@@ -94,7 +94,7 @@ commit (`WORKFLOW.md`).
 | `memory/buffer_arena` | long-lived buffer blocks (`BLOCK_KIND_BUFFER`): bump + per-block intrusive LIFO free list, pressure modes, per-block live count returning empty blocks | block pool; the buffer pressure protocol | the object heap; entities; GC | `block_pool`, `buffer`, `context`, `stdapi`, `arena` (`round_up_8`), `retained` (a payload's free is a retained block's release event) |
 | `memory/reserve` | the two-block per-thread reserve funding store-barrier log growth; drawn only after ordinary refusal; sets the refill flag the poll checks | block pool | what a log records; barrier semantics | `block_pool` |
 | `memory/critical` | the eight-block per-thread critical reserve, the second of `exceptions.md`'s three and separate from the first so neither consumer's worst case is the sum; drawn only after the pool refuses, and `give_back` refills it before a returned block reaches the pool | block pool; that a returned block is the reserve's before it is the pool's | who draws and what for — the collection's arena decides its own order. Two customers draw today, the arena and the candidate queue; the mutator that cannot collect arrives with S38.4 | `block_pool` |
-| `memory/retained` | the survivor list of each retained former-arena block — sorted, in the arena's own memory, named by the block's header line — and the atomic count word that returns the block: live occupants, pinned payloads and the lists of other blocks standing in it; published by the reset, read by the trace and the test-only enumerator, no process-global table and no lock | block addresses and arrays of addresses, plus the one word it tests through them: a slot's refcount, which is occupancy | what lives at those addresses — entities, classes, verdicts; where the arena placed the list | `block_pool` (stamping an emptied block and handing it over), `heap` (the collector line's words), `refcount` (`header_refcount`, the occupancy test's narrow read) |
+| `memory/retained` | the survivor list of each retained former-arena block — sorted, in the arena's own memory, named by the block's header line — and the atomic count word that returns the block: live occupants, pinned payloads and the lists of other blocks standing in it; published by the reset, read by the trace and the test-only enumerator, no process-global table and no lock | block addresses and arrays of addresses, plus the one question it asks through them: whether a slot is occupied, which `refcount::slot_state` answers over the count and the mark | what lives at those addresses — entities, classes, verdicts; where the arena placed the list | `block_pool` (stamping an emptied block and handing it over), `heap` (the collector line's words), `refcount` (`slot_state`, the one occupancy test) |
 | `memory/stats` | block-granular telemetry computed at query time; counters only on pool get/put — zero hot-path tax | pool counters | per-object events (the opt-in event log, unbuilt); arena/heap internals | `block_pool` |
 | `memory/stdapi` | the size-less allocator front door: `ll_malloc`/`ll_free`/`calloc`/`realloc`/aligned + `GlobalAlloc`; routes `ptr & !BLOCK_MASK` → header `kind`; asks `refcount::is_registered_candidate` and `cycle::deferred_slot_reuse::defer_reuse_if_tracing` before a physical return | every block kind's free route; the heap's `MAX_SMALL`; that a queue entry or an open trace withholds a physical return | entity semantics; who its callers are | `block_pool`, `heap`; upward: `refcount` (`is_registered_candidate`) and `cycle::deferred_slot_reuse` (`defer_reuse_if_tracing`), the two withholding tests on the free path |
 | `memory/context` | `LLContext` and the TLS current context (NULL-context fallback); the composition root wiring arena + thread heaps + immortal behind one ABI, `ll_arena_reset` included | the arena mount; which module implements each ABI it fronts | class layout; GC strategy; thread-heap init (heap's `ll_thread_init`, reached from the allocation cold paths) | `arena`, `heap`, `immortal`, `refcount`; upward: `promote` (`ll_arena_reset`) |
@@ -218,14 +218,15 @@ field is lent to):
   sites test it before calling in;
 - bits 13–14, destructor state (`DESTRUCTOR_PENDING` / `DESTRUCTOR_RAN`)
   — the debt protocol between `object` and the death paths;
-- bit 15, `DEAD_IN_PLACE` — the slot's occupant died inside a trace
-  window whose withheld-return chain had no room for a record, so the
-  death is written here (`PLAN.md` S43.2). What finds it is the sweep of
-  the block's rows, which S43.4 builds; until then a marked slot is held
-  for the life of the process. The count stays zero under it, and the bit is the
-  only thing that tells such a slot from a free one, so
-  `refcount::slot_state` is the one occupancy test and a guard test bans
-  the two-way one. The bit carried `STRING_OUT_OF_LINE` until the
+- bit 15, `DEAD_IN_PLACE` — the entity died inside a trace window whose
+  withheld-return chain had no room for a record, so the death is written
+  here (`PLAN.md` S43.2, S43.3). Three headers carry it: a size-class slot,
+  a retained survivor and a large entity's own header. What finds it is the
+  sweep of the rows over that memory, which S43.4 builds; until then marked
+  memory is held for the life of the process. The count stays zero under it,
+  and the bit is the only thing that tells such a header from an unoccupied
+  one, so `refcount::slot_state` is the one occupancy test and a guard test
+  bans the two-way one. The bit carried `STRING_OUT_OF_LINE` until the
   string's two layouts became the kind codes 8 and 9, and taking it
   fills the mutator's half: a further mutator flag needs a re-lay
   rather than a free position;

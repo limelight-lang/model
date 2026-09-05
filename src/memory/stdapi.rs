@@ -440,6 +440,18 @@ unsafe fn ll_free_large(ptr: *mut u8, block: *mut u8, kind: u32) {
                 return;
             }
 
+            // A survivor still carrying `DEAD_IN_PLACE` would take the
+            // decrement below and keep the mark, so the sweep would find it
+            // and hand the same survivor back a second time. The clear
+            // belongs to whoever returns the memory
+            // (`crate::refcount::clear_dead_in_place`), and this is where a
+            // path that forgot it shows up.
+            debug_assert_ne!(
+                unsafe { crate::refcount::slot_state(ptr as *const crate::refcount::RcHeader) },
+                crate::refcount::SlotState::DeadInPlace,
+                "a retained survivor reaches its block's count with its dead-in-place mark cleared"
+            );
+
             // A promoted survivor died. The block it was promoted in is
             // former arena memory with no free list and no stride, so
             // nothing is recycled inside it; what the death changes is

@@ -167,6 +167,20 @@ unsafe fn commission(block: *mut u8, size: usize, run_bytes: usize, kind: u32) -
 /// `block` is the block header of a live large-entity allocation whose
 /// entity is dead, and `kind` is the kind read from it.
 pub(crate) unsafe fn free(block: *mut u8, kind: u32) {
+    // A block returned under a standing `DEAD_IN_PLACE` goes to the pool or
+    // to the operating system while a sweep is still owed the mark, and the
+    // sweep would then hand the same memory back a second time. The clear
+    // belongs to whoever returns it (`crate::refcount::clear_dead_in_place`),
+    // and this is where a path that forgot it shows up.
+    debug_assert_ne!(
+        unsafe {
+            let (entity, _) = occupant(block);
+            crate::refcount::slot_state(entity as *const crate::refcount::RcHeader)
+        },
+        crate::refcount::SlotState::DeadInPlace,
+        "a large entity's memory is returned with its dead-in-place mark cleared"
+    );
+
     match kind {
         BLOCK_KIND_ENTITY_LARGE => BlockPool::global().put(block as *mut BlockHeader),
         BLOCK_KIND_ENTITY_LARGE_RUN => {

@@ -123,23 +123,32 @@ pub const DESTRUCTOR_PENDING: u32 = 1 << 13;
 /// `rfc/runtime/object-lifecycle.md`.
 pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 
-/// The slot holds no entity and is not on its block's free list: its
-/// occupant died inside a trace window whose withheld-return chain had no
-/// room for a record, so the death was written here instead
-/// (`PLAN.md` S43.2). What finds it is the sweep of the block's rows,
-/// which `PLAN.md` S43.4 builds; until that step lands a marked slot is
-/// held for the life of the process, and the owning thread is what clears
-/// the bit as it returns the slot.
+/// The entity is torn down and its memory has gone back nowhere: it died
+/// inside a trace window whose withheld-return chain had no room for a
+/// record, so the death was written here instead (`PLAN.md` S43.2, S43.3).
+/// What finds it is the sweep of the rows over that memory, which `PLAN.md`
+/// S43.4 builds; until that step lands the memory is held for the life of
+/// the process, and whoever returns the memory is what clears the bit — its
+/// block's owner for a slot, and the thread whose trace holds the rows for
+/// the other two, which have no owner (`dev/DECISIONS.md`, "the stamp is the
+/// whole condition where the return is not the owner's").
+///
+/// **Three headers carry it**, and what each one holds back differs: a
+/// size-class slot, which is on no free list and below its block's bump
+/// cursor; a retained survivor, whose block still counts it as a live
+/// occupant and so cannot go home; and the one entity of a large block,
+/// pooled or OS-direct, whose block or mapping waits with it.
 ///
 /// **The refcount stays zero under it**, which is what a queue reader
 /// depends on (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending
-/// slot reuse"), so the bit is the only thing that separates such a slot
-/// from a free one — a free slot's first eight bytes are a zero count and
-/// whatever flags its last occupant left.
+/// slot reuse"), so the bit is the only thing that separates such a header
+/// from an unoccupied one — an unoccupied header's first eight bytes are a
+/// zero count and whatever flags its last occupant left.
 ///
-/// Three writes keep it from going stale: commissioning zeroes every slot
-/// of a block it cuts, [`publish_header`] replaces all eight bytes of a
-/// new occupant's header, and the return clears it. **A fourth window
+/// Three writes keep it from going stale: commissioning zeroes the headers
+/// of the memory it cuts, whether that is every slot of a size-class block
+/// or the one entity of a large one, [`publish_header`] replaces all eight
+/// bytes of a new occupant's header, and the return clears it. **A fourth window
 /// they do not cover** is a thread that exits holding a marked slot: the
 /// block carries `used` above zero, so `heap`'s abandonment hands it to
 /// the abandoned list and an adopting thread claims it without zeroing a
@@ -888,16 +897,18 @@ pub(crate) unsafe fn slot_state(header: *const RcHeader) -> SlotState {
     SlotState::Free
 }
 
-/// Write the mark of [`SlotState::DeadInPlace`] into a slot whose entity
-/// has been torn down.
+/// Write the mark of [`SlotState::DeadInPlace`] into the header of an
+/// entity that has been torn down.
 ///
-/// The caller owns the slot at this instant: the teardown has finished, no
-/// queue entry names it, and it is on no free list, so nothing else reads
-/// or writes these bytes until the return clears the mark.
+/// The caller owns the memory at this instant: the teardown has finished, no
+/// queue entry names it, and it has gone back to no free list, no pool and no
+/// mapping, so nothing else reads or writes these bytes until the return
+/// clears the mark.
 ///
 /// # Safety
-/// `header` addresses a dead entity slot of this thread's heap whose count
-/// reads zero.
+/// `header` addresses a dead entity whose count reads zero, in memory a trace
+/// has stamped and whose sweep this thread will run
+/// (`crate::cycle::deferred_slot_reuse::can_carry_the_mark`).
 #[inline]
 pub(crate) unsafe fn mark_dead_in_place(header: *mut RcHeader) {
     debug_assert_eq!(
@@ -908,9 +919,13 @@ pub(crate) unsafe fn mark_dead_in_place(header: *mut RcHeader) {
     unsafe { update_header_flags(header, |flags| flags | DEAD_IN_PLACE) };
 }
 
-/// Take the mark off, which the owning thread does as it returns the slot.
+/// Take the mark off, which whoever returns the memory does as it returns it:
+/// the block's owner for a size-class slot, and for a retained survivor or a
+/// large entity the thread whose trace holds the rows, neither having an owner
+/// (`dev/DECISIONS.md`, "the stamp is the whole condition where the return is
+/// not the owner's").
 ///
-/// It runs on the owner and never on a collector worker: the mutator half
+/// It never runs on a collector worker: the mutator half
 /// of the flags word has one writer, and a worker that cleared a bit there
 /// would race the owner's own read-modify-write
 /// (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse",

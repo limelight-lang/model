@@ -11,8 +11,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-04 · Active: S43, from S43.2, the stage amended the same day
-to the form Edmond ruled: the chain stays and the mark answers its refusal. The
+Updated: 2026-09-05 · Active: S43, from S43.4, S43.3 having taken the marks of
+the retained survivor and of both large-entity forms. The stage keeps the form
+Edmond ruled on 2026-09-04: the chain stays and the mark answers its refusal.
+The
 rest of S36 stands behind it — S36.9's remainder and S36.12's slice (b) each
 wait on a ruling named in their own step. The sections after S40 are the
 backlog. S43 sits between S36 and S37, where it is to be done.
@@ -1826,15 +1828,20 @@ nulling would meet its own stamp and mark the slot again, and no slot would
 ever return. Nulling first is safe on one thread at that instant: the rows are
 dead there, which is what the token's release means.
 
-**Three populations are withheld today and the mark owes all three.** An entity
-block's slot is one; the other two are a retained block's whole-block return,
-which `ll_free` reaches through `occupant_freed`, and an OS-direct run's unmap
-— each pinned by a test of S36.2 (`a_retained_blocks_last_occupant_waits_for_`
-`the_trace_row`, `a_pooled_large_entity_waits_for_its_header_row`,
-`an_os_direct_large_entity_waits_for_its_header_row`). Neither has a slot's
-first word to write into: a retained occupant's mark goes in its own header
-and the sweep walks the survivor list, and a run's goes in its block header
-with the sweep unmapping. A step that ships the entity-slot half alone returns
+**Five shapes are withheld today and the mark owes four of them**, which is
+S43.3's Sage gate correcting this paragraph's own count.
+`stdapi::can_lose_trace_identity` admits four kinds and the retained kind
+arrives twice: an entity block's slot; a retained occupant's death, which
+`ll_free` reaches through `occupant_freed`; the reset's whole-block sentinel,
+where the pointer is the block header; a pooled large entity; and an OS-direct
+run. Each of the last four is pinned by a test of S36.2
+(`a_retained_blocks_last_occupant_waits_for_the_trace_row`,
+`a_pooled_large_entity_waits_for_its_header_row`,
+`an_os_direct_large_entity_waits_for_its_header_row`). The mark goes in the
+entity's own header in every case that takes one — the survivor's at its list
+address, the large entity's at `block + LINE_SIZE` — and the sentinel is the
+one shape with no entity header to write into, so it stays on the record path
+and joins S43.5's residue. A step that ships the entity-slot half alone returns
 a retained block or a run under a live row, which is the defect S36.2 exists
 to prevent.
 
@@ -1967,12 +1974,106 @@ to prevent.
         path past that region either" states the retracted form of 2026-09-03,
         that the list itself goes; it is wrong today rather than merely silent.
         `rfc/model/classes.md`'s "Flags layout" still calls bit 15 free.
-- [ ] S43.3 The retained occupant and the OS-direct run carry theirs
+- [x] S43.3 The retained occupant and the OS-direct run carry theirs
       done: a retained block whose last occupant dies under a live row, and an
         OS-direct run whose entity dies under one, are held by a mark in their
         own headers rather than by a record; the three S36.2 cases that pin
         those two returns pass unchanged
       tier: T2 · role: Sage → Critic
+      Sage 2026-09-05 (pre-change gate): **the step admits three populations
+        and not two** — the pooled large entity is one of its own beside the
+        OS-direct run, and the stage's paragraph above understated how many
+        shapes reach the window. **The condition is the stamp alone** where the
+        return is not the owner's, and the ownership word S43.2 reads may not
+        be read on either block: a retained block's `shared.owner` is its
+        previous life's, and a large-entity block's first line is a
+        `LargeEntityHeader` whose tail at that offset was never written
+        (`dev/DECISIONS.md`, "the stamp is the whole condition where the return
+        is not the owner's"). The mark is bit 15 of the entity's own header in
+        all three, `LargeEntityHeader::row` and the retained block's `holds`
+        word and survivor list all being refused for the readers they would
+        collide with. The reset's whole-block sentinel takes no mark, having no
+        entity header, and joins S43.5's residue. `register` counts what it
+        counted before and `is_occupied`'s assertion stays with its reason
+        rewritten: a mark needs a stamp, and `register` runs before any trace
+        can address the block. Refused: an eager `occupant_freed` or `unlink`
+        at the mark, a touched-list walk on the free path, an atomic on the
+        large entity's row word, any edit to `ll_free`'s arm order,
+        `can_lose_trace_identity`, `points_to_gc_entity`, `register`,
+        `occupant_freed`, `grow`, the abort or `RETURNS_BASE_RECORDS`, a
+        clearing store by any non-owner, and closing with any of the three
+        S36.2 tests edited.
+      progress 2026-09-05 — `cycle::deferred_slot_reuse::can_carry_the_mark` is
+        the one predicate that decides mark against record, and
+        `withhold_without_a_record` dispatches on it for every population
+        instead of testing `BLOCK_KIND_ENTITY` alone. A large entity asks its
+        own row word's colour; a retained survivor asks the block's shadow
+        pointer; an entity slot asks that pointer and ownership; every other
+        kind, and the retained sentinel, refuse structurally rather than fall
+        through. Two guards stand at the returns the mark must not survive:
+        `ll_free`'s retained arm before `occupant_freed`, and the head of
+        `large_entity::free`. `describe_slot`'s large arm names the state, and
+        `retained::is_occupied`'s assertion keeps its place with its reason
+        rewritten — no marked survivor can reach `register`, a mark needing a
+        stamp that cannot exist before the list is published. Five tests, three
+        taking and two refusing: a stamped retained survivor with its holder,
+        a stamped pooled large entity, a stamped run, an unmet large entity and
+        an unstamped retained survivor. All three taking tests were seen
+        failing first, at 1026, 1025 and 1025 records against 1024, and both
+        refusing tests were seen failing on the flip that admits their arm — 1024
+        against 1025 for the run and 1025 against 1026 for the survivor. The
+        three S36.2 cases pass unchanged.
+      Critic 2026-09-05 round 1: seven findings, six taken. The load-bearing
+        one was a hole rather than a defect: **the refusing half of the two new
+        arms had no test**, so replacing either with `true` left the whole
+        suite green, and the loss it would cause is a run nobody unmaps and a
+        retained block nobody empties. Two tests close it. Also taken: the
+        retained case claimed two marks and read one; `can_carry_the_mark`'s
+        doc said the walk that unstamps the memory finds the mark, which no
+        walk does until S43.4; the predicate's tail returned true for a kind
+        with no arm; and `dev/ARCHITECTURE.md`'s `memory/retained` row and that
+        module's own doc still described the two-state occupancy test S43.2
+        replaced, naming a `header_refcount` call the module does not make.
+        Left as a record: the retained and the large arms take any stamp for
+        their own trace's, having no proxy for whose it is, and that holds only
+        while one window is open in the process at a time. Nothing enforces
+        that today — S38's token is what will — and with two windows the
+        stamping thread's `clear_touched_rows` can run between the marking
+        thread's read of the stamp and its write of the mark. The slotted arm
+        is outside this, ownership standing beside its stamp.
+      Critic 2026-09-05 round 2: five findings, all taken, none in the code —
+        the repairs left no defect the suite could reach. What they left was a
+        disagreement between neighbouring docs:
+        `withhold_without_a_record` still said the sweep that unstamps the
+        memory finds the mark, twelve lines above its own sentence saying that
+        sweep is unbuilt, which is round 1's finding moved one function down.
+        `DEAD_IN_PLACE` and `clear_dead_in_place` said the owning thread clears
+        the bit, and two of the three populations have no owner — the ruling
+        names the thread whose trace holds the rows instead, and the decision
+        entry now carries that sentence. The round-1 line overstated its own
+        finding: a mark is written only inside the marker's own open window, so
+        the exposure is two threads each holding one, not a third thread. Two
+        citations of `rc-cycle.md` named the paragraph next to the sentence
+        they quote, and `retained.rs`'s module doc still said the enumerators
+        read a refcount word. The device stops at two rounds.
+      miri 2026-09-05 — `cycle::deferred_slot_reuse` at two threads, after both
+        refusing tests landed: 26 passed, 0 failed, 0 ignored, 74.44 s on
+        Miri's clock against 4 m 31 s of wall. 26 is every `#[test]` of the
+        module, which is what proves the run alive. The block's own run is
+        S43's, at its close.
+      handoff: the rfc contradicts the built state in three places and carrying
+        the amendment is that repository's work. `rfc/model/classes.md`'s flags
+        row 15 states the slotted condition — "a block this thread owns" — for
+        every header, and names the shadow pointer's nulling as what finds the
+        mark, which a large entity has no shadow pointer for.
+        `rfc/model/gc/rc-cycle.md` carries the same two halves in two
+        paragraphs: "A death past that region is marked in the dead slot rather
+        than recorded" names the shadow pointer, and "A mark is taken only
+        where the sweep will find it" makes ownership a condition of every
+        mark. The paragraph after them still reads "their marks are owed rather
+        than specified", with a reason that is wrong: a retained occupant's
+        mark lands in the survivor's own header and not in the word the
+        emptiness count reads.
 - [ ] S43.4 The sweep returns everything marked
       done: `clear_touched_rows` nulls a block's shadow pointer and **clears
         the mark**, and the **owning thread** returns the slot on its own free
@@ -1990,6 +2091,15 @@ to prevent.
         token is released, which is not the owning thread, and the mutator's
         half of the flags word has one writer — the same rule that refuses a
         worker the neighbouring clear of the candidate bit.
+      correction 2026-09-05 (S43.3's gate): the block-level flag has a place to
+        live in each population and they are not alike. A retained block's is a
+        word of its collector line and must be atomic, the deaths it answers
+        being frees any thread may perform; a large entity's must share the
+        header line the sweep already writes, or an ordinary collection pays a
+        line for every touched large entity. The per-slot marks S43.3 built are
+        in the entity headers themselves, so the sweep of a retained block
+        walks its survivor list and the sweep of a large block reads one
+        header.
       correction 2026-09-04 (Critic round 1 on S43.2): the step also owes the
         thread that exits holding a marked slot. Such a block reads `used`
         above zero, so `heap`'s abandonment puts it on the abandoned list and
@@ -2015,19 +2125,24 @@ to prevent.
         `dev/ARCHITECTURE.md`'s critical-reserve row names one borrower again
         and its withheld-returns row loses the blocks past the region
       tier: T2 · role: Critic
-      handoff (Critic round 1 on S43.2): one case has to be answered before
-        this deletion is possible, and it is the last resident of the growth
-        path once S43.3 has taken the retained block and the OS-direct run: **a
-        slot dying past a full region in a block no trace stamped**. It cannot
-        be marked, a mark there being one no sweep walks to, and it cannot be
-        dropped. Two ways out, and neither is chosen here: record the block
-        rather than the slot, so that the region holds one entry per block and
-        the close walks each recorded block once, which also retires the
-        stamped/unstamped distinction; or keep the growth for this one
-        population and narrow the step's promise to the reserve draw and the
-        abort. Pinned by
+      handoff (Critic round 1 on S43.2, widened by S43.3's Sage gate): two
+        cases have to be answered before this deletion is possible, and they
+        are what is left on the growth path now that S43.3 has taken the marks.
+        **A death past a full region in memory no trace stamped**, in any of
+        the four populations that can be stamped: a mark there is one no sweep
+        walks to, and the death cannot be dropped. Two ways out, and neither is
+        chosen here: record the block rather than the slot, so that the region
+        holds one entry per block and the close walks each recorded block once,
+        which also retires the stamped/unstamped distinction; or keep the
+        growth for this population and narrow the step's promise to the reserve
+        draw and the abort. Pinned by
         `an_unstamped_block_past_the_region_still_takes_a_record`, which asserts
-        today's answer.
+        today's answer. **And the reset's whole-block sentinel**, which reaches
+        the window with the block header as its pointer and so has no entity
+        header to mark at all; its block cannot carry a stamp either,
+        `promote::retain_block` zeroing the shadow pointer before the kind is
+        published, so no ordering makes it markable and the answer has to be
+        one of the two above.
       note 2026-09-04: what makes the refusal answerable is the mark, not the
         deletion of the chain — S43.1 measured the walk that a full deletion
         would cost every collection and it is dearer than the chain at every

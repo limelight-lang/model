@@ -25,15 +25,15 @@
 //!
 //! What lives at those addresses. It stores block addresses and arrays of
 //! addresses; entities, classes, refcounts and verdicts belong to the
-//! layers above. It reads one word of one of them, in one place and for
-//! one purpose: the refcount word is the occupancy test that decides how
-//! many of a list's addresses are alive when the list is published.
+//! layers above. It reads the first eight bytes of one of them, in one
+//! place and for one purpose: `refcount::slot_state` decides how many of a
+//! list's addresses are alive when the list is published.
 //!
 //! # The one requirement on an address
 //!
 //! Every address in a published list stays **readable** for as long as
-//! the list is published. Both enumerators read its refcount word without
-//! first testing that the block still exists, which they may because a
+//! the list is published. Both enumerators read its first eight bytes
+//! without first testing that the block still exists, which they may because a
 //! retained block leaves circulation only once its last survivor is gone,
 //! and the list itself is in memory that leaves circulation no earlier: a
 //! block holding another block's list is held for it, through the count
@@ -292,10 +292,12 @@ pub(crate) unsafe fn release_emptied(block: usize) {
 ///
 /// **A survivor marked dead in place would be counted dead here**, and
 /// `register` would then return a block to the pool with the mark still
-/// standing on it. Nothing produces such a survivor today — the mark is
-/// taken for the slotted population alone — and `PLAN.md` S43.3 is the
-/// step that produces one, so the assertion below is what makes it
-/// arrive as a failure rather than as a returned block.
+/// standing on it. No such survivor can reach this call, and the ordering
+/// is what says so: a mark is taken only where a trace has stamped the
+/// block (`crate::cycle::deferred_slot_reuse::can_carry_the_mark`), while
+/// this call runs at retention, over a collector line `promote::retain_block`
+/// has just zeroed and before any trace can address the block. The
+/// assertion below is the guard of that ordering.
 ///
 /// # Safety
 /// `address` must be readable at its first eight bytes, which is the count
@@ -305,7 +307,8 @@ unsafe fn is_occupied(address: usize) -> bool {
     debug_assert_ne!(
         state,
         crate::refcount::SlotState::DeadInPlace,
-        "a retained survivor carries a dead-in-place mark, and this test has no answer for it yet"
+        "a survivor being registered carries a dead-in-place mark, which means a trace \
+         stamped this block before its list was published"
     );
     state == crate::refcount::SlotState::Live
 }

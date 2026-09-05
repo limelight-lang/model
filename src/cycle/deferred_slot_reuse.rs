@@ -61,17 +61,17 @@
 //! [`RETURNS_BASE_RECORDS`] slots have died inside one trace window while both
 //! allocation paths refuse a single block.
 //!
-//! **An entity slot of a block this thread owns and a trace has stamped does
-//! not reach it**: past the region such a death is marked in the slot's own header
+//! **A death in memory a trace has stamped does not reach it**: past the
+//! region such a death is marked in the entity's own header
 //! ([`crate::refcount::DEAD_IN_PLACE`]), which asks no allocation path and so
 //! cannot be refused. The chain keeps every death the region holds, the walk a
 //! mark costs the sweep being dearer than an append at every design class
-//! (`dev/BENCHMARKS.md`, 2026-09-04, S43.1). Three populations still reach the
-//! growth and the process end behind it, and each leaves with its own step: a
-//! retained block's whole-block return and an OS-direct run, whose marks are
-//! `PLAN.md` S43.3's, and a slot in a block no trace stamped, which S43.5 has
-//! to answer before it can delete the growth. A thread exiting with its window still open
-//! ends the process for a reason of its own ([`dispose_thread_state`]).
+//! (`dev/BENCHMARKS.md`, 2026-09-04, S43.1). What still reaches the growth and
+//! the process end behind it is a death in memory no trace stamped, and the
+//! reset's whole-block sentinel, which has no header of its own to carry a
+//! mark; `PLAN.md` S43.5 has to answer both before it can delete the growth. A
+//! thread exiting with its window still open ends the process for a reason of
+//! its own ([`dispose_thread_state`]).
 //!
 //! The block leaving the append position is charged whole. The block still
 //! under the cursor is a documented residue: it never stands in the current
@@ -84,7 +84,10 @@
 use std::cell::Cell;
 
 use crate::cycle::records::{RecordChain, SEGMENT_HEADER_BYTES};
-use crate::memory::block_pool::{BLOCK_KIND_ENTITY, BLOCK_PAYLOAD, BlockHeader};
+use crate::cycle::shadow::{self, Color};
+use crate::memory::block_pool::{
+    BLOCK_KIND_ENTITY, BLOCK_KIND_RETAINED, BLOCK_PAYLOAD, BlockHeader,
+};
 use crate::memory::gc_metadata;
 
 /// The chain of withheld returns, resident in the workspace region it
@@ -424,10 +427,10 @@ impl Drop for ActiveTrace {
 /// returning this one is the reuse the window exists to prevent; dropping the
 /// record loses a physical return, which is refused (`dev/DECISIONS.md`, "an
 /// enrolment cannot fail"). Nothing can report it either: `ll_free` holds no
-/// frame that can fail. **S43.5 deletes this function**, and it owes one case
-/// first: a slot dying past a full region in a block no trace stamped is the
-/// last resident of this path once S43.3 has taken the other two populations,
-/// and a mark there is a mark no sweep walks to.
+/// frame that can fail. **S43.5 deletes this function**, and it owes two cases
+/// first: a death past a full region in memory no trace stamped, where a mark
+/// is one no sweep walks to, and the reset's whole-block sentinel, which
+/// addresses a block header and so has no entity header to mark.
 #[cold]
 fn grow(chain: &DeferredReturnChain) {
     let (block, from_reserve) = draw_block();
@@ -470,10 +473,10 @@ fn grow(chain: &DeferredReturnChain) {
 /// # Safety
 /// `ptr` is a dead entity slot whose teardown has completed and which this call
 /// owns until either the function returns `false` or the window closes.
-/// `kind` is the kind `ptr`'s own block reads, and for `BLOCK_KIND_ENTITY`
-/// `ptr` addresses a slot of that block rather than the block itself — the
-/// mark is a write into the header at `ptr`, and a block base passed under
-/// that kind would land it in the block's own header.
+/// `kind` is the kind `ptr`'s own block reads, and outside the retained
+/// sentinel `ptr` addresses an entity rather than the block itself — the mark
+/// is a write into the header at `ptr`, and a block base passed under any
+/// other kind would land it in the block's own header.
 #[inline]
 pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
     let control = DEFERRED_RETURNS.with(Cell::get);
@@ -489,47 +492,93 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
     true
 }
 
+/// Whether a mark in the entity's own header is one a sweep will reach,
+/// which is what separates the deaths this module answers with a mark from
+/// the deaths it still records.
+///
+/// The stamp is the half every population shares: rows over the memory mean
+/// a collection is walking it, and the memory a collection walks is the
+/// memory a sweep of its touched list can reach — which is what `PLAN.md`
+/// S43.4 builds, the walk today making one store per touched block and
+/// reading no header
+/// ([`crate::cycle::arena::TraceScratchArena::clear_touched_rows`]). Where
+/// that stamp is written, and what else has to hold, differs by population:
+///
+/// - **an entity slot** is asked whose block it is as well. The return is
+///   the owner's — its free list and its `used` — so a slot marked in a
+///   block this thread does not own waits for a sweep this thread never
+///   runs;
+/// - **a retained survivor** asks the stamp alone, its return being an
+///   atomic decrement any thread may perform
+///   ([`crate::memory::retained::occupant_freed`]). The reset's whole-block
+///   sentinel is refused here instead: it addresses the block header rather
+///   than an entity, so there is no header of its own to mark;
+/// - **a large entity**, pooled or OS-direct, carries its one row in its own
+///   block header, so that row's colour is the stamp
+///   ([`crate::memory::large_entity::shadow_row`]). Its header is not a
+///   `HeapBlockHeader`, and neither the shadow pointer nor the owner word
+///   an entity block carries exists at those offsets to be read.
+///
+/// Why the retained and large populations are not asked for an owner, and
+/// what that leaves open: `dev/DECISIONS.md`, "the stamp is the whole
+/// condition where the return is not the owner's".
+///
+/// # Safety
+/// As [`defer_reuse_if_tracing`].
+unsafe fn can_carry_the_mark(ptr: *mut u8, kind: u32) -> bool {
+    let block = BlockHeader::of_ptr(ptr) as *mut u8;
+
+    // Asked rather than listed, because the two large kinds grow together or
+    // not at all (`crate::memory::large_entity::is_large_entity`).
+    if crate::memory::large_entity::is_large_entity(kind) {
+        let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
+        return shadow::color(row) != Color::Untouched;
+    }
+
+    // A kind with no arm refuses rather than falls through: the set that
+    // reaches here is `stdapi::can_lose_trace_identity`'s, and a kind added
+    // there without an arm here would otherwise be marked on the strength of
+    // a shadow pointer read at an offset that may be another module's.
+    match kind {
+        BLOCK_KIND_ENTITY => {
+            !unsafe { crate::memory::heap::block_shadow(block) }.is_null()
+                && unsafe { crate::memory::heap::block_is_owned_by_this_thread(block) }
+        }
+        BLOCK_KIND_RETAINED => {
+            ptr != block && !unsafe { crate::memory::heap::block_shadow(block) }.is_null()
+        }
+        _ => false,
+    }
+}
+
 /// Withhold a return the region has no room to record.
 ///
-/// Which answer applies is the population's, and only one of them asks an
-/// allocation path:
-///
-/// - **an entity slot of a block this thread owns and a trace has stamped**
-///   carries the fact in its own header
-///   ([`crate::refcount::mark_dead_in_place`]), and the sweep that unstamps
-///   the block is what finds it. Nothing is drawn and nothing can refuse,
-///   which is what takes the process end off this path (`PLAN.md` S43.2).
-///   Ownership is asked beside the stamp because the sweep is the owner's:
-///   a block abandoned by an exited thread, or one this thread freed into
-///   from outside, carries a stamp its own owner's trace wrote, and a mark
-///   there waits for a sweep this thread will never run;
-/// - **everything else** still takes a record. A retained block's
-///   whole-block return and a large entity's run have no slot word to
-///   write into, and their own marks are `PLAN.md` S43.3's; a slot in a
-///   block no trace stamped would carry a mark no sweep would look for,
-///   and the slot would be lost. The block's shadow pointer is the test,
-///   which is the one `ll_free` already makes for its kind dispatch.
+/// A death [`can_carry_the_mark`] admits carries the fact in the entity's own
+/// header ([`crate::refcount::mark_dead_in_place`]), and what will find it is
+/// the sweep `PLAN.md` S43.4 builds over the memory the same trace stamped.
+/// Nothing is drawn and nothing can refuse, which is what takes the process
+/// end off that path (`PLAN.md` S43.2, S43.3). Every other death still takes a record, and what is left
+/// there is a death in memory no trace stamped, plus the reset's whole-block
+/// sentinel — the two `PLAN.md` S43.5 has to answer before it can delete the
+/// growth.
 ///
 /// A marked slot stays out of the allocator's hands the way a recorded one
-/// does — it is on no free list and below its block's bump cursor — and
-/// what returns it is `PLAN.md` S43.4's sweep, which is unbuilt: until it
-/// lands the mark holds the slot for the life of the process.
+/// does — it is on no free list and below its block's bump cursor — and a
+/// marked survivor keeps its block's occupant count above zero, so the block
+/// is not the pool's either. What returns them is `PLAN.md` S43.4's sweep,
+/// which is unbuilt: until it lands a mark holds the memory for the life of
+/// the process.
 ///
 /// # Safety
 /// As [`defer_reuse_if_tracing`], whose refused push this answers.
 #[cold]
 unsafe fn withhold_without_a_record(chain: &DeferredReturnChain, ptr: *mut u8, kind: u32) {
-    if kind == BLOCK_KIND_ENTITY {
-        let block = BlockHeader::of_ptr(ptr) as *mut u8;
-        if unsafe { crate::memory::heap::block_is_owned_by_this_thread(block) }
-            && !unsafe { crate::memory::heap::block_shadow(block) }.is_null()
-        {
-            unsafe {
-                crate::refcount::mark_dead_in_place(ptr as *mut crate::refcount::RcHeader);
-            }
-
-            return;
+    if unsafe { can_carry_the_mark(ptr, kind) } {
+        unsafe {
+            crate::refcount::mark_dead_in_place(ptr as *mut crate::refcount::RcHeader);
         }
+
+        return;
     }
 
     grow(chain);

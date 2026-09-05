@@ -2615,10 +2615,12 @@ pub(crate) fn describe_slot(addr: usize) -> String {
         let registered = crate::memory::large_entity::snapshot().contains(&(block as usize));
         let (refcount, flags) =
             unsafe { crate::refcount::header_pair(addr as *const crate::refcount::RcHeader) };
+        let state =
+            unsafe { crate::refcount::slot_state(addr as *const crate::refcount::RcHeader) };
         return format!(
             "addr {addr:#x} block {:#x} in_region {in_region} kind {kind_word} \
              large_entity size {size} occupant {:#x} registered_run {registered} \
-             refcount {refcount} flags {flags:#06x}",
+             state {state:?} refcount {refcount} flags {flags:#06x}",
             block as usize, entity as usize
         );
     }

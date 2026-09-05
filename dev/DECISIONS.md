@@ -8,6 +8,71 @@ never edited or deleted.
 
 ---
 
+## 2026-09-05 — the stamp is the whole condition where the return is not the owner's
+
+**Ruled by the Sage** on S43.3's pre-change gate.
+
+**Five shapes reach the trace window, not the three S43's prose named.**
+`stdapi::can_lose_trace_identity` admits four kinds, and the retained kind
+arrives twice: an occupant's death, which reaches `retained::occupant_freed`,
+and the reset's whole-block sentinel, where `ptr` is the block header. The
+pooled large entity is a population of its own beside the OS-direct run, the
+prose having folded it into the run while listing its test among the three the
+step must keep passing.
+
+**The mark for all three admitted populations is bit 15 of the entity's own
+header** — a retained survivor's at its list address, a large entity's at
+`block + LINE_SIZE`. One bit, one predicate and one writer rule, and every
+walker already reads it: `heap::for_each_entity_slot` asks `slot_state` of the
+survivor list and of both large forms, and `row.rs` asks it of a survivor.
+Refused homes, each for a reader it would collide with: the retained block's
+`holds` word, which decides the return and is decremented by whichever thread
+frees; the survivor list and its length, published once and binary-searched by
+the trace; `LargeEntityHeader::row`, which is the collector's word and is
+overwritten by `clear_touched_rows`; and that header's `_pad`, `prev` and
+`next`, written at commissioning or under the registry mutex.
+
+**The condition is the stamp alone.** S43.2 asks ownership beside the stamp
+because a size-class slot's return is the owner's — its free list and its
+`used` — so a mark in another thread's block waits for a sweep that never runs.
+Neither population here has an owner-only return: `occupant_freed` is an atomic
+decrement any thread may perform, and `release_emptied` and
+`large_entity::free` take process-global locks. The thread whose trace stamped
+the memory is the thread that sweeps it and can return it, whoever allocated
+it.
+
+**And the ownership word may not be read on either block.** A retained block's
+`shared.owner` is whatever its previous life left: the arena writes `kind` and
+`next` only, and `promote::retain_block` clears the collector line rather than
+the header's first lines, so the word can read a stale `Heap` id including this
+thread's own. A large-entity block's first line is a `LargeEntityHeader`, whose
+tail at the offset `shared.owner` occupies was never written.
+
+**The sentinel is refused and joins S43.5's residue.** It addresses a block
+header, so there is no entity header to mark; and its block cannot be stamped
+in any case, `retain_block` zeroing the shadow pointer before the kind is
+published. What still reaches the growth is therefore a death in memory no
+trace stamped — in any of the four populations — plus the sentinel always.
+
+**A marked survivor is a counted survivor.** The decrement is exactly what the
+withheld return owes, so the block keeps a live occupant and cannot go home
+while the mark stands, and the owner's later free is what spends it.
+
+**Who clears the mark where there is no owner.** The clear belongs to whoever
+returns the memory: a size-class slot's block owner, and for a retained
+survivor or a large entity the thread whose trace holds the rows over it —
+today the tracing mutator, under S38 the claimed one. A collector worker never
+clears it, for the reason it may not clear the candidate bit.
+
+**`register` counts what it counted before**, and `is_occupied`'s assertion
+against a marked survivor stays with its reason rewritten: no marked survivor
+can reach that call. A mark needs the block's shadow pointer non-null, while
+`register` runs at retention over a line `retain_block` has just zeroed and
+before any trace can address the block. The assertion is the guard of that
+ordering rather than a debt owed to a step.
+
+---
+
 ## 2026-09-04 — the dead-in-place mark is flags bit 15, and the owner clears it
 
 **Ruled by the Sage** on S43.2's pre-change gate.
