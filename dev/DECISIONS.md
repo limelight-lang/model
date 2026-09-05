@@ -88,7 +88,7 @@ been handing out slots of such blocks all through the trace. Recording those
 deaths protected nothing, and it was what kept the growth reachable.
 
 **Why the foreign slot is stacked rather than listed.**
-`heap::entity_block_slots` reads the owner's bump cursor without
+`heap::entity_block_slot_bounds` reads the owner's bump cursor without
 synchronisation, so a walk that acted on what it found there would read the
 first word of a slot the owner is publishing: the mixed-size access against
 `publish_header`'s store that `refcount::flags_load` names as undefined. The

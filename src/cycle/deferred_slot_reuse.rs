@@ -554,7 +554,7 @@ unsafe fn stack_foreign_slot(chain: &DeferredReturnChain, slot: *mut u8) {
 ///
 /// **The order of those two halves is load-bearing and cannot be simplified.**
 /// The reads at the head of an arm carry assertions of their own — the size
-/// class `crate::memory::heap::entity_block_slots` indexes by, the survivor
+/// class `crate::memory::heap::entity_block_slot_bounds` indexes by, the survivor
 /// list the retained arm asserts on — and a resumed walk repeats everything
 /// the raising walk ran before its first disposal. Named earlier, a block
 /// whose head-read raised would send the drop's own pass through that same
@@ -599,7 +599,8 @@ unsafe fn dispose_marks_of(
 
     match kind {
         BLOCK_KIND_ENTITY => {
-            let (first, stride, bump) = unsafe { crate::memory::heap::entity_block_slots(block) };
+            let (first, stride, bump) =
+                unsafe { crate::memory::heap::entity_block_slot_bounds(block) };
 
             // Named after the block has been read and not before: a walk that
             // raised in the reading above would send the drop's own pass
@@ -1088,7 +1089,7 @@ enum PastTheRegion {
 ///   listed, the close walking the block by stride. A slot in a block another
 ///   thread owns is marked and stacked instead: such a walk is bounded by a
 ///   bump cursor its owner moves, and a slot read across that store is read
-///   through a race ([`crate::memory::heap::entity_block_slots`]);
+///   through a race ([`crate::memory::heap::entity_block_slot_bounds`]);
 /// - **a retained survivor** is marked and its block listed, its return being
 ///   an atomic decrement any thread may perform
 ///   ([`crate::memory::retained::occupant_freed`]) and its walk bounded by a

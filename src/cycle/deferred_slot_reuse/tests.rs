@@ -1873,7 +1873,8 @@ fn the_close_returns_a_marked_retained_survivor() {
     // block that does empty here is the retained one, and that is what the
     // kind word below reads.
     let holder_block = (holder as usize & !crate::memory::block_pool::BLOCK_MASK) as *mut u8;
-    let (_, holder_stride, _) = unsafe { crate::memory::heap::entity_block_slots(holder_block) };
+    let (_, holder_stride, _) =
+        unsafe { crate::memory::heap::entity_block_slot_bounds(holder_block) };
     let keeper = unsafe { crate::memory::heap::entity_alloc(holder_stride) };
     assert!(!keeper.is_null());
     let keeper = unsafe { live_entity(keeper, 1) };

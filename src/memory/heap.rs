@@ -2409,6 +2409,11 @@ pub(crate) unsafe fn marked_link(block: *mut u8) -> *const AtomicPtr<u8> {
 /// which is the bound a per-slot walk runs to
 /// ([`for_each_entity_slot`] walks every block by the same three).
 ///
+/// The third element is a cursor rather than a capacity, which is what
+/// separates this call from [`collector_block_slots`]: that one answers how
+/// many slots the block holds, and the two figures differ by every slot past
+/// the bump.
+///
 /// **The cursor is read without synchronisation**, so a caller that is not
 /// the block's owner reads a value the owner may be moving. A census takes
 /// that knowingly, one slot short or one slot long being a census of the
@@ -2418,7 +2423,7 @@ pub(crate) unsafe fn marked_link(block: *mut u8) -> *const AtomicPtr<u8> {
 ///
 /// # Safety
 /// `block` is the header of a live `BLOCK_KIND_ENTITY` block.
-pub(crate) unsafe fn entity_block_slots(block: *mut u8) -> (*mut u8, usize, usize) {
+pub(crate) unsafe fn entity_block_slot_bounds(block: *mut u8) -> (*mut u8, usize, usize) {
     let header = block as *mut HeapBlockHeader;
     let (size_class, bump) = unsafe {
         (
@@ -2663,7 +2668,7 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
                 continue;
             }
 
-            let (base, class_size, bump) = unsafe { entity_block_slots(block as *mut u8) };
+            let (base, class_size, bump) = unsafe { entity_block_slot_bounds(block as *mut u8) };
             for s in 0..bump {
                 let slot = unsafe { base.add(s * class_size) } as *mut crate::refcount::RcHeader;
                 if unsafe { crate::refcount::slot_state(slot) } == crate::refcount::SlotState::Live

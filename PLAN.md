@@ -2477,12 +2477,6 @@ in `dev/INDEX.md`. What it did not do is below.
   guards would stop covering this population. Decide it after the question
   above — if the stack displaces the chain, this arm is every arm and the
   answer changes. Raised by the Code Reviewer, 2026-09-05.
-- [ ] **`heap::entity_block_slots` answers with a cursor and is named for a
-  count.** Its third element is the block's bump cursor, the bound a per-slot
-  walk runs to, while `heap::collector_block_slots` a screen away answers the
-  block's capacity. Two functions with "slots" in the name answer different
-  questions about one block. The rename reaches three call sites and is
-  otherwise mechanical. Raised by the Code Reviewer, 2026-09-05.
 - [ ] **The rule that no call between a naming and a disposal may raise is
   held by three comments and no test.**
   `cycle::deferred_slot_reuse::dispose_marks_of` may not raise between naming
