@@ -11,8 +11,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-05 · Active: S36, from S36.9's remainder and S36.12's slice
-(b), each waiting on a ruling named in its own step, and S36.3 behind them.
+Updated: 2026-09-05 · Active: S44, from S44.1, which replaces the withheld
+returns' record chain with one stack through the dead entities. S36 waits
+behind it: its S36.9 and S36.12 stay open on verifications later steps owe,
+and S36.3 is the next of its steps to be built.
 S43 closed the withheld-return window: past its region the module draws
 nothing, a death in memory the collection never met is returned at once, a
 marked slot of another thread's block is stacked rather than listing its
@@ -531,6 +533,72 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         maturation counter of S37.1 and the suspects buffer of S37.4 for the
         instant it waits for. Moved last in the stage for that reason; the work
         order takes it after S37.4.
+
+## S44 — One stack for every withheld return
+
+Goal: a trace's withheld returns are held in one structure that asks memory of
+nobody — the dead entities themselves, linked through the word a free list
+links by. Done when the record chain, its workspace region, the marked-block
+list and the `DEAD_IN_PLACE` mark are gone from the crate, the close is a pop
+loop, and the pop is measured at or below the chain on every arm of S43.1's
+fixture.
+
+The ruling is `dev/DECISIONS.md`, "one stack through the dead entity holds
+every withheld return". It answers the item the Sage raised on 2026-09-05 and
+Edmond delegated the same day, and it does not reverse his ruling of
+2026-09-04: that one chose between the chain and the per-slot block walk, and
+the stack landed the day after it.
+
+**The order is obligatory.** S44.1 before S44.2, or the deletion takes what is
+still in use; S44.3 after S44.2, the last branching reader of the mark being
+the walk S44.2 deletes; S44.4 last, a measurement being of what is built.
+
+- [ ] S44.1 The stack becomes the only store
+      done: every withheld return of all four populations — a slotted entity, a
+        retained survivor, a pooled large entity and an OS-direct run — is
+        pushed through byte 8 of the dead entity and given back by the close's
+        pop; the block's stamp still decides between a return at once and a
+        withholding; the close keeps S43.6's order, the row sweep and `swept`
+        before any return and the arena's blocks after them; a panic inside one
+        return loses that slot alone and the drop's own pass pops the rest
+        under the disposition `swept` selects, seen red on a build whose pop
+        moves the head after the return rather than before it; the record chain
+        stands unused, so the tree is green at this step
+      tier: T2 · role: Critic
+- [ ] S44.2 The chain, its region and the block walks are deleted
+      done: `RecordChain` has one user left, the trace worklist;
+        `RETURNS_BASE_RECORDS`, the marked-block list, the three arms of
+        `dispose_marks_of`, `walking`, `RetainedWalkHold` and `dispose_walking`
+        are gone, and with them the rule that no call between a naming and a
+        disposal may raise, which three cross-module notes carried and no test
+        did; `WORKSPACE_PREFIX_BYTES` is 64 and `WORKSPACE_BUMP_BYTES` 65,216,
+        pinned by the constants that pin them today; no walk of a block's slots
+        remains in the module
+      tier: T2 · role: Critic
+- [ ] S44.3 The mark is deleted
+      done: `DEAD_IN_PLACE`, `SlotState::DeadInPlace`, `mark_dead_in_place`,
+        `clear_dead_in_place`, the five `debug_assert` guards at the free
+        entrances, `marked_link` and `marked_next` in both headers and
+        `block_is_owned_by_this_thread` are gone; a slot reads two states
+        rather than three, and the guard that reads the crate's own sources
+        reports bit 15 free for the mutator
+      tier: T2 · role: Critic
+- [ ] S44.4 Measure the close against the chain
+      done: S43.1's fixture — 381 deaths, the dense arm at classes 32 and 128,
+        the sparse arm at 256, eight collections with the eighth killing inside
+        the window — run on both arms as built, with no lever on either side;
+        the lines the close touches and the time `ActiveTrace::drop` takes, the
+        minimum of twenty runs, recorded in `dev/BENCHMARKS.md`, with the stack
+        at or below the chain on every arm. A slower close on any arm is a
+        finding with a named cause rather than a number recorded and passed;
+        the suspected cause is the pop's dependent load, and the answer to try
+        is a prefetch of the next link
+      tier: T2 · role: —
+- [ ] S44.5 Carry the built form into `rfc`   *(waits on Edmond's word)*
+      done: `rfc/model/classes.md`'s flags row 15 and `rfc/model/gc/rc-cycle.md`'s
+        paragraphs about the mark, its list and the record-and-grow path
+        describe the stack instead
+      tier: T2 · role: —
 
 ## S36 — Commit
 
@@ -1567,9 +1635,9 @@ stage claiming the frees while building none of them.
         every build**, that assertion being the whole difference between "no
         user code runs between the detach and the restore" as an argument and
         as a check. And the step splits: slice (a) is the detach, the restore
-        and the two-phase loop; slice (b) is the pressure path's harvest, which
-        waits because its region capacity waits on the walk-against-chain
-        measurement. The instrument owed
+        and the two-phase loop; slice (b) is the pressure path's harvest, whose
+        region capacity waited on the withheld-return region's own fate and is
+        answered by S44. The instrument owed
         before the first edit is a walk over every lane, `candidate_count`
         answering one of two and the clause being about entities rather than
         counts.
@@ -1664,12 +1732,12 @@ stage claiming the frees while building none of them.
         the guard on every member of every confirmed component before any user
         code, so no member can start ordinary teardown mid-commit whichever
         unit is chosen.
-      handoff: the region's capacity is unchosen and **its expected budget is
-        gone**. It was to be the 8,320 bytes the withheld returns would have
-        left had their region been deleted; it stands instead, the chain being
-        the ordinary path and the mark answering its refusal
-        (`dev/DECISIONS.md`, "the chain stays and the mark answers its
-        refusal"). Nor does the density instrument supply the other input: a
+      handoff: the region's capacity is unchosen, and **the budget it expected
+        comes back with S44**: the withheld returns' 8,320-byte region is
+        deleted there, leaving a 64-byte prefix and 65,216 bytes of bump
+        (`dev/DECISIONS.md`, "one stack through the dead entity holds every
+        withheld return"). This slice waited on that ruling and no longer
+        does. Nor does the density instrument supply the other input: a
         synthetic load's death count is the fixture's own and was refused as a
         measurement (`dev/DECISIONS.md`, "the death count of a synthetic load
         is a check and not a measurement"). What is left to choose on is the bump's own 56,960 bytes
@@ -2431,61 +2499,6 @@ deleted with its steps; the decisions it leaves are in `dev/DECISIONS.md`
 (2026-08-17 and 2026-08-18), the traps in `dev/POSTMORTEM.md` and the map
 in `dev/INDEX.md`. What it did not do is below.
 
-- [ ] **The rfc's account of the dead-in-place mark, five paragraphs behind
-  the code.** The crate builds the mark, its list and the three answers a
-  death past the region takes; the specification still describes the first of
-  those alone (`dev/DECISIONS.md`, "the dead-in-place mark is flags bit 15,
-  and the owner clears it"). `rfc/model/classes.md`'s flags row 15 states the
-  slotted condition — "a block this thread owns" — for every header and names
-  the shadow pointer's nulling as what finds the mark, which a large entity
-  has no shadow pointer for. `rfc/model/gc/rc-cycle.md` carries the same two
-  halves in "A death past that region is marked in the dead slot rather than
-  recorded" and "A mark is taken only where the sweep will find it"; the
-  paragraph after them reads "their marks are owed rather than specified"
-  with a reason that is wrong, a retained occupant's mark landing in the
-  survivor's own header rather than in the word the emptiness count reads;
-  and "the sweep that nulls the block's shadow pointer is what finds it"
-  names a mechanism the window's list replaced. Two more paragraphs stand
-  against the deletion of the growth: "A death the mark cannot take still
-  takes a record" has no such population left, and the record-and-grow path
-  it describes is gone.
-  Edmond ruled the order on 2026-09-05 — the code first, the specification
-  after — so what is left is to carry them, which is the `rfc` repository's
-  work and needs his authorisation before it starts.
-- [ ] **Whether the stack of foreign slots should displace the region chain.**
-  It is built for one population: a marked slot of a block another thread
-  owns is threaded through the dead slots themselves, at the offset a free
-  list links by. The same form would serve every population — one load and
-  two stores into a line the teardown has already touched, no region, no
-  block walk and no records — and would retire the 8,320-byte workspace
-  prefix with them. What `dev/BENCHMARKS.md`, "S43.1 the sweep's walk against
-  the withheld chain" measured was the per-slot sweep against the chain, not
-  this, so the question is a measurement rather than an argument
-  (`dev/DECISIONS.md`, "a death the collection never met is returned at once,
-  and a foreign slot is stacked", the last paragraph). Raised by the Sage and
-  left to Edmond.
-- [ ] **The mark a stacked slot carries buys one thing, and it may be the
-  wrong price.** A slot of another thread's block is found by the window's
-  own stack; nothing walks that block. What the mark does there is answer the
-  case where the same window later adopts the block and lists it — the block
-  walk would then find the stacked slot and return it a second time, which is
-  why `dispose_foreign` runs before `dispose_marked` and why
-  `a_block_adopted_after_a_slot_of_it_was_stacked_returns_each_slot_once`
-  exists. Dropping the mark in that arm would take the hazard, the order and
-  the case with it, and would cost the three-state model its completeness: a
-  zero-count slot on no free list would read `Free`, and the two free-path
-  guards would stop covering this population. Decide it after the question
-  above — if the stack displaces the chain, this arm is every arm and the
-  answer changes. Raised by the Code Reviewer, 2026-09-05.
-- [ ] **The rule that no call between a naming and a disposal may raise is
-  held by three comments and no test.**
-  `cycle::deferred_slot_reuse::dispose_marks_of` may not raise between naming
-  the block it can be resumed inside and its first disposal, because the
-  resumed walk repeats everything before that disposal and a repeat inside an
-  unwinding drop aborts. `refcount::slot_state`, `heap::block_occupancy` and
-  `retained::pin` each carry a note back to it, and nothing else holds the
-  three modules to it. A case that resumes a walk through each of the three
-  is what would. Raised by the Code Reviewer, 2026-09-05.
 - [ ] **A gate flake, measured 2026-09-03 and pre-existing.** The case that
   reached the gate is fixed and measured; five cases that cannot take the
   same fix are named below and stay open.

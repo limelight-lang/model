@@ -8,6 +8,81 @@ never edited or deleted.
 
 ---
 
+## 2026-09-05 — one stack through the dead entity holds every withheld return
+
+**Ruled by the Sage**, on Edmond's delegation of the item the Sage itself
+raised the day before ("сам решай вопрос").
+
+**Decided.** A trace's withheld returns are held on one stack threaded through
+byte 8 of each dead entity — the word `FREE_LIST_LINK_OFFSET` names and
+`Object::class` occupies, dead data once teardown has finished. The record
+chain goes, and with it the 8,320-byte workspace region, the list of marked
+blocks, the three walk arms of `dispose_marks_of`, the `walking` word and its
+resumable-walk rule, `RetainedWalkHold`, and the `DEAD_IN_PLACE` mark with
+`SlotState::DeadInPlace` behind it. Every death still asks the block's stamp
+first: a block this collection never met is returned at once, unchanged from
+2026-09-05's earlier ruling.
+
+**Why the chain loses to a form it was never measured against.** S43.1 priced
+the chain against the *per-slot block walk*, whose cost moves with the blocks a
+trace touched and not with its deaths — 97,155 line reads against 96 on the
+sparse arm. The stack has no walk: its cost moves with deaths, as the chain's
+does, and it touches no cache line the death and the return do not touch
+anyway. A push writes byte 8 of a slot whose byte 0 the teardown wrote an
+instant earlier, and the close's pop reads the line `Heap::free` is about to
+write. In the unit S43.1 ruled governs — lines — the stack is at or below the
+chain on every arm.
+
+**What the chain still costs, the earlier list being stale.**
+`dev/BENCHMARKS.md`, 2026-09-04, names the growth past the region, its draw on
+the critical reserve and the `std::process::abort()` as the chain's unpriced
+standing costs; S43.5 deleted all three the next day. What stands is the 8,320
+bytes of every thread's workspace, a second form for one fact once the region
+fills, the walk arms and the unwind machinery that orders them, five
+`debug_assert` guards at the free entrances, and the last free bit of the
+mutator's flags half. Each is removed by construction rather than reduced,
+which is why the decision waits on no number.
+
+**This does not reverse Edmond's ruling of 2026-09-04.** That one chose between
+the chain and the walk, in its own words "the sweep walks a block's slots where
+the chain writes eight bytes", and refused the mark for every death on the
+walk's cost. The stack landed with S43.5 the following day and was never priced
+against the chain; this ruling answers the item that left open.
+
+**Refused, each with its reason.** A hybrid — the chain for owned slotted
+deaths and the stack for the rest — keeps two forms for one fact, keeps the
+region, and keeps the one hazard the module orders around, two structures
+naming one slot after an adoption. Keeping the block list and walk for owned
+blocks is dominated twice over, by S43.1 against the chain and by the line
+count against the stack. Keeping `DEAD_IN_PLACE` as a debug-only guard against
+a double push buys parity rather than safety: a double free already loops the
+block's own free list through the same word. The link in bytes 0-7 is refused
+because the count must read zero for the queue's reader. Pushing every death
+without the stamp read is refused because a window over a long teardown would
+then hold every acyclic death of the thread until its close. One record per
+block is the walk under another name. An atomic link or head is refused for one
+writer on one thread. Reversing the stack at the close for oldest-first is a
+second pass over cold lines for an order nothing reads.
+
+**Order.** Newest first, as the pop gives it. `Heap::free` builds a LIFO list
+either way, and the one order that is load-bearing — the row sweep before any
+return, `swept` set the instant after it, the arena's blocks back last — is
+S43.6's and stands.
+
+**Unwind.** The pop moves the head before it returns the slot, so a panic
+inside one return loses that slot alone and the drop's own pass takes the rest
+under the disposition `swept` selects. That is narrower than the chain's, whose
+replay starts at the base and loses every record behind a raising one.
+
+**The measurement is owed at the close, not before it.** Arithmetic cannot
+price the close's dependent load: each pop learns the next address from a cold
+slot line where the chain's replay reads its records sequentially. S43.1's
+fixture, both arms as built with no lever on either side, lines and a timing of
+`ActiveTrace::drop`; the stack at or below the chain on every arm is the
+acceptance, and a slower close is a finding rather than a number to record.
+
+---
+
 ## 2026-09-05 — a citation into a deleted document names its branch, and the checker reads it
 
 **Decided:** `dev/tools/citations.py` resolves a citation written as
