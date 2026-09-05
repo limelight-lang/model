@@ -1,4 +1,4 @@
-import re, os, bisect, sys
+import re, os, bisect, subprocess, sys
 ROOT = os.getcwd()
 RFC_ROOT = "/home/edmond/limelight"
 FILES = []
@@ -21,6 +21,21 @@ def read(path):
     return cache[path]
 def resolve(path):
     return os.path.join(RFC_ROOT, path) if path.startswith("rfc/") else os.path.join(ROOT, path)
+# A citation into a deleted document names the repository and the branch it
+# survives on before the path: `rfc`'s `archive/pre-rc-cycle`, `model/…md`.
+# Those resolve through `git show` rather than through the work tree.
+REPOS = {"rfc": os.path.join(RFC_ROOT, "rfc"), "model": ROOT}
+BRANCH_RE = re.compile(r"`(rfc|model)`(?:'s)?\s+`([A-Za-z0-9_./-]+)`,\s*$")
+def read_branch(repo, branch, path):
+    key = (repo, branch, path)
+    if key not in cache:
+        try:
+            cache[key] = norm(subprocess.run(
+                ["git", "-C", REPOS[repo], "show", f"{branch}:{path}"],
+                capture_output=True, text=True, check=True).stdout)
+        except (OSError, subprocess.CalledProcessError):
+            cache[key] = None
+    return cache[key]
 misses = total = 0
 for fpath in sorted(FILES):
     try:
@@ -49,7 +64,9 @@ for fpath in sorted(FILES):
                     break
                 if '/' in p and p.endswith('/' + path):
                     resolved = p
-        content = read(resolve(resolved))
+        on_branch = BRANCH_RE.search(text[max(0, m.start() - 80):m.start()])
+        content = read_branch(on_branch.group(1), on_branch.group(2), path) \
+            if on_branch else read(resolve(resolved))
         total += 1
         ok = content is not None and quoted.replace('`', '') in content.replace('`', '')
         if not ok:

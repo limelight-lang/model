@@ -765,7 +765,10 @@ of what was considered; the code is S36.9 (e).
 
 `dev/tools/citations.py` — the heading-level citation check, pass 1 of
 `dev/WORKFLOW.md`'s "Checks a grep cannot make": prints every cited
-heading the named document no longer carries.
+heading the named document no longer carries. A citation into a document
+that was deleted names the repository and the branch first — `` `rfc`'s
+`archive/pre-rc-cycle`, `model/…md`, "…" `` — and resolves through
+`git show`.
 
 `dev/CYCLE-TERMINOLOGY-AUDIT.md` and `dev/PROJECT-TERMINOLOGY-AUDIT.md` —
 the two mapping tables the vocabulary rests on, the first for `cycle`

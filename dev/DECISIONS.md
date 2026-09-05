@@ -8,6 +8,28 @@ never edited or deleted.
 
 ---
 
+## 2026-09-05 — a citation into a deleted document names its branch, and the checker reads it
+
+**Decided:** `dev/tools/citations.py` resolves a citation written as
+`` `rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`, "…" `` through
+`git show` in the named repository. The five such citations in
+`docs/performance-case-decompositions.md` stood among the checker's twelve
+known residues, and a residue list is what a reader compares a run against —
+five entries of it that need no action make the seven that would harder to see.
+
+**Refused: taking the section names off the five.** They are the only pointer
+from an instruction to the contract sentence it answers, the document being an
+instruction-level accounting, and a citation of the file alone sends a reader
+to a thousand-line document rather than to the sentence.
+
+**The instrument was calibrated before its output was believed:** a run over a
+citation whose quoted heading does not stand on the branch reports it, and so
+does one naming a branch that does not exist. Without that, teaching the
+checker a new form and reading fewer misses would be indistinguishable from
+teaching it to answer yes.
+
+---
+
 ## 2026-09-05 — a test function's extent is the column-zero brace
 
 **Decided:** the guard that requires `#[cfg_attr(miri, ignore = "…")]` of a

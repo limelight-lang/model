@@ -317,9 +317,16 @@ re-run after any deletion of a module, a document or a feature:
    every `` `…md`, "…" `` pair out of `src/`, `benches/`, `docs/`,
    `dev/INDEX.md` and `dev/ARCHITECTURE.md`, resolves `rfc/…` against the
    sibling repository, and prints each citation whose quoted text is not in
-   the named file. On 2026-09-01 it reported 379 citations and 12 misses:
-   five in `docs/performance-case-decompositions.md` naming the
-   deleted `rc-walk.md` (a backlog line owns them), one split path in
+   the named file.
+
+   **A document that was deleted is cited on the branch it survives on**, and
+   the checker reads that form: `` `rfc`'s `archive/pre-rc-cycle`,
+   `model/gc/rc-walk.md`, "…" `` resolves through `git show` in the named
+   repository. The five citations in
+   `docs/performance-case-decompositions.md` are the population, and they
+   were read as misses until 2026-09-05.
+
+   On 2026-09-05 it reported 435 citations and 7 misses: one split path in
    `memory/critical.rs` and one `routing.rs` sentence that is not a heading
    (both read correctly), and five string literals inside the two guard
    tests, which are examples and not citations. A run that prints anything

@@ -2521,14 +2521,6 @@ in `dev/INDEX.md`. What it did not do is below.
   on the child thread itself — the peak exactly at the base block and both
   spare segments, in both builds, and both current figures at zero. Seen red
   on a build whose `ll_thread_init` refills no spares.
-- [ ] **`docs/performance-case-decompositions.md`'s five citations point into
-  a deleted file on a branch**, and whether that form is acceptable is the
-  question left. The document carries its superseded banner and every one of
-  the five names `archive/pre-rc-cycle` explicitly, so a reader is not misled;
-  what `dev/tools/citations.py` cannot do is follow a citation onto a branch,
-  which is why the five stand in its twelve known residues. Either the checker
-  learns the branch form or the five lose their section names. Found by
-  `dev/tools/citations.py`, 2026-09-01; the banner landed the same day.
 - [ ] **The ladder's refusal has nowhere to go.**
   `InsertOutcome::AdmissionDenied` is answered inside the crate — a null
   from `ll_cow_separate`, a `false` from `element::set` — because the
