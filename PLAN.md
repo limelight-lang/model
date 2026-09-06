@@ -2292,10 +2292,45 @@ stage claiming the frees while building none of them.
         `cycle::finalization::Invalidated` lands. The pass takes that value by
         value, which is what keeps the invalidation ahead of every destructor
         of the finalization.
+      handoff: `src/cycle/finalization.rs` gains `Invalidated::destructors`,
+        `DestructorPass`, `Revalidation`, `Revalidated`, `GuardedComponent` and
+        `release_guards`; the cases are `what_the_destructor_pass_runs.rs` and
+        `what_the_revalidation_answers.rs` under
+        `src/cycle/finalization/tests/`, and the three S36.3 cases drive the
+        pass rather than `run_user_destructor` by hand. `Invalidated::`
+        `guards_released` retired: the discharge is `GuardedComponent`'s, it is
+        `unsafe`, and it is S36.5's entry.
+      handoff: the red the plan asks for was taken as a source mutation of
+        `confirm` — `weak::notify_members` moved into a per-member loop with the
+        destructor — and `every_destructor_of_the_finalization_reads_null_`
+        `through_the_other_s_cell` failed on a cell that still resolved. That
+        case gives both members a cell and each destructor the other's, because
+        under the forbidden order which member runs first is the sorted slice's
+        answer. Twelve source mutations were run in all, that one among them,
+        and each is caught by the case that owns it; the kind gate's ends the
+        run rather than failing it, on a misaligned class pointer.
       handoff: the re-verify survives the shortlist framing rather than
         contradicting it. Garbage is monotone only while no reference to the
         component exists outside it, and the destructor runs holding `$this`, a
         reference the teardown itself handed to user code.
+      handoff: 759 tests at one thread and three times at four, 759
+        `hash-folding`, 763 `debug-journal` three times, `cargo build
+        --release`, `cargo bench --no-run`, `cargo +1.94 fmt --check` clean and
+        465 citations with the same seven residues. Miri over
+        `cycle::finalization` at two threads: 14 passed, 0 failed, 6 ignored,
+        18.1 s of its own clock against 30 s of the wall, the six ignored being
+        the child-process cases.
+      handoff: what S36.5 inherits. `GuardedComponent::guards_released` is its
+        entry and states an ordering nothing can check: the sever and the free
+        run before the next component is read. The sever's membership test
+        reads the slice the revalidation sorted, on both of its paths. And a
+        component read as externally referenced may leave a freed entity named
+        in the caller's slice — a member whose guard was its last reference dies
+        inside the release.
+      handoff: untested, and its owner is S39.1, which waits on it: a destructor
+        that throws. Release sets `panic = "abort"`, so there it ends the
+        process; in a test build every value of the chain drops silently under
+        the unwind and every guard it wrote is stranded.
 - [ ] S36.5 Sever, free and the deferred drops
       done: internal edges are severed with external children collected; the
         guards come off through the counted release and each member reaching

@@ -4,7 +4,7 @@ use crate::cycle::testing::traced_unreachable_from;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
-use crate::object::{Object, ll_entity_die, ll_object_die, new_constructed, run_user_destructor};
+use crate::object::{Object, ll_entity_die, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, entity_flags, header_refcount, ll_release, ll_retain};
 use crate::test_support::{prop_offset, store_prop};
 use crate::weak::{LLWeakRef, ll_weakref_create, ll_weakref_get};
@@ -14,29 +14,37 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 /// both edges and free both members.
 ///
 /// The finalization stops before the sever and the free (`PLAN.md` S36.5), so
-/// a case that ran one owes this by hand. `retained` names the members whose
-/// count a destructor of the case released, and each is retained once more
-/// here, before the guards come off, so the edges are counted as the fixture
-/// built them.
+/// a case that ran one owes this by hand.
 ///
 /// **The guard comes off through `mutator_unguard_release`, which is the
 /// counter's twin of the guard's `+1` and not the counted release S36.5 will
-/// perform:** it stores a count and starts no teardown at zero. The retain
-/// beside it stands in for the reference the sever below spends — a member
-/// whose edge is nulled while its count is one dies inside `store_prop`'s
-/// barrier, under the loop that is still walking the ring.
+/// perform:** it stores a count and starts no teardown at zero.
 ///
 /// # Safety
 /// Both members are live objects of this thread's GC heap, each carrying one
 /// guard reference, linked into a ring through property 0.
-unsafe fn unwind_guarded_ring(arena: &mut Arena, ring: [*mut Object; 2], retained: &[*mut Object]) {
+unsafe fn unwind_guarded_ring(arena: &mut Arena, ring: [*mut Object; 2]) {
     unsafe {
-        for &member in retained {
-            ll_retain(member as *mut RcHeader);
-        }
-
         for member in ring {
             crate::refcount::mutator_unguard_release(member as *mut RcHeader);
+        }
+
+        dismantle_ring(arena, ring);
+    }
+}
+
+/// Break both edges of a ring nothing else holds and free both members.
+///
+/// The retain is what the sever below spends: a member whose edge is nulled
+/// while its count is one dies inside `store_prop`'s barrier, under the loop
+/// that is still walking the ring.
+///
+/// # Safety
+/// Both members are live objects of this thread's GC heap, unguarded, linked
+/// into a ring through property 0 and held by nothing else.
+unsafe fn dismantle_ring(arena: &mut Arena, ring: [*mut Object; 2]) {
+    unsafe {
+        for member in ring {
             ll_retain(member as *mut RcHeader);
         }
 
@@ -48,6 +56,17 @@ unsafe fn unwind_guarded_ring(arena: &mut Arena, ring: [*mut Object; 2], retaine
             assert!(ll_release(member as *mut RcHeader));
             ll_object_die(member);
         }
+    }
+}
+
+/// Release the fixture's own weak cell and free it.
+///
+/// # Safety
+/// `cell` is a live weak cell this fixture created and nothing else holds.
+unsafe fn drop_cell(cell: *mut LLWeakRef) {
+    unsafe {
+        assert!(ll_release(cell as *mut RcHeader));
+        ll_entity_die(cell as *mut RcHeader);
     }
 }
 
@@ -73,3 +92,5 @@ fn one_guard_each(before: &[u32]) -> Vec<u32> {
 mod what_a_destructor_reads_through_a_weak_cell;
 mod what_a_refused_component_keeps;
 mod what_an_abandoned_finalization_costs;
+mod what_the_destructor_pass_runs;
+mod what_the_revalidation_answers;

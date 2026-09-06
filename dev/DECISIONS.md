@@ -8,6 +8,35 @@ never edited or deleted.
 
 ---
 
+## 2026-09-06 — the revalidation of a component and its teardown are adjacent
+
+Owner: S36.4. Ruled by the Sage at the stage's pre-change gate.
+
+**Decided:** the destructor pass runs over every component of a commit, and
+then each component is read again *and torn down* before the next one is read.
+`cycle::finalization::Revalidation::revalidate` answers with a
+`GuardedComponent` borrowing the revalidation, so a second component cannot be
+read while one stands with its guards on.
+
+**Why:** the other loop shape — read every component again, then tear every one
+down — leaves a window a destructor can reach through. A destructor of a member
+of component *j* may take a weak reference to another member of *j* and store
+the cell where the component does not name it, which
+`rfc/model/weak-references.md` permits and which the invalidation of step 3
+cannot cover, standing behind it. The revalidation of *j* reads unreachable.
+The teardown of an earlier component *k* then drops its deferred external
+children, whose destructors are user code again, and one of them loads that
+cell, receives a live member of *j* and stores it in a root. The sever of *j*
+nulls the fields of an entity a root holds, and the release of the guards
+leaves it alive with its cells emptied.
+
+The design's own sequence is per component — "The owning mutator runs the
+following sequence for each component that exact validation confirms as
+unreachable" — and its batch-wide qualifiers stand on steps 2, 3 and 4 alone
+(`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation"). The
+adjacency adds no work: the same components are read and torn down either way,
+and what it fixes is the order of the driver's loop.
+
 ## 2026-09-06 — the member list is the workspace's second region, and its capacity is 1,024 records
 
 Owner: S36.12 slice (b). Ruled by the Sage at the stage's pre-change gate.

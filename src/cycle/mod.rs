@@ -35,9 +35,11 @@
 //! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`
 //! own no memory at all — they are arithmetic over memory somebody else holds,
 //! and [`validation`] reads the heap rather than a row. [`finalization`] holds
-//! less than either: one counter on the frame that drives the teardown, the
-//! writes it makes standing in the members' own headers until the counted
-//! release of `PLAN.md` S36.5.
+//! less than either: four counters, three on the frame that drives the
+//! teardown and one on the answer a component's reading gives it, the writes
+//! they make standing in the members' own headers until a counted release
+//! takes them off — its own, over a component it reads as externally
+//! referenced, or the caller's sever (`PLAN.md` S36.5).
 //!
 //! **A collection's memory is refusable, and the refusal ends the collection
 //! rather than the process.** A refused block leaves the heap byte-identical,
@@ -77,7 +79,8 @@ pub(crate) mod arena;
 // production path runs until S36.7.
 pub(crate) mod validation;
 // The guard references and the weak-reference invalidation a confirmed
-// component takes before the first destructor.
+// component takes, the destructors that run behind both, and the second
+// reading of each component the guard is subtracted in.
 #[cfg_attr(
     not(test),
     expect(
