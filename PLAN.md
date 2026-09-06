@@ -11,9 +11,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-06 · Active: S44, from S44.6, which moves the row sweep ahead
-of the candidate restore; S44.1 replaced the withheld returns' record chain
-with one stack through the dead entities and is closed. S36 waits behind it:
+Updated: 2026-09-06 · Active: S44, from S44.2, which deletes the record chain,
+its workspace region and the block walks; S44.1 put every withheld return on
+one stack through the dead entities and S44.6 moved the row sweep ahead of the
+candidate restore, and both are closed. S36 waits behind it:
 its S36.9 and S36.12 stay open on verifications later steps owe, and S36.3 is
 the next of its steps to be built.
 S43 closed the withheld-return window: past its region the module draws
@@ -605,7 +606,7 @@ S44.2 deletes; S44.4 last, a measurement being of what is built.
         a segmentation fault), a classifier that skips the stamp (four), a drop
         that always returns (one), the sentinel arm deleted (one). Commit
         12c2aa1.
-- [ ] S44.6 The row sweep runs before the candidate restore
+- [x] S44.6 The row sweep runs before the candidate restore
       done: `ActiveTrace::drop` sweeps the rows and sets `swept` before it
         restores a detached candidate chain, so the one panic that reached the
         abandoning disposition returns what the window withheld instead of
@@ -627,6 +628,15 @@ S44.2 deletes; S44.4 last, a measurement being of what is built.
         inferring the order from a sibling. Refused: keeping the order,
         deleting `swept`, injecting a fault inside `sweep_rows`, moving the
         restore behind the returns, and folding the change into S44.1.
+      handoff: `ActiveTrace::drop` sweeps the rows and sets `swept` first, then
+        restores the batch, then makes the returns; the ruling and its refusals
+        are `dev/DECISIONS.md`, 2026-09-06. Both polarities are pinned and each
+        was seen red on its own mutation: the order reversed reddens
+        `an_unwind_out_of_the_candidate_restore_returns_what_was_withheld`, and
+        a drop that always returns reddens
+        `a_window_dropped_before_its_rows_are_gone_abandons_what_it_withheld`,
+        which opens a `WithheldReturns` over an arena's region and drops it
+        unswept — the arm's first test, and it needs no fault injection.
 - [ ] S44.2 The chain, its region and the block walks are deleted
       done: `RecordChain` has one user left, the trace worklist;
         `RETURNS_BASE_RECORDS`, the marked-block list, the three arms of

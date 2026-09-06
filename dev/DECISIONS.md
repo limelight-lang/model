@@ -8,6 +8,63 @@ never edited or deleted.
 
 ---
 
+## 2026-09-06 — the row sweep runs ahead of the candidate restore
+
+**Ruled by the Sage**, on a finding of the second Critic round over S44.1.
+
+**Decided.** `ActiveTrace::drop` sweeps the collection's rows and sets
+`DeferredReturnChain::swept` before it restores a detached candidate chain,
+where it did both after it. The rest of the close is unchanged: the window
+falls, the withheld returns are made, and the arena's own blocks go back last.
+
+**Why.** `queue::restore_candidates` carries an assertion in every build — a
+candidate registered while the batch was detached — and it was the only
+statement of the drop that could raise ahead of `rows_are_gone`. A panic there
+reached `WithheldReturns::drop` with `swept` false, which takes every mark off
+and returns nothing, so the slot and the block holding it stayed out of
+circulation for the life of the process. Two frames later the arena's own drop
+swept those same rows, which is to say the returns the window had just
+abandoned were safe to make.
+
+**The two are independent, and that is what leaves the order free.** The
+restore reads the queue's two cells and writes them; the sweep rewinds the
+worklist and nulls the shadow pointer of every stamped block. Neither reads
+what the other writes. Nothing after the sweep depends on the restore either:
+`ll_free`'s candidate arm reads the entity's own `CANDIDATE_BIT`, and a
+withheld slot never carries it, that arm standing above
+`defer_reuse_if_tracing` in the same function.
+
+**The restore stays ahead of the returns.** Its assertion wants an empty write
+lane, and the returns below it are the one call of this path that could refill
+one.
+
+**`swept` and its abandoning arm stay**, though under this order no panic site
+in the built code reaches them. The flag is what `WithheldReturns::drop` reads
+instead of inferring the close's order from a sibling function, and it fails
+toward the answer that cannot corrupt. What tests it is the flag itself: a case
+opens a `WithheldReturns` over an arena's region and drops it without saying
+the rows are gone.
+
+**Refused, each with its reason.** Keeping the order, because the abandonment
+it costs is unbounded and the sweep that prevents it is two null tests and a
+list walk. Deleting `swept` with its arm, because the flag holds the ordering
+fact in the type that acts on it rather than in the shape of a caller.
+A third `cfg(test)` fault injection, inside `sweep_rows`, because S43.6's cap
+on injections stands and the arm needs no panic to be exercised. Moving the
+restore behind the returns as well, which gains nothing and puts its
+empty-lane assertion after the one call that could break it.
+
+**This reverses no ruling.** "The close sweeps the rows, returns, and gives the
+arena's blocks back last" constrains the sweep against the returns, and this
+order keeps that; "one stack through the dead entity holds every withheld
+return" names the row sweep before any return, `swept` set the instant after
+it, and the arena's blocks back last, all of which stand. What the restore's
+own ruling loses is one line of its cost: a refusal still leaks the batch's
+segments and leaves its roots' bits standing, and the withheld returns are now
+made.
+
+---
+
 ## 2026-09-05 — one stack through the dead entity holds every withheld return
 
 **Ruled by the Sage**, on Edmond's delegation of the item the Sage itself

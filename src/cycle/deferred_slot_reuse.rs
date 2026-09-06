@@ -844,6 +844,12 @@ impl Drop for WithheldReturns {
     ///   come off and the memory stays out of circulation, a slot handed back
     ///   under a live row being the reuse this window exists to prevent.
     ///
+    /// **No panic site of the crate stands in that second case**, [`ActiveTrace`]'s
+    /// drop sweeping ahead of everything that can raise (`dev/DECISIONS.md`,
+    /// "the row sweep runs ahead of the candidate restore"). The word is read
+    /// rather than the order inferred, so a close reordered later cannot make
+    /// this drop return under a row that still names the slot.
+    ///
     /// **What no panic recovers is the one return it interrupted.** A raising
     /// `ll_free` leaves its own slot with the mark off and the return unmade,
     /// on no free list, below its block's cursor and counted in its block's
@@ -982,20 +988,27 @@ impl ActiveTrace {
 
 impl Drop for ActiveTrace {
     fn drop(&mut self) {
-        // First, and before the rows die: a batch still here was disposed of by
-        // nothing, so every root in it keeps its registration and its records go
-        // back to the lane they came out of. It depends on neither the row
-        // sweep nor the returns below it, and `ll_free`'s candidate arm reads
-        // the entity's bit rather than the lane its record stands in.
+        // First of all, and taken whether or not anything was withheld: after
+        // the window falls, a physical return may recommission the block whose
+        // shadow pointer this sweep must null. Ahead of the restore below, so
+        // that a refusal raised there unwinds into a drop whose rows are gone
+        // and whose withheld returns can therefore be made rather than
+        // abandoned (`dev/DECISIONS.md`, "the row sweep runs ahead of the
+        // candidate restore").
+        self.arena.sweep_rows();
+        self.returns.rows_are_gone();
+
+        // A batch still here was disposed of by nothing, so every root in it
+        // keeps its registration and its records go back to the lane they came
+        // out of. It reads no row and no withheld slot, and `ll_free`'s
+        // candidate arm reads the entity's own bit rather than the lane its
+        // record stands in, so nothing above or below turns on where this
+        // stands between them. It stays ahead of the returns, whose `ll_free`
+        // is the one call on this path that could refill the lane its
+        // assertion wants empty.
         if let Some(batch) = self.batch.take() {
             crate::cycle::queue::restore_candidates(batch);
         }
-
-        // Ahead of the window's fall, and taken whether or not anything was
-        // withheld: after the window falls, a physical return may recommission
-        // the block whose shadow pointer this sweep must null.
-        self.arena.sweep_rows();
-        self.returns.rows_are_gone();
 
         self.returns.close_window();
         self.returns.replay();

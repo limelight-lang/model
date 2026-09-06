@@ -2337,15 +2337,86 @@ fn a_panic_in_the_reset_returns_every_marked_slot() {
     unsafe { crate::memory::stdapi::ll_free(keeper as *mut u8) };
 }
 
-/// An unwind that reaches the drop before the row sweep abandons: the marks
-/// come off and no memory goes back, the rows that would make a return a reuse
-/// still standing over the slots.
+/// A window dropped before its rows are gone abandons what it withheld: the
+/// marks come off and no memory goes back, a slot handed back under a row that
+/// names it being the reuse the window exists to prevent.
 ///
-/// This is `Disposition::Abandon`, the other half of what
-/// `DeferredReturnChain::swept` decides, and the only unwind that reaches it
-/// is one raised inside the drop ahead of the sweep. It is staged off
-/// `queue::restore_candidates`'s own refusal — a candidate registered while
-/// the batch is detached — which `ActiveTrace::drop` runs first of all.
+/// Read at the flag rather than behind a panic. Since S44.6 the close sweeps
+/// before anything that can raise, so no panic site in the crate reaches this
+/// arm and `DeferredReturnChain::swept` is what says which disposition the
+/// drop takes — the fact read rather than inferred from where an unwind came
+/// from (`dev/DECISIONS.md`, "the row sweep runs ahead of the candidate
+/// restore"). The case therefore opens the window's own structure over an
+/// arena's region and drops it without telling it the rows are gone.
+#[test]
+fn a_window_dropped_before_its_rows_are_gone_abandons_what_it_withheld() {
+    const CLASS: usize = ENTITY_SIZE * 9;
+
+    let _guard = test_guard();
+    let keeper = unsafe { crate::memory::heap::entity_alloc(CLASS) };
+    let victim = unsafe { crate::memory::heap::entity_alloc(CLASS) };
+    assert!(!keeper.is_null() && !victim.is_null());
+    let keeper = unsafe { live_entity(keeper, 1) };
+    let victim = unsafe { live_entity(victim, 1) };
+    let block = (victim as usize & !crate::memory::block_pool::BLOCK_MASK) as *mut u8;
+
+    let mut arena = TraceScratchArena::open().expect("this thread's workspace is in hand");
+    // Safety: the region is the arena's own, and the window below dies before
+    // the arena does, which is the order `ActiveTrace` gives by field order.
+    let returns = unsafe { WithheldReturns::open(arena.withheld_returns_region()) };
+    DEFERRED_RETURNS.with(|control| control.set(returns.control));
+
+    unsafe { ensure_row(&mut arena, victim, 1) };
+    let occupied_before = unsafe { crate::memory::heap::block_occupancy(block) };
+    unsafe { crate::refcount::set_header_refcount(victim, 0) };
+    unsafe { crate::memory::stdapi::ll_free(victim as *mut u8) };
+    assert_eq!(deferred_slot_count(), 1, "the death was withheld");
+
+    // No `rows_are_gone`, which is the whole of the case: the rows still stand
+    // over the block when the window falls.
+    drop(returns);
+
+    assert_eq!(
+        unsafe { crate::refcount::slot_state(victim) },
+        crate::refcount::SlotState::Free,
+        "the mark came off, so none outlives the window that took it"
+    );
+    assert_eq!(
+        unsafe { crate::memory::heap::block_occupancy(block) },
+        occupied_before,
+        "and no return was made"
+    );
+    assert_eq!(
+        deferred_slot_count(),
+        0,
+        "the window is closed, which is what a count of zero reads after a drop"
+    );
+
+    drop(arena);
+    let served = unsafe { crate::memory::heap::entity_alloc(CLASS) };
+    assert_ne!(
+        served, victim as *mut u8,
+        "the abandoned slot reached no free list"
+    );
+
+    // The abandoned slot is out of circulation by design, and the case returns
+    // it by hand so the class is left as it was found.
+    unsafe { crate::memory::stdapi::ll_free(victim as *mut u8) };
+    unsafe { dead_entity(served) };
+    unsafe { crate::memory::stdapi::ll_free(served) };
+    unsafe { crate::refcount::set_header_refcount(keeper, 0) };
+    unsafe { crate::memory::stdapi::ll_free(keeper as *mut u8) };
+}
+
+/// An unwind out of the candidate restore returns what the window withheld:
+/// the sweep has run by then, so the rows that would make a return a reuse are
+/// gone and the drop's own pass gives every stacked slot back.
+///
+/// This is what S44.6's order buys, and the restore's refusal is the only
+/// panic site the drop has ahead of its own returns — a candidate registered
+/// while the batch is detached (`queue::restore_candidates`). Before the sweep
+/// was hoisted this same unwind abandoned the slot and the block holding it
+/// for the life of the process.
 ///
 /// In a child process, as the queue's own cases of that refusal are: the
 /// refused restore leaves the batch's chain owned by nothing, and a test that
@@ -2356,7 +2427,7 @@ fn a_panic_in_the_reset_returns_every_marked_slot() {
     miri,
     ignore = "spawns a child process, which Miri's isolation forbids"
 )]
-fn an_unwind_before_the_sweep_abandons_what_was_withheld() {
+fn an_unwind_out_of_the_candidate_restore_returns_what_was_withheld() {
     const CHILD: &str = "LL_TRACE_ABANDON_CHILD";
     const CLASS: usize = ENTITY_SIZE * 8;
 
@@ -2365,7 +2436,7 @@ fn an_unwind_before_the_sweep_abandons_what_was_withheld() {
             .arg("--exact")
             .arg(
                 "cycle::deferred_slot_reuse::tests::\
-                 an_unwind_before_the_sweep_abandons_what_was_withheld",
+                 an_unwind_out_of_the_candidate_restore_returns_what_was_withheld",
             )
             .arg("--nocapture")
             .env(CHILD, "1")
@@ -2374,7 +2445,7 @@ fn an_unwind_before_the_sweep_abandons_what_was_withheld() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             output.status.success(),
-            "the child read the abandoning close: {}",
+            "the child read the returning close: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         // A child that matched no test name also exits zero, so the count is
@@ -2437,18 +2508,17 @@ fn an_unwind_before_the_sweep_abandons_what_was_withheld() {
     );
     assert_eq!(
         unsafe { crate::memory::heap::block_occupancy(block) },
-        occupied_before,
-        "and no return was made, the rows having stood over the slot when the \
-         window fell"
+        occupied_before - 1,
+        "and the return was made, the sweep having run before the refusal"
     );
 
     let served = unsafe { crate::memory::heap::entity_alloc(CLASS) };
-    assert_ne!(
-        served, victim as *mut u8,
-        "the abandoned slot reached no free list"
-    );
+    assert_eq!(served, victim as *mut u8, "the slot is the class's again");
 
-    let _ = keeper;
+    unsafe { dead_entity(served) };
+    unsafe { crate::memory::stdapi::ll_free(served) };
+    unsafe { crate::refcount::set_header_refcount(keeper, 0) };
+    unsafe { crate::memory::stdapi::ll_free(keeper as *mut u8) };
 }
 
 /// A panic inside one return leaves the slots below it standing on the stack,
