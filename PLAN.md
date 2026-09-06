@@ -2015,6 +2015,13 @@ stage claiming the frees while building none of them.
         by a test-only sequence probe; a weak cell re-created on a condemned
         member is cleared by the free-time `HAS_WEAK_REFERENCES` notification
       tier: T2 · role: Code Reviewer
+      note 2026-09-06 — the retirement clears `DEAD_IN_PLACE` before it hands
+        the slot back. S44.3 sets that bit at the head of `ll_free`, on the
+        flags load the candidate arm already makes, so a withheld slot still
+        carries it while its record stands; a retirement that offers the same
+        pointer to `ll_free` again is refused there and the slot is lost.
+        `refcount::clear_dead_in_place` is the hand-back, and
+        `block_pool::test_guard` counts the refusals such a path leaves.
 - [ ] S36.6 Commit writes the maturation stamp
       done: on the owning thread, after judgement, each proven-live component is
         stamped as a unit — current epoch and `min(age) + 1` saturated at 3, one
@@ -2347,6 +2354,13 @@ window there is.
         `rfc/dev/PLAN.md` names four — "`ll_thread_exit` drains the suspects
         buffer beside the inbox, the queue and the overflow buffer" — and the
         leak this step exists to close is not closed by the queue alone.
+      note 2026-09-06 — the retirement clears `DEAD_IN_PLACE` before it hands
+        the slot back. S44.3 sets that bit at the head of `ll_free`, on the
+        flags load the candidate arm already makes, so a withheld slot still
+        carries it while its record stands; a retirement that offers the same
+        pointer to `ll_free` again is refused there and the slot is lost.
+        `refcount::clear_dead_in_place` is the hand-back, and
+        `block_pool::test_guard` counts the refusals such a path leaves.
       handoff: the corpse half arrived from S34.3 on 2026-08-29, which built
         the deferral and the two accessors it needs
         (`refcount::clear_enrolled`, whose `expect(dead_code)` names this step)
