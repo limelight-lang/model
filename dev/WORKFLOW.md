@@ -461,7 +461,8 @@ figure quoted from its output says nothing about how long it took.
 **What a whole-suite run costs.** No figure for the single configuration
 has been taken. What is measured is a set of module slices, all at two threads
 on 2026-09-06, given as passed/ignored, Miri's clock, wall:
-`memory::large_entity` 7/1, 370 s, 8 m 55 s;
+`memory::large_entity` 7/1, 370 s, 8 m 55 s; `memory::heap` 21/1, 253 s,
+4 m 22 s;
 `promote::tests::the_memory_a_survivor_takes_with_it` 13/0, 342 s, 6 m 39 s;
 `promote::tests::the_reset_reads_no_zero_count_member` 9/0, 340 s, 4 m 8 s;
 `cycle::deferred_slot_reuse` 42/1, 31 s, 2 m 15 s; `memory::stdapi` 16/0, 17 s,
