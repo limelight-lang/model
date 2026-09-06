@@ -340,6 +340,12 @@ pub(crate) unsafe fn new_uninit(
 
             let mut payload = Buffer::new();
             if !unsafe { grow_payload(ctx, category, &mut payload, len, 0) } {
+                // The slot was drawn and nothing was published into it, so
+                // it goes back through `free_unpublished`, which clears the
+                // bit `ll_free` took at its head: a plain free of it reads as
+                // a repeat and loses the slot
+                // (`crate::refcount::DEAD_IN_PLACE`).
+                unsafe { crate::memory::stdapi::free_unpublished(mem) };
                 return Reserved::refused();
             }
 
@@ -654,12 +660,11 @@ unsafe fn new_out_of_line(
     let mut payload = Buffer::new();
     let want = bytes.len().max(hint.min(MAX_LEN));
     if want > 0 && !unsafe { grow_payload(ctx, category, &mut payload, want, hint.min(MAX_LEN)) } {
-        // The entity's memory is left where it is: in the arena it dies
-        // with the reset, in the heap the slot came off the free list and
-        // stays out of circulation until the thread ends — a leak, not a
-        // corruption. Giving it back is `memory::stdapi::free_unpublished`,
-        // which the template factory's refusal path uses; this one does not,
-        // and no step owns that yet.
+        // Nothing was published into the slot, so it goes back through
+        // `free_unpublished` rather than a plain free, which would read as a
+        // repeat of the free `ll_free` made at its head and lose the slot
+        // (`crate::refcount::DEAD_IN_PLACE`).
+        unsafe { crate::memory::stdapi::free_unpublished(mem) };
         return std::ptr::null_mut();
     }
 

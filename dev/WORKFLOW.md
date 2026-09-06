@@ -466,7 +466,8 @@ on 2026-09-06, given as passed/ignored, Miri's clock, wall:
 `promote::tests::the_memory_a_survivor_takes_with_it` 13/0, 342 s, 6 m 39 s;
 `promote::tests::the_reset_reads_no_zero_count_member` 9/0, 340 s, 4 m 8 s;
 `cycle::deferred_slot_reuse` 42/1, 31 s, 2 m 15 s; `memory::stdapi` 16/0, 17 s,
-28 s; `refcount::` 26/4, 10 s, 19 s; `template::` 11/0, 10 s, 20 s;
+30 s; `string::` 37/0, 30 s, 48 s;
+`refcount::` 26/4, 10 s, 19 s; `template::` 11/0, 10 s, 20 s;
 `memory::retained` 12/0, 9 s, 25 s; `memory::reset_window` 2/0, 5 s, 12 s.
 `promote::` whole does not finish inside 15 minutes of wall, which is why it is
 taken as those two submodules. An earlier reading of `cycle::` whole — 86
