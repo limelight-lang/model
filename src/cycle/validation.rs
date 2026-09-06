@@ -218,7 +218,7 @@ fn note_premise_walk() {
 }
 
 /// How many members' cells the premise check has walked on this thread.
-#[cfg(test)]
+#[cfg(all(test, debug_assertions))]
 pub(crate) fn premise_cell_walks() -> usize {
     PREMISE_CELL_WALKS.with(std::cell::Cell::get)
 }
