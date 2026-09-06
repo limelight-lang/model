@@ -451,8 +451,11 @@ MIRIFLAGS="-Zmiri-ignore-leaks" cargo +nightly miri test \
 
 **Cap the threads and time the run from outside.** The harness defaults
 to one thread per core and each Miri thread carries its own view of the
-interpreted heap; on this box (7.8 GiB, 2 GiB swap) that default took the
-machine down on 2026-08-09. Two threads held, at a load around 2. And the
+interpreted heap; that default took the machine down on 2026-08-09, when the
+box read 7.8 GiB of memory and 2 GiB of swap. Two threads held, at a load
+around 2. On 2026-09-06 the same box reads 23 GiB, 8 GiB of swap and sixteen
+cores, so the cap stands on the older reading and what a wider run costs here
+is unmeasured. And the
 `finished in …s` line is Miri's own clock rather than the wall's — two
 runs over different trees reported 154.41 s and 154.59 s while each cost
 tens of minutes — so a Miri run is timed by `time` or by the shell, and a
