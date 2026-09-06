@@ -1410,8 +1410,9 @@ stage claiming the frees while building none of them.
         `cells::sever_cells` carries as dead code: the manager-backed
         replacement S36.5 owes has a caller already, and S39.1 puts a
         collection on that same thread-exit path.
-      handoff: the repairs of round 1 are in `ea2a941`, which is what the step
-        closes on rather than `88ad136` alone.
+      handoff: the step closes on three commits rather than one — `88ad136`
+        built it, `ea2a941` carries round 1's repairs and `01d50cb` round 2's,
+        and the last is what the built form is.
       handoff: S36.9 is executed as separately reviewed slices: (a) physical
         block contract and queue state; (b) logical ledger and current arena
         instrumentation; (c) manager-backed parking plus ordinary/abort deny
