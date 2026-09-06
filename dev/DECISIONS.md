@@ -8,6 +8,35 @@ never edited or deleted.
 
 ---
 
+## 2026-09-06 — the stack stays, its close being slower than the chain
+
+**Decided by Edmond**, on S44.4's reading: the question of taking the chain
+back is closed, and the withheld returns stay on the stack through the dead
+entities.
+
+**What the reading said.** The close costs 1.4 µs against the chain's 1.1 at
+class 32, 1.5 against 1.2 at class 128, and 7.8 against 4.8 where each of 381
+dead entities has a block of its own; the cause is that the pop learns the next
+address from the slot it is freeing, so the returns cannot overlap
+(`dev/BENCHMARKS.md`, "S44.4 the close against the chain"). A prefetch of the
+next slot, a prefetch of its block header beside it, and pops in ascending
+order each recover under a tenth of the gap.
+
+**What the time buys.** The mutator pays the same either way, the withholding
+push costing one write into the dying entity against one into the region; what
+goes with the chain is the 8,320 bytes of every thread's workspace, the second
+form for one fact once the region fills, the walk arms with their unwind
+ordering, five guards at the free entrances, and flags bit 15, which the
+double-free refusal holds since S44.3 and which no second spare bit could
+replace.
+
+**What follows in the plan.** S44's `Done when:` asked for the pop at or below
+the chain and now asks for the measurement rather than for its direction. The
+offer refused with the question: a measurement of the close's share of a whole
+collection, which would have priced the gap against what a collection costs.
+
+---
+
 ## 2026-09-06 — a second `ll_free` of an entity is refused, and the mark is the bit it is refused on
 
 **Ruled by Edmond**, who asked for the guarantee, and by the Sage, which chose

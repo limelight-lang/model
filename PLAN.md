@@ -16,9 +16,9 @@ S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
 its region and the block walks, S44.3 turned the mark into the bit a second
 `ll_free` of an entity is refused on, and S44.4 measured the close and found it
-slower than the chain on every arm; all five are closed. That reading leaves
-S44's own `Done when:` unreachable as written, and the clause is Edmond's to
-move. S36 waits behind it:
+slower than the chain on every arm; all five are closed. Edmond kept the stack
+on that reading, and the stage's `Done when:` was rewritten to ask for the
+measurement rather than for its direction. S36 waits behind it:
 its S36.9 and S36.12 stay open on verifications later steps owe, and S36.3 is
 the next of its steps to be built.
 S43 closed the withheld-return window: past its region the module draws
@@ -546,8 +546,14 @@ Goal: a trace's withheld returns are held in one structure that asks memory of
 nobody — the dead entities themselves, linked through the word a free list
 links by. Done when the record chain, its workspace region, the marked-block
 list and the `DEAD_IN_PLACE` mark are gone from the crate, the close is a pop
-loop, and the pop is measured at or below the chain on every arm of S43.1's
+loop, and the pop is measured against the chain on every arm of S43.1's
 fixture.
+
+**The clause read "at or below the chain" until 2026-09-06**, and S44.4
+measured the pop above it on all three arms. Edmond kept the stack on that
+reading and closed the question, so the acceptance is the measurement rather
+than its direction; what the stack buys instead of the time is the standing
+cost the chain carried, listed in the ruling below.
 
 The ruling is `dev/DECISIONS.md`, "one stack through the dead entity holds
 every withheld return". It answers the item the Sage raised on 2026-09-05 and
@@ -802,10 +808,11 @@ a second time; S44.4 last, a measurement being of what is built.
         the gap, and none of the three is built. In lines the stack is the
         cheaper: it touches none the returns do not, where the chain touches 96
         of its own, and `the_close_reads_no_line_of_its_own` pins that over
-        every size class. **S44's own `Done when:` asks for the pop at or below
-        the chain, which this reading makes unreachable**; the clause is
-        Edmond's to move, and the stage stays open on it as well as on S44.5.
-        Commit 56c5336.
+        every size class. The stage's `Done when:` asked for the pop at or
+        below the chain; Edmond kept the stack on this reading and closed the
+        question the same day, and the clause now asks for the measurement
+        rather than for its direction. Commit 56c5336, and the standing-cost
+        correction ee26cad.
 - [ ] S44.5 Carry the built form into `rfc`   *(waits on Edmond's word)*
       done: `rfc/model/classes.md`'s flags row 15 and `rfc/model/gc/rc-cycle.md`'s
         paragraphs about the mark, its list and the record-and-grow path
