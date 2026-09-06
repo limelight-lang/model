@@ -130,10 +130,17 @@ struct FreeSlot {
 /// bytes of a slot that carry nothing an occupant or a walker reads: the
 /// return overwrites them.
 ///
-/// `crate::cycle::deferred_slot_reuse` stacks a dead-in-place slot of a
-/// foreign block through this same word, which it may do because the slot has
-/// not reached this list yet. Move the link and that stack moves with it.
+/// `crate::cycle::deferred_slot_reuse` threads its stack of withheld returns
+/// through this same word — every death a trace window holds back, in a block
+/// of any owner and in the retained and large populations too — which it may
+/// do because such a slot has not reached this list yet. Move the link and
+/// that stack moves with it.
 pub(crate) const FREE_LIST_LINK_OFFSET: usize = std::mem::offset_of!(FreeSlot, next);
+
+const _: () = assert!(
+    FREE_LIST_LINK_OFFSET + size_of::<*mut u8>() <= SIZE_CLASSES[0],
+    "the smallest size class must hold the link both the free list and the      withheld returns' stack write there"
+);
 
 /// Blocks whose owning thread died while they still held live objects,
 /// per size class, chained through `owned_next`.
@@ -317,6 +324,10 @@ struct BlockCollector {
     /// (`crate::cycle::deferred_slot_reuse`). Written by the thread that
     /// takes the first mark in the block and nulled by the walk that returns
     /// it, both inside one trace window.
+    ///
+    /// **Null for the life of every window as the crate stands**: a withheld
+    /// return is held in the dying entity instead, so nothing lists a block.
+    /// The word goes with the list (`PLAN.md`, S44.2).
     ///
     /// Atomic for what crosses threads here, which is the **null** a walk
     /// leaves behind: the next window to mark a slot in this block may run
@@ -2356,16 +2367,19 @@ pub(crate) unsafe fn block_hold_count(block: *mut u8) -> *const AtomicU64 {
     unsafe { &raw const (*line).holds }
 }
 
-/// Whether this thread's entity heap is the block's owner.
+/// Whether this thread's entity heap is the block's owner. A thread that has
+/// never allocated owns nothing, and the null it reads answers the same way.
 ///
-/// The free path asks it before writing a mark into a dead slot: a slot's
-/// return is its owner's free list and `used`, so a mark in a block this
-/// thread does not own is one no close of this thread's can make good
-/// (`crate::refcount::DEAD_IN_PLACE`). A thread that has never allocated
-/// owns nothing, and the null it reads answers the same way.
+/// Read by the cases that stage a block of another thread, and by no path of
+/// the crate: a withheld return is held in the dying entity itself and its
+/// return goes through `ll_free`, which posts a cross-thread free onto the
+/// block rather than onto this thread's free list
+/// (`crate::cycle::deferred_slot_reuse`). It goes with the mark
+/// (`PLAN.md`, S44.3).
 ///
 /// # Safety
 /// `block` is the header of a commissioned block.
+#[cfg(test)]
 pub(crate) unsafe fn block_is_owned_by_this_thread(block: *mut u8) -> bool {
     let owner = unsafe {
         (*(block as *mut HeapBlockHeader))

@@ -7,6 +7,52 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-06 — a reversed disposal order left two cases green while they asserted the wrong slot
+
+**What happened.** S44.1 moved every withheld return from the marked-block
+walk onto one stack, which reverses the order the close disposes in: the walk
+read a block's slots by rising address, the pop takes the newest withheld slot
+first. Two panic cases —
+`cycle::deferred_slot_reuse::tests::a_panic_inside_a_block_walk_returns_the_marks_below_it`
+and `..._a_retained_walk_spends_the_hold_it_took` — passed on the new order
+while asserting the old one, and each then freed a slot the close had already
+returned. The retained one drove its block into the pool with a dead occupant
+still counted in it.
+
+**Why it was possible.** Both cases read `refcount::slot_state` after the
+unwind and asserted `Free`. Two paths reach that state: the return the close
+made, and the disposal clearing the mark ahead of a return that then raised.
+Each case named the wrong slot of the two, and the assertion held for the
+other reason.
+
+**Why it was not caught.** Nothing else in either case separates the two
+slots. The block's occupancy falls by one under either reading, and the
+cleanup free of an already-returned slot is silent: `ll_free` asserts on the
+refcount word, which reads zero for a returned slot as well. Miri passed both,
+the second free walking the block's own free list, which is live memory. What
+found it was reading the cases against the new order rather than running them
+— the model printed each disposal's address under a temporary probe in
+`dispose_of`, and the first address was the newest death rather than the
+lowest.
+
+**What changed.** Each case now reads its answer off something only one slot
+can be. The slotted case allocates after the unwind, and the block's free list
+is LIFO, so the address it serves names the slot the close gave back; the
+retained case puts its two survivors in blocks of their own, so the block that
+went home names the return that was made. The slotted case withholds three
+slots rather than two, because at two a pass that gave one slot back and
+stopped reads the same as one that gave back everything behind the raising
+return.
+
+**The general shape.** A state asserted after an unwind is worth checking for
+a second producer. `Free` here is the absence of two facts, a count and a
+mark, and an assertion on an absence passes for whichever of them the code
+produced. And a change that reverses an order does not fail the cases that
+assert on that order: they stop meaning anything, and only reading them
+against the new order says which of the two they now name.
+
+---
+
 ## 2026-09-05 — an abandoned block of a class another case fills is a fixture, not a leftover
 
 **What happened.** S43.5's new case

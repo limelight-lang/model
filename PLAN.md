@@ -11,10 +11,11 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-05 · Active: S44, from S44.1, which replaces the withheld
-returns' record chain with one stack through the dead entities. S36 waits
-behind it: its S36.9 and S36.12 stay open on verifications later steps owe,
-and S36.3 is the next of its steps to be built.
+Updated: 2026-09-06 · Active: S44, from S44.6, which moves the row sweep ahead
+of the candidate restore; S44.1 replaced the withheld returns' record chain
+with one stack through the dead entities and is closed. S36 waits behind it:
+its S36.9 and S36.12 stay open on verifications later steps owe, and S36.3 is
+the next of its steps to be built.
 S43 closed the withheld-return window: past its region the module draws
 nothing, a death in memory the collection never met is returned at once, a
 marked slot of another thread's block is stacked rather than listing its
@@ -90,6 +91,14 @@ the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
 than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
 
+- A second withholding of one slot inside one window writes the stack's link
+  into itself, and the close then pops the block's own free list into
+  `ll_free` a second time. It takes a caller that frees one address twice, and
+  `dev/DECISIONS.md`, 2026-09-05, refuses the debug-only guard that would name
+  it — on the ground that a double free loops the block's free list through
+  the same word anyway, which holds outside a window and not inside one. The
+  mark that could catch it goes at S44.3. Edmond's word wanted on whether
+  anything replaces it.
 - `memory::reset_window` keeps a vocabulary of its own — `CORPSE_WALKS` and
   `park_large` beside `ResetWindow::escrow` — and
   `cycle::tests::the_metaphors_the_names_still_carry` and
@@ -550,10 +559,11 @@ Edmond delegated the same day, and it does not reverse his ruling of
 the stack landed the day after it.
 
 **The order is obligatory.** S44.1 before S44.2, or the deletion takes what is
-still in use; S44.3 after S44.2, the last branching reader of the mark being
-the walk S44.2 deletes; S44.4 last, a measurement being of what is built.
+still in use; S44.6 between them, so the deletions land on the close's final
+order; S44.3 after S44.2, the last branching reader of the mark being the walk
+S44.2 deletes; S44.4 last, a measurement being of what is built.
 
-- [ ] S44.1 The stack becomes the only store
+- [x] S44.1 The stack becomes the only store
       done: every withheld return of all four populations — a slotted entity, a
         retained survivor, a pooled large entity and an OS-direct run — is
         pushed through byte 8 of the dead entity and given back by the close's
@@ -565,6 +575,57 @@ the walk S44.2 deletes; S44.4 last, a measurement being of what is built.
         moves the head after the return rather than before it; the record chain
         stands unused, so the tree is green at this step
       tier: T2 · role: Critic
+      Critic 2026-09-06 round 1: nine findings. Two panic cases had begun
+        passing for the wrong reason — after an unwind a returned slot and the
+        raising one both read `Free`, the disposal clearing the mark ahead of
+        the return it never makes — and each freed an already-returned slot at
+        its end; both rewritten to read the answer off the free list and off a
+        block of their own. The abandoning disposition had no case at all,
+        byte 8 was pinned for the slotted population alone, the zero reading of
+        the close's probe went with a deleted case, and five doc surfaces still
+        described the marked-block list. All fixed. The guard against a double
+        push was refused: the ruling refuses it by name, and the mark it would
+        read goes at S44.3.
+      Critic 2026-09-06 round 2: six findings. The abandon case passed on a
+        child process that ran no test, its case named by a string literal, and
+        now reads the child's own count; the retained byte-8 case pinned the
+        link and not the room, which the fixture asserts off the class and a
+        `const` asserts against `SIZE_CLASSES[0]` for the slotted population;
+        four doc claims were still false and are rewritten. Its first finding —
+        that the one panic reaching the abandoning disposition is one the sweep
+        could have preceded — went to the Sage and became S44.6. The fixture it
+        proposed for the sentinel arm was built and is red on that arm's
+        deletion.
+      Sage 2026-09-06: the close's order changes, in a step of its own (S44.6).
+      handoff: every withheld return is pushed through byte 8 of the dead
+        entity and popped by the close, and `classify` answers off the block's
+        stamp alone, reading no owner word. The chain, the marked-block list,
+        their walks and the mark stand unwritten until S44.2 and S44.3. Seen
+        red: a pop that moves the head after the return (seven cases, ending in
+        a segmentation fault), a classifier that skips the stamp (four), a drop
+        that always returns (one), the sentinel arm deleted (one).
+- [ ] S44.6 The row sweep runs before the candidate restore
+      done: `ActiveTrace::drop` sweeps the rows and sets `swept` before it
+        restores a detached candidate chain, so the one panic that reached the
+        abandoning disposition returns what the window withheld instead of
+        abandoning it; `an_unwind_before_the_sweep_abandons_what_was_withheld`
+        becomes the case of that change — the restore still refuses, the marks
+        come off, the block's occupancy falls and the slot is served again —
+        and a second case pins the abandoning arm directly, over a
+        `WithheldReturns` the test opens and drops without `rows_are_gone`;
+        the ruling is recorded in `dev/DECISIONS.md`
+      tier: T1 · role: —
+      Sage 2026-09-06: hoist the sweep, keep `swept` and its arm, refuse a
+        third fault injection, and give the change a step of its own. The
+        restore reads the queue's two cells and the sweep reads rows and the
+        worklist, so neither depends on the other; nothing after the sweep
+        depends on the restore, `ll_free`'s candidate arm reading the entity's
+        own bit, and a withheld slot never carries that bit. After the hoist no
+        panic site in the built code reaches the abandoning arm, which stays
+        because the flag is what `WithheldReturns::drop` reads instead of
+        inferring the order from a sibling. Refused: keeping the order,
+        deleting `swept`, injecting a fault inside `sweep_rows`, moving the
+        restore behind the returns, and folding the change into S44.1.
 - [ ] S44.2 The chain, its region and the block walks are deleted
       done: `RecordChain` has one user left, the trace worklist;
         `RETURNS_BASE_RECORDS`, the marked-block list, the three arms of
@@ -592,7 +653,14 @@ the walk S44.2 deletes; S44.4 last, a measurement being of what is built.
         at or below the chain on every arm. A slower close on any arm is a
         finding with a named cause rather than a number recorded and passed;
         the suspected cause is the pop's dependent load, and the answer to try
-        is a prefetch of the next link
+        is a prefetch of the next link. The chain arm is not runnable in this
+        tree — S44.1 leaves the chain unwritten — so its reading is taken at
+        S44.1's parent commit, in a worktree of this box, against the stack at
+        the head of the branch. The fixture's `RECORD_BYTES`,
+        `APPEND_OPERATIONS_PER_DEATH` and `REPLAY_OPERATIONS_PER_DEATH` model
+        the chain and go with it; in lines the stack's own answer is by
+        construction, byte 8 sharing its line with byte 0 for every size class,
+        so what the fixture is rebuilt to weigh is the time
       tier: T2 · role: —
 - [ ] S44.5 Carry the built form into `rfc`   *(waits on Edmond's word)*
       done: `rfc/model/classes.md`'s flags row 15 and `rfc/model/gc/rc-cycle.md`'s

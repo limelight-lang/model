@@ -260,13 +260,12 @@ const RETIRED: [(&str, &str, Where); 92] = [
         "dispose_thread_state",
         Where::Under("cycle/deferred_slot_reuse"),
     ),
-    // The classifier answers how a death past the region is withheld, and one
-    // of its three answers is no withholding at all. The retired name reads
-    // as a permission and sends a reader looking for a population the module
-    // does not have.
+    // The classifier answers how a death is withheld, and one of its two
+    // answers is no withholding at all. The retired name reads as a permission
+    // and sends a reader looking for a population the module does not have.
     (
         "can_carry_the_mark",
-        "classify_past_the_region",
+        "classify",
         Where::Under("cycle/deferred_slot_reuse"),
     ),
     ("Judged", "ValidationResult", Where::Anywhere),

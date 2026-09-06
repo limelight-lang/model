@@ -124,16 +124,14 @@ pub const DESTRUCTOR_PENDING: u32 = 1 << 13;
 pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 
 /// The entity is torn down and its memory has gone back nowhere: it died
-/// inside a trace window whose withheld-return chain had no room for a
-/// record, so the death was written here instead.
-/// What finds it is the window's own list: the marker links each block it
-/// marks through one word of that block's header, and the close walks the
-/// list and returns every marked slot
-/// (`crate::cycle::deferred_slot_reuse`). Whoever returns the memory is
-/// what clears the bit — its block's owner for a slot, and the thread whose
-/// trace holds the rows for the other two, which have no owner
-/// (`dev/DECISIONS.md`, "the stamp is the whole condition where the return
-/// is not the owner's").
+/// inside a trace window, in memory that window's collection has met, so the
+/// death was written here instead.
+/// What finds it is the window's own stack: every withheld slot is pushed
+/// through the eight bytes a free list links by, and the close pops that
+/// stack and returns each slot (`crate::cycle::deferred_slot_reuse`). The
+/// thread whose window took the mark is what clears it, for all three headers
+/// and whoever owns the memory (`dev/DECISIONS.md`, "one stack through the
+/// dead entity holds every withheld return").
 ///
 /// **Three headers carry it**, and what each one holds back differs: a
 /// size-class slot, which is on no free list and below its block's bump
@@ -913,10 +911,9 @@ pub(crate) unsafe fn slot_state(header: *const RcHeader) -> SlotState {
 ///
 /// # Safety
 /// `header` addresses a dead entity whose count reads zero, in memory a trace
-/// has stamped, and the window that marks it returns it at its close —
-/// through the block's place on that window's list, or through the window's
-/// stack of foreign slots
-/// (`crate::cycle::deferred_slot_reuse`, `classify_past_the_region`).
+/// has stamped, and the window that marks it returns it at its close, off the
+/// stack it pushed the slot onto
+/// (`crate::cycle::deferred_slot_reuse`, `classify`).
 #[inline]
 pub(crate) unsafe fn mark_dead_in_place(header: *mut RcHeader) {
     debug_assert_eq!(
@@ -928,11 +925,11 @@ pub(crate) unsafe fn mark_dead_in_place(header: *mut RcHeader) {
 }
 
 /// Take the mark off, which the thread whose window took it does as it makes
-/// the return the mark deferred — the block's owner where the window listed
-/// the block, and the marking thread itself where it stacked the slot in a
-/// block another thread owns, or where the return is a retained survivor's or
-/// a large entity's and has no owner at all (`dev/DECISIONS.md`, "a death the
-/// collection never met is returned at once, and a foreign slot is stacked").
+/// the return the mark deferred. That thread makes every one of them: the
+/// return goes through `ll_free`, which posts a cross-thread free where the
+/// block is another thread's and takes the owner's path where it is this
+/// one's (`dev/DECISIONS.md`, "one stack through the dead entity holds every
+/// withheld return").
 ///
 /// **One thread writes this half of the flags word of one dead slot**, and it
 /// is the thread whose window marked it. The word is written by load and

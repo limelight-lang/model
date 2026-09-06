@@ -36,7 +36,7 @@ versions live in `docs/history/`, marked at the top.
   | module | what is there | production caller |
   |---|---|---|
   | `queue` | the per-thread candidate queue, its base block, spares and overflow buffer, and the cell that lends the collection workspace | `refcount::release_word`, `gc`'s poll |
-  | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its records in the workspace's fixed region, and the detached candidate batch a collection traces | `stdapi::ll_free` |
+  | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its stack of withheld returns through the dead entities, and the detached candidate batch a collection traces | `stdapi::ll_free` |
   | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | none until S36.7 |
   | `shadow` | the row: two bits of colour over thirty of working count | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
@@ -64,23 +64,19 @@ versions live in `docs/history/`, marked at the top.
   pressure path's alone").
 - What a slot's first eight bytes read: `refcount::slot_state`, three
   states over the count and one flag — live, dead in place, free. An entity
-  is dead in place when it died inside a trace window whose withheld-return
-  chain had no room for a record, in memory that collection has met
-  (`refcount::DEAD_IN_PLACE`); the count
+  is dead in place when it died inside a trace window, in memory that
+  collection has met (`refcount::DEAD_IN_PLACE`); the count
   still reads zero, so the flag is the only thing that
   separates such a header from an unoccupied one, and a guard test bans the
   two-way test outside `refcount`. Three headers carry it — a size-class
-  slot, a retained survivor and a large entity's own header — and how a death
-  past the region is answered is
-  `cycle::deferred_slot_reuse::classify_past_the_region`: returned where the
-  collection never met the block, marked with its block listed where it did
-  and the block is this thread's, marked and stacked where the block is
-  another thread's. What returns marked
-  memory is the window's close, which walks the list the marker linked each
-  block into — one atomic word per block header, `heap::marked_link` and
-  `large_entity::marked_link`, headed in the withheld returns' control line —
-  and then the stack of foreign slots threaded through the dead slots
-  themselves at `heap::FREE_LIST_LINK_OFFSET`.
+  slot, a retained survivor and a large entity's own header — and what
+  decides is `cycle::deferred_slot_reuse::classify`: returned at once where
+  the collection never met the block, marked and stacked where it did. What
+  returns marked memory is the window's close, which pops that stack —
+  threaded through the dead entities themselves at
+  `heap::FREE_LIST_LINK_OFFSET`, headed in the withheld returns' control
+  line. The record chain, the marked-block list and the mark itself go with
+  `PLAN.md` S44.2 and S44.3.
 - The candidate gate: `refcount::CANDIDATE_GATE_MASK` and
   `may_become_a_candidate`,
   read on the non-zero decrement in `release_word`. Five conditions in
@@ -413,7 +409,7 @@ versions live in `docs/history/`, marked at the top.
   reads the block is withheld, and for a run that is soundness rather than
   economy — its memory is unmapped at the free while a trace may still
   address it. `cycle::deferred_slot_reuse` defers that return and owns the
-  sweep-before-replay order (`PLAN.md` S36.2).
+  sweep-before-return order (`PLAN.md` S36.2).
   The doors
   above it are
   `heap::entity_alloc` past `MAX_SMALL` and `Arena::alloc_entity` past
@@ -617,9 +613,9 @@ Withholding a physical return — `memory::stdapi::ll_free` asks two windows
 before a slot, a retained block or a large run goes back: an entity whose
 header still carries `CANDIDATE_BIT` waits with no record kept, the queue entry
 being the record; an open trace sends the return to
-`cycle::deferred_slot_reuse::ActiveTrace`, which replays it after its trace
-scratch arena has swept its rows and before that arena gives its own blocks
-back. The two close in either order.
+`cycle::deferred_slot_reuse::ActiveTrace`, which stacks it through the dead
+entity and makes it after its trace scratch arena has swept its rows and
+before that arena gives its own blocks back. The two close in either order.
 
 Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's
 out-of-line body lives: a string's payload and an array's table storage.

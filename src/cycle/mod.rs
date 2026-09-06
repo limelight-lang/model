@@ -51,11 +51,10 @@
 //! allocator-issued", which is that block), and at the first registration of a
 //! thread the runtime never registered, where the same refusal aborts because
 //! there is no caller left to report it to. Past both stands the overflow
-//! buffer's own bound, which aborts when it fills. Past the workspace's own
-//! region for withheld returns nothing is drawn at all: a death the region
-//! cannot record is answered in the dying entity's memory, or returned at
-//! once where no row of the collection names it
-//! ([`deferred_slot_reuse`], `classify_past_the_region`). Thread
+//! buffer's own bound, which aborts when it fills. The window over withheld
+//! returns draws nothing at all: a death it withholds is held in the dying
+//! entity's own memory, and one no row of the collection names is returned at
+//! once ([`deferred_slot_reuse`], `classify`). Thread
 //! exit inside an open window aborts, `ll_thread_exit` being
 //! `extern "C"` and having no caller to refuse to.
 //!
@@ -66,7 +65,7 @@
 //! the slot returns all run after it, untokened — which is why
 //! [`validation`] re-reads the heap instead.
 
-// `ActiveTrace` owns the `TraceScratchArena`, fixing sweep-before-replay even
+// `ActiveTrace` owns the `TraceScratchArena`, fixing sweep-before-return even
 // before the production collection opens one in S36.7.
 pub(crate) mod arena;
 // The validation over a component the scan proposed, and dead until the

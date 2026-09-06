@@ -61,6 +61,9 @@ pub(crate) struct LargeEntityHeader {
     /// next window's marker reads to decide whether the block is listed
     /// (`crate::memory::heap::marked_link`).
     ///
+    /// **Null for the life of every window as the crate stands**, nothing
+    /// listing a block: the word goes with the list (`PLAN.md`, S44.2).
+    ///
     /// In this header rather than beside the entity, so that the walk reads
     /// the line the marker already read the row's colour from.
     marked_next: AtomicPtr<u8>,
@@ -262,7 +265,7 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// unmet one.** A run whose own row reads `Color::Untouched` is unmapped
 /// while a collection is open, on the ground that no row of that collection
 /// names it (`crate::cycle::deferred_slot_reuse`,
-/// `classify_past_the_region`); what the third condition answers is *whose*
+/// `classify`); what the third condition answers is *whose*
 /// blocks a collection reads, not whether an enumerator that took its
 /// snapshot before the registry removal may still dereference the address.
 /// The gap is one thread's own, so a quiescent mutator closes it today; a

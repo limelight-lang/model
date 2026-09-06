@@ -246,16 +246,6 @@ impl<T: Copy> RecordChain<T> {
         }
     }
 
-    /// Records the chain holds, for a chain nothing has popped. Tests only:
-    /// the count is `O(records)`, the chain persisting no bound of its own
-    /// until S36.5 needs one.
-    #[cfg(test)]
-    pub(crate) fn used(&self) -> usize {
-        let mut count = 0;
-        self.walk(|_| count += 1);
-        count
-    }
-
     /// Whether the chain holds no record.
     pub(crate) fn is_empty(&self) -> bool {
         self.current.get() == self.base
