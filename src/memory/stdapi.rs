@@ -355,9 +355,10 @@ pub unsafe fn ll_free(ptr: *mut u8) {
 
     // The queue entry above and a trace's shadow rows are independent
     // identifiers of the same slot. A return refused by the first is recorded
-    // by that entry; a return refused here is recorded out of band and replayed
-    // through this same entry point when the trace closes. Whichever window
-    // closes last performs the physical return (`cycle::deferred_slot_reuse`).
+    // by that entry; a return refused here is held on the window's stack,
+    // threaded through the dying entity, and made through this same entry
+    // point when the trace closes. Whichever window closes last performs the
+    // physical return (`cycle::deferred_slot_reuse`).
     if can_lose_trace_identity(kind)
         && unsafe { crate::cycle::deferred_slot_reuse::defer_reuse_if_tracing(ptr, kind) }
     {
@@ -443,8 +444,8 @@ unsafe fn ll_free_large(ptr: *mut u8, block: *mut u8, kind: u32) {
             }
 
             // A survivor still carrying `DEAD_IN_PLACE` would take the
-            // decrement below and keep the mark, so the next window's walk
-            // would find it and hand the same survivor back a second time. The clear
+            // decrement below and keep the mark, and a mark that outlives its
+            // window is one no window can answer for. The clear
             // belongs to whoever returns the memory
             // (`crate::refcount::clear_dead_in_place`), and this is where a
             // path that forgot it shows up.

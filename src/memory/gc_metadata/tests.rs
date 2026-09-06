@@ -283,8 +283,8 @@ fn a_block_crossing_publishes_the_bump_it_abandons() {
     // The second grant cannot fit, so the workspace leaves the bump —
     // consumed to the byte, which is the instant its figure is exact. Held
     // rather than returned, and charged all the same: the bytes stay in use
-    // until the reset rewinds over them. The fixed regions at the workspace's
-    // head are outside the figure, being memory the thread holds whether or
+    // until the reset rewinds over them. The fixed region at the workspace's
+    // head is outside the figure, being memory the thread holds whether or
     // not a collection is running (`cycle::arena::TraceScratchArena::residue`).
     assert!(!arena.alloc(8).is_null());
     assert_eq!(

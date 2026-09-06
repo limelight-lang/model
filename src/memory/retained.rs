@@ -153,18 +153,8 @@ pub(crate) unsafe fn register(block: usize, occupants: &[usize], destination: *m
 /// by the reset and spent when that block returns
 /// ([`release_emptied`]); the reset's own count over the window in
 /// which it has not yet established occupant counts
-/// ([`hold_released`]); or the count a walk of the block's survivor list
-/// keeps while it reads it, so that no free of another thread's can put the
-/// block in the pool under the walk
-/// (`crate::cycle::deferred_slot_reuse`). Counted rather than flagged,
-/// because one block can hold the payloads and lists of several others and
-/// each is spent on its own.
-///
-/// **Change this, change `cycle::deferred_slot_reuse::dispose_marks_of` too:**
-/// that walk takes its count between naming the block it can be resumed
-/// inside and its first disposal, and a panic site added here would be
-/// repeated by the resumed walk inside an unwind, where a second panic
-/// aborts.
+/// ([`hold_released`]). Counted rather than flagged, because one block can
+/// hold the payloads and lists of several others and each is spent on its own.
 ///
 /// # Safety
 /// As [`count_word`].
@@ -222,11 +212,9 @@ pub(crate) unsafe fn payload_freed(block: usize) -> bool {
 /// [`register`] leaves it — the caller returns the block through
 /// `ll_free(block)`, which answers off the count word.
 ///
-/// Two callers hold for a window rather than for a thing: the reset, over
-/// the span in which an occupant count cannot yet be established for the
-/// block (module doc), and the walk that returns dead-in-place marks, over
-/// the span in which it reads the block's survivor list
-/// (`crate::cycle::deferred_slot_reuse`).
+/// One caller holds for a window rather than for a thing: the reset, over the
+/// span in which an occupant count cannot yet be established for the block
+/// (module doc).
 ///
 /// A zero low half here means nothing counted holds the block, which
 /// covers a block whose occupants all died inside the reset and one that

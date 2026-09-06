@@ -318,27 +318,11 @@ struct BlockCollector {
     /// The length of `survivors`, which is a retained block's index space.
     /// Published by the release store of `survivors`.
     survivor_count: AtomicU32,
-    /// The next block of the marking window's list, or this block itself at
-    /// the list's end; **null while the block holds no dead-in-place mark**,
-    /// which is the whole membership test
-    /// (`crate::cycle::deferred_slot_reuse`). Written by the thread that
-    /// takes the first mark in the block and nulled by the walk that returns
-    /// it, both inside one trace window.
-    ///
-    /// **Null for the life of every window as the crate stands**: a withheld
-    /// return is held in the dying entity instead, so nothing lists a block.
-    /// The word goes with the list (`PLAN.md`, S44.2).
-    ///
-    /// Atomic for what crosses threads here, which is the **null** a walk
-    /// leaves behind: the next window to mark a slot in this block may run
-    /// on another thread, and it reads this word to decide whether the block
-    /// is already listed. The link and the null are a release store against
-    /// that acquire load. Within one window the marker and the walker are
-    /// the same thread, so the load-then-store that lists a block is not a
-    /// read-modify-write and does not need to be one — what makes that safe
-    /// is the one-window premise S38's token will enforce
-    /// (`dev/DECISIONS.md`, "the marker links the block, and the window's
-    /// close walks the list").
+    /// The word a marking window's list of blocks was threaded through, and
+    /// null for the life of the process: nothing lists a block since the
+    /// withheld returns took a stack of their own
+    /// (`crate::cycle::deferred_slot_reuse`). It goes with its twin in a
+    /// large-entity header (`PLAN.md`, S44.3).
     marked_next: AtomicPtr<u8>,
 }
 
@@ -837,27 +821,12 @@ impl Heap {
         };
 
         probe_count!(ADOPTED);
-        // A block on a marking window's list cannot reach here: the list
-        // lives inside one trace window, the window's close walks it, and a
-        // thread cannot exit inside a window
-        // (`crate::cycle::deferred_slot_reuse::dispose_thread_state`). The
-        // adoption is where the ordering would fail visibly — the new owner
-        // never made the mark, its `used` never reaches zero, and the block
-        // is counted as holding a live slot the exited thread owed.
-        //
-        // A marked slot of a block its marking thread did not own does reach
-        // an adopting thread, and is sound here: that window stacked the slot
-        // rather than listing the block, and its close returns the slot
-        // through `ll_free` — onto this block's own remote stack while the
-        // block is still a stranger's, and by the ordinary owner path once
-        // this adoption has made it the marking thread's.
-        debug_assert!(
-            self.block_kind != BLOCK_KIND_ENTITY
-                || unsafe { &*marked_link(block as *mut u8) }
-                    .load(Ordering::Relaxed)
-                    .is_null(),
-            "an adopted block is still listed on a marking window its owner never closed"
-        );
+        // A marked slot of another thread's block does reach an adopting
+        // thread, and is sound: the window that marked it holds it on a stack
+        // of its own and returns it through `ll_free` — onto this block's own
+        // remote stack while the block is still a stranger's, and by the
+        // ordinary owner path once this adoption has made it the marking
+        // thread's (`crate::cycle::deferred_slot_reuse`).
         // Through the raw pointer, like `own`/`link`/`retire_empty`. Holding
         // a `&mut` to the header across `self.own` would alias it: `own`
         // writes these very fields through `block`, which invalidates any
@@ -964,16 +933,6 @@ impl Heap {
                 // and an empty block is worth more to the pool than to the
                 // abandoned list.
                 self.collect_remote_locked(block);
-                // The twin of the guard in `adopt`, at the other end of the
-                // same ordering: the list a window built is walked at that
-                // window's close, and this thread cannot be exiting inside one.
-                debug_assert!(
-                    self.block_kind != BLOCK_KIND_ENTITY
-                        || unsafe { &*marked_link(block as *mut u8) }
-                            .load(Ordering::Relaxed)
-                            .is_null(),
-                    "a block abandoned at thread exit is still listed on a marking window"
-                );
                 unsafe {
                     (*block)
                         .shared
@@ -2071,9 +2030,9 @@ thread_local! {
 /// memory to give back at that point must leave it for another thread.
 ///
 /// The refusal was written against a withheld free, whose backlog the exit
-/// disposed and nothing rebuilt. What withholds today is one slot at a time
-/// uses two forms — a slot a queue entry names is simply withheld, while
-/// S36.2's trace window records physical returns out of band
+/// disposed and nothing rebuilt. What withholds today withholds one slot at a
+/// time, in two forms: a slot a queue entry names waits for the entry, and a
+/// death inside S36.2's trace window waits on that window's own stack
 /// (`memory::stdapi::ll_free`). The refusal therefore still protects a
 /// real backlog during thread exit.
 pub(crate) fn thread_may_free() -> bool {
@@ -2228,9 +2187,11 @@ pub unsafe extern "C" fn ll_entity_reserve(
 /// its withholding: an unconsumed cell carries no published header and no
 /// registration, so the registration window never withholds it, while a cell a
 /// caller published and registered is withheld (`memory::stdapi::ll_free`).
-/// The second window, a trace in flight, keys on the block kind alone and
-/// so withholds an unconsumed cell too, its return delayed to the window's
-/// close (S36.2, `PLAN.md`).
+/// The second window, a trace in flight, withholds an unconsumed cell only
+/// where this collection has met the cell's block: the stamp is the whole of
+/// that condition (`crate::cycle::deferred_slot_reuse::classify`), so a cell
+/// of a block no row addresses goes back at once and one of a stamped block
+/// waits for the close (S36.2, `PLAN.md`).
 ///
 /// # Safety
 /// Every element must be an unconsumed cell from [`ll_entity_reserve`].
@@ -2401,18 +2362,22 @@ pub(crate) unsafe fn block_shadow(block: *mut u8) -> *mut u8 {
     unsafe { (*line).shadow.load(Ordering::Acquire) }
 }
 
-/// The word that lists a block among those holding a dead-in-place mark:
-/// null while it holds none, and otherwise the next block of the marking
-/// window's list, or the block itself at the list's end
-/// (`crate::cycle::deferred_slot_reuse`).
+/// The word a marking window's list of blocks was threaded through, and null
+/// for the life of the process: nothing lists a block since the withheld
+/// returns took a stack of their own (`crate::cycle::deferred_slot_reuse`).
 ///
 /// The pointer is to the word rather than to its value, because the two
 /// populations that keep it in a heap block and the two that keep it in a
-/// large-entity header are walked through one call site
+/// large-entity header were read through one call site
 /// (`crate::memory::large_entity::marked_link`).
 ///
 /// # Safety
 /// As [`clear_block_shadow`], for as long as the returned pointer is used.
+#[expect(
+    dead_code,
+    reason = "nothing lists a block since the stack took every withheld return; \
+              the word and this accessor go with `PLAN.md` S44.3"
+)]
 pub(crate) unsafe fn marked_link(block: *mut u8) -> *const AtomicPtr<u8> {
     let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
     unsafe { &raw const (*line).marked_next }
@@ -2431,9 +2396,9 @@ pub(crate) unsafe fn marked_link(block: *mut u8) -> *const AtomicPtr<u8> {
 /// **The cursor is read without synchronisation**, so a caller that is not
 /// the block's owner reads a value the owner may be moving. A census takes
 /// that knowingly, one slot short or one slot long being a census of the
-/// instant it ran ([`for_each_entity_slot`]); a caller that acts on a slot
-/// it finds — the walk that returns dead-in-place marks — must be the owner,
-/// and that is its own condition rather than this function's.
+/// instant it ran ([`for_each_entity_slot`]); a caller that acts on a slot it
+/// finds must be the owner, and that is its own condition rather than this
+/// function's.
 ///
 /// # Safety
 /// `block` is the header of a live `BLOCK_KIND_ENTITY` block.
@@ -2525,18 +2490,11 @@ pub(crate) unsafe fn collector_block_slots(block: *mut u8) -> u32 {
 /// `used` therefore counts the slots the allocator cannot hand out, which
 /// is what the row array reserves rows for.
 ///
-/// The walk that returns dead-in-place marks reads it for a second reason:
-/// a block down to one occupant is one the next return retires, and the
-/// walk owes that reading **before** the return rather than after
-/// (`crate::cycle::deferred_slot_reuse`). That walk is one a panic can
-/// resume, so a panic site added here would be repeated inside an unwind,
-/// where a second panic aborts — **change this, change
-/// `cycle::deferred_slot_reuse::dispose_marks_of` too**.
-///
 /// # Safety
 /// `block` is the header of a commissioned `BLOCK_KIND_ENTITY` block, read
 /// on the thread that owns it — `private` is the owner's half of the
 /// header, and an allocation borrows it as `&mut`.
+#[cfg(test)]
 pub(crate) unsafe fn block_occupancy(block: *mut u8) -> u32 {
     unsafe { (*(block as *mut HeapBlockHeader)).private.used }
 }

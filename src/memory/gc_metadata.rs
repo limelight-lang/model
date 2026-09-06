@@ -18,12 +18,11 @@
 //! the block count alone cannot say whether collection is holding memory it
 //! needs. The charge lands at a structural transition — a queue segment
 //! leaving the write position, an overflow-buffer append, a queue-base control
-//! line, a trace-scratch block leaving the bump, a withheld-return block
-//! leaving the append position — never per grant, which is what keeps the
-//! candidate-registration path and the free path free of it. Three residues
-//! follow from that and are granularity rather than error: the write segment's
-//! own fill, the block under the trace scratch arena's bump and the
-//! withheld-return block still under the cursor. Each is entered in the
+//! line, a trace-scratch block leaving the bump — never per grant, which is
+//! what keeps the candidate-registration path and the free path free of it.
+//! Two residues follow from that and are granularity rather than error: the
+//! write segment's own fill and the block under the trace scratch arena's
+//! bump. Each is entered in the
 //! high-water figure by the transition that ends it, and by a mark rather than
 //! a charge, the bytes standing there being released in the same breath — so
 //! that figure is exact for one thread and can miss a maximum two threads
@@ -151,8 +150,7 @@ impl GcMemoryStats {
     /// hundred bytes is in this figure at two hundred, a thread that filled a
     /// queue segment without growing the queue enters its fill when it
     /// releases its segments, and a collection enters the bump its reset
-    /// rewinds and the block its withheld returns were being written into when
-    /// it closes. **Entered at that
+    /// rewinds when it closes. **Entered at that
     /// transition and not while the residue stands**, so a residue that
     /// coexisted with another thread's maximum is in this figure only if it
     /// outlived it.
@@ -182,9 +180,9 @@ pub fn stats() -> GcMemoryStats {
 ///
 /// The caller charges at a transition that has one inverse — a segment leaving
 /// the write position, an overflow-buffer append, a queue-base control line, a
-/// trace-scratch block leaving the bump, a withheld-return block leaving the
-/// append position — and never per grant (`dev/DECISIONS.md`, "the logical
-/// charge lands at a structural transition, not at a grant").
+/// trace-scratch block leaving the bump — and never per grant
+/// (`dev/DECISIONS.md`, "the logical charge lands at a structural transition,
+/// not at a grant").
 pub(crate) fn charge(bytes: usize) {
     let in_use = IN_USE.fetch_add(bytes, Ordering::Relaxed) + bytes;
     IN_USE_PEAK.fetch_max(in_use, Ordering::Relaxed);

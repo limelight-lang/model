@@ -32,10 +32,12 @@
 //! structure. What the reading decided is what the crate built after it: the
 //! chain stays and the walk runs on the refusal alone.
 //!
-//! **"The sweep" below is the design that was priced, not the walk that was
-//! built**: a walk of every touched block's slots at every collection. What
-//! the crate builds walks the blocks one refusal listed, and an ordinary
-//! collection reads no slot at all.
+//! **Both arms below are designs the crate does not have.** "The sweep" is a
+//! walk of every touched block's slots at every collection, which was priced
+//! and refused; "the chain" is the record chain S44.2 deleted, and its three
+//! constants model a structure nothing writes. What the crate builds is one
+//! stack through the dying entities, and `PLAN.md` S44.4 rebuilds this fixture
+//! around it.
 //!
 //! Two units are reported because they disagree in direction:
 //!
@@ -77,7 +79,7 @@
 use super::*;
 
 use super::the_loads::{COLLECTIONS, DESIGN_CLASSES, slots_per_block};
-use crate::cycle::deferred_slot_reuse::{RETURNS_BASE_RECORDS, deferred_slot_count};
+use crate::cycle::deferred_slot_reuse::deferred_slot_count;
 use crate::memory::block_pool::BLOCK_PAYLOAD;
 use crate::memory::gc_metadata;
 use crate::memory::heap::block_bump;
@@ -91,8 +93,9 @@ const MEMBERS: usize = 381;
 /// the 256-byte header line a block reserves.
 const CACHE_LINE_BYTES: usize = 64;
 
-/// Bytes one withheld return takes in the chain: an address, and the record
-/// carries nothing beside it (`crate::cycle::records`).
+/// Bytes one withheld return took in the chain: an address, and the record
+/// carried nothing beside it. The chain is deleted; this models it
+/// (`PLAN.md`, S44.2).
 const RECORD_BYTES: usize = size_of::<*mut u8>();
 
 /// Memory operations the sweep's walk makes per slot: the load of the slot's
@@ -382,17 +385,12 @@ fn the_control_holds(load: &DeathLoad) {
     );
 }
 
-/// The construction check the death count stands as, and the budget the
-/// window is asserted to keep.
+/// The construction check the death count stands as.
 fn the_deaths_are_the_ones_the_fixture_made(load: &DeathLoad) {
     let killing = &load.killing;
     assert_eq!(
         killing.withheld, killing.freed,
         "the free path withheld a different number of returns than the fixture freed"
-    );
-    assert!(
-        killing.withheld <= RETURNS_BASE_RECORDS,
-        "the chain grew past its region, so the window drew a manager block"
     );
     assert_eq!(
         killing.blocks_after, killing.blocks_before,
@@ -422,6 +420,11 @@ fn report(load: &DeathLoad) {
     let chain_lines = 2 * record_lines;
     let chain_operations = deaths * (APPEND_OPERATIONS_PER_DEATH + REPLAY_OPERATIONS_PER_DEATH);
 
+    println!(
+        "\n  [both arms below are deleted designs: the sweep was refused and \
+         the chain went with `PLAN.md` S44.2; the built form is one stack \
+         through the dying entities, and S44.4 rebuilds this fixture]"
+    );
     println!(
         "\n== class {} ({} slots a block), {MEMBERS} members, {} fillers between ==",
         load.class_bytes,

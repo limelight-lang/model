@@ -53,19 +53,11 @@ pub(crate) struct LargeEntityHeader {
     /// by the kind's release store, and the trace token is what keeps
     /// two collectors off it.
     row: u32,
-    /// The next block of the marking window's list, or this block itself at
-    /// the list's end; **null while the entity carries no dead-in-place
-    /// mark** (`crate::cycle::deferred_slot_reuse`). Atomic where `row` is
-    /// plain, and for the reason its twin on a heap block's collector line
-    /// is: what crosses threads is the null a walk leaves behind, which the
-    /// next window's marker reads to decide whether the block is listed
-    /// (`crate::memory::heap::marked_link`).
-    ///
-    /// **Null for the life of every window as the crate stands**, nothing
-    /// listing a block: the word goes with the list (`PLAN.md`, S44.2).
-    ///
-    /// In this header rather than beside the entity, so that the walk reads
-    /// the line the marker already read the row's colour from.
+    /// The word a marking window's list of blocks was threaded through, and
+    /// null for the life of the process: nothing lists a block since the
+    /// withheld returns took a stack of their own
+    /// (`crate::cycle::deferred_slot_reuse`). It goes with its twin on a heap
+    /// block's collector line (`PLAN.md`, S44.3).
     marked_next: AtomicPtr<u8>,
 }
 
@@ -96,13 +88,18 @@ pub(crate) unsafe fn shadow_row(block: *mut u8) -> *mut u32 {
     unsafe { &raw mut (*(block as *mut LargeEntityHeader)).row }
 }
 
-/// The word that lists this block among those holding a dead-in-place mark,
-/// the twin of [`crate::memory::heap::marked_link`] for the two large kinds
-/// and read through the same call site.
+/// The word a marking window's list was threaded through, the twin of
+/// [`crate::memory::heap::marked_link`] for the two large kinds. Nothing
+/// lists a block, so the word reads null for the life of the process.
 ///
 /// # Safety
 /// `block` must be the header of a live large-entity block, of either kind,
 /// for as long as the returned pointer is used.
+#[expect(
+    dead_code,
+    reason = "nothing lists a block since the stack took every withheld return; \
+              the word and its two readers go with `PLAN.md` S44.3"
+)]
 pub(crate) unsafe fn marked_link(block: *mut u8) -> *const AtomicPtr<u8> {
     unsafe { &raw const (*(block as *const LargeEntityHeader)).marked_next }
 }
@@ -199,10 +196,10 @@ unsafe fn commission(block: *mut u8, size: usize, run_bytes: usize, kind: u32) -
 /// entity is dead, and `kind` is the kind read from it.
 pub(crate) unsafe fn free(block: *mut u8, kind: u32) {
     // A block returned under a standing `DEAD_IN_PLACE` goes to the pool or
-    // to the operating system while a walk is still owed the mark, and that
-    // walk would then hand the same memory back a second time. The clear
-    // belongs to whoever returns it (`crate::refcount::clear_dead_in_place`),
-    // and this is where a path that forgot it shows up.
+    // to the operating system carrying a mark no window can answer for. The
+    // clear belongs to whoever returns it
+    // (`crate::refcount::clear_dead_in_place`), and this is where a path that
+    // forgot it shows up.
     debug_assert_ne!(
         unsafe {
             let (entity, _) = occupant(block);

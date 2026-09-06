@@ -9,25 +9,21 @@
 //!
 //! **The chain allocates nothing.** A caller hands it a region and the
 //! capacity that region holds, and where the region came from is that caller's
-//! subject: both chains take their base out of the thread's workspace, and
-//! the worklist's overflow is the collection arena's bump while the withheld
-//! returns' is a manager block of their own
-//! ([`crate::cycle::arena`], [`crate::cycle::deferred_slot_reuse`]). That is
-//! what lets one chain serve users whose memory comes from different places,
-//! and it is why [`RecordChain::push`] reports a full append position rather
-//! than growing.
+//! subject: the worklist takes every segment out of the collection arena's
+//! bump, one at the first push ([`crate::cycle::arena`],
+//! [`crate::cycle::stack`]). That is what lets one chain serve users whose
+//! memory comes from different places, and it is why [`RecordChain::push`]
+//! reports a full append position rather than growing.
 //!
-//! **Segments differ in capacity and each one carries its own**, because a
-//! base region sized to the common case sits beside overflow segments sized to
-//! the block that funds them. A boundary crossing reads that number rather
-//! than a constant, so a chain of unequal segments hands its records back
-//! exactly.
+//! **Each segment carries its own capacity**, which a boundary crossing reads
+//! instead of a constant, so a chain of unequal segments hands its records
+//! back exactly. Every segment the one user attaches is the same size, so no
+//! chain of unequal ones stands today: the second size went with the withheld
+//! returns' chain (`PLAN.md`, S44.2).
 //!
-//! Two access orders, over one chain: [`RecordChain::pop`] takes the newest
-//! record and is what a descent needs, and [`RecordChain::walk`] reads every
-//! record oldest first and is what a replay needs. A chain that pops has no
-//! defined walk, the records past the cursor being the ones it has handed
-//! back.
+//! One access order: [`RecordChain::pop`] takes the newest record, which is
+//! what a descent needs. A reader of every record oldest first stood here for
+//! the withheld returns' replay and went with it (`PLAN.md`, S44.2).
 //!
 //! **The records are `Copy` and no drop glue runs over them.** A segment is
 //! raw memory the owner rewinds or releases whole, so a record whose death
@@ -37,25 +33,24 @@ use std::cell::Cell;
 
 /// Bytes a segment spends on its header before its first record.
 ///
-/// A whole line, so that the record count of a segment funded by one 64 KiB
-/// block divides evenly and the fixed regions of the workspace can be laid out
-/// in lines (`crate::cycle::arena`). The header is written when the segment is
-/// attached and read at every boundary crossing.
+/// A whole line, so that a page of entries fits behind it exactly: the
+/// worklist's segment is 4,160 bytes and its records 4,096
+/// (`crate::cycle::stack`). The header is written when the segment is attached
+/// and read at every boundary crossing.
 pub(crate) const SEGMENT_HEADER_BYTES: usize = 64;
 
 /// The header of one segment: its place in the chain, and how many records
 /// follow it.
 ///
 /// `previous` is null in the base segment and `next` in the newest one. Both
-/// are [`Cell`]s because the chain appends through a shared reference: the
-/// withheld returns reach theirs from a raw pointer on the free path
-/// (`crate::cycle::deferred_slot_reuse`).
+/// are [`Cell`]s because the chain's own append takes `&self`, which is what
+/// let a user reach one from a raw pointer without a borrow of its own.
 #[repr(C)]
 struct Segment {
     previous: Cell<*mut Segment>,
     next: Cell<*mut Segment>,
     /// Records the region behind this header holds. Fixed when the segment is
-    /// attached, and what the pop and the walk read to size it.
+    /// attached, and what the pop reads to size it.
     capacity: usize,
     _line: [u8; SEGMENT_HEADER_BYTES - 3 * size_of::<usize>()],
 }
@@ -216,34 +211,6 @@ impl<T: Copy> RecordChain<T> {
         let segment = unsafe { Segment::write_header(region, capacity, current) };
         unsafe { (*current).next.set(segment) };
         self.open(segment);
-    }
-
-    /// Read every record oldest first, for a chain nothing has popped.
-    pub(crate) fn walk(&self, mut visit: impl FnMut(T)) {
-        let current = self.current.get();
-        let cursor = self.cursor.get();
-        let mut segment = self.base;
-
-        loop {
-            let records = unsafe { Segment::records::<T>(segment) };
-            let held = if segment == current {
-                (cursor as usize - records as usize) / size_of::<T>()
-            } else {
-                // Every segment below the append position is full: a chain
-                // that never pops advances only when it has no room left.
-                unsafe { (*segment).capacity }
-            };
-
-            for index in 0..held {
-                visit(unsafe { records.add(index).read() });
-            }
-
-            if segment == current {
-                return;
-            }
-
-            segment = unsafe { (*segment).next.get() };
-        }
     }
 
     /// Whether the chain holds no record.

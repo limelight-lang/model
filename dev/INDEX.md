@@ -41,7 +41,7 @@ versions live in `docs/history/`, marked at the top.
   | `shadow` | the row: two bits of colour over thirty of working count | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
   | `mark` | the trace: trial deletion over the rows | none |
-  | `records` | `RecordChain`, the segmented record chain the collection's lists are built on | none |
+  | `records` | `RecordChain`, the segmented record chain the trace's worklist is built on, and its one user since the withheld returns took the stack | none |
   | `stack` | the trace worklist, 256-entry segments out of the arena | none |
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
   | `trace` | both phases over one detached batch, in the order the rows require: every root marks before any root scans | none until S36.7 |
@@ -75,8 +75,8 @@ versions live in `docs/history/`, marked at the top.
   returns marked memory is the window's close, which pops that stack —
   threaded through the dead entities themselves at
   `heap::FREE_LIST_LINK_OFFSET`, headed in the withheld returns' control
-  line. The record chain, the marked-block list and the mark itself go with
-  `PLAN.md` S44.2 and S44.3.
+  line, which is the whole of the region the workspace keeps for it. The mark
+  itself goes with `PLAN.md` S44.3.
 - The candidate gate: `refcount::CANDIDATE_GATE_MASK` and
   `may_become_a_candidate`,
   read on the non-zero decrement in `release_word`. Five conditions in

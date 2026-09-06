@@ -41,11 +41,9 @@
 //! bump ([`crate::cycle::arena`]), and thread-local storage holds one non-owning
 //! pointer to that line: **null is the closed window**, so no second flag can
 //! disagree with the window's existence (`PLAN.md`, S36.9, "TLS holds only the
-//! non-owning pointer that finds the owner state"). The rest of the region —
-//! the record chain and the [`RETURNS_BASE_RECORDS`] records behind it — takes
-//! no death: the open writes the chain's segment header and nothing writes a
-//! record, and the whole of it goes with `PLAN.md` S44.2, as do the list of
-//! marked blocks and the walks that read it.
+//! non-owning pointer that finds the owner state"). That line is the whole of
+//! the region and the whole of what the module holds: one head, one flag, and
+//! every withheld return in the dying entity it belongs to.
 //!
 //! There is no TLS drop glue: thread-exit order is owned explicitly by
 //! `memory::heap::ll_thread_exit`, and a runtime structure first touched by a
@@ -95,51 +93,28 @@
 //! (`crate::memory::gc_metadata`).
 
 use std::cell::Cell;
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-use crate::cycle::records::{RecordChain, SEGMENT_HEADER_BYTES};
 use crate::cycle::shadow::{self, Color};
 use crate::memory::block_pool::{BLOCK_KIND_ENTITY, BLOCK_KIND_RETAINED, BlockHeader};
 
 /// The head of the withheld returns and the words the close reads beside it,
-/// resident in the workspace region they describe.
+/// resident in the region of the workspace it stands in.
 ///
 /// `Cell` rather than a lock or a `RefCell`: the head has one writer by
 /// construction, the thread whose trace window is open, and the push sits on
 /// the free path where a borrow flag buys nothing.
 ///
-/// One 64-byte line, so the base segment's own header starts on the next one
-/// and a push writes no line another reader is on.
+/// One 64-byte line of its own, so a push writes no line another reader is on.
+/// The line holds two words and is not packed further: the region it heads is
+/// the workspace's fixed prefix, and a prefix under 64 bytes would move the
+/// collection's bump off a line boundary for nothing.
 #[repr(C, align(64))]
-struct DeferredReturnChain {
-    /// The region's record chain. Written by nothing, every withheld return
-    /// standing on the stack below, and deleted with the region it lies in
-    /// (`PLAN.md`, S44.2).
-    records: RecordChain<*mut u8>,
-    /// Newest block of the list of blocks holding a mark, and null for the
-    /// life of every window: nothing lists a block. The list, the walks that
-    /// read it and this word go together (`PLAN.md`, S44.2).
-    marked: Cell<*mut u8>,
+struct WindowControl {
     /// Newest withheld slot, or null while this window has withheld none.
     /// Each names the next through [`withheld_link`] and the oldest names
     /// null, a stack rather than a list because a slot is pushed once and no
     /// word of it has to answer "stacked?".
     withheld: Cell<*mut u8>,
-    /// The block a walk can be resumed inside, and null for the life of every
-    /// window, no block being listed for a walk to enter (`PLAN.md`, S44.2).
-    ///
-    /// A walk takes its block off the list before it touches a slot, so
-    /// through that stretch this word is the only thing naming the block, and
-    /// a panic there would otherwise leave the marks the walk had not reached
-    /// named by nothing ([`WithheldReturns::dispose_walking`]).
-    ///
-    /// **Null is not "no walk in progress".** An arm names its block only
-    /// after it has read what it needs of it, so the head of every walk runs
-    /// with this word null; and the large-entity arm never names its block at
-    /// all, having one disposal with nothing behind it for a resumed walk to
-    /// reach. What non-null means is exactly that a resumed walk would be
-    /// sound and would have something to do.
-    walking: Cell<*mut u8>,
     /// Whether this collection's rows are gone, which is what decides between
     /// returning the marks and abandoning them.
     ///
@@ -150,26 +125,19 @@ struct DeferredReturnChain {
     swept: Cell<bool>,
 }
 
-const _: () = assert!(size_of::<DeferredReturnChain>() == 64);
-const _: () = assert!(align_of::<DeferredReturnChain>() == 64);
+const _: () = assert!(size_of::<WindowControl>() == 64);
+const _: () = assert!(align_of::<WindowControl>() == 64);
 
-/// Records the workspace's own region for withheld returns holds.
-///
-/// The capacity the Sage gate fixed, over a chain nothing writes into
-/// (`PLAN.md`, S36.11, S44.2).
-pub(crate) const RETURNS_BASE_RECORDS: usize = 1_024;
-
-/// Bytes that region takes out of the workspace: the control line, the base
-/// segment's header line, and the records behind it.
-pub(crate) const RETURNS_BASE_BYTES: usize = size_of::<DeferredReturnChain>()
-    + SEGMENT_HEADER_BYTES
-    + RETURNS_BASE_RECORDS * size_of::<*mut u8>();
+/// Bytes the withheld returns take out of the workspace: the control line the
+/// stack's head stands in, and nothing besides — every withheld return is held
+/// in the dying entity itself.
+pub(crate) const RETURNS_BASE_BYTES: usize = size_of::<WindowControl>();
 
 thread_local! {
     /// The control line of this thread's withheld returns while its trace
     /// window is open, and null otherwise. Non-owning: the region belongs to
     /// the workspace the [`ActiveTrace`]'s arena holds.
-    static DEFERRED_RETURNS: Cell<*mut DeferredReturnChain> =
+    static DEFERRED_RETURNS: Cell<*mut WindowControl> =
         const { Cell::new(std::ptr::null_mut()) };
 }
 
@@ -182,8 +150,8 @@ thread_local! {
 /// [`crate::cycle::arena::TraceScratchArena`] is re-entrant for the same
 /// reason.
 struct WithheldReturns {
-    /// The control line, in the workspace region this chain was opened over.
-    control: *mut DeferredReturnChain,
+    /// The control line, in the workspace region this window was opened over.
+    control: *mut WindowControl,
 }
 
 impl WithheldReturns {
@@ -195,26 +163,22 @@ impl WithheldReturns {
     ///
     /// # Safety
     /// `region` addresses [`RETURNS_BASE_BYTES`] writable bytes, aligned to
-    /// 64, and stays the caller's for as long as this chain is used.
+    /// 64, and stays the caller's for as long as this window is used.
     unsafe fn open(region: *mut u8) -> Self {
-        let control = region as *mut DeferredReturnChain;
-        let records = unsafe { region.add(size_of::<DeferredReturnChain>()) };
+        let control = region as *mut WindowControl;
 
         // Field by field and written rather than assigned: the region is
         // memory with no value in it, so an assignment would drop a
-        // `DeferredReturnChain` that was never constructed.
+        // `WindowControl` that was never constructed.
         unsafe {
-            (&raw mut (*control).records).write(RecordChain::over(records, RETURNS_BASE_RECORDS));
-            (&raw mut (*control).marked).write(Cell::new(std::ptr::null_mut()));
             (&raw mut (*control).withheld).write(Cell::new(std::ptr::null_mut()));
-            (&raw mut (*control).walking).write(Cell::new(std::ptr::null_mut()));
             (&raw mut (*control).swept).write(Cell::new(false));
         }
 
         Self { control }
     }
 
-    fn chain(&self) -> &DeferredReturnChain {
+    fn control(&self) -> &WindowControl {
         unsafe { &*self.control }
     }
 
@@ -225,7 +189,7 @@ impl WithheldReturns {
     /// [`crate::cycle::arena::TraceScratchArena::sweep_rows`] returns, and by
     /// nothing else: every path that returns memory stands on this word.
     fn rows_are_gone(&self) {
-        self.chain().swept.set(true);
+        self.control().swept.set(true);
     }
 
     /// Take this thread's window down.
@@ -243,145 +207,6 @@ impl WithheldReturns {
         });
     }
 
-    /// Return every recorded slot through `ll_free`, oldest first. The chain
-    /// it walks is empty for the life of every window, no death being
-    /// recorded, and it goes with the chain (`PLAN.md`, S44.2).
-    ///
-    /// Called with the window already closed, so a return that reaches
-    /// [`defer_reuse_if_tracing`] again is refused there and proceeds
-    /// physically.
-    fn replay(&self) {
-        self.chain().records.walk(|slot| {
-            // Safety: each record is one entity slot whose observable
-            // teardown completed before `defer_reuse_if_tracing` accepted
-            // the return. Replaying it once through `ll_free` is
-            // the return it still owes.
-            unsafe { crate::memory::stdapi::ll_free(slot) };
-        });
-    }
-
-    /// Take the newest listed block off the list, or **None** when nothing
-    /// is listed.
-    ///
-    /// The head moves before the block is touched, so the blocks behind the
-    /// one being disposed of are still named by the head and the drop's own
-    /// pass finds them. A walk that took the head whole would leave them
-    /// listed with nothing naming them, and a listed block refuses every
-    /// later mark of itself (`dev/POSTMORTEM.md`, "a repair moved ownership
-    /// into a `Drop` and left the state that names it behind": a clearing
-    /// written twice in two places is a clearing that will be true in one of
-    /// them).
-    ///
-    /// **The block under the walk is named by
-    /// [`DeferredReturnChain::walking`]** for as much of the disposal as a
-    /// re-walk can repeat, which is what keeps a panic inside a disposal from
-    /// stranding the marks that walk had not reached
-    /// ([`dispose_walking`](Self::dispose_walking)). That word is
-    /// [`dispose_marks_of`]'s to set, not this function's: an arm reads what
-    /// it needs of the block before it names it.
-    fn take_marked_block(&self) -> Option<(*mut u8, u32)> {
-        let block = self.chain().marked.get();
-        if block.is_null() {
-            return None;
-        }
-
-        // Safety: a listed block is one this window marked a slot in, and no
-        // return has retired it — the replay may have returned other slots
-        // of it, but every marked slot is itself a hold, through `used`, the
-        // occupant count, or the one entity a large block carries.
-        let kind = unsafe { crate::memory::block_pool::load_block_kind(block as *const AtomicU32) };
-        let link = unsafe { &*marked_link(block, kind) };
-        let next = link.load(Ordering::Acquire);
-        link.store(std::ptr::null_mut(), Ordering::Release);
-
-        // The last block names itself, which is what keeps "listed" a test
-        // of one word against null.
-        self.chain().marked.set(if next == block {
-            std::ptr::null_mut()
-        } else {
-            next
-        });
-
-        Some((block, kind))
-    }
-
-    /// Finish the walk a panic left inside a block, if a walk was inside one.
-    ///
-    /// The block is named by [`DeferredReturnChain::walking`] and by nothing
-    /// else, its walk having taken it off the list first. Its slots that were
-    /// already disposed of read free rather than marked, so a second walk
-    /// makes exactly the returns the first did not reach; the slot whose own
-    /// return raised is the one this cannot recover, its mark having come off
-    /// before the return ([`dispose_of`]).
-    ///
-    /// **The block has not retired**, which is what makes reading its header
-    /// here sound: a walk nulls this word before any return that can spend the
-    /// block's last hold, so a block still named by it holds at least the slot
-    /// whose disposal raised.
-    ///
-    /// **And the walk it repeats reaches no assertion the first walk failed**,
-    /// which is what keeps this out of a second panic inside a drop that is
-    /// already unwinding — a panic there aborts. An arm names its block only
-    /// after it has read what it needs of it, so a walk that raised before its
-    /// first disposal leaves this word null and its block unnamed.
-    fn dispose_walking(&self, disposition: Disposition) {
-        let block = self.chain().walking.get();
-        if block.is_null() {
-            return;
-        }
-
-        // Safety: as above — the block stands, so its header still reads the
-        // kind the interrupted walk read from it.
-        let kind = unsafe { crate::memory::block_pool::load_block_kind(block as *const AtomicU32) };
-        unsafe { dispose_marks_of(self.chain(), block, kind, disposition) };
-
-        // No assertion over the word afterwards, unlike the two loops that
-        // call this. A non-null `walking` means an unwind by construction, so
-        // every execution of one here would be inside a drop that is already
-        // unwinding, where a firing assertion aborts instead of reporting.
-    }
-
-    /// Dispose of every mark this window listed a block for, newest block
-    /// first: `Return` makes the return each mark deferred, `Abandon` takes
-    /// the marks off and gives no memory back.
-    ///
-    /// Called where [`replay`](Self::replay) is called, under the same closed
-    /// window, and after [`dispose_withheld`](Self::dispose_withheld). The
-    /// order separated the one slot both structures could name, and no window
-    /// lists a block any longer, so this walk finds nothing and the order it
-    /// stands in is not load-bearing (`PLAN.md`, S44.2).
-    ///
-    /// **A block leaves the list before its slots are returned**, because the
-    /// return that spends its last hold gives the block to the pool and its
-    /// header to the next owner.
-    ///
-    /// **`Abandon` is what an unwind before the sweep takes**, and both halves
-    /// of what a listed block carries have to go there. The link, because a
-    /// listed block refuses every later mark of itself and no window could
-    /// return those slots. The mark, because a mark that outlives its window
-    /// is a slot an exiting thread hands to an adopting one, which is the case
-    /// `crate::refcount::DEAD_IN_PLACE` says cannot arise and the two guards
-    /// in `crate::memory::heap` assert. **The memory stays out of
-    /// circulation** on that path: [`DeferredReturnChain::swept`] read false,
-    /// so this collection's rows still stand over these blocks and a slot
-    /// handed back would be one a new occupant could take under a row that
-    /// names it.
-    ///
-    /// **The leading [`dispose_walking`](Self::dispose_walking) reaches
-    /// nothing under `Abandon`**, and stands there for symmetry: a walk is
-    /// named only under the returning disposition, and an abandoning disposal
-    /// cannot raise, being a clear of one flag bit.
-    fn dispose_marked(&self, disposition: Disposition) {
-        self.dispose_walking(disposition);
-        while let Some((block, kind)) = self.take_marked_block() {
-            unsafe { dispose_marks_of(self.chain(), block, kind, disposition) };
-            debug_assert!(
-                self.chain().walking.get().is_null(),
-                "a walk that ran to its end left its block named"
-            );
-        }
-    }
-
     /// Take the newest withheld slot off the stack, or **None** when nothing
     /// is stacked.
     ///
@@ -391,7 +216,7 @@ impl WithheldReturns {
     /// moved the head after the return would leave the whole stack named by a
     /// slot the free list has taken back.
     fn pop_withheld(&self) -> Option<*mut u8> {
-        let slot = self.chain().withheld.get();
+        let slot = self.control().withheld.get();
         if slot.is_null() {
             return None;
         }
@@ -406,7 +231,7 @@ impl WithheldReturns {
         // one occupant its block or mapping waits for. None of the three moves
         // when a block changes hands: adoption writes the owner word and no
         // slot's state.
-        self.chain()
+        self.control()
             .withheld
             .set(unsafe { withheld_link(slot).read() });
         Some(slot)
@@ -439,27 +264,28 @@ impl WithheldReturns {
     }
 }
 
-/// What the walk does with a mark it finds.
+/// What the close does with a slot it pops.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Disposition {
     /// Clear the mark and make the return it deferred, which is the close.
     Return,
     /// Clear the mark and return nothing, which is the unwind that reached
-    /// the chain before the rows were swept ([`WithheldReturns::drop`]).
+    /// the window's drop before the rows were swept
+    /// ([`WithheldReturns::drop`]).
     Abandon,
 }
 
-// Slots the close has read on this thread, which under the stack is one per
-// withheld return. What it is for is the size of the close: a reading tells a
-// collection that withheld nothing from one that withheld and gave back, where
-// the free lists afterwards read alike.
+// Slots the close has popped on this thread, one per withheld return. What it
+// is for is the size of the close: a reading tells a collection that withheld
+// nothing from one that withheld and gave back, where the free lists afterwards
+// read alike.
 #[cfg(test)]
 thread_local! {
     static MARKED_SLOTS_VISITED: Cell<usize> = const { Cell::new(0) };
 }
 
-/// Count one slot the close read, and nothing at all without `cfg(test)`: the
-/// pop calls it either way.
+/// Count one slot the close popped, and nothing at all without `cfg(test)`:
+/// the pop calls it either way.
 #[inline]
 fn note_slot_visited() {
     #[cfg(test)]
@@ -470,49 +296,6 @@ fn note_slot_visited() {
 #[cfg(test)]
 pub(crate) fn take_marked_slots_visited() -> usize {
     MARKED_SLOTS_VISITED.with(|visited| visited.replace(0))
-}
-
-/// The word that says whether a block is on the marking window's list, in
-/// the header the block's kind gives it: the collector line of a heap block,
-/// and the first line of a large-entity block, which is a header of its own
-/// with no collector line at that offset.
-///
-/// # Safety
-/// `block` is the header of a live block whose kind is `kind`, for as long
-/// as the returned pointer is used.
-unsafe fn marked_link(block: *mut u8, kind: u32) -> *const AtomicPtr<u8> {
-    if crate::memory::large_entity::is_large_entity(kind) {
-        return unsafe { crate::memory::large_entity::marked_link(block) };
-    }
-
-    unsafe { crate::memory::heap::marked_link(block) }
-}
-
-/// Put `block` on this window's list of blocks holding a mark, unless an
-/// earlier mark of the same window already did.
-///
-/// # Safety
-/// As [`marked_link`], and `chain` is this thread's open window.
-#[expect(
-    dead_code,
-    reason = "nothing lists a block since the stack took every withheld return; \
-              the list and the walk that reads it go with `PLAN.md` S44.2"
-)]
-unsafe fn list_marked_block(chain: &DeferredReturnChain, block: *mut u8, kind: u32) {
-    let link = unsafe { &*marked_link(block, kind) };
-
-    // Acquire against the release store a walk's unlisting makes: the window
-    // that listed this block before may have run on another thread, and this
-    // load is what has to see the null it left
-    // (`crate::memory::heap::BlockCollector::marked_next`).
-    if !link.load(Ordering::Acquire).is_null() {
-        return;
-    }
-
-    let head = chain.marked.get();
-    let next = if head.is_null() { block } else { head };
-    link.store(next, Ordering::Release);
-    chain.marked.set(block);
 }
 
 /// The word a stacked slot names the next one through: the eight bytes a free
@@ -533,212 +316,10 @@ unsafe fn withheld_link(slot: *mut u8) -> *mut *mut u8 {
 /// Put `slot` on this window's stack of withheld returns.
 ///
 /// # Safety
-/// As [`withheld_link`], and `chain` is this thread's open window.
-unsafe fn push_withheld(chain: &DeferredReturnChain, slot: *mut u8) {
-    unsafe { withheld_link(slot).write(chain.withheld.get()) };
-    chain.withheld.set(slot);
-}
-
-/// Dispose of every dead-in-place slot of one listed block: `Return` frees
-/// it through `stdapi::ll_free`, which is the funnel the replay uses — the
-/// queue window, the reset's arms and the kind dispatch all get their say a
-/// second time — and `Abandon` only takes the mark off.
-///
-/// **A returning walk of a block ends at the return that can retire it**,
-/// which is the return of its last hold: past that instant the block may be
-/// the pool's and its slots another owner's. Every marked slot is one hold,
-/// so a block down to its last one holds no mark this walk has not seen. An
-/// abandoning walk retires nothing and needs no such stop.
-///
-/// **An arm names its block in [`DeferredReturnChain::walking`] after it has
-/// read what it needs of the block and before its first disposal, and unnames
-/// it where a re-walk stops being possible** — the instant before any return
-/// that can retire the block, and the end of the walk otherwise. While the
-/// word names the block, a panic inside a disposal leaves the marks the walk
-/// has not reached to [`WithheldReturns::dispose_walking`].
-///
-/// **The order of those two halves is load-bearing and cannot be simplified.**
-/// The reads at the head of an arm carry assertions of their own — the size
-/// class `crate::memory::heap::entity_block_slot_bounds` indexes by, the survivor
-/// list the retained arm asserts on — and a resumed walk repeats everything
-/// the raising walk ran before its first disposal. Named earlier, a block
-/// whose head-read raised would send the drop's own pass through that same
-/// failure, inside an unwind, where a second panic aborts. What a walk that
-/// raises there loses instead is every mark of that one block, which
-/// [`WithheldReturns::drop`] states.
-///
-/// **Between a naming and its first disposal nothing may raise either**, for
-/// the same reason, and what runs there is `note_slot_visited`,
-/// [`is_marked`] through `crate::refcount::slot_state`,
-/// `crate::memory::heap::block_occupancy`, `crate::memory::retained::pin` and
-/// one read out of the survivor list. Each of the three named calls carries a
-/// note back to this one.
-///
-/// # Safety
-/// `block` is a block this window listed, its kind is `kind`, the caller has
-/// taken it off the list, and `chain` is the window that listed it.
-unsafe fn dispose_marks_of(
-    chain: &DeferredReturnChain,
-    block: *mut u8,
-    kind: u32,
-    disposition: Disposition,
-) {
-    if crate::memory::large_entity::is_large_entity(kind) {
-        let (entity, _) = unsafe { crate::memory::large_entity::occupant(block) };
-        note_slot_visited();
-        // Asked here as in the two arms below, though one statement both
-        // marks this entity and lists its block: an arm that frees whatever
-        // it is handed would free a live entity the day a block is listed
-        // for another reason.
-        let marked = unsafe { is_marked(entity) };
-
-        // The arm never names the block: it has one disposal, so there is
-        // nothing behind that disposal for a resumed walk to reach, and the
-        // return unmaps the block anyway.
-        if marked {
-            unsafe { dispose_of(entity, disposition) };
-        }
-
-        return;
-    }
-
-    match kind {
-        BLOCK_KIND_ENTITY => {
-            let (first, stride, bump) =
-                unsafe { crate::memory::heap::entity_block_slot_bounds(block) };
-
-            // Named after the block has been read and not before: a walk that
-            // raised in the reading above would send the drop's own pass
-            // through the same reading, inside an unwind, where a second
-            // panic aborts ([`WithheldReturns::dispose_walking`]).
-            chain.walking.set(block);
-            for index in 0..bump {
-                let slot = unsafe { first.add(index * stride) };
-                note_slot_visited();
-                if !unsafe { is_marked(slot) } {
-                    continue;
-                }
-
-                // `used` has one writer, the owner, which is this thread: a
-                // cross-thread free posts to `remote_free` and moves nothing
-                // here (`crate::memory::heap::Heap::free`). So a reading of
-                // one taken before the return still holds at the return, and
-                // the block that reaches zero by it is the pool's — nothing
-                // of it may be read afterwards. The retained arm below,
-                // whose count any thread may spend, holds a pin instead.
-                let last = disposition == Disposition::Return
-                    && unsafe { crate::memory::heap::block_occupancy(block) } == 1;
-                if last {
-                    chain.walking.set(std::ptr::null_mut());
-                }
-
-                unsafe { dispose_of(slot, disposition) };
-                if last {
-                    return;
-                }
-            }
-
-            chain.walking.set(std::ptr::null_mut());
-        }
-        BLOCK_KIND_RETAINED => {
-            // Non-null by construction: a listless block has no index space,
-            // so no row can address it and no stamp can stand on it
-            // (`crate::memory::retained`, `crate::cycle::row`).
-            let (list, count) = unsafe { crate::memory::heap::block_survivor_list(block) };
-            debug_assert!(
-                !list.is_null(),
-                "a retained block with no survivor list carried a mark"
-            );
-
-            // As the entity arm above, and for the same reason: the reading
-            // and the assertion over it stand ahead of the naming.
-            chain.walking.set(block);
-
-            // **A returning walk holds the block itself while it reads it**,
-            // and the hold stands from here to the guard's death, so a panic
-            // in the list read above leaks none. A retained block's count is
-            // spent by whichever thread frees, so a reading of it taken
-            // before a return can be spent by another thread between the two
-            // and the block would go to the pool under the walk. The hold
-            // answers that: no return inside the walk can empty the block,
-            // and the guard decides the emptiness on this thread, after the
-            // last read.
-            let hold = (disposition == Disposition::Return)
-                .then(|| unsafe { RetainedWalkHold::take(chain, block) });
-
-            for index in 0..count {
-                let survivor = unsafe { list.add(index).read() } as *mut u8;
-                note_slot_visited();
-                if unsafe { is_marked(survivor) } {
-                    unsafe { dispose_of(survivor, disposition) };
-                }
-            }
-
-            // Before the hold dies, whose release can retire the block.
-            chain.walking.set(std::ptr::null_mut());
-            drop(hold);
-        }
-        // A kind with no arm is a block this walk cannot read the slots of,
-        // and `classify` lists none such. It names no block
-        // either, having no slot to dispose of.
-        _ => debug_assert!(false, "a kind with no arm reached the marked walk"),
-    }
-}
-
-/// The hold a returning walk keeps on a retained block, and the emptiness
-/// decision that spends it.
-///
-/// A guard rather than a pair of statements around the walk: a panic between
-/// them would otherwise leave the hold standing, and a retained block nothing
-/// releases never reaches the pool.
-struct RetainedWalkHold<'a> {
-    chain: &'a DeferredReturnChain,
-    block: *mut u8,
-}
-
-impl<'a> RetainedWalkHold<'a> {
-    /// Hold `block` for as long as this guard lives.
-    ///
-    /// # Safety
-    /// `block` is the retained block the walk is inside, held by something
-    /// else — an occupant or a list — until this returns.
-    unsafe fn take(chain: &'a DeferredReturnChain, block: *mut u8) -> Self {
-        unsafe { crate::memory::retained::pin(block as usize) };
-        Self { chain, block }
-    }
-}
-
-impl Drop for RetainedWalkHold<'_> {
-    /// Spend the hold, and give the block back when the hold was the last
-    /// thing holding it — the sentinel return `ll_free` answers off the count
-    /// word.
-    ///
-    /// **On an unwind out of the walk the block is not empty here**: the
-    /// survivor whose return raised is still an occupant of it, its
-    /// `occupant_freed` never having been made, and so is every survivor the
-    /// walk had not reached. So the block stands and
-    /// [`DeferredReturnChain::walking`] still names it for the pass that
-    /// finishes the walk.
-    fn drop(&mut self) {
-        if !unsafe { crate::memory::retained::hold_released(self.block as usize) } {
-            return;
-        }
-
-        // Nulled ahead of the return that retires the block: what a walk
-        // would resume into is memory the pool has taken back.
-        self.chain.walking.set(std::ptr::null_mut());
-        unsafe { crate::memory::stdapi::ll_free(self.block) };
-    }
-}
-
-/// Whether the entity at `slot` is one this walk owes a return.
-///
-/// # Safety
-/// `slot` addresses a published entity header, or a slot of an entity block
-/// at or below its bump cursor.
-unsafe fn is_marked(slot: *mut u8) -> bool {
-    let state = unsafe { crate::refcount::slot_state(slot as *const crate::refcount::RcHeader) };
-    state == crate::refcount::SlotState::DeadInPlace
+/// As [`withheld_link`], and `control` is this thread's open window.
+unsafe fn push_withheld(control: &WindowControl, slot: *mut u8) {
+    unsafe { withheld_link(slot).write(control.withheld.get()) };
+    control.withheld.set(slot);
 }
 
 /// Take the mark off, and make the return it deferred where the disposition
@@ -746,83 +327,18 @@ unsafe fn is_marked(slot: *mut u8) -> bool {
 ///
 /// The clear comes first because the return reads the same word: a slot that
 /// reached its free list marked would be handed out as an occupant, and a
-/// retained survivor or a large entity would be found by a later window's
-/// walk and handed back twice.
+/// retained survivor or a large entity would reach the pool or the operating
+/// system with the mark standing, which the guards at those two entrances
+/// refuse (`crate::memory::stdapi`, `crate::memory::large_entity::free`).
 ///
 /// # Safety
 /// `slot` is a dead-in-place entity this close has taken off the window's
-/// stack, or one of a block it has taken off the window's list.
+/// stack.
 unsafe fn dispose_of(slot: *mut u8, disposition: Disposition) {
     unsafe { crate::refcount::clear_dead_in_place(slot as *mut crate::refcount::RcHeader) };
     if disposition == Disposition::Return {
-        fire_injected_disposal_failure();
         unsafe { crate::memory::stdapi::ll_free(slot) };
     }
-}
-
-// Returning disposals of this thread left before the injected failure raises,
-// or zero while none is armed.
-//
-// Fault injection, tests only, and the disposal a walk raises inside has no
-// other way of being staged: every other panic case here arms `ll_free`'s
-// refusal of a live free by raising a count, and `is_marked` reads that same
-// count first, so a slot armed that way is skipped rather than raised on.
-#[cfg(test)]
-thread_local! {
-    static PANIC_AT_DISPOSAL: Cell<usize> = const { Cell::new(0) };
-}
-
-/// Arm the injection to raise on the `nth` returning disposal of this thread,
-/// counting from one.
-///
-/// Disarmed by the firing and by this guard's death, so a case that raises
-/// before its disposal leaves nothing standing for the thread's next window.
-/// The count names a disposal rather than a slot: what the case asserts is
-/// which slot the walk skipped, read off that slot's own state.
-#[cfg(test)]
-pub(crate) struct InjectedDisposalFailure;
-
-#[cfg(test)]
-impl InjectedDisposalFailure {
-    pub(crate) fn arm(nth: usize) -> Self {
-        assert!(nth > 0, "the count names a disposal, from one");
-        PANIC_AT_DISPOSAL.with(|left| left.set(nth));
-        Self
-    }
-}
-
-#[cfg(test)]
-impl Drop for InjectedDisposalFailure {
-    fn drop(&mut self) {
-        PANIC_AT_DISPOSAL.with(|left| left.set(0));
-    }
-}
-
-/// Raise the armed failure at its disposal, and do nothing at all without
-/// `cfg(test)`.
-///
-/// It stands between the clear and the return because that is what the real
-/// refusal leaves behind: `ll_free`'s assertion is at its head, so a panic
-/// there finds the mark already off and the slot unreturned. Raised before the
-/// clear, it would leave a mark the resumed walk returns, and the case would
-/// pass on a path no real panic takes.
-#[inline]
-fn fire_injected_disposal_failure() {
-    #[cfg(test)]
-    PANIC_AT_DISPOSAL.with(|left| {
-        let remaining = left.get();
-        if remaining == 0 {
-            return;
-        }
-
-        if remaining > 1 {
-            left.set(remaining - 1);
-            return;
-        }
-
-        left.set(0);
-        panic!("the injected disposal failure");
-    });
 }
 
 impl Drop for WithheldReturns {
@@ -832,7 +348,7 @@ impl Drop for WithheldReturns {
     /// and no path of this module holds memory of the manager's.
     ///
     /// **Which of the two dispositions it takes is
-    /// [`DeferredReturnChain::swept`]'s to say.** The ordered close sets that
+    /// [`WindowControl::swept`]'s to say.** The ordered close sets that
     /// word the instant the rows are gone, so:
     ///
     /// - **a panic raised after the sweep** — inside
@@ -859,18 +375,17 @@ impl Drop for WithheldReturns {
     /// returns ([`pop_withheld`](WithheldReturns::pop_withheld)).
     ///
     /// A panic raised by these returns themselves is a panic during an unwind
-    /// and ends the process, which is why the walks make no return the
-    /// ordered close would not have made and reach no assertion it failed.
+    /// and ends the process, which is why this pass makes no return the
+    /// ordered close would not have made and reaches no assertion it failed.
     fn drop(&mut self) {
         self.close_window();
-        let disposition = if self.chain().swept.get() {
+        let disposition = if self.control().swept.get() {
             Disposition::Return
         } else {
             Disposition::Abandon
         };
 
         self.dispose_withheld(disposition);
-        self.dispose_marked(disposition);
     }
 }
 
@@ -1011,9 +526,7 @@ impl Drop for ActiveTrace {
         }
 
         self.returns.close_window();
-        self.returns.replay();
         self.returns.dispose_withheld(Disposition::Return);
-        self.returns.dispose_marked(Disposition::Return);
 
         // The arena's own blocks name no slot, so they go back after the
         // returns rather than before them — which is what leaves every return
@@ -1058,8 +571,8 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
         return false;
     }
 
-    let chain = unsafe { &*control };
-    unsafe { withhold(chain, ptr, kind) }
+    let window = unsafe { &*control };
+    unsafe { withhold(window, ptr, kind) }
 }
 
 /// How a death is withheld, or that it needs no withholding at all.
@@ -1170,20 +683,25 @@ unsafe fn classify(ptr: *mut u8, kind: u32) -> Withholding {
 /// ([`push_withheld`]), which the close pops. Nothing is drawn and nothing can
 /// refuse, which is what leaves this path with no process end on it at all.
 ///
-/// A marked slot stays out of the allocator's hands the way a recorded one
-/// does — it is on no free list and below its block's bump cursor — and a
-/// marked survivor keeps its block's occupant count above zero, so the block
-/// is not the pool's either. Both hold until the close, and no longer.
+/// A marked slot stays out of the allocator's hands: it is on no free list and
+/// below its block's bump cursor, and a marked survivor keeps its block's
+/// occupant count above zero, so the block is not the pool's either. Both hold
+/// until the close, and no longer.
 ///
 /// # Safety
-/// As [`defer_reuse_if_tracing`], whose refused push this answers.
-unsafe fn withhold(chain: &DeferredReturnChain, ptr: *mut u8, kind: u32) -> bool {
+/// As [`defer_reuse_if_tracing`], and `control` is this thread's open window.
+unsafe fn withhold(control: &WindowControl, ptr: *mut u8, kind: u32) -> bool {
     if unsafe { classify(ptr, kind) } == Withholding::ReturnNow {
         return false;
     }
 
+    // Nothing may raise between the mark and the push: a slot marked and not
+    // stacked is one no close can reach, and its mark would outlive the window
+    // (`crate::refcount::DEAD_IN_PLACE`). What stands between them today is
+    // nothing at all, and the only assertion in the mark's own path fires
+    // ahead of the flags write.
     unsafe { crate::refcount::mark_dead_in_place(ptr as *mut crate::refcount::RcHeader) };
-    unsafe { push_withheld(chain, ptr) };
+    unsafe { push_withheld(control, ptr) };
     true
 }
 
@@ -1192,8 +710,8 @@ unsafe fn withhold(chain: &DeferredReturnChain, ptr: *mut u8, kind: u32) -> bool
 /// A live window at exit would leave a trace using blocks whose owner is being
 /// abandoned; that is outside the protocol, and this ends the process rather
 /// than letting it happen — `ll_thread_exit` is `extern "C"` and has no caller
-/// that could act on a refusal. The chain itself needs no disposal here: it
-/// belongs to the [`ActiveTrace`], whose drop is what returns it.
+/// that could act on a refusal. The window itself needs no disposal here: it
+/// belongs to the [`ActiveTrace`], whose drop is what closes it.
 pub(crate) fn dispose_thread_state() {
     assert!(
         DEFERRED_RETURNS.with(Cell::get).is_null(),

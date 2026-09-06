@@ -279,27 +279,30 @@ array is enrolled for the sweep through a prologue of its own
 entry naming an entity, and a trace that may still address the entity's shadow
 row. Both are
 built into `stdapi::ll_free`. A refused queue-window return needs no second
-record because the entry is its record. A refused trace-window return is
-recorded out of band by `cycle::deferred_slot_reuse`; closing the trace replays
-it through the same `ll_free`, so whichever window closes last performs the
-physical return.
+record because the entry is its record. A refused trace-window return is held
+by `cycle::deferred_slot_reuse` on a stack threaded through the dying entities
+themselves — byte 8 of each, the word a free slot links by — and the close pops
+that stack through the same `ll_free`, so whichever window closes last performs
+the physical return.
 
-`ActiveTrace` owns the `TraceScratchArena`: close first resets it — which
-rewinds the bump over the thread's workspace and gives back every block above
-it — and nulls every block's row pointer, then takes the window down, then
-replays the returns. The records are written into a chain of manager blocks the
-window draws when it opens, so the free path reaches no allocator. Drawing at
-the open is what makes the refusal answerable: both allocation paths refusing
-there is a collection that does not start, and so is a refused workspace one
-refusal earlier. Past that block the chain grows, and a refusal
-of the growth aborts the process — the trace is holding a slot it may neither
-return nor drop, and `ll_free` has no frame to report through.
+`ActiveTrace` owns the `TraceScratchArena`, and the close's order is: sweep the
+rows and record that they are gone, restore any detached candidate chain, take
+the window down, make the returns, and only then reset the arena, which rewinds
+the bump over the thread's workspace and gives back every block above it. The
+returns come before the reset so that a panic in the hand-back still finds them
+made; the sweep comes first so that an unwind anywhere after it returns what
+the window withheld instead of abandoning it.
+
+The free path reaches no allocator at all: the window's own memory is one
+64-byte control line at the head of the workspace the arena already holds, and
+every withheld return lives in the entity it belongs to. So the only refusal on
+this path is the workspace one collection earlier — a thread whose first
+collection cannot draw its workspace does not start one.
 
 The window covers mark and scan alone and ends before exact validation and
 teardown. Today the in-line owner finds it through one thread-local pointer to
-the chain's head block, a null pointer being the closed window; the
-collector-worker form waits on S38's owner-addressable token and deferred-reuse
-handoff.
+that control line, a null pointer being the closed window; the collector-worker
+form waits on S38's owner-addressable token and deferred-reuse handoff.
 
 The gate covers ordinary entity slots, retained blocks and both large entity
 kinds. A retained block rides at block granularity — its last occupant can
@@ -607,18 +610,20 @@ in use inside them — answers how much of the reservation is working memory.
 The charge lands at a structural transition and never per grant: a queue
 segment leaving the write position charges its whole payload, an
 overflow-buffer append charges one pointer, the queue's base block charges its
-64-byte control line, a block leaving the trace scratch arena's bump charges
-what it consumed — the workspace included, which stays in use until the reset
-rewinds over it — and a withheld-return block leaving the append position
-charges its own. **The collection workspace's fixed region is charged
-nowhere**: the withheld returns' 8,320 bytes are memory the thread holds
+64-byte control line, and a block leaving the trace scratch arena's bump
+charges what it consumed — the workspace included, which stays in use until the
+reset rewinds over it. **The collection workspace's fixed region is charged
+nowhere**: the withheld returns' control line is memory the thread holds
 whether or not a collection is running, so what the workspace charges at the
-crossing is the 56,960 bytes its bump may grant. Each
+crossing is what it consumed of what its bump may grant
+(`cycle::arena::WORKSPACE_BUMP_BYTES`) rather than the whole payload. The
+withheld returns themselves are charged nowhere either, standing in entities
+the ledger already counts. Each
 charge has one inverse, so the figure is exact at every instant except for
-three named residues — the write segment's own fill, at most 65,280 bytes per
-thread, and the block under the arena's bump plus the one under the
-withheld-return cursor, at most 65,280 bytes each per collection in flight. All
-three are entered in the high-water figure by the transition that ends them,
+two named residues — the write segment's own fill, at most 65,280 bytes per
+thread, and the block under the arena's bump, at most 65,280 bytes per
+collection in flight. Both
+are entered in the high-water figure by the transition that ends them,
 and by a mark rather than a charge, so a collection's own high-water figure is
 exact even when its current one lags.
 
@@ -634,9 +639,9 @@ a block collection never owned a hard invariant failure rather than a counter
 underflow.
 
 The withheld returns of a trace, the weak table and the survivor lists of
-retained blocks are outside the global allocator as well, each in the
-memory of the layer that owns it — a manager chain, a buffer payload, the
-arena's own blocks. What remains in PLAN S36.9 is the composite source
+retained blocks are outside the global allocator as well, each in the memory
+of the layer that owns it — the dying entities themselves, a buffer payload,
+the arena's own blocks. What remains in PLAN S36.9 is the composite source
 audit and the deny test over a wired collection.
 
 ### The critical reserve

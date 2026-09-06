@@ -149,11 +149,10 @@ pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 /// of the memory it cuts, whether that is every slot of a size-class block
 /// or the one entity of a large one, [`publish_header`] replaces all eight
 /// bytes of a new occupant's header, and the return clears it. **A mark
-/// never outlives the window that took it**, which is what keeps a thread
-/// exit and an adoption out of this list: the close returns every mark, and
-/// a thread cannot exit inside a window
-/// (`crate::cycle::deferred_slot_reuse::dispose_thread_state`). Abandonment
-/// and adoption assert the ordering rather than answer it.
+/// never outlives the window that took it**: the close disposes of every slot
+/// on the window's stack, whether it returns them or abandons them, and a
+/// thread cannot exit inside a window, whose abort is what holds that half
+/// (`crate::cycle::deferred_slot_reuse::dispose_thread_state`).
 pub const DEAD_IN_PLACE: u32 = 1 << 15;
 
 /// The entity is a live **escapee**: a request-arena object that one or
@@ -861,9 +860,9 @@ pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
 pub(crate) enum SlotState {
     /// An entity is in the slot and its count is above zero.
     Live,
-    /// The occupant died inside a trace window that could not record the
-    /// return, and the slot is neither the allocator's nor an entity's
-    /// until that window's close returns it ([`DEAD_IN_PLACE`]).
+    /// The occupant died inside a trace window that is holding its return
+    /// back, and the slot is neither the allocator's nor an entity's until
+    /// that window's close returns it ([`DEAD_IN_PLACE`]).
     DeadInPlace,
     /// The allocator may hand the slot out: either it is on the block's
     /// free list or it stands above the block's bump cursor.
@@ -874,16 +873,10 @@ pub(crate) enum SlotState {
 ///
 /// **The one definition of the occupancy test**, and every walker that
 /// reads a slot's first word goes through it: `heap::for_each_entity_slot`
-/// and the census over it, `heap::describe_slot`, `retained::is_occupied`,
-/// which `register` counts a retained block's live occupants through, and
-/// the walk that returns the marks
-/// (`cycle::deferred_slot_reuse::is_marked`). A count above zero answers
-/// without the second load, so a live slot is settled by one load.
-///
-/// **Change this, change `cycle::deferred_slot_reuse::dispose_marks_of` too:**
-/// this call stands inside a walk that a panic can resume, and a panic site
-/// added here would be repeated by the resumed walk inside an unwind, where a
-/// second panic aborts. The walk names the calls it needs kept quiet.
+/// and the census over it, `heap::describe_slot`, and `retained::is_occupied`,
+/// which `register` counts a retained block's live occupants through. A count
+/// above zero answers without the second load, so a live slot is settled by
+/// one load.
 ///
 /// # Safety
 /// `header` addresses a slot of a commissioned entity block, readable at
@@ -934,10 +927,8 @@ pub(crate) unsafe fn mark_dead_in_place(header: *mut RcHeader) {
 /// **One thread writes this half of the flags word of one dead slot**, and it
 /// is the thread whose window marked it. The word is written by load and
 /// store rather than by a read-modify-write, so a second writer loses one of
-/// the two; what keeps the marking thread alone with the slot is that the
-/// slot reached no free list, so the block's owner has no reason to touch it,
-/// and that at most one window is open in the process (`PLAN.md`, S38's
-/// token). It never runs on a collector worker, which
+/// the two; what keeps the marking thread alone with the slot is that the slot
+/// reached no free list, so the block's owner has no reason to touch it. It never runs on a collector worker, which
 /// `rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse"
 /// refuses the neighbouring clear of the candidate bit for the same
 /// reason.

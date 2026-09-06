@@ -29,8 +29,8 @@
 //! workspace an [`arena`] borrows. Everything else is per collection:
 //! [`arena`] holds the blocks a single trace bumps into past that workspace
 //! and the worklist [`stack`] draws its segments from that bump,
-//! [`deferred_slot_reuse`] opens its chain over the workspace's fixed region
-//! and holds nothing else, and the rows [`shadow`], [`mark`] and
+//! [`deferred_slot_reuse`] opens its control line over the workspace's fixed
+//! region and holds every withheld return in the dying entity itself, and the rows [`shadow`], [`mark`] and
 //! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`
 //! own no memory at all — they are arithmetic over memory somebody else holds,
 //! and [`validation`] reads the heap rather than a row.
@@ -97,7 +97,7 @@ pub(crate) mod deferred_slot_reuse;
 #[cfg(test)]
 pub(crate) mod density;
 pub(crate) mod queue;
-// The record chain the collection's lists are built on.
+// The record chain the trace's worklist is built on.
 pub(crate) mod records;
 pub(crate) mod row;
 // The second phase, and the proposal a collection reads: reached from

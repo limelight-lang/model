@@ -10,12 +10,13 @@
 //! workspace base is drawn at the first collection, not at thread init").
 //!
 //! **Its first [`WORKSPACE_PREFIX_BYTES`] bytes are a fixed region rather than
-//! bump**, and the bump opens behind it. The region is the withheld returns'
-//! records ([`crate::cycle::deferred_slot_reuse`]), which is what lets an
-//! ordinary collection withhold every return it has without asking the memory
-//! manager for anything. The arena holds no part of that chain, only the
-//! region it is opened over, because the chain outlives the arena's reset and
-//! dies with the window instead.
+//! bump**, and the bump opens behind it. The region is one line, the control
+//! line of the withheld returns ([`crate::cycle::deferred_slot_reuse`]), whose
+//! stack is threaded through the dying entities themselves — which is what
+//! lets an ordinary collection withhold every return it has without asking the
+//! memory manager for anything. The arena holds no part of that window, only
+//! the region it is opened over, because the window outlives the arena's reset
+//! and dies with the collection instead.
 //!
 //! The trace's worklist ([`crate::cycle::stack`]) has no region and takes its
 //! segments from the bump, one at the first push. The arena holds it for the
@@ -144,8 +145,8 @@ pub(crate) enum RowLookup {
 /// [`crate::cycle::queue::release_queue_base`] fails its assertion inside
 /// `heap::ll_thread_exit` — an `extern "C"` frame, so the panic aborts the
 /// process whether or not anything is unwinding, and the report is a signal
-/// rather than a named test. [`crate::cycle::deferred_slot_reuse`]'s chain is
-/// held this way for the same reason.
+/// rather than a named test. [`crate::cycle::deferred_slot_reuse`]'s control
+/// line is held this way for the same reason.
 ///
 /// **What it converts is one path.** A lent cell that reaches thread exit by
 /// any other route — an arena that is forgotten rather than dropped — still
@@ -167,18 +168,19 @@ impl Drop for LentWorkspace {
     }
 }
 
-/// Bytes at the head of the workspace the withheld returns' region takes,
-/// before the bump opens.
+/// Bytes at the head of the workspace the withheld returns' control line
+/// takes, before the bump opens.
 pub(crate) const WORKSPACE_PREFIX_BYTES: usize = RETURNS_BASE_BYTES;
 
 /// Bytes of the workspace the bump may grant.
 pub(crate) const WORKSPACE_BUMP_BYTES: usize = BLOCK_PAYLOAD - WORKSPACE_PREFIX_BYTES;
 
-// What the region costs the bump, pinned: it is the trade the capacity was
-// taken on, and a capacity raised without that comparison moves the cost
-// silently.
-const _: () = assert!(WORKSPACE_PREFIX_BYTES == 8_320);
-const _: () = assert!(WORKSPACE_BUMP_BYTES == 56_960);
+// What the prefix costs the bump, pinned: one line, and everything else of
+// the block grantable. The first assertion is the prefix's own and fires when
+// it grows again; the second is the pair of it and the payload, and fires on
+// either, so a reading of it names both.
+const _: () = assert!(WORKSPACE_PREFIX_BYTES == 64);
+const _: () = assert!(WORKSPACE_BUMP_BYTES == 65_216);
 
 // The region begins on a line, which its control line needs to be aligned at
 // all: a payload starts `LINE_SIZE` into a block the pool aligns to
@@ -254,7 +256,7 @@ pub(crate) struct TraceScratchArena {
     left: usize,
     /// Bytes the bump may grant out of the block under the cursor: the whole
     /// payload of a drawn block, and [`WORKSPACE_BUMP_BYTES`] of the
-    /// workspace, whose head the fixed regions hold.
+    /// workspace, whose head the fixed region holds.
     open_capacity: usize,
     /// Newest array of the touched list, or null while no block has
     /// been touched.
@@ -307,22 +309,21 @@ impl TraceScratchArena {
     /// finds.
     ///
     /// Measured against what the bump may grant rather than against the whole
-    /// payload: the workspace's fixed regions are memory the thread holds
-    /// whether or not a collection is running, and counting them here would
-    /// charge every collection for them again.
+    /// payload: the workspace's fixed region is memory the thread holds
+    /// whether or not a collection is running, and counting it here would
+    /// charge every collection for it again.
     pub(crate) fn residue(&self) -> usize {
         self.open_capacity - self.left
     }
 
-    /// The workspace region a trace window opens its withheld-return chain
-    /// over: [`RETURNS_BASE_BYTES`] bytes at the head of the payload.
+    /// The workspace region a trace window opens its control line over:
+    /// [`RETURNS_BASE_BYTES`] bytes at the head of the payload.
     ///
-    /// The chain is not this arena's: its records are read by a replay that
-    /// runs after [`sweep_rows`](Self::sweep_rows) and before
-    /// [`reset`](Self::reset), so what the arena guarantees is the region's
-    /// address and that the workspace stays lent until the arena drops —
-    /// which is after the window's chain has died
-    /// (`crate::cycle::deferred_slot_reuse::ActiveTrace`).
+    /// The window is not this arena's: its stack is popped after
+    /// [`sweep_rows`](Self::sweep_rows) and before [`reset`](Self::reset), so
+    /// what the arena guarantees is the region's address and that the
+    /// workspace stays lent until the arena drops — which is after the window
+    /// has died (`crate::cycle::deferred_slot_reuse::ActiveTrace`).
     pub(crate) fn withheld_returns_region(&self) -> *mut u8 {
         BlockHeader::payload_start(self.base.block())
     }

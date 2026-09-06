@@ -11,10 +11,11 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-06 · Active: S44, from S44.2, which deletes the record chain,
-its workspace region and the block walks; S44.1 put every withheld return on
-one stack through the dead entities and S44.6 moved the row sweep ahead of the
-candidate restore, and both are closed. S36 waits behind it:
+Updated: 2026-09-06 · Active: S44, from S44.3, which turns the mark into the
+bit a second `ll_free` of an entity is refused on. S44.1 put every withheld
+return on one stack through the dead entities, S44.6 moved the row sweep ahead
+of the candidate restore, and S44.2 deleted the chain, its region and the block
+walks; all three are closed. S36 waits behind it:
 its S36.9 and S36.12 stay open on verifications later steps owe, and S36.3 is
 the next of its steps to be built.
 S43 closed the withheld-return window: past its region the module draws
@@ -553,8 +554,9 @@ the stack landed the day after it.
 
 **The order is obligatory.** S44.1 before S44.2, or the deletion takes what is
 still in use; S44.6 between them, so the deletions land on the close's final
-order; S44.3 after S44.2, the last branching reader of the mark being the walk
-S44.2 deletes; S44.4 last, a measurement being of what is built.
+order; S44.3 after S44.2, because under the bit's new meaning every
+free-listed slot would read withheld and the walk S44.2 deletes would return it
+a second time; S44.4 last, a measurement being of what is built.
 
 - [x] S44.1 The stack becomes the only store
       done: every withheld return of all four populations — a slotted entity, a
@@ -629,7 +631,7 @@ S44.2 deletes; S44.4 last, a measurement being of what is built.
         `a_window_dropped_before_its_rows_are_gone_abandons_what_it_withheld`,
         which opens a `WithheldReturns` over an arena's region and drops it
         unswept — the arm's first test, and it needs no fault injection.
-- [ ] S44.2 The chain, its region and the block walks are deleted
+- [x] S44.2 The chain, its region and the block walks are deleted
       done: `RecordChain` has one user left, the trace worklist;
         `RETURNS_BASE_RECORDS`, the marked-block list, the three arms of
         `dispose_marks_of`, `walking`, `RetainedWalkHold` and `dispose_walking`
@@ -639,14 +641,83 @@ S44.2 deletes; S44.4 last, a measurement being of what is built.
         pinned by the constants that pin them today; no walk of a block's slots
         remains in the module
       tier: T2 · role: Critic
-- [ ] S44.3 The mark is deleted
-      done: `DEAD_IN_PLACE`, `SlotState::DeadInPlace`, `mark_dead_in_place`,
-        `clear_dead_in_place`, the five `debug_assert` guards at the free
-        entrances, `marked_link` and `marked_next` in both headers and
-        `block_is_owned_by_this_thread` are gone; a slot reads two states
-        rather than three, and the guard that reads the crate's own sources
-        reports bit 15 free for the mutator
+      Critic 2026-09-06 round 1: ten findings. The marked-block list was not
+        gone — two `debug_assert`s in `Heap::adopt` and at thread exit still
+        read it, and the mark's own doc credited them with holding "a mark
+        never outlives the window"; both are deleted and the doc names what
+        holds the rule now. The disposal fault injection's stated reason had
+        dissolved with `is_marked`, so the injection is deleted and its two
+        cases raise a count, the lever a third case already used.
+        `records.rs`'s module doc described two users and justified two design
+        choices by the deleted one; twelve prose surfaces across the crate
+        still described the chain, the replay or the walk;
+        `docs/memory-manager.md` carried the deleted design and the reverse of
+        the built close order; `dev/ARCHITECTURE.md`'s invariant 12 said a
+        deferred slot is never written until the replay; two
+        `dev/BENCHMARKS.md` annotations quoted the old workspace figures as
+        current. All repaired.
+      Critic 2026-09-06 round 2: ten findings, one of them a defect the first
+        round's own repair left. `a_panic_in_the_close_leaves_no_stacked_mark_standing`
+        freed its two slots in the order that made the ordered close return the
+        foreign one, so the drop's own pass ran over an empty stack and the
+        case pinned nothing it claimed; the deaths are swapped, and a stubbed
+        `WithheldReturns::drop` now reddens five cases where it reddened four.
+        `memory::gc_metadata`'s three enumerations still named the deleted
+        charge site and a third residue; four guards gave the deleted walk as
+        their reason; `heap`'s cells-return doc said the trace window keys on
+        the block kind alone, where the stamp is the whole condition;
+        `marked_next`'s field doc contradicted itself; `clear_dead_in_place`
+        rested on a process-wide one-window premise `dev/ARCHITECTURE.md`
+        invariant 15 withdrew; `records`'s `SEGMENT_HEADER_BYTES` was justified
+        by two facts that had gone. All repaired.
+      handoff: the module holds one 64-byte control line and nothing else, and
+        the workspace's prefix is 64 bytes with 65,216 of bump, both pinned.
+        `RecordChain` serves the trace worklist alone, `WindowControl` is the
+        old `DeferredReturnChain` under the name of what it is, and
+        `heap::marked_link`, `large_entity::marked_link` and the two
+        `marked_next` words wait for S44.3 behind `#[expect(dead_code)]`. Seen
+        red: a pop that moves the head after the return, and a
+        `WithheldReturns::drop` stubbed to close the window alone — five cases,
+        one per population and one per disposition.
+- [ ] S44.3 The mark becomes the bit a second free is refused on
+      done: flags bit 15 keeps its place and changes meaning — "`ll_free` has
+        taken this slot and has not handed it back" — so a second `ll_free` of
+        an entity returns without doing anything while its block still stands;
+        the bit is set at the head of `ll_free` for the entity kinds, on the
+        flags load the candidate arm already makes, and cleared by
+        `refcount::publish_header`, by `dispose_of` ahead of its return, by the
+        reset window's flush and by the two paths that free a slot they never
+        published (`heap::ll_entity_cells_return`, `template`'s refused store);
+        `SlotState::DeadInPlace` becomes the state the bit now names, the five
+        `debug_assert` guards at the free entrances go, and `marked_link`,
+        `marked_next` in both headers and `block_is_owned_by_this_thread` go
+        with them; a refusal is counted by a `probe_count!`, both polarities
+        are pinned — one refusal counted with the slot served once, and zero
+        refusals over the suite — and the guard removed is seen red
       tier: T2 · role: Critic
+      Sage 2026-09-06: build the guard as one bit, and let it be the mark's.
+        The two meanings are sequential sub-states of a zero count — withheld
+        by a window, then returned — so one bit answers both, and the head
+        check refuses a second free in either. Bits 0-14 are assigned and 15 is
+        the only spare, so the promise to hand it back to the mutator is
+        withdrawn before it is kept; what the mutator loses is a bit two
+        already-refused features wanted. The store breaks the letter of the
+        heap's "the allocator never writes bytes 0-7" and not its reason: the
+        write is `ll_free`'s, the count still reads zero, and
+        `mark_dead_in_place` already writes those two bytes from outside the
+        allocator. Quiet in both builds with a counter rather than an abort in
+        a test build, so the release arm is the one the suite measures. One
+        step rather than two, and after S44.2, whose walk would otherwise have
+        returned every free-listed slot a second time. Refused: the free-list
+        link as the fact, walking the block's free list, a sentinel in the
+        count word, a spare kind code, a clear in `Heap::alloc`, a second bit,
+        setting per arm instead of at the head, a separate entry for the
+        replays, a test-build abort, guarding `BLOCK_KIND_HEAP`, two steps, and
+        landing before S44.2.
+      note: the guarantee is partial by construction and the docs say so — a
+        second free is a no-op while the slot's memory still reads as that
+        slot, and undefined once its block has gone home and been
+        recommissioned under another kind.
 - [ ] S44.4 Measure the close against the chain
       done: S43.1's fixture — 381 deaths, the dense arm at classes 32 and 128,
         the sparse arm at 256, eight collections with the eighth killing inside
@@ -1804,14 +1875,14 @@ stage claiming the frees while building none of them.
         code, so no member can start ordinary teardown mid-commit whichever
         unit is chosen.
       handoff: the region's capacity is unchosen, and **the budget it expected
-        comes back with S44**: the withheld returns' 8,320-byte region is
-        deleted there, leaving a 64-byte prefix and 65,216 bytes of bump
+        came back with S44.2**: the withheld returns' 8,320-byte region is gone,
+        leaving a 64-byte prefix and 65,216 bytes of bump
         (`dev/DECISIONS.md`, "one stack through the dead entity holds every
         withheld return"). This slice waited on that ruling and no longer
         does. Nor does the density instrument supply the other input: a
         synthetic load's death count is the fixture's own and was refused as a
         measurement (`dev/DECISIONS.md`, "the death count of a synthetic load
-        is a check and not a measurement"). What is left to choose on is the bump's own 56,960 bytes
+        is a check and not a measurement"). What is left to choose on is the bump's own 65,216 bytes
         and the pressure path's need, and `cycle::density` counts no death that
         could narrow it — `heap::block_occupancy` reads `used`, which drops at
         a slot's physical return rather than at its teardown.

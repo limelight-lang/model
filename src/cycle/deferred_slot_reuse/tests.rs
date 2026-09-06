@@ -1060,13 +1060,6 @@ fn a_stamped_block_this_thread_does_not_own_is_marked_and_stacked() {
         crate::refcount::SlotState::DeadInPlace,
         "the slot carries the mark"
     );
-    assert!(
-        unsafe { &*crate::memory::heap::marked_link(block) }
-            .load(Ordering::Relaxed)
-            .is_null(),
-        "no block is listed, and a listed one would send the close walking a \
-         bump cursor this thread has no right to read"
-    );
     assert_eq!(
         unsafe { crate::memory::heap::block_occupancy(block) },
         occupancy_before,
@@ -1951,8 +1944,10 @@ fn a_panic_in_the_close_leaves_no_stacked_mark_standing() {
     let mut window = ActiveTrace::open().expect("the pool funds the trace window");
     unsafe { ensure_row(window.arena(), foreign, 1) };
     unsafe { ensure_row(window.arena(), raiser, 0) };
-    unsafe { crate::memory::stdapi::ll_free(raiser as *mut u8) };
 
+    // The foreign slot dies first and the raiser second, so the raiser is the
+    // head: the close raises on its first pop, and the foreign slot's return is
+    // the drop's own pass — which is the half this case is about.
     unsafe { crate::refcount::set_header_refcount(foreign, 0) };
     unsafe { crate::memory::stdapi::ll_free(foreign as *mut u8) };
     assert_eq!(
@@ -1960,6 +1955,7 @@ fn a_panic_in_the_close_leaves_no_stacked_mark_standing() {
         crate::refcount::SlotState::DeadInPlace,
         "the death was withheld"
     );
+    unsafe { crate::memory::stdapi::ll_free(raiser as *mut u8) };
 
     // The pop will reach this slot and find it reading live, which is the free
     // `ll_free` refuses.
@@ -2196,12 +2192,6 @@ fn a_block_adopted_after_a_slot_of_it_was_stacked_returns_each_slot_once() {
 
     unsafe { crate::refcount::set_header_refcount(before_adoption, 0) };
     unsafe { crate::memory::stdapi::ll_free(before_adoption as *mut u8) };
-    assert!(
-        unsafe { &*crate::memory::heap::marked_link(block) }
-            .load(Ordering::Relaxed)
-            .is_null(),
-        "the block was listed while it was another thread's"
-    );
 
     // The adoption: this thread holds no block of the class, and the
     // abandoned one is already carved for it
@@ -2270,7 +2260,7 @@ fn a_block_adopted_after_a_slot_of_it_was_stacked_returns_each_slot_once() {
 /// arena give its blocks back. A close that gave them back first would reach
 /// the window's drop with the rows still standing, and the marks would be
 /// abandoned rather than returned — which is the disposition
-/// `DeferredReturnChain::swept` decides.
+/// `WindowControl::swept` decides.
 ///
 /// The panic is injected, the reset's own sites being an underflowed ledger
 /// and a poisoned pool mutex: a test can raise neither without taking the
@@ -2343,7 +2333,7 @@ fn a_panic_in_the_reset_returns_every_marked_slot() {
 ///
 /// Read at the flag rather than behind a panic. Since S44.6 the close sweeps
 /// before anything that can raise, so no panic site in the crate reaches this
-/// arm and `DeferredReturnChain::swept` is what says which disposition the
+/// arm and `WindowControl::swept` is what says which disposition the
 /// drop takes — the fact read rather than inferred from where an unwind came
 /// from (`dev/DECISIONS.md`, "the row sweep runs ahead of the candidate
 /// restore"). The case therefore opens the window's own structure over an
@@ -2529,12 +2519,10 @@ fn an_unwind_out_of_the_candidate_restore_returns_what_was_withheld() {
 /// still named by the head. A pop that moved the head after the return would
 /// leave the head naming a slot the free list has taken back.
 ///
-/// The panic is injected at the close's first return, which is the newest
-/// withheld slot. The lever the other panic cases use cannot reach a withheld
-/// slot at all — `is_marked` reads the count before the flags, so a slot whose
-/// count was raised is skipped rather than raised on — and the injection
-/// stands where `ll_free`'s own refusal would leave the pop: the mark already
-/// off, the return not made (`InjectedDisposalFailure`).
+/// The panic is staged off `ll_free`'s own refusal, on the close's first
+/// return, which is the newest withheld slot: a slot whose refcount is raised
+/// while the window is open is one that entry point refuses at its head, with
+/// the mark already off and the return unmade.
 ///
 /// **Which return was lost is read off the free list**, both headers reading
 /// `Free` afterwards: the disposal clears the mark ahead of the return it then
@@ -2584,17 +2572,20 @@ fn a_panic_inside_one_return_gives_back_the_slots_below_it() {
         );
     }
 
-    let armed = InjectedDisposalFailure::arm(1);
+    // The pop will reach `third` first and find it reading live, which is the
+    // free `ll_free` refuses at its head — the mark already off, the return
+    // unmade.
+    unsafe { crate::refcount::set_header_refcount(third, 1) };
     let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         drop(window);
     }));
     assert!(refused.is_err(), "the close was expected to raise");
-    drop(armed);
 
     assert_eq!(
         unsafe { crate::refcount::slot_state(third) },
-        crate::refcount::SlotState::Free,
-        "the unwind took the mark off the slot whose return it raised inside"
+        crate::refcount::SlotState::Live,
+        "the unwind took the mark off the slot whose return it raised inside, \
+         and the raised count is what that return refused on"
     );
     assert_eq!(
         unsafe { crate::memory::heap::block_occupancy(block) },
@@ -2617,6 +2608,7 @@ fn a_panic_inside_one_return_gives_back_the_slots_below_it() {
 
     // The raising slot reached no free list, so this is its first return
     // rather than a second.
+    unsafe { crate::refcount::set_header_refcount(third, 0) };
     unsafe { crate::memory::stdapi::ll_free(third as *mut u8) };
     for slot in served {
         unsafe { dead_entity(slot) };
@@ -2659,7 +2651,7 @@ fn a_panic_inside_a_retained_survivors_return_gives_back_the_one_below_it() {
     // The holders take no row, so their own slots stand in a block this
     // collection never met and their deaths are returned at once. The second
     // survivor dies last, which puts it at the head of the stack and makes its
-    // return the one the injection names.
+    // return the one the close raises inside.
     for holder in [first_holder, second_holder] {
         unsafe {
             assert!(crate::refcount::ll_release(holder as *mut RcHeader));
@@ -2675,12 +2667,13 @@ fn a_panic_inside_a_retained_survivors_return_gives_back_the_one_below_it() {
         );
     }
 
-    let armed = InjectedDisposalFailure::arm(1);
+    // As the slotted case stages it: a raised count is the free `ll_free`
+    // refuses at its head, with the mark already off and the return unmade.
+    unsafe { crate::refcount::set_header_refcount(second_survivor, 1) };
     let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         drop(window);
     }));
     assert!(refused.is_err(), "the close was expected to raise");
-    drop(armed);
 
     assert_eq!(
         unsafe { crate::memory::block_pool::load_block_kind(&raw const (*first_block).kind) },
@@ -2700,6 +2693,7 @@ fn a_panic_inside_a_retained_survivors_return_gives_back_the_one_below_it() {
 
     // The raising survivor is the panic's own leak, and its return is what
     // empties the block it stands in.
+    unsafe { crate::refcount::set_header_refcount(second_survivor, 0) };
     unsafe { crate::memory::stdapi::ll_free(second_survivor as *mut u8) };
     assert_eq!(
         unsafe { crate::memory::block_pool::load_block_kind(&raw const (*second_block).kind) },
