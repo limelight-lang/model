@@ -1354,6 +1354,50 @@ stage claiming the frees while building none of them.
         stand unchanged — `validation::member_counts_cover_internal_edges`'s
         in-degree `vec!` under `debug_assertions`, and `cells::sever_cells`'s
         `&mut Vec<*mut RcHeader>`, dead code whose replacement S36.5 owes.
+      audit 2026-09-06 — the composite source audit re-run, because S43 and
+        S44 rewrote the modules it covers, `deferred_slot_reuse` and the record
+        chain among them. Subject: `cycle` whole, `weak` and its table,
+        `cells`, `object`'s dispose path, `gc_metadata`, `retained`,
+        `large_entity`, `critical`, `block_pool`, `heap`, `arena`, `stdapi`,
+        `reset_window`, and `promote` for reachability alone. **The clause is
+        still not met**, and the five sites that break it are the ones
+        2026-09-03 named, at today's lines: `park_large`'s
+        `parked_large.push` (`reset_window.rs:326`), `record_death`'s insert
+        into the boxed `died_set` (`:224`) and the `escrow.extend(edges)` below
+        it (`:231`), a nested close's `parked_large.extend` (`:143`), and
+        `snapshots.remove` (`:230`), which frees rather than allocates. The
+        ruling of 2026-09-02 covers all five unchanged.
+        `cycle` came through the rewrite clean: `validation`'s in-degree `vec!`
+        under `debug_assertions`, whose `validate_component` has no non-test
+        caller until S36.3, and `queue::collect_lane_tokens` under `cfg(test)`
+        are its whole population, and the arena, the trace stack and the record
+        chain extend over manager blocks. Clean too, and named so the next
+        audit need not re-read them: `weak` and its table, `cells`'s live
+        tracer, `gc_metadata`, `retained`, `critical`, `block_pool`, `arena`
+        and `stdapi`; `heap`'s only production global-allocator traffic is
+        `ll_thread_init`'s `alloc` and `ll_thread_exit`'s `Box::from_raw`, and
+        no collection frame reaches either. Three `reset_window` sites the
+        earlier reading did not name stand on the reset's own frames rather
+        than on a death path, so a collection does not enter them: `opened`'s
+        `Box::new` (`:105`), `corrections`' two clones (`:309`, `:310`), and
+        `snapshot_edge` with `credit` (`:195`, `:209`).
+      correction 2026-09-06 — "`snapshot()`'s `Vec` has no production caller"
+        claims more than the code supports. `large_entity::snapshot` carries no
+        `cfg(test)`, and `heap::for_each_entity_slot` is `pub` and ungated, so
+        the `Vec` is compiled into a release build and callable from outside
+        the crate. What holds is the narrower reading: every in-crate caller of
+        that enumerator is test-gated, `cells::heap_census` among them, so no
+        collection frame reaches it. The retraction of 2026-09-02 drew the same
+        distinction over the same function.
+      audit 2026-09-06, beside the path — `static_block::tear_down`
+        (`static_block.rs:169`) owns a `Vec<*mut RcHeader>` and fills it
+        through `object::sever_counted_slots`, in production, on the
+        thread-exit release of static-block roots. No collection frame reaches
+        it, so it is not a site of this clause. It is recorded because it is
+        the live instance of the `&mut Vec<*mut RcHeader>` signature
+        `cells::sever_cells` carries as dead code: the manager-backed
+        replacement S36.5 owes has a caller already, and S39.1 puts a
+        collection on that same thread-exit path.
       handoff: S36.9 is executed as separately reviewed slices: (a) physical
         block contract and queue state; (b) logical ledger and current arena
         instrumentation; (c) manager-backed parking plus ordinary/abort deny
