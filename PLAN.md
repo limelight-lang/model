@@ -96,6 +96,16 @@ the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
 than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
 
+- **Which step retires a candidate record at commit.** S34.2's law names "the
+  drain's corpse rule, or S36.5 commit for an in-flight root"; four comments
+  name S36.6 instead — `refcount`'s `DEAD_IN_PLACE` and `clear_candidate_bit`,
+  its `expect(dead_code)` reason, and `stdapi::ll_free`'s candidate arm — and
+  so does `dev/DECISIONS.md`, "a second `ll_free` of an entity is refused, and
+  the mark is the bit it is refused on". Neither step's `done:` mentions the
+  retirement at all: S36.5's is the sever and the free, S36.6's is the
+  maturation stamp alone. The act needs a criterion in whichever step gets it,
+  and the citations on the other side move in the same commit.
+
 - `memory::reset_window` keeps a vocabulary of its own — `CORPSE_WALKS` and
   `park_large` beside `ResetWindow::escrow` — and
   `cycle::tests::the_metaphors_the_names_still_carry` and
