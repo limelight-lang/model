@@ -769,7 +769,7 @@ a second time; S44.4 last, a measurement being of what is built.
         both dispositions (1), the close returning without the hand-back (28),
         the reset flush's hand-back (5), `free_unpublished`'s (7, five of them
         through the guard), and a `classify` that withholds nothing (5).
-        Commit 0000000.
+        Commit 296e85b.
 - [ ] S44.4 Measure the close against the chain
       done: S43.1's fixture — 381 deaths, the dense arm at classes 32 and 128,
         the sparse arm at 256, eight collections with the eighth killing inside
