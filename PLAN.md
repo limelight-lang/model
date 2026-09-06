@@ -11,16 +11,18 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-06 · Active: S44, from S44.5, which waits on Edmond's word.
+Updated: 2026-09-06 · Active: S36, from S36.3. S44 has one step left, S44.5,
+and it waits on Edmond's word.
 S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
 its region and the block walks, S44.3 turned the mark into the bit a second
 `ll_free` of an entity is refused on, and S44.4 measured the close and found it
 slower than the chain on every arm; all five are closed. Edmond kept the stack
 on that reading, and the stage's `Done when:` was rewritten to ask for the
-measurement rather than for its direction. S36 waits behind it:
-its S36.9 and S36.12 stay open on verifications later steps owe, and S36.3 is
-the next of its steps to be built.
+measurement rather than for its direction. S36 is the work in front:
+its S36.9 stays open on the deny run a wired collection owes, S36.12 closed on
+2026-09-06 with the pressure path's harvest, and S36.3 is the next of its steps
+to be built.
 S43 closed the withheld-return window: past its region the module draws
 nothing, a death in memory the collection never met is returned at once, a
 marked slot of another thread's block is stacked rather than listing its
@@ -1876,7 +1878,7 @@ stage claiming the frees while building none of them.
         collections reuse the same base, corpse bytes remain intact, critical
         capacity is restored, and success and abort both return GC bytes to the
         per-thread baseline.
-- [ ] S36.12 The in-flight batch and condemned membership   *(before S36.3)*
+- [x] S36.12 The in-flight batch and condemned membership   *(before S36.3)*
       done: collection detaches the active candidate chain as one in-flight
         batch whose bounds travel with it, and all roots mark before any root
         scans. **The member list is the pressure path's alone** — the ordinary
@@ -2043,6 +2045,27 @@ stage claiming the frees while building none of them.
         one thread. `.tbss` is a control rather than evidence here, the region
         being heap memory the section cannot see, and a timed run is theatre
         while nothing collects.
+      progress 2026-09-06 — slice (b): the sweep that nulls the blocks' shadow
+        pointers harvests, into the workspace's second fixed region — a
+        64-byte control line and 1,024 eight-byte records, prefix 8,320 and
+        bump 56,960, the layout S44.2's bytes paid for. `cycle::members` owns
+        the region and the one-list-per-thread rule, `shadow::for_each_unreachable`
+        reads only the groups a trace met, and `row::entity_at` is the dispatch
+        backwards over the three populations, on two new accessors —
+        `heap::entity_slot_at` off the collector's own line and
+        `retained::occupant_at`. An unarmed close reads no row, counted where
+        the read is. Thirteen cases, and six source mutations each reddened
+        the case that owns it: a kept partial list, a sweep that harvests
+        unarmed, a slot address one stride off, a second arming granted, a
+        sweep that gives up where the list does, and a walk that reads unmet
+        groups. Verification on the day: 731 at one thread and three times at
+        four, 731 `hash-folding`, 735 `debug-journal` three times, release and
+        `cargo bench --no-run` clean, `cargo +1.94 fmt --check` clean,
+        `citations.py` 443 with the same seven residues. Miri at two threads
+        over the modules it touched: `cycle::members` 10 passed in 9.4 s of
+        Miri's clock and 14 s of wall, `cycle::row` 7 in 337.8 s and 3 m 54 s,
+        `cycle::arena` 29 in 185.8 s and 4 m 20 s, `cycle::shadow` 12 in 6.5 s,
+        `cycle::deferred_slot_reuse` 42 in 31.5 s, 0 failed anywhere.
       handoff: choose and test the commit unit here. A single condemned batch
         is safe under the aggregate exact sum but resurrection in one connected
         part conservatively retains the others; if teardown promises
@@ -2064,6 +2087,14 @@ stage claiming the frees while building none of them.
         and the pressure path's need, and `cycle::density` counts no death that
         could narrow it — `heap::block_occupancy` reads `used`, which drops at
         a slot's physical return rather than at its teardown.
+      handoff: closed 2026-09-06 by `88ad136`, after slice (a)'s `e63c235`. What
+        S36.7 owes is named in its own `done:` and repeated here for the reader
+        who arrives at the driver: arming the harvest after `TraceOutcome::Complete`
+        and never before, taking the batch and giving its segments back as one
+        pair, reading `members::take_standing` after the window has closed, and
+        the trace over fewer roots that follows an overflow. The region holds
+        one list per thread, so a collection a destructor starts finds it in use
+        and harvests nothing.
       handoff: an enrolled death does not clear the bit or retire its record.
         Teardown finishes and physical return waits; only the consumer that
         still owns the record may observe count zero, clear `CANDIDATE_BIT`, return
