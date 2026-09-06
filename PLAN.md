@@ -603,7 +603,8 @@ S44.2 deletes; S44.4 last, a measurement being of what is built.
         their walks and the mark stand unwritten until S44.2 and S44.3. Seen
         red: a pop that moves the head after the return (seven cases, ending in
         a segmentation fault), a classifier that skips the stamp (four), a drop
-        that always returns (one), the sentinel arm deleted (one).
+        that always returns (one), the sentinel arm deleted (one). Commit
+        12c2aa1.
 - [ ] S44.6 The row sweep runs before the candidate restore
       done: `ActiveTrace::drop` sweeps the rows and sets `swept` before it
         restores a detached candidate chain, so the one panic that reached the
