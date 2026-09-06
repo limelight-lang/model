@@ -187,13 +187,16 @@ which is the region the stack was built to give up.
 
 ### What this run does not price, and it is the stage's motive
 
-The chain's standing costs: 8,320 bytes of every thread's workspace held for a
-window that may withhold nothing, the growth past that region, its draw on the
-critical reserve, and the `std::process::abort()` that answered a refusal
-`ll_free` could not report. S43.1 named those and could not measure them; this
-run cannot either. The ruling that chose the stack is `dev/DECISIONS.md`, "one
-stack through the dead entity holds every withheld return", and it did not rest
-on the close being the faster of the two.
+The chain's standing costs, and the list is the ruling's rather than S43.1's,
+whose three items had gone by the day after it: 8,320 bytes of every thread's
+workspace held for a window that may withhold nothing, a second form for one
+fact once the region fills, the walk arms and the unwind machinery that orders
+them, five `debug_assert` guards at the free entrances, and the last free bit
+of the mutator's flags half, which the double-free refusal now holds. Each is
+removed by construction rather than reduced, so none of them is a number this
+run could have taken. The ruling that chose the stack is `dev/DECISIONS.md`,
+"one stack through the dead entity holds every withheld return", and it did not
+rest on the close being the faster of the two.
 
 Understated on both sides, as at S43.1: the fixture's members carry no external
 children, so no acyclic tail dies behind them and a real teardown's deferred
