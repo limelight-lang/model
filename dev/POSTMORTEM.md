@@ -7,6 +7,38 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-06 — an assertion over "the block's shadow stamp" was vacuous for half the population it was written for
+
+**What happened.** S36.12 (b)'s two cases about the sweep read what a
+collection leaves stamped on a block through
+`memory::heap::block_shadow`, and the fixture they were written against
+holds two populations: an ordinary entity block, whose array pointer is in
+the collector line that call reads, and a pooled large-entity block, whose
+row is a word of its own header and which has no array at all. For the
+second, `block_shadow` reads a `HeapBlockHeader` field of a block that is
+not one, and it answered null whatever the sweep had done. Half of each
+assertion held for no reason, and a mutation that stopped the sweep on the
+block that refused a record passed green.
+
+**Why it was possible.** The fixture grew a second population in the same
+session that the assertions were written, on a Critic's finding that one
+block could not carry a claim about work past a refusal. The helper was
+not revisited: it takes an entity and answers a word, and nothing in its
+name or signature says which of the three populations it can answer for.
+
+**Why it was not caught.** The suite was green before and after, and a
+green mutation looks exactly like a mutation the code survives. What found
+it was running the mutation and reading its silence — the case that should
+have reddened did not, and the only way that happens is an assertion that
+does not depend on the code under it.
+
+**What it changes.** The helper dispatches on the block kind, as every
+other reader of a row in this crate does (`cycle::row::resolve_edge_target`
+is the production one). And a mutation that survives is read as a finding
+about the case rather than as evidence about the code.
+
+---
+
 ## 2026-09-06 — `refcount::` had never been run under Miri, and its stack-header cases were undefined
 
 **What happened.** S44.3's Miri pass over the modules it touched reported
