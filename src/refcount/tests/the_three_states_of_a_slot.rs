@@ -22,39 +22,75 @@ fn header(count: u32) -> RcHeader {
 #[test]
 fn a_live_slot_answers_from_the_count_alone() {
     let mut live = header(1);
-    assert_eq!(unsafe { slot_state(&raw const live) }, SlotState::Live);
+    let live = &raw mut live;
+    assert_eq!(unsafe { slot_state(live) }, SlotState::Live);
 
-    unsafe { update_header_flags(&raw mut live, |flags| flags | DEAD_IN_PLACE) };
+    unsafe { update_header_flags(live, |flags| flags | DEAD_IN_PLACE) };
     assert_eq!(
-        unsafe { slot_state(&raw const live) },
+        unsafe { slot_state(live) },
         SlotState::Live,
         "the count decides first, so a mark under a live count changes nothing"
     );
 }
 
-/// A zero count and the mark is the third state, and a zero count without
-/// it is what the allocator may hand out.
+/// A zero count and the mark is the third state, and a zero count without it
+/// is a slot no free holds: commissioned and never occupied, or handed back
+/// by whoever took it.
 #[test]
 fn a_zero_count_is_read_apart_by_the_mark() {
     let mut slot = header(0);
+    let slot = &raw mut slot;
     assert_eq!(
-        unsafe { slot_state(&raw const slot) },
+        unsafe { slot_state(slot) },
         SlotState::Free,
-        "a dead slot with no mark is the allocator's"
+        "a dead slot no free holds is the allocator's"
     );
 
-    unsafe { mark_dead_in_place(&raw mut slot) };
+    assert!(
+        unsafe { take_slot_for_free(slot) }.is_some(),
+        "the first free takes the slot"
+    );
     assert_eq!(
-        unsafe { slot_state(&raw const slot) },
+        unsafe { slot_state(slot) },
         SlotState::DeadInPlace,
-        "and the mark takes it out of both the live set and the free one"
+        "and the take is what separates it from a slot no free holds"
     );
 
-    unsafe { clear_dead_in_place(&raw mut slot) };
+    assert!(
+        unsafe { take_slot_for_free(slot) }.is_none(),
+        "a second free of one slot is refused, the take finding its own bit up"
+    );
+
+    unsafe { clear_dead_in_place(slot) };
     assert_eq!(
-        unsafe { slot_state(&raw const slot) },
+        unsafe { slot_state(slot) },
         SlotState::Free,
-        "the clear is what gives it back"
+        "the clear is what hands it back"
+    );
+    assert!(
+        unsafe { take_slot_for_free(slot) }.is_some(),
+        "and a free after the hand-back is taken like a first one"
+    );
+}
+
+/// The take hands back the flags as they stood before it, which is the load
+/// the candidate arm reads instead of making one of its own
+/// (`crate::memory::stdapi::ll_free`).
+#[test]
+fn the_take_hands_back_the_flags_it_tested() {
+    let mut slot = header(0);
+    let slot = &raw mut slot;
+    unsafe { update_header_flags(slot, |flags| flags | CANDIDATE_BIT) };
+
+    let flags = unsafe { take_slot_for_free(slot) }.expect("the first free takes it");
+    assert!(
+        is_registered_candidate(flags),
+        "the candidate bit comes back as it stood"
+    );
+    assert_eq!(
+        flags & DEAD_IN_PLACE,
+        0,
+        "and the bit the take itself set is not in what it hands back"
     );
 }
 
@@ -68,16 +104,17 @@ fn a_zero_count_is_read_apart_by_the_mark() {
 #[test]
 fn the_mark_leaves_the_collectors_byte_where_it_stands() {
     let mut slot = header(0);
-    let collector_byte = unsafe { (&raw mut slot as *mut u8).add(6) };
+    let slot = &raw mut slot;
+    let collector_byte = unsafe { (slot as *mut u8).add(6) };
     unsafe { collector_byte.write(0xA5) };
 
-    unsafe { mark_dead_in_place(&raw mut slot) };
+    assert!(unsafe { take_slot_for_free(slot) }.is_some());
     assert_eq!(unsafe { collector_byte.read() }, 0xA5);
 
-    unsafe { clear_dead_in_place(&raw mut slot) };
+    unsafe { clear_dead_in_place(slot) };
     assert_eq!(unsafe { collector_byte.read() }, 0xA5);
     assert_eq!(
-        unsafe { mutator_flags(&raw const slot) } & DEAD_IN_PLACE,
+        unsafe { mutator_flags(slot) } & DEAD_IN_PLACE,
         0,
         "and the mutator's own half came back to where it started"
     );

@@ -16,7 +16,7 @@
 //! block's slots for the same reason.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicU32};
+use std::sync::atomic::AtomicU32;
 
 use crate::memory::block_pool::{
     BLOCK_KIND_ENTITY_LARGE, BLOCK_KIND_ENTITY_LARGE_RUN, BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader,
@@ -53,12 +53,6 @@ pub(crate) struct LargeEntityHeader {
     /// by the kind's release store, and the trace token is what keeps
     /// two collectors off it.
     row: u32,
-    /// The word a marking window's list of blocks was threaded through, and
-    /// null for the life of the process: nothing lists a block since the
-    /// withheld returns took a stack of their own
-    /// (`crate::cycle::deferred_slot_reuse`). It goes with its twin on a heap
-    /// block's collector line (`PLAN.md`, S44.3).
-    marked_next: AtomicPtr<u8>,
 }
 
 const _: () = assert!(
@@ -86,22 +80,6 @@ pub(crate) fn is_large_entity(kind: u32) -> bool {
 /// kind.
 pub(crate) unsafe fn shadow_row(block: *mut u8) -> *mut u32 {
     unsafe { &raw mut (*(block as *mut LargeEntityHeader)).row }
-}
-
-/// The word a marking window's list was threaded through, the twin of
-/// [`crate::memory::heap::marked_link`] for the two large kinds. Nothing
-/// lists a block, so the word reads null for the life of the process.
-///
-/// # Safety
-/// `block` must be the header of a live large-entity block, of either kind,
-/// for as long as the returned pointer is used.
-#[expect(
-    dead_code,
-    reason = "nothing lists a block since the stack took every withheld return; \
-              the word and its two readers go with `PLAN.md` S44.3"
-)]
-pub(crate) unsafe fn marked_link(block: *mut u8) -> *const AtomicPtr<u8> {
-    unsafe { &raw const (*(block as *const LargeEntityHeader)).marked_next }
 }
 
 /// Allocate one entity of `size` bytes in a block-aligned allocation of
@@ -179,7 +157,6 @@ unsafe fn commission(block: *mut u8, size: usize, run_bytes: usize, kind: u32) -
         (&raw mut (*header).prev).write(std::ptr::null_mut());
         (&raw mut (*header).next).write(std::ptr::null_mut());
         (&raw mut (*header).row).write(0);
-        (&raw mut (*header).marked_next).write(AtomicPtr::new(std::ptr::null_mut()));
         let entity = block.add(LINE_SIZE);
         (entity as *mut u64).write(0);
         store_block_kind(&raw const (*header).kind, kind);
@@ -195,20 +172,6 @@ unsafe fn commission(block: *mut u8, size: usize, run_bytes: usize, kind: u32) -
 /// `block` is the block header of a live large-entity allocation whose
 /// entity is dead, and `kind` is the kind read from it.
 pub(crate) unsafe fn free(block: *mut u8, kind: u32) {
-    // A block returned under a standing `DEAD_IN_PLACE` goes to the pool or
-    // to the operating system carrying a mark no window can answer for. The
-    // clear belongs to whoever returns it
-    // (`crate::refcount::clear_dead_in_place`), and this is where a path that
-    // forgot it shows up.
-    debug_assert_ne!(
-        unsafe {
-            let (entity, _) = occupant(block);
-            crate::refcount::slot_state(entity as *const crate::refcount::RcHeader)
-        },
-        crate::refcount::SlotState::DeadInPlace,
-        "a large entity's memory is returned with its dead-in-place mark cleared"
-    );
-
     match kind {
         BLOCK_KIND_ENTITY_LARGE => BlockPool::global().put(block as *mut BlockHeader),
         BLOCK_KIND_ENTITY_LARGE_RUN => {

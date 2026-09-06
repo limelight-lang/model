@@ -73,10 +73,10 @@ fn flags_layout_matches_the_normative_table() {
         "the gate covers the category, the kind's top bit and the three marks"
     );
     // Bit 15 came free when the string's layout became a kind code and was
-    // spent on the dead-in-place mark (`refcount::DEAD_IN_PLACE`), which fills the
-    // mutator's half: the next mutator flag needs a re-lay rather than a
-    // free position. `rfc/model/classes.md`'s "Flags layout" is the table
-    // both sides transcribe, and it still calls the bit free.
+    // spent on the mark `ll_free` takes (`refcount::DEAD_IN_PLACE`), which
+    // fills the mutator's half: the next mutator flag needs a re-lay rather
+    // than a free position. `rfc/model/classes.md`'s "Flags layout" is the
+    // table both sides transcribe, and it still calls the bit free.
     assert_eq!(claimed & 0xFFFF, 0xFFFF, "bits 0-15 are all claimed");
     // Bits 16 and above are unclaimed until S36.6 and S37.1 lay the
     // collector's epoch, maturation age and reserve there. Nothing may

@@ -245,6 +245,71 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
     }
 }
 
+/// Frees refused as repeats since the last read.
+///
+/// A plain static rather than a thread-local, for the reason
+/// `reset_window`'s counters give: every memory test holds
+/// `block_pool::test_guard`, which serializes the suite, so the figure a test
+/// reads is its own. Process-wide is also what the reading is for — a free
+/// refused anywhere is a slot out of circulation, and a per-thread tally would
+/// hide one made on a fixture's second thread.
+#[cfg(test)]
+static REFUSED_FREES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Count one free refused as a repeat, and nothing at all without `cfg(test)`:
+/// [`ll_free`] calls it either way.
+///
+/// A counter and not an abort, so the arm a test build takes is the arm a
+/// release build takes: the refusal is a silent return in both, and what a
+/// test build adds is the tally
+/// (`dev/DECISIONS.md`, "a second `ll_free` of an entity is refused, and the
+/// mark is the bit it is refused on").
+#[inline]
+fn note_refused_free() {
+    #[cfg(test)]
+    REFUSED_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many frees have been refused as repeats, cleared by the read.
+#[cfg(test)]
+pub(crate) fn take_refused_frees() -> usize {
+    REFUSED_FREES.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Give back a slot the caller took from the entity heap and never published.
+///
+/// **An unpublished slot may still carry the mark of the free that put it on
+/// the free list** — the allocator hands bytes 0-7 back as the last occupant
+/// left them, and [`crate::refcount::publish_header`] is what takes the bit
+/// down. A caller that skips the publication skips the hand-back with it, so
+/// its free reads as a repeat and the slot is out of circulation for good
+/// (`crate::refcount::DEAD_IN_PLACE`). This is that hand-back and the free
+/// together.
+///
+/// A slot handed out by the bump cursor carries nothing, commissioning having
+/// zeroed it; whether a given call got one of those is allocation history, so
+/// every unpublished free goes through here rather than deciding.
+///
+/// Every category of entity memory goes through here, not only the ones whose
+/// block kind makes [`ll_free`] read the mark: the clear is a two-byte store
+/// into a header the caller owns and has not published, which is sound
+/// wherever the memory came from.
+///
+/// **What must not go through here is a block base.** The retained sentinel
+/// `promote::arena_reset_full` passes to [`ll_free`] addresses a `BlockHeader`,
+/// and the store below would land on that header's second word rather than on
+/// an entity's flags; [`ll_free`] separates the sentinel by
+/// [`points_to_gc_entity`], which is a test this function does not make.
+///
+/// # Safety
+/// `slot` addresses an entity header — never a block base — in a live
+/// allocation of this thread that was never published as an entity, is
+/// readable at its first eight bytes, and is not freed yet.
+pub(crate) unsafe fn free_unpublished(slot: *mut u8) {
+    unsafe { crate::refcount::clear_dead_in_place(slot as *mut crate::refcount::RcHeader) };
+    unsafe { ll_free(slot) };
+}
+
 /// Free a pointer from [`ll_alloc`]. Dispatches on the owning block's
 /// kind — no size needed.
 ///
@@ -298,6 +363,36 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         // the process.
     }
 
+    // **A second free of one entity does nothing.** The flags bit taken here
+    // says this slot is `ll_free`'s and has not been handed back, so the
+    // repeat reads it up and returns, touching no free list, no pool and no
+    // mapping (`crate::refcount::DEAD_IN_PLACE`).
+    //
+    // **How far the refusal reaches differs by population**, and the
+    // populations are three: a size-class slot and a retained survivor carry
+    // the bit until the slot is published again; a pooled large entity's
+    // second free reads `BLOCK_KIND_FREE` instead, the pool having re-stamped
+    // the kind; an OS-direct run is covered for no time at all, its memory
+    // being the operating system's from the first free
+    // (`crate::refcount::DEAD_IN_PLACE`).
+    //
+    // Entities only: a raw heap block carries no header to take, and the
+    // retained sentinel addresses a `BlockHeader` rather than an `RcHeader`
+    // ([`points_to_gc_entity`]). The flags come back as they stood, which is
+    // what the candidate arm below reads instead of loading them again.
+    let flags = if points_to_gc_entity(kind, ptr, block) {
+        match unsafe { crate::refcount::take_slot_for_free(ptr as *mut crate::refcount::RcHeader) }
+        {
+            Some(flags) => flags,
+            None => {
+                note_refused_free();
+                return;
+            }
+        }
+    } else {
+        0
+    };
+
     // A reset in flight on this thread reads one header word of every
     // survivor it holds after its fixpoint, and one of every child their
     // slots still name, so a body whose free would return memory to the
@@ -341,15 +436,14 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // zero-count member out of the pool (`dev/DECISIONS.md`, "A block's `used`
     // falls at the slot's return").
     //
-    // The bit is cleared and the slot returned by the retirement, which
-    // is `cycle::queue::release_queue_segments`'s today and a collection's
-    // commit later (`PLAN.md` S36.6). Only the entity populations are asked:
-    // a raw heap block carries no header to ask.
-    if points_to_gc_entity(kind, ptr, block)
-        && unsafe {
-            crate::refcount::is_registered_candidate(ptr as *const crate::refcount::RcHeader)
-        }
-    {
+    // Nothing retires such an entry yet: the clear of this bit and the return
+    // of the slot are `PLAN.md` S36.6's and S39.1's, and until one of them
+    // lands a slot withheld here is withheld for the life of the process. The
+    // retirement will hand the slot back through this same entry point, so it
+    // owes the mark the take above set a clear of its own; without that clear
+    // its free reads as a repeat and the slot never returns
+    // (`crate::refcount::DEAD_IN_PLACE`).
+    if crate::refcount::is_registered_candidate(flags) {
         return;
     }
 
@@ -430,7 +524,7 @@ unsafe fn ll_free_large(ptr: *mut u8, block: *mut u8, kind: u32) {
                 // A block nothing holds any more, returned by the reset
                 // when every survivor died inside it or the payload it was
                 // pinned for did (`promote::arena_reset_full`), or by the
-                // walk that returned the last mark it carried
+                // close that made the last withheld return it was holding
                 // (`crate::cycle::deferred_slot_reuse`). Nothing is
                 // counted down — the count word already reads zero, and
                 // a decrement from zero would underflow into the
@@ -442,18 +536,6 @@ unsafe fn ll_free_large(ptr: *mut u8, block: *mut u8, kind: u32) {
                 unsafe { crate::memory::retained::release_emptied(block) };
                 return;
             }
-
-            // A survivor still carrying `DEAD_IN_PLACE` would take the
-            // decrement below and keep the mark, and a mark that outlives its
-            // window is one no window can answer for. The clear
-            // belongs to whoever returns the memory
-            // (`crate::refcount::clear_dead_in_place`), and this is where a
-            // path that forgot it shows up.
-            debug_assert_ne!(
-                unsafe { crate::refcount::slot_state(ptr as *const crate::refcount::RcHeader) },
-                crate::refcount::SlotState::DeadInPlace,
-                "a retained survivor reaches its block's count with its dead-in-place mark cleared"
-            );
 
             // A promoted survivor died. The block it was promoted in is
             // former arena memory with no free list and no stride, so

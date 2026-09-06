@@ -160,9 +160,12 @@ fn entity_and_raw_allocations_are_segregated_end_to_end() {
         r as usize & !BLOCK_MASK,
         "the two populations never share a block"
     );
-    // Both go home through the one size-less free.
+    // Both go home through the one size-less free, the entity slot through the
+    // unpublished form of it: nothing was published into it, so nothing took
+    // the mark of the free that may have put it on the free list
+    // (`memory::stdapi::free_unpublished`).
     unsafe {
-        crate::memory::stdapi::ll_free(e);
+        crate::memory::stdapi::free_unpublished(e);
         crate::memory::stdapi::ll_free(r);
     }
 }

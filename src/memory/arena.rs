@@ -352,8 +352,10 @@ impl Arena {
             // Where `alloc_large` asserts, this entry point reports: nothing is
             // published into the slot yet, so handing the run straight back
             // leaves no zero-count member and no leak, and the factory above
-            // raises on it the way it raises on any other refusal.
-            unsafe { crate::memory::stdapi::ll_free(entity) };
+            // raises on it the way it raises on any other refusal. Unpublished,
+            // so the return is the unpublished form
+            // (`memory::stdapi::free_unpublished`).
+            unsafe { crate::memory::stdapi::free_unpublished(entity) };
             return std::ptr::null_mut();
         }
 

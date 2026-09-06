@@ -198,9 +198,10 @@ being a power of two for most classes. The free list has none of those
 (`rfc/model/memory/heap-slot-allocation.md`, "Fix 5", which also says why
 the benchmark that first chose the bitmap was not measuring what it
 claimed). The link lived in bytes 0–7 until the entity heap needed those
-bytes: they must survive a free untouched, because in an entity block
-they keep the dead entity's final refcount-0 header, which is how a trace
-tells a free slot from a live entity. One offset for both populations keeps a
+bytes: the count in them must survive a free, because in an entity block it
+is the dead entity's final refcount of zero and that is how a trace tells a
+free slot from a live entity. The flags beside it are written on a free, by
+`ll_free`'s own head and by nothing below it (`refcount::DEAD_IN_PLACE`). One offset for both populations keeps a
 single code path, and the cache-line argument is unchanged (every class
 is ≥ 16 bytes).
 
@@ -238,9 +239,19 @@ Three rules distinguish the entity population:
   slot therefore reads `refcount 0` from commissioning until the instant
   it is a fully formed entity — the walker's three-way classification
   never meets bytes that lie.
-- **A free leaves bytes 0–7 untouched** (the link is at 8–15): the dead
-  entity's final `refcount 0` header *is* the vacancy stamp. There is no
-  teardown stamp to forget.
+- **A free leaves the count in bytes 0–7 untouched** (the link is at 8–15):
+  the dead entity's final `refcount 0` *is* the vacancy stamp, and there is no
+  teardown stamp to forget. The flags half of that word is written once per
+  free, at the head of `ll_free` and ahead of every path below it: the bit
+  says the slot is the free's and has not been handed back, which is what a
+  second `ll_free` of one entity is refused on (`refcount::DEAD_IN_PLACE`).
+  The refusal lasts as long as the slot holds that free: publishing the next
+  occupant takes the bit down, so a free of the old pointer after the slot has
+  been reissued is a free of the new occupant and is undefined. It covers this
+  population and the retained survivors; a pooled large entity's second free is
+  absorbed by the pool's re-stamp of the block kind instead, and an OS-direct
+  run's memory is unmapped by its first free, which leaves a second one
+  undefined from that instant.
 - **Abandoned lists are per population**: adoption never moves a block
   across populations, so a raw heap can never hand out entity-block
   slots.
@@ -484,8 +495,9 @@ arrive with their own subsystems.
 the entity population, arena and immortal from theirs — zero-fills the
 body, writes the class, and publishes the header **last**, as one 8-byte
 store (until that store the slot reads refcount 0, so a trace crossing
-the block classifies it as free rather than reading a half-built
-entity). That is all it does. `ll_object_constructed` is called once the user constructor
+the block classifies it as unoccupied rather than reading a half-built
+entity; the same store hands back a recycled slot, all eight bytes of the
+previous occupant's header going down at once). That is all it does. `ll_object_constructed` is called once the user constructor
 has returned successfully — it sets the header's `DESTRUCTOR_PENDING` flag
 and, for an arena object, writes the destructor-log record. Teardown
 dispatches on that flag, never on the class, so an object whose
@@ -781,7 +793,9 @@ Without it a retained block's occupants are root sources and a ring
 living entirely among promoted survivors is never collected. The list is
 frozen — nothing allocates into a dead arena — and a survivor that later
 dies leaves refcount 0 behind, which is the walk's own occupancy test, so
-a stale entry is skipped like a free slot. No process-wide table names
+a stale entry is skipped like an unoccupied slot. Nothing republishes into a
+retained block, so such an entry keeps the flags bit its free took for as long
+as the block stands. No process-wide table names
 retained blocks: every reader holds the block's address, and the
 test-only enumerator finds the blocks by their kind in the region scan.
 

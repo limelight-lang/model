@@ -11,11 +11,12 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-06 · Active: S44, from S44.3, which turns the mark into the
-bit a second `ll_free` of an entity is refused on. S44.1 put every withheld
-return on one stack through the dead entities, S44.6 moved the row sweep ahead
-of the candidate restore, and S44.2 deleted the chain, its region and the block
-walks; all three are closed. S36 waits behind it:
+Updated: 2026-09-06 · Active: S44, from S44.4, the measurement of the close
+against the chain. S44.1 put every withheld return on one stack through the
+dead entities, S44.6 moved the row sweep ahead of the candidate restore, S44.2
+deleted the chain, its region and the block walks, and S44.3 turned the mark
+into the bit a second `ll_free` of an entity is refused on; all four are
+closed. S36 waits behind it:
 its S36.9 and S36.12 stay open on verifications later steps owe, and S36.3 is
 the next of its steps to be built.
 S43 closed the withheld-return window: past its region the module draws
@@ -679,7 +680,7 @@ a second time; S44.4 last, a measurement being of what is built.
         red: a pop that moves the head after the return, and a
         `WithheldReturns::drop` stubbed to close the window alone — five cases,
         one per population and one per disposition.
-- [ ] S44.3 The mark becomes the bit a second free is refused on
+- [x] S44.3 The mark becomes the bit a second free is refused on
       done: flags bit 15 keeps its place and changes meaning — "`ll_free` has
         taken this slot and has not handed it back" — so a second `ll_free` of
         an entity returns without doing anything while its block still stands;
@@ -714,10 +715,61 @@ a second time; S44.4 last, a measurement being of what is built.
         setting per arm instead of at the head, a separate entry for the
         replays, a test-build abort, guarding `BLOCK_KIND_HEAP`, two steps, and
         landing before S44.2.
-      note: the guarantee is partial by construction and the docs say so — a
-        second free is a no-op while the slot's memory still reads as that
-        slot, and undefined once its block has gone home and been
-        recommissioned under another kind.
+      note: the guarantee is partial by construction and the docs say so, by
+        population: a size-class slot and a retained survivor carry the mark
+        until the slot is published again, a pooled large entity's second free
+        is absorbed by the pool's re-stamp of the block kind instead, and an
+        OS-direct run is covered for no time at all, its first free unmapping
+        the memory a second one would read.
+      Critic 2026-09-06 round 1: ten findings. The largest was right and its
+        instances were not: a free of a slot the caller never published is
+        refused wherever the allocator served a recycled one, and of the three
+        sites it named two were latent while the one that fired it did not
+        name. What found that one was a probe — the refusal made to panic, the
+        suite run at one thread and at four. The rule has a name now,
+        `stdapi::free_unpublished`, and every path that frees an unpublished
+        slot goes through it. The guarantee's boundary was written as the
+        block's recommissioning where it is the slot's reissue, in six places.
+        `Disposition::Abandon` leaves a slot no `ll_free` will take, and the one
+        case over that arm claimed to return it by hand. The template case
+        pinned neither of its premises and is rebuilt on both; the two new cases
+        took no `test_guard`; three post-close messages claimed a disposition
+        the state word cannot show; four prose surfaces were false, invariant 12
+        among them. The counter became a plain static. Refused: a clear in
+        `Heap::alloc`, which the Sage had already refused by name.
+      Critic 2026-09-06 round 2: eleven findings, and the first of them sat
+        inside round 1's own repair — `Disposition`'s two docstrings still said
+        the abandon path clears. The one with teeth: four cases pinning the
+        withholding read only the header, which now says the same for a
+        withheld slot and a returned one, so a build whose `classify` withholds
+        nothing passed them; each has `deferred_slot_count` beside it now, and
+        all five of that family go red on that mutation. The OS-direct run is
+        covered for no time at all — its first free unmaps the memory a second
+        would read — where five surfaces folded it into the reissue boundary.
+        `arena::alloc_entity` freed an unpublished run without the hand-back;
+        `ll_entity_cells_return`'s own doc sent its one outside caller to the
+        free that loses the cell; `free_unpublished`'s contract admitted the
+        block sentinel, whose offset 4 is another header's word;
+        `take_slot_for_free` carried a `debug_assert` that would abort out of
+        `ll_c_free` in an embedder's debug build. Its proposal for the second
+        polarity was taken: `block_pool::test_guard`'s drop reads the tally, so
+        every memory test in the suite is the detector, and a build without the
+        hand-back reddens seven cases, five of them through that assertion.
+        The Miri finding is the second instance of the rule
+        `dev/POSTMORTEM.md` states under 2026-08-26, which had a docstring and
+        no reader; it has a reader now.
+      handoff: flags bit 15 says `ll_free` has taken the slot and has not
+        handed it back. The head of `ll_free` refuses a free that finds it up
+        and counts the refusal; `block_pool::test_guard`'s drop asserts the
+        count is zero, which makes every memory test a detector for a path that
+        frees without handing back. What hands a slot back is
+        `publish_header`, the close's `dispose_of` ahead of its return, the
+        reset window's flush, and `stdapi::free_unpublished`. Seen red, each on
+        its own mutation: the refusal deleted (2 cases), the close clearing on
+        both dispositions (1), the close returning without the hand-back (28),
+        the reset flush's hand-back (5), `free_unpublished`'s (7, five of them
+        through the guard), and a `classify` that withholds nothing (5).
+        Commit 0000000.
 - [ ] S44.4 Measure the close against the chain
       done: S43.1's fixture — 381 deaths, the dense arm at classes 32 and 128,
         the sparse arm at 256, eight collections with the eighth killing inside

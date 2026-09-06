@@ -171,7 +171,7 @@ pub unsafe fn ll_template_new(
             // thousand values takes a block-aligned run of its own, and
             // that one would keep a registry entry every collection
             // walks for the life of the process.
-            unsafe { crate::memory::stdapi::ll_free(mem) };
+            unsafe { crate::memory::stdapi::free_unpublished(mem) };
             return std::ptr::null_mut();
         }
     }

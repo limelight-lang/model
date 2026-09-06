@@ -7,6 +7,51 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-06 — `refcount::` had never been run under Miri, and its stack-header cases were undefined
+
+**What happened.** S44.3's Miri pass over the modules it touched reported
+undefined behaviour in
+`refcount::tests::the_three_states_of_a_slot::a_live_slot_answers_from_the_count_alone`,
+a case the step had not changed: `slot_state(&raw const live)` over a header
+built on the stack. The read reaches `AtomicU32::load`, which retags for
+shared-read-write, and a pointer taken with `&raw const` grants read-only —
+"trying to retag from <…> for SharedReadWrite permission … but that tag only
+grants SharedReadOnly". Every case in the file did the same, taking
+`&raw const` for the reads and `&raw mut` for the writes of one header.
+
+**This is the second instance.** The entry of 2026-08-26 below, "an atomic
+read needs write provenance, and `&raw const` does not carry it", is the same
+defect in the same test directory, and it ends with the rule for the whole
+crate: a pointer handed to any accessor in `refcount` carries write
+provenance, which in a fixture means `&raw mut` over a local header.
+
+**Why it was possible a second time.** That rule got a docstring on
+`entity_refcount` and nothing that reads the sources. Its neighbour in the same
+directory got the other kind: `who_may_read_a_header`'s occupancy guard walks
+every file looking for a hand-rolled count test. A rule with a reader outlives
+the session that wrote it; a rule with a docstring lasts until the next fixture
+is written by someone who did not open that file. `&raw const` also reads as
+the careful spelling for a read, which is what makes the wrong one attractive.
+
+**Why it was not caught.** Miri runs at the close of a logical block and is
+targeted at the modules that block touched, and no block between the two
+instances had named `refcount::`. Nothing in the module suggests one: its cases
+allocate nothing, hold no pointer into an arena and touch no block, which is
+the population the run is usually for. `cargo test` passes the defect by
+construction.
+
+**What changed.** Each case takes one `&raw mut` per header and reuses it for
+both halves, and the rule gained the reader it lacked:
+`refcount::tests::who_may_read_a_header::`
+`every_pointer_into_an_accessor_carries_write_provenance` walks the sources for
+`&raw const` reaching any accessor of this header, with its own file exempt for
+its fixture and nothing else — `exempt_file`'s wider exemption would have
+covered the offending file itself. `refcount::` runs clean under Miri: 26
+passed, 4 ignored, 10.4 s of Miri's clock. What the targeting rule takes from
+this: a module whose cases build values on the stack is not outside Miri's
+reach, and "the modules a block touched" includes the ones whose tests read a
+value through a raw pointer, not only the ones whose production code does.
+
 ## 2026-09-06 — a reversed disposal order left two cases green while they asserted the wrong slot
 
 **What happened.** S44.1 moved every withheld return from the marked-block

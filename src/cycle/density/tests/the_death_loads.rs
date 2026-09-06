@@ -103,7 +103,10 @@ const RECORD_BYTES: usize = size_of::<*mut u8>();
 const SWEEP_OPERATIONS_PER_SLOT: usize = 2;
 
 /// The store the mark puts in a dead slot's own first word
-/// (`refcount::DEAD_IN_PLACE`), which is what the sweep design pays per death.
+/// (`refcount::DEAD_IN_PLACE`). `ll_free` takes that bit at its head for every
+/// entity death, withheld or not, so it is a cost neither design carries over
+/// the other; it stays counted because both arms of the comparison pay it and
+/// the figure is what a death costs rather than what one arm costs.
 const MARK_OPERATIONS_PER_DEATH: usize = 1;
 
 /// Memory operations one append makes with a window open and room in the

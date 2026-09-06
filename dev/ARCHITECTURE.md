@@ -218,23 +218,23 @@ field is lent to):
   sites test it before calling in;
 - bits 13–14, destructor state (`DESTRUCTOR_PENDING` / `DESTRUCTOR_RAN`)
   — the debt protocol between `object` and the death paths;
-- bit 15, `DEAD_IN_PLACE` — the entity died inside a trace window, in memory
-  that window's collection has met, so the death is written here. Three
-  headers carry it: a size-class slot,
-  a retained survivor and a large entity's own header. What finds it is the
-  window's own stack: every withheld slot is pushed through the eight bytes a
-  free list links by, whoever owns its block, and the window's close pops that
-  stack and returns each slot through `ll_free`, so no mark outlives the window
-  that took it. No block is walked and no word of one is read, a walk of a
-  block being bounded by a bump cursor its owner moves. A death in memory the
-  collection never met carries no mark at all and is returned where it
-  stands. The count stays zero under it,
-  and the bit is the only thing that tells such a header from an unoccupied
-  one, so `refcount::slot_state` is the one occupancy test and a guard test
-  bans the two-way one. The bit carried `STRING_OUT_OF_LINE` until the
-  string's two layouts became the kind codes 8 and 9, and taking it
-  fills the mutator's half: a further mutator flag needs a re-lay
-  rather than a free position;
+- bit 15, `DEAD_IN_PLACE` — `ll_free` has taken this slot and has not handed
+  it back. The head of the free sets it for every entity kind and refuses a
+  free that finds it already up, which is what makes a second `ll_free` of one
+  entity do nothing rather than put one address on a free list twice. Three
+  headers carry it: a size-class slot, a retained survivor and a large
+  entity's own header. It stands from the free of one occupant to the
+  publication of the next, so a free-listed slot carries it and so does one
+  whose return a trace window is withholding; what separates those two is the
+  physical return, not the header, and the withheld ones are found through the
+  window's own stack rather than through any bit. What hands a slot back is
+  `refcount::publish_header`, the trace window's close ahead of its return,
+  the reset window's flush, and every path that frees a slot it never published
+  (`memory::stdapi::free_unpublished`). The count stays zero under it, so `refcount::slot_state` is the
+  one occupancy test and a guard test bans the two-way one. The bit carried
+  `STRING_OUT_OF_LINE` until the string's two layouts became the kind codes 8
+  and 9, and taking it fills the mutator's half: a further mutator flag needs
+  a re-lay rather than a free position;
 - bits 16–31, **free and asserted free**. `rc-trace` kept a candidate
   index across 15–31 and `rc-walk` an epoch byte at 16–23, and both went
   on 2026-08-26. `refcount::tests::the_header_the_compiler_shares`
@@ -335,10 +335,13 @@ write them. Each is load-bearing for at least two modules.
    (pinned by `refcount::tests::the_header_the_compiler_shares::header_is_8_bytes_at_offset_zero`).
    What `+8` holds depends on the entity kind; nothing reads `+8`
    without a kind dispatch.
-4. **A dead entity slot keeps its final refcount-0 header** in bytes
-   0–7 — the walker's occupancy test. That is why every intrusive link
+4. **A dead entity slot keeps its final refcount of zero** in bytes
+   0–7, which is the walker's occupancy test. That is why every intrusive link
    through dead memory (heap free list, remote-free list) lives at
-   bytes 8–15, and why entity blocks are zeroed at commissioning.
+   bytes 8–15, and why entity blocks are zeroed at commissioning. The flags
+   half of that word is written on a free, by `ll_free`'s own head and by
+   nothing below it (`refcount::DEAD_IN_PLACE`); the count is what the
+   invariant is about and no free touches it.
 5. **An escapee's hold-count lives in its `refcount`** while
    `IS_ESCAPEE` is set: the barrier and holder teardown maintain it,
    `promote` consumes it. Promotion rewrites the category in place —
@@ -402,9 +405,10 @@ write them. Each is load-bearing for at least two modules.
     (eager-death amendment, 2026-07-27, superseding the F5
     deferral/marker scheme): a release reaching zero always tears down
     at the natural point, with only the memory's reuse deferred
-    (out-of-band — the window that defers a slot's reuse writes the mark in
-    the dead entity's header and the stack's link in its byte 8, and nothing
-    else of the memory). The zero-count-member rule that goes with it opens the
+    (out-of-band — the window that defers a slot's reuse writes the stack's
+    link in the dead entity's byte 8 and nothing else of the memory; the flags
+    bit in its header is `ll_free`'s own and says nothing about the
+    deferral). The zero-count-member rule that goes with it opens the
     cycle teardown: a component holding a member already at `rc 0` is
     dropped whole, before any field is traced or any guard written
     (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation",

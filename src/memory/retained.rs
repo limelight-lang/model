@@ -291,26 +291,17 @@ pub(crate) unsafe fn release_emptied(block: usize) {
 /// rule"). `heap::for_each_entity_slot` applies this same test to these
 /// same addresses, so the two must read at one width and answer alike.
 ///
-/// **A survivor marked dead in place would be counted dead here**, and
-/// `register` would then return a block to the pool with the mark still
-/// standing on it. No such survivor can reach this call, and the ordering
-/// is what says so: a mark is taken only where a trace has stamped the
-/// block (`crate::cycle::deferred_slot_reuse`, `classify`), while
-/// this call runs at retention, over a collector line `promote::retain_block`
-/// has just zeroed and before any trace can address the block. The
-/// assertion below is the guard of that ordering.
+/// **A survivor whose `ll_free` has already run is counted dead here**, and
+/// that is what the caller wants: the block's live count is the occupants it
+/// still has. Such a survivor carries the bit `ll_free` takes
+/// (`crate::refcount::DEAD_IN_PLACE`), which is one of the two zero-count
+/// states this predicate answers alike.
 ///
 /// # Safety
 /// `address` must be readable at its first eight bytes, which is the count
 /// and the mutator's half of the flags.
 unsafe fn is_occupied(address: usize) -> bool {
     let state = unsafe { crate::refcount::slot_state(address as *const crate::refcount::RcHeader) };
-    debug_assert_ne!(
-        state,
-        crate::refcount::SlotState::DeadInPlace,
-        "a survivor being registered carries a dead-in-place mark, which means a trace \
-         stamped this block before its list was published"
-    );
     state == crate::refcount::SlotState::Live
 }
 

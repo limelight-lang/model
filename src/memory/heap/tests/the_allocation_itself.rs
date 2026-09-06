@@ -113,7 +113,7 @@ fn reserved_cells_are_accounted_returned_cells_recirculate() {
         !cells[..n].contains(&p),
         "a reserved cell was double-issued"
     );
-    unsafe { crate::memory::stdapi::ll_free(p) };
+    unsafe { crate::memory::stdapi::free_unpublished(p) };
     // Returned cells recirculate: the free-list is LIFO, so the
     // next allocation is the last cell returned.
     unsafe { ll_entity_cells_return(cells.as_ptr(), n) };
@@ -122,5 +122,45 @@ fn reserved_cells_are_accounted_returned_cells_recirculate() {
         cells[..n].contains(&reused),
         "a returned cell did not recirculate"
     );
-    unsafe { crate::memory::stdapi::ll_free(reused) };
+    unsafe { crate::memory::stdapi::free_unpublished(reused) };
+}
+
+/// A cell the reserve took off a free list carries the mark of the free that
+/// put it there, and the return hands it back before it offers it to `ll_free`
+/// again. Without that clear the return is read as a repeat and the cell never
+/// reaches the free list (`crate::refcount::DEAD_IN_PLACE`).
+///
+/// The case above reserves out of virgin bump space, where no free has run and
+/// no mark stands: [`Heap::reserve_cells`] takes a block's virgin tail first
+/// and its free list only after. So this one drains the class's virgin space
+/// with a reservation of its own and gives it back, which leaves the class one
+/// block with a free list and no tail — the state in which a reserve reaches a
+/// slot some free has taken.
+#[test]
+fn a_cell_taken_off_a_free_list_recirculates_after_its_return() {
+    let _g = crate::memory::block_pool::test_guard();
+    let class = MAX_SMALL;
+
+    let mut drained = vec![std::ptr::null_mut::<u8>(); 4096];
+    let mut contiguous = 0usize;
+    let n = unsafe { ll_entity_reserve(class, 4096, drained.as_mut_ptr(), &mut contiguous) };
+    assert!(n > 1, "the class served nothing to drain; got {n}");
+    unsafe { ll_entity_cells_return(drained.as_ptr(), n) };
+
+    let mut cells = [std::ptr::null_mut::<u8>(); 1];
+    let taken = unsafe { ll_entity_reserve(class, 1, cells.as_mut_ptr(), &mut contiguous) };
+    assert_eq!(taken, 1, "the reserve answered nothing");
+    assert_eq!(
+        unsafe { crate::refcount::slot_state(cells[0] as *const crate::refcount::RcHeader) },
+        crate::refcount::SlotState::DeadInPlace,
+        "the reserve handed out a slot a free had taken, which is this case's premise"
+    );
+
+    unsafe { ll_entity_cells_return(cells.as_ptr(), taken) };
+    let reused = unsafe { entity_alloc(class) };
+    assert_eq!(
+        reused, cells[0],
+        "a cell the return did not hand back never reaches the free list"
+    );
+    unsafe { crate::memory::stdapi::free_unpublished(reused) };
 }

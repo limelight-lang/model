@@ -8,6 +8,71 @@ never edited or deleted.
 
 ---
 
+## 2026-09-06 — a second `ll_free` of an entity is refused, and the mark is the bit it is refused on
+
+**Ruled by Edmond**, who asked for the guarantee, and by the Sage, which chose
+its shape on the question of where the fact is kept.
+
+**Decided.** Flags bit 15 keeps its place and changes meaning. It said "this
+entity died inside a trace window that is withholding its return"; it now says
+"`ll_free` has taken this slot and has not handed it back". The head of
+`ll_free` sets it for the entity kinds, on the flags load the candidate arm
+below it already made, and refuses a free that finds it up: such a free returns
+having touched no free list, no pool and no mapping. A refusal is counted by a
+thread-local a test reads, not aborted.
+
+**What hands a slot back**, which is the whole of what clears the bit:
+`refcount::publish_header`, whose one eight-byte store takes the previous
+occupant's flags down with the rest of the word; the trace window's close,
+ahead of the return it makes; the reset window's flush, ahead of the free it
+deferred; and the two paths that free a slot they never published,
+`heap::ll_entity_cells_return` and `template`'s free after a refused store. A
+path that frees such a slot without clearing first leaks it, its free being
+read as a repeat. The candidate retirement is the one such path not built yet,
+and it owes the clear (`PLAN.md` S36.6 and S39.1).
+
+**Why one bit answers both meanings.** They are sequential sub-states of a zero
+count: withheld by a window, then returned. The head check refuses a second
+free in either, and nothing enumerates a withheld slot by the bit — the
+window's own stack does that, which is what S44.1 built. Bits 0-14 are
+assigned and 15 was the only spare, so the promise to hand it back to the
+mutator is withdrawn before it was ever kept; what the mutator loses is a bit
+two already-refused features wanted.
+
+**The store breaks the letter of "the allocator never writes bytes 0-7" and
+not its reason.** The write is `ll_free`'s own, at its head and ahead of every
+path below it; the count still reads zero, which is what every walker's
+occupancy test asks; and the mark already wrote those two bytes from outside
+the allocator before this change. `docs/memory-manager.md` and
+`dev/ARCHITECTURE.md` invariant 4 now state the rule about the count rather
+than about the word.
+
+**How far the refusal reaches differs by population, and the documents say
+so.** A size-class slot and a retained survivor carry the bit until the slot is
+handed out and published again; past that publication a free of the old pointer
+is a free of the new occupant, undefined as every free of reissued memory is. A
+pooled large entity never reaches the bit on a second free — the first free
+returns its block to the pool, which re-stamps the kind, and the second falls
+through the arm that tolerates a freed block. An OS-direct run is covered for
+no time at all: its first free unmaps the memory, so the second faults reading
+the block's kind. `ll_malloc` is out of scope for a different reason: a raw
+heap block carries no header to take.
+
+**Five `debug_assert` guards went with the invariant they held** — at the two
+entrances to a block's free list, at the retained survivor's decrement, at the
+pool and unmap entrance of a large entity, and at `retained::is_occupied`. Each
+refused a slot that reached those places marked, and each now describes the
+ordinary case. `heap::marked_link`, `large_entity::marked_link` and the
+`marked_next` word in both headers went at the same time, nothing having listed
+a block since the stack took every withheld return.
+
+**Refused**, by the Sage: the free-list link as the fact, walking the block's
+free list, a sentinel in the count word, a spare kind code, a clear in
+`Heap::alloc`, a second bit, setting the bit per arm instead of at the head, a
+separate journal entry for the replays, an abort in a test build, guarding
+`BLOCK_KIND_HEAP`, splitting the work in two steps, and landing before S44.2 —
+whose deleted walk would have returned every free-listed slot a second time.
+
 ## 2026-09-06 — the row sweep runs ahead of the candidate restore
 
 **Ruled by the Sage**, on a finding of the second Critic round over S44.1.

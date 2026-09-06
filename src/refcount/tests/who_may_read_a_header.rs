@@ -266,10 +266,11 @@ const COUNTS_AS_A_NUMBER: [&str; 3] = ["cycle/validation.rs", "object.rs", "memo
 /// The lines of `text` that test a slot's occupancy by hand.
 ///
 /// The shape is a count compared against zero, which separates two states
-/// where a slot has three: a slot whose occupant died inside a trace window
-/// that could not record the return is neither live nor free
-/// ([`crate::refcount::DEAD_IN_PLACE`]), and a walker asking the count alone
-/// reads it as free.
+/// where a slot has three: a slot `ll_free` has taken and not handed back is
+/// neither live nor free ([`crate::refcount::DEAD_IN_PLACE`]), and a walker
+/// asking the count alone cannot name it. The two agree on which slots are
+/// live; what a hand-rolled test loses is the state a reader needs whenever
+/// the question is what may be handed out.
 ///
 /// **What it cannot see is the comparison on its own line**, the count
 /// having been bound to a local first. The walk is line-oriented, as the
@@ -331,10 +332,102 @@ fn a_slots_occupancy_is_asked_through_one_predicate() {
 
     assert!(
         offences.is_empty(),
-        "a slot's occupancy is tested by hand, which reads a slot marked \
-         dead in place as free. Ask `refcount::slot_state`:\n{}",
+        "a slot's occupancy is tested by hand, which cannot name the state a \
+         free leaves behind. Ask `refcount::slot_state`:\n{}",
         offences.join("\n")
     );
+}
+
+/// The lines of `text` that hand a `refcount` accessor a pointer taken with
+/// `&raw const`.
+///
+/// Every accessor of this header reads through an atomic, and an atomic read
+/// retags for shared-read-write, which a pointer taken with `&raw const` does
+/// not grant. Over a heap allocation the provenance is the allocation's and
+/// the spelling costs nothing; over a value on the stack — which is what a
+/// fixture builds — it is undefined, and only Miri says so
+/// (`dev/POSTMORTEM.md`, "an atomic read needs write provenance, and
+/// `&raw const` does not carry it").
+///
+/// Line-oriented, like its two neighbours, so a call split across lines from
+/// the `&raw const` that feeds it is past this walk.
+fn const_provenance_into_an_accessor(text: &str) -> Vec<(usize, String)> {
+    const ACCESSORS: [&str; 6] = [
+        "slot_state(",
+        "header_refcount(",
+        "entity_refcount(",
+        "header_pair(",
+        "mutator_flags(",
+        "refcount_load(",
+    ];
+
+    let mut found = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with("//") || !line.contains("&raw const") {
+            continue;
+        }
+
+        if ACCESSORS.iter().any(|call| line.contains(call)) {
+            found.push((number + 1, line.trim().to_string()));
+        }
+    }
+
+    found
+}
+
+/// No caller hands a `refcount` accessor a read-only pointer.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "reads the crate's sources; `opendir` is unavailable under Miri's isolation, \
+              and the abort takes the whole slice with it"
+)]
+fn every_pointer_into_an_accessor_carries_write_provenance() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(root.as_path(), &mut files);
+    assert!(files.len() > 50, "the source walk found almost nothing");
+
+    let mut offences = Vec::new();
+    for path in &files {
+        let relative = path.strip_prefix(&root).expect("a path under src/");
+        // This file alone, for its fixture below, and not the whole of
+        // `refcount/` the way `exempt_file` reads it: the defect this guard
+        // exists for stood in `refcount/tests/the_three_states_of_a_slot.rs`,
+        // which that exemption would have covered.
+        if relative.to_string_lossy().replace('\\', "/")
+            == "refcount/tests/who_may_read_a_header.rs"
+        {
+            continue;
+        }
+
+        let text = fs::read_to_string(path).expect("a source file is readable");
+        for (number, line) in const_provenance_into_an_accessor(&text) {
+            offences.push(format!("{}:{number}: {line}", path.display()));
+        }
+    }
+
+    assert!(
+        offences.is_empty(),
+        "a `refcount` accessor is handed a pointer taken with `&raw const`, \
+         which grants no write permission for the atomic read inside it. Take \
+         one `&raw mut` per header and reuse it:\n{}",
+        offences.join("\n")
+    );
+}
+
+/// The provenance guard has to see an offence, or it passes by finding nothing.
+#[test]
+fn the_provenance_guard_sees_a_const_pointer() {
+    let source = "\
+fn case() {
+    let mut header = RcHeader::new(MemoryCategory::GcHeap, 0);
+    assert_eq!(unsafe { slot_state(&raw const header) }, SlotState::Free);
+}
+";
+    let found = const_provenance_into_an_accessor(source);
+    assert_eq!(found.len(), 1, "the guard read {found:?}");
+    assert_eq!(found[0].0, 3);
 }
 
 /// The guard has to see an offence, or it passes by finding nothing.

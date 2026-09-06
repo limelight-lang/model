@@ -81,3 +81,74 @@ fn a_dying_template_releases_what_it_held() {
         }
     });
 }
+
+/// A refused store frees memory the factory never published, and that free
+/// needs the slot handed back first: the head of `ll_free` took it, and a free
+/// of a slot `ll_free` still holds is read as a repeat
+/// (`crate::refcount::DEAD_IN_PLACE`). Without the clear the instance's slot
+/// stays out of circulation for the life of the process.
+///
+/// **Two premises, and the case pins both.** The slot the factory draws must
+/// be one a free has taken, or the clear is a no-op over a virgin slot and
+/// nothing is exercised: the class's virgin space is drained through a
+/// reservation and given straight back, which leaves the class free lists and
+/// no tail. And the build must fail at the store rather than at its own
+/// allocation, or no free is reached at all: an allocation of the same class
+/// is made under the same forced refusal and must succeed.
+///
+/// The refusal itself is the one the barrier has: an arena COW string stored
+/// into a `GcHeap` template is copied out of the arena, and that copy is an
+/// allocation the pool can refuse.
+#[test]
+fn a_refused_store_gives_the_instances_slot_back() {
+    let _g = crate::memory::block_pool::test_guard();
+    let cls = ClassBuilder::new("InterpolatedString").template().build();
+    let shape = shape_of(&["", ""]);
+
+    with_ctx(|ctx| {
+        let payload = vec![b'x'; crate::memory::heap::MAX_SMALL + 16];
+        let s = unsafe { ll_string_new(ctx, MemoryCategory::RequestArena, &payload) };
+        assert!(!s.is_null());
+        let held = [Value::entity(Tag::String, s as *mut RcHeader)];
+
+        let size = VALUES_OFFSET + size_of::<Value>();
+        let mut drained = vec![std::ptr::null_mut::<u8>(); 4096];
+        let mut contiguous = 0usize;
+        let n = unsafe {
+            crate::memory::heap::ll_entity_reserve(
+                size,
+                4096,
+                drained.as_mut_ptr(),
+                &raw mut contiguous,
+            )
+        };
+        assert!(n > 1, "the class served nothing to drain; got {n}");
+        unsafe { crate::memory::heap::ll_entity_cells_return(drained.as_ptr(), n) };
+
+        let oom = crate::memory::block_pool::force_oom();
+        let probe = unsafe { crate::memory::heap::entity_alloc(size) };
+        assert!(
+            !probe.is_null(),
+            "the drained class serves under the forced refusal, so the build's \
+             own allocation is not what fails below"
+        );
+        assert_eq!(
+            unsafe { crate::refcount::slot_state(probe as *const RcHeader) },
+            crate::refcount::SlotState::DeadInPlace,
+            "and it serves a slot a free has taken, which is what the build's \
+             own free has to hand back"
+        );
+        unsafe { crate::refcount::clear_dead_in_place(probe as *mut RcHeader) };
+        unsafe { crate::memory::stdapi::ll_free(probe) };
+        let _ = crate::memory::stdapi::take_refused_frees();
+
+        let t = unsafe { ll_template_new(ctx, cls, &*shape, &held, MemoryCategory::GcHeap) };
+        drop(oom);
+        assert!(t.is_null(), "the escape copy was refused, so the build was");
+        assert_eq!(
+            crate::memory::stdapi::take_refused_frees(),
+            0,
+            "the refused build handed its own slot back before it freed it"
+        );
+    });
+}

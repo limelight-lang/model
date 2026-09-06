@@ -76,6 +76,11 @@ fn an_object_of_ten_thousand_properties_is_built_read_and_torn_down() {
 /// taker gets memory the first is already using. What stops it is
 /// that `put` re-stamps the kind, so the second `ll_free` reads
 /// `BLOCK_KIND_FREE` and falls through the arm that tolerates it.
+///
+/// The entity guard is not what answers here and could not be: it reads the
+/// block's kind to find a header to test, and by the second free that kind is
+/// the pool's (`crate::refcount::DEAD_IN_PLACE`,
+/// `memory::stdapi::tests::a_second_free_of_one_entity`).
 #[test]
 fn a_second_free_of_a_pooled_large_entity_does_nothing() {
     let _g = test_guard();

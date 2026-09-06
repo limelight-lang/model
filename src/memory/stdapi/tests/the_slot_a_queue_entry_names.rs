@@ -120,8 +120,11 @@ fn a_block_emptied_around_a_withheld_zero_count_member_reaches_the_pool_at_the_r
          when the free was withheld rather than at the return"
     );
 
-    // The return, which is the retirement's last act: the bit comes down
-    // and the same entry point takes the slot.
+    // The return, which is the retirement's last act: both bits come down and
+    // the same entry point takes the slot. The mark is one of the two — the
+    // free that was refused above took the slot, and a free of a slot `ll_free`
+    // still holds is read as a repeat (`crate::refcount::DEAD_IN_PLACE`).
+    unsafe { crate::refcount::clear_dead_in_place(header) };
     unsafe { crate::refcount::clear_candidate_bit(header) };
     unsafe { ll_free(zero_count_member) };
 
@@ -150,10 +153,15 @@ fn a_withheld_slot_keeps_the_body_the_death_left() {
         "the retirement reads a zero count out of the parked body"
     );
     assert!(
-        unsafe { crate::refcount::is_registered_candidate(header) },
+        crate::refcount::is_registered_candidate(unsafe { crate::refcount::mutator_flags(header) }),
         "and the bit that parked it is still standing"
     );
 
     unsafe { crate::refcount::clear_candidate_bit(header) };
+    // The retirement hands the slot back before it offers it again. The free
+    // above took the slot and the candidate arm then refused the return, so
+    // without this clear the free below reads as a repeat and the slot is out
+    // of circulation for good (`crate::refcount::DEAD_IN_PLACE`).
+    unsafe { crate::refcount::clear_dead_in_place(header) };
     unsafe { ll_free(cell) };
 }

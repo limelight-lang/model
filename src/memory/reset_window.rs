@@ -145,6 +145,11 @@ unsafe fn close_and_flush() {
     }
 
     for ptr in window.parked_large {
+        // The park was a refusal inside `ll_free`, which had already taken the
+        // slot; the flush hands it back before it offers it again, or the free
+        // below reads as a repeat and is refused
+        // (`crate::refcount::DEAD_IN_PLACE`).
+        unsafe { crate::refcount::clear_dead_in_place(ptr as *mut crate::refcount::RcHeader) };
         unsafe { crate::memory::stdapi::ll_free(ptr) };
     }
 

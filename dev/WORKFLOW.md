@@ -459,8 +459,18 @@ tens of minutes — so a Miri run is timed by `time` or by the shell, and a
 figure quoted from its output says nothing about how long it took.
 
 **What a whole-suite run costs.** No figure for the single configuration
-has been taken. What is measured is `cycle::` on 2026-09-01: 86 passed, 0
-failed, 1 ignored, 387 s on Miri's clock against 10 m 33 s of wall. The
+has been taken. What is measured is a set of module slices, all at two threads
+on 2026-09-06, given as passed/ignored, Miri's clock, wall:
+`memory::large_entity` 7/1, 370 s, 8 m 55 s;
+`promote::tests::the_memory_a_survivor_takes_with_it` 13/0, 342 s, 6 m 39 s;
+`promote::tests::the_reset_reads_no_zero_count_member` 9/0, 340 s, 4 m 8 s;
+`cycle::deferred_slot_reuse` 42/1, 31 s, 2 m 15 s; `memory::stdapi` 16/0, 17 s,
+28 s; `refcount::` 26/4, 10 s, 19 s; `template::` 11/0, 10 s, 20 s;
+`memory::retained` 12/0, 9 s, 25 s; `memory::reset_window` 2/0, 5 s, 12 s.
+`promote::` whole does not finish inside 15 minutes of wall, which is why it is
+taken as those two submodules. An earlier reading of `cycle::` whole — 86
+passed, 387 s, 10 m 33 s on 2026-09-01 — describes a tree several stages back
+and is comparable with nothing above. The
 two-configuration figures of 2026-08-08 went with the configurations
 themselves. One test dominating
 a run has taken it from a quarter of an hour to 28 minutes on its own

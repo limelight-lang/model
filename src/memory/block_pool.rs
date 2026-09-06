@@ -886,6 +886,26 @@ impl Drop for TestGuard {
         crate::memory::reserve::drain_for_test();
         crate::memory::critical::drain_for_test();
         crate::memory::heap::ll_thread_exit();
+
+        // A refused free is a slot out of circulation, and the paths that owe a
+        // hand-back before they free are kept by a rule rather than by a check
+        // (`crate::refcount::DEAD_IN_PLACE`). Every memory test holds this
+        // guard, so reading the tally here is what turns the whole suite into
+        // the detector; a test that means to refuse reads the count itself and
+        // leaves zero behind.
+        //
+        // The read runs whether or not the assertion does, so a refusal cannot
+        // reach the next test and be blamed on it. The assertion is skipped
+        // during an unwind: a panic here would be a panic during a panic, which
+        // aborts and takes the failure being reported with it.
+        let refused = crate::memory::stdapi::take_refused_frees();
+        if !std::thread::panicking() {
+            assert_eq!(
+                refused, 0,
+                "a free was refused as a repeat during this test, which leaves \
+                 that slot and the block holding it out of circulation"
+            );
+        }
     }
 }
 

@@ -123,36 +123,57 @@ pub const DESTRUCTOR_PENDING: u32 = 1 << 13;
 /// `rfc/runtime/object-lifecycle.md`.
 pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 
-/// The entity is torn down and its memory has gone back nowhere: it died
-/// inside a trace window, in memory that window's collection has met, so the
-/// death was written here instead.
-/// What finds it is the window's own stack: every withheld slot is pushed
-/// through the eight bytes a free list links by, and the close pops that
-/// stack and returns each slot (`crate::cycle::deferred_slot_reuse`). The
-/// thread whose window took the mark is what clears it, for all three headers
-/// and whoever owns the memory (`dev/DECISIONS.md`, "one stack through the
-/// dead entity holds every withheld return").
+/// **`ll_free` has taken this slot and has not handed it back.** The head of
+/// the free sets it for every entity kind, and the free itself clears it
+/// nowhere, so it stands from the free of one occupant to the publication of
+/// the next (`crate::memory::stdapi::ll_free`).
 ///
-/// **Three headers carry it**, and what each one holds back differs: a
-/// size-class slot, which is on no free list and below its block's bump
-/// cursor; a retained survivor, whose block still counts it as a live
-/// occupant and so cannot go home; and the one entity of a large block,
-/// pooled or OS-direct, whose block or mapping waits with it.
+/// **What it answers is a second free.** The head reads it before the free
+/// does anything else, and a free of a slot already carrying it returns
+/// without touching a free list, a pool or a mapping — which is what makes a
+/// repeat `ll_free` of one entity do nothing instead of putting one address on
+/// a free list twice
+/// (`dev/DECISIONS.md`, "a second `ll_free` of an entity is refused, and the
+/// mark is the bit it is refused on").
+///
+/// **How far that reaches differs by population**:
+///
+/// - a **size-class slot** and a **retained survivor** carry the bit until the
+///   slot is handed out and published again. A free of the old pointer past
+///   that publication is a free of the new occupant, and undefined as every
+///   free of reissued memory is;
+/// - a **pooled large entity** never reaches this bit on a second free: the
+///   first free puts its block in the pool, which re-stamps the kind, so the
+///   second reads `BLOCK_KIND_FREE` and falls through the arm that tolerates
+///   it (`crate::memory::stdapi`, `ll_free_large`);
+/// - an **OS-direct run** is covered for no time at all: the first free unmaps
+///   its memory, and a second faults reading the block's kind before any
+///   header is looked at.
+///
+/// **The two zero-count states under it are sub-states of one fact.** A slot
+/// on its block's free list carries the bit, and so does one whose return a
+/// trace window is withholding; what separates the two is the physical return,
+/// not the header. Nothing enumerates a withheld slot by this bit — the
+/// window's own stack does that (`crate::cycle::deferred_slot_reuse`).
+///
+/// **Three headers carry it**: a size-class slot, a retained survivor, and the
+/// one entity of a large block, pooled or OS-direct.
 ///
 /// **The refcount stays zero under it**, which is what a queue reader
 /// depends on (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending
-/// slot reuse"), so the bit is the only thing that separates such a header
-/// from an unoccupied one — an unoccupied header's first eight bytes are a
-/// zero count and whatever flags its last occupant left.
+/// slot reuse").
 ///
-/// Three writes keep it from going stale: commissioning zeroes the headers
-/// of the memory it cuts, whether that is every slot of a size-class block
-/// or the one entity of a large one, [`publish_header`] replaces all eight
-/// bytes of a new occupant's header, and the return clears it. **A mark
-/// never outlives the window that took it**: the close disposes of every slot
-/// on the window's stack, whether it returns them or abandons them, and a
-/// thread cannot exit inside a window, whose abort is what holds that half
-/// (`crate::cycle::deferred_slot_reuse::dispose_thread_state`).
+/// **Who hands a slot back**, which is the whole of what clears it:
+/// [`publish_header`], whose one eight-byte store takes the bit down with the
+/// rest of the previous occupant's header; the trace window's close, ahead of
+/// the return it makes (`crate::cycle::deferred_slot_reuse`, `dispose_of`);
+/// the reset window's flush, ahead of the free it deferred
+/// (`crate::memory::reset_window`); and every path that frees a slot it never
+/// published, which goes through `crate::memory::stdapi::free_unpublished`. A
+/// path that frees such a slot without clearing first leaks it, its free being
+/// read as a repeat. The
+/// candidate retirement is the one such path not built yet, and it owes the
+/// clear (`PLAN.md` S36.6 and S39.1).
 pub const DEAD_IN_PLACE: u32 = 1 << 15;
 
 /// The entity is a live **escapee**: a request-arena object that one or
@@ -510,16 +531,19 @@ impl RcHeader {
 /// refcount and flags separately: a torn pair would expose garbage kind
 /// bits behind a live count. Until this store the slot reads refcount 0
 /// — block commissioning zeroed it, or the previous occupant's death
-/// left it — so a trace crossing the block classifies the slot as free
-/// rather than reading a half-built entity. The store is a relaxed
+/// left it — so a trace crossing the block classifies the slot as
+/// unoccupied rather than reading a half-built entity. The store is a relaxed
 /// atomic because that trace may run on a collector thread
 /// (`rfc/model/gc/rc-cycle.md`, "Concurrency"), and without the
 /// annotation the race is undefined behaviour.
 ///
 /// **This is the one eight-byte access to a header the crate makes**,
 /// and it is legal precisely because the entity is not published yet: no
-/// collector can be writing byte 6 of a slot it reads as free, so the
-/// wide store overlaps nothing. Every access after this point is narrow
+/// collector can be writing byte 6 of a slot whose count reads zero, so the
+/// wide store overlaps nothing. The width is also what hands a recycled slot
+/// back: the previous occupant's flags go down with the rest of the word,
+/// [`DEAD_IN_PLACE`] among them, so a slot lived in twice needs no clear of
+/// its own between the two lives. Every access after this point is narrow
 /// — four bytes for the counter, two for the mutator's half of the
 /// flags — because a wide one would be a mixed-size atomic access
 /// against the collector's byte stores.
@@ -860,12 +884,13 @@ pub(crate) unsafe fn header_pair(header: *const RcHeader) -> (u32, u32) {
 pub(crate) enum SlotState {
     /// An entity is in the slot and its count is above zero.
     Live,
-    /// The occupant died inside a trace window that is holding its return
-    /// back, and the slot is neither the allocator's nor an entity's until
-    /// that window's close returns it ([`DEAD_IN_PLACE`]).
+    /// `ll_free` has taken the slot and has not handed it back: it is on its
+    /// block's free list, or a trace window is withholding its return
+    /// ([`DEAD_IN_PLACE`]).
     DeadInPlace,
-    /// The allocator may hand the slot out: either it is on the block's
-    /// free list or it stands above the block's bump cursor.
+    /// No free holds the slot: it stands above its block's bump cursor and has
+    /// never been occupied, or its occupant's count has reached zero and its
+    /// teardown has not freed it yet.
     Free,
 }
 
@@ -894,47 +919,58 @@ pub(crate) unsafe fn slot_state(header: *const RcHeader) -> SlotState {
     SlotState::Free
 }
 
-/// Write the mark of [`SlotState::DeadInPlace`] into the header of an
-/// entity that has been torn down.
+/// Take the slot for the free in progress, and hand back the flags as they
+/// stood before the take. **`None` is a second free**: [`DEAD_IN_PLACE`] was
+/// already up, so `ll_free` has this slot and has not handed it back, and the
+/// caller returns without touching a free list, a pool or a mapping.
 ///
-/// The caller owns the memory at this instant: the teardown has finished, no
-/// queue entry names it, and it has gone back to no free list, no pool and no
-/// mapping, so nothing else reads or writes these bytes until the return
-/// clears the mark.
+/// **One load answers two questions.** The flags come back as loaded, so the
+/// candidate arm that follows this call tests [`CANDIDATE_BIT`] in them rather
+/// than reading the halfword a second time
+/// (`crate::memory::stdapi::ll_free`).
+///
+/// A load and a store rather than a read-modify-write, for the reason
+/// [`update_header_flags`] gives. What keeps a second writer off the halfword
+/// between them is the count: it reads zero, so the entity is torn down and no
+/// mutator holds a reference to it.
+///
+/// The zero count is a precondition and is asserted at the free's own
+/// entrance rather than here, under the gate that entrance argues for
+/// (`crate::memory::stdapi::ll_free`): an assertion in this function would
+/// carry into an embedder's debug build and abort out of `ll_c_free`.
 ///
 /// # Safety
-/// `header` addresses a dead entity whose count reads zero, in memory a trace
-/// has stamped, and the window that marks it returns it at its close, off the
-/// stack it pushed the slot onto
-/// (`crate::cycle::deferred_slot_reuse`, `classify`).
+/// `header` addresses an entity whose count reads zero, in memory the caller
+/// owns until it hands the slot back.
 #[inline]
-pub(crate) unsafe fn mark_dead_in_place(header: *mut RcHeader) {
-    debug_assert_eq!(
-        unsafe { refcount_load(header) },
-        0,
-        "a slot is marked dead only after its teardown has left the count at zero"
-    );
-    unsafe { update_header_flags(header, |flags| flags | DEAD_IN_PLACE) };
+pub(crate) unsafe fn take_slot_for_free(header: *mut RcHeader) -> Option<u32> {
+    let flags = unsafe { flags_load(header) };
+    if flags & DEAD_IN_PLACE != 0 {
+        return None;
+    }
+
+    unsafe { flags_store(header, flags | DEAD_IN_PLACE) };
+    Some(flags)
 }
 
-/// Take the mark off, which the thread whose window took it does as it makes
-/// the return the mark deferred. That thread makes every one of them: the
-/// return goes through `ll_free`, which posts a cross-thread free where the
-/// block is another thread's and takes the owner's path where it is this
-/// one's (`dev/DECISIONS.md`, "one stack through the dead entity holds every
-/// withheld return").
+/// Hand the slot back, which whoever is about to offer it to `ll_free` again
+/// does first: the trace window's close ahead of its return, the reset
+/// window's flush ahead of the free it deferred, and the two paths that free a
+/// slot they never published. [`publish_header`] does the same thing for a new
+/// occupant, in the one store that writes the whole header
+/// ([`DEAD_IN_PLACE`] names all four).
 ///
-/// **One thread writes this half of the flags word of one dead slot**, and it
-/// is the thread whose window marked it. The word is written by load and
-/// store rather than by a read-modify-write, so a second writer loses one of
-/// the two; what keeps the marking thread alone with the slot is that the slot
-/// reached no free list, so the block's owner has no reason to touch it. It never runs on a collector worker, which
-/// `rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse"
-/// refuses the neighbouring clear of the candidate bit for the same
+/// **One thread writes this half of the flags word of one dead slot.** The
+/// word is written by load and store rather than by a read-modify-write, so a
+/// second writer loses one of the two; what keeps this caller alone with the
+/// slot is the count, which reads zero, and the ownership of the memory that
+/// goes with being the one about to free it. It never runs on a collector
+/// worker, which `rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot
+/// reuse" refuses the neighbouring clear of the candidate bit for the same
 /// reason.
 ///
 /// # Safety
-/// As [`mark_dead_in_place`].
+/// As [`take_slot_for_free`].
 #[inline]
 pub(crate) unsafe fn clear_dead_in_place(header: *mut RcHeader) {
     unsafe { update_header_flags(header, |flags| flags & !DEAD_IN_PLACE) };
@@ -966,8 +1002,8 @@ pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u
 /// the body (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot
 /// reuse").
 #[inline]
-pub(crate) unsafe fn is_registered_candidate(header: *const RcHeader) -> bool {
-    unsafe { mutator_flags(header) & CANDIDATE_BIT != 0 }
+pub(crate) fn is_registered_candidate(flags: u32) -> bool {
+    flags & CANDIDATE_BIT != 0
 }
 
 /// Take the candidate bit down, which only the retirement of the entry

@@ -62,12 +62,12 @@ fn served_at_the_limit_and_past_it(
     // no-op arms, and a virgin slot reads the refcount 0 its
     // commissioning left.
     unsafe {
-        crate::memory::stdapi::ll_free(at);
+        crate::memory::stdapi::free_unpublished(at);
         // Except the arena's run, which the arena owns: it is in the
         // large-run log, so the reset below is its free and a second
         // one here would hand the same memory back twice.
         if category != MemoryCategory::RequestArena {
-            crate::memory::stdapi::ll_free(past);
+            crate::memory::stdapi::free_unpublished(past);
         }
     }
 

@@ -657,7 +657,9 @@ unsafe fn new_out_of_line(
         // The entity's memory is left where it is: in the arena it dies
         // with the reset, in the heap the slot came off the free list and
         // stays out of circulation until the thread ends — a leak, not a
-        // corruption, and the same shape every other factory has on OOM.
+        // corruption. Giving it back is `memory::stdapi::free_unpublished`,
+        // which the template factory's refusal path uses; this one does not,
+        // and no step owns that yet.
         return std::ptr::null_mut();
     }
 

@@ -63,20 +63,34 @@ versions live in `docs/history/`, marked at the top.
   and reads them directly (`dev/DECISIONS.md`, "the member list is the
   pressure path's alone").
 - What a slot's first eight bytes read: `refcount::slot_state`, three
-  states over the count and one flag — live, dead in place, free. An entity
-  is dead in place when it died inside a trace window, in memory that
-  collection has met (`refcount::DEAD_IN_PLACE`); the count
-  still reads zero, so the flag is the only thing that
-  separates such a header from an unoccupied one, and a guard test bans the
-  two-way test outside `refcount`. Three headers carry it — a size-class
-  slot, a retained survivor and a large entity's own header — and what
-  decides is `cycle::deferred_slot_reuse::classify`: returned at once where
-  the collection never met the block, marked and stacked where it did. What
-  returns marked memory is the window's close, which pops that stack —
-  threaded through the dead entities themselves at
+  states over the count and one flag — live, dead in place, free. A slot is
+  dead in place when `ll_free` has taken it and nobody has handed it back
+  (`refcount::DEAD_IN_PLACE`), which covers a slot on its block's free list
+  and one whose return a trace window is withholding. The head of `ll_free`
+  reads the bit and refuses a free that finds it up, so a second free of a
+  size-class slot or a retained survivor does nothing for as long as the slot
+  holds the first free; past the publication of its next occupant a free of the
+  old pointer is undefined, as a free of any reissued memory is. A pooled large
+  entity's second free is absorbed by the pool's re-stamp of the block kind,
+  and an OS-direct run's memory is unmapped by its first free. What hands a
+  slot back is `refcount::publish_header`,
+  the window's close ahead of its return, the reset window's flush and
+  `memory::stdapi::free_unpublished`
+  (`dev/DECISIONS.md`, "a second `ll_free` of an entity is refused, and the
+  mark is the bit it is refused on"). The count still reads zero under the
+  bit, and a guard test bans the two-way occupancy test outside `refcount`.
+- Giving back memory that was never published as an entity:
+  `memory::stdapi::free_unpublished`, which hands the slot back and frees it.
+  Its callers are the return of unconsumed reserved cells, the template
+  factory's free after a refused store, and the tests that allocate from the
+  entity heap without publishing. A plain `ll_free` there is read as a repeat
+  whenever the allocator served a recycled slot, and the slot is lost.
+- What withholds a return, which the header says nothing about:
+  `cycle::deferred_slot_reuse::classify` returns a death at once where the
+  collection never met its block and stacks it where it did. The window's
+  close pops that stack — threaded through the dead entities themselves at
   `heap::FREE_LIST_LINK_OFFSET`, headed in the withheld returns' control
-  line, which is the whole of the region the workspace keeps for it. The mark
-  itself goes with `PLAN.md` S44.3.
+  line, which is the whole of the region the workspace keeps for it.
 - The candidate gate: `refcount::CANDIDATE_GATE_MASK` and
   `may_become_a_candidate`,
   read on the non-zero decrement in `release_word`. Five conditions in
