@@ -805,6 +805,7 @@ a second time; S44.4 last, a measurement being of what is built.
         every size class. **S44's own `Done when:` asks for the pop at or below
         the chain, which this reading makes unreachable**; the clause is
         Edmond's to move, and the stage stays open on it as well as on S44.5.
+        Commit 56c5336.
 - [ ] S44.5 Carry the built form into `rfc`   *(waits on Edmond's word)*
       done: `rfc/model/classes.md`'s flags row 15 and `rfc/model/gc/rc-cycle.md`'s
         paragraphs about the mark, its list and the record-and-grow path
