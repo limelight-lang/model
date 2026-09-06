@@ -2095,15 +2095,53 @@ stage claiming the frees while building none of them.
         release and bench builds clean, and Miri at two threads over
         `cycle::members` 12 passed, `cycle::shadow` 16, `cycle::arena` 29 and
         `cycle::deferred_slot_reuse` 42, 0 failed.
+      Critic 2026-09-06 round 2 (slice b): nine findings against round 1's
+        repairs, all taken, and two were defects the repairs themselves
+        introduced. Round 1 popped each array off the touched list before
+        reading it, so an unwind out of the harvest left that array's block
+        stamped while the arrays behind it were swept — and the second sweep of
+        the same close, finding the flag still raised, went on harvesting and
+        ended with a list holding part of a set and `overflowed` false. The
+        array leaves the list only after both halves are done now, and the
+        harvest is a four-state value on the arena, so a sweep that meets
+        `Running` knows it is the first one's unwind and gives the list up.
+        `InjectedHarvestFailure` stages that, the state having no other way in:
+        what raises it in production is a retained block whose survivor list no
+        longer holds a row's position, and a debug build ends on `entity_at`'s
+        assertion first. The second defect was mine, found while the round ran
+        and reported by it too: a refused second arming assigned its own answer
+        over the flag, disarming the collection that had armed. Also taken: the
+        sweep asks the list as well as its own state, a driver that released
+        early leaving a null control line; the overflow case refused on its
+        last array, so the claim about work past a refusal is made at a
+        capacity of zero now; the nested case asked for no harvest at all,
+        where the sequence it names is a collection that asks and is refused;
+        `rows_read`'s doc named one of its two sites and no case pinned the
+        other, which the armed close now does at nine — eight rows of one met
+        group and one large entity's own word; the rounding case wrote through
+        `row` outside its stated bound; `entity_at`'s doc still said a caller
+        passes an unplaceable row over; and one order claim stood in three
+        cases. Repairs in the same commit as this entry, and the harvest before
+        the store is forced rather than chosen: a large entity's row **is** the
+        word the sweep nulls. Three mutations, each caught: a re-entered sweep
+        that goes on harvesting, an array popped before it is handled — which
+        aborts rather than fails, the stranded stamp reaching a `debug_assert`
+        inside an `extern "C"` frame — and the harvest moved after the store.
+        Gate on the day: 739 at one thread and three times at four, 739
+        `hash-folding`, 743 `debug-journal` three times, release and bench
+        builds clean, `fmt --check` clean, and Miri at two threads —
+        `cycle::members` 14 passed in 110.8 s of Miri's clock, `cycle::arena`
+        29 in 186.0 s, `cycle::shadow` 16 in 7.6 s, 0 failed.
       Known gaps of slice (b): the `None` arm of `harvest_rows` — a retained
         block whose survivor list no longer holds a row's position — is
         release-only, `entity_at`'s assertion ending a debug build on that
-        path, so no case reaches it and what is pinned is the policy at the
-        member list's own level; the retained population is not driven through
-        the sweep, its round trip being pinned at the row level instead; and a
-        driver that unwinds between the arming and the release leaves the
-        region in use for the thread's life, which thread exit now refuses and
-        S36.7's driver owns.
+        path, so no case reaches the arm itself; what a case does reach, since
+        round 2, is the state it produces, `InjectedHarvestFailure` staging a
+        walk that does not finish. The retained population is not driven
+        through the sweep, its round trip being pinned at the row level
+        instead. And a driver that unwinds between the arming and the release
+        leaves the region in use for the thread's life, which thread exit now
+        refuses and S36.7's driver owns.
       handoff: choose and test the commit unit here. A single condemned batch
         is safe under the aggregate exact sum but resurrection in one connected
         part conservatively retains the others; if teardown promises

@@ -64,6 +64,31 @@ fn the_records_stand_until_the_driver_drops_them() {
     take_standing();
 }
 
+/// A second arming of the same collection is refused and changes nothing: the
+/// sweep still ends the harvest this collection armed.
+///
+/// The overflow is what makes the ending observable — an ended harvest empties
+/// an overflowed list, and a collection that lost its own flag to the refusal
+/// would hand the driver the one record that fitted.
+#[test]
+fn a_refused_second_arming_leaves_the_first_standing() {
+    let _g = test_guard();
+
+    let mut arena = open_arena();
+    assert!(arena.arm_harvest(1));
+    assert!(unsafe { push(address(0x1000)) });
+    assert!(!unsafe { push(address(0x2000)) }, "past the capacity");
+    assert!(!arena.arm_harvest(1), "the list is already this arena's");
+    drop(arena);
+
+    let standing = take_standing().expect("a harvest was armed");
+    assert!(standing.overflowed());
+    assert!(
+        standing.entities().is_empty(),
+        "the sweep ended the harvest the first arming made"
+    );
+}
+
 /// The nesting rule: a collection a destructor of a teardown starts is refused
 /// an arming, rather than writing over the list the outer driver is reading.
 #[test]

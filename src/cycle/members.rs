@@ -146,6 +146,15 @@ pub(crate) unsafe fn arm(region: *mut u8, capacity: u32) -> bool {
     true
 }
 
+/// Whether a list is armed or standing on this thread.
+///
+/// What a sweep asks beside its own state: a collection that armed one still
+/// answers false here if a driver took and released the list before the close,
+/// and appending to that is a write through a null control line.
+pub(crate) fn is_armed() -> bool {
+    !MEMBER_LIST.with(Cell::get).is_null()
+}
+
 /// Append `entity` to the armed list, and answer **false when it is full** —
 /// the sweep's signal to stop reading rows and finish nulling pointers.
 ///

@@ -249,6 +249,54 @@ fn fire_injected_reset_failure() {
     }
 }
 
+// Whether the next harvest of this thread raises where a row the dispatch
+// cannot place would.
+//
+// Fault injection, tests only, and the second of its kind here for the same
+// reason as the first: the state it stages — a sweep that unwound out of the
+// middle of its walk — has no other way in. What raises it in production is a
+// retained block whose survivor list no longer holds a row's position, and a
+// debug build ends on that assertion before the arm below is ever reached
+// (`crate::cycle::row::entity_at`).
+#[cfg(test)]
+thread_local! {
+    static PANIC_IN_HARVEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Arm the injection for **one** harvested block of this thread, and disarm it
+/// when this guard dies — including on the unwind the injected panic raises.
+///
+/// What it interrupts is the sweep: the block being harvested keeps its shadow
+/// pointer and the arrays behind it keep theirs, which is the state the second
+/// sweep of the same close is there to finish.
+#[cfg(test)]
+pub(crate) struct InjectedHarvestFailure;
+
+#[cfg(test)]
+impl InjectedHarvestFailure {
+    pub(crate) fn arm() -> Self {
+        PANIC_IN_HARVEST.with(|armed| armed.set(true));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for InjectedHarvestFailure {
+    fn drop(&mut self) {
+        PANIC_IN_HARVEST.with(|armed| armed.set(false));
+    }
+}
+
+/// Raise the armed failure and disarm it, and do nothing at all without
+/// `cfg(test)`.
+#[inline]
+fn fire_injected_harvest_failure() {
+    #[cfg(test)]
+    if PANIC_IN_HARVEST.with(|armed| armed.replace(false)) {
+        panic!("the injected harvest failure");
+    }
+}
+
 /// One collection's memory: the thread's workspace for as long as the arena
 /// lives, and the blocks the bump grew into past it, which
 /// [`TraceScratchArena::reset`] returns.
@@ -281,16 +329,32 @@ pub(crate) struct TraceScratchArena {
     /// ledger, so that [`reset`](TraceScratchArena::reset) discharges exactly
     /// what was charged and a re-entered reset discharges nothing.
     published: usize,
-    /// Whether **this** collection armed a harvest, which is what the sweep
-    /// gates on.
+    /// Where **this** collection's harvest stands.
     ///
     /// The thread-local list cannot answer that question: it stands from the
     /// arming until the driver releases it, which is across the whole
     /// teardown, so a collection a destructor of that teardown starts would
     /// read it as its own and append to a list another frame is reading
-    /// ([`crate::cycle::members`]). Cleared by the sweep, so the second one a
-    /// close performs harvests nothing.
-    harvesting: bool,
+    /// ([`crate::cycle::members`]).
+    harvest: Harvest,
+}
+
+/// Where one collection's harvest stands, which only its own sweep moves.
+///
+/// Four states rather than a flag, because a close sweeps twice — once at
+/// [`sweep_rows`](TraceScratchArena::sweep_rows) and again through
+/// [`reset`](TraceScratchArena::reset) — and the second sweep has to tell a
+/// walk that finished from one that unwound out of the middle.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Harvest {
+    /// This collection armed none, which is every ordinary one.
+    Unarmed,
+    /// Armed, and its sweep has not started.
+    Armed,
+    /// A sweep is walking the touched list.
+    Running,
+    /// Swept: the list is the driver's to read, or was given up.
+    Done,
 }
 
 impl TraceScratchArena {
@@ -323,7 +387,7 @@ impl TraceScratchArena {
             touched: std::ptr::null_mut(),
             worklist: TraceStack::new(),
             published: 0,
-            harvesting: false,
+            harvest: Harvest::Unarmed,
         })
     }
 
@@ -372,9 +436,18 @@ impl TraceScratchArena {
     /// `capacity` is what the harvest takes before it gives up, and the caller
     /// arms only after its trace is complete: a colour is a verdict only then
     /// (`crate::cycle::trace`).
+    ///
+    /// A second call answers false and **leaves the first arming standing**:
+    /// the refusal is the list's, and a collection that lost its flag here
+    /// would sweep without ending its own harvest, leaving the list armed for
+    /// the thread's life.
     pub(crate) fn arm_harvest(&mut self, capacity: u32) -> bool {
-        self.harvesting = unsafe { crate::cycle::members::arm(self.member_region(), capacity) };
-        self.harvesting
+        let armed = unsafe { crate::cycle::members::arm(self.member_region(), capacity) };
+        if armed {
+            self.harvest = Harvest::Armed;
+        }
+
+        armed
     }
 
     /// Charge `bytes` of this arena's bump as memory in use, and remember
@@ -671,28 +744,48 @@ impl TraceScratchArena {
             "the worklist is drained before the rows it points into are unstamped"
         );
 
-        // The arena's own flag rather than the thread's list: the list stands
-        // from the arming until the driver releases it, which is across the
-        // whole teardown, so a collection a destructor of that teardown starts
-        // would read it as its own (`crate::cycle::members`).
-        let harvesting = self.harvesting;
-        // Falls the moment the region refuses a record, and the rest of the
-        // walk is the null-only sweep an ordinary collection makes: what an
-        // overflowed harvest owes is nothing, and reading further rows would
-        // pay for records the driver is going to discard.
-        let mut taking = harvesting;
+        // This collection's own state rather than the thread's list: the list
+        // stands from the arming until the driver releases it, which is across
+        // the whole teardown, so a collection a destructor of that teardown
+        // starts would read it as its own (`crate::cycle::members`).
+        let mut taking = match self.harvest {
+            Harvest::Armed if crate::cycle::members::is_armed() => {
+                self.harvest = Harvest::Running;
+                true
+            }
+            // Armed, and the list is gone: a driver took and released it
+            // before this close. There is nothing to append to and nothing to
+            // end, and a push would write through a null control line.
+            Harvest::Armed => {
+                debug_assert!(
+                    false,
+                    "the driver released the list before the sweep filled it"
+                );
+                self.harvest = Harvest::Done;
+                false
+            }
+            // The sweep that set this did not reach its end: it unwound out of
+            // the walk, and what stands in the list is a part of a set. Given
+            // up whole, which is what a set closed under its in-edges requires
+            // of any reading short of all of it.
+            Harvest::Running => {
+                self.harvest = Harvest::Done;
+                if crate::cycle::members::is_armed() {
+                    unsafe { crate::cycle::members::abandon() };
+                    unsafe { crate::cycle::members::end_harvest() };
+                }
+
+                false
+            }
+            Harvest::Unarmed | Harvest::Done => false,
+        };
 
         let mut array = self.touched;
         while !array.is_null() {
-            // Off the list before it is read, so that an unwind out of the
-            // harvest below leaves the arrays behind this one on it: the second
-            // sweep of this close unstamps them, where an emptied list would
-            // leave their blocks naming bump memory the reset gives back. It is
-            // also what makes a second call find nothing rather than repeat the
-            // walk.
-            self.touched = unsafe { (*array).next };
-
             let block = unsafe { (*array).block };
+            // Ahead of the store below, and it has to be: a large entity's row
+            // *is* the word that store nulls, so a harvest after it would read
+            // every one of them as untouched.
             if taking {
                 taking = unsafe { Self::harvest_rows(array, block) };
             }
@@ -715,14 +808,21 @@ impl TraceScratchArena {
                 },
             }
 
+            // Off the list once both halves are done, and not before: an
+            // unwind out of the harvest above leaves this array at the head,
+            // so the second sweep of this close unstamps it and everything
+            // behind it. An emptied list would leave those blocks naming bump
+            // memory the reset is about to hand back. It is also what makes a
+            // second call find nothing rather than repeat the walk.
+            self.touched = unsafe { (*array).next };
             array = self.touched;
         }
 
-        if harvesting {
-            // Once per close, whatever the walk met: the flag falls with the
-            // call, so the second sweep a drop performs ends no harvest and
-            // reads no list the driver may already have released.
-            self.harvesting = false;
+        if self.harvest == Harvest::Running {
+            // Once per close: the state moves with the call, so the second
+            // sweep a drop performs ends no harvest and reads no list the
+            // driver may already have taken.
+            self.harvest = Harvest::Done;
             unsafe { crate::cycle::members::end_harvest() };
         }
     }
@@ -731,10 +831,9 @@ impl TraceScratchArena {
     /// member list, and answer **false where the list refused one**, which
     /// ends the harvest of the whole sweep rather than of this block.
     ///
-    /// The rows are the collection's own memory and stay readable after the
-    /// block's shadow pointer is nulled, so the two are in either order; this
-    /// one reads the rows first, while the block's header line is still cold
-    /// for the store that follows.
+    /// Called before the block's shadow pointer is nulled, which is forced
+    /// rather than chosen: a large entity's row is that very word, so a
+    /// harvest after the store would read every such row as untouched.
     ///
     /// A row the dispatch cannot place ends the harvest, which is a retained
     /// block whose survivor list no longer holds the row's position: the set
@@ -746,6 +845,7 @@ impl TraceScratchArena {
     /// `array` is an initialised array of a scanned collection, `block` is the
     /// block it was written for, and a harvest is armed on this thread.
     unsafe fn harvest_rows(array: *mut RowArray, block: *mut u8) -> bool {
+        fire_injected_harvest_failure();
         let population = unsafe { (*array).population };
         let take =
             |index: u32| match unsafe { crate::cycle::row::entity_at(block, population, index) } {

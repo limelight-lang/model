@@ -32,8 +32,14 @@ unsafe fn visited(array: *mut RowArray) -> Vec<u32> {
 /// Colour row `index` as the scan would, whatever the state of its group: the
 /// point of two of the cases below is a colour standing in memory the walk is
 /// forbidden to read.
+///
+/// The address is computed here rather than taken from [`row`], whose contract
+/// is an index below `row_count`: two of these writes are deliberately in the
+/// rounding's rows, which the array reserves and no slot of the block owns.
 unsafe fn write_unreachable(array: *mut RowArray, index: u32) {
-    unsafe { row(array, index).write(compose(Color::PotentiallyUnreachable, 0)) };
+    let slot = unsafe { (array as *mut u8).add(size_of::<RowArray>()) as *mut u32 }
+        .wrapping_add(index as usize);
+    unsafe { slot.write(compose(Color::PotentiallyUnreachable, 0)) };
 }
 
 /// The walk answers the rows the scan left unreachable, in ascending index, and

@@ -326,7 +326,9 @@ pub(crate) fn note_row_read() {
     ROWS_READ.with(|rows| rows.set(rows.get() + 1));
 }
 
-/// Rows [`for_each_unreachable`] has read on this thread.
+/// Rows the sweep has read on this thread, over both of its reading sites:
+/// this module's walk over an array, and the arena's read of the word a large
+/// entity's block header carries.
 #[cfg(test)]
 pub(crate) fn rows_read() -> usize {
     ROWS_READ.with(std::cell::Cell::get)

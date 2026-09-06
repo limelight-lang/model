@@ -7,11 +7,25 @@ use crate::cycle::shadow;
 use crate::memory::gc_metadata::thread_stats;
 use crate::test_support::allocation_probe;
 
-/// The shadow-row pointer of the block holding `entity`, which the sweep nulls
-/// whether or not it harvested.
-unsafe fn block_shadow_of(entity: *mut Object) -> *mut u8 {
-    let block = entity as usize & !crate::memory::block_pool::BLOCK_MASK;
-    unsafe { crate::memory::heap::block_shadow(block as *mut u8) }
+/// What this collection left stamped on the block holding `entity`, zero once
+/// the sweep has been over it.
+///
+/// Two words rather than one, because the two populations of the fixture keep
+/// their rows in different places: an entity block names its array from the
+/// collector line, and a large entity's block carries the row itself in its
+/// own header. Reading the first word for both would answer zero for the
+/// large entity whatever the sweep did.
+unsafe fn stamp_of(entity: *mut Object) -> usize {
+    let block = (entity as usize & !crate::memory::block_pool::BLOCK_MASK) as *mut u8;
+    let header = crate::memory::block_pool::BlockHeader::of_ptr(block as *const u8);
+    let kind = unsafe { crate::memory::block_pool::load_block_kind(&raw const (*header).kind) };
+    if crate::memory::large_entity::is_large_entity(kind) {
+        let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
+        row as usize
+    } else {
+        let array = unsafe { crate::memory::heap::block_shadow(block) };
+        array as usize
+    }
 }
 
 /// The harvest takes the entities the scan left unreachable and nothing else, and
@@ -24,10 +38,15 @@ fn an_armed_close_takes_the_entities_the_scan_left_unreachable() {
     let (alpha, beta) = (rings.alpha, rings.beta);
 
     let before = thread_stats();
+    let rows_before = shadow::rows_read();
     let _ = allocation_probe::take_allocations();
-    trace_and_close(Some(MEMBER_CAPACITY));
+    assert!(
+        trace_and_close(Some(MEMBER_CAPACITY)),
+        "the region was free"
+    );
     let drawn = allocation_probe::take_allocations();
     let after = thread_stats();
+    let rows = shadow::rows_read() - rows_before;
 
     let standing = take_standing().expect("the close harvested");
     assert!(!standing.overflowed());
@@ -41,6 +60,11 @@ fn an_armed_close_takes_the_entities_the_scan_left_unreachable() {
         "both rings, in the order the walk met them, and nothing besides"
     );
 
+    // What the harvest read, derived rather than observed: the eight rows of
+    // the one group the trace met in `alpha`'s block — the bitmap is what
+    // keeps the other 4,072 unread — and the single header word `beta`'s block
+    // carries, which is the row of a block with no array.
+    assert_eq!(rows, 8 + 1, "one met group and one large entity's own word");
     assert_eq!(drawn, (0, 0), "the region is the thread's own workspace");
     assert_eq!(
         (after.current_blocks(), after.current_bytes_in_use()),
@@ -61,7 +85,7 @@ fn an_ordinary_close_reads_no_row() {
     let rings = two_rings();
 
     let before = shadow::rows_read();
-    trace_and_close(None);
+    assert!(!trace_and_close(None), "this close asked for no harvest");
 
     assert_eq!(
         shadow::rows_read() - before,
@@ -76,20 +100,26 @@ fn an_ordinary_close_reads_no_row() {
 /// The sweep's own duty is unconditional: a harvest that overflowed still
 /// nulls every block's shadow pointer, because a row left standing is a slot
 /// the next collection can hand out under this one's rows.
+///
+/// **The capacity is zero so that the refusal lands on the first array of the
+/// two**, which is what puts a block past it: at a capacity of one the walk
+/// refuses on its last array and the claim would be made over the block that
+/// refused.
 #[test]
 fn an_overflowed_close_still_nulls_every_pointer() {
     let _g = test_guard();
     let rings = two_rings();
     let (alpha, beta) = (rings.alpha, rings.beta);
 
-    trace_and_close(Some(1));
+    assert!(trace_and_close(Some(0)), "the region was free");
 
     let standing = take_standing().expect("the close harvested");
     assert!(standing.overflowed(), "two rings against one record");
     assert!(standing.entities().is_empty());
     for entity in [alpha, beta] {
-        assert!(
-            unsafe { block_shadow_of(entity) }.is_null(),
+        assert_eq!(
+            unsafe { stamp_of(entity) },
+            0,
             "the sweep finished its own work past the refusal"
         );
     }
@@ -139,23 +169,24 @@ fn the_harvest_enters_what_an_unarmed_close_enters() {
 fn a_nested_close_appends_nothing_to_a_standing_list() {
     let _g = test_guard();
     let outer = two_rings();
-    let (alpha, beta) = (outer.alpha, outer.beta);
 
     trace_and_close(Some(MEMBER_CAPACITY));
     let standing = take_standing().expect("the close harvested");
-    assert_eq!(
-        standing.entities(),
-        [beta as *mut RcHeader, alpha as *mut RcHeader]
-    );
+    let harvested: Vec<*mut RcHeader> = standing.entities().to_vec();
+    assert_eq!(harvested.len(), 2, "both rings");
 
-    // The nested collection: it arms nothing, because the region is in use.
+    // The nested collection asks for a harvest of its own and is refused,
+    // which is the sequence a destructor of the teardown drives.
     let inner = two_rings();
     let before = shadow::rows_read();
-    trace_and_close(None);
+    assert!(
+        !trace_and_close(Some(MEMBER_CAPACITY)),
+        "the region is the outer driver's"
+    );
 
     assert_eq!(
         standing.entities(),
-        [beta as *mut RcHeader, alpha as *mut RcHeader],
+        harvested.as_slice(),
         "the outer driver's list is what it was"
     );
     assert!(!standing.overflowed());
@@ -168,4 +199,55 @@ fn a_nested_close_appends_nothing_to_a_standing_list() {
     drop(standing);
     tear_down(inner);
     tear_down(outer);
+}
+
+/// A sweep that unwinds out of its harvest leaves neither half of its work
+/// half-done: the second sweep of the same close unstamps every block the
+/// first did not reach, and the records the first wrote are given up rather
+/// than handed to a driver as a whole set.
+///
+/// The unwind is injected, because the state has no other way in: what raises
+/// it in production is a retained block whose survivor list no longer holds a
+/// row's position, and a debug build ends on `entity_at`'s assertion before
+/// the arm that answers `None` is reached
+/// (`crate::cycle::arena::InjectedHarvestFailure`).
+#[test]
+fn a_harvest_that_unwinds_gives_up_its_records_and_still_sweeps() {
+    let _g = test_guard();
+    let rings = two_rings();
+    let (alpha, beta) = (rings.alpha, rings.beta);
+
+    let mut active = ActiveTrace::open().expect("the guard drew this thread's workspace");
+    active.detach_candidates();
+    let outcome = {
+        let (arena, batch) = active.rows_and_roots();
+        unsafe { trace_batch(arena, batch) }
+    };
+    assert_eq!(outcome, TraceOutcome::Complete);
+    assert!(active.arm_harvest(MEMBER_CAPACITY), "the region was free");
+
+    let armed = crate::cycle::arena::InjectedHarvestFailure::arm();
+    let raised = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop(active);
+    }));
+    assert!(raised.is_err(), "the harvest was expected to raise");
+    drop(armed);
+
+    for entity in [alpha, beta] {
+        assert_eq!(
+            unsafe { stamp_of(entity) },
+            0,
+            "the second sweep of the close unstamped what the first left"
+        );
+    }
+
+    let standing = take_standing().expect("the harvest was armed");
+    assert!(
+        standing.overflowed(),
+        "a walk that did not finish is a reading short of the whole set"
+    );
+    assert!(standing.entities().is_empty());
+
+    drop(standing);
+    tear_down(rings);
 }

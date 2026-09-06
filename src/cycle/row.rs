@@ -199,10 +199,11 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
 ///
 /// **`None` for a row whose address cannot be recovered**, which is one
 /// population's alone: a retained block's rows are keyed by position in its
-/// survivor list, and a position the list does not hold names no entity. The
-/// caller reads that as a row it must pass over — the entity keeps its
-/// candidate bit and a later collection meets it again — rather than as an
-/// error, and the `debug_assert` is what makes it visible in a test build.
+/// survivor list, and a position the list does not hold names no entity. It is
+/// a disagreement between the array and the list rather than an ordinary
+/// answer — the `debug_assert` ends a test build on it — and the harvest that
+/// meets one gives up its whole reading rather than leaving the entity out
+/// (`crate::cycle::arena::TraceScratchArena::harvest_rows`).
 ///
 /// The population comes from the caller's own row array rather than from a
 /// second read of the block's kind: the array was written for this block by

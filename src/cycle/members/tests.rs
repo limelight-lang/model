@@ -81,10 +81,14 @@ fn tear_down(rings: TwoRings) {
     }
 }
 
-/// Trace both rings under an open window and close it, arming a harvest of
-/// `capacity` first where one is asked for. The window's drop is what sweeps,
-/// so the list stands only after this returns.
-fn trace_and_close(capacity: Option<u32>) {
+/// Trace both rings under an open window and close it, asking for a harvest of
+/// `capacity` where one is asked for at all. **Answers whether the arming was
+/// granted**, which is false for a collection that ran while another's list was
+/// standing — the case the caller means to stage.
+///
+/// The window's drop is what sweeps, so the list stands only after this
+/// returns.
+fn trace_and_close(capacity: Option<u32>) -> bool {
     let mut active = ActiveTrace::open().expect("the guard drew this thread's workspace");
     active.detach_candidates();
     let outcome = {
@@ -93,11 +97,9 @@ fn trace_and_close(capacity: Option<u32>) {
     };
     assert_eq!(outcome, TraceOutcome::Complete);
 
-    if let Some(capacity) = capacity {
-        assert!(
-            active.arm_harvest(capacity),
-            "no list stands on this thread"
-        );
+    match capacity {
+        Some(capacity) => active.arm_harvest(capacity),
+        None => false,
     }
 }
 
