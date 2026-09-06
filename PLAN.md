@@ -92,14 +92,6 @@ the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
 than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
 
-- A second withholding of one slot inside one window writes the stack's link
-  into itself, and the close then pops the block's own free list into
-  `ll_free` a second time. It takes a caller that frees one address twice, and
-  `dev/DECISIONS.md`, 2026-09-05, refuses the debug-only guard that would name
-  it — on the ground that a double free loops the block's free list through
-  the same word anyway, which holds outside a window and not inside one. The
-  mark that could catch it goes at S44.3. Edmond's word wanted on whether
-  anything replaces it.
 - `memory::reset_window` keeps a vocabulary of its own — `CORPSE_WALKS` and
   `park_large` beside `ResetWindow::escrow` — and
   `cycle::tests::the_metaphors_the_names_still_carry` and
