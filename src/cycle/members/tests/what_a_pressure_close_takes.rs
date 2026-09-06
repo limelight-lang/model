@@ -31,11 +31,15 @@ fn an_armed_close_takes_the_entities_the_scan_left_unreachable() {
 
     let standing = take_standing().expect("the close harvested");
     assert!(!standing.overflowed());
-    let mut taken: Vec<usize> = standing.entities().iter().map(|&e| e as usize).collect();
-    taken.sort_unstable();
-    let mut expected = vec![alpha as usize, beta as usize];
-    expected.sort_unstable();
-    assert_eq!(taken, expected, "both rings, and nothing besides");
+    // The order the module documents, unsorted: block by block of the touched
+    // list, which is newest first, and by ascending row inside each block. The
+    // trace meets `alpha` first, so `beta`'s block is the newer array and its
+    // one row comes out first.
+    assert_eq!(
+        standing.entities(),
+        [beta as *mut RcHeader, alpha as *mut RcHeader],
+        "both rings, in the order the walk met them, and nothing besides"
+    );
 
     assert_eq!(drawn, (0, 0), "the region is the thread's own workspace");
     assert_eq!(
@@ -121,4 +125,47 @@ fn the_harvest_enters_what_an_unarmed_close_enters() {
     tear_down(rings);
 
     assert_eq!(armed, unarmed, "the same trace, the same ledger");
+}
+
+/// The rule the region exists to keep: a collection a destructor of the
+/// teardown starts appends nothing to the list that teardown is reading.
+///
+/// The list stands from the arming until the driver releases it, which is
+/// across the whole teardown, so the sweep cannot gate on "a list is armed on
+/// this thread" — it gates on the flag its own arena carries. A nested close
+/// that appended here would hand the outer driver entities its own path has
+/// already torn down.
+#[test]
+fn a_nested_close_appends_nothing_to_a_standing_list() {
+    let _g = test_guard();
+    let outer = two_rings();
+    let (alpha, beta) = (outer.alpha, outer.beta);
+
+    trace_and_close(Some(MEMBER_CAPACITY));
+    let standing = take_standing().expect("the close harvested");
+    assert_eq!(
+        standing.entities(),
+        [beta as *mut RcHeader, alpha as *mut RcHeader]
+    );
+
+    // The nested collection: it arms nothing, because the region is in use.
+    let inner = two_rings();
+    let before = shadow::rows_read();
+    trace_and_close(None);
+
+    assert_eq!(
+        standing.entities(),
+        [beta as *mut RcHeader, alpha as *mut RcHeader],
+        "the outer driver's list is what it was"
+    );
+    assert!(!standing.overflowed());
+    assert_eq!(
+        shadow::rows_read() - before,
+        0,
+        "and the nested close read no row at all"
+    );
+
+    drop(standing);
+    tear_down(inner);
+    tear_down(outer);
 }

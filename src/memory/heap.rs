@@ -1680,6 +1680,11 @@ pub extern "C" fn ll_thread_exit() {
     //    close, so this call frees nothing: it refuses an exit that would
     //    abandon a trace still holding rows in the heaps below.
     crate::cycle::deferred_slot_reuse::dispose_thread_state();
+    // Beside it, and for the same reason one step down: a harvested member
+    // list names records inside the workspace block this exit is about to hand
+    // over, and the driver that would read them is a frame that will not run
+    // again (`crate::cycle::members`).
+    crate::cycle::members::dispose_thread_state();
 
     // 3. The weak table, after every death that could still need a row.
     //    `weak.rs` pinned this position against the day static-block

@@ -192,11 +192,13 @@ const _: () = assert!(WORKSPACE_BUMP_BYTES == 56_960);
 // prefix or none (`crate::cycle::shadow::bytes_for`).
 const _: () = assert!(3 * 16_408 < WORKSPACE_BUMP_BYTES);
 
-// The regions begin on a line, which their control lines need to be aligned at
+// Each region begins on a line, which its control line needs to be aligned at
 // all: a payload starts `LINE_SIZE` into a block the pool aligns to
-// `BLOCK_SIZE`, so an offset that is a multiple of 64 is 64-aligned.
+// `BLOCK_SIZE`, so an offset that is a multiple of 64 is 64-aligned. The first
+// assertion is the member region's own offset, the second the bump's, which
+// begins where that region ends.
 const _: () = assert!(RETURNS_BASE_BYTES % 64 == 0);
-const _: () = assert!(MEMBERS_BASE_BYTES % 64 == 0);
+const _: () = assert!((RETURNS_BASE_BYTES + MEMBERS_BASE_BYTES) % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::LINE_SIZE % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::BLOCK_SIZE % 64 == 0);
 
@@ -279,6 +281,16 @@ pub(crate) struct TraceScratchArena {
     /// ledger, so that [`reset`](TraceScratchArena::reset) discharges exactly
     /// what was charged and a re-entered reset discharges nothing.
     published: usize,
+    /// Whether **this** collection armed a harvest, which is what the sweep
+    /// gates on.
+    ///
+    /// The thread-local list cannot answer that question: it stands from the
+    /// arming until the driver releases it, which is across the whole
+    /// teardown, so a collection a destructor of that teardown starts would
+    /// read it as its own and append to a list another frame is reading
+    /// ([`crate::cycle::members`]). Cleared by the sweep, so the second one a
+    /// close performs harvests nothing.
+    harvesting: bool,
 }
 
 impl TraceScratchArena {
@@ -311,6 +323,7 @@ impl TraceScratchArena {
             touched: std::ptr::null_mut(),
             worklist: TraceStack::new(),
             published: 0,
+            harvesting: false,
         })
     }
 
@@ -347,8 +360,21 @@ impl TraceScratchArena {
     /// reads it after every block has gone back
     /// (`crate::cycle::members::StandingMembers`). What the arena guarantees
     /// is the address, and that its own bump never grants these bytes.
-    pub(crate) fn member_region(&self) -> *mut u8 {
+    fn member_region(&self) -> *mut u8 {
         unsafe { BlockHeader::payload_start(self.base.block()).add(RETURNS_BASE_BYTES) }
+    }
+
+    /// Arm this collection's sweep to harvest into the thread's member list,
+    /// and answer **false when a list is already armed or standing** — a
+    /// collection nested inside another's teardown, which sweeps without
+    /// harvesting.
+    ///
+    /// `capacity` is what the harvest takes before it gives up, and the caller
+    /// arms only after its trace is complete: a colour is a verdict only then
+    /// (`crate::cycle::trace`).
+    pub(crate) fn arm_harvest(&mut self, capacity: u32) -> bool {
+        self.harvesting = unsafe { crate::cycle::members::arm(self.member_region(), capacity) };
+        self.harvesting
     }
 
     /// Charge `bytes` of this arena's bump as memory in use, and remember
@@ -645,23 +671,27 @@ impl TraceScratchArena {
             "the worklist is drained before the rows it points into are unstamped"
         );
 
-        let mut array = self.touched;
-        // Emptied first: the walk below runs to the end of the chain,
-        // and a second call must find nothing rather than repeat it.
-        self.touched = std::ptr::null_mut();
-
-        // Read once for the whole sweep rather than per block: a harvest is
-        // armed before the sweep and released after the teardown, so nothing
-        // can arm one between two blocks of this walk
-        // (`crate::cycle::members`).
-        let harvesting = crate::cycle::members::is_armed();
+        // The arena's own flag rather than the thread's list: the list stands
+        // from the arming until the driver releases it, which is across the
+        // whole teardown, so a collection a destructor of that teardown starts
+        // would read it as its own (`crate::cycle::members`).
+        let harvesting = self.harvesting;
         // Falls the moment the region refuses a record, and the rest of the
         // walk is the null-only sweep an ordinary collection makes: what an
         // overflowed harvest owes is nothing, and reading further rows would
         // pay for records the driver is going to discard.
         let mut taking = harvesting;
 
+        let mut array = self.touched;
         while !array.is_null() {
+            // Off the list before it is read, so that an unwind out of the
+            // harvest below leaves the arrays behind this one on it: the second
+            // sweep of this close unstamps them, where an emptied list would
+            // leave their blocks naming bump memory the reset gives back. It is
+            // also what makes a second call find nothing rather than repeat the
+            // walk.
+            self.touched = unsafe { (*array).next };
+
             let block = unsafe { (*array).block };
             if taking {
                 taking = unsafe { Self::harvest_rows(array, block) };
@@ -685,11 +715,15 @@ impl TraceScratchArena {
                 },
             }
 
-            array = unsafe { (*array).next };
+            array = self.touched;
         }
 
         if harvesting {
-            crate::cycle::members::end_harvest();
+            // Once per close, whatever the walk met: the flag falls with the
+            // call, so the second sweep a drop performs ends no harvest and
+            // reads no list the driver may already have released.
+            self.harvesting = false;
+            unsafe { crate::cycle::members::end_harvest() };
         }
     }
 
@@ -702,10 +736,11 @@ impl TraceScratchArena {
     /// one reads the rows first, while the block's header line is still cold
     /// for the store that follows.
     ///
-    /// A retained block whose list does not name the row's position is passed
-    /// over rather than harvested: the disagreement between the two is
-    /// `crate::cycle::row::entity_at`'s to report, and an entity left out of
-    /// the list keeps its candidate bit and dies at a later collection.
+    /// A row the dispatch cannot place ends the harvest, which is a retained
+    /// block whose survivor list no longer holds the row's position: the set
+    /// this walk is taking is closed under its in-edges, so a member dropped
+    /// from the list is one the others still name. The disagreement itself is
+    /// `crate::cycle::row::entity_at`'s to report.
     ///
     /// # Safety
     /// `array` is an initialised array of a scanned collection, `block` is the
@@ -714,14 +749,24 @@ impl TraceScratchArena {
         let population = unsafe { (*array).population };
         let take =
             |index: u32| match unsafe { crate::cycle::row::entity_at(block, population, index) } {
-                Some(entity) => crate::cycle::members::push(entity),
-                None => true,
+                Some(entity) => unsafe { crate::cycle::members::push(entity) },
+                // A row the dispatch cannot place ends the harvest rather than
+                // thinning it: the set is closed under its in-edges, so an
+                // entity dropped from the list is one the members left in it
+                // still name, and tearing those down would leave it holding
+                // freed slots. The list is emptied by the word an overflow
+                // uses.
+                None => {
+                    unsafe { crate::cycle::members::abandon() };
+                    false
+                }
             };
 
         // The one population whose row is not in the array: a large entity's
         // colour is a word of its own block header, and its array carries the
         // prologue alone (`crate::cycle::shadow::RowArray`).
         if population == Population::SingleEntity {
+            shadow::note_row_read();
             let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
             if shadow::color(row) != Color::PotentiallyUnreachable {
                 return true;

@@ -9,14 +9,19 @@ use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
 use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, ll_release, ll_retain};
-use crate::test_support::{prop_offset, store_prop};
+use crate::test_support::{POOLED_FILLERS, prop_offset, store_prop, wide_class};
 
 /// Two garbage rings of one entity each, registered as candidates: `alpha`
 /// holds itself and `beta` holds itself, so a trace over both leaves two rows
 /// at zero and two entities unreachable.
 ///
-/// Two rather than one, because the cases below count what a harvest took and
-/// a count of one cannot tell a list from a cell.
+/// **Two populations and two blocks**, which is what makes a case about the
+/// sweep's walk a case at all: `alpha` is a slot of an ordinary entity block
+/// and its row stands in that block's array, `beta` fills a pooled
+/// large-entity block whose one row is a word of its own header. So the
+/// touched list carries two arrays, both arms of the harvest run, and a claim
+/// about what the sweep still owes past a refusal has a second block to be
+/// made over.
 struct TwoRings {
     arena: Arena,
     alpha: *mut Object,
@@ -34,11 +39,12 @@ fn two_rings() -> TwoRings {
         "the growth path is funded"
     );
 
-    let class = ClassBuilder::new("MemberRing").prop("next", true).build();
+    let slotted = ClassBuilder::new("MemberRing").prop("next", true).build();
+    let wide = wide_class("MemberWideRing", POOLED_FILLERS, None);
     let mut arena = Arena::new();
     let mut context = LLContext { arena: &mut arena };
-    let alpha = unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) };
-    let beta = unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) };
+    let alpha = unsafe { new_constructed(&mut context, slotted, MemoryCategory::GcHeap) };
+    let beta = unsafe { new_constructed(&mut context, wide, MemoryCategory::GcHeap) };
 
     unsafe {
         store_prop(&mut arena, alpha, prop_offset(0), alpha);

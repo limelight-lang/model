@@ -300,22 +300,28 @@ fn note_written(bytes: usize) {
     let _ = bytes;
 }
 
-// Rows this thread has read out of an array (tests only).
+// Rows the sweep has read on this thread (tests only).
 //
 // The instrument of one rule: a collection off the poll keeps its arena and
 // reads its rows through the teardown, so its close reads none — and a harvest
 // that ran on that path would be paid for by every collection rather than by
-// the pressure ones (`crate::cycle::members`). Counted where the read is,
-// because a count taken outside cannot tell a row the sweep read from a row
-// the scan did.
+// the pressure ones (`crate::cycle::members`). Counted at the sweep's two
+// reading sites rather than at every read of a row, because what the rule is
+// about is the close: the scan reads rows on both paths and its reads would
+// drown the figure.
 #[cfg(test)]
 thread_local! {
     static ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Add one to `ROWS_READ`, and nothing at all without `cfg(test)`.
+///
+/// Called by both of the sweep's row reads — this module's walk over an
+/// array, and the arena's read of the word a large entity's block header
+/// carries — so the count answers "rows the sweep read" rather than "rows one
+/// of its two arms read".
 #[inline]
-fn note_row_read() {
+pub(crate) fn note_row_read() {
     #[cfg(test)]
     ROWS_READ.with(|rows| rows.set(rows.get() + 1));
 }

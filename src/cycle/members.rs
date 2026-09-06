@@ -41,8 +41,11 @@
 //! filled the list is gone by then — it is `ActiveTrace`'s drop that sweeps —
 //! and the workspace outlives every window, so the records stand until the
 //! driver has read them. A collection that a destructor of that teardown
-//! starts finds the pointer set and harvests nothing, which is what keeps one
-//! list per thread.
+//! starts is refused an arming by that same pointer, and its sweep gates on
+//! **its own** arena's flag rather than on this one: the list stands for the
+//! whole teardown, so a sweep that asked "is a list armed on this thread"
+//! would append to another frame's
+//! (`crate::cycle::arena::TraceScratchArena::arm_harvest`).
 
 use std::cell::Cell;
 
@@ -143,19 +146,17 @@ pub(crate) unsafe fn arm(region: *mut u8, capacity: u32) -> bool {
     true
 }
 
-/// Whether a harvest is armed on this thread, which the sweep asks once and
-/// not per block.
-pub(crate) fn is_armed() -> bool {
-    !MEMBER_LIST.with(Cell::get).is_null()
-}
-
 /// Append `entity` to the armed list, and answer **false when it is full** —
 /// the sweep's signal to stop reading rows and finish nulling pointers.
 ///
 /// The overflow is remembered rather than counted: what the driver does with
 /// it is trace again, and how far past the capacity this trace would have gone
 /// says nothing about how far the next one will.
-pub(crate) fn push(entity: *mut RcHeader) -> bool {
+///
+/// # Safety
+/// The caller's own collection armed this list ([`arm`] answered true for it)
+/// and has not ended its harvest.
+pub(crate) unsafe fn push(entity: *mut RcHeader) -> bool {
     let control = MEMBER_LIST.with(Cell::get);
     debug_assert!(
         !control.is_null(),
@@ -173,9 +174,28 @@ pub(crate) fn push(entity: *mut RcHeader) -> bool {
     true
 }
 
-/// End the harvest the sweep was running: an overflowed list is emptied, so
-/// that no driver tears down a part of a set.
-pub(crate) fn end_harvest() {
+/// Give the whole harvest up, which is what a row the dispatch cannot place
+/// costs: the list is emptied at [`end_harvest`] and the driver reads the
+/// refusal the way it reads an overflow.
+///
+/// # Safety
+/// As [`push`].
+pub(crate) unsafe fn abandon() {
+    let control = MEMBER_LIST.with(Cell::get);
+    debug_assert!(
+        !control.is_null(),
+        "a harvest is given up only while it is armed"
+    );
+
+    unsafe { (*control).overflowed.set(true) };
+}
+
+/// End the harvest the sweep was running: an overflowed or abandoned list is
+/// emptied, so that no driver tears down a part of a set.
+///
+/// # Safety
+/// As [`push`].
+pub(crate) unsafe fn end_harvest() {
     let control = MEMBER_LIST.with(Cell::get);
     debug_assert!(
         !control.is_null(),
@@ -249,6 +269,20 @@ impl Drop for StandingMembers {
         MEMBER_LIST.with(|list| list.set(std::ptr::null_mut()));
         MEMBER_LIST_HELD.with(|held| held.set(false));
     }
+}
+
+/// Refuse a thread exit that would leave a member list behind, called from
+/// `heap::ll_thread_exit` beside the trace window's own refusal.
+///
+/// A list standing here names records inside the workspace block the exit is
+/// about to hand to the pool, and its driver is a frame that will never run
+/// again. The release profile ends the process on it, which is the same answer
+/// the window gives (`crate::cycle::deferred_slot_reuse::dispose_thread_state`).
+pub(crate) fn dispose_thread_state() {
+    assert!(
+        MEMBER_LIST.with(Cell::get).is_null(),
+        "a thread cannot exit holding a harvested member list"
+    );
 }
 
 /// The records, which begin where the control line ends.

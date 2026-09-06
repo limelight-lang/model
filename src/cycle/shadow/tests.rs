@@ -44,3 +44,4 @@ unsafe fn raw(array: *mut RowArray, index: u32) -> u32 {
 
 mod what_a_first_touch_writes;
 mod what_a_row_word_holds;
+mod what_the_unreachable_walk_visits;

@@ -522,7 +522,7 @@ impl ActiveTrace {
         )
     )]
     pub(crate) fn arm_harvest(&mut self, capacity: u32) -> bool {
-        unsafe { crate::cycle::members::arm(self.arena.member_region(), capacity) }
+        self.arena.arm_harvest(capacity)
     }
 
     /// The trace's working memory. No arena reference can outlive the window,
