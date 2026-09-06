@@ -193,6 +193,56 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
     }
 }
 
+/// The entity the row at `index` of `block` carries the working count for,
+/// which is what [`resolve_edge_target`] answers backwards: it takes an
+/// address to a row, and this takes a row to its address.
+///
+/// **`None` for a row whose address cannot be recovered**, which is one
+/// population's alone: a retained block's rows are keyed by position in its
+/// survivor list, and a position the list does not hold names no entity. The
+/// caller reads that as a row it must pass over — the entity keeps its
+/// candidate bit and a later collection meets it again — rather than as an
+/// error, and the `debug_assert` is what makes it visible in a test build.
+///
+/// The population comes from the caller's own row array rather than from a
+/// second read of the block's kind: the array was written for this block by
+/// the same trace, and a block cannot change hands while its rows stand
+/// (`crate::cycle::arena`).
+///
+/// # Safety
+/// `block` is the header of the live block `population` describes, and `index`
+/// is a row index of that block's array.
+pub(crate) unsafe fn entity_at(
+    block: *mut u8,
+    population: Population,
+    index: u32,
+) -> Option<*mut RcHeader> {
+    match population {
+        Population::Slotted => {
+            Some(unsafe { crate::memory::heap::entity_slot_at(block, index) } as *mut RcHeader)
+        }
+        Population::Retained => {
+            let occupant =
+                unsafe { crate::memory::retained::occupant_at(block as usize, index as usize) };
+            debug_assert!(
+                occupant.is_some(),
+                "a retained block's row names a position its survivor list does not hold"
+            );
+            occupant.map(|addr| addr as *mut RcHeader)
+        }
+        // The sole occupant of its own block, one line in
+        // (`crate::memory::large_entity`), so its index is the only one there
+        // is and carries no information.
+        Population::SingleEntity => {
+            debug_assert_eq!(
+                index, SINGLE_ENTITY_INDEX,
+                "a large entity's block holds one row and this names another"
+            );
+            Some(unsafe { crate::memory::large_entity::occupant(block) }.0 as *mut RcHeader)
+        }
+    }
+}
+
 // Dispatches this thread has made through `resolve_edge_target` (tests only).
 //
 // The dispatch is the trace's per-edge cost — a block-kind load, and for a

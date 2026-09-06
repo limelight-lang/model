@@ -432,6 +432,26 @@ pub(crate) unsafe fn occupant_index(block: usize, addr: usize) -> Option<usize> 
         .ok()
 }
 
+/// The survivor at `index` of `block`'s list, which is what
+/// [`occupant_index`] answers backwards.
+///
+/// `None` for a block with no list and for an index past the list's own
+/// count. A collection reads that as a row it cannot place: the entity keeps
+/// its candidate bit and a later collection meets it again, which is the same
+/// conservative direction [`occupant_index`] takes for an address the list
+/// does not name.
+///
+/// # Safety
+/// As [`count_word`].
+pub(crate) unsafe fn occupant_at(block: usize, index: usize) -> Option<usize> {
+    let (list, count) = unsafe { block_survivor_list(block as *mut u8) };
+    if list.is_null() || index >= count {
+        return None;
+    }
+
+    Some(unsafe { *list.add(index) })
+}
+
 /// A copy of `block`'s survivor list, empty for a block with no list.
 /// The same words the dispatch binary-searches, read another way, for a
 /// test that wants to disagree with the search.

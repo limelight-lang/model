@@ -300,6 +300,32 @@ fn note_written(bytes: usize) {
     let _ = bytes;
 }
 
+// Rows this thread has read out of an array (tests only).
+//
+// The instrument of one rule: a collection off the poll keeps its arena and
+// reads its rows through the teardown, so its close reads none — and a harvest
+// that ran on that path would be paid for by every collection rather than by
+// the pressure ones (`crate::cycle::members`). Counted where the read is,
+// because a count taken outside cannot tell a row the sweep read from a row
+// the scan did.
+#[cfg(test)]
+thread_local! {
+    static ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Add one to `ROWS_READ`, and nothing at all without `cfg(test)`.
+#[inline]
+fn note_row_read() {
+    #[cfg(test)]
+    ROWS_READ.with(|rows| rows.set(rows.get() + 1));
+}
+
+/// Rows [`for_each_unreachable`] has read on this thread.
+#[cfg(test)]
+pub(crate) fn rows_read() -> usize {
+    ROWS_READ.with(std::cell::Cell::get)
+}
+
 /// What the probe holds for this thread.
 #[cfg(test)]
 pub(crate) fn written_bytes() -> usize {
@@ -416,14 +442,60 @@ const fn group_bytes(row_count: u32) -> usize {
 }
 
 /// Groups the array reserves for `row_count` rows, which is the
-/// denominator of a group density.
+/// denominator of a group density and the bound of a walk over the
+/// bitmap.
 ///
 /// It counts the group the rounding adds: at 255 rows the last group
 /// carries seven slots and one reserved row, and the trace meets that
 /// group through the seven.
-#[cfg(test)]
 pub(crate) const fn group_count(row_count: u32) -> u32 {
     (padded(row_count) / GROUP as usize) as u32
+}
+
+/// Visit the index of every row of `array` the scan left
+/// [`Color::PotentiallyUnreachable`], lowest index first, and stop where
+/// `visit` answers false.
+///
+/// **False when it stopped early**, which is the visitor's own refusal
+/// handed back to whoever owns it. True when the array is exhausted,
+/// including where nothing was visited at all.
+///
+/// Only the groups a trace met are read. An unmet group's eight rows are
+/// whatever the block that held this memory before left in them, so
+/// reading their colours would read another collection's verdicts
+/// ([`ensure_group_initialized`]); a block whose trace met one entity
+/// therefore costs the bitmap and one group rather than its whole array.
+///
+/// The rows past `row_count` are the rounding's, reserved so that a group
+/// init writes eight, and no walk visits them: their index names no slot
+/// of the block.
+///
+/// # Safety
+/// `array` is an initialised array whose collection has been scanned.
+pub(crate) unsafe fn for_each_unreachable(
+    array: *mut RowArray,
+    mut visit: impl FnMut(u32) -> bool,
+) -> bool {
+    let row_count = unsafe { (*array).row_count };
+    for group in 0..group_count(row_count) {
+        let first = group * GROUP;
+        if !unsafe { group_is_initialized(array, first) } {
+            continue;
+        }
+
+        for index in first..(first + GROUP).min(row_count) {
+            note_row_read();
+            if color(unsafe { *row(array, index) }) != Color::PotentiallyUnreachable {
+                continue;
+            }
+
+            if !visit(index) {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 /// Groups of `array` the trace zeroed, counted off the bitmap.

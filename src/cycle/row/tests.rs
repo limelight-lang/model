@@ -41,4 +41,5 @@ unsafe fn block_kind(address: usize) -> u32 {
     unsafe { load_block_kind(&raw const (*header).kind) }
 }
 
+mod the_entity_behind_a_row;
 mod the_row_each_population_resolves_to;

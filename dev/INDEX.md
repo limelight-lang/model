@@ -41,6 +41,7 @@ versions live in `docs/history/`, marked at the top.
   | `shadow` | the row: two bits of colour over thirty of working count | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
   | `mark` | the trace: trial deletion over the rows | none |
+  | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | none until S36.7 |
   | `records` | `RecordChain`, the segmented record chain the trace's worklist is built on, and its one user since the withheld returns took the stack | none |
   | `stack` | the trace worklist, 256-entry segments out of the arena | none |
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
@@ -622,6 +623,17 @@ counted per thread as well, and `thread_stats` is what an exact assertion
 reads: the process figures are moved by every thread the suite is running
 (`dev/DECISIONS.md`, "the test-facing reading of the GC ledger is per
 thread").
+
+The collection workspace's two fixed regions — one 64 KiB block a thread draws
+at its first collection and keeps until it exits, whose head the bump does not
+grant. First the withheld returns' control line, 64 bytes
+(`cycle::deferred_slot_reuse`); behind it the member list, a control line and
+1,024 eight-byte records, 8,256 bytes (`cycle::members`). Prefix 8,320 and bump
+56,960, both pinned by `const` assertions in `cycle::arena`. The list is what a
+collection an allocation failure started reads its teardown off, the rows
+having gone back with the blocks; a collection off the poll keeps its arena
+instead and arms nothing (`dev/DECISIONS.md`, "the member list is the pressure
+path's alone").
 
 Withholding a physical return — `memory::stdapi::ll_free` asks two windows
 before a slot, a retained block or a large run goes back: an entity whose

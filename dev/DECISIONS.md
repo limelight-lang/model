@@ -8,6 +8,57 @@ never edited or deleted.
 
 ---
 
+## 2026-09-06 — the member list is the workspace's second region, and its capacity is 1,024 records
+
+Owner: S36.12 slice (b). Ruled by the Sage at the stage's pre-change gate.
+
+**Decided:** the list a pressure collection harvests into is a second fixed
+region of the collection workspace, behind the withheld returns' control line —
+a 64-byte control line of its own and 1,024 eight-byte records, 8,256 bytes. The
+workspace's prefix becomes 8,320 and its bump 56,960, both pinned by `const`
+assertions in `cycle::arena`. What keeps the records readable from the last
+append to the last destructor is that nothing else writes those bytes: the
+arena's open sets its cursor past the prefix, its reset rewinds to it, and
+`queue::return_workspace_base` leaves the block in the thread's own cell rather
+than handing it to the pool.
+
+**The capacity is derived rather than round.** The lower bound is two median
+closures of the corpus this collector is sized against, 381 entities each
+(`PLAN.md` S37), which is 762; the upper is the three widest row arrays the bump
+must still hold beside the list, 3 × 16,408 = 49,224 against 56,960. Inside that
+range 1,024 is the count whose records are exactly the 8,192 bytes S44.2 gave
+back to the bump when the withheld returns' region went. What revises it is a
+measurement of a real pressure collection, which S40.1 takes; `cycle::density`
+cannot, counting no death at all.
+
+**A trace's whole set fits or none of it does.** The scan leaves a row
+potentially unreachable only where no live referrer raised it, so every referrer
+of such an entity carries that colour too: a prefix of the set is not a set a
+teardown can take, its members being named by the entities left behind. An
+overflow empties the list and says so, and what follows is a trace over fewer
+roots rather than a partial teardown. That narrows the ruling of 2026-09-03,
+which left "the entities past the region" to the next trace: the unit is the
+trace, and every candidate bit stands after an overflow.
+
+**Refused: the bump instead of a fixed region.** It costs an ordinary
+collection nothing, which is its whole case, and it puts the list exactly where
+the next collection's first row array is granted — so a collection a destructor
+starts would write over the list the outer teardown is reading. It also enters
+the arena's residue in the manager's high-water figure, for memory the thread
+holds whether or not a collection is running.
+
+**Where the implementation departs from the gate:** the word that says the
+region is in use is a thread-local pointer rather than the region's own fill.
+The gate had the fill written once at the workspace's first draw; a thread-local
+`Cell` is zero by construction, so the dirty block the pool hands over needs no
+initialisation pass to be read safely.
+
+**What it does not settle:** what a real pressure collection harvests, and the
+driver that arms one — S36.7's, along with the re-trace over fewer roots that
+follows an overflow.
+
+---
+
 ## 2026-09-06 — the stack stays, its close being slower than the chain
 
 **Decided by Edmond**, on S44.4's reading: the question of taking the chain

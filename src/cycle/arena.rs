@@ -9,14 +9,17 @@
 //! ([`crate::cycle::queue::lend_workspace_base`]; `dev/DECISIONS.md`, "the
 //! workspace base is drawn at the first collection, not at thread init").
 //!
-//! **Its first [`WORKSPACE_PREFIX_BYTES`] bytes are a fixed region rather than
-//! bump**, and the bump opens behind it. The region is one line, the control
-//! line of the withheld returns ([`crate::cycle::deferred_slot_reuse`]), whose
-//! stack is threaded through the dying entities themselves — which is what
-//! lets an ordinary collection withhold every return it has without asking the
-//! memory manager for anything. The arena holds no part of that window, only
-//! the region it is opened over, because the window outlives the arena's reset
-//! and dies with the collection instead.
+//! **Its first [`WORKSPACE_PREFIX_BYTES`] bytes are two fixed regions rather
+//! than bump**, and the bump opens behind them. The first is one line, the
+//! control line of the withheld returns
+//! ([`crate::cycle::deferred_slot_reuse`]), whose stack is threaded through
+//! the dying entities themselves — which is what lets an ordinary collection
+//! withhold every return it has without asking the memory manager for
+//! anything. The second is the member list a pressure collection harvests into
+//! ([`crate::cycle::members`]), which is read after the arena has given every
+//! block back. The arena holds neither, only the addresses they are opened
+//! over: both outlive its reset, one dying with the collection and the other
+//! with the teardown that reads it.
 //!
 //! The trace's worklist ([`crate::cycle::stack`]) has no region and takes its
 //! segments from the bump, one at the first push. The arena holds it for the
@@ -97,6 +100,7 @@
 //! ([`TraceScratchArena::ensure_row`]).
 
 use crate::cycle::deferred_slot_reuse::RETURNS_BASE_BYTES;
+use crate::cycle::members::MEMBERS_BASE_BYTES;
 use crate::cycle::row::{Population, RowKey};
 use crate::cycle::shadow::{self, Color, RowArray};
 use crate::cycle::stack::{SEGMENT_BYTES, TraceStack, WorklistEntry};
@@ -168,24 +172,31 @@ impl Drop for LentWorkspace {
     }
 }
 
-/// Bytes at the head of the workspace the withheld returns' control line
-/// takes, before the bump opens.
-pub(crate) const WORKSPACE_PREFIX_BYTES: usize = RETURNS_BASE_BYTES;
+/// Bytes at the head of the workspace its two fixed regions take, before the
+/// bump opens: the withheld returns' control line, then the member list.
+pub(crate) const WORKSPACE_PREFIX_BYTES: usize = RETURNS_BASE_BYTES + MEMBERS_BASE_BYTES;
 
 /// Bytes of the workspace the bump may grant.
 pub(crate) const WORKSPACE_BUMP_BYTES: usize = BLOCK_PAYLOAD - WORKSPACE_PREFIX_BYTES;
 
-// What the prefix costs the bump, pinned: one line, and everything else of
+// What the prefix costs the bump, pinned: two regions, and everything else of
 // the block grantable. The first assertion is the prefix's own and fires when
 // it grows again; the second is the pair of it and the payload, and fires on
 // either, so a reading of it names both.
-const _: () = assert!(WORKSPACE_PREFIX_BYTES == 64);
-const _: () = assert!(WORKSPACE_BUMP_BYTES == 65_216);
+const _: () = assert!(WORKSPACE_PREFIX_BYTES == 8_320);
+const _: () = assert!(WORKSPACE_BUMP_BYTES == 56_960);
 
-// The region begins on a line, which its control line needs to be aligned at
+// What the bump keeps for rows, stated where the prefix is chosen: three of
+// the widest arrays a block can need, which is what a trace over three
+// smallest-class blocks reserves. A fourth has never fitted the workspace,
+// prefix or none (`crate::cycle::shadow::bytes_for`).
+const _: () = assert!(3 * 16_408 < WORKSPACE_BUMP_BYTES);
+
+// The regions begin on a line, which their control lines need to be aligned at
 // all: a payload starts `LINE_SIZE` into a block the pool aligns to
 // `BLOCK_SIZE`, so an offset that is a multiple of 64 is 64-aligned.
 const _: () = assert!(RETURNS_BASE_BYTES % 64 == 0);
+const _: () = assert!(MEMBERS_BASE_BYTES % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::LINE_SIZE % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::BLOCK_SIZE % 64 == 0);
 
@@ -326,6 +337,18 @@ impl TraceScratchArena {
     /// has died (`crate::cycle::deferred_slot_reuse::ActiveTrace`).
     pub(crate) fn withheld_returns_region(&self) -> *mut u8 {
         BlockHeader::payload_start(self.base.block())
+    }
+
+    /// The workspace region a harvest writes its members into:
+    /// [`MEMBERS_BASE_BYTES`] bytes behind the withheld returns' control line.
+    ///
+    /// The list is not this arena's either, and it outlives it the other way
+    /// round: the sweep fills it while the arena still stands, and the driver
+    /// reads it after every block has gone back
+    /// (`crate::cycle::members::StandingMembers`). What the arena guarantees
+    /// is the address, and that its own bump never grants these bytes.
+    pub(crate) fn member_region(&self) -> *mut u8 {
+        unsafe { BlockHeader::payload_start(self.base.block()).add(RETURNS_BASE_BYTES) }
     }
 
     /// Charge `bytes` of this arena's bump as memory in use, and remember
@@ -627,8 +650,23 @@ impl TraceScratchArena {
         // and a second call must find nothing rather than repeat it.
         self.touched = std::ptr::null_mut();
 
+        // Read once for the whole sweep rather than per block: a harvest is
+        // armed before the sweep and released after the teardown, so nothing
+        // can arm one between two blocks of this walk
+        // (`crate::cycle::members`).
+        let harvesting = crate::cycle::members::is_armed();
+        // Falls the moment the region refuses a record, and the rest of the
+        // walk is the null-only sweep an ordinary collection makes: what an
+        // overflowed harvest owes is nothing, and reading further rows would
+        // pay for records the driver is going to discard.
+        let mut taking = harvesting;
+
         while !array.is_null() {
             let block = unsafe { (*array).block };
+            if taking {
+                taking = unsafe { Self::harvest_rows(array, block) };
+            }
+
             match unsafe { (*array).population } {
                 // The large entity's row is the block's own header word,
                 // so what a stale one costs is not a wild pointer but a
@@ -649,6 +687,50 @@ impl TraceScratchArena {
 
             array = unsafe { (*array).next };
         }
+
+        if harvesting {
+            crate::cycle::members::end_harvest();
+        }
+    }
+
+    /// Write every entity of `block` the scan left unreachable into the armed
+    /// member list, and answer **false where the list refused one**, which
+    /// ends the harvest of the whole sweep rather than of this block.
+    ///
+    /// The rows are the collection's own memory and stay readable after the
+    /// block's shadow pointer is nulled, so the two are in either order; this
+    /// one reads the rows first, while the block's header line is still cold
+    /// for the store that follows.
+    ///
+    /// A retained block whose list does not name the row's position is passed
+    /// over rather than harvested: the disagreement between the two is
+    /// `crate::cycle::row::entity_at`'s to report, and an entity left out of
+    /// the list keeps its candidate bit and dies at a later collection.
+    ///
+    /// # Safety
+    /// `array` is an initialised array of a scanned collection, `block` is the
+    /// block it was written for, and a harvest is armed on this thread.
+    unsafe fn harvest_rows(array: *mut RowArray, block: *mut u8) -> bool {
+        let population = unsafe { (*array).population };
+        let take =
+            |index: u32| match unsafe { crate::cycle::row::entity_at(block, population, index) } {
+                Some(entity) => crate::cycle::members::push(entity),
+                None => true,
+            };
+
+        // The one population whose row is not in the array: a large entity's
+        // colour is a word of its own block header, and its array carries the
+        // prologue alone (`crate::cycle::shadow::RowArray`).
+        if population == Population::SingleEntity {
+            let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
+            if shadow::color(row) != Color::PotentiallyUnreachable {
+                return true;
+            }
+
+            return take(crate::cycle::row::SINGLE_ENTITY_INDEX);
+        }
+
+        unsafe { shadow::for_each_unreachable(array, take) }
     }
 
     /// Queue `entry` for expansion, or answer **false** when both allocation

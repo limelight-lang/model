@@ -81,6 +81,9 @@ pub(crate) mod validation;
 // The first phase of a trace, reached from [`trace`] rather than from a
 // collection: the collection that drives one is S36.7's.
 pub(crate) mod mark;
+// The list a pressure collection takes out of its rows before the blocks go
+// back, and the region of the workspace it stands in.
+pub(crate) mod members;
 // Physical slot return waits while a trace can still address the slot's shadow
 // row. The production trace that opens the window arrives in S36.7; S36.2
 // builds the window and the return-path half first.

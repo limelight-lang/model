@@ -498,6 +498,33 @@ impl ActiveTrace {
         (&mut self.arena, batch)
     }
 
+    /// Arm this window's close to harvest, so that its sweep writes the
+    /// entities the scan left unreachable into the thread's member list
+    /// ([`crate::cycle::members`]).
+    ///
+    /// **False when a list is already standing on this thread**, which is a
+    /// collection a destructor of another collection's teardown started: it
+    /// closes the way an ordinary one does and takes no members, the region
+    /// holding one list and the outer driver still reading it.
+    ///
+    /// Armed after the trace answers `Complete` and never before. A trace that
+    /// gave up leaves no colour that is a verdict, so a harvest of its rows
+    /// would name entities no scan classified (`crate::cycle::trace`).
+    ///
+    /// `capacity` is what this harvest takes before it gives up, and the
+    /// driver of an ordinary collection arms nothing at all: that path keeps
+    /// its arena through the teardown and reads the rows themselves.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the driver that collects under pressure is `PLAN.md` S36.7's"
+        )
+    )]
+    pub(crate) fn arm_harvest(&mut self, capacity: u32) -> bool {
+        unsafe { crate::cycle::members::arm(self.arena.member_region(), capacity) }
+    }
+
     /// The trace's working memory. No arena reference can outlive the window,
     /// which is what makes the close order above enforceable by the type.
     ///

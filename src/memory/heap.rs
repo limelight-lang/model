@@ -2410,6 +2410,36 @@ pub(crate) unsafe fn entity_slot_index(entity: *mut u8) -> u32 {
     slot_index_by_reciprocal(offset, reciprocal)
 }
 
+/// The slot at `index` of an entity block, which is what
+/// [`entity_slot_index`] answers backwards.
+///
+/// The stride is the collector's own copy of the size class, the word
+/// [`collector_block_slots`] reads, so a walk that already holds a block's row
+/// array pays no second line for the address behind a row
+/// (`crate::cycle::row::entity_at`).
+///
+/// The address is a slot of the block and says nothing about what stands in
+/// it: a slot past the bump cursor has never been handed out, and one whose
+/// entity died reads as free. What separates the three is
+/// [`crate::refcount::slot_state`], and a caller that acts on the answer owes
+/// that reading.
+///
+/// # Safety
+/// `block` is the header of a commissioned `BLOCK_KIND_ENTITY` block and
+/// `index` is below [`collector_block_slots`].
+pub(crate) unsafe fn entity_slot_at(block: *mut u8, index: u32) -> *mut u8 {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    // Relaxed for the reason `entity_slot_index` loads its reciprocal
+    // relaxed: the caller's acquire load of the kind published this word.
+    let stride = SIZE_CLASSES[unsafe { (*line).size_class.load(Ordering::Relaxed) } as usize];
+    debug_assert!(
+        (index as usize) < BLOCK_PAYLOAD / stride,
+        "a slot index past the block's own slot count"
+    );
+
+    unsafe { block.add(LINE_SIZE + index as usize * stride) }
+}
+
 /// How many slots an entity block holds, which is how many rows its
 /// shadow array needs (`crate::cycle::arena`).
 ///
