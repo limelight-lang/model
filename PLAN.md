@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-06 · Active: S36, from S36.4. S44 has one step left, S44.5,
+Updated: 2026-09-06 · Active: S36, from S36.5. S44 has one step left, S44.5,
 and it waits on Edmond's word.
 S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
@@ -22,8 +22,9 @@ on that reading, and the stage's `Done when:` was rewritten to ask for the
 measurement rather than for its direction. S36 is the work in front:
 its S36.9 stays open on the deny run a wired collection owes, S36.12 closed on
 2026-09-06 with the pressure path's harvest, S36.3 closed the same day with the
-guard references and the weak window, and S36.4 — the destructors and the
-resurrection re-verify — is the next of its steps to be built.
+guard references and the weak window, S36.4 the same day with the destructors
+and the revalidation behind them, and S36.5 — the sever, the free and the
+deferred drops — is the next of its steps to be built.
 S43 closed the withheld-return window: past its region the module draws
 nothing, a death in memory the collection never met is returned at once, a
 marked slot of another thread's block is stacked rather than listing its
@@ -108,6 +109,18 @@ guard lowers it on the unwind as well as on the return.
   retirement at all: S36.5's is the sever and the free, S36.6's is the
   maturation stamp alone. The act needs a criterion in whichever step gets it,
   and the citations on the other side move in the same commit.
+
+- **Which destructors "a destructor ran anywhere" counts.**
+  `rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 5 gates
+  the second reading on a destructor having run anywhere in the commit, and
+  S36.4 reads that as a member's pending `__destruct` at step 4, which is what
+  `DestructorPass` records. The other reading is any user destructor at all, the
+  external children of a component's teardown included — and those run without
+  touching the flag, which `cycle::finalization`'s
+  `a_child_of_a_dying_member_runs_its_destructor_inside_the_release` shows. The
+  skip is sound under the first reading by the induction written at
+  `Revalidation::revalidate`; which reading the specification means is
+  unresolved, and it is `rfc`'s sentence to sharpen.
 
 - **`exact test` is a term the glossary retires** in favour of *exact
   validation* (`rfc/dev/GLOSSARY.md`, "Deprecated terms"), and it stands 45
@@ -2276,11 +2289,11 @@ stage claiming the frees while building none of them.
         caller for this signature; that one commit uses one finalization, which
         no type here holds; and the disjointness of whatever partition it
         makes, which `confirm` cannot check and states as a precondition.
-- [ ] S36.4 Destructors and the resurrection re-verify
+- [x] S36.4 Destructors and the resurrection re-verify
       done: `__destruct` runs per object member on the owning thread; when any
         ran, the exact test runs again with the guard discount; a failure
         releases the guards through the counted path, so survivors keep true
-        counts with destructors still ahead of them, and the component is
+        counts with their destructors already behind them, and the component is
         abandoned with its cells nulled; a destructor that stores `$this` into
         an external root proves both the acquittal and the nulled cell — the
         divergence from PHP that `weak-references.md` records
@@ -2292,6 +2305,67 @@ stage claiming the frees while building none of them.
         `cycle::finalization::Invalidated` lands. The pass takes that value by
         value, which is what keeps the invalidation ahead of every destructor
         of the finalization.
+      correction 2026-09-06 — the `done:` clause read "with destructors still
+        ahead of them", where the design retains a survivor "with their
+        destructors already invoked" (`rfc/model/gc/rc-cycle.md`, "Cycle
+        finalization and reclamation", step 5). The code follows the design —
+        `DESTRUCTOR_RAN` stands on a survivor, so its later ordinary death runs
+        no second body — and the clause is corrected to it. Raised by the
+        Critic's first round, ruled by Edmond.
+      Sage 2026-09-06, the stage's pre-code gate: **refused the batch-then-batch
+        shape** — revalidate every component, then tear every one down — and
+        ruled the revalidation of a component adjacent to its teardown. A
+        destructor of component *j* may take a weak reference to a member of
+        *j*, and the external children an earlier component's teardown drops run
+        user code that can root what it resolves, so *j* would be severed under
+        a root; the design's sequence is per component and only its steps 2, 3
+        and 4 carry a batch-wide qualifier. The chain is `Invalidated →
+        DestructorPass → Revalidation`, each close matching the members it was
+        handed against the members the confirm guarded, and `GuardedComponent`
+        borrowing the revalidation. The kind gate is
+        `refcount::carries_a_class_word` rather than a test for the object kind,
+        so the pass admits the kinds the death path dispatches to
+        `ll_object_die`; the ordinary death of a member the release takes to
+        zero is the revalidation's own, through the counted release rather than
+        the counter's twin, its queue entry named as the price. Costed at one
+        flags load per member, one indirect call per member that owes a
+        destructor, one validation per component read again, and zero manager
+        allocation. Baseline recorded: 746 tests, and S36.3's Miri count over
+        the module. Final.
+      Critic 2026-09-06 round 1: nine findings, all taken. Three were claims the
+        code contradicts — the answer promised every member survives while the
+        release frees one whose guard was its last reference; the module doc
+        named the destructor pass as the only place user code runs, and an
+        external child's `__destruct` runs inside the release; and the path a
+        commit with no destructor takes returned without the sort its doc
+        promised, which the sever's membership test reads by binary search. Two
+        were obligations stated and unenforced: `guards_released` was safe while
+        carrying the adjacency, and is `unsafe` now, and the skip's soundness
+        was argued nowhere. The allocation account was S36.3's and stale — user
+        code allocates without bound and the counted release can end the process
+        through the overflow buffer. Two cases did not own their behaviour: the
+        cross-component weak case passed with the invalidation moved into a
+        per-component pass until the prober's component was confirmed first, and
+        nothing read the queue entry the counted release exists to write. The
+        rest were a dead parameter, a fixture reading its victim from a static,
+        and a count of counters.
+      Critic 2026-09-06 round 2: seven findings, all taken, and **both soundness
+        arguments the first round asked for were false**. The second user-code
+        site was said to be unable to reach a member of an unread component; it
+        can, through anything step 4 published, and what keeps the component
+        whole is the adjacency itself — the sentence as written licensed the
+        loop shape the ruling forbids. The skip's warrant said no user code runs
+        when no member owes a destructor; an external child's does and sets no
+        flag, so an induction replaced it. Three surfaces still said the guards
+        come off in S36.5 and nowhere else, which the release inside this module
+        contradicts; the module doc still claimed the borrow orders the teardown
+        where the type's own doc says it orders the readings alone; the two
+        close assertions named a protection a member count cannot give — a
+        component offered twice in place of another meets the sum; and the test
+        module doc kept the sentence the first round removed from `run`. The
+        ruling that reshaped the API had no case at all:
+        `a_component_rooted_by_an_earlier_teardown_is_read_after_it` is it, and
+        a mutation deferring the release out of `revalidate` is caught by it.
       handoff: `src/cycle/finalization.rs` gains `Invalidated::destructors`,
         `DestructorPass`, `Revalidation`, `Revalidated`, `GuardedComponent` and
         `release_guards`; the cases are `what_the_destructor_pass_runs.rs` and
