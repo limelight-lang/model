@@ -83,8 +83,13 @@
 //! of a block is the one word the stamp stands in; what the return then reads
 //! is `ll_free`'s own, which both designs pay alike. What the stack
 //! costs the close moves with the deaths withheld rather than with the blocks
-//! the collection touched, which is the reading S43.1 took against the walk
+//! the collection touched, which is what the refused walk was priced against
 //! (`dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld chain").
+//! What that costs in time is 3.7 ns a death where the deaths share one block
+//! and 20.5 where each has a block of its own, against the deleted chain's 2.9
+//! and 12.6: the pop learns the next address from the slot it is freeing, so
+//! the returns cannot overlap where the chain's records let them
+//! (`dev/BENCHMARKS.md`, "S44.4 the close against the chain").
 //! A thread exiting with its window still open ends the process, which is the
 //! one process end this module holds and has a reason of its own
 //! ([`dispose_thread_state`]).

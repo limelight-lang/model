@@ -1,10 +1,11 @@
-//! What a trace's sweep would walk against what its deaths would record
-//! (`dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld chain").
+//! What a collection's close costs when its deaths happen inside the window
+//! (`dev/BENCHMARKS.md`, "S44.4 the close against the chain").
 //!
-//! Ignored in the ordinary suite and run by hand:
+//! Ignored in the ordinary suite and run by hand, in a release build because
+//! the reading is a time:
 //!
 //! ```text
-//! cargo test --lib density::tests::the_death_loads -- --ignored --nocapture
+//! cargo test --release --lib density::tests::the_death_loads -- --ignored --nocapture
 //! ```
 //!
 //! The numbers themselves are in `dev/BENCHMARKS.md`; what stands here is the
@@ -21,68 +22,54 @@
 //! fails if a death took another `ll_free` arm, if a candidate bit still
 //! stood, or if a teardown killed something nobody counted.
 //!
-//! What the crate chooses, and what both prices are read off, is where the
-//! heap put those entities: the blocks the trace touched, the two walk bounds
-//! each of them carries, and how the deaths cluster across them.
+//! # The reading is a time, and the other arm is in another tree
 //!
-//! # The two prices, and they are counted rather than timed
+//! [`ActiveTrace`]'s drop is the whole close — the row sweep, the candidate
+//! restore, the withheld returns and the arena's hand-back — and it is what is
+//! timed, because the two designs differ inside it and share everything
+//! around it. The arm this tree cannot run is the record chain, which the
+//! crate does not carry (`dev/DECISIONS.md`, "one stack through the dead
+//! entity holds every withheld return"); its reading is taken over a worktree
+//! at the last commit that carried it, with this construction ported into it,
+//! and the two are compared in one sitting under `dev/BENCHMARKS.md`'s Method.
+//! Which commit that was, and what the two answered, is `dev/BENCHMARKS.md`,
+//! "S44.4 the close against the chain".
 //!
-//! Neither side existed when the reading was taken, on 2026-09-04, so there
-//! was nothing to time and every figure below is arithmetic over counted
-//! structure. What the reading decided is what the crate built after it: the
-//! chain stays and the walk runs on the refusal alone.
+//! The reading is the **minimum** of [`TIMED_RUNS`] independent loads, each on
+//! a heap of its own. A close cannot be repeated over one population — it
+//! destroys the one it reads — so a run is a whole load, and the minimum is
+//! the sample least disturbed by the box this crate is developed on.
 //!
-//! **Both arms below are designs the crate does not have.** "The sweep" is a
-//! walk of every touched block's slots at every collection, which was priced
-//! and refused; "the chain" is the record chain S44.2 deleted, and its three
-//! constants model a structure nothing writes. What the crate builds is one
-//! stack through the dying entities, and `PLAN.md` S44.4 rebuilds this fixture
-//! around it.
+//! # In lines the stack answers by construction
 //!
-//! Two units are reported because they disagree in direction:
-//!
-//! - **cache lines.** The sweep reads one word per walked slot, and at a
-//!   stride under 64 bytes that walk reads the block through. The chain
-//!   writes eight records to a line and reads them back once at the replay.
-//! - **memory operations.** The sweep is one load and one test per walked
-//!   slot against
-//!   [`defer_reuse_if_tracing`](crate::cycle::deferred_slot_reuse)'s
-//!   documented three loads and two stores per death, plus the replay's own
-//!   load per record.
-//!
-//! # Two bounds on the walk, and the production one is the wider
-//!
-//! `heap::for_each_entity_slot` walks `0..bump`, not `0..slots`, and this
-//! fixture's blocks are young: a component of 381 members at class 32 leaves
-//! the cursor at 381 of 2,040. The bump bound is what a walk over *this*
-//! population would cost and the slot bound is what it costs once the block
-//! has filled, since the cursor never retreats
-//! (`crate::memory::heap::block_bump`). Both are reported per load.
+//! The close's pop reads one word of each dead entity, at
+//! `heap::FREE_LIST_LINK_OFFSET`, and the `ll_free` behind that pop reads the
+//! same entity's header. Both stand in the first sixteen bytes of a slot whose
+//! alignment is its size class, so they share a cache line at every class and
+//! the pop touches no line the return does not.
+//! [`the_close_reads_no_line_of_its_own`] pins that rather than stating it.
 //!
 //! # What these loads may not claim
 //!
 //! The teardown is unbuilt — S36.3's guard, S36.4's destructors and S36.5's
 //! sever and deferred drops are all open — so the frees below are the shape
-//! of that path rather than the path. Three consequences, and the first two
-//! pull in opposite directions:
+//! of that path rather than the path. Two consequences:
 //!
 //! - **no tail.** A component's members here carry one property each and no
-//!   external children, so no acyclic garbage dies behind them. Production
-//!   deaths are therefore understated, which favours the chain.
-//! - **every touched block holds a death.** A production trace touches blocks
-//!   holding survivors alone, which the sweep pays for and the chain does not.
-//!   That favours the sweep.
+//!   external children, so no acyclic garbage dies behind them, and a real
+//!   teardown's deferred drops would lengthen both arms' closes.
 //! - **no destructor and no verdict.** A `__destruct` that allocates or
 //!   resurrects moves the death set, and `cycle::validation` is what decides a
 //!   component is garbage; here the fixture asserts it.
 
 use super::*;
 
-use super::the_loads::{COLLECTIONS, DESIGN_CLASSES, slots_per_block};
+use std::time::{Duration, Instant};
+
+use super::the_loads::{COLLECTIONS, slots_per_block};
 use crate::cycle::deferred_slot_reuse::deferred_slot_count;
-use crate::memory::block_pool::BLOCK_PAYLOAD;
 use crate::memory::gc_metadata;
-use crate::memory::heap::block_bump;
+use crate::memory::heap::FREE_LIST_LINK_OFFSET;
 use crate::refcount::clear_candidate_bit;
 
 /// The component size every load carries: the corpus's median closure, and
@@ -93,73 +80,36 @@ const MEMBERS: usize = 381;
 /// the 256-byte header line a block reserves.
 const CACHE_LINE_BYTES: usize = 64;
 
-/// Bytes one withheld return took in the chain: an address, and the record
-/// carried nothing beside it. The chain is deleted; this models it
-/// (`PLAN.md`, S44.2).
-const RECORD_BYTES: usize = size_of::<*mut u8>();
+/// Loads each timed arm runs, and the reading is the minimum of them.
+///
+/// Twenty rather than more because the whole load is rebuilt per run: the
+/// sparse arm draws a block per component member, so one close of it costs a
+/// build of some 24 MiB.
+const TIMED_RUNS: usize = 20;
 
-/// Memory operations the sweep's walk makes per slot: the load of the slot's
-/// first word and the test on it.
-const SWEEP_OPERATIONS_PER_SLOT: usize = 2;
+/// The size classes the dense arm is read at: the narrowest of the design's
+/// four, where a block holds every member, and the one where a block holds
+/// three quarters of them.
+///
+/// Class 16 is not among them and cannot be: `props_for(16)` is zero
+/// properties, so a class-16 entity has no property to carry a ring edge and
+/// no component can be built in it.
+const DENSE_CLASSES: [usize; 2] = [32, 128];
 
-/// The store the mark puts in a dead slot's own first word
-/// (`refcount::DEAD_IN_PLACE`). `ll_free` takes that bit at its head for every
-/// entity death, withheld or not, so it is a cost neither design carries over
-/// the other; it stays counted because both arms of the comparison pay it and
-/// the figure is what a death costs rather than what one arm costs.
-const MARK_OPERATIONS_PER_DEATH: usize = 1;
+/// The size class the sparse arm is read at, one component member to a block.
+const SPARSE_CLASS: usize = 256;
 
-/// Memory operations one append makes with a window open and room in the
-/// segment: three loads — the thread-local control line, the cursor and the
-/// limit — and two stores (`crate::cycle::deferred_slot_reuse`,
-/// `defer_reuse_if_tracing`).
-const APPEND_OPERATIONS_PER_DEATH: usize = 5;
-
-/// The replay's own load of the record at the window's close. What follows it
-/// is the entry into `ll_free` that both designs make, so it is not counted
-/// on either side.
-const REPLAY_OPERATIONS_PER_DEATH: usize = 1;
-
-/// One touched entity block, with the two bounds a per-slot walk of it could
-/// run to and the deaths that landed in it.
+/// One touched entity block and the deaths that landed in it.
 #[derive(Clone, Copy)]
 struct WalkedBlock {
     /// The block header's address, which is what a death's slot resolves to.
     block: usize,
-    /// The block's index space, which is its slot count.
-    slots: u32,
-    /// Slots handed out at least once, and the bound
-    /// `heap::for_each_entity_slot` uses.
-    bump: u32,
     /// Component members freed inside the window whose slot is in this block.
     deaths: u32,
 }
 
-impl WalkedBlock {
-    /// Bytes between two slots of this block, which is the size class.
-    fn stride(&self) -> usize {
-        BLOCK_PAYLOAD / self.slots as usize
-    }
-
-    /// Distinct cache lines a walk of `slots` slots from the block's base
-    /// reads.
-    ///
-    /// Two regimes, and the stride decides which: at 64 bytes and above every
-    /// slot's first word is a line of its own, and below it the walk reads a
-    /// span of consecutive lines. Slots are contiguous and the base is
-    /// line-aligned, so the last slot's offset gives the span.
-    fn lines_for(&self, slots: u32) -> usize {
-        if slots == 0 {
-            return 0;
-        }
-
-        let span = (slots as usize - 1) * self.stride() / CACHE_LINE_BYTES + 1;
-        span.min(slots as usize)
-    }
-}
-
-/// One killing collection: the reading taken before the first free, and what
-/// the deaths did.
+/// One killing collection: the reading taken before the first free, what the
+/// deaths did, and what the close cost.
 struct DeathReading {
     /// The density read after the trace and before any free, which is the
     /// arm the ordinary collections are compared against.
@@ -171,8 +121,14 @@ struct DeathReading {
     arena_blocks: usize,
     /// Entities the fixture freed inside the window.
     freed: usize,
-    /// Returns the chain withheld, which equals `freed` or the run is void.
+    /// Returns the window withheld, which equals `freed` or the run is void.
     withheld: usize,
+    /// Distinct cache lines the withheld slots stand in, which is what the
+    /// close's pop reads and what the returns behind it read anyway.
+    close_lines: usize,
+    /// What `ActiveTrace::drop` took: the sweep, the restore, every withheld
+    /// return and the arena's hand-back.
+    close: Duration,
     /// Manager blocks the thread held before the collection and after its
     /// close.
     blocks_before: usize,
@@ -220,7 +176,8 @@ fn a_killing_load(class_bytes: usize, fillers_between: usize) -> DeathLoad {
 }
 
 /// Trace, read the rows, then run the teardown S36.5 will run — inside the
-/// still-open window, which is where a collection's own deaths happen.
+/// still-open window, which is where a collection's own deaths happen — and
+/// time the close that follows it.
 ///
 /// The fillers outlive the window and are freed after it: they are the
 /// occupants a production trace touches a block for without killing anything
@@ -255,6 +212,12 @@ fn collect_and_kill(fixture: Fixture) -> DeathReading {
         walked.deaths += 1;
     }
 
+    let dying: Vec<usize> = ring
+        .iter()
+        .map(|&member| entities[member] as usize)
+        .collect();
+    let close_lines = lines_of(&dying);
+
     // The shape `tear_down` uses, and S36.5's: hold every member while the
     // ring's edges go, then release and die. The candidate bit is cleared
     // first because `ll_free` refuses the queue window before it reaches the
@@ -286,7 +249,9 @@ fn collect_and_kill(fixture: Fixture) -> DeathReading {
     }
 
     let withheld = deferred_slot_count();
+    let start = Instant::now();
     drop(active);
+    let close = start.elapsed();
 
     let blocks_after = gc_metadata::thread_stats().current_blocks();
     let mut is_member = vec![false; entities.len()];
@@ -312,13 +277,25 @@ fn collect_and_kill(fixture: Fixture) -> DeathReading {
         arena_blocks,
         freed: ring.len(),
         withheld,
+        close_lines,
+        close,
         blocks_before,
         blocks_after,
     }
 }
 
-/// The entity blocks of the touched list, with both walk bounds read off each
-/// block's own header.
+/// Distinct [`CACHE_LINE_BYTES`]-byte lines `addresses` fall in.
+fn lines_of(addresses: &[usize]) -> usize {
+    let mut lines: Vec<usize> = addresses
+        .iter()
+        .map(|address| address / CACHE_LINE_BYTES)
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines.len()
+}
+
+/// The entity blocks of the touched list.
 ///
 /// # Safety
 /// As `density::totals`: the arena has not been reset, every touched block is
@@ -329,11 +306,8 @@ unsafe fn walked_blocks(arena: &TraceScratchArena) -> Vec<WalkedBlock> {
     let mut array = arena.touched_head();
     while !array.is_null() {
         if unsafe { (*array).population } == Population::Slotted {
-            let block = unsafe { (*array).block };
             walked.push(WalkedBlock {
-                block: block as usize,
-                slots: unsafe { (*array).row_count },
-                bump: unsafe { block_bump(block) },
+                block: unsafe { (*array).block } as usize,
                 deaths: 0,
             });
         }
@@ -407,27 +381,33 @@ fn the_deaths_are_the_ones_the_fixture_made(load: &DeathLoad) {
     );
 }
 
-/// One load's row of the table `dev/BENCHMARKS.md` records.
-fn report(load: &DeathLoad) {
+/// The minimum, median and maximum of a timed arm, in microseconds.
+struct CloseStats {
+    minimum: f64,
+    median: f64,
+    maximum: f64,
+}
+
+/// Reduce one arm's closes to [`CloseStats`].
+fn reduce(closes: &[Duration]) -> CloseStats {
+    let mut micros: Vec<f64> = closes
+        .iter()
+        .map(|close| close.as_nanos() as f64 / 1_000.0)
+        .collect();
+    micros.sort_by(|a, b| a.partial_cmp(b).expect("a duration is never NaN"));
+    CloseStats {
+        minimum: micros[0],
+        median: micros[micros.len() / 2],
+        maximum: micros[micros.len() - 1],
+    }
+}
+
+/// One placement's row of the table `dev/BENCHMARKS.md` records.
+fn report(load: &DeathLoad, closes: &[Duration]) {
     let killing = &load.killing;
-    let blocks = killing.blocks.len();
-    let slots: usize = killing.blocks.iter().map(|w| w.slots as usize).sum();
-    let bump: usize = killing.blocks.iter().map(|w| w.bump as usize).sum();
-    let slot_lines: usize = killing.blocks.iter().map(|w| w.lines_for(w.slots)).sum();
-    let bump_lines: usize = killing.blocks.iter().map(|w| w.lines_for(w.bump)).sum();
+    let stats = reduce(closes);
     let deaths = killing.freed;
 
-    // The chain's line is written at the append and read at the replay, so a
-    // record's line is touched twice where a walked slot's is touched once.
-    let record_lines = deaths.div_ceil(CACHE_LINE_BYTES / RECORD_BYTES);
-    let chain_lines = 2 * record_lines;
-    let chain_operations = deaths * (APPEND_OPERATIONS_PER_DEATH + REPLAY_OPERATIONS_PER_DEATH);
-
-    println!(
-        "\n  [both arms below are deleted designs: the sweep was refused and \
-         the chain went with `PLAN.md` S44.2; the built form is one stack \
-         through the dying entities, and S44.4 rebuilds this fixture]"
-    );
     println!(
         "\n== class {} ({} slots a block), {MEMBERS} members, {} fillers between ==",
         load.class_bytes,
@@ -435,85 +415,84 @@ fn report(load: &DeathLoad) {
         load.fillers_between
     );
     println!(
-        "  blocks touched {blocks}, arena blocks drawn {}, deaths {deaths} in {} of them",
+        "  blocks touched {}, arena blocks drawn {}, deaths {deaths} in {} of them",
+        killing.blocks.len(),
         killing.arena_blocks,
         killing.blocks.iter().filter(|w| w.deaths > 0).count()
     );
-    println!("  walk at the slot bound: {slots} slots, {slot_lines} lines");
-    println!("  walk at the bump bound: {bump} slots, {bump_lines} lines");
     println!(
-        "  chain at {deaths} deaths: {} bytes, {record_lines} lines written and read back \
-         ({chain_lines} line touches)",
-        deaths * RECORD_BYTES
+        "  the close reads {deaths} links in {} lines, every one of them a line \
+         its own return reads",
+        killing.close_lines
     );
     println!(
-        "  sweep operations at the slot bound {}, at the bump bound {}, chain operations {}",
-        slots * SWEEP_OPERATIONS_PER_SLOT + deaths * MARK_OPERATIONS_PER_DEATH,
-        bump * SWEEP_OPERATIONS_PER_SLOT + deaths * MARK_OPERATIONS_PER_DEATH,
-        chain_operations
-    );
-    println!(
-        "  break-even deaths by lines: {} at the slot bound, {} at the bump bound",
-        break_even_by_lines(slot_lines),
-        break_even_by_lines(bump_lines)
-    );
-    println!(
-        "  break-even deaths by operations: {} at the slot bound, {} at the bump bound",
-        break_even_by_operations(slots),
-        break_even_by_operations(bump)
-    );
-    println!(
-        "  deaths the load can reach at all: {slots} at the slot bound, {bump} at the bump bound"
+        "  ActiveTrace::drop over {} runs: min {:.1} us, median {:.1}, max {:.1}",
+        closes.len(),
+        stats.minimum,
+        stats.median,
+        stats.maximum
     );
 }
 
-/// Deaths at which the chain's line touches reach the sweep's walk.
+/// Run one placement [`TIMED_RUNS`] times, check every run, and report the
+/// first run's structure beside all of their closes.
 ///
-/// The sweep reads `walk_lines` lines once; the chain touches a line per
-/// eight records, twice. They meet at `4 × walk_lines` deaths, so a walk that
-/// reads more than one line for every four slots it visits stands above the
-/// deaths its own blocks can hold.
-fn break_even_by_lines(walk_lines: usize) -> usize {
-    4 * walk_lines
+/// The structure is the first run's rather than an agreement across runs
+/// because [`the_control_holds`] already fixes it per run: eight collections
+/// of one load read one density, and a run whose placement differed would
+/// fail there rather than reach this report.
+fn a_timed_arm(class_bytes: usize, fillers_between: usize) {
+    let mut closes = Vec::with_capacity(TIMED_RUNS);
+    let mut first = None;
+
+    for _ in 0..TIMED_RUNS {
+        let load = on_a_fresh_thread(move || a_killing_load(class_bytes, fillers_between));
+        the_control_holds(&load);
+        the_deaths_are_the_ones_the_fixture_made(&load);
+        closes.push(load.killing.close);
+        first.get_or_insert(load);
+    }
+
+    report(&first.expect("a timed arm runs at least once"), &closes);
 }
 
-/// Deaths at which the chain's memory operations reach the sweep's.
+/// The premise the line reading rests on: a slot's header and the word the
+/// stack links it through share a cache line, at every size class the design
+/// has.
 ///
-/// `2 × walked + deaths` against `6 × deaths`, which meet at `2 × walked / 5`.
-fn break_even_by_operations(walked: usize) -> usize {
-    let per_death =
-        APPEND_OPERATIONS_PER_DEATH + REPLAY_OPERATIONS_PER_DEATH - MARK_OPERATIONS_PER_DEATH;
-    walked * SWEEP_OPERATIONS_PER_SLOT / per_death
+/// Not a measurement and not ignored — it is one arithmetic statement about
+/// the layout, and a size class that broke it would make the close's reads
+/// lines of their own without failing anything else.
+#[test]
+fn the_close_reads_no_line_of_its_own() {
+    for &class_bytes in crate::memory::heap::SIZE_CLASSES {
+        let last_slot = crate::memory::block_pool::BLOCK_PAYLOAD - class_bytes;
+        for base in [0, class_bytes, last_slot] {
+            assert_eq!(
+                base / CACHE_LINE_BYTES,
+                (base + FREE_LIST_LINK_OFFSET) / CACHE_LINE_BYTES,
+                "class {class_bytes} puts the stack's link in a line of its own"
+            );
+        }
+    }
 }
 
-/// The dense arm: the component's members allocated back to back, over each
-/// of the design's four size classes.
-///
-/// Class 16 is not here and its figure is arithmetic: `props_for(16)` is zero
-/// properties, so a class-16 entity has no property to carry a ring edge and
-/// no component can be built in it.
+/// The dense arm: the component's members allocated back to back, at the two
+/// classes [`DENSE_CLASSES`] names.
 #[test]
 #[ignore = "a measurement, recorded in dev/BENCHMARKS.md; run with --ignored"]
 fn the_dense_arm_dies_inside_the_window() {
     let _g = test_guard();
-    for class_bytes in DESIGN_CLASSES {
-        let load = on_a_fresh_thread(move || a_killing_load(class_bytes, 0));
-        the_control_holds(&load);
-        the_deaths_are_the_ones_the_fixture_made(&load);
-        report(&load);
+    for class_bytes in DENSE_CLASSES {
+        a_timed_arm(class_bytes, 0);
     }
 }
 
 /// The sparse arm: one component member per block at class 256, which is the
-/// placement the sweep pays most for and the chain least.
+/// placement that spreads the close's returns over the most blocks.
 #[test]
 #[ignore = "a measurement, recorded in dev/BENCHMARKS.md; run with --ignored"]
 fn the_sparse_arm_dies_inside_the_window() {
     let _g = test_guard();
-    let class_bytes = 256;
-    let load =
-        on_a_fresh_thread(move || a_killing_load(class_bytes, slots_per_block(class_bytes) - 1));
-    the_control_holds(&load);
-    the_deaths_are_the_ones_the_fixture_made(&load);
-    report(&load);
+    a_timed_arm(SPARSE_CLASS, slots_per_block(SPARSE_CLASS) - 1);
 }

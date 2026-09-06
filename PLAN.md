@@ -11,12 +11,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-06 · Active: S44, from S44.4, the measurement of the close
-against the chain. S44.1 put every withheld return on one stack through the
-dead entities, S44.6 moved the row sweep ahead of the candidate restore, S44.2
-deleted the chain, its region and the block walks, and S44.3 turned the mark
-into the bit a second `ll_free` of an entity is refused on; all four are
-closed. S36 waits behind it:
+Updated: 2026-09-06 · Active: S44, from S44.5, which waits on Edmond's word.
+S44.1 put every withheld return on one stack through the dead entities, S44.6
+moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
+its region and the block walks, S44.3 turned the mark into the bit a second
+`ll_free` of an entity is refused on, and S44.4 measured the close and found it
+slower than the chain on every arm; all five are closed. That reading leaves
+S44's own `Done when:` unreachable as written, and the clause is Edmond's to
+move. S36 waits behind it:
 its S36.9 and S36.12 stay open on verifications later steps owe, and S36.3 is
 the next of its steps to be built.
 S43 closed the withheld-return window: past its region the module draws
@@ -770,7 +772,7 @@ a second time; S44.4 last, a measurement being of what is built.
         the reset flush's hand-back (5), `free_unpublished`'s (7, five of them
         through the guard), and a `classify` that withholds nothing (5).
         Commit 296e85b.
-- [ ] S44.4 Measure the close against the chain
+- [x] S44.4 Measure the close against the chain
       done: S43.1's fixture — 381 deaths, the dense arm at classes 32 and 128,
         the sparse arm at 256, eight collections with the eighth killing inside
         the window — run on both arms as built, with no lever on either side;
@@ -788,6 +790,21 @@ a second time; S44.4 last, a measurement being of what is built.
         construction, byte 8 sharing its line with byte 0 for every size class,
         so what the fixture is rebuilt to weigh is the time
       tier: T2 · role: —
+      handoff: the close is slower than the chain on every arm, and the reading
+        with its cause is `dev/BENCHMARKS.md`, "S44.4 the close against the
+        chain". At 381 deaths, the minimum of twenty closes: 1.4 against 1.1 µs
+        at class 32, 1.5 against 1.2 at class 128, 7.8 against 4.8 on the
+        sparse arm. The structure carries 0.2, 0.1 and 2.8 µs of that and
+        S44.3's hand-back the rest. The cause is that the next address stands
+        in the slot being freed, so the returns cannot overlap where the
+        chain's do; a prefetch of the next slot, a prefetch of its block header
+        beside it, and pops in ascending order each recover under a tenth of
+        the gap, and none of the three is built. In lines the stack is the
+        cheaper: it touches none the returns do not, where the chain touches 96
+        of its own, and `the_close_reads_no_line_of_its_own` pins that over
+        every size class. **S44's own `Done when:` asks for the pop at or below
+        the chain, which this reading makes unreachable**; the clause is
+        Edmond's to move, and the stage stays open on it as well as on S44.5.
 - [ ] S44.5 Carry the built form into `rfc`   *(waits on Edmond's word)*
       done: `rfc/model/classes.md`'s flags row 15 and `rfc/model/gc/rc-cycle.md`'s
         paragraphs about the mark, its list and the record-and-grow path

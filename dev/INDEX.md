@@ -46,7 +46,7 @@ versions live in `docs/history/`, marked at the top.
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
   | `trace` | both phases over one detached batch, in the order the rows require: every root marks before any root scans | none until S36.7 |
   | `validation` | the owner's exact validation of one component, and the zero-count-member rule | none |
-  | `density` | test builds only: what share of a touched block's slots one trace met, and, in `tests::the_death_loads`, what a sweep of those blocks would cost against the chain of withheld returns | none |
+  | `density` | test builds only: what share of a touched block's slots one trace met, and, in `tests::the_death_loads`, what the window's close costs in time and in cache lines | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a
   count at the field's bound is a floor and absorbs every subtraction, so

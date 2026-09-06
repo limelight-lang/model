@@ -100,6 +100,106 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-06 — S44.4 the close against the chain: the stack costs 25 % more where the deaths share a block and 63 % more where they do not
+
+**Machine:** dev box, shared with interactive work, load average 2.5–3.1 over
+the sitting; the timed thread pinned with `taskset -c 3`. **Build:**
+`--release`, `rustc 1.96.0`. **Command:**
+
+```
+cargo test --release --lib density::tests::the_death_loads -- --ignored --nocapture
+```
+
+**What was measured:** the wall time of `ActiveTrace::drop`, which is the whole
+close — the row sweep, the candidate restore, every withheld return and the
+arena's hand-back — over a collection whose 381 deaths all happened inside its
+own window. Each reading is the minimum of twenty independent loads, a close
+being unrepeatable over one population, and the six arms were rotated six times
+so that the box's drift is common mode between them. Two of the arms are other
+trees, the chain having been deleted by S44.2, so each was built from its own
+worktree and the six binaries were run back to back in one sitting.
+
+### The arms
+
+| arm | tree | dense 32 | dense 128 | sparse 256 |
+| --- | --- | --- | --- | --- |
+| the chain | `831fe1a` | 1.10 µs | 1.20 µs | 4.80 µs |
+| the stack | `12c2aa1` | 1.30 | 1.30 | 7.60 |
+| the stack under the hand-back, as built | `d127cb4` | 1.40 | 1.50 | 7.80 |
+| and a prefetch of the next slot | | 1.50 | 1.50 | 7.10 |
+| and a prefetch of the next slot and its block header | | 1.50 | 1.50 | 7.20 |
+| and the pops ascending rather than descending | | 1.40 | 1.50 | 7.20 |
+
+Per death that is 2.9, 3.1 and 12.6 ns for the chain against 3.7, 3.9 and
+20.5 ns for the close as built. The three rows below the built one are probes
+rather than candidates, and what each was asked is under "The cause".
+
+Two of the three steps between the trees are visible in the table and the third
+is not. The structure alone costs 0.2, 0.1 and 2.8 µs — that is the second row
+against the first — and S44.3's hand-back of the mark costs a further 0.1, 0.2
+and 0.2, which is the third row against the second. S44.6's reordering of the
+sweep and the restore moves work neither way and does not separate.
+
+### In lines the stack is the cheaper of the two
+
+The close's pop reads one word of each dead entity, at
+`heap::FREE_LIST_LINK_OFFSET`, and the `ll_free` behind that pop reads the same
+entity's header: 191 lines at class 32, where two slots share a line, and 381
+at class 128 and on the sparse arm. Every one of them is a line the return
+reads anyway, which
+`density::tests::the_death_loads::the_close_reads_no_line_of_its_own` pins over
+every size class rather than stating. The chain adds 48 lines to that at 381
+deaths — 3,048 bytes of records — written at the append and read back at the
+replay, so it touches 96 lines the stack does not.
+
+**The units disagree, and the time governs here.** S43.1 read the same load in
+lines alone because neither design was built and there was nothing to time;
+with both built, the 96 line touches the chain pays are worth less than the
+memory-level parallelism they buy it.
+
+### The cause: the pop cannot run ahead of itself
+
+The chain's records stand side by side in the workspace region, so every
+address the close will free is readable before the first free and the returns
+overlap. The stack's next address stands **in** the slot being freed, so a
+return cannot begin until the one before it has resolved a miss. That is why
+the gap is 0.1–0.2 µs where all 381 slots sit in one warm block and 2.8 µs
+where each of them has a block of its own.
+
+Three probes separate that from its alternatives, and each is one commit over
+the built tree:
+
+- **a prefetch of the next slot's line**, issued one pop ahead so the
+  intervening `ll_free` covers it: 7.10 against 7.80 µs on the sparse arm, and
+  0.10 µs *dearer* on both dense arms, where nothing misses and the hint is
+  pure instruction. It cannot go deeper than one pop, the address after next
+  being unreadable until the next slot has been read.
+- **a prefetch of that slot's block header as well**, the second line every
+  return reads: 7.20 µs, no better than the first.
+- **the pops ascending**, taken by reversing the fixture's death order so that
+  the stack unwinds in address order rather than against it: 7.20 µs. So the
+  cost is not the direction of the walk, which a hardware prefetcher could
+  have covered.
+
+None of the three reaches the chain, and the best of them recovers 9 % of a
+63 % gap. What would close it is knowing the addresses before the frees begin,
+which is the region the stack was built to give up.
+
+### What this run does not price, and it is the stage's motive
+
+The chain's standing costs: 8,320 bytes of every thread's workspace held for a
+window that may withhold nothing, the growth past that region, its draw on the
+critical reserve, and the `std::process::abort()` that answered a refusal
+`ll_free` could not report. S43.1 named those and could not measure them; this
+run cannot either. The ruling that chose the stack is `dev/DECISIONS.md`, "one
+stack through the dead entity holds every withheld return", and it did not rest
+on the close being the faster of the two.
+
+Understated on both sides, as at S43.1: the fixture's members carry no external
+children, so no acyclic tail dies behind them and a real teardown's deferred
+drops would lengthen both closes.
+
+
 ## 2026-09-04 — S43.1 the sweep's walk against the withheld chain: the chain is cheaper in lines at every design class
 
 **Machine:** dev box, shared with interactive work. **Base:** `7562c9e` plus

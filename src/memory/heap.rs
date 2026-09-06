@@ -2451,25 +2451,6 @@ pub(crate) unsafe fn block_occupancy(block: *mut u8) -> u32 {
     unsafe { (*(block as *mut HeapBlockHeader)).private.used }
 }
 
-/// How far an entity block's bump cursor has reached, which is the bound a
-/// per-slot walk of that block runs to ([`for_each_entity_slot`]) and
-/// therefore the length priced against a per-death record
-/// (`dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld
-/// chain").
-///
-/// The cursor never retreats: a freed slot goes on the block's free list and
-/// is handed out from there, so a block that has once filled reads its whole
-/// slot count here. The gap between this bound and
-/// [`collector_block_slots`] therefore measures how young a block is rather
-/// than a saving the walk could count on, and both bounds are reported.
-///
-/// # Safety
-/// As [`block_occupancy`].
-#[cfg(test)]
-pub(crate) unsafe fn block_bump(block: *mut u8) -> u32 {
-    unsafe { (*(block as *mut HeapBlockHeader)).private.bump }
-}
-
 /// The reciprocal a block of this `stride` carries in its collector
 /// line: `2^32 / stride + 1`.
 ///
