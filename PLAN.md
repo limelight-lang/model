@@ -1410,6 +1410,8 @@ stage claiming the frees while building none of them.
         `cells::sever_cells` carries as dead code: the manager-backed
         replacement S36.5 owes has a caller already, and S39.1 puts a
         collection on that same thread-exit path.
+      handoff: the repairs of round 1 are in `ea2a941`, which is what the step
+        closes on rather than `88ad136` alone.
       handoff: S36.9 is executed as separately reviewed slices: (a) physical
         block contract and queue state; (b) logical ledger and current arena
         instrumentation; (c) manager-backed parking plus ordinary/abort deny
@@ -2066,6 +2068,42 @@ stage claiming the frees while building none of them.
         Miri's clock and 14 s of wall, `cycle::row` 7 in 337.8 s and 3 m 54 s,
         `cycle::arena` 29 in 185.8 s and 4 m 20 s, `cycle::shadow` 12 in 6.5 s,
         `cycle::deferred_slot_reuse` 42 in 31.5 s, 0 failed anywhere.
+      Critic 2026-09-06 round 1 (slice b): nine findings, all taken, and the
+        first is the defect the module's own doc denied. The sweep gated on
+        `members::is_armed()`, which answers "a list stands on this thread" —
+        and a list stands from the arming until the driver releases it, across
+        the whole teardown — so a collection a destructor of that teardown
+        started swept, read its own blocks' rows and appended them to the outer
+        driver's list, which would then have torn down entities the nested
+        collection had already freed. The flag moved onto the arena, which is
+        per collection, and a case drives that sequence. Also taken: the
+        touched list was emptied before a walk the harvest had made able to
+        panic, so an unwind stranded the rest of the chain with their shadow
+        pointers standing, and it is popped as the walk goes now; a row the
+        dispatch cannot place gave a partial set with `overflowed()` false,
+        where the closed-under-in-edges argument requires the whole harvest to
+        be given up; `push` and `end_harvest` were safe functions guarded by a
+        `debug_assert` alone and are `unsafe` with their precondition stated;
+        thread exit did not refuse a standing list; the overflow fixture was
+        one block, so the claim about what the sweep still owes past a refusal
+        was made over the block that refused; the single-entity arm, the
+        multi-group walk and the rounding bound had no case; the rows-read
+        counter missed the sweep's second reading site; and a `const`
+        assertion's comment did not describe what it checked. Repairs in
+        `ea2a941`, with the gate re-run on the day: 737 at one thread and three
+        times at four, 737 `hash-folding`, 741 `debug-journal` three times,
+        release and bench builds clean, and Miri at two threads over
+        `cycle::members` 12 passed, `cycle::shadow` 16, `cycle::arena` 29 and
+        `cycle::deferred_slot_reuse` 42, 0 failed.
+      Known gaps of slice (b): the `None` arm of `harvest_rows` — a retained
+        block whose survivor list no longer holds a row's position — is
+        release-only, `entity_at`'s assertion ending a debug build on that
+        path, so no case reaches it and what is pinned is the policy at the
+        member list's own level; the retained population is not driven through
+        the sweep, its round trip being pinned at the row level instead; and a
+        driver that unwinds between the arming and the release leaves the
+        region in use for the thread's life, which thread exit now refuses and
+        S36.7's driver owns.
       handoff: choose and test the commit unit here. A single condemned batch
         is safe under the aggregate exact sum but resurrection in one connected
         part conservatively retains the others; if teardown promises
