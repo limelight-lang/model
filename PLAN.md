@@ -1996,6 +1996,53 @@ stage claiming the frees while building none of them.
         two added ignores are the slice's child-process cases, which Miri's
         isolation forbids; 134 and 9 account for every `#[test]` under
         `src/cycle` at that commit.
+      Sage 2026-09-06 (slice b gate): **a second fixed region of the
+        workspace, behind the withheld returns' control line** — a 64-byte
+        control line of its own and 1,024 eight-byte records, so the prefix is
+        8,320 bytes and the bump 56,960, which is the layout the crate ran on
+        from 2026-09-03 until S44.2 returned those bytes. What keeps the list
+        readable from the last append to the last destructor is that nothing
+        else writes the region: the arena's open sets its cursor past the
+        prefix, its reset rewinds to it, and `return_workspace_base` hands the
+        block to the thread's own cell rather than to the pool. The capacity is
+        derived rather than round — the floor is two median closures of 381
+        (S37's corpus figure), the ceiling is the three widest row arrays the
+        bump must still hold (3 × 16,408 = 49,224 against 56,960), and 1,024 is
+        the count whose records are exactly the bytes S44.2 gave back; S40.1's
+        corpus arm revises it. The harvest walks the group bitmap and reads
+        only the groups a trace met, reconstructing each address by population
+        — the slot stride from the collector line's own `size_class`, the
+        retained block's survivor list, the large entity's own block — and the
+        ordinary path reads no row at all, which a `cfg(test)` count asserted
+        at zero pins. **The region is all-or-nothing per trace**: an overflow
+        zeroes the fill, answers `Overflowed`, tears nothing down and leaves
+        every candidate bit standing, and the re-trace over fewer roots is
+        S36.7's driver. Slice (b) may close on slice (a)'s fixtures, and may
+        not stand on a teardown, a reclaimed count or the two-trace collection.
+        Taken whole. Where it departs: no pre-change Miri run, `dev/WORKFLOW.md`
+        putting Miri at the close of a logical block, and the figure the gate
+        names — 134 passed at `e63c235` — predates S44.
+      note 2026-09-06 — the gate reads "what does not fit the region keeps its
+        candidate bit" as the trace rather than the entity. `dev/DECISIONS.md`,
+        "the member list is the pressure path's alone", says the entities past
+        the region stand in the queue for the next trace; the gate narrows that
+        because the scan condemns a row only where no live referrer raised it,
+        so every referrer of a condemned entity is itself condemned, and
+        freeing a prefix of that set leaves the rest naming freed slots. Under
+        the narrower reading nothing is torn down after an overflow, so every
+        bit stands and the ruling's sentence holds of the whole batch. Edmond's
+        to overturn.
+      baseline 2026-09-06, read at `c2a3af0` before the first edit:
+        `WORKSPACE_PREFIX_BYTES` 64 and `WORKSPACE_BUMP_BYTES` 65,216;
+        `the_workspace_a_thread_holds_for_its_life` — a thread's first
+        collection makes 0 heap allocations and 1 pool request, its second
+        makes neither, and the one block it keeps goes back at thread exit; a
+        block's first touch writes 121 bytes, 24 of prologue, 64 of bitmap and
+        33 for one group, against the 16,320 its rows reserve;
+        `touched_blocks()` 3 over a three-block chain; the suite 718 passed at
+        one thread. `.tbss` is a control rather than evidence here, the region
+        being heap memory the section cannot see, and a timed run is theatre
+        while nothing collects.
       handoff: choose and test the commit unit here. A single condemned batch
         is safe under the aggregate exact sum but resurrection in one connected
         part conservatively retains the others; if teardown promises
