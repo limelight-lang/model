@@ -10,12 +10,16 @@
 //! and answers a value. A row read after its arena reset is the one thing a
 //! caller can do wrong, and it is the caller's to avoid
 //! (`rfc/model/gc/rc-cycle.md`, "Concurrency"; the row layout it reads is
-//! `crate::cycle::shadow`). Beside them stands [`open_arena`], which hands the
-//! caller an arena to own.
+//! `crate::cycle::shadow`). Beside them stand [`open_arena`], which hands the
+//! caller an arena to own, and [`traced_unreachable_from`], the trace a
+//! fixture runs before it asks about a component.
 
 use crate::cycle::arena::TraceScratchArena;
+use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::row::{EdgeTarget, RowKey, resolve_edge_target};
+use crate::cycle::scan::{ScanResult, scan};
 use crate::cycle::shadow::{self, Color, RowArray};
+use crate::object::Object;
 use crate::refcount::RcHeader;
 
 /// The row word the trace left for `entity`, read the way the scan
@@ -60,4 +64,40 @@ pub(crate) unsafe fn row_color(entity: *mut RcHeader) -> Color {
 /// place.
 pub(crate) fn open_arena() -> TraceScratchArena {
     TraceScratchArena::open().expect("the guard drew this thread's workspace")
+}
+
+/// Trace the fixture from one root and assert every entity named is
+/// unreachable, which is the state the exact test is asked about.
+///
+/// The arena comes back so the caller resets it before validating: the rows
+/// die at the token's release and the exact test runs after it
+/// (`rfc/model/gc/rc-cycle.md`, "Concurrency").
+///
+/// # Safety
+/// As `mark` and `scan`: `root` is an entity header of this thread's heap
+/// whose slot is still its own, on the owning thread with no mutator beside
+/// it.
+pub(crate) unsafe fn traced_unreachable_from(
+    root: *mut Object,
+    expected: &[*mut Object],
+) -> TraceScratchArena {
+    let mut arena = open_arena();
+    assert_eq!(
+        unsafe { mark(&mut arena, root as *mut RcHeader) },
+        MarkResult::Complete
+    );
+    assert_eq!(
+        unsafe { scan(&mut arena, root as *mut RcHeader) },
+        ScanResult::Complete
+    );
+
+    for &entity in expected {
+        assert_eq!(
+            unsafe { row_color(entity as *mut RcHeader) },
+            Color::PotentiallyUnreachable,
+            "the trace read this entity as potentially unreachable"
+        );
+    }
+
+    arena
 }

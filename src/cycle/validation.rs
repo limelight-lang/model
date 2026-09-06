@@ -56,6 +56,11 @@ use crate::object::header_category;
 use crate::refcount::{MemoryCategory, RcHeader, header_refcount};
 
 /// What the exact test answered about one component.
+///
+/// **The answer is the one refusal the finalization protocol has**, so a
+/// caller that drops it tears down whatever it validated: a component this
+/// refuses is live, or holds a member somebody else is already tearing down.
+#[must_use = "an unread answer tears down a component the exact test may have refused"]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ValidationResult {
     /// No reference to any member exists outside the component, so the

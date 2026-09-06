@@ -191,12 +191,12 @@ pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
 /// user code runs** — the binding obligation of `rfc/model/gc/rc-cycle.md`,
 /// "Cycle finalization and reclamation", step 3 (a weak load is the one channel that can hand a
 /// destructor a pointer counted references cannot account for). Irrevocable on
-/// a later externally-referenced reading, by design. No collector calls it
-/// today; S36.3 is where the next one does (`PLAN.md`).
+/// a later externally-referenced reading, by design. The caller is
+/// `cycle::finalization::Finalization::confirm`, which nulls over a confirmed
+/// component before any member of it takes a destructor.
 ///
 /// # Safety
 /// Members must be live entities on their owning thread.
-#[expect(dead_code, reason = "the weak window of the cycle teardown is S36.3")]
 pub(crate) unsafe fn notify_members(members: &[*mut RcHeader]) {
     for &m in members {
         if unsafe { mutator_flags(m) } & HAS_WEAK_REFERENCES != 0 {

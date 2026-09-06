@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-06 · Active: S36, from S36.3. S44 has one step left, S44.5,
+Updated: 2026-09-06 · Active: S36, from S36.4. S44 has one step left, S44.5,
 and it waits on Edmond's word.
 S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
@@ -21,8 +21,9 @@ slower than the chain on every arm; all five are closed. Edmond kept the stack
 on that reading, and the stage's `Done when:` was rewritten to ask for the
 measurement rather than for its direction. S36 is the work in front:
 its S36.9 stays open on the deny run a wired collection owes, S36.12 closed on
-2026-09-06 with the pressure path's harvest, and S36.3 is the next of its steps
-to be built.
+2026-09-06 with the pressure path's harvest, S36.3 closed the same day with the
+guard references and the weak window, and S36.4 — the destructors and the
+resurrection re-verify — is the next of its steps to be built.
 S43 closed the withheld-return window: past its region the module draws
 nothing, a death in memory the collection never met is returned at once, a
 marked slot of another thread's block is stacked rather than listing its
@@ -107,6 +108,13 @@ guard lowers it on the unwind as well as on the return.
   retirement at all: S36.5's is the sever and the free, S36.6's is the
   maturation stamp alone. The act needs a criterion in whichever step gets it,
   and the citations on the other side move in the same commit.
+
+- **`exact test` is a term the glossary retires** in favour of *exact
+  validation* (`rfc/dev/GLOSSARY.md`, "Deprecated terms"), and it stands 45
+  times across the tree — `cycle::validation`'s own module doc among them. The
+  three vocabulary guards do not carry it, so nothing goes red and the count
+  only grows; `cycle::finalization` and its cases were written in the ratified
+  word, which is the whole of what has moved. No step owns the rest.
 
 - `memory::reset_window` keeps a vocabulary of its own — `CORPSE_WALKS` and
   `park_large` beside `ResetWindow::escrow` — and
@@ -2190,7 +2198,7 @@ stage claiming the frees while building none of them.
         instrument. The old cost, `2E + V + B + 2R` registry acquisitions per
         retained-only trace, was taken by reading the five call sites and
         stands in `dev/BENCHMARKS.md`, 2026-09-02.
-- [ ] S36.3 The guard and the weak window
+- [x] S36.3 The guard and the weak window
       done: after the exact test confirms, every member takes the teardown
         guard, then every weak cell naming any member is nulled, all members
         before any destructor; a condemned ring A↔B with a weak cell on A, whose
@@ -2198,10 +2206,76 @@ stage claiming the frees while building none of them.
         seen red against the per-member order before the component-wide call
         lands; a component the exact test refuses leaves every cell resolving
       tier: T2 · role: Critic
+      Sage 2026-09-06, the stage's pre-code gate: the module is
+        `cycle::finalization`, which is the glossary's own name for the
+        protocol, and the guards and the invalidation run inside the call that
+        validates, so a component the exact validation refuses is structurally
+        unwritten; the batch-wide half of step 3 is carried by the type, `seal`
+        being the only source of the value a destructor pass takes. Costed at
+        three header accesses per member and about six for a weak-bearing one,
+        a manager-allocation budget of zero — the debug premise check's `Vec` is
+        the exact validation's and inherited — and no refusal of its own.
+        **Ruled the `done:` clause "seen red against the per-member order"
+        unmeetable in this step**, which builds no destructor loop, and moved
+        it to S36.4; source mutations run by hand stand in its place here.
+        Edmond's to overturn. Final.
+      Critic 2026-09-06 round 1: twelve findings, all taken. An unsealed
+        `Finalization` lost its guards silently, `#[must_use]` firing only on
+        an unused expression — the value now carries a drop that refuses, in
+        the shape `cycle::queue::InFlightBatch` already uses. The exact
+        validation's answer could be discarded, so `ValidationResult` is
+        `#[must_use]`. "Every member takes the guard" had no assertion at all,
+        and a mutation guarding all but the last member passed the whole group;
+        three cases now read every member's count. The rest were doc claims
+        that did not hold: a standing invariant on `Invalidated` that user code
+        can falsify, an order the type does not establish, a fit with the
+        harvest that does not exist, step 5 cited for a refusal step 1 answers,
+        and a fixture comment naming the counted release for the counter's
+        twin.
+      Critic 2026-09-06 round 2: fifteen findings, fourteen taken, three of
+        them defects the first round's repairs introduced. `seal` moved the
+        obligation to `Invalidated` and left it unguarded, so the leak stood
+        one call further on — the sealed value carries the same drop now, and
+        `guards_released` is what discharges it. The drop's account named the
+        premise check, which raises before the first guard, where the assertion
+        that raises after all of them is `weak::notify_death`'s. And
+        `dev/ARCHITECTURE.md` asserted the order the module doc disclaims. Of
+        the rest: "no other thread reading these headers" contradicted
+        `refcount`'s own reason for a narrow store; the path off the poll
+        derives no member list at all, which the fit section did not say;
+        `dev/ALGORITHM-AUDIT.md` resolves in `rfc` and not here; "exact test"
+        is a term the glossary retires, and the new files say "exact
+        validation"; `dev/INDEX.md`'s production-caller column named a caller
+        no production build runs; and the `cycle` row's module count was one
+        short of the tree before this step and stayed one short after being
+        incremented. Refused — a debug-only set of guarded members inside
+        `Finalization`: the value holds a counter and no identity by design,
+        and the disjointness of a partition belongs to the step that makes one.
+      handoff: `src/cycle/finalization.rs` is `Finalization::begin`, `confirm`,
+        `seal` and `Invalidated`, with the cases under
+        `src/cycle/finalization/tests/`. `confirm` validates, guards and nulls
+        as one act, so a refused component is left byte-identical; S36.4's
+        destructor pass takes `Invalidated` by value, and `guards_released` is
+        what S36.5 calls when the guards come off. Six source mutations were
+        run against the repaired body and each was caught by the case that owns
+        it; 746 tests at one thread and three times at four, 746
+        `hash-folding`, 750 `debug-journal` three times, release, `cargo bench
+        --no-run`, `cargo +1.94 fmt --check` and 451 citations with the same
+        seven residues. Miri over `cycle::finalization` at two threads: 5
+        passed, 0 failed, 2 ignored, 10.6 s of its own clock, the two ignored
+        being the child-process cases.
       handoff: the guard is needed even single-threaded — a destructor releasing
         an internal edge would otherwise drop a member to zero and start
         ordinary death inside the teardown. The window is the one PEP 442 exists
         to close.
+      handoff: what S36.7 inherits from this step, in one place: the commit
+        unit, left open by S36.12's handoff and admitted either way by
+        `confirm`'s signature; the mutable view of `members::StandingMembers` a
+        sort needs, and what a sort costs the order that list documents; the
+        path off the poll, which derives no member list at all and so has no
+        caller for this signature; that one commit uses one finalization, which
+        no type here holds; and the disjointness of whatever partition it
+        makes, which `confirm` cannot check and states as a precondition.
 - [ ] S36.4 Destructors and the resurrection re-verify
       done: `__destruct` runs per object member on the owning thread; when any
         ran, the exact test runs again with the guard discount; a failure
@@ -2211,6 +2285,13 @@ stage claiming the frees while building none of them.
         an external root proves both the acquittal and the nulled cell — the
         divergence from PHP that `weak-references.md` records
       tier: T2 · role: Critic
+      note 2026-09-06 — this step owns the clause the Sage gate moved out of
+        S36.3: the destructor loop is written per member first and seen red
+        against S36.3's A↔B fixture, whose cell naming one member is loaded by
+        the destructor of another, before the loop behind
+        `cycle::finalization::Invalidated` lands. The pass takes that value by
+        value, which is what keeps the invalidation ahead of every destructor
+        of the finalization.
       handoff: the re-verify survives the shortlist framing rather than
         contradicting it. Garbage is monotone only while no reference to the
         component exists outside it, and the destructor runs holding `$this`, a

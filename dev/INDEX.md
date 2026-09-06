@@ -46,7 +46,8 @@ versions live in `docs/history/`, marked at the top.
   | `stack` | the trace worklist, 256-entry segments out of the arena | none |
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
   | `trace` | both phases over one detached batch, in the order the rows require: every root marks before any root scans | none until S36.7 |
-  | `validation` | the owner's exact validation of one component, and the zero-count-member rule | none |
+  | `validation` | the owner's exact validation of one component, and the zero-count-member rule | none until S36.7; `cycle::finalization` is what acts on its answer |
+  | `finalization` | the guard reference on every member of a confirmed component and the weak cells naming them, nulled before any destructor | none until S36.7 |
   | `density` | test builds only: what share of a touched block's slots one trace met, and, in `tests::the_death_loads`, what the window's close costs in time and in cache lines | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a

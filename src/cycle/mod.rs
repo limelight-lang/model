@@ -11,7 +11,8 @@
 //! # What lives here, and what does not
 //!
 //! The collector's own state: shadow rows, the arena they come from, the
-//! trace's mark and scan, and the exact test that validates a component. Two
+//! trace's mark and scan, the exact test that validates a component and the
+//! guards and weak-cell nulling its answer stands for. Two
 //! things it deliberately does not hold. The enumeration of an entity's
 //! counted children is `cells`, which knows entity kinds and no blocks;
 //! the enumeration of a block's slots is `memory::heap`, which knows
@@ -33,7 +34,10 @@
 //! region and holds every withheld return in the dying entity itself, and the rows [`shadow`], [`mark`] and
 //! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`
 //! own no memory at all — they are arithmetic over memory somebody else holds,
-//! and [`validation`] reads the heap rather than a row.
+//! and [`validation`] reads the heap rather than a row. [`finalization`] holds
+//! less than either: one counter on the frame that drives the teardown, the
+//! writes it makes standing in the members' own headers until the counted
+//! release of `PLAN.md` S36.5.
 //!
 //! **A collection's memory is refusable, and the refusal ends the collection
 //! rather than the process.** A refused block leaves the heap byte-identical,
@@ -68,16 +72,20 @@
 // `ActiveTrace` owns the `TraceScratchArena`, fixing sweep-before-return even
 // before the production collection opens one in S36.7.
 pub(crate) mod arena;
-// The validation over a component the scan proposed, and dead until the
-// teardown that opens with it.
+// The validation over a component the scan proposed, reached from
+// [`finalization`], which is where its answer is acted on and which no
+// production path runs until S36.7.
+pub(crate) mod validation;
+// The guard references and the weak-reference invalidation a confirmed
+// component takes before the first destructor.
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the teardown that opens with the validation test is `PLAN.md` S36.3's"
+        reason = "the driver that opens a finalization is `PLAN.md` S36.7's"
     )
 )]
-pub(crate) mod validation;
+pub(crate) mod finalization;
 // The first phase of a trace, reached from [`trace`] rather than from a
 // collection: the collection that drives one is S36.7's.
 pub(crate) mod mark;
