@@ -210,7 +210,7 @@ fn a_member_a_candidate_entry_names_keeps_its_slot_withheld() {
     // for the trace that pops it: `cycle::mark` reads a root's refcount before
     // its cells and drops it at zero, and it may read at all only because the
     // mutator does not free a slot an entry names. The slot comes back when
-    // the entry is retired, which no step builds yet (`PLAN.md` S39.1).
+    // the entry is retired, which no step builds yet (`PLAN.md` S39.2).
     assert!(
         unsafe { is_registered_candidate(mutator_flags(members[0])) },
         "the member the queue names keeps its bit"

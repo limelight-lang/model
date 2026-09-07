@@ -8,6 +8,34 @@ never edited or deleted.
 
 ---
 
+## 2026-09-07 — the collection's yield and the retirement that unlocks it are two steps, not one
+
+Owner: the Sage, ruling on whether S36.15 could be built at all.
+
+**A collection returns no entity slot today.** Every member of a collected
+component is a registered candidate — the barrier spends an entity's creation
+reference with `ll_release`, and that non-final decrement is what the candidate
+gate admits — so `ll_free` withholds each member's slot and the block's `used`
+falls at a return that never comes. What a collection does return is a member's
+body: a string payload, an array's storage chunk, an OS-direct run. So the
+allocation path can be wired to a collection and still be refused on the retry,
+which is why S36.15's criterion "served rather than refused" moved out of it.
+
+**The retirement stays at the owner's read of a zero-count entry**, which is
+where Y12 clause 7 puts it, and not in the commit. The commit cannot drop the
+entry: the mark reads a root's refcount out of the body, so an entry is the only
+identifier of a slot the collection freed, and dropping it while the slot stays
+withheld would park that slot for the life of the process. `PLAN.md` S39.2 is
+that step, and S39.1's exit drain becomes one of its callers rather than the
+owner of the mechanism.
+
+**Why the wiring goes first rather than waiting.** Held behind S39.2, the
+collection under pressure keeps the state S36.7 left it in — built, correct and
+reached by nothing — and the `expect(dead_code)` on it is the whole record of
+that. Wired first, the refusal path is exercised at every allocation that meets
+an empty pool, and the case that reads a freed member's slot as still withheld
+is the negative polarity S39.2 flips.
+
 ## 2026-09-07 — the guard on a traced edge target stands in the row dispatch rather than at registration
 
 Owner: the Miri failure of the same day (`dev/POSTMORTEM.md`, "a fixture that

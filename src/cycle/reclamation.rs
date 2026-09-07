@@ -63,7 +63,7 @@
 //! torn down, its children released and its weak cells nulled, and the address
 //! stays readable and out of the allocator's hands. The step that retires an
 //! entry whose entity is gone, and hands the slot back with it, is `PLAN.md`
-//! S39.1.
+//! S39.2.
 //!
 //! # Why the queue is the arena's
 //!

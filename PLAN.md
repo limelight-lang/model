@@ -29,7 +29,13 @@ epoch counter under it, and S36.7 the same day with the collection behind the
 ABI — `cycle::collect`, which is the first production caller the modules of
 `cycle` have. Two of its steps are the debts that left with it: S36.15 puts the
 collection under pressure behind the allocation failure that should start it,
-and S36.16 carries the merge and the two paths back into `rfc`.
+and S36.16 carried the merge and the two paths back into `rfc` on 2026-09-07,
+ahead of S36.15 because S36.15 needs `cargo` and a Miri run held the lock.
+S36.15 lost half its criterion the same day: a collection returns no entity
+slot, every member being a registered candidate whose slot `ll_free` withholds,
+so "served rather than refused" moved to the new **S39.2**, which retires the
+entry at the owner's read (the Sage's ruling, `dev/DECISIONS.md`, "the
+collection's yield and the retirement that unlocks it are two steps").
 S43 closed the withheld-return window: past its region the module draws
 nothing, a death in memory the collection never met is returned at once, a
 marked slot of another thread's block is stacked rather than listing its
@@ -2815,19 +2821,50 @@ stage claiming the frees while building none of them.
         And `queue::merge_candidates` copies its part-filled head one record at
         a time, which is a memcpy nobody has measured against.
 - [ ] S36.15 The allocation slow path starts a collection   *(after S36.7)*
-      done: a refusal on the entity allocation path runs
-        `cycle::collect::collect_under_pressure` and retries the allocation on
-        the memory it returned, and a test whose heap holds one garbage ring
-        allocates past the pool's last block and is served rather than refused;
-        a second test shows the path taken once rather than per refusal inside
-        one allocation
+      done: the call's place is chosen — `memory::heap`'s refill or the entity
+        factory above it — and recorded with its reason; a refusal on the
+        entity allocation path runs `cycle::collect::collect_under_pressure`
+        once per allocation and retries once; a retry the allocator refuses,
+        and a collection that freed nothing, go back to the caller as the
+        refusal it raises memory-exhausted on, with no second collection for
+        that raise (`rfc/runtime/exceptions.md`, "Allocation failure is an
+        ordinary exception"); under a test-only cap on the blocks the pool
+        hands out, a heap holding one garbage ring runs exactly one collection,
+        asks the pool exactly once more
+        (`memory::block_pool::take_pool_requests`) and is refused, the arming
+        state read with it; and a second case reads the other polarity — every
+        member of that ring is torn down and its slot still withheld, which is
+        why the retry is refused, and it goes red when S39.2 lands
       tier: T2 · role: Critic
-      note: the collection is built and reached from nothing, which the
-        `expect(dead_code)` on `collect_under_pressure` reports. What this step
-        decides is where the call stands — `memory::heap`'s refill, or the
-        entity factory above it — and what a collection that freed nothing owes
-        the caller that is about to raise memory-exhausted
-        (`rfc/runtime/exceptions.md`).
+      Sage 2026-09-07: the criterion "allocates past the pool's last block and
+        is served rather than refused" could not be met here and moves to
+        S39.2. A collection returns no entity slot: every member the ring
+        fixture builds is a registered candidate, `ll_free` withholds such a
+        slot, and the block's `used` falls at the return that never comes. The
+        retirement stays where Y12 clause 7 puts it — the owner's read of a
+        zero-count entry — rather than in the commit, which was refused the
+        same day (`dev/DECISIONS.md`, "the commit clears no candidate bit").
+        Blocking this step on a step nobody had written would leave the
+        collection with no production caller, which is the debt S36.7 left.
+        Final.
+      correction 2026-09-07: the Sage's "a member whose creation reference went
+        straight into a field takes no non-final decrement, so its slot
+        returns" has no site in this crate. The barrier spends a creation
+        reference with `ll_release` (`array::element::write_through`;
+        `dev/DECISIONS.md`, "the creation reference is spent before the
+        displaced original is dropped"), which is the decrement that registers
+        the candidate. What a collection does return is a member's body — a
+        string payload, an array's storage, an OS-direct run — and that is what
+        keeps "returns nothing" from being the whole truth.
+      note: `FORCE_OOM` is not the injection these cases can use. It refuses at
+        the top of `take_block`, ahead of the thread cache and the global free
+        stack, so a retry under it proves nothing about the collection while a
+        retry with it dropped proves the pool. The cap is new, `cfg(test)`, and
+        stands against `blocks_out`.
+      note: the `entity_alloc` cases that already run under `FORCE_OOM` would
+        start a collection they did not start before. What that disturbs — a
+        lane detached and merged, a thread armed — is read at the first run
+        rather than assumed.
 
 - [ ] S36.8 Elide the redundant exact test after an in-line owner trace
       done: when mark and scan run synchronously on the owning mutator at one
@@ -2849,7 +2886,7 @@ stage claiming the frees while building none of them.
         guard acquisition; encode that boundary in the API so a future caller
         cannot pass a stale condemned list as an in-line proof.
 
-- [ ] S36.16 Carry the collection's two paths into `rfc`   *(after S36.7)*
+- [x] S36.16 Carry the collection's two paths into `rfc`   *(after S36.7)*
       done: `model/gc/rc-cycle.md`'s "Concurrency" says the ordinary path
         merges its detached chain into the live lane rather than giving its
         segments back, and says why a segment given back with its records
@@ -2862,6 +2899,18 @@ stage claiming the frees while building none of them.
         pointer at it from here (`dev/WORKFLOW.md`: a debt the other plan owns
         is never written as this plan's `S<n>`). What was built is
         `queue::merge_candidates` and `cycle::collect`.
+      handoff: taken ahead of S36.15, which is a `cargo` step and stood behind
+        a Miri run holding the lock. Three edits in `rfc`, one commit:
+        `model/gc/rc-cycle.md`'s "Concurrency" says the close merges the
+        detached chain and names the two refused answers by what each strands;
+        the same file's "Cycle finalization and reclamation" opens with the
+        unit the in-line collection commits — the whole confirmed set, with the
+        precision that costs in the two refusing arms; and
+        `model/gc/cycle/questions.md` Y12 clause 5 names the merge as what puts
+        an unwalked root back, and ties a freed member's surviving entry to
+        clause 7's retirement. `dev/tools/linkcheck.php` clean at 630 links,
+        and this crate's citation check unmoved at 495 with the same seven
+        residues.
 
 
 ## S37 — Maturation and the two class gates
@@ -3163,6 +3212,14 @@ window there is.
         pointer to `ll_free` again is refused there and the slot is lost.
         `refcount::clear_dead_in_place` is the hand-back, and
         `block_pool::test_guard` counts the refusals such a path leaves.
+      handoff 2026-09-07: half of the fixture obstacle below is gone. Three
+        cases of `cycle/queue/tests.rs` build their candidates as live GC-heap
+        objects through `allocated_candidate`, because after S36.7 the poll
+        fires a collection over the lane and the trace read a block header
+        under a header in a local — Miri's finding, `dev/POSTMORTEM.md`,
+        "a fixture that was sound became undefined behaviour when the poll grew
+        a collection". The other forty-eight uses of the bare header stand, so
+        a drain that dereferenced every entry still meets them.
       handoff: the corpse half arrived from S34.3 on 2026-08-29, which built
         the deferral and the two accessors it needs
         (`refcount::clear_enrolled`, whose `expect(dead_code)` names this step)
@@ -3175,6 +3232,27 @@ window there is.
       handoff: the criterion previously read "named rather than left to the
         reader", which a doc comment saying "these leak" satisfies with S29.2's
         defect intact.
+
+- [ ] S39.2 The owner's read of a zero-count entry retires it   *(after S36.15)*
+      done: at the owner's detach or read, an entry whose entity reads zero and
+        whose teardown has run is dropped rather than merged back, its
+        `CANDIDATE_BIT` and `DEAD_IN_PLACE` cleared and its slot returned
+        through `ll_free`; under S36.15's pool cap a heap holding one garbage
+        ring allocates past the pool's last block and is served rather than
+        refused; and S36.15's case that reads the slot as still withheld is
+        flipped in the same commit
+      tier: T2 · role: Critic
+      note: this is Y12 clause 7 — "the owner drops the entry, clears the bit
+        and returns the slot at its exact reading" — resting on
+        `rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse",
+        whose "unless a synchronous collection removes zero-count entries
+        earlier" is what admits it. S39.1's exit drain becomes one caller of
+        what this builds rather than its owner, and the `expect(dead_code)` on
+        `refcount::clear_candidate_bit` names S39.1 today and moves here.
+      note: "a prefix of freed slots ends the pressure path with an arming" is
+        this debt read from the pressure loop's side — the freed entries stand
+        in the lane where the next bound re-selects them — so what this step
+        makes pay is that loop's second round.
 
 ## S40 — Measure the trace's density and decide the row form
 

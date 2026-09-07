@@ -396,7 +396,7 @@ write them. Each is load-bearing for at least two modules.
    `rc-cycle`: a collector proposes a shortlist, and every reduction of
    state is the owner's, taken on an exact reading at its own checkpoint
    (`rfc/model/gc/rc-cycle.md`). None of the sharpening is built, and
-   nothing retires a queue entry at a death, which `PLAN.md` S39.1 owns. A
+   nothing retires a queue entry at a death, which `PLAN.md` S39.2 owns. A
    collection runs off the poll and off the explicit fire
    (`cycle::collect`).
 10. **Arm vs fire**: nothing collects mid-mutation. A collection fires

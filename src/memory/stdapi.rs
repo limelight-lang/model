@@ -360,7 +360,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         // freeing it. Nothing clears the bit that arm reads — thread exit
         // leaves it standing and a collection's commit frees a member into the
         // arm rather than around it — so a slot withheld here is withheld for
-        // the life of the process, and `PLAN.md` S39.1 is the step that
+        // the life of the process, and `PLAN.md` S39.2 is the step that
         // chooses the fate of the entry behind it.
     }
 
@@ -442,7 +442,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // keeps the entry's address readable for the trace that pops it
     // (`crate::cycle::mark`, the zero-count root; `crate::cycle::reclamation`
     // is the teardown). Nothing retires such an entry yet, so the slot is
-    // withheld for the life of the process and `PLAN.md` S39.1 is the step
+    // withheld for the life of the process and `PLAN.md` S39.2 is the step
     // that chooses the fate. That retirement will come through this same entry
     // point, so it owes the mark the take above set a clear of its own;
     // without that clear its free reads as a repeat and the slot never returns

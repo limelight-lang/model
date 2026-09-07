@@ -86,7 +86,7 @@ fn two_rings() -> TwoRings {
 /// withholds the slot of anything whose bit still stands, so a teardown that
 /// skipped this would leave both slots and their block out for the life of the
 /// process. Nothing in production clears the bit — a collection's commit frees
-/// a member into that arm rather than around it — and `PLAN.md` S39.1 is the
+/// a member into that arm rather than around it — and `PLAN.md` S39.2 is the
 /// step that chooses the fate of the record behind it
 /// (`crate::refcount::clear_candidate_bit`).
 fn tear_down(rings: TwoRings) {

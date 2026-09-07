@@ -217,7 +217,7 @@ pub(crate) unsafe fn read_as_unreachable(root: *mut Object, members: &[*mut Obje
 /// **The slots do not come back to the allocator.** The null store decrements
 /// each member through the candidate gate, so a queue entry names it at its
 /// free and `ll_free` withholds the slot until the entry is retired
-/// (`PLAN.md` S39.1). A case that counts free slots is counting something else.
+/// (`PLAN.md` S39.2). A case that counts free slots is counting something else.
 ///
 /// # Safety
 /// Every member is a live object of this thread's GC heap, unguarded, linked

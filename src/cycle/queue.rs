@@ -837,7 +837,7 @@ pub(crate) fn detach_candidates() -> InFlightBatch {
 /// free keeps its entry too, that entry being what holds the freed slot out of
 /// the allocator's hands until it is retired (`dev/DECISIONS.md`, "the commit
 /// clears no candidate bit, and a member the queue names keeps its slot
-/// withheld"; the retirement is `PLAN.md` S39.1's).
+/// withheld"; the retirement is `PLAN.md` S39.2's).
 ///
 /// **The lane a batch comes back to is not the lane it left.** The ordinary
 /// collection tears down inside its own trace window (`dev/DECISIONS.md`, "the

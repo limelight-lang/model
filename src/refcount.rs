@@ -174,7 +174,7 @@ pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 /// path that frees such a slot without clearing first leaks it, its free being
 /// read as a repeat. The
 /// retirement of an entry naming a withheld slot is the one such path not built
-/// yet, and it owes the clear (`PLAN.md` S39.1). A collection's commit frees a
+/// yet, and it owes the clear (`PLAN.md` S39.2). A collection's commit frees a
 /// member the queue still names into exactly that state: the free takes the
 /// mark, the candidate arm withholds the slot, and the entry stays the record
 /// of it (`crate::cycle::reclamation`).
@@ -1132,14 +1132,14 @@ pub(crate) fn is_registered_candidate(flags: u32) -> bool {
 /// ([`crate::cycle::queue::release_queue_segments`]), and a collection's commit
 /// withholds a member's slot rather than returning it, the entry naming that
 /// slot being the record that keeps the address readable
-/// ([`crate::cycle::reclamation`]). `PLAN.md` S39.1 is the step that chooses
+/// ([`crate::cycle::reclamation`]). `PLAN.md` S39.2 is the step that chooses
 /// the fate of an entry whose entity is torn down.
 #[inline]
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the retirement that clears an entry's bit is `PLAN.md` S39.1's"
+        reason = "the retirement that clears an entry's bit is `PLAN.md` S39.2's"
     )
 )]
 pub(crate) unsafe fn clear_candidate_bit(header: *mut RcHeader) {
