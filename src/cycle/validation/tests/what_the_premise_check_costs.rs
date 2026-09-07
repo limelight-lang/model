@@ -22,7 +22,7 @@ fn the_premise_check_walks_every_member_s_cells_once() {
     let mut members = ring.map(|member| member as *mut RcHeader);
     let before = premise_cell_walks();
     assert_eq!(
-        unsafe { validate_component(&mut members, 0) },
+        unsafe { validate_component(&Membership::listed(&mut members), 0) },
         ValidationResult::Unreachable
     );
     assert_eq!(

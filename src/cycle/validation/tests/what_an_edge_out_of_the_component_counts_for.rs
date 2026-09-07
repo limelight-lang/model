@@ -38,7 +38,7 @@ fn a_reference_the_component_holds_is_no_reference_into_it() {
 
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { validate_component(&mut members, 0) },
+        unsafe { validate_component(&Membership::listed(&mut members), 0) },
         ValidationResult::Unreachable,
         "the ring's own two edges account for both members' counts"
     );

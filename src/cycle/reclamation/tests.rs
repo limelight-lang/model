@@ -48,15 +48,17 @@ unsafe fn spend_creation_references(entities: &[*mut Object]) {
 unsafe fn commit(members: &mut [*mut RcHeader], arena: &mut TraceScratchArena) -> Reclaimed {
     let mut finalization = Finalization::begin();
     assert_eq!(
-        unsafe { finalization.confirm(members) },
+        unsafe { finalization.confirm(&Membership::listed(members)) },
         ValidationResult::Unreachable
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(members) };
+    unsafe { pass.run(&Membership::listed(members)) };
     let mut revalidation = pass.close();
-    let answer = match unsafe { revalidation.revalidate(members) } {
-        Revalidated::Unreachable(component) => unsafe { reclaim(component, members, arena) },
+    let answer = match unsafe { revalidation.revalidate(&Membership::listed(members)) } {
+        Revalidated::Unreachable(component) => unsafe {
+            reclaim(component, &Membership::listed(members), arena)
+        },
         Revalidated::ExternallyReferenced => {
             panic!("the fixture's component is garbage nothing keeps")
         }

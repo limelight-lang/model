@@ -48,7 +48,7 @@ fn stamped(epoch: u32, age: u32) -> MaturationStamp {
 unsafe fn commit_reading_live(members: &mut [*mut RcHeader]) {
     let mut finalization = Finalization::begin();
     assert_eq!(
-        unsafe { finalization.confirm(members) },
+        unsafe { finalization.confirm(&Membership::listed(members)) },
         ValidationResult::ExternallyReferenced,
         "the fixture holds this component from outside"
     );
@@ -279,14 +279,15 @@ unsafe fn a_component_read_unreachable_takes_no_stamp(classes: [*const crate::cl
 
     let mut finalization = Finalization::begin();
     assert_eq!(
-        unsafe { finalization.confirm(&mut headers) },
+        unsafe { finalization.confirm(&Membership::listed(&mut headers)) },
         ValidationResult::Unreachable
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(&headers) };
+    unsafe { pass.run(&Membership::listed(&mut headers)) };
     let mut revalidation = pass.close();
-    let Revalidated::Unreachable(component) = (unsafe { revalidation.revalidate(&mut headers) })
+    let Revalidated::Unreachable(component) =
+        (unsafe { revalidation.revalidate(&Membership::listed(&mut headers)) })
     else {
         panic!("nothing took a reference to this component");
     };
@@ -300,7 +301,7 @@ unsafe fn a_component_read_unreachable_takes_no_stamp(classes: [*const crate::cl
     // The teardown itself is `cycle::reclamation`'s; what this case owes the
     // finalization is the guards, and the release is the discharge that tears
     // nothing down.
-    unsafe { component.release(&headers) };
+    unsafe { component.release(&Membership::listed(&mut headers)) };
     revalidation.close();
 
     unsafe { dismantle_ring(&mut arena, members) };
@@ -328,7 +329,7 @@ fn a_resurrected_component_is_stamped_at_the_second_reading() {
 
     let mut finalization = Finalization::begin();
     assert_eq!(
-        unsafe { finalization.confirm(&mut headers) },
+        unsafe { finalization.confirm(&Membership::listed(&mut headers)) },
         ValidationResult::Unreachable
     );
     assert_eq!(
@@ -338,11 +339,11 @@ fn a_resurrected_component_is_stamped_at_the_second_reading() {
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(&headers) };
+    unsafe { pass.run(&Membership::listed(&mut headers)) };
     let mut revalidation = pass.close();
     assert!(
         matches!(
-            unsafe { revalidation.revalidate(&mut headers) },
+            unsafe { revalidation.revalidate(&Membership::listed(&mut headers)) },
             Revalidated::ExternallyReferenced
         ),
         "the destructor kept a reference the component does not contain"

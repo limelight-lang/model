@@ -889,20 +889,7 @@ impl TraceScratchArena {
                 }
             };
 
-        // The one population whose row is not in the array: a large entity's
-        // colour is a word of its own block header, and its array carries the
-        // prologue alone (`crate::cycle::shadow::RowArray`).
-        if population == Population::SingleEntity {
-            shadow::note_row_read();
-            let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
-            if shadow::color(row) != Color::PotentiallyUnreachable {
-                return true;
-            }
-
-            return take(crate::cycle::row::SINGLE_ENTITY_INDEX);
-        }
-
-        unsafe { shadow::for_each_unreachable(array, take) }
+        unsafe { crate::cycle::row::for_each_unreachable(array, block, population, take) }
     }
 
     /// Queue `entry` for expansion, or answer **false** when both allocation
@@ -1033,11 +1020,18 @@ impl TraceScratchArena {
     /// been touched. Every array names the next, so this is the whole
     /// list.
     ///
-    /// Handed out so that `crate::cycle::density` can read the rows a
-    /// trace left without a second copy of the list's shape. It is a
-    /// borrow of the arena's own memory and stays valid until
-    /// [`clear_touched_rows`](Self::clear_touched_rows) runs.
-    #[cfg(test)]
+    /// Handed out so that the rows a trace left can be read without a second
+    /// copy of the list's shape: `crate::cycle::membership` takes it as the
+    /// membership of a collection off the poll, and `crate::cycle::density`
+    /// measures over it. It is a borrow of the arena's own memory and stays
+    /// valid until [`clear_touched_rows`](Self::clear_touched_rows) runs.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the driver that takes the rows as a membership is `PLAN.md` S36.7's"
+        )
+    )]
     pub(crate) fn touched_head(&self) -> *mut RowArray {
         self.touched
     }

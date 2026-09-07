@@ -84,6 +84,7 @@
 use crate::cells::{PlainCells, entity_kind, sever_cells, trace_cells};
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::finalization::{GuardedComponent, release_guards};
+use crate::cycle::membership::Membership;
 use crate::memory::barrier::drop_ref;
 use crate::refcount::{MemoryCategory, RcHeader, severed_edge_release};
 
@@ -112,19 +113,12 @@ pub(crate) enum Reclaimed {
 /// Tear one confirmed component down: sever its internal edges, free every
 /// member, then drop the children the sever displaced out of it.
 ///
-/// `members` is the membership the revalidation answered about, **sorted**,
-/// which is what the membership test reads by binary search. It names freed
-/// entities when this returns [`Reclaimed::Freed`], and nothing may read it
-/// again.
-///
-/// **A slice is what only one of the two production paths has**, and this is
-/// the second consumer of the one `cycle::finalization` already names: the
-/// pressure path harvests a list, and the path off the poll keeps its rows
-/// through the teardown and derives no member list at all
-/// (`rfc/model/gc/rc-cycle.md`, "When the arena goes back depends on why the
-/// collection ran"). What serves the second path — a list built for it, or a
-/// membership test that reads the row a member's block still carries — is
-/// `PLAN.md` S36.7's to choose.
+/// `members` is the membership the revalidation answered about, in whichever
+/// of the two forms the path that produced it holds ([`Membership`]): the
+/// pressure path's harvested list, or the rows a collection off the poll keeps
+/// through its teardown (`rfc/model/gc/rc-cycle.md`, "When the arena goes back
+/// depends on why the collection ran"). It names freed entities when this
+/// returns [`Reclaimed::Freed`], and nothing may read it again.
 ///
 /// `component` is that answer, and consuming it here is what states the
 /// teardown happened: this call is the only discharge of it that tears down
@@ -144,12 +138,12 @@ pub(crate) enum Reclaimed {
 /// adjacent").
 pub(crate) unsafe fn reclaim(
     component: GuardedComponent<'_>,
-    members: &[*mut RcHeader],
+    members: &Membership<'_>,
     arena: &mut TraceScratchArena,
 ) -> Reclaimed {
-    // The most a count without identity can check: the answer and the slice
-    // describe the same component. In every build, because a caller that
-    // paired the wrong two would tear down a component nothing read again.
+    // The most a count without identity can check: the answer and the
+    // membership describe the same component. In every build, because a caller
+    // that paired the wrong two would tear down a component nothing read again.
     assert_eq!(
         component.members(),
         members.len(),
@@ -157,16 +151,16 @@ pub(crate) unsafe fn reclaim(
     );
 
     let mut external_children = 0;
-    for &member in members {
-        let kind = unsafe { entity_kind(member) };
-        unsafe {
+    unsafe {
+        members.for_each(|member| {
+            let kind = entity_kind(member);
             trace_cells::<PlainCells>(member, kind, |cell| {
-                if members.binary_search(&cell.child).is_err() {
+                if !members.contains(cell.child) {
                     external_children += 1;
                 }
-            })
-        };
-    }
+            });
+        })
+    };
 
     if !arena.reserve_drops(external_children) {
         unsafe { component.release(members) };
@@ -182,30 +176,32 @@ pub(crate) unsafe fn reclaim(
     // happens to hold: a segment's slack would absorb a small over-sever and
     // report nothing.
     let mut queued = 0;
-    for &member in members {
-        let kind = unsafe { entity_kind(member) };
-        let displaced = |child: *mut RcHeader| {
-            if members.binary_search(&child).is_ok() {
-                // The count cannot reach zero here: the guard stands under
-                // every member until the release below. Why the decrement is
-                // the narrow store and not `ll_release` is
-                // `severed_edge_release`'s own contract.
-                let left = unsafe { severed_edge_release(child) };
-                debug_assert!(
-                    left > 0,
-                    "a member's guard stands until its component is freed"
-                );
-            } else {
-                queued += 1;
-                assert!(
-                    queued <= external_children && arena.push_drop(child),
-                    "the sever displaces the children the walk ahead of it counted"
-                );
-            }
-        };
+    unsafe {
+        members.for_each(|member| {
+            let kind = entity_kind(member);
+            let displaced = |child: *mut RcHeader| {
+                if members.contains(child) {
+                    // The count cannot reach zero here: the guard stands under
+                    // every member until the release below. Why the decrement
+                    // is the narrow store and not `ll_release` is
+                    // `severed_edge_release`'s own contract.
+                    let left = severed_edge_release(child);
+                    debug_assert!(
+                        left > 0,
+                        "a member's guard stands until its component is freed"
+                    );
+                } else {
+                    queued += 1;
+                    assert!(
+                        queued <= external_children && arena.push_drop(child),
+                        "the sever displaces the children the walk ahead of it counted"
+                    );
+                }
+            };
 
-        unsafe { sever_cells(member, kind, displaced) };
-    }
+            sever_cells(member, kind, displaced);
+        })
+    };
 
     // The other half of the same obligation: a sever that hands over fewer
     // children than the walk counted has left a counted reference standing in

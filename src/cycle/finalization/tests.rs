@@ -5,7 +5,9 @@ use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
 use crate::object::{Object, ll_entity_die, ll_object_die, new_constructed};
-use crate::refcount::{MemoryCategory, entity_flags, header_refcount, ll_release, ll_retain};
+use crate::refcount::{
+    MemoryCategory, RcHeader, entity_flags, header_refcount, ll_release, ll_retain,
+};
 use crate::test_support::{prop_offset, store_prop};
 use crate::weak::{LLWeakRef, ll_weakref_create, ll_weakref_get};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

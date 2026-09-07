@@ -11,14 +11,17 @@
 //! cannot go stale, because the thread that performs it is the thread
 //! that changes the counts.
 //!
-//! # The rows are not read here
+//! # No row is written here, and the counts come from the heap
 //!
-//! The trace token covers the mark, the scan and the rows they write,
-//! and it is released before the exact test of any component — with the
-//! arena and every row in it (`rfc/model/gc/rc-cycle.md`, "Concurrency").
-//! A component therefore arrives as a
-//! member list of its own, and the in-degree this file needs is computed
-//! from the heap.
+//! The trace token covers the mark, the scan and the rows they write, and it
+//! is released before the exact test of any component
+//! (`rfc/model/gc/rc-cycle.md`, "Concurrency"). What the release ends is the
+//! right to trace rather than the life of the rows: a collection off the poll
+//! keeps its arena through the teardown and its membership **is** those rows,
+//! while a collection under pressure has given the blocks back and holds a
+//! harvested list. Either way the in-degree this file needs is computed from
+//! the heap, and the membership answers only which entities the component
+//! holds ([`Membership`]).
 //!
 //! # The sum stands for the per-member identity
 //!
@@ -52,6 +55,7 @@
 //! count-based decision in this crate already stands on.
 
 use crate::cells::{self, PlainCells};
+use crate::cycle::membership::Membership;
 use crate::object::header_category;
 use crate::refcount::{MemoryCategory, RcHeader, header_refcount};
 
@@ -78,13 +82,10 @@ pub(crate) enum ValidationResult {
 
 /// Validate one component against its members' current fields.
 ///
-/// `members` is the component's whole membership and nothing besides,
-/// each member once. **The slice is sorted by address in place**, which
-/// is how a traced child is tested for membership, so the caller's own
-/// order is gone when this returns: nothing may be held parallel to it
-/// by index. A queue entry array indexed after the call names a
-/// different member, and clearing a registration bit through it is the
-/// permanent miss of `rfc/model/gc/cycle/questions.md`, Y6.
+/// `members` is the component's whole membership and nothing besides, each
+/// member once, in whichever of the two forms the path that produced it holds
+/// ([`Membership`]). What this file asks of it is a walk and a membership
+/// test, and the two forms answer both.
 ///
 /// `guard_refs_per_member` is the teardown guard outstanding on every member:
 /// zero before the guards are taken, one for the re-verify a destructor forces.
@@ -94,7 +95,12 @@ pub(crate) enum ValidationResult {
 ///
 /// Answers [`ValidationResult::ZeroCountMember`] from a pass of its own, before
 /// any field of any member is read, and only while no guard is outstanding — a
-/// guarded member cannot read zero.
+/// guarded member reading zero is a defect and refused as one.
+///
+/// **It walks the membership twice**, once for the counts and once for the
+/// edges, which is what that order costs. On the listed form the second walk
+/// is a second read of the same slice; on the row form it is a second walk of
+/// the touched list.
 ///
 /// **Nothing is written**, neither an entity nor a shadow row, so a
 /// component this refuses costs the caller nothing to undo. The guard is
@@ -110,50 +116,55 @@ pub(crate) enum ValidationResult {
 /// which is the condition `cells::trace_cells` reads an entity's cells plainly
 /// under.
 pub(crate) unsafe fn validate_component(
-    members: &mut [*mut RcHeader],
+    members: &Membership<'_>,
     guard_refs_per_member: u32,
 ) -> ValidationResult {
-    members.sort_unstable();
-    debug_assert!(!members.is_empty(), "a component has a member");
+    debug_assert!(members.len() > 0, "a component has a member");
     debug_assert!(
-        members.windows(2).all(|pair| pair[0] != pair[1]),
-        "a member stands in its component once: twice counts one refcount twice \
-         and its in-edges once"
-    );
-    debug_assert!(
-        members
-            .iter()
-            .all(|&m| unsafe { header_category(m) } == MemoryCategory::GcHeap),
-        "a member outside the GC heap carries a count no store barrier maintains, \
-         so no identity holds over it"
+        unsafe { every_member_is_a_gc_heap_entity_once(members) },
+        "a member stands in its component once and inside the GC heap: twice counts \
+         one refcount twice and its in-edges once, and a count outside the heap is \
+         one no store barrier maintains"
     );
 
-    if guard_refs_per_member == 0 {
-        if members.iter().any(|&m| unsafe { header_refcount(m) } == 0) {
-            return ValidationResult::ZeroCountMember;
-        }
-    } else {
-        debug_assert!(
-            members.iter().all(|&m| unsafe { header_refcount(m) } > 0),
+    // A pass of its own, and it is ahead of every field read below rather than
+    // folded into it: a member at count zero holds teardown residue in its
+    // cells, and the zero-count rule drops the component before anything reads
+    // one (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation",
+    // step 1).
+    let mut total_refcount = 0u64;
+    let mut zero_count_member = false;
+    unsafe {
+        members.for_each(|member| {
+            let refcount = header_refcount(member);
+            zero_count_member |= refcount == 0;
+            total_refcount += u64::from(refcount);
+        })
+    };
+
+    if zero_count_member {
+        // The reading a guard makes impossible, so it is an answer on one arm
+        // and a defect on the other.
+        assert_eq!(
+            guard_refs_per_member, 0,
             "a guarded member cannot read zero: the guard is a reference of its own"
         );
+        return ValidationResult::ZeroCountMember;
     }
 
-    let mut total_refcount = 0u64;
     let mut internal_edges = 0u64;
-    for &member in members.iter() {
-        total_refcount += u64::from(unsafe { header_refcount(member) });
-        // The kind is loaded here and passed down rather than read inside
-        // the tracer, which is the contract `trace_cells` states.
-        let kind = unsafe { cells::entity_kind(member) };
-        unsafe {
+    unsafe {
+        members.for_each(|member| {
+            // The kind is loaded here and passed down rather than read inside
+            // the tracer, which is the contract `trace_cells` states.
+            let kind = cells::entity_kind(member);
             cells::trace_cells::<PlainCells>(member, kind, |cell| {
-                if members.binary_search(&cell.child).is_ok() {
+                if members.contains(cell.child) {
                     internal_edges += 1;
                 }
             });
-        }
-    }
+        })
+    };
 
     debug_assert!(
         unsafe { member_counts_cover_internal_edges(members, guard_refs_per_member) },
@@ -184,29 +195,59 @@ pub(crate) unsafe fn validate_component(
 /// # Safety
 /// As [`validate_component`], with `members` already sorted.
 unsafe fn member_counts_cover_internal_edges(
-    members: &[*mut RcHeader],
+    members: &Membership<'_>,
     guard_refs_per_member: u32,
 ) -> bool {
-    let mut in_degrees = vec![0u64; members.len()];
-    for &holder in members {
+    let listed = unsafe { members_in_address_order(members) };
+    let mut in_degrees = vec![0u64; listed.len()];
+    for &holder in &listed {
         note_premise_walk();
         let kind = unsafe { cells::entity_kind(holder) };
         unsafe {
             cells::trace_cells::<PlainCells>(holder, kind, |cell| {
-                if let Ok(position) = members.binary_search(&cell.child) {
+                if let Ok(position) = listed.binary_search(&cell.child) {
                     in_degrees[position] += 1;
                 }
             });
         }
     }
 
-    members
-        .iter()
-        .zip(&in_degrees)
-        .all(|(&member, &in_degree)| {
-            u64::from(unsafe { header_refcount(member) })
-                >= in_degree + u64::from(guard_refs_per_member)
-        })
+    listed.iter().zip(&in_degrees).all(|(&member, &in_degree)| {
+        u64::from(unsafe { header_refcount(member) })
+            >= in_degree + u64::from(guard_refs_per_member)
+    })
+}
+
+/// Whether every member stands in `members` once and inside the GC heap.
+///
+/// Debug builds alone, and it materialises the membership to say so: the row
+/// form answers a membership test and not a duplicate one, a row being one
+/// entity's ([`Membership`]).
+///
+/// # Safety
+/// As [`validate_component`].
+unsafe fn every_member_is_a_gc_heap_entity_once(members: &Membership<'_>) -> bool {
+    let listed = unsafe { members_in_address_order(members) };
+    listed.windows(2).all(|pair| pair[0] != pair[1])
+        && listed
+            .iter()
+            .all(|&m| unsafe { header_category(m) } == MemoryCategory::GcHeap)
+}
+
+/// The membership as a sorted list, which is what a check indexed by member
+/// needs and what neither form hands out.
+///
+/// The allocation is a debug build's: both callers stand inside a
+/// `debug_assert!`, whose argument is compiled in every build and executed in
+/// none but that one.
+///
+/// # Safety
+/// As [`validate_component`].
+unsafe fn members_in_address_order(members: &Membership<'_>) -> Vec<*mut RcHeader> {
+    let mut listed = Vec::with_capacity(members.len());
+    unsafe { members.for_each(|member| listed.push(member)) };
+    listed.sort_unstable();
+    listed
 }
 
 #[cfg(test)]

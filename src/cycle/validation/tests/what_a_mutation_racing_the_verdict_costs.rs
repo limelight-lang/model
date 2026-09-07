@@ -35,7 +35,7 @@ fn a_reference_taken_after_the_verdict_leaves_the_ring_externally_referenced() {
 
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { validate_component(&mut members, 0) },
+        unsafe { validate_component(&Membership::listed(&mut members), 0) },
         ValidationResult::ExternallyReferenced,
         "one member carries a reference the component does not hold"
     );
@@ -74,7 +74,7 @@ fn the_same_ring_without_the_store_is_unreachable() {
 
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { validate_component(&mut members, 0) },
+        unsafe { validate_component(&Membership::listed(&mut members), 0) },
         ValidationResult::Unreachable,
         "every reference into the ring comes from the ring"
     );

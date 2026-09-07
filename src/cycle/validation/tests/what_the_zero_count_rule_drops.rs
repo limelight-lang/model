@@ -66,7 +66,7 @@ fn a_member_at_count_zero_drops_the_component_whole() {
 
     let mut members = [head as *mut RcHeader, tail as *mut RcHeader];
     assert_eq!(
-        unsafe { validate_component(&mut members, 0) },
+        unsafe { validate_component(&Membership::listed(&mut members), 0) },
         ValidationResult::ZeroCountMember,
         "the component holds a member at count zero"
     );

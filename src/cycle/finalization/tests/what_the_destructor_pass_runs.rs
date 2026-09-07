@@ -35,12 +35,12 @@ fn a_pending_destructor_runs_once_over_the_whole_finalization() {
     let mut finalization = Finalization::begin();
     let mut members = [ring[0] as *mut RcHeader, ring[1] as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(&members) };
+    unsafe { pass.run(&Membership::listed(&mut members)) };
     assert_eq!(
         DESTRUCTOR_RUNS.load(Ordering::Relaxed),
         2,
@@ -49,7 +49,8 @@ fn a_pending_destructor_runs_once_over_the_whole_finalization() {
     );
 
     let mut revalidation = pass.close();
-    let Revalidated::Unreachable(guarded) = (unsafe { revalidation.revalidate(&mut members) })
+    let Revalidated::Unreachable(guarded) =
+        (unsafe { revalidation.revalidate(&Membership::listed(&mut members)) })
     else {
         panic!("a destructor that stores nothing leaves the ring unreachable");
     };
@@ -107,13 +108,13 @@ fn a_member_carrying_no_class_word_is_passed_over() {
     let mut finalization = Finalization::begin();
     let mut members = [holder as *mut RcHeader, array as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable,
         "the property and the element are the only two references there are"
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(&members) };
+    unsafe { pass.run(&Membership::listed(&mut members)) };
     assert_eq!(
         DESTRUCTOR_RUNS.load(Ordering::Relaxed),
         1,
@@ -124,7 +125,8 @@ fn a_member_carrying_no_class_word_is_passed_over() {
     );
 
     let mut revalidation = pass.close();
-    let Revalidated::Unreachable(guarded) = (unsafe { revalidation.revalidate(&mut members) })
+    let Revalidated::Unreachable(guarded) =
+        (unsafe { revalidation.revalidate(&Membership::listed(&mut members)) })
     else {
         panic!("nothing outside the ring holds either member");
     };

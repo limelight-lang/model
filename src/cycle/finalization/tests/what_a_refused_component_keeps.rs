@@ -55,7 +55,7 @@ fn an_externally_referenced_component_takes_no_guard_and_keeps_its_cell() {
     let mut finalization = Finalization::begin();
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::ExternallyReferenced,
         "one member carries a reference the component does not hold"
     );
@@ -148,7 +148,7 @@ fn a_zero_count_member_leaves_the_component_and_its_cell_alone() {
     let mut finalization = Finalization::begin();
     let mut members = [head as *mut RcHeader, tail as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::ZeroCountMember,
         "the component holds a member at count zero"
     );

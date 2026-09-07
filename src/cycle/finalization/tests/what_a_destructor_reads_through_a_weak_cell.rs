@@ -109,7 +109,7 @@ fn a_destructor_reads_null_through_the_cell_naming_the_other_member() {
     let mut finalization = Finalization::begin();
     let mut members = [target as *mut RcHeader, probe as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable,
         "the ring is held by nothing outside it"
     );
@@ -122,7 +122,7 @@ fn a_destructor_reads_null_through_the_cell_naming_the_other_member() {
     assert_eq!(invalidated.members(), 2);
 
     let mut pass = invalidated.destructors();
-    unsafe { pass.run(&members) };
+    unsafe { pass.run(&Membership::listed(&mut members)) };
     assert_eq!(
         SEEN_BY_THE_SECOND.load(Ordering::Relaxed),
         0,
@@ -132,7 +132,8 @@ fn a_destructor_reads_null_through_the_cell_naming_the_other_member() {
     );
 
     let mut revalidation = pass.close();
-    let Revalidated::Unreachable(guarded) = (unsafe { revalidation.revalidate(&mut members) })
+    let Revalidated::Unreachable(guarded) =
+        (unsafe { revalidation.revalidate(&Membership::listed(&mut members)) })
     else {
         panic!("a destructor that resolves nothing leaves the ring unreachable");
     };
@@ -182,7 +183,7 @@ fn a_destructor_of_one_component_reads_null_through_a_cell_naming_another() {
     ];
     for members in &mut components {
         assert_eq!(
-            unsafe { finalization.confirm(members) },
+            unsafe { finalization.confirm(&Membership::listed(members)) },
             ValidationResult::Unreachable
         );
     }
@@ -200,8 +201,8 @@ fn a_destructor_of_one_component_reads_null_through_a_cell_naming_another() {
     );
 
     let mut pass = invalidated.destructors();
-    for members in &components {
-        unsafe { pass.run(members) };
+    for members in &mut components {
+        unsafe { pass.run(&Membership::listed(members)) };
     }
 
     assert_eq!(
@@ -215,7 +216,8 @@ fn a_destructor_of_one_component_reads_null_through_a_cell_naming_another() {
     let mut revalidation = pass.close();
     unsafe { drop_cell(cell) };
     for (index, members) in components.iter_mut().enumerate() {
-        let Revalidated::Unreachable(guarded) = (unsafe { revalidation.revalidate(members) })
+        let Revalidated::Unreachable(guarded) =
+            (unsafe { revalidation.revalidate(&Membership::listed(members)) })
         else {
             panic!("neither component is held from outside");
         };
@@ -257,13 +259,13 @@ fn every_destructor_of_the_finalization_reads_null_through_the_other_s_cell() {
     let mut finalization = Finalization::begin();
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable
     );
     let invalidated = finalization.seal();
 
     let mut pass = invalidated.destructors();
-    unsafe { pass.run(&members) };
+    unsafe { pass.run(&Membership::listed(&mut members)) };
 
     // Both members bear a cell and each destructor loads the other's, so
     // whichever of the two runs first meets a cell the invalidation had to
@@ -282,7 +284,8 @@ fn every_destructor_of_the_finalization_reads_null_through_the_other_s_cell() {
     );
 
     let mut revalidation = pass.close();
-    let Revalidated::Unreachable(guarded) = (unsafe { revalidation.revalidate(&mut members) })
+    let Revalidated::Unreachable(guarded) =
+        (unsafe { revalidation.revalidate(&Membership::listed(&mut members)) })
     else {
         panic!("a destructor that resolves nothing leaves the ring unreachable");
     };
@@ -318,7 +321,7 @@ fn a_release_inside_a_destructor_stops_at_the_other_member_s_guard() {
     let mut finalization = Finalization::begin();
     let mut members = [target as *mut RcHeader, probe as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable
     );
     assert_eq!(
@@ -329,7 +332,7 @@ fn a_release_inside_a_destructor_stops_at_the_other_member_s_guard() {
     let invalidated = finalization.seal();
 
     let mut pass = invalidated.destructors();
-    unsafe { pass.run(&members) };
+    unsafe { pass.run(&Membership::listed(&mut members)) };
     assert_eq!(
         RELEASED_MEMBER.load(Ordering::Relaxed) as *mut RcHeader,
         target as *mut RcHeader,
@@ -350,7 +353,8 @@ fn a_release_inside_a_destructor_stops_at_the_other_member_s_guard() {
     );
 
     let mut revalidation = pass.close();
-    let Revalidated::Unreachable(guarded) = (unsafe { revalidation.revalidate(&mut members) })
+    let Revalidated::Unreachable(guarded) =
+        (unsafe { revalidation.revalidate(&Membership::listed(&mut members)) })
     else {
         panic!(
             "the edge the destructor gave up was the component's own, not a reference from outside"

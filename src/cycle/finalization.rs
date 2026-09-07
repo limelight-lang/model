@@ -167,10 +167,11 @@
 use std::marker::PhantomData;
 
 use crate::cycle::epoch;
+use crate::cycle::membership::Membership;
 use crate::cycle::validation::{ValidationResult, validate_component};
 use crate::object::{Object, ll_entity_die, run_user_destructor};
 use crate::refcount::{
-    MATURATION_AGE_MAX, MaturationStamp, RcHeader, carries_a_class_word, ll_release, mutator_flags,
+    MATURATION_AGE_MAX, MaturationStamp, carries_a_class_word, ll_release, mutator_flags,
     mutator_guard_retain, read_maturation_stamp, write_maturation_stamp,
 };
 use crate::weak;
@@ -211,9 +212,9 @@ impl Finalization {
     /// Validate one candidate component and, where the exact validation confirms it,
     /// guard every member and null every weak cell naming one.
     ///
-    /// `members` is the component's whole membership, each member once, and
-    /// **the slice is sorted in place** by the exact validation, so the caller's own
-    /// order is gone when this returns ([`validate_component`]).
+    /// `members` is the component's whole membership, each member once, in
+    /// whichever form the path that produced it holds
+    /// ([`Membership`]).
     ///
     /// The answer is the exact validation's, unchanged. On
     /// [`ValidationResult::Unreachable`] the component belongs to this
@@ -244,7 +245,7 @@ impl Finalization {
     /// thread's GC heap whose slot is still its own, and the call runs on the
     /// owning thread with no mutator beside it. The invalidation reads the
     /// same headers under the same rule.
-    pub(crate) unsafe fn confirm(&mut self, members: &mut [*mut RcHeader]) -> ValidationResult {
+    pub(crate) unsafe fn confirm(&mut self, members: &Membership<'_>) -> ValidationResult {
         let result = unsafe { validate_component(members, 0) };
         if result != ValidationResult::Unreachable {
             if result == ValidationResult::ExternallyReferenced {
@@ -254,12 +255,18 @@ impl Finalization {
             return result;
         }
 
-        for &member in members.iter() {
-            unsafe { mutator_guard_retain(member) };
-            self.members += 1;
-        }
+        unsafe {
+            members.for_each(|member| {
+                mutator_guard_retain(member);
+                self.members += 1;
+            })
+        };
 
-        unsafe { weak::notify_members(members) };
+        // A second walk rather than one loop, which is step 3's own shape: the
+        // guards of the whole component stand before the first cell naming any
+        // of its members is nulled (`rfc/model/gc/rc-cycle.md`, "Cycle
+        // finalization and reclamation", steps 2 and 3).
+        unsafe { members.for_each(|member| weak::notify_member(member)) };
         result
     }
 
@@ -422,17 +429,19 @@ impl DestructorPass {
     /// Every member is an entity header of this thread's GC heap guarded by
     /// the finalization this pass came from, offered once, and the call runs on
     /// the owning thread.
-    pub(crate) unsafe fn run(&mut self, members: &[*mut RcHeader]) {
-        for &member in members {
-            self.members_run += 1;
-            if !carries_a_class_word(unsafe { mutator_flags(member) }) {
-                continue;
-            }
+    pub(crate) unsafe fn run(&mut self, members: &Membership<'_>) {
+        unsafe {
+            members.for_each(|member| {
+                self.members_run += 1;
+                if !carries_a_class_word(mutator_flags(member)) {
+                    return;
+                }
 
-            if unsafe { run_user_destructor(member as *mut Object) } {
-                self.any_destructor_ran = true;
-            }
-        }
+                if run_user_destructor(member as *mut Object) {
+                    self.any_destructor_ran = true;
+                }
+            })
+        };
     }
 
     /// Close the pass: every member has run whatever destructor it owed, and
@@ -539,10 +548,9 @@ impl Revalidation {
     /// # Safety
     /// As [`Finalization::confirm`], and every member is one this finalization
     /// guarded, offered once.
-    pub(crate) unsafe fn revalidate(&mut self, members: &mut [*mut RcHeader]) -> Revalidated<'_> {
+    pub(crate) unsafe fn revalidate(&mut self, members: &Membership<'_>) -> Revalidated<'_> {
         self.members_revalidated += members.len();
         if !self.any_destructor_ran {
-            members.sort_unstable();
             return Revalidated::Unreachable(GuardedComponent::over(members.len(), self));
         }
 
@@ -698,12 +706,12 @@ impl<'a> GuardedComponent<'a> {
     /// ([`crate::cycle::reclamation::reclaim`]). What this does is what the
     /// [`Revalidated::ExternallyReferenced`] arm does, on a component read as
     /// unreachable, so **a member whose guard was its last reference is freed
-    /// here** and the caller's slice can name a freed entity afterwards.
+    /// here** and the caller's membership can name a freed entity afterwards.
     ///
     /// # Safety
     /// As [`release_guards`], and `members` is this component's whole
     /// membership, unsevered.
-    pub(crate) unsafe fn release(mut self, members: &[*mut RcHeader]) {
+    pub(crate) unsafe fn release(mut self, members: &Membership<'_>) {
         debug_assert_eq!(
             members.len(),
             self.members,
@@ -756,12 +764,14 @@ impl Drop for GuardedComponent<'_> {
 /// # Safety
 /// Every member is a live entity of this thread's GC heap carrying exactly one
 /// guard reference, each named once, and the call runs on the owning thread.
-pub(crate) unsafe fn release_guards(members: &[*mut RcHeader]) {
-    for &member in members {
-        if unsafe { ll_release(member) } {
-            unsafe { ll_entity_die(member) };
-        }
-    }
+pub(crate) unsafe fn release_guards(members: &Membership<'_>) {
+    unsafe {
+        members.for_each(|member| {
+            if ll_release(member) {
+                ll_entity_die(member);
+            }
+        })
+    };
 }
 
 /// Stamp a component the exact validation read as externally referenced: this
@@ -785,23 +795,21 @@ pub(crate) unsafe fn release_guards(members: &[*mut RcHeader]) {
 /// # Safety
 /// Every member is a live entity of this thread's GC heap whose slot is still
 /// its own, named once, and the call runs on the owning thread.
-unsafe fn stamp_component(members: &[*mut RcHeader], epoch: u32) {
-    let youngest = members
-        .iter()
-        .map(|&member| {
-            let stamp = unsafe { read_maturation_stamp(member) };
-            if stamp.epoch == epoch { stamp.age } else { 0 }
+unsafe fn stamp_component(members: &Membership<'_>, epoch: u32) {
+    let mut youngest: Option<u32> = None;
+    unsafe {
+        members.for_each(|member| {
+            let stamp = read_maturation_stamp(member);
+            let age = if stamp.epoch == epoch { stamp.age } else { 0 };
+            youngest = Some(youngest.map_or(age, |carried: u32| carried.min(age)));
         })
-        .min()
-        .unwrap_or(0);
+    };
 
     let stamp = MaturationStamp {
         epoch,
-        age: (youngest + 1).min(MATURATION_AGE_MAX),
+        age: (youngest.unwrap_or(0) + 1).min(MATURATION_AGE_MAX),
     };
-    for &member in members {
-        unsafe { write_maturation_stamp(member, stamp) };
-    }
+    unsafe { members.for_each(|member| write_maturation_stamp(member, stamp)) };
 }
 
 #[cfg(test)]

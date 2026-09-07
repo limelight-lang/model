@@ -28,12 +28,12 @@ fn a_guarded_ring_is_unreachable_only_when_the_guard_references_are_subtracted()
     }
 
     assert_eq!(
-        unsafe { validate_component(&mut members, 1) },
+        unsafe { validate_component(&Membership::listed(&mut members), 1) },
         ValidationResult::Unreachable,
         "the discount takes off the one reference the teardown itself added"
     );
     assert_eq!(
-        unsafe { validate_component(&mut members, 0) },
+        unsafe { validate_component(&Membership::listed(&mut members), 0) },
         ValidationResult::ExternallyReferenced,
         "undiscounted, the guards read as references from outside"
     );

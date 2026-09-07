@@ -187,21 +187,24 @@ pub(crate) unsafe fn notify_death(target: *mut RcHeader) {
     unsafe { update_header_flags(target, |f| f & !HAS_WEAK_REFERENCES) };
 }
 
-/// A collector's user destructor pass: null every member's cell **before any
+/// A collector's user destructor pass: null one member's cell **before any
 /// user code runs** — the binding obligation of `rfc/model/gc/rc-cycle.md`,
 /// "Cycle finalization and reclamation", step 3 (a weak load is the one channel that can hand a
 /// destructor a pointer counted references cannot account for). Irrevocable on
 /// a later externally-referenced reading, by design. The caller is
-/// `cycle::finalization::Finalization::confirm`, which nulls over a confirmed
-/// component before any member of it takes a destructor.
+/// `cycle::finalization::Finalization::confirm`, which walks the whole
+/// confirmed component through here before any member of it takes a
+/// destructor — one member at a time, because the component reaches it as a
+/// membership rather than as a slice
+/// (`cycle::membership::Membership`).
+///
+/// A member with no weak reference to it costs the flag read and nothing else.
 ///
 /// # Safety
-/// Members must be live entities on their owning thread.
-pub(crate) unsafe fn notify_members(members: &[*mut RcHeader]) {
-    for &m in members {
-        if unsafe { mutator_flags(m) } & HAS_WEAK_REFERENCES != 0 {
-            unsafe { notify_death(m) };
-        }
+/// `member` is a live entity on its owning thread.
+pub(crate) unsafe fn notify_member(member: *mut RcHeader) {
+    if unsafe { mutator_flags(member) } & HAS_WEAK_REFERENCES != 0 {
+        unsafe { notify_death(member) };
     }
 }
 

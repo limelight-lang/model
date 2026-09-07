@@ -34,7 +34,7 @@ unsafe fn confirmed_ring(
     let mut finalization = Finalization::begin();
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable
     );
     (finalization, members)
@@ -179,10 +179,10 @@ fn a_revalidation_dropped_instead_of_closed_fails() {
     if std::env::var_os(CHILD).is_some() {
         let _g = test_guard();
         let mut arena = Arena::new();
-        let (finalization, members) =
+        let (finalization, mut members) =
             unsafe { confirmed_ring(&mut arena, "FinalizationUnclosedRevalidationNode") };
         let mut pass = finalization.seal().destructors();
-        unsafe { pass.run(&members) };
+        unsafe { pass.run(&Membership::listed(&mut members)) };
         drop(pass.close());
         return;
     }
@@ -207,9 +207,9 @@ fn a_component_read_as_unreachable_and_dropped_with_its_guards_fails() {
         let (finalization, mut members) =
             unsafe { confirmed_ring(&mut arena, "FinalizationUnreleasedComponentNode") };
         let mut pass = finalization.seal().destructors();
-        unsafe { pass.run(&members) };
+        unsafe { pass.run(&Membership::listed(&mut members)) };
         let mut revalidation = pass.close();
-        drop(unsafe { revalidation.revalidate(&mut members) });
+        drop(unsafe { revalidation.revalidate(&Membership::listed(&mut members)) });
         return;
     }
 

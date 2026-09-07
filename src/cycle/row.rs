@@ -193,6 +193,42 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
     }
 }
 
+/// Visit the index of every row of `block` the scan left
+/// [`Color::PotentiallyUnreachable`](crate::cycle::shadow::Color), stopping
+/// where `visit` answers false, and answer **false when it stopped early**.
+///
+/// The reason this stands here rather than in
+/// [`crate::cycle::shadow::for_each_unreachable`] is the population that has
+/// no row in its array: a large entity's colour is a word of its own block
+/// header, and the dispatch that knows so is this module's. Both readings a
+/// collection takes of its rows go through here — the harvest of the pressure
+/// path ([`crate::cycle::arena::TraceScratchArena`]) and the membership a
+/// collection off the poll reads its rows as
+/// ([`crate::cycle::membership::Membership`]).
+///
+/// # Safety
+/// `array` is an initialised array of a scanned collection, `block` is the
+/// block it was written for, and `population` is that array's own.
+pub(crate) unsafe fn for_each_unreachable(
+    array: *mut crate::cycle::shadow::RowArray,
+    block: *mut u8,
+    population: Population,
+    visit: impl FnMut(u32) -> bool,
+) -> bool {
+    let mut visit = visit;
+    if population == Population::SingleEntity {
+        crate::cycle::shadow::note_row_read();
+        let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
+        if crate::cycle::shadow::color(row) != crate::cycle::shadow::Color::PotentiallyUnreachable {
+            return true;
+        }
+
+        return visit(SINGLE_ENTITY_INDEX);
+    }
+
+    unsafe { crate::cycle::shadow::for_each_unreachable(array, visit) }
+}
+
 /// The entity the row at `index` of `block` carries the working count for,
 /// which is what [`resolve_edge_target`] answers backwards: it takes an
 /// address to a row, and this takes a row to its address.

@@ -97,12 +97,12 @@ fn a_finalization_no_destructor_ran_in_is_not_read_again() {
         let mut finalization = Finalization::begin();
         let mut members = headers(&ring);
         assert_eq!(
-            unsafe { finalization.confirm(&mut members) },
+            unsafe { finalization.confirm(&Membership::listed(&mut members)) },
             ValidationResult::Unreachable
         );
 
         let mut pass = finalization.seal().destructors();
-        unsafe { pass.run(&members) };
+        unsafe { pass.run(&Membership::listed(&mut members)) };
         let mut revalidation = pass.close();
 
         // The answer holds the revalidation, so it is read and discharged
@@ -114,7 +114,7 @@ fn a_finalization_no_destructor_ran_in_is_not_read_again() {
             // where the exact validation would have.
             members.reverse();
             let before = premise_cell_walks();
-            let answer = unsafe { revalidation.revalidate(&mut members) };
+            let answer = unsafe { revalidation.revalidate(&Membership::listed(&mut members)) };
             assert!(
                 members.is_sorted(),
                 "a component comes back sorted whether or not it was read again"
@@ -171,12 +171,12 @@ fn a_destructor_that_keeps_this_leaves_the_component_with_its_true_counts() {
     let mut finalization = Finalization::begin();
     let mut members = headers(&ring);
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(&members) };
+    unsafe { pass.run(&Membership::listed(&mut members)) };
     assert_eq!(
         KEPT_MEMBER.load(Ordering::Relaxed) as *mut Object,
         keeper_member,
@@ -186,7 +186,7 @@ fn a_destructor_that_keeps_this_leaves_the_component_with_its_true_counts() {
     let mut revalidation = pass.close();
     assert!(
         matches!(
-            unsafe { revalidation.revalidate(&mut members) },
+            unsafe { revalidation.revalidate(&Membership::listed(&mut members)) },
             Revalidated::ExternallyReferenced
         ),
         "a reference the component does not contain is what the second \
@@ -239,12 +239,12 @@ fn a_member_whose_guard_was_its_last_reference_dies_at_the_release() {
     let mut finalization = Finalization::begin();
     let mut members = headers(&ring);
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(&members) };
+    unsafe { pass.run(&Membership::listed(&mut members)) };
     assert_eq!(
         unsafe { header_refcount(first as *mut RcHeader) },
         1,
@@ -255,7 +255,7 @@ fn a_member_whose_guard_was_its_last_reference_dies_at_the_release() {
     let mut revalidation = pass.close();
     assert!(
         matches!(
-            unsafe { revalidation.revalidate(&mut members) },
+            unsafe { revalidation.revalidate(&Membership::listed(&mut members)) },
             Revalidated::ExternallyReferenced
         ),
         "the reference the destructor kept is one the component does not contain"
@@ -323,17 +323,17 @@ fn a_survivor_the_release_decrements_is_registered_as_a_candidate() {
     let mut finalization = Finalization::begin();
     let mut members = [peer as *mut RcHeader, keeper_member as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(&members) };
+    unsafe { pass.run(&Membership::listed(&mut members)) };
     let mut revalidation = pass.close();
 
     let _ = take_admissions();
     assert!(matches!(
-        unsafe { revalidation.revalidate(&mut members) },
+        unsafe { revalidation.revalidate(&Membership::listed(&mut members)) },
         Revalidated::ExternallyReferenced
     ));
     assert_eq!(
@@ -391,13 +391,13 @@ fn a_child_of_a_dying_member_runs_its_destructor_inside_the_release() {
     let mut finalization = Finalization::begin();
     let mut members = headers(&ring);
     assert_eq!(
-        unsafe { finalization.confirm(&mut members) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable,
         "the child is a child rather than a holder, so it counts for neither side"
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(&members) };
+    unsafe { pass.run(&Membership::listed(&mut members)) };
     assert_eq!(
         CHILD_DESTRUCTOR_RUNS.load(Ordering::Relaxed),
         0,
@@ -406,7 +406,7 @@ fn a_child_of_a_dying_member_runs_its_destructor_inside_the_release() {
 
     let mut revalidation = pass.close();
     assert!(matches!(
-        unsafe { revalidation.revalidate(&mut members) },
+        unsafe { revalidation.revalidate(&Membership::listed(&mut members)) },
         Revalidated::ExternallyReferenced
     ));
     assert_eq!(
@@ -514,14 +514,14 @@ fn a_component_rooted_by_an_earlier_teardown_is_read_after_it() {
     let mut components = [headers(&torn_down), headers(&read_later)];
     for members in &mut components {
         assert_eq!(
-            unsafe { finalization.confirm(members) },
+            unsafe { finalization.confirm(&Membership::listed(members)) },
             ValidationResult::Unreachable
         );
     }
 
     let mut pass = finalization.seal().destructors();
-    for members in &components {
-        unsafe { pass.run(members) };
+    for members in &mut components {
+        unsafe { pass.run(&Membership::listed(members)) };
     }
     assert_eq!(
         PUBLISHED_MEMBER.load(Ordering::Relaxed) as *mut Object,
@@ -532,7 +532,7 @@ fn a_component_rooted_by_an_earlier_teardown_is_read_after_it() {
 
     let mut revalidation = pass.close();
     assert!(matches!(
-        unsafe { revalidation.revalidate(&mut components[0]) },
+        unsafe { revalidation.revalidate(&Membership::listed(&mut components[0])) },
         Revalidated::ExternallyReferenced
     ));
     assert_eq!(
@@ -543,7 +543,7 @@ fn a_component_rooted_by_an_earlier_teardown_is_read_after_it() {
     );
     assert!(
         matches!(
-            unsafe { revalidation.revalidate(&mut components[1]) },
+            unsafe { revalidation.revalidate(&Membership::listed(&mut components[1])) },
             Revalidated::ExternallyReferenced
         ),
         "the second component is read after the first is torn down, so the \

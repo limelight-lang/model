@@ -103,6 +103,17 @@ pub(crate) mod mark;
 // The list a pressure collection takes out of its rows before the blocks go
 // back, and the region of the workspace it stands in.
 pub(crate) mod members;
+// The two forms a commit's membership takes — the harvested list, and the rows
+// a collection off the poll keeps — behind the three questions every reader of
+// one asks.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the driver that reads a commit's membership is `PLAN.md` S36.7's"
+    )
+)]
+pub(crate) mod membership;
 // Physical slot return waits while a trace can still address the slot's shadow
 // row. The production trace that opens the window arrives in S36.7; S36.2
 // builds the window and the return-path half first.
