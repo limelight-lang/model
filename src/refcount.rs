@@ -14,12 +14,13 @@
 //! collector thread as an accelerator over the same headers
 //! (`rfc/model/gc/rc-cycle.md`, "Decision summary" and "Concurrency").
 //!
-//! **Flags bits 15 and 16-31 are unclaimed.** The region above 15 is the
-//! collector's own, laid out as epoch at 16-17, maturation age at 18-19
-//! and reserve at 20-23. Until the step that lays each one lands,
-//! nothing reads or writes them, and
+//! **The region above bit 15 is the collector's own**, and byte 6 of it
+//! carries the maturation stamp: the epoch at 16-17, the age at 18-19,
+//! and a reserve at 20-23 that nothing writes yet.
+//! [`write_maturation_stamp`] is the one writer, one byte wide, and
 //! `refcount::tests::the_header_the_compiler_shares` is what keeps a
-//! constant from drifting in meanwhile.
+//! mutator constant from drifting into any of them. Bits 24-31 are
+//! unclaimed.
 
 use crate::journal::kinds::journal_event;
 
@@ -189,6 +190,45 @@ pub const DEAD_IN_PLACE: u32 = 1 << 15;
 /// promotion. Cleared when the count returns to zero or the survivor's
 /// category is rewritten at promotion.
 pub const IS_ESCAPEE: u32 = 1 << 11;
+
+/// Byte 6 of the header, where the collector keeps the maturation stamp: the
+/// epoch it was written in at bits 16-17, the age at 18-19, and bits 20-23
+/// reserved (`rfc/model/classes.md`, "Flags layout").
+///
+/// The byte has one writer, the owning thread's commit
+/// ([`write_maturation_stamp`]), and the fields share it, so each is written by
+/// a byte-wide read-modify-write rather than by a store of the whole byte: a
+/// store would carry the reserve's bits down with it once the reserve has a
+/// writer of its own.
+const MATURATION_STAMP_BYTE: usize = 6;
+
+/// The maturation epoch, bits 16-17: which epoch's collection wrote the age
+/// beside it. An age under any other epoch reads as no age at all, which is
+/// what retires a stamp without clearing it in place.
+pub(crate) const MATURATION_EPOCH_MASK: u32 = 0b11 << 16;
+
+/// The maturation age, bits 18-19: how many consecutive collections of the
+/// epoch read the entity's component as externally referenced, counted from
+/// one and saturated at [`MATURATION_AGE_MAX`].
+pub(crate) const MATURATION_AGE_MASK: u32 = 0b11 << 18;
+
+/// The two fields as they sit inside byte 6, derived from the flags-word masks
+/// above so that the two forms cannot drift apart: the byte's bit 0 is the
+/// flags word's bit 16.
+const MATURATION_EPOCH_IN_BYTE: u8 = (MATURATION_EPOCH_MASK >> MATURATION_STAMP_SHIFT) as u8;
+const MATURATION_AGE_IN_BYTE: u8 = (MATURATION_AGE_MASK >> MATURATION_STAMP_SHIFT) as u8;
+const MATURATION_AGE_SHIFT_IN_BYTE: u32 =
+    MATURATION_AGE_MASK.trailing_zeros() - MATURATION_STAMP_SHIFT;
+
+/// The flags-word position of [`MATURATION_STAMP_BYTE`]'s first bit.
+const MATURATION_STAMP_SHIFT: u32 = MATURATION_STAMP_BYTE as u32 * 8 - 32;
+
+/// The age the field holds, past which it stops counting: two bits.
+///
+/// It is the field's bound and not the traversal's threshold — what age an
+/// edge target is pruned at is `PLAN.md` S37.1's `k`, which reads this field
+/// and is a policy over it.
+pub(crate) const MATURATION_AGE_MAX: u32 = 3;
 
 /// The copy-on-write barrier's test, in the order `rfc/model/values.md`
 /// fixes it and for the reasons it gives:
@@ -836,12 +876,86 @@ pub unsafe extern "C" fn ll_release_batch(entity: *mut RcHeader) -> bool {
 /// **It does not answer for bits 16 and above**, and the name says
 /// mutator for that reason. Those are the collector's, written a byte at
 /// a time, and a caller asking this what epoch an entity carries gets
-/// zero in every build with nothing red. The byte reader they need is
-/// S36.6's and S37.1's, and it is not written yet — **change this, and
-/// give those steps their helper.**
+/// zero in every build with nothing red. [`read_maturation_stamp`] is what
+/// answers for them.
 #[inline]
 pub(crate) unsafe fn mutator_flags(header: *const RcHeader) -> u32 {
     unsafe { flags_load(header) }
+}
+
+/// The maturation stamp of a published header: the epoch a commit wrote it in
+/// and the age it wrote there.
+///
+/// An entity no commit has stamped answers epoch 0 and age 0, which the
+/// publication gives it — [`publish_header`] writes the whole word, so a
+/// recycled slot carries no stamp of its previous occupant. An age is read
+/// against the epoch beside it and means nothing on its own: the two are one
+/// field in two parts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct MaturationStamp {
+    /// Bits 16-17 of the flags, as a value rather than in place.
+    pub(crate) epoch: u32,
+    /// Bits 18-19, counted from one; zero means unstamped in this epoch.
+    pub(crate) age: u32,
+}
+
+/// Read the maturation stamp of a **published** header as one relaxed byte
+/// load, the width the collector's half is written at.
+///
+/// # Safety
+/// `header` points at a live published entity, and the read is the owning
+/// thread's or a collector's — the byte is written by the owner alone, so
+/// either sees a whole stamp rather than a torn one.
+#[inline]
+pub(crate) unsafe fn read_maturation_stamp(header: *const RcHeader) -> MaturationStamp {
+    let byte = unsafe { maturation_byte_load(header) };
+    MaturationStamp {
+        epoch: (byte & MATURATION_EPOCH_IN_BYTE) as u32,
+        age: ((byte & MATURATION_AGE_IN_BYTE) >> MATURATION_AGE_SHIFT_IN_BYTE) as u32,
+    }
+}
+
+/// Write the maturation stamp of a **published** header, and leave the rest of
+/// the byte as it stands.
+///
+/// The one writer is the owning thread's commit, over a component its exact
+/// validation read as externally referenced (`crate::cycle::finalization`).
+/// The access is one byte wide at [`MATURATION_STAMP_BYTE`], so it overlaps
+/// neither the counter nor the mutator's two bytes of the flags, and the
+/// read-modify-write is safe against no second writer rather than against
+/// none: byte 6 has one (`rfc/model/classes.md`, "Flags layout").
+///
+/// # Safety
+/// `header` points at a live published entity of this thread, and this thread
+/// is its owner.
+#[inline]
+pub(crate) unsafe fn write_maturation_stamp(header: *mut RcHeader, stamp: MaturationStamp) {
+    debug_assert!(stamp.epoch <= MATURATION_EPOCH_IN_BYTE as u32);
+    debug_assert!(stamp.age <= MATURATION_AGE_MAX);
+    let fields = stamp.epoch as u8 | ((stamp.age as u8) << MATURATION_AGE_SHIFT_IN_BYTE);
+    let reserve = unsafe { maturation_byte_load(header) }
+        & !(MATURATION_EPOCH_IN_BYTE | MATURATION_AGE_IN_BYTE);
+    unsafe { maturation_byte_store(header, reserve | fields) };
+}
+
+/// The relaxed byte load at [`MATURATION_STAMP_BYTE`], and the store's twin.
+#[inline]
+unsafe fn maturation_byte_load(header: *const RcHeader) -> u8 {
+    unsafe {
+        (*((header as *const u8).add(MATURATION_STAMP_BYTE) as *const core::sync::atomic::AtomicU8))
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// The relaxed byte store at [`MATURATION_STAMP_BYTE`]. Narrow for the reason
+/// [`flags_store`] is: a wider store would overlap the mutator's two bytes
+/// without covering them.
+#[inline]
+unsafe fn maturation_byte_store(header: *mut RcHeader, byte: u8) {
+    unsafe {
+        (*((header as *mut u8).add(MATURATION_STAMP_BYTE) as *const core::sync::atomic::AtomicU8))
+            .store(byte, core::sync::atomic::Ordering::Relaxed)
+    };
 }
 
 /// Read the refcount of a **published** header, same dispatch rule and

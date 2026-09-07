@@ -33,16 +33,16 @@ unsafe fn unwind_guarded_ring(arena: &mut Arena, ring: [*mut Object; 2]) {
     }
 }
 
-/// Break both edges of a ring nothing else holds and free both members.
+/// Break every edge of a ring nothing else holds and free its members.
 ///
 /// The retain is what the sever below spends: a member whose edge is nulled
 /// while its count is one dies inside `store_prop`'s barrier, under the loop
 /// that is still walking the ring.
 ///
 /// # Safety
-/// Both members are live objects of this thread's GC heap, unguarded, linked
+/// Every member is a live object of this thread's GC heap, unguarded, linked
 /// into a ring through property 0 and held by nothing else.
-unsafe fn dismantle_ring(arena: &mut Arena, ring: [*mut Object; 2]) {
+unsafe fn dismantle_ring<const MEMBERS: usize>(arena: &mut Arena, ring: [*mut Object; MEMBERS]) {
     unsafe {
         for member in ring {
             ll_retain(member as *mut RcHeader);
@@ -92,5 +92,6 @@ fn one_guard_each(before: &[u32]) -> Vec<u32> {
 mod what_a_destructor_reads_through_a_weak_cell;
 mod what_a_refused_component_keeps;
 mod what_an_abandoned_finalization_costs;
+mod what_the_commit_stamps;
 mod what_the_destructor_pass_runs;
 mod what_the_revalidation_answers;

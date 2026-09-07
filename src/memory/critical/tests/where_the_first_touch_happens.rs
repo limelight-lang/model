@@ -149,6 +149,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("OWNER_STATE", false),
         ("PANIC_IN_HARVEST", false),
         ("PANIC_IN_RESET", false),
+        ("PINNED", false),
         ("POOL_REQUESTS", false),
         ("PREMISE_CELL_WALKS", false),
         ("RESERVE", true),

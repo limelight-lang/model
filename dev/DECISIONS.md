@@ -8,6 +8,49 @@ never edited or deleted.
 
 ---
 
+## 2026-09-07 — the epoch counter is founded where the stamp is written, and the prune stays S37.1's
+
+Owner: S36.6. Ruled by the Sage before the first edit, over a criterion the step
+could not meet: its `done:` clause asked for the ageing to be read "off the
+S37.1 counter", and S37.1 builds neither the prune nor the counter.
+
+**Decided:** S36.6 builds the write half alone. `cycle::epoch` founds the
+counter — one process-global `AtomicU64` of closed commits, the epoch being
+`(commits / 64) % 4` — and `cycle::finalization` writes the stamp at the two
+readings that prove a component live: `Finalization::confirm` answering
+`ExternallyReferenced` at step 2, and `Revalidation::revalidate` answering it at
+step 5, there before the guards come off. The commit is counted at
+`Revalidation::close`. S37.1 keeps the descent's read, its `#[cfg(test)]`
+counter of pruned edges, and the case that shows a matured ring pruned.
+
+**Why the two halves are separated.** The write is testable on its own: the
+stamp is a header byte, and a case reads it back through
+`refcount::read_maturation_stamp` without a descent to interpret it. The
+counter goes with the write because a stamp carries an epoch and cannot be
+written without one, and because its advance already has a site — the close of
+the commit is the one point a collection ends at. Merging the two steps would
+also put S37.1's change to `cycle::mark` under a step that carries no review
+role, which is the opposite of what the stage's gate asks for.
+
+**What the ruling corrected on the way.** S36.6's clause read the ageing as
+"two collections and the third prunes it", and against S37.1's `k = 3` with an
+age of `min + 1` it is three collections and the fourth: a component reaches
+age 3 at its third reading, and the descent that meets it afterwards is the
+fourth collection's. The clause moved to S37.1 in the corrected form.
+
+**What is not covered.** At step 5 the stamp is written before
+`release_guards`, because a member whose guard was its last reference dies in
+that call and the slice can then name a freed slot. No case exhibits the wrong
+order: a stamp written into a slot the allocator has back changes nothing a
+test can read, and the free list keeps the memory mapped, so Miri does not
+answer either. What holds the order is the comment at the site.
+
+**The epoch a case reads is pinned rather than driven** (`cycle::epoch::pin`, a
+`#[cfg(test)]` thread-local). The counter is process-global, so a case that
+closed 64 commits to reach a turnover would move the epoch under whichever
+other case was reading a stamp at that moment — a flake in a foreign test, and
+the expensive kind, since it would name the stamp rather than the counter.
+
 ## 2026-09-07 — the commit clears no candidate bit, and a member the queue names keeps its slot withheld
 
 Owner: S36.5. Ruled by the Sage the other way at the stage's pre-change gate and

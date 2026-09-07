@@ -25,7 +25,9 @@
 //!
 //! # What each module owns, and for how long
 //!
-//! Two lifetimes only. [`queue`] holds per-thread state for one thread's whole
+//! Three lifetimes. [`epoch`] holds one word for the process, a count of
+//! closed commits that owns no memory and is never given back. [`queue`] holds
+//! per-thread state for one thread's whole
 //! life, given back at `ll_thread_exit` — the base block, and the collection
 //! workspace an [`arena`] borrows. Everything else is per collection:
 //! [`arena`] holds the blocks a single trace bumps into past that workspace
@@ -91,6 +93,10 @@ pub(crate) mod validation;
     )
 )]
 pub(crate) mod finalization;
+// The count of closed commits and the epoch a maturation stamp carries. Read
+// by the commit that writes a stamp and, once S37.1 lands, by the descent that
+// reads one.
+pub(crate) mod epoch;
 // The first phase of a trace, reached from [`trace`] rather than from a
 // collection: the collection that drives one is S36.7's.
 pub(crate) mod mark;

@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-07 · Active: S36, from S36.6. S44 has one step left, S44.5,
+Updated: 2026-09-07 · Active: S36, from S36.7. S44 has one step left, S44.5,
 and it waits on Edmond's word.
 S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
@@ -24,8 +24,10 @@ its S36.9 stays open on the deny run a wired collection owes, S36.12 closed on
 2026-09-06 with the pressure path's harvest, S36.3 closed the same day with the
 guard references and the weak window, S36.4 the same day with the destructors
 and the revalidation behind them, S36.5 on 2026-09-07 with the sever, the frees
-and the deferred drops, and S36.6 — the maturation stamp — is the next of its
-steps to be built.
+and the deferred drops, and S36.6 the same day with the maturation stamp and
+the epoch counter under it. S36.7 — the collection behind the ABI — is the next
+of its steps to be built, and it is what gives the modules of `cycle` their
+first production caller.
 S43 closed the withheld-return window: past its region the module draws
 nothing, a death in memory the collection never met is returned at once, a
 marked slot of another thread's block is stacked rather than listing its
@@ -2530,20 +2532,90 @@ stage claiming the frees while building none of them.
         holding a member whose guard is its last reference — that member is
         freed inside `GuardedComponent::release`, and the case that exercises
         the refusal has no such member.
-- [ ] S36.6 Commit writes the maturation stamp
-      done: on the owning thread, after judgement, each proven-live component is
-        stamped as a unit — current epoch and `min(age) + 1` saturated at 3, one
-        single-byte store per member, never inside a wider access; a condemned
-        or unjudged component is never stamped; in the accelerator form the
-        posted proven-live components are stamped by the owner at its drain, so
-        the stamp byte has one writing thread in both forms; a test matures a
-        live ring across two collections and shows the third pruning it, read
-        off the S37.1 counter
+- [x] S36.6 Commit writes the maturation stamp
+      done: on the owning thread, after the exact validation, each proven-live
+        component is stamped as a unit — current epoch and `min(age) + 1`
+        saturated at 3, where a member whose stamp epoch is not the current one
+        contributes age 0 — one single-byte relaxed store per member at header
+        offset 6, never inside a wider access; a component read as unreachable
+        is never stamped, nor is one the zero-count rule dropped; in the
+        accelerator form the posted proven-live components are stamped by the
+        owner at its drain, so the stamp byte has one writing thread in both
+        forms; the epoch counter is one process-global full-width word of
+        closed commits, advanced at the close of every commit, the epoch being
+        its value past the turnover shift and the stamp carrying the low two
+        bits; tests read the byte out of the headers — a live ring driven
+        through four commits reads ages 1, 2, 3, 3, a ring one fresh member
+        joined reads the minimum, a component a destructor resurrected is
+        stamped at the second reading, a component read as unreachable keeps a
+        zero byte by both roads to that answer, and past a turnover the next
+        stamp carries the new epoch at age 1
       tier: T2 · role: —
+      correction 2026-09-07 — the criterion ended "a test matures a live ring
+        across two collections and shows the third pruning it, read off the
+        S37.1 counter", which no work at this step could satisfy: the prune and
+        the counter are S37.1's, and the crate had no epoch counter at all. The
+        Sage ruled the split below and the clause was rewritten to the write
+        half before anything was built to it. The pruning case moved to S37.1
+        and was corrected on the way: with `k = 3` and an age of `min + 1` a
+        component reaches age 3 at its third reading, so it is the fourth
+        collection that prunes it rather than the third.
+      Sage 2026-09-07, called by Edmond on the criterion: ruled the step the
+        write half alone — `cycle::epoch` founds the counter, `cycle::finalization`
+        writes the stamp at the two readings that prove a component live, and
+        S37.1 keeps the descent's read, its counter and the pruning case. The
+        write is testable on its own because the stamp is a header byte; the
+        counter goes with the write because a stamp cannot be written without
+        an epoch and its advance already has a site; and merging would put
+        S37.1's change to `cycle::mark` under a step that carries no role
+        (`dev/DECISIONS.md`, "the epoch counter is founded where the stamp is
+        written").
       handoff: commit is the only writer because a mature stamp suppresses
         descent, which is a reduction of future suspicion and therefore the
         owner's by the law of S34.2 — and because the mark writes into no
         entity, which is what makes an aborted collection free.
+      handoff: `src/cycle/epoch.rs` is `current()`, `commit_closed()` and a
+        `#[cfg(test)]` `pin`; `refcount::{read,write}_maturation_stamp` and
+        `MaturationStamp` are the byte-wide pair at offset 6, the write a
+        read-modify-write so the reserve at bits 20-23 stands;
+        `finalization::stamp_component` is the private writer, reached from
+        `Finalization::confirm` at step 2 and from `Revalidation::revalidate`
+        at step 5, in the second case ahead of `release_guards` because a
+        member whose guard was its last reference dies in that call. The cases
+        are `cycle::finalization::tests::what_the_commit_stamps`,
+        `refcount::tests::the_maturation_stamp_the_commit_writes` and
+        `cycle::epoch::tests`; `dismantle_ring` in the finalization fixtures
+        takes a ring of any size now.
+      handoff: 785 tests at one thread and three times at four, 785
+        `hash-folding`, 789 `debug-journal` three times, `cargo build
+        --release`, `cargo bench --no-run`, `cargo +1.94 fmt --check` clean,
+        `cargo check --lib --tests` warning-free and 478 citations with the
+        same seven residues. Nine source mutations, each caught by the case
+        that owns it: the stamp written on every refused answer, the component
+        aged at its oldest member, a stale stamp keeping its age, the age
+        unsaturated, a component read as unreachable stamped by either road,
+        the close counting no commit, the stamp storing the whole byte, and the
+        age read out of the epoch's bits. No Miri run: the change adds no
+        pointer arithmetic and no `unsafe` past the two byte accessors, whose
+        offset is the one `the_flags_half_the_mutator_leaves_alone` already
+        writes by hand (`dev/WORKFLOW.md`, Miri).
+      handoff: untested, and it is the ordering the whole step rests on: the
+        stamp at step 5 is written before the guards come off. A stamp written
+        after would land in a slot the allocator may have back, and no case can
+        exhibit that — the byte reads the same either way and the free list
+        keeps the memory mapped, so Miri answers nothing about it. What holds
+        the order is the comment at the site.
+      handoff: what S37.1 inherits. Its handoff names two producers of a stamp
+        byte nobody wrote, and neither stands against the built form. A
+        recycled slot is cleared by its next publication: `publish_header`
+        writes all eight bytes, pinned by
+        `a_published_entity_carries_no_stamp_of_its_own_slot`. A promoted
+        survivor does keep its byte — `update_header_flags` sees bits 0-15 and
+        `flags_store` writes two bytes at offset 4 — but an arena entity is
+        never a candidate and no commit ever stamped it, so the byte it keeps
+        is the zero its own publication wrote. What would revive the hazard is
+        a path that publishes an entity without `publish_header`, or a stamp
+        written outside a commit; the zeroing S38.0 owes is cheap either way.
 - [ ] S36.7 Wire the collection into the ABI
       done: `ll_gc_collect_cycles` runs a collection and reports what it
         reclaimed, and `ll_gc_maybe_collect` fires on the armed pending flag and
@@ -2624,6 +2696,15 @@ stage is what makes a trace affordable rather than what tunes it.
         `rfc/dev/DECISIONS.md` closing Y12 clause 8 makes it process-global and
         full-width against a per-thread mirror, and the full width is what keeps
         a wrapped stamp from hiding a turnover.
+      correction 2026-09-07: the counter is built, so this step reads it rather
+        than founds it — `cycle::epoch`, one process-global `AtomicU64` of
+        closed commits advanced at every commit's close, the epoch being
+        `(commits / 64) % 4` (S36.6). What is left here is the descent's read,
+        the per-thread mirror S37.4's re-offer needs, and `k`. The maturation
+        case moved here from S36.6 with its arithmetic corrected: with `k = 3`
+        and an age of `min + 1`, a live ring reaches age 3 at its third commit
+        and the fourth collection is the one that prunes its edges, read off
+        this step's counter.
       handoff: the root-side reading — "traced only after it has stayed a
         candidate across `k` collections" — was struck from this step and from
         `rc-cycle.md`'s summary bullet on 2026-08-26. It is not a second

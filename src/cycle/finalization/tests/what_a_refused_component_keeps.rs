@@ -11,6 +11,7 @@
 //! here would never resolve again.
 
 use super::*;
+use crate::refcount::read_maturation_stamp;
 
 /// What the members carried before the finalization was asked about them.
 ///
@@ -86,6 +87,13 @@ fn an_externally_referenced_component_takes_no_guard_and_keeps_its_cell() {
         first as *mut RcHeader,
         "the cell still resolves"
     );
+    for member in [first, second] {
+        assert_eq!(
+            unsafe { read_maturation_stamp(member as *mut RcHeader) }.age,
+            1,
+            "the one write a component read live does take: its stamp"
+        );
+    }
 
     unsafe {
         // `get` retained above.
@@ -169,6 +177,13 @@ fn a_zero_count_member_leaves_the_component_and_its_cell_alone() {
         tail as *mut RcHeader,
         "the cell naming the second member still resolves"
     );
+    for member in [head, tail] {
+        assert_eq!(
+            unsafe { read_maturation_stamp(member as *mut RcHeader) }.age,
+            0,
+            "a proposal the validation drops stamps nothing"
+        );
+    }
 
     unsafe {
         // The `get` above and the release that made the zero-count member are

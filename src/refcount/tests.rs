@@ -11,6 +11,7 @@ fn release(header: &mut RcHeader) -> bool {
 mod the_candidate_gate;
 mod the_flags_half_the_mutator_leaves_alone;
 mod the_header_the_compiler_shares;
+mod the_maturation_stamp_the_commit_writes;
 mod the_three_states_of_a_slot;
 mod the_widths_the_mutator_uses;
 mod what_the_category_decides;

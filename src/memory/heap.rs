@@ -2643,8 +2643,9 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
 ///
 /// The header is reported as its two mutator halves rather than as one
 /// word, because a mutator-side read of a published header may not span
-/// byte 6. The collector's bits 16-31 are therefore absent from the text,
-/// having no mutator-side reader at all yet.
+/// byte 6. The collector's bits 16-31 are therefore absent from the text:
+/// the maturation stamp among them is read a byte at a time by the
+/// collector's own paths (`refcount::read_maturation_stamp`).
 ///
 /// A large-entity block answers a different set, because it has no
 /// stride and no cursor: its occupant's size, and — the membership that

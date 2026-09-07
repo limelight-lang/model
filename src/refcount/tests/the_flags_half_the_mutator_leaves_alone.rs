@@ -5,12 +5,16 @@
 //! Nothing writes the flags half from another thread yet — the collector
 //! that will is S38's — so what these tests pin is the separation the
 //! mutator owes, which outlives the collector that first asked for it:
-//! `rc-walk`'s epoch stamp is where the marker below comes from.
+//! `rc-walk`'s epoch stamp is where the marker below comes from. The
+//! commit's own writer of that byte is
+//! `refcount::write_maturation_stamp`, and it runs on the owning thread.
 
 use super::*;
 
-/// A marker in the flags half, in bits no constant claims. Any value
-/// there would do — what the tests read is whether it comes back.
+/// A marker in the flags half, standing for whatever the collector's byte
+/// holds. Any value there would do — what the tests read is whether it
+/// comes back — so it is written as a byte rather than through the
+/// maturation stamp's fields, which claim bits 16-19 of it.
 const FOREIGN_MARK: u32 = 7 << 16;
 
 /// Byte 6 of the header is addressable on its own: a byte store there

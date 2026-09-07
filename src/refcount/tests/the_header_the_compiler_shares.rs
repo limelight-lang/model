@@ -50,6 +50,12 @@ fn flags_layout_matches_the_normative_table() {
     assert_eq!(DESTRUCTOR_PENDING, 1 << 13);
     assert_eq!(DESTRUCTOR_RAN, 1 << 14);
     assert_eq!(DEAD_IN_PLACE, 1 << 15, "dead in place: bit 15");
+    assert_eq!(MATURATION_EPOCH_MASK, 0b11 << 16, "epoch: bits 16-17");
+    assert_eq!(
+        MATURATION_AGE_MASK,
+        0b11 << 18,
+        "maturation age: bits 18-19"
+    );
 
     let claimed = MEMORY_CATEGORY_MASK
         | ENTITY_KIND_MASK
@@ -78,10 +84,20 @@ fn flags_layout_matches_the_normative_table() {
     // than a free position. `rfc/model/classes.md`'s "Flags layout" is the
     // table both sides transcribe, and it still calls the bit free.
     assert_eq!(claimed & 0xFFFF, 0xFFFF, "bits 0-15 are all claimed");
-    // Bits 16 and above are unclaimed until S36.6 and S37.1 lay the
-    // collector's epoch, maturation age and reserve there. Nothing may
-    // drift into them meanwhile, which is what this asserts.
-    assert_eq!(claimed & 0xFFFF_0000, 0, "nothing claims bits 16-31");
+    // The collector's own fields stand at 16-19 and are written a byte at
+    // a time, never by a mutator path: what this asserts is that no
+    // constant a mutator reads has drifted into them, and that the
+    // reserve above them is still free.
+    assert_eq!(
+        claimed & 0xFFFF_0000,
+        0,
+        "no mutator flag claims bits 16-31"
+    );
+    assert_eq!(
+        (MATURATION_EPOCH_MASK | MATURATION_AGE_MASK) & 0xFFF0_FFFF,
+        0,
+        "the collector's fields are inside bits 16-19"
+    );
 }
 
 /// The three questions `rfc/model/classes.md` turns into mask tests. Each

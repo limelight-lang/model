@@ -14,6 +14,24 @@
 //! `$this` (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation",
 //! steps 2 to 5).
 //!
+//! # The commit is where a maturation stamp is written
+//!
+//! A component the exact validation reads as externally referenced is proven
+//! live for this collection, and every one of its members takes a stamp: the
+//! commit's epoch and one age more than the component carried
+//! ([`stamp_component`]). What the stamp buys is paid at the next collection —
+//! the descent stops at a mature edge target instead of following it
+//! (`PLAN.md` S37.1) — so the write is a reduction of future suspicion and
+//! therefore the owner's alone, by the law that only the owner reduces state
+//! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial deletion",
+//! the ownership invariant).
+//!
+//! The stamp is the only thing a collection writes into an entity that
+//! outlives it. It is written after the exact validation rather than during
+//! the trace, which is what keeps an aborted collection free: the rows carry
+//! the trace, and a trace that stops at its budget or at a refused block
+//! leaves every header as it found it.
+//!
 //! # The order is the type's rather than the caller's
 //!
 //! [`Finalization::confirm`] performs the exact validation, the guards and the
@@ -148,10 +166,12 @@
 
 use std::marker::PhantomData;
 
+use crate::cycle::epoch;
 use crate::cycle::validation::{ValidationResult, validate_component};
 use crate::object::{Object, ll_entity_die, run_user_destructor};
 use crate::refcount::{
-    RcHeader, carries_a_class_word, ll_release, mutator_flags, mutator_guard_retain,
+    MATURATION_AGE_MAX, MaturationStamp, RcHeader, carries_a_class_word, ll_release, mutator_flags,
+    mutator_guard_retain, read_maturation_stamp, write_maturation_stamp,
 };
 use crate::weak;
 
@@ -166,6 +186,11 @@ pub(crate) struct Finalization {
     /// what the drop below distinguishes from a finalization abandoned with
     /// guards outstanding.
     sealed: bool,
+    /// The epoch every stamp of this commit carries, read once at
+    /// [`Finalization::begin`] and carried to the second reading: a turnover
+    /// between step 2 and step 5 would otherwise age two components of one
+    /// collection against different epochs.
+    epoch: u32,
     /// The counts and the cells are the owning thread's to write, and the
     /// exact validation reads fields no other thread may read
     /// ([`validate_component`]).
@@ -178,6 +203,7 @@ impl Finalization {
         Self {
             members: 0,
             sealed: false,
+            epoch: epoch::current(),
             _not_send: PhantomData,
         }
     }
@@ -191,8 +217,11 @@ impl Finalization {
     ///
     /// The answer is the exact validation's, unchanged. On
     /// [`ValidationResult::Unreachable`] the component belongs to this
-    /// finalization and its members carry a guard reference each; on either
-    /// other answer nothing is written at all.
+    /// finalization and its members carry a guard reference each; on
+    /// [`ValidationResult::ExternallyReferenced`] every member takes this
+    /// commit's maturation stamp ([`stamp_component`]) and no count moves; on
+    /// [`ValidationResult::ZeroCountMember`], which drops the proposal instead
+    /// of answering about it, nothing is written at all.
     ///
     /// **A member confirmed once must not be offered again.** The exact validation
     /// is given `guard_refs_per_member` of zero here, so a member that already
@@ -218,6 +247,10 @@ impl Finalization {
     pub(crate) unsafe fn confirm(&mut self, members: &mut [*mut RcHeader]) -> ValidationResult {
         let result = unsafe { validate_component(members, 0) };
         if result != ValidationResult::Unreachable {
+            if result == ValidationResult::ExternallyReferenced {
+                unsafe { stamp_component(members, self.epoch) };
+            }
+
             return result;
         }
 
@@ -237,6 +270,7 @@ impl Finalization {
         Invalidated {
             members: self.members,
             taken: false,
+            epoch: self.epoch,
             _not_send: PhantomData,
         }
     }
@@ -290,6 +324,8 @@ pub(crate) struct Invalidated {
     members: usize,
     /// Whether [`Invalidated::destructors`] took this value's guards.
     taken: bool,
+    /// The commit's epoch, as [`Finalization`] read it.
+    epoch: u32,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -309,6 +345,7 @@ impl Invalidated {
             members_run: 0,
             any_destructor_ran: false,
             closed: false,
+            epoch: self.epoch,
             _not_send: PhantomData,
         }
     }
@@ -352,6 +389,8 @@ pub(crate) struct DestructorPass {
     any_destructor_ran: bool,
     /// Whether [`DestructorPass::close`] took this value's answer.
     closed: bool,
+    /// The commit's epoch, as [`Finalization`] read it.
+    epoch: u32,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -420,6 +459,7 @@ impl DestructorPass {
             members_released: 0,
             any_destructor_ran: self.any_destructor_ran,
             closed: false,
+            epoch: self.epoch,
             _not_send: PhantomData,
         }
     }
@@ -463,6 +503,8 @@ pub(crate) struct Revalidation {
     any_destructor_ran: bool,
     /// Whether [`Revalidation::close`] took this value's answer.
     closed: bool,
+    /// The epoch this commit's stamps carry ([`Finalization`]).
+    epoch: u32,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -509,6 +551,11 @@ impl Revalidation {
                 Revalidated::Unreachable(GuardedComponent::over(members.len(), self))
             }
             ValidationResult::ExternallyReferenced => {
+                // Ahead of the release, which is where a member whose guard was
+                // its last reference dies: past it the slice can name a slot
+                // the allocator has back, and the stamp would be written into
+                // whatever occupies it next.
+                unsafe { stamp_component(members, self.epoch) };
                 unsafe { release_guards(members) };
                 self.members_released += members.len();
                 Revalidated::ExternallyReferenced
@@ -532,6 +579,12 @@ impl Revalidation {
     /// a driver that stopped short, and not one that offered a component
     /// twice. That every guard has come off is [`GuardedComponent`]'s own
     /// refusal rather than this one.
+    ///
+    /// **This is where the process counts one commit**
+    /// ([`epoch::commit_closed`]), and therefore where the epoch a later
+    /// collection stamps with advances. A trace that proposed nothing still
+    /// opens and closes a finalization and counts; one that aborted before
+    /// step 2 never reaches this and counts nothing.
     pub(crate) fn close(mut self) {
         assert_eq!(
             self.members_revalidated, self.guarded,
@@ -539,6 +592,7 @@ impl Revalidation {
         );
 
         self.closed = true;
+        epoch::commit_closed();
     }
 }
 
@@ -569,7 +623,9 @@ pub(crate) enum Revalidated<'a> {
     /// guard is off and every surviving member carries its true count, with
     /// its destructor already behind it; the weak cells nulled at step 3 stay
     /// null, which is where this design parts from PHP
-    /// (`rfc/model/weak-references.md`, "Death notification").
+    /// (`rfc/model/weak-references.md`, "Death notification"). Each member was
+    /// stamped with this commit's maturation before the guards came off, the
+    /// component having been read live twice.
     ///
     /// **A member the guard was the last reference of is freed here**, so the
     /// slice the caller passed can name an entity whose slot is back with the
@@ -705,6 +761,46 @@ pub(crate) unsafe fn release_guards(members: &[*mut RcHeader]) {
         if unsafe { ll_release(member) } {
             unsafe { ll_entity_die(member) };
         }
+    }
+}
+
+/// Stamp a component the exact validation read as externally referenced: this
+/// commit's epoch on every member, and one age more than the component already
+/// carried.
+///
+/// The age is the youngest member's, saturated at
+/// [`MATURATION_AGE_MAX`], and a member whose stamp was written in another
+/// epoch contributes zero — a stale stamp is retired by being read against the
+/// epoch beside it rather than by a pass that clears it. The minimum is what
+/// keeps a member that joined this epoch from inheriting its mates' age: the
+/// descent S37.1 builds stops at a mature edge target, so a component is worth
+/// no more suspicion than its youngest member is.
+///
+/// A component read as unreachable reaches neither caller, and neither does one
+/// dropped for a member at count zero
+/// ([`ValidationResult::ZeroCountMember`]): the stamp says that a collection
+/// read this component and found it live, which is the only claim the descent
+/// may act on.
+///
+/// # Safety
+/// Every member is a live entity of this thread's GC heap whose slot is still
+/// its own, named once, and the call runs on the owning thread.
+unsafe fn stamp_component(members: &[*mut RcHeader], epoch: u32) {
+    let youngest = members
+        .iter()
+        .map(|&member| {
+            let stamp = unsafe { read_maturation_stamp(member) };
+            if stamp.epoch == epoch { stamp.age } else { 0 }
+        })
+        .min()
+        .unwrap_or(0);
+
+    let stamp = MaturationStamp {
+        epoch,
+        age: (youngest + 1).min(MATURATION_AGE_MAX),
+    };
+    for &member in members {
+        unsafe { write_maturation_stamp(member, stamp) };
     }
 }
 

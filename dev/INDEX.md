@@ -40,6 +40,7 @@ versions live in `docs/history/`, marked at the top.
   | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | none until S36.7 |
   | `shadow` | the row: two bits of colour over thirty of working count | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
+  | `epoch` | the process's count of closed commits, and the two-bit epoch a maturation stamp carries: `(commits / 64) % 4` | `cycle::finalization`, which reads it at a commit's start and advances it at its close |
   | `mark` | the trace: trial deletion over the rows | none |
   | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | none until S36.7 |
   | `records` | `RecordChain`, the segmented record chain the trace's worklist and the teardown's deferred drops are built on: `pop` serves a descent, `drain` a replay in append order | none |
@@ -47,7 +48,7 @@ versions live in `docs/history/`, marked at the top.
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
   | `trace` | both phases over one detached batch, in the order the rows require: every root marks before any root scans | none until S36.7 |
   | `validation` | the owner's exact validation of one component, and the zero-count-member rule | none until S36.7; `cycle::finalization` is what acts on its answer |
-  | `finalization` | the guard reference on every member of a confirmed component, the weak cells naming them nulled before any destructor, the destructor pass over the whole commit and the second reading each component takes with the guard subtracted | none until S36.7 |
+  | `finalization` | the guard reference on every member of a confirmed component, the weak cells naming them nulled before any destructor, the destructor pass over the whole commit, the second reading each component takes with the guard subtracted, and the maturation stamp every component read as externally referenced takes at either reading | none until S36.7 |
   | `reclamation` | the teardown of a component the second reading kept: the room taken before the first cell is emptied, the sever, the frees through the ordinary death path, and the queue the displaced external children wait in | none until S36.7 |
   | `density` | test builds only: what share of a touched block's slots one trace met, and, in `tests::the_death_loads`, what the window's close costs in time and in cache lines | none |
 
@@ -719,6 +720,14 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
   models the collector's store. A `Class` descriptor's own `flags` word is
   read through `Class::flags_of`, at its offset rather than through the
   pointer deref the guard greps for.
+- The maturation stamp at byte 6, bits 16-19 of the flags: the epoch at 16-17
+  and the age at 18-19, written by `refcount::write_maturation_stamp` and read
+  by `read_maturation_stamp`, both one byte wide and relaxed. The write is a
+  read-modify-write, so the reserve at 20-23 stands. Its one caller is
+  `cycle::finalization`, over a component the exact validation read as
+  externally referenced; positions pinned by
+  `refcount::tests::the_header_the_compiler_shares`, packing by
+  `the_maturation_stamp_the_commit_writes`.
 - **No mutator access to a live published header spans byte 6** — four
   bytes for the counter, two for the mutator's half of the flags. The
   eight-byte accesses are the four outside a header's life: `publish_header`
