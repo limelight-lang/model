@@ -76,8 +76,9 @@ pub(crate) fn dispose() {
 /// **Null when memory refuses**, which is this entry point's out-of-memory
 /// answer and costs the caller nothing to act on: the target keeps its flags,
 /// the arena's weak log keeps its entries, and the table keeps every row it
-/// held. A refusal of the cell after the table has already grown leaves the
-/// larger table standing, which changes nothing a caller can read.
+/// held. A refusal of the table's growth after the cell was taken gives the
+/// cell back and leaves a larger table standing, which changes nothing a
+/// caller can read.
 ///
 /// The cell is **always GC-heap memory**, wherever the target lives and
 /// whichever arena is ambient: its refcount only counts in that
@@ -120,30 +121,57 @@ pub unsafe extern "C" fn ll_weakref_create(
         }
     }
 
-    // Every refusal this call can meet is taken here, before it holds
-    // anything: the table's own growth first, the cell second. Past this point
-    // the row's insert cannot fail.
-    if table::ensure_room_for_one_more().is_null() {
-        return std::ptr::null_mut();
-    }
-
+    // The cell first, because taking it is what can run user code: a refused
+    // entity allocation collects this thread's cycles, and a destructor of
+    // that collection reaches this same function
+    // (`memory::heap::entity_alloc`). Everything the row depends on is read
+    // after it and nothing before it is trusted across it.
     let mem = unsafe { crate::memory::heap::entity_alloc(size_of::<LLWeakRef>()) };
     if mem.is_null() {
         return std::ptr::null_mut();
     }
 
+    // The table's growth after the cell and not before it, for the same
+    // reason: room made before the allocation is room a destructor's own row
+    // may have taken. A refusal here gives the cell back rather than leaking
+    // it — no header was published into it, which is what `free_unpublished`
+    // is for.
+    if table::ensure_room_for_one_more().is_null() {
+        unsafe { crate::memory::stdapi::free_unpublished(mem) };
+        return std::ptr::null_mut();
+    }
+
     let cell = mem as *mut LLWeakRef;
+    unsafe { (*cell).target = target };
+
+    // The row before the header, so that the one answer that decides whether
+    // this cell lives is taken while it is still unpublished. A destructor of
+    // the collection above may have created a weak reference to this same
+    // target and taken the canonical row; then this cell goes back and the
+    // caller gets the row's ([`table::insert`]).
+    let existing = unsafe { table::insert(target as usize, cell) };
+    if !existing.is_null() {
+        unsafe { crate::memory::stdapi::free_unpublished(mem) };
+        unsafe { ll_retain(existing as *mut RcHeader) };
+        return existing;
+    }
+
     unsafe {
-        (*cell).target = target;
         crate::refcount::publish_header(
             cell as *mut RcHeader,
             RcHeader::new(MemoryCategory::GcHeap, EntityKind::WeakRef.to_flags()),
         );
     }
 
-    unsafe { table::insert(target as usize, cell) };
     unsafe { update_header_flags(target, |f| f | HAS_WEAK_REFERENCES) };
-    if MemoryCategory::from_flags(flags) == MemoryCategory::RequestArena {
+    // The category is read again rather than taken from the word above: the
+    // allocation between them can run user code, and nothing read before it is
+    // trusted across it. What that word could not have missed is a promotion,
+    // which only ever moves a target out of the arena — `drain_arena_weak_log`
+    // re-reads the category and skips one that moved — so this re-read costs a
+    // load and buys the rule rather than a fix.
+    if MemoryCategory::from_flags(unsafe { mutator_flags(target) }) == MemoryCategory::RequestArena
+    {
         unsafe { (*resolve_arena(ctx)).log_weak(target) };
     }
 

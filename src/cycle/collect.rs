@@ -94,16 +94,47 @@ thread_local! {
 struct CollectingThread;
 
 impl CollectingThread {
-    /// Take the right, or answer `None` where this thread is already
-    /// collecting.
+    /// Take the right, or answer `None` where this thread may not collect.
+    ///
+    /// Two states refuse it. **A collection already running**, whose rows and
+    /// window a second one would take. And **a reset in flight**, which is the
+    /// other place this crate runs user destructors: between
+    /// `promote::retain_block` and `promote::place_survivor_lists` a promoted
+    /// survivor stands in a block stamped `BLOCK_KIND_RETAINED` with no
+    /// occupant list published, and `memory::retained::register` states the
+    /// rule that state breaks — "no trace may address it yet". A collection
+    /// there reads every such survivor as untracked and frees a member into
+    /// the reset window's absorb arm, which reports a teardown that returned
+    /// no memory (`memory::reset_window::absorbs_retained_free`).
     fn take() -> Option<Self> {
-        if COLLECTING.with(Cell::get) {
+        if COLLECTING.with(Cell::get) || crate::memory::reset_window::is_open() {
             return None;
         }
 
         COLLECTING.with(|collecting| collecting.set(true));
         Some(Self)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Pressure collections this thread has opened since
+    /// [`take_pressure_collections`] last answered.
+    ///
+    /// It counts what `collect_under_pressure` opened rather than what called
+    /// it: a call the gate above refuses opens none, and a case that read the
+    /// calls would report a collection over a window never taken. Per thread
+    /// because a collection is, and because the harness runs cases in
+    /// parallel — which is also what makes a case that panics before it reads
+    /// the count harmless: the thread it left a count on is its own.
+    static PRESSURE_COLLECTIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Pressure collections opened on this thread since this last answered, which
+/// it leaves at zero.
+#[cfg(test)]
+pub(crate) fn take_pressure_collections() -> usize {
+    PRESSURE_COLLECTIONS.with(|count| count.replace(0))
 }
 
 impl Drop for CollectingThread {
@@ -204,24 +235,23 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
 /// and what stands behind it is garbage this path is handing to the poll
 /// rather than garbage that is not there.
 ///
-/// **Nothing in the crate starts one yet.** The allocation slow path is where
-/// a refusal becomes a collection, and `PLAN.md` S36.15 is the step that puts
-/// the call there.
+/// **The entity allocation path starts one**, on the refusal that would
+/// otherwise be the caller's memory-exhausted
+/// ([`crate::memory::heap::entity_alloc`]). What it returns to that caller is a
+/// member's body rather than its slot: a member is a registered candidate and
+/// `ll_free` withholds such a slot until an entry is retired (`PLAN.md`
+/// S39.2).
 ///
 /// # Safety
 /// As [`collect_off_the_poll`], and the caller holds no allocation in flight
 /// that the destructors below could reach.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the allocation slow path that starts one is `PLAN.md` S36.15's"
-    )
-)]
 pub(crate) unsafe fn collect_under_pressure() -> usize {
     let Some(_collecting) = CollectingThread::take() else {
         return 0;
     };
+
+    #[cfg(test)]
+    PRESSURE_COLLECTIONS.with(|count| count.set(count.get() + 1));
 
     let mut freed = 0;
     let mut roots = ALL_ROOTS;

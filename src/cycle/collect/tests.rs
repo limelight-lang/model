@@ -414,6 +414,54 @@ fn an_armed_poll_fires_and_an_unarmed_one_does_not() {
     assert!(!crate::gc::is_armed(), "the fire disarms the thread");
 }
 
+/// A collection asked for from inside an arena reset answers zero. The reset
+/// is the other place this crate runs user destructors, and between
+/// `promote::retain_block` and `promote::place_survivor_lists` a promoted
+/// survivor stands in a block stamped retained with no occupant list — the
+/// state `memory::retained::register` forbids a trace to read.
+///
+/// The garbage ring is what makes the answer a verdict: an unguarded
+/// collection here frees it and answers two, so a zero says the gate refused
+/// rather than that there was nothing to collect.
+#[test]
+fn a_collection_reached_from_an_arena_reset_is_refused() {
+    let _g = test_guard();
+    // Built here rather than through `node_class`, which registers whatever
+    // pointer it is handed: this ring wants no destructor at all.
+    let garbage = ClassBuilder::new("CollectDuringResetGarbage")
+        .prop("next", true)
+        .build();
+    let dying = node_class("CollectDuringResetNode", collecting_destructor as *const ());
+
+    let mut arena = Arena::new();
+    let ring = unsafe { ring(&mut arena, [garbage, garbage]) };
+    let mut context = LLContext { arena: &mut arena };
+    let in_arena = unsafe { new_constructed(&mut context, dying, MemoryCategory::RequestArena) };
+    NESTED_CALLS.store(0, Ordering::Relaxed);
+    NESTED_ANSWERS.store(0, Ordering::Relaxed);
+
+    unsafe { crate::promote::arena_reset_full(&mut arena) };
+
+    assert_eq!(
+        NESTED_CALLS.load(Ordering::Relaxed),
+        1,
+        "the arena entity's destructor asked for a collection"
+    );
+    assert_eq!(
+        NESTED_ANSWERS.load(Ordering::Relaxed),
+        0,
+        "and the reset refused it, with a ring standing that an unguarded one would free"
+    );
+
+    // The refusal ends with the reset, so the ring is still collectable.
+    assert_eq!(
+        unsafe { ll_gc_collect_cycles() },
+        2,
+        "and the collection the reset refused runs once the reset is over"
+    );
+    let _ = (ring, in_arena);
+}
+
 /// A collection asked for from inside a destructor of a collection already
 /// running answers zero and opens nothing. The outer collection is unaffected:
 /// it holds the rows the inner one would have traced, and a second window on

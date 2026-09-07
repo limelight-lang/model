@@ -105,3 +105,58 @@ fn get_returns_the_target_retained_until_death_nulls_it() {
         }
     });
 }
+
+/// The composition a re-entrant creation produces: the call reads the gate bit
+/// down, takes a cell, and finds the row taken by the time it inserts. It gives
+/// its own cell back and hands out the canonical one retained.
+///
+/// **The state is made by hand and the reason it can arise is not.** Taking the
+/// cell runs user destructors where the entity heap refuses
+/// (`memory::heap::entity_alloc`), and one of them creating a weak reference to
+/// this same target leaves the row standing under a `flags` word this call read
+/// before it. Clearing the bit reproduces exactly what that call then sees: no
+/// fast path at the top, a row at the insert.
+#[test]
+fn a_row_taken_while_the_cell_was_being_built_wins_and_the_cell_goes_back() {
+    let _g = crate::memory::block_pool::test_guard();
+    let cls = ClassBuilder::new("WeakTargetReentrant").build();
+
+    with_ctx(|ctx| {
+        let target = unsafe { new_constructed(ctx, cls, MemoryCategory::GcHeap) } as *mut RcHeader;
+        let canonical = unsafe { ll_weakref_create(ctx, target) };
+        assert!(!canonical.is_null(), "the first creation took the row");
+
+        // The head of the cell class's free list, so the call below takes this
+        // slot and giving it back puts it here again.
+        let probe = unsafe { crate::memory::heap::entity_alloc(size_of::<LLWeakRef>()) };
+        assert!(!probe.is_null(), "the heap serves a cell-sized slot");
+        unsafe { crate::memory::stdapi::free_unpublished(probe) };
+
+        unsafe { crate::refcount::update_header_flags(target, |f| f & !HAS_WEAK_REFERENCES) };
+        let answer = unsafe { ll_weakref_create(ctx, target) };
+        unsafe { crate::refcount::update_header_flags(target, |f| f | HAS_WEAK_REFERENCES) };
+
+        assert_eq!(
+            answer, canonical,
+            "the row that stood is what the caller gets"
+        );
+        assert_eq!(
+            unsafe { crate::refcount::entity_refcount(answer) },
+            2,
+            "handed out retained, so the caller owns a reference of its own"
+        );
+
+        let after = unsafe { crate::memory::heap::entity_alloc(size_of::<LLWeakRef>()) };
+        assert_eq!(
+            after, probe,
+            "and the cell it built went back: the free list offers the same slot again"
+        );
+        unsafe { crate::memory::stdapi::free_unpublished(after) };
+
+        unsafe {
+            crate::refcount::ll_release(answer as *mut RcHeader);
+            assert!(ll_release(target));
+            crate::object::ll_entity_die(target);
+        }
+    });
+}

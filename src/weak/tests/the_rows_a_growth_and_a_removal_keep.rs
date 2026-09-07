@@ -15,7 +15,12 @@ fn insert(index: usize) {
         !table::ensure_room_for_one_more().is_null(),
         "the buffer layer funds the table"
     );
-    unsafe { table::insert(address(index), address(index + 0x10_0000) as *mut LLWeakRef) };
+    let taken =
+        unsafe { table::insert(address(index), address(index + 0x10_0000) as *mut LLWeakRef) };
+    assert!(
+        taken.is_null(),
+        "the target had no row, so this one took it"
+    );
 }
 
 fn found(index: usize) -> usize {
@@ -102,6 +107,40 @@ fn a_removal_leaves_every_other_row_reachable() {
             "row {index} after the re-inserts"
         );
     }
+
+    table::dispose();
+}
+
+/// A second insert for one target leaves the row that stands and answers the
+/// cell it names. That is what `ll_weakref_create` reads after an allocation
+/// that ran user destructors: one of them may have created a weak reference to
+/// the same target and taken the row, and the cell this call took goes back
+/// rather than overwriting it.
+#[test]
+fn a_second_insert_for_one_target_answers_the_row_that_stands() {
+    let _g = crate::memory::block_pool::test_guard();
+    table::dispose();
+
+    insert(0);
+    let standing = found(0);
+    assert_ne!(standing, 0, "the first insert took the row");
+
+    assert!(
+        !table::ensure_room_for_one_more().is_null(),
+        "the buffer layer funds the table"
+    );
+    let loser = address(0x20_0000) as *mut LLWeakRef;
+    let answer = unsafe { table::insert(address(0), loser) };
+
+    assert_eq!(
+        answer as usize, standing,
+        "the answer is the cell the row already named"
+    );
+    assert_eq!(
+        found(0),
+        standing,
+        "and the row is untouched: the second cell never reached the table"
+    );
 
     table::dispose();
 }

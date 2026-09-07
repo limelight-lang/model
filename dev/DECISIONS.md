@@ -8,6 +8,54 @@ never edited or deleted.
 
 ---
 
+## 2026-09-07 — a collection is refused while an arena reset is in flight
+
+Owner: S36.15's Critic round, which found it while attacking the new caller;
+the defect is older than that step.
+
+**The reset is the crate's other place for user destructors**, and between
+`promote::retain_block` and `promote::place_survivor_lists` its heap is in a
+state `memory::retained::register` forbids a trace to read: a promoted survivor
+stands in a block stamped `BLOCK_KIND_RETAINED` whose occupant list is not
+published. What makes that load-bearing is the accounting rather than the
+weaker trace — a block with no list answers untracked for its life, which is a
+degradation the design already accepts (`memory::retained`, the null-list arm).
+The accounting is not: a member the collection frees in one of those blocks is
+absorbed by the reset window (`memory::reset_window::absorbs_retained_free`)
+while the teardown reports it freed, so "freed" stops meaning "memory came
+back" for the caller that started the collection.
+
+The refusal sits in `cycle::collect::CollectingThread::take`, beside the one
+that refuses a collection reached from inside a collection, and covers both
+paths: the poll's collection could already be reached from a reset's destructor
+before the allocation path gained one. What a refused collection costs is the
+same as every other refusal — zero, and the lane keeps every registration.
+
+Refused as the alternative: teaching the trace to skip a block whose list is
+not published. It is the same information the reset already has, read at a
+harder moment, and it leaves the absorb arm untouched — which is the limb the
+refusal exists for.
+
+## 2026-09-07 — a collection returns the slot of every freed entity the candidate gate never admitted
+
+Corrects the entry below it of the same day, whose "a collection returns no
+entity slot" is true of a ring of objects and false as a rule.
+
+`CANDIDATE_GATE_MASK` carries `KIND_ABOVE_THE_RING_RESERVE`, so an entity whose
+kind code is eight or above never takes the candidate bit — a string, a weak
+cell, a reference box. A template instance is not one of them: `ll_template_new`
+publishes it as `EntityKind::Object`, so it is a member like any other object.
+When a teardown severs a member's edge to such an
+entity and the entity dies, `ll_free` meets no candidate arm and its slot goes
+onto its block's free list at once. An object holding a string is the ordinary
+shape of a collected component, so the memory a collection returns is its
+members' bodies **and** the slots of their non-cyclic children.
+
+What stands from the corrected entry is the part the plan rests on: the slot of
+a **member** — an entity the gate admitted and an entry names — is withheld
+until `PLAN.md` S39.2 retires that entry. A ring of objects, which is what the
+fixtures build, returns nothing at all.
+
 ## 2026-09-07 — the collection's yield and the retirement that unlocks it are two steps, not one
 
 Owner: the Sage, ruling on whether S36.15 could be built at all.

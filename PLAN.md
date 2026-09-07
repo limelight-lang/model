@@ -31,11 +31,13 @@ ABI — `cycle::collect`, which is the first production caller the modules of
 collection under pressure behind the allocation failure that should start it,
 and S36.16 carried the merge and the two paths back into `rfc` on 2026-09-07,
 ahead of S36.15 because S36.15 needs `cargo` and a Miri run held the lock.
-S36.15 lost half its criterion the same day: a collection returns no entity
-slot, every member being a registered candidate whose slot `ll_free` withholds,
-so "served rather than refused" moved to the new **S39.2**, which retires the
-entry at the owner's read (the Sage's ruling, `dev/DECISIONS.md`, "the
-collection's yield and the retirement that unlocks it are two steps").
+S36.15 lost half its criterion the same day and then closed: a collection
+returns no slot of a **member**, every one being a registered candidate whose
+slot `ll_free` withholds, so "served rather than refused" moved to the new
+**S39.2**, which retires the entry at the owner's read (the Sage's ruling,
+`dev/DECISIONS.md`, "the collection's yield and the retirement that unlocks it
+are two steps"). Its Critic round left one open number, **S40.4**: what the
+trace a refused allocation repeats costs at the memory ceiling.
 S43 closed the withheld-return window: past its region the module draws
 nothing, a death in memory the collection never met is returned at once, a
 marked slot of another thread's block is stacked rather than listing its
@@ -2820,12 +2822,12 @@ stage claiming the frees while building none of them.
         `rfc`, whose "Concurrency" section still says the segments go back.
         And `queue::merge_candidates` copies its part-filled head one record at
         a time, which is a memcpy nobody has measured against.
-- [ ] S36.15 The allocation slow path starts a collection   *(after S36.7)*
+- [x] S36.15 The allocation slow path starts a collection   *(after S36.7)*
       done: the call's place is chosen — `memory::heap`'s refill or the entity
         factory above it — and recorded with its reason; a refusal on the
         entity allocation path runs `cycle::collect::collect_under_pressure`
-        once per allocation and retries once; a retry the allocator refuses,
-        and a collection that freed nothing, go back to the caller as the
+        once per allocation and retries once, whatever that collection
+        answered; a retry the allocator refuses goes back to the caller as the
         refusal it raises memory-exhausted on, with no second collection for
         that raise (`rfc/runtime/exceptions.md`, "Allocation failure is an
         ordinary exception"); under a test-only cap on the blocks the pool
@@ -2865,6 +2867,69 @@ stage claiming the frees while building none of them.
         start a collection they did not start before. What that disturbs — a
         lane detached and merged, a thread armed — is read at the first run
         rather than assumed.
+      Critic 2026-09-07 (two lenses, the wiring and the cases). Taken from the
+        wiring's lens — `ll_weakref_create` read "has this target a row?"
+        before the allocation and inserted after it, so a destructor of the
+        collection that creates a weak reference to the same target left a
+        second row, a cell dangling at the target's death and a count the table
+        never gives back; an arena reset runs destructors between
+        `promote::retain_block` and `promote::place_survivor_lists`, where a
+        promoted survivor stands in a retained block with no occupant list and
+        `memory::retained::register` forbids a trace to read it; the claim "a
+        collection returns no entity slot" is true of a ring of objects and
+        false as a rule, the candidate gate never admitting a kind at or above
+        eight; and the obligation a caller now carries was written on a private
+        function that no caller reads. Taken from the cases' lens — the counter
+        counted entries into the cold tail rather than collections opened, so a
+        tail with the collection deleted still read one; both cases passed with
+        `collect_off_the_poll` substituted for the pressure path; the
+        withholding case read `DeadInPlace`, which a slot on its block's free
+        list also reads; the injection was a process-wide threshold on a
+        counter every thread moves; the loop's guard admitted 100,000 slots and
+        panicked holding them; and no case took the branch where a collection
+        frees nothing. Refused nothing.
+      handoff: the call stands in `memory::heap::entity_alloc`, not in
+        `Heap::alloc_no_block`: a `&mut Heap` is live there and the
+        collection's destructors re-enter the allocator on the same thread.
+        `cycle::collect::CollectingThread::take` refuses a collection while a
+        reset window is open, which is a defect older than this step — the
+        poll's own collection could already be reached from a reset's
+        destructor — and `a_collection_reached_from_an_arena_reset_is_refused`
+        is red without it. `weak::table::insert` answers the row that stands
+        instead of writing a second one, and `ll_weakref_create` gives its cell
+        back and hands out the canonical one.
+      Critic 2026-09-07 round 2 (over round 1's repairs). Taken — the retry was
+        gated on the collection's answer, and that answer counts members a
+        commit freed rather than memory an allocator can use: a trace that
+        ended in a refused allocation path has given its blocks back, and a set
+        the revalidation read as live has already run the destructors, each of
+        which can free a child whose slot returns at once. The retry is
+        unconditional now, and the control case reads two pool requests rather
+        than one. Also taken — all three cases built one size class, which is
+        the unit `Heap::adopt` works in, so each case's three withheld slots
+        landed in the next case's arithmetic; they take three classes now and
+        the occupancy reading is a delta. And `weak/table.rs`'s module doc still
+        described the order the repair inverted, `ll_weakref_create` still read
+        the target's category before the allocation and used it after, the
+        DECISIONS entry called a template instance a kind above the ring
+        reserve when `ll_template_new` publishes it as an object, the budget's
+        doc claimed a property its placement above the thread cache forbids,
+        and the caller's obligation was stated on `entity_alloc` while seven of
+        the nine factories reach it through `routing::entity_alloc_in`. All
+        repaired. Verified and not a defect — the other factories satisfy the
+        obligation today: `box_element`, `fill_from` and `flatten` each read a
+        structure across the allocation and are safe because no other name can
+        reach it, which is now written where each does it.
+      handoff: the injection is `block_pool::budget_blocks`, a per-thread count
+        of blocks this thread may still take. Three cases in
+        `src/memory/heap/tests/the_collection_a_refusal_starts.rs`, one of them
+        the control arm with no ring, and one more in `weak::` for the row a
+        re-entrant creation finds taken. Seven source mutations were run and
+        each was caught by the case that owns it — among them the poll's
+        collection substituted for the pressure one, a second collection inside
+        one allocation, and the candidate arm returning a member's slot.
+        Verified at 805 tests, and Miri clean over `memory::heap` (24 in 271 s),
+        `weak::` (21 in 42 s) and `cycle::collect` (9 in 720 s).
 
 - [ ] S36.8 Elide the redundant exact test after an in-line owner trace
       done: when mark and scan run synchronously on the owning mutator at one
@@ -3375,6 +3440,27 @@ Goal: the one number the design still lacks.
         here. A persistent 64 KiB block removes manager churn, not cache fills
         and not the sparse-row cost. S40.2 changes representation only from
         these data.
+- [ ] S40.4 Price the trace a refused allocation repeats   *(after S36.15)*
+      done: the cost of the pressure path at the memory ceiling is measured —
+        a heap with no collectable garbage, a lane of `n` registered entries,
+        and one refused allocation per attempt — and the decision that follows
+        is recorded: whether a thread remembers that its last pressure
+        collection freed nothing, and what clears that memory
+      tier: T2 · role: Bench → Sage
+      note: what the path does not cover, which the price is taken against:
+        `routing::entity_alloc_in`'s `RequestArena` arm never reaches
+        `entity_alloc`, and neither does `ll_entity_reserve`, so an arena
+        allocation and a bulk cell reservation still raise memory-exhausted
+        with collectable garbage standing.
+      note: raised by S36.15's Critic. `collect_under_pressure` traces a lane
+        that only grows — an entry is retired by nothing until S39.2 — so a
+        program that catches memory-exhausted and retries pays a trace over
+        every entity ever registered, per refused allocation. One statement
+        makes several allocations, so the throttle the step built is per call
+        and there is none between calls. What makes the number worth taking
+        rather than guessing is that S39.2 changes it: a lane that shrinks at
+        each retirement is a different curve.
+
 - [ ] S40.2 Decide chunks or not
       done: the decision and its reason are in `dev/DECISIONS.md`, quoting a
         number on each side with its denominator — the full-trace write volume

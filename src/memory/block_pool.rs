@@ -313,6 +313,46 @@ pub(crate) fn force_oom() -> ForcedOom {
 pub(crate) struct ForcedOom;
 
 #[cfg(test)]
+thread_local! {
+    /// How many more blocks this thread may take, tests only; `usize::MAX` is no
+    /// budget and is what every thread that does not set one runs under.
+    ///
+    /// **Per thread rather than a threshold on `blocks_out`**, for two reasons a
+    /// process-wide cap gets wrong. `blocks_out` falls at every `put` by every
+    /// thread, so a stranger's thread exit reopens a capped path mid-case and the
+    /// counts a case reads stop being deterministic; and a process-wide refusal
+    /// reaches every other test running beside it, which is the rule
+    /// `dev/POSTMORTEM.md` states for a fault injection and the reason
+    /// `gc::FORCE_BUFFER_REFUSAL` is per thread.
+    ///
+    /// [`FORCE_OOM`] answers a different question and cannot answer this one: it
+    /// refuses every request whatever comes back, so a case about a retry served
+    /// off returned memory would be reading the injection rather than the
+    /// collection.
+    static BLOCK_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+
+/// Let this thread take `blocks` more from the pool and refuse it after that.
+/// The budget is restored to what it was when the guard drops, on an unwind as
+/// on a return, so a guard taken inside another's window gives that one back
+/// rather than lifting it.
+#[cfg(test)]
+#[must_use = "the pool is budgeted only while the guard lives"]
+pub(crate) fn budget_blocks(blocks: usize) -> BlockBudget {
+    BlockBudget(BLOCK_BUDGET.with(|budget| budget.replace(blocks)))
+}
+
+#[cfg(test)]
+pub(crate) struct BlockBudget(usize);
+
+#[cfg(test)]
+impl Drop for BlockBudget {
+    fn drop(&mut self) {
+        BLOCK_BUDGET.with(|budget| budget.set(self.0));
+    }
+}
+
+#[cfg(test)]
 impl Drop for ForcedOom {
     fn drop(&mut self) {
         FORCE_OOM.store(false, Ordering::Relaxed);
@@ -330,6 +370,9 @@ thread_local! {
 }
 
 /// Pool requests on this thread, and zero the count.
+///
+/// A request the [`BLOCK_BUDGET`] refuses is counted; one [`FORCE_OOM`]
+/// refuses is not, that check standing above this one.
 #[cfg(test)]
 pub(crate) fn take_pool_requests() -> usize {
     POOL_REQUESTS.with(|c| c.replace(0))
@@ -611,6 +654,32 @@ impl BlockPool {
 
         #[cfg(test)]
         POOL_REQUESTS.with(|c| c.set(c.get() + 1));
+
+        // Counted above and refused here, which is the order a budgeted case
+        // reads: what it asserts is that the path asked the pool, and a
+        // request the budget refuses is still a request ([`BLOCK_BUDGET`]).
+        // `FORCE_OOM` returns above the counter instead, so the two injections
+        // give `POOL_REQUESTS` two meanings — a refusal is a request under the
+        // budget and is not one under the flag.
+        //
+        // `try_with`, like the cache below: a thread past its own TLS teardown
+        // has no budget and takes the ordinary path.
+        #[cfg(test)]
+        {
+            let spent = BLOCK_BUDGET
+                .try_with(|budget| match budget.get() {
+                    usize::MAX => false,
+                    0 => true,
+                    left => {
+                        budget.set(left - 1);
+                        false
+                    }
+                })
+                .unwrap_or(false);
+            if spent {
+                return std::ptr::null_mut();
+            }
+        }
 
         self.blocks_out.fetch_add(1, Ordering::Relaxed);
         let cached = THREAD_CACHE

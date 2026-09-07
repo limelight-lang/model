@@ -665,8 +665,17 @@ unsafe fn store_through_box(
 /// hot path and the overwrite arm returns before any allocation, so the
 /// cost is unmeasured and was not weighed.
 ///
+/// **The element read here is used after an allocation that can run user
+/// code**, `ll_reference_new` collecting this thread's cycles where the entity
+/// heap refuses (`memory::heap::entity_alloc`). What makes that safe is the
+/// exclusive ownership the safety clause asks for and nothing weaker: no other
+/// name reaches this array, so no destructor can unset the key under the value
+/// already in hand, which would box an entity whose count has reached zero.
+///
 /// # Safety
-/// `a` a live, exclusively owned array; `arena` the live mounted arena.
+/// `a` a live, exclusively owned array — exclusive in the strong sense above,
+/// unreachable from re-entrant user code and not merely unshared; `arena` the
+/// live mounted arena.
 unsafe fn box_element(
     a: *mut LLArray,
     arena: *mut crate::memory::arena::Arena,

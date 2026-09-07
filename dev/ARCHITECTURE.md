@@ -400,12 +400,15 @@ write them. Each is load-bearing for at least two modules.
    collection runs off the poll and off the explicit fire
    (`cycle::collect`).
 10. **Arm vs fire**: nothing collects mid-mutation. A collection fires
-    only at a clean point, and the crate has two of them: the ABI's
-    `ll_gc_collect_cycles`, and the `ll_gc_maybe_collect` poll, whose
-    one caller inside the crate is `object::ll_release_vector`'s
-    backedge. The allocation slow path becomes the third when S36.15
-    puts the call to `cycle::collect::collect_under_pressure` there; the
-    collection it would start is built. The rule is a
+    only at a clean point, and the crate has three of them: the ABI's
+    `ll_gc_collect_cycles`; the `ll_gc_maybe_collect` poll, whose one
+    caller inside the crate is `object::ll_release_vector`'s backedge;
+    and the entity allocation a refusal ends, where
+    `memory::heap::entity_alloc` runs
+    `cycle::collect::collect_under_pressure` once and asks again — the GC-heap
+    and long-lived categories only, an arena entity being served by
+    `Arena::alloc_entity` and a bulk reservation by `Heap::reserve_cells`,
+    neither of which passes through that door. The rule is a
     correctness requirement rather than a policy: a store lowers the old
     value's count before overwriting the pointer, and a collection
     firing in that window would subtract one reference twice

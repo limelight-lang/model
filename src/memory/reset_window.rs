@@ -327,9 +327,13 @@ pub(crate) unsafe fn park_large(ptr: *mut u8) -> bool {
     true
 }
 
-/// Whether a reset is in flight on this thread — what a test asks
-/// instead of reading the thread-local itself.
-#[cfg(test)]
+/// Whether a reset is in flight on this thread.
+///
+/// Read by `cycle::collect` before it opens a collection, and by tests that
+/// ask the question instead of reading the thread-local themselves: a reset
+/// runs user destructors over a heap whose promoted survivors are stamped and
+/// not yet listed, which is not a heap a trace may read
+/// (`memory::retained::register`).
 pub(crate) fn is_open() -> bool {
     !WINDOW.with(|cell| cell.get()).is_null()
 }

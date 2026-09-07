@@ -2092,11 +2092,38 @@ pub fn thread_entity_heap() -> *mut Heap {
 /// a whole block and leave the entity-block population the walk
 /// enumerates.
 ///
+/// **A refusal here runs user destructors.** The cold tail below collects this
+/// thread's cycles before it answers, so a call to this function is a point at
+/// which `__destruct` bodies run, allocate and free. What a caller owes is
+/// therefore more than the allocator's contract: it holds no half-established
+/// runtime structure that a destructor or a trace can read, and it re-reads
+/// anything it decided before the call that such a body could change. The
+/// weak table's canonical row is the site that names the obligation
+/// (`weak::ll_weakref_create`), and a reset in flight is refused rather than
+/// trusted to it (`cycle::collect`).
+///
 /// # Safety
 /// Standard allocator contract; the caller publishes an `RcHeader` into
-/// the slot's first 8 bytes (header last — see `ll_object_new`).
+/// the slot's first 8 bytes (header last — see `ll_object_new`). And the
+/// caller stands at a point where user code may run: see above.
 #[inline]
 pub unsafe fn entity_alloc(size: usize) -> *mut u8 {
+    let slot = unsafe { entity_alloc_once(size) };
+    if slot.is_null() {
+        return unsafe { entity_alloc_under_pressure(size) };
+    }
+
+    slot
+}
+
+/// One attempt at `size` bytes, with no collection behind it: the answer of
+/// the allocator as it stands. It is what lets [`entity_alloc`] ask twice
+/// without asking for a second collection.
+///
+/// # Safety
+/// As [`entity_alloc`].
+#[inline]
+unsafe fn entity_alloc_once(size: usize) -> *mut u8 {
     if size <= MAX_SMALL {
         let h = thread_entity_heap();
         if h.is_null() {
@@ -2112,6 +2139,50 @@ pub unsafe fn entity_alloc(size: usize) -> *mut u8 {
         // (`rfc/model/memory/large-entities.md`).
         crate::memory::large_entity::alloc(size)
     }
+}
+
+/// Cold tail: the entity heap refused, so this thread collects its own cycles
+/// and asks once more, on the memory the teardown returned.
+///
+/// **One collection per allocation, and one retry behind it.** A second
+/// collection inside the same request would trace a lane whose garbage the
+/// first one has taken, and the collection is the expensive half.
+///
+/// **The retry is unconditional, and what a collection answered decides
+/// nothing here.** Its answer counts the members a commit freed, which is not
+/// what the allocator can use: a collection that ends in a refused allocation
+/// path has already given back every block it drew, and one whose set the
+/// revalidation read as live has already run the destructors, each of which
+/// can have freed a child whose slot returns at once. Both answer zero with
+/// memory standing. The attempt that follows costs a size-class lookup and a
+/// free-list load on a path that has already paid a whole trace, and a null
+/// from it goes to the factory, whose caller raises memory-exhausted
+/// (`rfc/runtime/exceptions.md`, "Allocation failure is an ordinary
+/// exception").
+///
+/// **What a collection returns is its members' bodies and the slots of their
+/// non-cyclic children.** A member is a registered candidate, and `ll_free`
+/// withholds such a slot until an entry is retired, which is `PLAN.md` S39.2;
+/// an entity the candidate gate never admitted — a string, a weak cell, a
+/// reference box, any kind at or above eight — is freed by the sever and its
+/// slot returns at once (`refcount::CANDIDATE_GATE_MASK`). A component of objects alone therefore
+/// returns nothing this path can use, and the retry behind it is refused.
+///
+/// **A collection fires here because this site is a clean point**, the third
+/// in this crate (`dev/ARCHITECTURE.md`, "Arm vs fire"): the design puts the
+/// allocation slow path beside the statement boundary and the request end
+/// (`rfc/model/gc/strategies.md`, "Collection requests and triggers"). A
+/// collection reached from inside a collection collects nothing and answers
+/// zero, which `cycle::collect`'s own flag decides rather than a test here.
+///
+/// # Safety
+/// As [`entity_alloc`], whose contract carries what a caller owes a point at
+/// which user code runs.
+#[cold]
+#[inline(never)]
+unsafe fn entity_alloc_under_pressure(size: usize) -> *mut u8 {
+    let _ = unsafe { crate::cycle::collect::collect_under_pressure() };
+    unsafe { entity_alloc_once(size) }
 }
 
 /// Reserve up to `count` GcHeap entity cells of `size` from this

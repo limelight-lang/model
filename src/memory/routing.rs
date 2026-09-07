@@ -40,6 +40,13 @@ use crate::refcount::MemoryCategory;
 /// # Safety
 /// `ctx` per [`crate::memory::context::ll_arena_alloc`].
 #[inline]
+/// **The `GcHeap` and `LongLived` arms can run user destructors.** A refusal
+/// there collects this thread's cycles before it answers
+/// (`memory::heap::entity_alloc`), so a caller of those categories holds no
+/// half-established runtime structure across this call and re-reads anything
+/// it decided before it that a `__destruct` body could change. The
+/// `RequestArena` and `Immortal` arms run no user code and owe nothing beyond
+/// the allocator's contract.
 pub(crate) unsafe fn entity_alloc_in(
     ctx: *mut LLContext,
     category: MemoryCategory,

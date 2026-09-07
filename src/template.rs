@@ -217,6 +217,15 @@ unsafe fn release_stored(owner_cat: MemoryCategory, slots: &mut [Value], i: usiz
 /// What "cannot be produced yet" covers is stated once, in
 /// [`text_len`]: a float, and anything whose text is user code.
 ///
+/// **The lengths pass 1 measures are used by pass 2 across an allocation that
+/// can run user code**, `new_uninit` collecting this thread's cycles where the
+/// entity heap refuses (`memory::heap::entity_alloc`). What makes that safe is
+/// that a published template's slots are written by nothing: the instance
+/// holds its own reference to every value, and the crate has no setter for
+/// one. A value that changed between the passes would overrun the string this
+/// measured — caught by the equality below in a debug build and silent in a
+/// release one.
+///
 /// # Safety
 /// `t` is a live template instance and `ctx` is per
 /// [`crate::memory::context::ll_arena_alloc`].

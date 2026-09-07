@@ -661,6 +661,13 @@ unsafe fn element_for_copy(element: Value, reason: CopyReason) -> Value {
 /// # Safety
 /// `src` and `dst` are live arrays, `dst` empty; `arena` the live
 /// mounted arena.
+/// **The loop walks the source's storage across allocations that can run user
+/// code**, every child copy reaching `memory::heap::entity_alloc`, which
+/// collects this thread's cycles on a refusal. What makes that safe is that no
+/// other name reaches the source: a shared one is separated before the copy
+/// begins, and an escape copy's source is an arena COW entity at count one.
+/// A source a destructor could write into would leave this walk striding a
+/// chunk that moved.
 unsafe fn fill_from(
     src: *mut LLArray,
     dst: *mut LLArray,

@@ -53,18 +53,24 @@
 //! which of them answers, and a thread needs 1,025 live weak references to
 //! reach the second.
 //!
-//! **Every allocation this module makes happens before the caller has anything
-//! in hand.** `ll_weakref_create` calls [`ensure_room_for_one_more`] first, and
-//! a refusal there is a null return from an ABI entry that already answers null
-//! for out of memory: no cell built, no row written, no gate bit set. The
-//! insert that follows cannot fail, and removal never allocates — so the death
-//! path is structurally incapable of failing rather than promising not to.
+//! **The cell is taken before this module's own allocation**, and the order is
+//! the caller's rather than a preference: taking a cell runs user destructors
+//! where the entity heap refuses (`memory::heap::entity_alloc`), so room made
+//! before it is room a destructor's own row may have taken, and a row read
+//! before it may have appeared since. `ll_weakref_create` therefore takes the
+//! cell, calls [`ensure_room_for_one_more`], and lets [`insert`] answer whether
+//! a row already stands. **Every refusal past the cell owes it back** through
+//! `memory::stdapi::free_unpublished`, the cell carrying no header yet.
 //!
-//! A growth that has already taken hold when the *cell* is then refused stays
-//! taken: the table is twice the size it was and the payload it copied out of
-//! is back on the free list. Nothing observable to the caller changed — the
-//! rows, the gate bits and the arena's weak log are what they were — and the
-//! capacity is spent, not lost.
+//! What the death path keeps from that order is what it had: removal never
+//! allocates, so it is structurally incapable of failing rather than promising
+//! not to.
+//!
+//! A growth that has already taken hold when a later step refuses stays taken:
+//! the table is twice the size it was and the payload it copied out of is back
+//! on the free list. Nothing observable to the caller changed — the rows, the
+//! gate bits and the arena's weak log are what they were — and the capacity is
+//! spent, not lost.
 
 use std::cell::Cell;
 
@@ -191,24 +197,36 @@ pub(super) unsafe fn find(table: *mut WeakTable, target: usize) -> *mut LLWeakRe
     (subscriber & !TAG_MASK) as *mut LLWeakRef
 }
 
-/// Register `cell` as `target`'s canonical subscriber.
+/// Register `cell` as `target`'s canonical subscriber, and answer null; or,
+/// where a row already names `target`, leave the table alone and answer the
+/// cell that row names.
 ///
-/// Cannot fail: [`ensure_room_for_one_more`] has already made room, and the
-/// caller has done everything fallible before reaching here. The table is read
-/// here rather than passed in, because a growth between the two calls frees
-/// the payload a caller would be holding.
+/// **A row already there is an ordinary answer rather than an error**, and it
+/// is why this function answers at all: taking the cell runs user destructors,
+/// and one of them can create a weak reference to this same target and take
+/// the row first (`memory::heap::entity_alloc`, and
+/// [`ll_weakref_create`](super::ll_weakref_create), which gives its own cell
+/// back and hands out the one this answers). A second row for one target would
+/// leave the loser dangling at its target's death and count one row the table
+/// never gives back.
+///
+/// Cannot fail otherwise: [`ensure_room_for_one_more`] has made the room. The
+/// table is read here rather than passed in, because a growth between the two
+/// calls frees the payload a caller would be holding.
 ///
 /// # Safety
-/// [`ensure_room_for_one_more`] has answered since the last insert, and
-/// `target` has no row.
-pub(super) unsafe fn insert(target: usize, cell: *mut LLWeakRef) {
+/// [`ensure_room_for_one_more`] has answered since the last insert.
+pub(super) unsafe fn insert(target: usize, cell: *mut LLWeakRef) -> *mut LLWeakRef {
     let table = current();
     debug_assert!(!table.is_null(), "an insert with no table under it");
     debug_assert_eq!(cell as usize & TAG_MASK, 0, "an entity slot is 16-aligned");
     let mask = unsafe { (*table).mask };
     let rows = rows_of(table);
     let (index, hit) = unsafe { probe(rows, mask, target) };
-    debug_assert!(!hit, "a target takes one row");
+    if hit {
+        let subscriber = unsafe { (*rows.add(index)).subscriber };
+        return (subscriber & !TAG_MASK) as *mut LLWeakRef;
+    }
 
     unsafe {
         rows.add(index).write(Row {
@@ -217,6 +235,8 @@ pub(super) unsafe fn insert(target: usize, cell: *mut LLWeakRef) {
         });
         (*table).count += 1;
     }
+
+    std::ptr::null_mut()
 }
 
 /// Drop `target`'s row and answer the cell it named, or null when no row
