@@ -207,7 +207,7 @@ fn the_queue_crosses_a_segment_boundary_on_the_room_it_reserved() {
     // a second one — and the addresses are the case's own rather than
     // entities': what crosses the boundary is the chain, and a drain that
     // never drops anything is what lets the case read every record back.
-    let children = SEGMENT_RECORDS + 1;
+    let children = crate::cycle::drops::SEGMENT_RECORDS + 1;
     assert!(scratch.reserve_drops(children));
     assert_eq!(
         scratch.drop_segment_count(),

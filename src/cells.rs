@@ -119,12 +119,14 @@ pub(crate) struct OutsideCells {
     /// collision link into a self-referencing chain and the second reads
     /// as an integer key rather than a hole.
     ///
-    /// **It hands over no more occupants than [`walk_plain`](Self::walk_plain)
-    /// yields cells** over the same instance. A cycle teardown takes room for a
-    /// component's displaced children against that walk and cannot act on a
-    /// refusal once it has begun to empty cells, so a group that severs a cell
-    /// its walk does not yield ends the run at the queue's assertion
-    /// ([`crate::cycle::reclamation`]). A map whose
+    /// **It hands over exactly the occupants [`walk_plain`](Self::walk_plain)
+    /// yields cells for** over the same instance, and a cycle teardown checks
+    /// both halves in every build: it takes room for a component's displaced
+    /// children against that walk and cannot act on a refusal once it has
+    /// begun to empty cells, so a group that severs a cell its walk does not
+    /// yield ends the run at the queue's assertion, and one that severs fewer
+    /// leaves a counted reference standing in storage about to be freed and
+    /// ends it at the close ([`crate::cycle::reclamation`]). A map whose
     /// entry holds a key beside its value is the shape to watch: both are
     /// occupants, so the walk yields both.
     pub sever: unsafe fn(*mut RcHeader, &mut dyn FnMut(*mut RcHeader)),

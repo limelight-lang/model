@@ -113,8 +113,12 @@ pub(crate) mod deferred_slot_reuse;
 #[cfg(test)]
 pub(crate) mod density;
 pub(crate) mod queue;
-// The teardown of a confirmed component: the sever, the frees and the drops
-// they displaced. Reached from the driver S36.7 builds, and from nothing else.
+// The queue a teardown holds the children its sever displaced in, held by the
+// arena whose bump its segments come from.
+pub(crate) mod drops;
+// The teardown of a confirmed component: the sever, the frees, and the drops
+// of the children the sever displaced. `reclaim` is reached from the driver
+// S36.7 builds and from nothing else; the queue type beside it is the arena's.
 #[cfg_attr(
     not(test),
     expect(

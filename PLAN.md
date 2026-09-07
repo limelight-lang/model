@@ -2474,11 +2474,31 @@ stage claiming the frees while building none of them.
         dead candidate and a lane that only grows, and three stale sentences.
         The eighth is a new `Fog` line, the reset window's absorb arm standing
         ahead of the candidate arm.
+      Code Reviewer 2026-09-07, the step's declared role: six findings and four
+        comment repairs in place, one of them a dangling fragment a doc rewrite
+        had left in `refcount::clear_candidate_bit`. Two were taken as work.
+        **The module had made `arena` depend on the teardown**, importing the
+        queue type and its segment size out of `cycle::reclamation` while the
+        teardown imported the arena; the worklist's own precedent is the answer,
+        so the queue type moved to `cycle::drops` beside `cycle::stack` and the
+        arena depends on a structure again rather than on a phase. And
+        **`DeferredDrops` and `TraceStack` were two copies of one idea** — both
+        an `Option<RecordChain<T>>` drawn at first use, with `new`, `is_empty`,
+        `rewind` and `segment_count` identical: they are one type now,
+        `records::LazyChain<T>`, and each user is a type alias over the verbs it
+        reaches for. Also taken: `reserve_drops` read the chain's room once per
+        drawn segment, which walks every kept segment, and reads it once now.
+        Reported and not taken: the test fixtures of `cycle` copy a two-member
+        ring in fourteen files rather than sharing one in `cycle::testing`, and
+        `severed_edge_release` is a second name over one store.
       handoff: `src/cycle/reclamation.rs` is `reclaim(component, members, arena)
         -> Reclaimed` and `DeferredDrops`; the cases are four groups under
-        `src/cycle/reclamation/tests/`. `RecordChain` gains `room`, `attach` and
-        `drain` with three cases of its own; `TraceScratchArena` owns the queue
-        and gains `reserve_drops`, `push_drop`, `drain_drops`; `cells::
+        `src/cycle/reclamation/tests/`; the queue itself is `cycle::drops`, a
+        `records::LazyChain` the arena owns. `RecordChain` gains `room`,
+        `attach` and `drain` with three cases of its own, and `LazyChain` is the
+        lazily-drawn chain both it and the worklist are;
+        `TraceScratchArena` gains `reserve_drops`, `push_drop`, `drain_drops`;
+        `cells::
         sever_cells` and four signatures under it take a closure instead of a
         `Vec`; `refcount::severed_edge_release` is the narrow decrement an
         internal edge takes; `GuardedComponent::release` is the refusal path's
@@ -3299,6 +3319,27 @@ in `dev/INDEX.md`. What it did not do is below.
   arena's weak log, the way a cell's target does, and the last subscriber
   leaving clears `HAS_WEAK_REFERENCES` so an ordinary death stops asking the
   table.
+- [ ] **A second gate flake, measured 2026-09-07 and pre-existing.**
+  `template::tests::the_instance_as_an_ordinary_entity::`
+  `a_refused_store_gives_the_instances_slot_back` fails 1 run in 20 of
+  `cargo test --lib` on the assertion that the escape copy was refused —
+  measured 1 in 20 on the working tree of S36.5 and 1 in 20 at `fe7956c`
+  before it, in a worktree of its own, so the step did not introduce it.
+
+  **What it looks like.** The case forces the pool to refuse and expects
+  `ll_template_new` to fail on the copy of a payload past `MAX_SMALL`. That
+  copy is a buffer-arena chunk, and the buffer arena rotates onto an adopted
+  tail and then onto any owned tail before it asks the pool
+  (`dev/DECISIONS.md`, 2026-08-05), so a thread whose buffer arena still has
+  room serves the copy with the pool refusing throughout. The harness reuses
+  its threads across cases, so whether that room exists depends on what ran on
+  the thread before — which is the shape of a one-in-twenty.
+
+  **Why it is not fixed here.** The repair is not the one line the reclamation
+  refusal case needed: draining the thread's critical reserve does not close
+  this path, and exhausting a thread's buffer arena before the refusal is a
+  fixture the crate has nowhere yet. Left for a decision rather than guessed
+  at, with the measurement recorded so the next reader starts from a number.
 - [ ] **The ladder's refusal has nowhere to go.**
   `InsertOutcome::AdmissionDenied` is answered inside the crate — a null
   from `ll_cow_separate`, a `false` from `element::set` — because the

@@ -1015,8 +1015,8 @@ pub(crate) fn is_registered_candidate(flags: u32) -> bool {
 /// **Never when a trace finds the entity externally referenced**: candidate
 /// registration is edge-triggered, so an entity whose bit is cleared while it
 /// is still alive is one no later decrement can register again, and the ring it
-/// closes is a permanent miss (`rfc/model/gc/cycle/questions.md`, Y6). The two
-/// lawful clearings are the zero-count member retirement in
+/// closes is a permanent miss (`rfc/model/gc/cycle/questions.md`, Y6).
+///
 /// **No production path clears it today**, and the two that look as though
 /// they should do not: thread exit gives the queue's segments back and leaves
 /// every entity's bit standing, which it names as a permanent miss

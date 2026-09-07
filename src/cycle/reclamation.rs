@@ -86,104 +86,8 @@
 use crate::cells::{PlainCells, entity_kind, sever_cells, trace_cells};
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::finalization::{GuardedComponent, release_guards};
-use crate::cycle::records::{RecordChain, SEGMENT_HEADER_BYTES};
 use crate::memory::barrier::drop_ref;
 use crate::refcount::{MemoryCategory, RcHeader, severed_edge_release};
-
-/// Children one segment holds behind its header line.
-///
-/// The worklist's trade (`crate::cycle::stack`), taken again over an
-/// eight-byte record: a page of children behind the line, so a component whose
-/// children fit one page crosses no boundary and one whose children do not
-/// costs a page at a time.
-pub(crate) const SEGMENT_RECORDS: usize = 512;
-
-/// Bytes one segment takes out of the arena.
-pub(crate) const SEGMENT_BYTES: usize =
-    SEGMENT_HEADER_BYTES + SEGMENT_RECORDS * size_of::<*mut RcHeader>();
-
-// The page the trade above is against, pinned: the record count and the
-// record's width are chosen together.
-const _: () = assert!(SEGMENT_BYTES - SEGMENT_HEADER_BYTES == 4096);
-
-/// The children a sever displaced out of a component, waiting for the last
-/// member's free.
-///
-/// Held by the arena whose memory it stands on and emptied once per component.
-/// **It does not outlive an arena reset**: the segments are that arena's blocks
-/// and the workspace it bumps over, so a queue used after the reset would read
-/// children out of memory another collection is granting.
-pub(crate) struct DeferredDrops {
-    /// The chain, or `None` until a reservation has drawn the first segment. A
-    /// component with no external child pays for no segment.
-    children: Option<RecordChain<*mut RcHeader>>,
-}
-
-impl DeferredDrops {
-    /// An empty queue holding no region.
-    pub(crate) fn new() -> Self {
-        Self { children: None }
-    }
-
-    /// Children the queue takes before it owes another region.
-    pub(crate) fn room(&self) -> usize {
-        self.children.as_ref().map_or(0, RecordChain::room)
-    }
-
-    /// Take `region` as one more segment of the queue — the first one, or one
-    /// behind those an earlier component left.
-    ///
-    /// # Safety
-    /// `region` addresses [`SEGMENT_BYTES`] writable bytes of the arena that
-    /// holds this queue.
-    pub(crate) unsafe fn take(&mut self, region: *mut u8) {
-        match self.children.as_ref() {
-            Some(chain) => unsafe { chain.attach(region, SEGMENT_RECORDS) },
-            None => {
-                self.children = Some(unsafe { RecordChain::over(region, SEGMENT_RECORDS) });
-            }
-        }
-    }
-
-    /// Queue `child`, or answer **false** when the reservation this walk stands
-    /// on was too small — which is a defect of the bound rather than a state a
-    /// caller can act on.
-    pub(crate) fn push(&mut self, child: *mut RcHeader) -> bool {
-        let Some(chain) = self.children.as_ref() else {
-            return false;
-        };
-
-        chain.push(child) || (chain.advance_to_kept() && chain.push(child))
-    }
-
-    /// Hand every child over in the order the sever displaced them, and leave
-    /// the queue empty over the segments it holds.
-    pub(crate) fn drain(&mut self, visit: impl FnMut(*mut RcHeader)) {
-        if let Some(chain) = self.children.as_ref() {
-            chain.drain(visit);
-        }
-    }
-
-    /// Whether the queue holds no child, which is the state every component
-    /// starts and ends in.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.children.as_ref().is_none_or(RecordChain::is_empty)
-    }
-
-    /// Forget every segment, which the arena owes the instant it gives those
-    /// blocks back. Nothing is freed here: the memory is the arena's.
-    pub(crate) fn rewind(&mut self) {
-        self.children = None;
-    }
-
-    /// Segments drawn from the arena, emptied ones included. Tests only, and
-    /// the instrument for the defect the children cannot show: a reservation
-    /// that draws a segment per component while the last one stands empty.
-    #[cfg(test)]
-    pub(crate) fn segment_count(&self) -> usize {
-        self.children.as_ref().map_or(0, RecordChain::segment_count)
-    }
-}
 
 /// What [`reclaim`] did with one component.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -284,11 +188,10 @@ pub(crate) unsafe fn reclaim(
         let kind = unsafe { entity_kind(member) };
         let displaced = |child: *mut RcHeader| {
             if members.binary_search(&child).is_ok() {
-                // The narrow decrement rather than `ll_release`: the member is
-                // about to be freed, and a counted release the candidate gate
-                // admits would write a queue entry naming the slot just before
-                // it goes back. The count cannot reach zero here — the guard
-                // stands under every member until the release below.
+                // The count cannot reach zero here: the guard stands under
+                // every member until the release below. Why the decrement is
+                // the narrow store and not `ll_release` is
+                // `severed_edge_release`'s own contract.
                 let left = unsafe { severed_edge_release(child) };
                 debug_assert!(
                     left > 0,

@@ -31,7 +31,7 @@
 //! only caller that knows where a segment comes from
 //! ([`TraceScratchArena::push_work`](crate::cycle::arena::TraceScratchArena::push_work)).
 
-use crate::cycle::records::{RecordChain, SEGMENT_HEADER_BYTES};
+use crate::cycle::records::{LazyChain, SEGMENT_HEADER_BYTES};
 use crate::refcount::RcHeader;
 
 /// Entries one segment holds behind its header line.
@@ -87,79 +87,12 @@ pub(crate) struct WorklistEntry {
 /// somebody's rows either way, and the second is the quieter of the two. The
 /// reset is what empties it, and the retry after an abort is the collection
 /// that depends on this.
-pub(crate) struct TraceStack {
-    /// The chain, or `None` until the first push has drawn a segment.
-    entries: Option<RecordChain<WorklistEntry>>,
-}
-
-impl TraceStack {
-    /// An empty worklist. Draws nothing: a root whose entity has no counted
-    /// children pays for no segment.
-    pub(crate) fn new() -> Self {
-        Self { entries: None }
-    }
-
-    /// Queue `entry` in the segment the worklist is filling, or answer
-    /// **false** when there is no room and the caller owes a region.
-    pub(crate) fn push_into_current(&mut self, entry: WorklistEntry) -> bool {
-        self.entries.as_ref().is_some_and(|chain| chain.push(entry))
-    }
-
-    /// Move onto the segment an earlier crossing left above the current one,
-    /// or answer **false** when there is none.
-    pub(crate) fn advance_to_kept(&mut self) -> bool {
-        self.entries
-            .as_ref()
-            .is_some_and(RecordChain::advance_to_kept)
-    }
-
-    /// Take `region` as the worklist's segment — the first one, or one more
-    /// above the current — and make it the one being filled.
-    ///
-    /// # Safety
-    /// `region` addresses [`SEGMENT_BYTES`] writable bytes of the arena that
-    /// holds this worklist, and no segment stands above the current one —
-    /// which is what [`advance_to_kept`](Self::advance_to_kept) answering
-    /// false reports.
-    pub(crate) unsafe fn extend(&mut self, region: *mut u8) {
-        match self.entries.as_ref() {
-            Some(chain) => unsafe { chain.extend(region, SEGMENT_ENTRIES) },
-            None => {
-                self.entries = Some(unsafe { RecordChain::over(region, SEGMENT_ENTRIES) });
-            }
-        }
-    }
-
-    /// The next entity to expand and the row its meeting found, or `None`
-    /// when the closure is exhausted.
-    pub(crate) fn pop(&mut self) -> Option<WorklistEntry> {
-        self.entries.as_ref().and_then(RecordChain::pop)
-    }
-
-    /// Whether the trace has expanded everything it queued.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.entries.as_ref().is_none_or(RecordChain::is_empty)
-    }
-
-    /// Forget every segment, which the arena owes the instant it gives those
-    /// blocks back.
-    ///
-    /// Nothing is freed here and nothing can be: the memory is the arena's and
-    /// goes back with it. What this undoes is the worklist's own belief that
-    /// it has segments to advance into.
-    pub(crate) fn rewind(&mut self) {
-        self.entries = None;
-    }
-
-    /// Segments drawn from the arena, emptied ones included. Tests only, and
-    /// the instrument for the one defect the entries cannot show: a worklist
-    /// that abandoned an emptied segment answers every push and pop correctly
-    /// while spending a page per boundary crossing.
-    #[cfg(test)]
-    pub(crate) fn segment_count(&self) -> usize {
-        self.entries.as_ref().map_or(0, RecordChain::segment_count)
-    }
-}
+///
+/// The type is the chain both collection structures share
+/// ([`crate::cycle::records::LazyChain`]); what makes it a worklist is the
+/// record and the verbs the arena reaches for — `push_into_current` and `pop`,
+/// growing through `extend` at every boundary the depth crosses.
+pub(crate) type TraceStack = LazyChain<WorklistEntry>;
 
 #[cfg(test)]
 mod tests;

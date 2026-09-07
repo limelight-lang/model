@@ -339,5 +339,112 @@ impl<T: Copy> RecordChain<T> {
     }
 }
 
+/// A [`RecordChain`] whose first region is drawn at the first push rather than
+/// at its birth, and whose segments are its owner's to give back.
+///
+/// Both users of the chain want this and neither wants it differently: a trace
+/// that queues no entity and a teardown that displaces no child each pay for no
+/// segment, and both hold their chain inside the arena whose bump the segments
+/// come from, so [`rewind`](Self::rewind) is what the arena owes the instant it
+/// hands those blocks back. What differs is only the verb each user needs — a
+/// descent takes [`pop`](Self::pop) and grows through
+/// [`extend`](Self::extend), a replay takes [`drain`](Self::drain) and reserves
+/// through [`attach`](Self::attach) — and both verbs stand here rather than in
+/// two wrappers that would each restate `new`, `is_empty` and `rewind`
+/// (`crate::cycle::stack`, `crate::cycle::drops`).
+pub(crate) struct LazyChain<T: Copy> {
+    /// The chain, or `None` until a region has been taken.
+    records: Option<RecordChain<T>>,
+}
+
+impl<T: Copy> LazyChain<T> {
+    /// An empty chain holding no region.
+    pub(crate) fn new() -> Self {
+        Self { records: None }
+    }
+
+    /// Add `record` to the segment being filled, or answer **false** when
+    /// there is no room and the caller owes an advance or a region.
+    pub(crate) fn push_into_current(&mut self, record: T) -> bool {
+        self.records
+            .as_ref()
+            .is_some_and(|chain| chain.push(record))
+    }
+
+    /// Move the append position onto a segment an earlier crossing left above
+    /// the current one, or answer **false** when there is none.
+    pub(crate) fn advance_to_kept(&mut self) -> bool {
+        self.records
+            .as_ref()
+            .is_some_and(RecordChain::advance_to_kept)
+    }
+
+    /// The newest record, or `None` when the chain holds none.
+    pub(crate) fn pop(&mut self) -> Option<T> {
+        self.records.as_ref().and_then(RecordChain::pop)
+    }
+
+    /// Hand every record over oldest first and leave the chain empty over the
+    /// segments it holds ([`RecordChain::drain`]).
+    pub(crate) fn drain(&mut self, visit: impl FnMut(T)) {
+        if let Some(chain) = self.records.as_ref() {
+            chain.drain(visit);
+        }
+    }
+
+    /// Records the chain takes before it owes another region
+    /// ([`RecordChain::room`]).
+    pub(crate) fn room(&self) -> usize {
+        self.records.as_ref().map_or(0, RecordChain::room)
+    }
+
+    /// Take `region` as the segment being filled — the first one, or one above
+    /// the current — which is what a user that has just filled its append
+    /// position needs ([`RecordChain::extend`]).
+    ///
+    /// # Safety
+    /// As [`RecordChain::over`], and the region is the owner's for as long as
+    /// the chain is used.
+    pub(crate) unsafe fn extend(&mut self, region: *mut u8, capacity: usize) {
+        match self.records.as_ref() {
+            Some(chain) => unsafe { chain.extend(region, capacity) },
+            None => self.records = Some(unsafe { RecordChain::over(region, capacity) }),
+        }
+    }
+
+    /// Take `region` as one more segment behind those the chain holds, leaving
+    /// the append position where it is, which is what a reservation taken
+    /// before the first push needs ([`RecordChain::attach`]).
+    ///
+    /// # Safety
+    /// As [`extend`](Self::extend).
+    pub(crate) unsafe fn attach(&mut self, region: *mut u8, capacity: usize) {
+        match self.records.as_ref() {
+            Some(chain) => unsafe { chain.attach(region, capacity) },
+            None => self.records = Some(unsafe { RecordChain::over(region, capacity) }),
+        }
+    }
+
+    /// Whether the chain holds no record.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.records.as_ref().is_none_or(RecordChain::is_empty)
+    }
+
+    /// Forget every segment, which the owner owes the instant it gives those
+    /// blocks back. Nothing is freed here: the memory is the owner's.
+    pub(crate) fn rewind(&mut self) {
+        self.records = None;
+    }
+
+    /// Segments drawn, emptied ones included. Tests only, and the instrument
+    /// for the one defect the records cannot show: a chain that abandoned an
+    /// emptied segment answers every push and pop correctly while spending a
+    /// region per boundary crossing.
+    #[cfg(test)]
+    pub(crate) fn segment_count(&self) -> usize {
+        self.records.as_ref().map_or(0, RecordChain::segment_count)
+    }
+}
+
 #[cfg(test)]
 mod tests;

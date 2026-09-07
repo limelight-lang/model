@@ -100,11 +100,13 @@
 //! ([`TraceScratchArena::ensure_row`]).
 
 use crate::cycle::deferred_slot_reuse::RETURNS_BASE_BYTES;
+use crate::cycle::drops::{
+    DeferredDrops, SEGMENT_BYTES as DROP_SEGMENT_BYTES, SEGMENT_RECORDS as DROP_SEGMENT_RECORDS,
+};
 use crate::cycle::members::MEMBERS_BASE_BYTES;
-use crate::cycle::reclamation::{DeferredDrops, SEGMENT_BYTES as DROP_SEGMENT_BYTES};
 use crate::cycle::row::{Population, RowKey};
 use crate::cycle::shadow::{self, Color, RowArray};
-use crate::cycle::stack::{SEGMENT_BYTES, TraceStack, WorklistEntry};
+use crate::cycle::stack::{SEGMENT_BYTES, SEGMENT_ENTRIES, TraceStack, WorklistEntry};
 #[cfg(test)]
 use crate::memory::block_pool::BlockPool;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
@@ -921,7 +923,7 @@ impl TraceScratchArena {
                 return false;
             }
 
-            unsafe { self.worklist.extend(region) };
+            unsafe { self.worklist.extend(region, SEGMENT_ENTRIES) };
         }
 
         self.worklist.push_into_current(entry)
@@ -943,13 +945,19 @@ impl TraceScratchArena {
     /// are counted before a new one is drawn, so a commit of many small
     /// components draws once.
     pub(crate) fn reserve_drops(&mut self, children: usize) -> bool {
-        while self.drops.room() < children {
+        // The room is read once and counted up rather than asked for again per
+        // segment: the answer walks every segment the chain holds, so asking
+        // it k times over m kept segments is quadratic in a call whose whole
+        // work is k allocations.
+        let mut room = self.drops.room();
+        while room < children {
             let region = self.alloc(DROP_SEGMENT_BYTES);
             if region.is_null() {
                 return false;
             }
 
-            unsafe { self.drops.take(region) };
+            unsafe { self.drops.attach(region, DROP_SEGMENT_RECORDS) };
+            room += DROP_SEGMENT_RECORDS;
         }
 
         true
@@ -959,7 +967,8 @@ impl TraceScratchArena {
     /// **false** when the reservation this teardown took was too small — which
     /// is a defect of the bound rather than a refusal a caller can act on.
     pub(crate) fn push_drop(&mut self, child: *mut RcHeader) -> bool {
-        self.drops.push(child)
+        self.drops.push_into_current(child)
+            || (self.drops.advance_to_kept() && self.drops.push_into_current(child))
     }
 
     /// Hand every queued child to `visit` in the order the sever displaced
