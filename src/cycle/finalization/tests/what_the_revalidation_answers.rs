@@ -67,38 +67,6 @@ unsafe extern "C" fn counting_dispose(obj: *mut Object) -> bool {
     unsafe { ll_default_dispose(obj) }
 }
 
-/// A ring of `MEMBERS` objects, each naming the next through `prop_offset(0)`
-/// and the last naming the first, held by nothing else and read as unreachable
-/// by a trace that has released its rows.
-///
-/// `classes` is one class per member, in ring order.
-///
-/// # Safety
-/// `arena` is this thread's and every class carries one Box property at
-/// `prop_offset(0)`.
-unsafe fn unreachable_ring<const MEMBERS: usize>(
-    arena: &mut Arena,
-    classes: [*const crate::class::Class; MEMBERS],
-) -> [*mut Object; MEMBERS] {
-    let mut context = LLContext { arena: &mut *arena };
-    let ring = classes
-        .map(|class| unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) });
-    unsafe {
-        for (index, &member) in ring.iter().enumerate() {
-            store_prop(arena, member, prop_offset(0), ring[(index + 1) % MEMBERS]);
-        }
-
-        for &member in &ring {
-            assert!(!ll_release(member as *mut RcHeader));
-        }
-    }
-
-    let expected: Vec<*mut Object> = ring.to_vec();
-    let mut shadow_arena = unsafe { traced_unreachable_from(ring[0], &expected) };
-    shadow_arena.reset();
-    ring
-}
-
 /// The members of `ring` as the header pointers a finalization takes.
 fn headers<const MEMBERS: usize>(ring: &[*mut Object; MEMBERS]) -> [*mut RcHeader; MEMBERS] {
     ring.map(|member| member as *mut RcHeader)
@@ -123,7 +91,7 @@ fn a_finalization_no_destructor_ran_in_is_not_read_again() {
     // two arms is the same fixture: what separates the readings is whether a
     // destructor ran, and nothing else.
     for (classes, walks_owed) in [([silent, silent], 0), ([silent, speaking], 2)] {
-        let ring = unsafe { unreachable_ring(&mut arena, classes) };
+        let ring = unsafe { traced_unreachable_ring(&mut arena, classes) };
         KEPT_MEMBER.store(0, Ordering::Relaxed);
 
         let mut finalization = Finalization::begin();
@@ -192,7 +160,7 @@ fn a_destructor_that_keeps_this_leaves_the_component_with_its_true_counts() {
         .build();
 
     let mut arena = Arena::new();
-    let ring = unsafe { unreachable_ring(&mut arena, [plain, keeper]) };
+    let ring = unsafe { traced_unreachable_ring(&mut arena, [plain, keeper]) };
     let [peer, keeper_member] = ring;
     KEPT_MEMBER.store(0, Ordering::Relaxed);
 
@@ -263,7 +231,7 @@ fn a_member_whose_guard_was_its_last_reference_dies_at_the_release() {
     let mut arena = Arena::new();
     // The keeper is last, so the edge it gives up is the one naming the first
     // member — which leaves that member holding its guard and nothing else.
-    let ring = unsafe { unreachable_ring(&mut arena, [plain, plain, keeper]) };
+    let ring = unsafe { traced_unreachable_ring(&mut arena, [plain, plain, keeper]) };
     let [first, _, keeper_member] = ring;
     KEPT_MEMBER.store(0, Ordering::Relaxed);
     DEATHS.store(0, Ordering::Relaxed);
@@ -403,7 +371,7 @@ fn a_child_of_a_dying_member_runs_its_destructor_inside_the_release() {
         .build();
 
     let mut arena = Arena::new();
-    let ring = unsafe { unreachable_ring(&mut arena, [holder, keeper]) };
+    let ring = unsafe { traced_unreachable_ring(&mut arena, [holder, keeper]) };
     let [holder_member, keeper_member] = ring;
     KEPT_MEMBER.store(0, Ordering::Relaxed);
     DEATHS.store(0, Ordering::Relaxed);
@@ -528,8 +496,8 @@ fn a_component_rooted_by_an_earlier_teardown_is_read_after_it() {
         .build();
 
     let mut arena = Arena::new();
-    let torn_down = unsafe { unreachable_ring(&mut arena, [holder, keeper]) };
-    let read_later = unsafe { unreachable_ring(&mut arena, [publisher, plain]) };
+    let torn_down = unsafe { traced_unreachable_ring(&mut arena, [holder, keeper]) };
+    let read_later = unsafe { traced_unreachable_ring(&mut arena, [publisher, plain]) };
     let [holder_member, keeper_member] = torn_down;
     let [_, peer] = read_later;
     KEPT_MEMBER.store(0, Ordering::Relaxed);

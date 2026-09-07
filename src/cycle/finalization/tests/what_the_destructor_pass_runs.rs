@@ -20,31 +20,6 @@ unsafe extern "C" fn counting_destructor(_obj: *mut Object) {
     DESTRUCTOR_RUNS.fetch_add(1, Ordering::Relaxed);
 }
 
-/// A ring of two objects of `class`, held by nothing else and read as
-/// unreachable by a trace that has released its rows.
-///
-/// # Safety
-/// `arena` is this thread's and `class` carries one Box property at
-/// `prop_offset(0)`.
-unsafe fn unreachable_ring(
-    arena: &mut Arena,
-    class: *const crate::class::Class,
-) -> [*mut Object; 2] {
-    let mut context = LLContext { arena: &mut *arena };
-    let first = unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) };
-    unsafe {
-        store_prop(arena, first, prop_offset(0), second);
-        store_prop(arena, second, prop_offset(0), first);
-        assert!(!ll_release(first as *mut RcHeader));
-        assert!(!ll_release(second as *mut RcHeader));
-    }
-
-    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
-    shadow_arena.reset();
-    [first, second]
-}
-
 #[test]
 fn a_pending_destructor_runs_once_over_the_whole_finalization() {
     let _g = test_guard();
@@ -54,7 +29,7 @@ fn a_pending_destructor_runs_once_over_the_whole_finalization() {
         .build();
 
     let mut arena = Arena::new();
-    let ring = unsafe { unreachable_ring(&mut arena, node) };
+    let ring = unsafe { traced_unreachable_ring(&mut arena, [node, node]) };
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
 
     let mut finalization = Finalization::begin();

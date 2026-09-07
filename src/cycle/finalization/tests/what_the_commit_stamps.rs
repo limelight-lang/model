@@ -17,39 +17,6 @@ use super::*;
 use crate::cycle::epoch;
 use crate::refcount::{MaturationStamp, read_maturation_stamp};
 
-/// A ring in the GC heap, each member naming the next, with the fixture's own
-/// reference to every member released — so the members are held by their own
-/// edges and by whatever the case adds.
-///
-/// The trace is what the caller's component list stands on: it reads every
-/// member as potentially unreachable, which is the proposal an exact
-/// validation is asked about.
-///
-/// # Safety
-/// The caller runs on a quiescent heap and takes the ring apart afterwards.
-unsafe fn ring<const MEMBERS: usize>(
-    arena: &mut Arena,
-    classes: [*const crate::class::Class; MEMBERS],
-) -> [*mut Object; MEMBERS] {
-    let mut context = LLContext { arena: &mut *arena };
-    let ring = classes
-        .map(|class| unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) });
-    unsafe {
-        for (index, &member) in ring.iter().enumerate() {
-            store_prop(arena, member, prop_offset(0), ring[(index + 1) % MEMBERS]);
-        }
-
-        for &member in &ring {
-            assert!(!ll_release(member as *mut RcHeader));
-        }
-    }
-
-    let expected: Vec<*mut Object> = ring.to_vec();
-    let mut shadow_arena = unsafe { traced_unreachable_from(ring[0], &expected) };
-    shadow_arena.reset();
-    ring
-}
-
 /// The stamp each member carries, in the caller's own order.
 ///
 /// # Safety
@@ -112,7 +79,7 @@ fn a_component_read_live_ages_by_one_at_every_collection() {
         .build();
 
     let mut arena = Arena::new();
-    let members = unsafe { ring(&mut arena, [node, node]) };
+    let members = unsafe { traced_unreachable_ring(&mut arena, [node, node]) };
     let mut context = LLContext { arena: &mut arena };
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
     unsafe { store_prop(&mut arena, keeper, prop_offset(0), members[0]) };
@@ -155,7 +122,7 @@ fn every_closed_commit_is_counted_toward_the_turnover() {
         .build();
 
     let mut arena = Arena::new();
-    let members = unsafe { ring(&mut arena, [node, node]) };
+    let members = unsafe { traced_unreachable_ring(&mut arena, [node, node]) };
     let mut context = LLContext { arena: &mut arena };
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
     unsafe { store_prop(&mut arena, keeper, prop_offset(0), members[0]) };
@@ -193,7 +160,7 @@ fn a_stamp_of_another_epoch_starts_the_age_again() {
         .build();
 
     let mut arena = Arena::new();
-    let members = unsafe { ring(&mut arena, [node, node]) };
+    let members = unsafe { traced_unreachable_ring(&mut arena, [node, node]) };
     let mut context = LLContext { arena: &mut arena };
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
     unsafe { store_prop(&mut arena, keeper, prop_offset(0), members[0]) };
@@ -238,7 +205,7 @@ fn the_youngest_member_decides_the_component_age() {
         .build();
 
     let mut arena = Arena::new();
-    let members = unsafe { ring(&mut arena, [node, node, node]) };
+    let members = unsafe { traced_unreachable_ring(&mut arena, [node, node, node]) };
     let [first, second, third] = members;
 
     // The third member's edge into the ring is what holds the pair from
@@ -307,7 +274,7 @@ fn a_component_read_unreachable_is_never_stamped() {
 /// The caller runs on a quiescent heap under `memory::block_pool::test_guard`.
 unsafe fn a_component_read_unreachable_takes_no_stamp(classes: [*const crate::class::Class; 2]) {
     let mut arena = Arena::new();
-    let members = unsafe { ring(&mut arena, classes) };
+    let members = unsafe { traced_unreachable_ring(&mut arena, classes) };
     let mut headers = members.map(|member| member as *mut RcHeader);
 
     let mut finalization = Finalization::begin();
@@ -356,7 +323,7 @@ fn a_resurrected_component_is_stamped_at_the_second_reading() {
         .build();
 
     let mut arena = Arena::new();
-    let members = unsafe { ring(&mut arena, [plain, keeper]) };
+    let members = unsafe { traced_unreachable_ring(&mut arena, [plain, keeper]) };
     let mut headers = members.map(|member| member as *mut RcHeader);
 
     let mut finalization = Finalization::begin();

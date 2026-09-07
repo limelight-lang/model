@@ -1,6 +1,8 @@
 use super::*;
 use crate::class::ClassBuilder;
-use crate::cycle::testing::traced_unreachable_from;
+use crate::cycle::testing::{
+    dismantle_ring, ring, traced_unreachable_from, traced_unreachable_ring,
+};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
@@ -11,7 +13,7 @@ use crate::weak::{LLWeakRef, ll_weakref_create, ll_weakref_get};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Dismantle the ring the fixture built: take each guard reference off, break
-/// both edges and free both members.
+/// every edge and free every member.
 ///
 /// The finalization stops before the sever and the free
 /// ([`crate::cycle::reclamation`]), so a case that ran one owes this by hand.
@@ -21,41 +23,18 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 /// performs:** it stores a count and starts no teardown at zero.
 ///
 /// # Safety
-/// Both members are live objects of this thread's GC heap, each carrying one
+/// Every member is a live object of this thread's GC heap, each carrying one
 /// guard reference, linked into a ring through property 0.
-unsafe fn unwind_guarded_ring(arena: &mut Arena, ring: [*mut Object; 2]) {
+unsafe fn unwind_guarded_ring<const MEMBERS: usize>(
+    arena: &mut Arena,
+    members: [*mut Object; MEMBERS],
+) {
     unsafe {
-        for member in ring {
+        for member in members {
             crate::refcount::mutator_unguard_release(member as *mut RcHeader);
         }
 
-        dismantle_ring(arena, ring);
-    }
-}
-
-/// Break every edge of a ring nothing else holds and free its members.
-///
-/// The retain is what the sever below spends: a member whose edge is nulled
-/// while its count is one dies inside `store_prop`'s barrier, under the loop
-/// that is still walking the ring.
-///
-/// # Safety
-/// Every member is a live object of this thread's GC heap, unguarded, linked
-/// into a ring through property 0 and held by nothing else.
-unsafe fn dismantle_ring<const MEMBERS: usize>(arena: &mut Arena, ring: [*mut Object; MEMBERS]) {
-    unsafe {
-        for member in ring {
-            ll_retain(member as *mut RcHeader);
-        }
-
-        for member in ring {
-            store_prop(arena, member, prop_offset(0), std::ptr::null_mut());
-        }
-
-        for member in ring {
-            assert!(ll_release(member as *mut RcHeader));
-            ll_object_die(member);
-        }
+        dismantle_ring(arena, members);
     }
 }
 

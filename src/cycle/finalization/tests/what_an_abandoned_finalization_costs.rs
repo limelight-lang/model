@@ -27,15 +27,9 @@ unsafe fn confirmed_ring(
     class_name: &str,
 ) -> (Finalization, [*mut RcHeader; 2]) {
     let node = ClassBuilder::new(class_name).prop("next", true).build();
-    let mut context = LLContext { arena: &mut *arena };
-    let first = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-    unsafe {
-        store_prop(arena, first, prop_offset(0), second);
-        store_prop(arena, second, prop_offset(0), first);
-        assert!(!ll_release(first as *mut RcHeader));
-        assert!(!ll_release(second as *mut RcHeader));
-    }
+    // The untraced builder: these cases go straight to the exact validation,
+    // which reads the heap and not a row.
+    let [first, second] = unsafe { ring(arena, [node, node]) };
 
     let mut finalization = Finalization::begin();
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];

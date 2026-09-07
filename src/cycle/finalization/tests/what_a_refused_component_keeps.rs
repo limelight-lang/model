@@ -41,22 +41,11 @@ fn an_externally_referenced_component_takes_no_guard_and_keeps_its_cell() {
         .build();
 
     let mut arena = Arena::new();
+    let [first, second] = unsafe { traced_unreachable_ring(&mut arena, [node, node]) };
     let mut context = LLContext { arena: &mut arena };
-    let first = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
     let cell = unsafe { ll_weakref_create(&mut context, first as *mut RcHeader) };
     assert!(!cell.is_null(), "the fixture's weak cell");
-
-    unsafe {
-        store_prop(&mut arena, first, prop_offset(0), second);
-        store_prop(&mut arena, second, prop_offset(0), first);
-        assert!(!ll_release(first as *mut RcHeader));
-        assert!(!ll_release(second as *mut RcHeader));
-    }
-
-    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
-    shadow_arena.reset();
 
     // The store the exact validation exists to absorb: a reference taken after the
     // trace read the counts.
@@ -133,20 +122,19 @@ fn a_zero_count_member_leaves_the_component_and_its_cell_alone() {
         .build();
 
     let mut arena = Arena::new();
+    // The ring is the shared fixture; the chain hanging off it at property 1
+    // is this case's own, and the trace has to name all four.
+    let [first, second] = unsafe { ring(&mut arena, [ring_node, ring_node]) };
     let mut context = LLContext { arena: &mut arena };
-    let first = unsafe { new_constructed(&mut context, ring_node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, ring_node, MemoryCategory::GcHeap) };
     let head = unsafe { new_constructed(&mut context, chain_node, MemoryCategory::GcHeap) };
     let tail = unsafe { new_constructed(&mut context, chain_node, MemoryCategory::GcHeap) };
     let cell = unsafe { ll_weakref_create(&mut context, tail as *mut RcHeader) };
     assert!(!cell.is_null(), "the fixture's weak cell");
 
     unsafe {
-        store_prop(&mut arena, first, prop_offset(0), second);
-        store_prop(&mut arena, second, prop_offset(0), first);
         store_prop(&mut arena, first, prop_offset(1), head);
         store_prop(&mut arena, head, prop_offset(0), tail);
-        for entity in [first, second, head, tail] {
+        for entity in [head, tail] {
             assert!(!ll_release(entity as *mut RcHeader));
         }
     }

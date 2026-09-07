@@ -8,6 +8,43 @@ never edited or deleted.
 
 ---
 
+## 2026-09-07 — the ring fixture is two functions rather than one builder with parameters
+
+Owner: S45. Ruled by the Sage before the first edit, over a survey that found
+the same ring built by hand at about twenty sites under `src/cycle/`.
+
+**Decided:** `cycle::testing` owns `ring(arena, classes)` — create one object
+per class, link member `i` to `(i + 1) % MEMBERS` through property 0, spend
+every creation reference — and `traced_unreachable_ring`, which adds the trace
+and the arena reset. `dismantle_ring` moves there from
+`cycle::finalization::tests` so that every module of the tree reaches it, and
+`unwind_guarded_ring` stays with the finalization cases and calls it.
+
+**Why not one builder.** The sites differ in what they attach to the ring: an
+outside holder, one or two external children at property 1 and up, a weak cell,
+a destructor, a guard reference taken by hand. A builder covering all of them
+takes five parameters and a mode, and a fixture with five parameters is read
+more slowly than the ten lines it replaces. What every site does share is the
+ring itself, and the split at the trace is where the cases part: those that
+read a row of their own — a colour outside the component, a working count after
+the mark alone — take `ring` and run the phases themselves.
+
+**Why the teardown is not in the builder.** Half the reclamation sites have no
+teardown at all, the commit having freed the members; the rest add what is
+theirs — a candidate bit cleared by hand, a weak cell, an external chain.
+`dismantle_ring` covers the common part and each case writes its own beside it.
+
+**What stays as it is**, because a shared fixture would bury the point of the
+case: the two rings that close through an array element rather than a
+property; the two cases whose subject is an unusual way to spend a creation
+reference; `confirmed_ring`, whose subject is that nothing is torn down; both
+`two_rings`, whose members carry self-edges and stage the candidate queue; and
+`density::tests::build`, which chooses block populations.
+
+**What the duplication had already cost:** S36.6 needed a ring of three
+members and generalised the teardown of one file out of twenty; the other
+nineteen still took apart two.
+
 ## 2026-09-07 — the epoch counter is founded where the stamp is written, and the prune stays S37.1's
 
 Owner: S36.6. Ruled by the Sage before the first edit, over a criterion the step

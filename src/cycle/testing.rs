@@ -4,6 +4,12 @@
 //! and a second copy of the row lookup would be a second opinion about
 //! where a row is. Test builds only.
 //!
+//! Beside the row readers stand the fixtures every case of the tree needs: a
+//! ring of GC-heap objects ([`ring`]), the same read as potentially
+//! unreachable ([`traced_unreachable_ring`]) and the teardown that takes one
+//! apart ([`dismantle_ring`]). What a case attaches to a ring — an outside
+//! holder, an external child, a weak cell, a destructor — stays in the case.
+//!
 //! The row readers own nothing, allocate nothing and order nothing: each reads
 //! a row the caller's arena holds, through
 //! [`arena::find_initialized_row`](crate::cycle::arena::find_initialized_row),
@@ -14,13 +20,17 @@
 //! caller an arena to own, and [`traced_unreachable_from`], the trace a
 //! fixture runs before it asks about a component.
 
+use crate::class::Class;
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::row::{EdgeTarget, RowKey, resolve_edge_target};
 use crate::cycle::scan::{ScanResult, scan};
 use crate::cycle::shadow::{self, Color, RowArray};
-use crate::object::Object;
-use crate::refcount::RcHeader;
+use crate::memory::arena::Arena;
+use crate::memory::context::LLContext;
+use crate::object::{Object, ll_object_die, new_constructed};
+use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain};
+use crate::test_support::{prop_offset, store_prop};
 
 /// The row word the trace left for `entity`, read the way the scan
 /// reads it — through the block's own shadow pointer. A meeting would
@@ -100,4 +110,100 @@ pub(crate) unsafe fn traced_unreachable_from(
     }
 
     arena
+}
+
+/// A ring of GC-heap objects, one per class given, each member naming the next
+/// through property 0 and the last naming the first, with every creation
+/// reference spent — so the ring is held by its own edges and by whatever the
+/// caller adds afterwards.
+///
+/// What a case adds is its own: an outside holder, an external child at
+/// another property, a weak cell, a destructor. The ring is what they have in
+/// common and all this builds.
+///
+/// The trace is the caller's too, and [`traced_unreachable_ring`] is the one
+/// most of them want. A case that reads rows of its own — a colour outside the
+/// component, a working count after the mark alone — runs the phases itself
+/// and takes this.
+///
+/// # Safety
+/// The caller runs on a quiescent heap under `memory::block_pool::test_guard`,
+/// and takes the ring apart through [`dismantle_ring`] or by hand.
+pub(crate) unsafe fn ring<const MEMBERS: usize>(
+    arena: &mut Arena,
+    classes: [*const Class; MEMBERS],
+) -> [*mut Object; MEMBERS] {
+    let mut context = LLContext { arena: &mut *arena };
+    let members = classes
+        .map(|class| unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) });
+
+    unsafe {
+        for (index, &member) in members.iter().enumerate() {
+            store_prop(
+                arena,
+                member,
+                prop_offset(0),
+                members[(index + 1) % MEMBERS],
+            );
+        }
+
+        for &member in &members {
+            assert!(!ll_release(member as *mut RcHeader));
+        }
+    }
+
+    members
+}
+
+/// A [`ring`] the trace has read as potentially unreachable, with the scratch
+/// arena reset behind it — the state an exact validation is asked about.
+///
+/// The reset is here because the rows die at the trace token's release and
+/// everything that reads a row happens before it
+/// (`rfc/model/gc/rc-cycle.md`, "Concurrency"); a case that wants a row after
+/// the trace builds its ring with [`ring`] and runs the phases itself.
+///
+/// # Safety
+/// As [`ring`].
+pub(crate) unsafe fn traced_unreachable_ring<const MEMBERS: usize>(
+    arena: &mut Arena,
+    classes: [*const Class; MEMBERS],
+) -> [*mut Object; MEMBERS] {
+    let members = unsafe { ring(arena, classes) };
+    let expected: Vec<*mut Object> = members.to_vec();
+    let mut scratch = unsafe { traced_unreachable_from(members[0], &expected) };
+    scratch.reset();
+    members
+}
+
+/// Break every edge of a ring nothing else holds and free its members.
+///
+/// The retain is what the sever below spends: a member whose edge is nulled
+/// while its count is one dies inside `store_prop`'s barrier, under the loop
+/// that is still walking the ring.
+///
+/// A member holding a child at another property needs no null store of its
+/// own — the death path releases every cell the member still holds.
+///
+/// # Safety
+/// Every member is a live object of this thread's GC heap, unguarded, linked
+/// into a ring through property 0 and held by nothing else.
+pub(crate) unsafe fn dismantle_ring<const MEMBERS: usize>(
+    arena: &mut Arena,
+    members: [*mut Object; MEMBERS],
+) {
+    unsafe {
+        for member in members {
+            ll_retain(member as *mut RcHeader);
+        }
+
+        for member in members {
+            store_prop(arena, member, prop_offset(0), std::ptr::null_mut());
+        }
+
+        for member in members {
+            assert!(ll_release(member as *mut RcHeader));
+            ll_object_die(member);
+        }
+    }
 }

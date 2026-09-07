@@ -71,46 +71,20 @@ unsafe extern "C" fn releasing_destructor(obj: *mut Object) {
     RELEASE_REACHED_ZERO.store(unsafe { ll_release(member) }, Ordering::Relaxed);
 }
 
-/// Two objects linked into a ring nothing else holds, each at count one and
-/// both read as unreachable by a trace that has released its rows.
+/// A weak cell naming `member`, which the case hands to a destructor through a
+/// static and releases through [`drop_cell`].
 ///
-/// `weak_cells` says which member gets a weak cell of its own; a member
-/// without one answers a null cell.
+/// The cell is created after the trace, so what a case reads through it is the
+/// null the invalidation writes rather than a state the trace saw
+/// (`rfc/model/weak-references.md`, "Death notification").
 ///
 /// # Safety
-/// `arena` is this thread's, and both classes carry one Box property at
-/// `prop_offset(0)`.
-unsafe fn unreachable_ring(
-    arena: &mut Arena,
-    first_class: *const crate::class::Class,
-    second_class: *const crate::class::Class,
-    weak_cells: [bool; 2],
-) -> (*mut Object, *mut Object, [*mut LLWeakRef; 2]) {
-    let mut context = LLContext { arena: &mut *arena };
-    let first = unsafe { new_constructed(&mut context, first_class, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, second_class, MemoryCategory::GcHeap) };
-    let mut cells = [std::ptr::null_mut(); 2];
-    for (index, member) in [first, second].into_iter().enumerate() {
-        if !weak_cells[index] {
-            continue;
-        }
-
-        let cell = unsafe { ll_weakref_create(&mut context, member as *mut RcHeader) };
-        assert!(!cell.is_null(), "the fixture's weak cell");
-        cells[index] = cell;
-    }
-
-    unsafe {
-        store_prop(arena, first, prop_offset(0), second);
-        store_prop(arena, second, prop_offset(0), first);
-        // From here the ring holds both entities and nothing else does.
-        assert!(!ll_release(first as *mut RcHeader));
-        assert!(!ll_release(second as *mut RcHeader));
-    }
-
-    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
-    shadow_arena.reset();
-    (first, second, cells)
+/// `member` is a live entity of this thread's GC heap.
+unsafe fn cell_on(arena: &mut Arena, member: *mut Object) -> *mut LLWeakRef {
+    let mut context = LLContext { arena };
+    let cell = unsafe { ll_weakref_create(&mut context, member as *mut RcHeader) };
+    assert!(!cell.is_null(), "the fixture's weak cell");
+    cell
 }
 
 #[test]
@@ -125,10 +99,10 @@ fn a_destructor_reads_null_through_the_cell_naming_the_other_member() {
         .build();
 
     let mut arena = Arena::new();
-    let (target, probe, cells) =
-        unsafe { unreachable_ring(&mut arena, named, prober, [true, false]) };
+    let [target, probe] = unsafe { traced_unreachable_ring(&mut arena, [named, prober]) };
+    let cell = unsafe { cell_on(&mut arena, target) };
 
-    FIRST_CELL.store(cells[0] as usize, Ordering::Relaxed);
+    FIRST_CELL.store(cell as usize, Ordering::Relaxed);
     SEEN_BY_THE_SECOND.store(usize::MAX, Ordering::Relaxed);
 
     let before = unsafe { refcounts(&[target, probe]) };
@@ -165,7 +139,7 @@ fn a_destructor_reads_null_through_the_cell_naming_the_other_member() {
     assert_eq!(guarded.members(), 2);
 
     unsafe {
-        drop_cell(cells[0]);
+        drop_cell(cell);
         unwind_guarded_ring(&mut arena, [target, probe]);
     }
 
@@ -192,12 +166,11 @@ fn a_destructor_of_one_component_reads_null_through_a_cell_naming_another() {
     // destructor loads belongs to a component confirmed after it. A per-member
     // or per-component nulling would leave that cell resolving; only an
     // invalidation whole over the finalization nulls it in time.
-    let (probe, probe_peer, _) =
-        unsafe { unreachable_ring(&mut arena, prober, plain, [false, false]) };
-    let (target, target_peer, cells) =
-        unsafe { unreachable_ring(&mut arena, named, plain, [true, false]) };
+    let [probe, probe_peer] = unsafe { traced_unreachable_ring(&mut arena, [prober, plain]) };
+    let [target, target_peer] = unsafe { traced_unreachable_ring(&mut arena, [named, plain]) };
+    let cell = unsafe { cell_on(&mut arena, target) };
 
-    FIRST_CELL.store(cells[0] as usize, Ordering::Relaxed);
+    FIRST_CELL.store(cell as usize, Ordering::Relaxed);
     SEEN_BY_THE_SECOND.store(usize::MAX, Ordering::Relaxed);
 
     let ring_members = [probe, probe_peer, target, target_peer];
@@ -240,7 +213,7 @@ fn a_destructor_of_one_component_reads_null_through_a_cell_naming_another() {
     );
 
     let mut revalidation = pass.close();
-    unsafe { drop_cell(cells[0]) };
+    unsafe { drop_cell(cell) };
     for (index, members) in components.iter_mut().enumerate() {
         let Revalidated::Unreachable(guarded) = (unsafe { revalidation.revalidate(members) })
         else {
@@ -272,8 +245,9 @@ fn every_destructor_of_the_finalization_reads_null_through_the_other_s_cell() {
         .build();
 
     let mut arena = Arena::new();
-    let (first, second, cells) =
-        unsafe { unreachable_ring(&mut arena, first_class, second_class, [true, true]) };
+    let [first, second] =
+        unsafe { traced_unreachable_ring(&mut arena, [first_class, second_class]) };
+    let cells = unsafe { [cell_on(&mut arena, first), cell_on(&mut arena, second)] };
 
     FIRST_CELL.store(cells[0] as usize, Ordering::Relaxed);
     SECOND_CELL.store(cells[1] as usize, Ordering::Relaxed);
@@ -335,8 +309,7 @@ fn a_release_inside_a_destructor_stops_at_the_other_member_s_guard() {
         .build();
 
     let mut arena = Arena::new();
-    let (target, probe, _) =
-        unsafe { unreachable_ring(&mut arena, plain, releaser, [false, false]) };
+    let [target, probe] = unsafe { traced_unreachable_ring(&mut arena, [plain, releaser]) };
 
     RELEASED_MEMBER.store(0, Ordering::Relaxed);
     RELEASE_REACHED_ZERO.store(true, Ordering::Relaxed);

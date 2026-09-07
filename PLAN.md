@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-07 · Active: S36, from S36.7. S44 has one step left, S44.5,
+Updated: 2026-09-07 · Active: S45, then S36 from S36.7. S44 has one step left, S44.5,
 and it waits on Edmond's word.
 S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
@@ -856,6 +856,75 @@ a second time; S44.4 last, a measurement being of what is built.
         paragraphs about the mark, its list and the record-and-grow path
         describe the stack instead
       tier: T2 · role: —
+
+## S45 — One ring fixture for the cycle tests
+
+Goal: the ring every collector test needs is built in one place. Twenty sites
+under `src/cycle/` create the same two or three objects, link them through
+property 0, spend their creation references and trace them, and a change to
+any of those four acts today is twenty edits — which is how S36.6 left
+nineteen files able to take apart a ring of two members and one able to take
+apart a ring of three.
+
+Done when: `cycle::testing` owns the builder and the teardown, every site the
+Sage of 2026-09-07 named is converted, no local builder is left without a
+caller, and the suite reports the same count it did before the stage.
+
+The shape is ruled and not open (`dev/DECISIONS.md`, "the ring fixture is two
+functions rather than one builder with parameters"): `ring` creates, links and
+spends, `traced_unreachable_ring` adds the trace and the reset, and children,
+outside holders, weak cells and destructors stay written out in the case that
+is about them.
+
+- [x] S45.1 The builder, the teardown, and the finalization group
+      done: `cycle::testing` gains `ring` and `traced_unreachable_ring`, both
+        const-generic over the member count and taking one class per member,
+        and `dismantle_ring` moves there from `cycle::finalization::tests`
+        unchanged, `unwind_guarded_ring` staying where it is and calling it;
+        the six files of the finalization group are converted —
+        `what_the_commit_stamps`, `what_the_revalidation_answers`,
+        `what_the_destructor_pass_runs`, `what_a_destructor_reads_through_a_weak_cell`
+        (cells created after the trace), `what_an_abandoned_finalization_costs`
+        (`ring`, which runs no trace, and its `confirmed_ring` keeps its
+        confirm) and `what_a_refused_component_keeps` (the ring half only, the
+        chain written out); every local builder the conversion orphans is
+        deleted in the same commit
+      tier: T1 · role: —
+      handoff: `cycle::testing::ring`, `traced_unreachable_ring` and
+        `dismantle_ring` are the three; `unwind_guarded_ring` stays in
+        `cycle::finalization::tests` and is const-generic now, as
+        `dismantle_ring` already was. Two sites took the untraced builder:
+        `confirmed_ring`, which runs no trace, and the zero-count case, whose
+        trace has to name the chain hanging off the ring as well. The weak-cell
+        file creates its cells after the trace now rather than before the ring
+        closes, through a local `cell_on`; the ring's counts are the same
+        either way, a weak reference being uncounted. 785 tests at one thread,
+        `cargo +1.94 fmt --check` clean, no new warning. The fixture code is
+        about 200 lines shorter.
+- [ ] S45.2 The scan, mark and validation sites
+      done: `scan::tests::ring` and its `drop_ring` are gone — a case that held
+        a member releases what it retained and calls `dismantle_ring`; the two
+        inline rings of `mark::tests::what_the_trace_subtracts` and the sites
+        under `validation/tests/` are converted, `what_the_premise_check_costs`
+        taking `[node; 6]` in place of its `Vec` and
+        `the_same_ring_without_the_store_is_unreachable` keeping its unused
+        keeper allocation ahead of the trace, so the two arms still differ by
+        one store
+      tier: T1 · role: —
+- [ ] S45.3 The reclamation group, and the sweep
+      done: the four inline sites and the two builders of `reclamation/tests/`
+        are converted, `read_as_unreachable` deleted with its last caller, and
+        `what_a_refused_reservation_keeps`'s by-hand teardown replaced by
+        `dismantle_ring`; a grep finds no ring built outside `cycle::testing`
+        except the sites the ruling leaves alone, and the full gate runs
+      tier: T1 · role: Code Reviewer
+      handoff: what stays as it is, and why the stage does not touch it: the
+        two rings that close through an array element rather than a property;
+        the two cases whose subject is an unusual way to spend a creation
+        reference (`a_survivor_the_release_decrements_is_registered_as_a_candidate`,
+        `an_edge_inside_the_component_writes_no_candidate_entry`); both
+        `two_rings`, whose members carry self-edges and stage the candidate
+        queue; and `density::tests::build`, which chooses block populations.
 
 ## S36 — Commit
 
