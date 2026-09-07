@@ -1,7 +1,7 @@
 use super::*;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::finalization::{Finalization, Revalidated};
-use crate::cycle::testing::{open_arena, traced_unreachable_from};
+use crate::cycle::testing::{dismantle_ring, open_arena, ring, traced_unreachable};
 use crate::cycle::validation::ValidationResult;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
@@ -32,16 +32,6 @@ unsafe fn spend_creation_references(entities: &[*mut Object]) {
             "an edge of the fixture holds this entity"
         );
     }
-}
-
-/// Read `members` as potentially unreachable through a real trace and let the
-/// rows go, which is the state a component reaches the commit's chain in.
-///
-/// # Safety
-/// As `traced_unreachable_from`.
-unsafe fn read_as_unreachable(root: *mut Object, members: &[*mut Object]) {
-    let mut arena = unsafe { traced_unreachable_from(root, members) };
-    arena.reset();
 }
 
 /// Drive the whole commit over one component: the guards and the weak

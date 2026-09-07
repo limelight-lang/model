@@ -66,16 +66,13 @@ struct RingWithAChild {
 unsafe fn ring_with_a_child(arena: &mut Arena, child_class: *const Class) -> RingWithAChild {
     let node = node_class("ReclamationRingNode");
     let keeper = unsafe { object(arena, node) };
-    let first = unsafe { object(arena, node) };
-    let second = unsafe { object(arena, node) };
+    let [first, second] = unsafe { ring(arena, [node, node]) };
     let child = unsafe { object(arena, child_class) };
 
     unsafe {
-        store_prop(arena, first, prop_offset(0), second);
-        store_prop(arena, second, prop_offset(0), first);
         store_prop(arena, first, prop_offset(1), child);
-        spend_creation_references(&[first, second, child]);
-        read_as_unreachable(first, &[first, second]);
+        spend_creation_references(&[child]);
+        traced_unreachable(first, &[first, second]);
     }
 
     RingWithAChild {
@@ -142,7 +139,9 @@ fn an_edge_inside_the_component_writes_no_candidate_entry() {
     // same whichever release the sever uses. The second member's creation
     // reference is spent through the narrow counter store instead, which is
     // the state of a member a trace reached rather than a root the queue
-    // named.
+    // named. That is why the ring is built here rather than through
+    // `cycle::testing::ring`, which spends both references through the
+    // candidate gate.
     let mut arena = Arena::new();
     let first = unsafe { object(&mut arena, node) };
     let second = unsafe { object(&mut arena, node) };
@@ -151,7 +150,7 @@ fn an_edge_inside_the_component_writes_no_candidate_entry() {
         store_prop(&mut arena, second, prop_offset(0), first);
         spend_creation_references(&[first]);
         crate::refcount::mutator_unguard_release(second as *mut RcHeader);
-        read_as_unreachable(first, &[first, second]);
+        traced_unreachable(first, &[first, second]);
     }
 
     assert!(

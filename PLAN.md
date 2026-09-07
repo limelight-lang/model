@@ -927,6 +927,14 @@ is about them.
         `dismantle_ring`; a grep finds no ring built outside `cycle::testing`
         except the sites the ruling leaves alone, and the full gate runs
       tier: T1 · role: Code Reviewer
+      handoff: `read_as_unreachable` did not simply go: every site that hangs a
+        child off its ring traces after the attachment rather than at the
+        build, so the trace and the reset are shared as
+        `cycle::testing::traced_unreachable`, which
+        `traced_unreachable_ring` is now written over. Two rings are left built
+        by hand and each says why at the site: the candidate-entry case, whose
+        premise is a member whose creation reference was *not* spent through
+        the gate, and the ignored benchmark in `density`.
       handoff: what stays as it is, and why the stage does not touch it: the
         two rings that close through an array element rather than a property;
         the two cases whose subject is an unusual way to spend a creation

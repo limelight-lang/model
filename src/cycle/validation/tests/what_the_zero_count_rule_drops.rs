@@ -31,28 +31,25 @@ fn a_member_at_count_zero_drops_the_component_whole() {
         .build();
 
     let mut arena = Arena::new();
+    let [first, second] = unsafe { ring(&mut arena, [ring_node, ring_node]) };
     let mut context = LLContext { arena: &mut arena };
-    let first = unsafe { new_constructed(&mut context, ring_node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, ring_node, MemoryCategory::GcHeap) };
     let head = unsafe { new_constructed(&mut context, chain_node, MemoryCategory::GcHeap) };
     let tail = unsafe { new_constructed(&mut context, chain_node, MemoryCategory::GcHeap) };
 
     unsafe {
-        store_prop(&mut arena, first, prop_offset(0), second);
-        store_prop(&mut arena, second, prop_offset(0), first);
         store_prop(&mut arena, first, prop_offset(1), head);
         store_prop(&mut arena, head, prop_offset(0), tail);
 
         // From here the graph holds every entity and nothing else does,
         // which leaves all four rows at zero and reads both components as
         // unreachable.
-        for entity in [first, second, head, tail] {
+        for entity in [head, tail] {
             assert!(!ll_release(entity as *mut RcHeader));
         }
-    }
 
-    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second, head, tail]) };
-    shadow_arena.reset();
+        // The chain hangs off the ring, so the trace has to name all four.
+        traced_unreachable(first, &[first, second, head, tail]);
+    }
 
     // The ring's teardown releases the chain's head, which reaches zero.
     assert!(unsafe { ll_release(head as *mut RcHeader) });

@@ -90,15 +90,12 @@ unsafe fn ring_under(
     let peer = node_class("ReclamationHookedPeer");
     let plain = ClassBuilder::new("ReclamationHookedChild").build();
 
-    let first = unsafe { object(arena, hooked) };
-    let second = unsafe { object(arena, peer) };
+    let [first, second] = unsafe { ring(arena, [hooked, peer]) };
     let child = unsafe { object(arena, plain) };
     unsafe {
-        store_prop(arena, first, prop_offset(0), second);
-        store_prop(arena, second, prop_offset(0), first);
         store_prop(arena, first, prop_offset(1), child);
-        spend_creation_references(&[first, second, child]);
-        read_as_unreachable(first, &[first, second]);
+        spend_creation_references(&[child]);
+        traced_unreachable(first, &[first, second]);
     }
 
     OUTSIDE_OCCUPANT.store(child as usize, Ordering::Relaxed);

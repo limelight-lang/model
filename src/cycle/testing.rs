@@ -171,9 +171,22 @@ pub(crate) unsafe fn traced_unreachable_ring<const MEMBERS: usize>(
 ) -> [*mut Object; MEMBERS] {
     let members = unsafe { ring(arena, classes) };
     let expected: Vec<*mut Object> = members.to_vec();
-    let mut scratch = unsafe { traced_unreachable_from(members[0], &expected) };
-    scratch.reset();
+    unsafe { traced_unreachable(members[0], &expected) };
     members
+}
+
+/// Read `members` as potentially unreachable through a real trace and let the
+/// rows go — the state a component reaches an exact validation in.
+///
+/// It is [`traced_unreachable_ring`]'s second half, taken alone by a case that
+/// attaches something to its ring before the trace: an external child the
+/// trace has to meet as a live external, a second ring naming the first.
+///
+/// # Safety
+/// As [`traced_unreachable_from`].
+pub(crate) unsafe fn traced_unreachable(root: *mut Object, members: &[*mut Object]) {
+    let mut scratch = unsafe { traced_unreachable_from(root, members) };
+    scratch.reset();
 }
 
 /// Break every edge of a ring nothing else holds and free its members.

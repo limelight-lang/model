@@ -68,18 +68,15 @@ fn the_children_are_dropped_in_the_order_the_sever_displaced_them() {
         .build();
 
     let mut arena = Arena::new();
-    let first = unsafe { object(&mut arena, holder) };
-    let second = unsafe { object(&mut arena, peer) };
+    let [first, second] = unsafe { ring(&mut arena, [holder, peer]) };
     let earlier = unsafe { object(&mut arena, child) };
     let later = unsafe { object(&mut arena, child) };
 
     unsafe {
-        store_prop(&mut arena, first, prop_offset(0), second);
-        store_prop(&mut arena, second, prop_offset(0), first);
         store_prop(&mut arena, first, prop_offset(1), earlier);
         store_prop(&mut arena, first, prop_offset(2), later);
-        spend_creation_references(&[first, second, earlier, later]);
-        read_as_unreachable(first, &[first, second]);
+        spend_creation_references(&[earlier, later]);
+        traced_unreachable(first, &[first, second]);
     }
 
     DROPS.store(0, Ordering::Relaxed);
@@ -115,15 +112,12 @@ fn a_second_component_reuses_the_segment_the_first_one_emptied() {
     let mut arena = Arena::new();
     let node = node_class("ReclamationSegmentNode");
     let components: [[*mut Object; 2]; 2] = std::array::from_fn(|_| {
-        let first = unsafe { object(&mut arena, node) };
-        let second = unsafe { object(&mut arena, node) };
+        let [first, second] = unsafe { ring(&mut arena, [node, node]) };
         let child = unsafe { object(&mut arena, plain) };
         unsafe {
-            store_prop(&mut arena, first, prop_offset(0), second);
-            store_prop(&mut arena, second, prop_offset(0), first);
             store_prop(&mut arena, first, prop_offset(1), child);
-            spend_creation_references(&[first, second, child]);
-            read_as_unreachable(first, &[first, second]);
+            spend_creation_references(&[child]);
+            traced_unreachable(first, &[first, second]);
         }
 
         [first, second]
@@ -166,14 +160,10 @@ fn a_cell_a_destructor_created_is_nulled_at_the_member_s_own_free() {
     AMBIENT_ARENA.store(arena as usize, Ordering::Relaxed);
     RECREATED_CELL.store(0, Ordering::Relaxed);
 
-    let first = unsafe { object(&mut *arena, speaking) };
-    let second = unsafe { object(&mut *arena, peer) };
-    unsafe {
-        store_prop(arena, first, prop_offset(0), second);
-        store_prop(arena, second, prop_offset(0), first);
-        spend_creation_references(&[first, second]);
-        read_as_unreachable(first, &[first, second]);
-    }
+    // The arena is reached through the one raw pointer this case holds, which
+    // is what keeps the destructor's own reborrow legal under Miri.
+    let [first, second] = unsafe { ring(&mut *arena, [speaking, peer]) };
+    unsafe { traced_unreachable(first, &[first, second]) };
 
     let mut scratch = open_arena();
     let mut members = headers([first, second]);
