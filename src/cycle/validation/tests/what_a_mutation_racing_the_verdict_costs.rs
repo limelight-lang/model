@@ -27,8 +27,7 @@ fn a_reference_taken_after_the_verdict_leaves_the_ring_externally_referenced() {
     let mut context = LLContext { arena: &mut arena };
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
 
-    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
-    shadow_arena.reset();
+    unsafe { read_as_unreachable(first, &[first, second]) };
 
     // The mutation, through the store barrier the mutator uses: the
     // keeper is a live root the trace never reached.
@@ -71,8 +70,7 @@ fn the_same_ring_without_the_store_is_unreachable() {
     // store and by nothing else, allocations included.
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
 
-    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
-    shadow_arena.reset();
+    unsafe { read_as_unreachable(first, &[first, second]) };
 
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(

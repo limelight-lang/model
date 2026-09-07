@@ -151,7 +151,7 @@ pub(crate) mod stack;
     expect(dead_code, reason = "the collection that drives both phases is S36.7")
 )]
 pub(crate) mod trace;
-// The row readers the mark's tests and the scan's tests share. Test
+// The row readers and the ring fixtures the collector's tests share. Test
 // builds only.
 #[cfg(test)]
 pub(crate) mod testing;

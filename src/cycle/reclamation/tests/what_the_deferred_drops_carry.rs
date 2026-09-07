@@ -76,7 +76,7 @@ fn the_children_are_dropped_in_the_order_the_sever_displaced_them() {
         store_prop(&mut arena, first, prop_offset(1), earlier);
         store_prop(&mut arena, first, prop_offset(2), later);
         spend_creation_references(&[earlier, later]);
-        traced_unreachable(first, &[first, second]);
+        read_as_unreachable(first, &[first, second]);
     }
 
     DROPS.store(0, Ordering::Relaxed);
@@ -117,7 +117,7 @@ fn a_second_component_reuses_the_segment_the_first_one_emptied() {
         unsafe {
             store_prop(&mut arena, first, prop_offset(1), child);
             spend_creation_references(&[child]);
-            traced_unreachable(first, &[first, second]);
+            read_as_unreachable(first, &[first, second]);
         }
 
         [first, second]
@@ -163,7 +163,7 @@ fn a_cell_a_destructor_created_is_nulled_at_the_member_s_own_free() {
     // The arena is reached through the one raw pointer this case holds, which
     // is what keeps the destructor's own reborrow legal under Miri.
     let [first, second] = unsafe { ring(&mut *arena, [speaking, peer]) };
-    unsafe { traced_unreachable(first, &[first, second]) };
+    unsafe { read_as_unreachable(first, &[first, second]) };
 
     let mut scratch = open_arena();
     let mut members = headers([first, second]);

@@ -26,7 +26,7 @@ fn a_component_whose_children_have_no_room_is_left_whole() {
         // live external rather than as a member.
         store_prop(&mut arena, first, prop_offset(1), child);
         spend_creation_references(&[child]);
-        traced_unreachable(first, &[first, second]);
+        read_as_unreachable(first, &[first, second]);
     }
 
     // The bump has nothing left to grant, so the reservation is what asks the
@@ -75,10 +75,9 @@ fn a_component_whose_children_have_no_room_is_left_whole() {
         "and the child it names still counts that edge"
     );
 
-    // The fixture's own teardown, by hand: what the refusal left is a ring
-    // nothing else holds, and the case owes it the death the collection could
-    // not perform.
-    // The child goes with the members: the death of the member holding it
+    // The fixture's own teardown: what the refusal left is a ring nothing else
+    // holds, and the case owes it the death the collection could not perform.
+    // The child goes with the members — the death of the member holding it
     // releases the edge at property 1.
     unsafe { dismantle_ring(&mut arena, [first, second]) };
 

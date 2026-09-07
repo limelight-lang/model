@@ -318,8 +318,7 @@ fn a_survivor_the_release_decrements_is_registered_as_a_candidate() {
         assert!(!ll_release(keeper_member as *mut RcHeader));
     }
 
-    let mut shadow_arena = unsafe { traced_unreachable_from(peer, &[peer, keeper_member]) };
-    shadow_arena.reset();
+    unsafe { read_as_unreachable(peer, &[peer, keeper_member]) };
 
     let mut finalization = Finalization::begin();
     let mut members = [peer as *mut RcHeader, keeper_member as *mut RcHeader];

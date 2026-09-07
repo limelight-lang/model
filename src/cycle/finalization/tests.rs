@@ -1,8 +1,6 @@
 use super::*;
 use crate::class::ClassBuilder;
-use crate::cycle::testing::{
-    dismantle_ring, ring, traced_unreachable_from, traced_unreachable_ring,
-};
+use crate::cycle::testing::{dismantle_ring, read_as_unreachable, ring, traced_unreachable_ring};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;

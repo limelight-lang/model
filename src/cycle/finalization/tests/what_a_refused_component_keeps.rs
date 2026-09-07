@@ -139,8 +139,7 @@ fn a_zero_count_member_leaves_the_component_and_its_cell_alone() {
         }
     }
 
-    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second, head, tail]) };
-    shadow_arena.reset();
+    unsafe { read_as_unreachable(first, &[first, second, head, tail]) };
 
     // The ring's own teardown is what releases the chain's head to zero.
     assert!(unsafe { ll_release(head as *mut RcHeader) });

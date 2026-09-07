@@ -6,9 +6,10 @@
 //!
 //! Beside the row readers stand the fixtures every case of the tree needs: a
 //! ring of GC-heap objects ([`ring`]), the same read as potentially
-//! unreachable ([`traced_unreachable_ring`]) and the teardown that takes one
-//! apart ([`dismantle_ring`]). What a case attaches to a ring — an outside
-//! holder, an external child, a weak cell, a destructor — stays in the case.
+//! unreachable ([`traced_unreachable_ring`]), that reading taken alone
+//! ([`read_as_unreachable`]) and the teardown that takes a ring apart
+//! ([`dismantle_ring`]). What a case attaches to a ring — an outside holder,
+//! an external child, a weak cell, a destructor — stays in the case.
 //!
 //! The row readers own nothing, allocate nothing and order nothing: each reads
 //! a row the caller's arena holds, through
@@ -121,14 +122,24 @@ pub(crate) unsafe fn traced_unreachable_from(
 /// another property, a weak cell, a destructor. The ring is what they have in
 /// common and all this builds.
 ///
-/// The trace is the caller's too, and [`traced_unreachable_ring`] is the one
-/// most of them want. A case that reads rows of its own — a colour outside the
-/// component, a working count after the mark alone — runs the phases itself
-/// and takes this.
+/// **The trace is the caller's.** [`traced_unreachable_ring`] is this followed
+/// by one, and it is what a case takes when the ring is the whole graph. This
+/// one is for the three that cannot use it: a case that attaches a child or a
+/// chain the trace has to meet, and then calls [`read_as_unreachable`]; one
+/// that runs the phases itself to read a row of its own; and one that traces
+/// nothing at all.
+///
+/// **Every member comes back registered as a candidate.** The creation
+/// references are spent through `ll_release`, so the gate admits each member
+/// and leaves `CANDIDATE_BIT` up with one queue entry naming it — the state a
+/// root of a real collection is in, and the reason a case whose subject is
+/// that bit builds its ring itself.
 ///
 /// # Safety
 /// The caller runs on a quiescent heap under `memory::block_pool::test_guard`,
-/// and takes the ring apart through [`dismantle_ring`] or by hand.
+/// `arena` is this thread's, every class carries one Box property at
+/// `prop_offset(0)`, and the ring is taken apart through [`dismantle_ring`] or
+/// by hand.
 pub(crate) unsafe fn ring<const MEMBERS: usize>(
     arena: &mut Arena,
     classes: [*const Class; MEMBERS],
@@ -148,7 +159,10 @@ pub(crate) unsafe fn ring<const MEMBERS: usize>(
         }
 
         for &member in &members {
-            assert!(!ll_release(member as *mut RcHeader));
+            assert!(
+                !ll_release(member as *mut RcHeader),
+                "an edge of the ring holds this member"
+            );
         }
     }
 
@@ -171,7 +185,7 @@ pub(crate) unsafe fn traced_unreachable_ring<const MEMBERS: usize>(
 ) -> [*mut Object; MEMBERS] {
     let members = unsafe { ring(arena, classes) };
     let expected: Vec<*mut Object> = members.to_vec();
-    unsafe { traced_unreachable(members[0], &expected) };
+    unsafe { read_as_unreachable(members[0], &expected) };
     members
 }
 
@@ -179,12 +193,14 @@ pub(crate) unsafe fn traced_unreachable_ring<const MEMBERS: usize>(
 /// rows go — the state a component reaches an exact validation in.
 ///
 /// It is [`traced_unreachable_ring`]'s second half, taken alone by a case that
-/// attaches something to its ring before the trace: an external child the
-/// trace has to meet as a live external, a second ring naming the first.
+/// builds more than a ring: an external child at another property, a chain
+/// hanging off one member. Such a graph is traced after it is whole, and
+/// `members` names the component the case will ask about rather than
+/// everything the trace meets.
 ///
 /// # Safety
 /// As [`traced_unreachable_from`].
-pub(crate) unsafe fn traced_unreachable(root: *mut Object, members: &[*mut Object]) {
+pub(crate) unsafe fn read_as_unreachable(root: *mut Object, members: &[*mut Object]) {
     let mut scratch = unsafe { traced_unreachable_from(root, members) };
     scratch.reset();
 }
@@ -197,6 +213,11 @@ pub(crate) unsafe fn traced_unreachable(root: *mut Object, members: &[*mut Objec
 ///
 /// A member holding a child at another property needs no null store of its
 /// own — the death path releases every cell the member still holds.
+///
+/// **The slots do not come back to the allocator.** The null store decrements
+/// each member through the candidate gate, so a queue entry names it at its
+/// free and `ll_free` withholds the slot until the entry is retired
+/// (`PLAN.md` S39.1). A case that counts free slots is counting something else.
 ///
 /// # Safety
 /// Every member is a live object of this thread's GC heap, unguarded, linked

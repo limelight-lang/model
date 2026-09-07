@@ -95,7 +95,7 @@ unsafe fn ring_under(
     unsafe {
         store_prop(arena, first, prop_offset(1), child);
         spend_creation_references(&[child]);
-        traced_unreachable(first, &[first, second]);
+        read_as_unreachable(first, &[first, second]);
     }
 
     OUTSIDE_OCCUPANT.store(child as usize, Ordering::Relaxed);

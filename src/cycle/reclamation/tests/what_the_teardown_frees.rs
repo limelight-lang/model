@@ -72,7 +72,7 @@ unsafe fn ring_with_a_child(arena: &mut Arena, child_class: *const Class) -> Rin
     unsafe {
         store_prop(arena, first, prop_offset(1), child);
         spend_creation_references(&[child]);
-        traced_unreachable(first, &[first, second]);
+        read_as_unreachable(first, &[first, second]);
     }
 
     RingWithAChild {
@@ -150,7 +150,7 @@ fn an_edge_inside_the_component_writes_no_candidate_entry() {
         store_prop(&mut arena, second, prop_offset(0), first);
         spend_creation_references(&[first]);
         crate::refcount::mutator_unguard_release(second as *mut RcHeader);
-        traced_unreachable(first, &[first, second]);
+        read_as_unreachable(first, &[first, second]);
     }
 
     assert!(

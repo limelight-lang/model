@@ -920,7 +920,7 @@ is about them.
         outsider after the ring rather than before: the ring's death releases
         the edge at property 1 that holds it. 785 tests at one thread and at
         four.
-- [ ] S45.3 The reclamation group, and the sweep
+- [x] S45.3 The reclamation group, and the sweep
       done: the four inline sites and the two builders of `reclamation/tests/`
         are converted, `read_as_unreachable` deleted with its last caller, and
         `what_a_refused_reservation_keeps`'s by-hand teardown replaced by
@@ -935,6 +935,29 @@ is about them.
         by hand and each says why at the site: the candidate-entry case, whose
         premise is a member whose creation reference was *not* spent through
         the gate, and the ignored benchmark in `density`.
+      Code Reviewer 2026-09-07, the stage's declared role: nine findings, three
+        comment repairs made in place. **The fixture's own comments were what
+        it found**, and the stage's premise is why they matter — a sentence at
+        a declaration read once and trusted twenty times. Taken: the new
+        `read_as_unreachable` claimed its callers' children are met as live
+        externals, which a probe read as potentially unreachable — every caller
+        spends the child's creation reference, so the child is garbage the
+        teardown's queue drops; `ring`'s safety clause had dropped "`arena` is
+        this thread's and every class carries one Box property at
+        `prop_offset(0)`", which three of the five deleted builders carried and
+        which a class built with `prop_pointer` would break silently; `cell_on`
+        gave the cell's position after the trace a causal reason it does not
+        have; the helper was not adopted at six sites inside the stage's own
+        files; and two facts a caller cannot see went into the two docs — that
+        `ring` leaves every member registered as a candidate, and that
+        `dismantle_ring` frees members whose slots stay withheld. The helper is
+        `read_as_unreachable` rather than `traced_unreachable` on its reading
+        too: the name is the act. Also taken from it: the divergence between
+        the ruling and the DECISIONS entry, recorded as an entry of its own.
+        It reports a Miri run over `cycle::` of its own — 227 passed, 715 s of
+        Miri's clock — which is the run the reborrow of the arena inside `ring`
+        needs; run again here it reported the same population, 227 passed and
+        21 ignored, in 716 s of Miri's clock against 20 m 29 s of the wall.
       handoff: what stays as it is, and why the stage does not touch it: the
         two rings that close through an array element rather than a property;
         the two cases whose subject is an unusual way to spend a creation

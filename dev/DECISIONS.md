@@ -8,6 +8,29 @@ never edited or deleted.
 
 ---
 
+## 2026-09-07 — `confirmed_ring` takes the shared builder after all, and the exclusion list is three names shorter
+
+Owner: S45. A correction to the entry below it, "the ring fixture is two
+functions rather than one builder with parameters", whose list of sites left
+alone was written from the proposal rather than from the ruling that answered
+it.
+
+**What the ruling actually excluded:** the two rings that close through an
+array element, the two cases whose subject is an unusual way to spend a
+creation reference, both `two_rings`, and `density::tests::build`. Four sites
+the proposal had excluded were returned to the work and are converted:
+`confirmed_ring`, which takes the untraced `ring` and keeps its own
+`Finalization::confirm`; `the_same_ring_without_the_store_is_unreachable`,
+which keeps its unused keeper allocation ahead of the trace so the two arms
+still differ by one store; `what_the_premise_check_costs`, whose six members
+are `[node; 6]` now, the runtime length never having been its subject; and the
+two zero-count cases, which take the ring half and keep their chain.
+
+**Why it is written down rather than corrected in place:** an entry is a
+record of the day it was made (`dev/DECISIONS.md`, the header), and a reader
+running that entry's list against the tree finds a name that does not resolve.
+This is that reader's answer.
+
 ## 2026-09-07 — the ring fixture is two functions rather than one builder with parameters
 
 Owner: S45. Ruled by the Sage before the first edit, over a survey that found

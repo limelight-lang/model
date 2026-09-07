@@ -48,7 +48,7 @@ fn a_member_at_count_zero_drops_the_component_whole() {
         }
 
         // The chain hangs off the ring, so the trace has to name all four.
-        traced_unreachable(first, &[first, second, head, tail]);
+        read_as_unreachable(first, &[first, second, head, tail]);
     }
 
     // The ring's teardown releases the chain's head, which reaches zero.

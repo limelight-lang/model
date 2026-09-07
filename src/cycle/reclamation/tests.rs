@@ -1,7 +1,7 @@
 use super::*;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::finalization::{Finalization, Revalidated};
-use crate::cycle::testing::{dismantle_ring, open_arena, ring, traced_unreachable};
+use crate::cycle::testing::{dismantle_ring, open_arena, read_as_unreachable, ring};
 use crate::cycle::validation::ValidationResult;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;

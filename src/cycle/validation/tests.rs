@@ -2,7 +2,7 @@ use super::*;
 use crate::class::ClassBuilder;
 use crate::cycle::shadow::Color;
 use crate::cycle::testing::{
-    dismantle_ring, ring, row_color, traced_unreachable, traced_unreachable_from,
+    dismantle_ring, read_as_unreachable, ring, row_color, traced_unreachable_from,
     traced_unreachable_ring,
 };
 use crate::memory::arena::Arena;

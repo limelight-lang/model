@@ -101,8 +101,7 @@ fn a_member_carrying_no_class_word_is_passed_over() {
         assert!(!ll_release(array as *mut RcHeader));
     }
 
-    let mut shadow_arena = unsafe { traced_unreachable_from(holder, &[holder]) };
-    shadow_arena.reset();
+    unsafe { read_as_unreachable(holder, &[holder]) };
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
 
     let mut finalization = Finalization::begin();

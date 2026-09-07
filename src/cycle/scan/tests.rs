@@ -1,7 +1,7 @@
 //! The pair the scan exists for: the same ring, once with a reference
 //! into its middle and once without one.
 //!
-//! Both graphs are traced from the same root and differ in one release,
+//! Both graphs are traced from the same root and differ in one retain,
 //! so what separates them is the working count the mark left. The pair
 //! is the test rather than either half of it: a scan that colours
 //! everything live passes the first alone, and one that colours every zero
