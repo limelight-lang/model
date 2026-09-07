@@ -14,7 +14,7 @@ use crate::cycle::members::MEMBER_CAPACITY;
 use crate::cycle::testing::ring;
 use crate::gc::{ll_gc_collect_cycles, ll_gc_maybe_collect};
 use crate::memory::arena::Arena;
-use crate::memory::block_pool::test_guard;
+use crate::memory::block_pool::{force_oom, test_guard};
 use crate::memory::context::LLContext;
 use crate::object::{Object, new_constructed};
 use crate::refcount::{MemoryCategory, RcHeader, SlotState, ll_release, ll_retain, slot_state};
@@ -230,6 +230,102 @@ fn a_bounded_round_that_frees_nothing_hands_the_rest_to_the_poll() {
         assert!(ll_release(live as *mut RcHeader));
         crate::object::ll_object_die(live);
     }
+}
+
+/// The other producer of a fruitless bounded round, and the one the loop
+/// cannot see coming: a prefix that names only slots this collection has
+/// already freed. An entry is never retired, so the dead stand where the next
+/// bound re-selects them, and the round after a paying one meets nothing.
+/// The ring behind them is handed to the poll rather than read as absent.
+#[test]
+fn a_prefix_of_freed_slots_ends_the_pressure_path_with_an_arming() {
+    let _g = test_guard();
+    let class = node_class(
+        "CollectPressureDeadPrefixNode",
+        counting_destructor as *const (),
+    );
+    let mut arena = Arena::new();
+
+    // Exactly what one harvest holds, registered first, and one component past
+    // it behind them: the first bound frees the pairs, and the bound after
+    // that lands on their entries.
+    let pairs = MEMBER_CAPACITY as usize / 2;
+    let mut members = Vec::with_capacity(pairs * 2);
+    for _ in 0..pairs {
+        members.extend_from_slice(&unsafe { ring(&mut arena, [class, class]) });
+    }
+
+    let ring = unsafe { long_ring(&mut arena, class, MEMBER_CAPACITY as usize + 1) };
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+    crate::gc::disarm();
+
+    assert_eq!(
+        unsafe { collect_under_pressure() },
+        members.len(),
+        "the pairs are freed, and the component past the region is not"
+    );
+    assert!(
+        crate::gc::is_armed(),
+        "so the round that met only their entries hands the rest to the poll"
+    );
+    assert_eq!(
+        unsafe { slot_state(ring[0] as *mut RcHeader) },
+        SlotState::Live
+    );
+
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        ring.len(),
+        "and the poll it armed collects the component"
+    );
+}
+
+/// A collection the memory manager refuses reads no lane, so it proves nothing
+/// about one and hands it to the poll the way a bounded round does. Staged at
+/// the first allocation a collection makes — the workspace, which a thread's
+/// first collection draws — because every refusal past it ends the same way.
+#[test]
+fn a_refused_collection_hands_the_lane_to_the_poll() {
+    let _g = test_guard();
+
+    let (freed, armed) = std::thread::spawn(|| {
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the pool served this thread"
+        );
+
+        let class = node_class("CollectRefusedNode", counting_destructor as *const ());
+        let mut arena = Arena::new();
+        let members = unsafe { ring(&mut arena, [class, class]) };
+        crate::gc::disarm();
+
+        let oom = force_oom();
+        let freed = unsafe { collect_under_pressure() };
+        drop(oom);
+
+        let armed = crate::gc::is_armed();
+        assert_eq!(
+            unsafe { slot_state(members[0] as *mut RcHeader) },
+            SlotState::Live,
+            "the ring stands, the collection having read nothing"
+        );
+
+        assert_eq!(
+            unsafe { ll_gc_maybe_collect() },
+            members.len(),
+            "and the poll it armed collects it once the pool serves again"
+        );
+
+        (freed, armed)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(freed, 0, "a refused collection frees nothing");
+    assert!(
+        armed,
+        "and arms the thread rather than reporting an empty lane"
+    );
 }
 
 /// Every member of a ring nothing holds is freed by one collection, which

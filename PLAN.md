@@ -2762,6 +2762,29 @@ stage claiming the frees while building none of them.
         the rfc's literal "gives its segments back": segments given back with
         their records strand every root in them. The driver is a module of its
         own with one entry per path.
+      Critic 2026-09-07 round 2, over round 1's repairs: six findings, two
+        taken as code. The repaired stop rule had an exit it did not cover — a
+        trace an allocation path refused ended the loop with no arming, which
+        is the one ending that reads no lane at all; it arms now, and a case
+        under `force_oom` on a thread of its own pins it. The dead-prefix
+        producer of a fruitless bounded round had no case; it has one. Taken as
+        prose: the ledger paragraph of `merge_candidates` contradicted itself
+        and missed the overflow buffer's own charge, the `CollectingThread`
+        note had the unwind's order backwards — the inner frames' drops run
+        before the `extern "C"` boundary aborts — and the membership's
+        assertion comment said no counter of the chain would see a truncated
+        walk, where `Revalidation::close` does see it, after the damage.
+        Verified and not a defect: the full head's splice, against every reader
+        of the chain and both sides of the ledger; the loop's termination; and
+        that the arming never fires with nothing behind it.
+      note 2026-09-07 — what the pressure path returns is a fraction of what
+        the heap holds, and the fraction is unpriced. Round 2's worked example:
+        3,000 garbage pairs and one component past the region freed 750 pairs
+        over five traces and handed the rest to the poll, because the bound
+        restarts from half the roots after every paying round while the freed
+        entries stay in the lane at exactly the positions the next bound
+        re-selects. The yield is S39.1's to change — retiring an entry is what
+        empties the dead prefix — and S40.1's to measure.
       Critic 2026-09-07 round 1, two lenses: six findings, three taken. The
         pressure loop read an empty harvest under a bound as an empty heap and
         ended with garbage standing and the thread unarmed — a bounded round

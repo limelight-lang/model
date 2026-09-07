@@ -75,20 +75,22 @@ thread_local! {
 /// down as well. **Which unwind that is, is narrow.** A user destructor is an
 /// `unsafe extern "C" fn` and a Limelight exception is caught at its own
 /// boundary, so no user code unwinds into this frame
-/// (`rfc/runtime/exceptions.md`, and `crate::object::DestructorFn`); the two
-/// ABI entries are `extern "C"` too, so a panic raised anywhere inside one of
-/// them ends the process before any drop of this module runs. What is left is
-/// a panic in the crate's own code reaching the `pub(crate)` entries, which is
-/// a debug build's assertion — and there the flag falling is what keeps one
-/// failed collection from stopping every later one.
+/// (`rfc/runtime/exceptions.md`, and `crate::object::DestructorFn`). What
+/// remains is a panic in the crate's own code, which is an assertion, and only
+/// where the profile unwinds: the release profile aborts at the panic itself.
+/// Reached through the two `extern "C"` ABI entries such a panic still ends the
+/// process — but at their boundary and not before it, so the drops of every
+/// frame below run first, this flag's among them.
 ///
-/// **What such an unwind leaves standing is the whole commit**: every drop of
-/// the finalization chain is silent while panicking, so every member of the
-/// union keeps its guard reference and its nulled weak cells, and a guarded
-/// member reads as externally referenced at every later trace. The thread
-/// itself is clean — the window closed, the returns made, the batch merged,
-/// the workspace given back — and that memory is lost for the life of the
-/// process.
+/// **What that unwind leaves standing is the commit it was in the middle of.**
+/// Every drop of the finalization chain is silent while panicking, so a member
+/// the teardown had not reached keeps its guard reference and its nulled weak
+/// cells, and reads as externally referenced at every later trace; a member it
+/// had reached is freed or carries its true count. The children a sever had
+/// already queued are rewound with the arena rather than dropped, so their
+/// counted references go with them. The thread itself is clean — the window
+/// closed, the returns made, the batch merged, the workspace given back — and
+/// that memory is lost for the life of the process.
 struct CollectingThread;
 
 impl CollectingThread {
@@ -194,11 +196,13 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
 /// (`dev/DECISIONS.md`, "the commit clears no candidate bit") — so the
 /// stopping condition is progress rather than an empty queue.
 ///
-/// **A bounded round that ends the loop arms the thread**, whether it ended on
-/// an overflow at one root or on a teardown that freed nothing. Only a round
-/// that traced every root and freed nothing has read the whole lane; a bounded
-/// one has read a prefix of it, and what stands behind that prefix is garbage
-/// this path is leaving to the poll rather than garbage that is not there.
+/// **A round that ends the loop without having read the whole lane arms the
+/// thread.** That is a bounded round — one that overflowed at a single root,
+/// or whose teardown freed nothing — and a round of either kind that an
+/// allocation path refused. Only a round that traced every root and freed
+/// nothing has read the whole lane; every other ending leaves a prefix behind,
+/// and what stands behind it is garbage this path is handing to the poll
+/// rather than garbage that is not there.
 ///
 /// **Nothing in the crate starts one yet.** The allocation slow path is where
 /// a refusal becomes a collection, and `PLAN.md` S36.15 is the step that puts
@@ -222,8 +226,22 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     let mut freed = 0;
     let mut roots = ALL_ROOTS;
     loop {
-        let Some(mut standing) = (unsafe { trace_and_harvest(roots) }) else {
-            break;
+        let mut standing = match unsafe { trace_and_harvest(roots) } {
+            Traced::Harvested(standing) => standing,
+            // Nothing was registered, so there is nothing this path can do and
+            // nothing for a later poll to do either.
+            Traced::Nothing => break,
+            // The trace met a refused allocation path, which under the
+            // pressure that started this collection is the ordinary answer
+            // rather than a surprise (`dev/DECISIONS.md`, "under memory
+            // starvation a collection ends itself and gives back everything").
+            // It read no lane and proved nothing about one, so it ends the
+            // loop the way a bounded round does: the poll is what tries again,
+            // on whatever memory the ending itself gave back.
+            Traced::AllocationFailed => {
+                crate::gc::arm();
+                break;
+            }
         };
 
         if standing.overflowed() {
@@ -294,43 +312,59 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
 /// first `roots` roots of it, and close the window so that its sweep harvests
 /// the unreachable rows into the thread's member list.
 ///
-/// `None` is every end short of a list: a workspace the manager refused, an
-/// empty lane, a trace an allocation path refused, and a close that found no
-/// list armed. Each of them leaves the heap as it was and every root
-/// registered.
+/// [`Traced::Nothing`] is the lane that holds nothing and the window that could
+/// not be opened; [`Traced::AllocationFailed`] is the trace an allocation path refused
+/// and the close that found no list armed. Each of them leaves the heap as it
+/// was and every root registered, and they are told apart because one says the
+/// lane is empty and the other says nothing about it at all.
 ///
 /// The window is closed here rather than by the caller, which is what makes
 /// the blocks go back before the teardown reads the list.
 ///
 /// # Safety
 /// As [`collect_under_pressure`].
-unsafe fn trace_and_harvest(roots: usize) -> Option<HarvestedMembers> {
-    let mut window = ActiveTrace::open()?;
-    window.detach_candidates();
+unsafe fn trace_and_harvest(roots: usize) -> Traced {
+    let Some(mut window) = ActiveTrace::open() else {
+        return Traced::AllocationFailed;
+    };
 
+    window.detach_candidates();
     let (arena, batch) = window.rows_and_roots();
     if batch.is_empty() {
-        return None;
+        return Traced::Nothing;
     }
 
     let (outcome, roots_traced) = unsafe { trace_batch(arena, batch, roots) };
     if outcome != TraceOutcome::Complete {
-        return None;
+        return Traced::AllocationFailed;
     }
 
     // Armed after the trace answered and never before: a trace that gave up
     // leaves no colour that is a verdict, and a harvest of its rows would name
     // entities no scan classified (`crate::cycle::deferred_slot_reuse`).
     if !window.arm_harvest(MEMBER_CAPACITY) {
-        return None;
+        return Traced::AllocationFailed;
     }
 
     drop(window);
-    let members = crate::cycle::members::take_standing()?;
-    Some(HarvestedMembers {
-        members,
-        roots_traced,
-    })
+    match crate::cycle::members::take_standing() {
+        Some(members) => Traced::Harvested(HarvestedMembers {
+            members,
+            roots_traced,
+        }),
+        None => Traced::AllocationFailed,
+    }
+}
+
+/// What one trace of the pressure path answered.
+enum Traced {
+    /// The sweep harvested a list, which may be empty.
+    Harvested(HarvestedMembers),
+    /// The lane held no root at all.
+    Nothing,
+    /// An allocation path refused, or the memory the window stands on could
+    /// not be had. Nothing was read, so nothing about the lane was proved.
+    AllocationFailed,
 }
 
 /// What one trace of the pressure path left behind: the harvested list, and
