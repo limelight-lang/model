@@ -9,7 +9,7 @@
 
 use super::*;
 
-use crate::memory::block_pool::BlockPool;
+use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockPool};
 use crate::memory::gc_metadata;
 use crate::test_support::allocation_probe;
 
@@ -330,6 +330,125 @@ fn a_merged_batch_keeps_its_full_segment_behind_the_live_chain() {
         "the records of the two write positions first, then the full \
          segment's own oldest"
     );
+
+    reset();
+}
+
+/// A head the detach caught at capacity is spliced with the segments behind
+/// it rather than copied in. Copying one always takes the growth path — a full
+/// head cannot fit the room a live head has left — and the segment it would
+/// displace is charged either way, so the splice takes that charge where the
+/// growth would have.
+#[test]
+fn a_full_batch_head_is_spliced_and_charged_rather_than_copied() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares(), "the cells start full");
+
+    let mut filler = candidate(2);
+    let filler_entity = &raw mut filler;
+    let mut oldest = candidate(2);
+    let oldest_entity = &raw mut oldest;
+    assert!(unsafe { !release(oldest_entity) });
+    fill_write_segment(filler_entity);
+
+    let batch = detach_candidates();
+    assert!(refill_spares(), "the registration below grows from a cell");
+
+    let mut severed = candidate(2);
+    let severed_entity = &raw mut severed;
+    assert!(unsafe { !release(severed_entity) });
+    assert_eq!(segment_count(), 1);
+
+    let blocks_before = BlockPool::global().blocks_out();
+    let spares_before = spare_count();
+    gc_metadata::lower_thread_peak_to_current();
+    let charged_before = gc_metadata::thread_stats().current_bytes_in_use();
+
+    merge_candidates(batch);
+
+    assert_eq!(
+        segment_count(),
+        2,
+        "the head went into the chain rather than through the write"
+    );
+    assert_eq!(
+        candidate_count(),
+        1 + SEGMENT_CAPACITY,
+        "counted by the fill rule, which holds of the spliced head"
+    );
+    assert_eq!(
+        spare_count(),
+        spares_before,
+        "no cell was spent and none was taken back"
+    );
+    assert_eq!(BlockPool::global().blocks_out(), blocks_before);
+    assert_eq!(
+        gc_metadata::thread_stats().current_bytes_in_use(),
+        charged_before + BLOCK_PAYLOAD,
+        "and the segment that left the write position carries its payload"
+    );
+
+    let mut after = Vec::new();
+    collect_lane_tokens(&mut after);
+    assert_eq!(after.len(), 1 + SEGMENT_CAPACITY);
+    assert_eq!(&after[..2], &[severed_entity, oldest_entity]);
+
+    reset();
+}
+
+/// The copy of a part-filled head can fill the live write segment, and then it
+/// takes the growth path — one growth at most, because what is copied fits the
+/// room the live head has left plus one fresh segment. The records survive it
+/// whichever tier funds the segment.
+#[test]
+fn a_copy_that_fills_the_live_head_grows_once_and_keeps_every_record() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares(), "the cells start full");
+
+    // The batch's head holds one record and the live head is full, so the
+    // copy of that one record cannot fit and has to grow.
+    let mut detached = candidate(2);
+    let detached_entity = &raw mut detached;
+    assert!(unsafe { !release(detached_entity) });
+    let batch = detach_candidates();
+
+    assert!(refill_spares(), "the growths below draw from cells");
+    let mut filler = candidate(2);
+    let filler_entity = &raw mut filler;
+    let mut severed = candidate(2);
+    let severed_entity = &raw mut severed;
+    assert!(unsafe { !release(severed_entity) });
+    fill_write_segment(filler_entity);
+    assert_eq!(candidate_count(), SEGMENT_CAPACITY);
+
+    merge_candidates(batch);
+
+    assert_eq!(
+        candidate_count(),
+        SEGMENT_CAPACITY + 1,
+        "the record crossed into a lane that had no room for it"
+    );
+    assert_eq!(
+        segment_count(),
+        2,
+        "which is the growth the copy took, and only one"
+    );
+    assert_eq!(
+        overflow_len(),
+        0,
+        "funded by a cell rather than by the tier below"
+    );
+
+    let mut after = Vec::new();
+    collect_lane_tokens(&mut after);
+    assert_eq!(after.len(), SEGMENT_CAPACITY + 1);
+    assert_eq!(
+        after[0], detached_entity,
+        "the copied record is the newest of the lane"
+    );
+    assert_eq!(after[1], severed_entity, "and the lane's own is behind it");
 
     reset();
 }

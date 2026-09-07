@@ -71,9 +71,24 @@ thread_local! {
 /// The right to run one collection on this thread, taken for as long as one
 /// runs.
 ///
-/// The flag falls with this value, on the ordinary exit and on an unwind out of
-/// a destructor alike — which is what keeps one raising destructor from
-/// stopping every later collection of the thread.
+/// The flag falls with this value, and an unwind that reaches its drop takes it
+/// down as well. **Which unwind that is, is narrow.** A user destructor is an
+/// `unsafe extern "C" fn` and a Limelight exception is caught at its own
+/// boundary, so no user code unwinds into this frame
+/// (`rfc/runtime/exceptions.md`, and `crate::object::DestructorFn`); the two
+/// ABI entries are `extern "C"` too, so a panic raised anywhere inside one of
+/// them ends the process before any drop of this module runs. What is left is
+/// a panic in the crate's own code reaching the `pub(crate)` entries, which is
+/// a debug build's assertion — and there the flag falling is what keeps one
+/// failed collection from stopping every later one.
+///
+/// **What such an unwind leaves standing is the whole commit**: every drop of
+/// the finalization chain is silent while panicking, so every member of the
+/// union keeps its guard reference and its nulled weak cells, and a guarded
+/// member reads as externally referenced at every later trace. The thread
+/// itself is clean — the window closed, the returns made, the batch merged,
+/// the workspace given back — and that memory is lost for the life of the
+/// process.
 struct CollectingThread;
 
 impl CollectingThread {
@@ -118,6 +133,12 @@ impl Drop for CollectingThread {
 /// (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 pub(crate) unsafe fn collect_off_the_poll() -> usize {
     let Some(_collecting) = CollectingThread::take() else {
+        // The arming a poll spent to reach this stays spent, which is the
+        // ruling and its cost together: the flag is an event, and a thread
+        // that stayed armed inside its own collection would fire at every poll
+        // of the teardown. What the thread loses is one collection — the
+        // registrations step 4 made stand in the lane until something arms it
+        // again, which the next draw does.
         return 0;
     };
 
@@ -173,6 +194,12 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
 /// (`dev/DECISIONS.md`, "the commit clears no candidate bit") — so the
 /// stopping condition is progress rather than an empty queue.
 ///
+/// **A bounded round that ends the loop arms the thread**, whether it ended on
+/// an overflow at one root or on a teardown that freed nothing. Only a round
+/// that traced every root and freed nothing has read the whole lane; a bounded
+/// one has read a prefix of it, and what stands behind that prefix is garbage
+/// this path is leaving to the poll rather than garbage that is not there.
+///
 /// **Nothing in the crate starts one yet.** The allocation slow path is where
 /// a refusal becomes a collection, and `PLAN.md` S36.15 is the step that puts
 /// the call there.
@@ -206,6 +233,11 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             let traced = standing.roots_traced;
             drop(standing);
             if traced <= 1 {
+                // One root reaches more than the region holds, so no bound
+                // makes this component fit. The poll's collection keeps its
+                // rows and has no region to overflow — though it does have
+                // blocks to be refused, and under the pressure that started
+                // this it may meet the same refusal.
                 crate::gc::arm();
                 break;
             }
@@ -214,29 +246,45 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             continue;
         }
 
-        if standing.members.entities().is_empty() {
-            break;
+        let mut taken = 0;
+        if !standing.members.entities().is_empty() {
+            // The trace's own arena went back with its blocks, so the queue
+            // the sever's displaced children wait in stands in a second one —
+            // over the same workspace, which this thread holds whether or not
+            // the pool has anything (`crate::cycle::reclamation`).
+            let Some(mut arena) = TraceScratchArena::open() else {
+                break;
+            };
+
+            let members = Membership::listed(standing.members.entities_mut());
+            taken = unsafe { commit(&members, &mut arena) };
+            arena.reset();
         }
 
-        // The trace's own arena went back with its blocks, so the queue the
-        // sever's displaced children wait in stands in a second one — over the
-        // same workspace, which this thread holds whether or not the pool has
-        // anything (`crate::cycle::reclamation`).
-        let Some(mut arena) = TraceScratchArena::open() else {
-            break;
-        };
-
-        let members = Membership::listed(standing.members.entities_mut());
-        let taken = unsafe { commit(&members, &mut arena) };
-        arena.reset();
         drop(standing);
         freed += taken;
-
-        if taken == 0 || roots == ALL_ROOTS {
-            break;
+        if taken > 0 && roots != ALL_ROOTS {
+            // A bound was in force and it paid, so the roots past it are worth
+            // another trace — on the memory this teardown just returned.
+            roots = ALL_ROOTS;
+            continue;
         }
 
-        roots = ALL_ROOTS;
+        if roots != ALL_ROOTS {
+            // **A bounded round that freed nothing says nothing about the
+            // roots past the bound**, so this is not "there is no more
+            // garbage" and must not be read as one. Two things produce it and
+            // neither is rare: a prefix that names only slots this loop has
+            // already freed — an entry is never retired, so the dead stand in
+            // the lane where the next bound re-selects them (`dev/DECISIONS.md`,
+            // "the commit clears no candidate bit") — and a prefix whose roots
+            // are live. What the collection can still do for its caller is
+            // hand the rest to the poll, whose own collection keeps its rows
+            // and has no region to overflow.
+            crate::gc::arm();
+        }
+
+        break;
     }
 
     freed

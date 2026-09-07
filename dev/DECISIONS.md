@@ -8,6 +8,47 @@ never edited or deleted.
 
 ---
 
+## 2026-09-07 — a bounded round that frees nothing arms the thread, and a full batch head is spliced rather than copied
+
+Owner: S36.7's Critic round, which found both. Refines the entry below it of the
+same day, whose termination clause read "a round that freed nothing ends the
+loop": that reads two different facts as one.
+
+**"Freed nothing under a bound" is not "there is nothing left to free."** The
+pressure loop traces a prefix of the lane, and two ordinary lanes make that
+prefix worthless. A lane whose oldest records name slots the loop has already
+freed — entries are never retired, so the dead stay exactly where the next bound
+re-selects them — and a lane whose oldest record is a live root, which every
+halving keeps in place. In both the bounded round meets nothing unreachable, and
+the old rule ended the collection reporting what it had freed, with collectable
+garbage standing and the thread unarmed. The rule now: a round that traced
+**every** root and freed nothing ends the loop silently, and a **bounded** round
+that ends it arms the thread first — on an overflow at one root, and on a
+teardown that freed nothing alike. What the poll's collection then has that this
+one did not is that it keeps its rows and has no region to overflow.
+
+**A batch head the detach caught at capacity is spliced with the segments behind
+it.** The merge copies a part-filled head through the ordinary write, and a full
+head cannot fit the room a live head has left, so copying one always takes the
+growth path — a spare cell, or a reserve draw that arms the thread from inside a
+window's close, or the overflow buffer whose bound is an abort. Splicing it costs
+one charge instead: the segment leaves the write position full, which is where
+`append_with_new_segment` charges its payload, and `release_queue_segments`
+discharges one payload for every segment behind the head. Without that charge the
+ledger underflows at the next thread exit, which is how the case that pins it
+fails.
+
+**What neither of them settles.** The loop's cost shape: every unbounded round
+retraces the whole remaining set while the harvest stops at 1,024, so a
+population much larger than the region costs traces in proportion to itself and
+entity visits in proportion to the square. Nobody has priced it, and the
+measurement belongs with S40.1's. And the arming a poll spends to reach a
+collection that refuses it stays spent, which the Sage ruled and both Critics
+raised: the thread loses one collection, and the registrations of the teardown
+it was made inside wait for the next draw to arm again.
+
+---
+
 ## 2026-09-07 — the commit is the whole unreachable set, the rows are one form of its membership, and the batch is merged back
 
 Owner: S36.7. Ruled by the Sage on Edmond's standing instruction, over the four

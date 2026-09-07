@@ -17,7 +17,7 @@ use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
 use crate::object::{Object, new_constructed};
-use crate::refcount::{MemoryCategory, RcHeader, SlotState, ll_release, slot_state};
+use crate::refcount::{MemoryCategory, RcHeader, SlotState, ll_release, ll_retain, slot_state};
 use crate::test_support::{prop_offset, store_prop};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -172,6 +172,64 @@ fn a_component_past_the_region_ends_the_pressure_path_and_arms_the_thread() {
         members.len(),
         "and the poll it armed collects the whole of it"
     );
+}
+
+/// A bound that covers only roots this path cannot free is not a reading of an
+/// empty heap. The lane here opens with a live root, so every halving keeps it
+/// first and the bounded rounds meet nothing unreachable at all; the ring
+/// behind it is neither freed nor lost, and the thread is armed for the poll
+/// that can take it.
+#[test]
+fn a_bounded_round_that_frees_nothing_hands_the_rest_to_the_poll() {
+    let _g = test_guard();
+    let class = node_class(
+        "CollectPressureLiveFirstNode",
+        counting_destructor as *const (),
+    );
+    let mut arena = Arena::new();
+
+    // A registered candidate that is not garbage: the second reference is this
+    // frame's, so the non-final decrement registers it and leaves it live. It
+    // is the oldest record of the lane, which is where every prefix starts.
+    let mut context = LLContext { arena: &mut arena };
+    let live = unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) };
+    unsafe { ll_retain(live as *mut RcHeader) };
+    assert!(!unsafe { ll_release(live as *mut RcHeader) });
+
+    let members = unsafe { long_ring(&mut arena, class, MEMBER_CAPACITY as usize + 1) };
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+    crate::gc::disarm();
+
+    assert_eq!(
+        unsafe { collect_under_pressure() },
+        0,
+        "no bound over this lane holds the ring's membership"
+    );
+    assert!(
+        crate::gc::is_armed(),
+        "so the collection hands the rest to the poll rather than reading its \
+         own bound as an empty heap"
+    );
+    assert_eq!(
+        unsafe { slot_state(members[0] as *mut RcHeader) },
+        SlotState::Live,
+        "and the ring stands, every registration with it"
+    );
+
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        members.len(),
+        "the poll it armed collects the ring and leaves the live root alone"
+    );
+    assert_eq!(
+        unsafe { slot_state(live as *mut RcHeader) },
+        SlotState::Live
+    );
+
+    unsafe {
+        assert!(ll_release(live as *mut RcHeader));
+        crate::object::ll_object_die(live);
+    }
 }
 
 /// Every member of a ring nothing holds is freed by one collection, which

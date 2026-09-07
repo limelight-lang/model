@@ -2762,6 +2762,22 @@ stage claiming the frees while building none of them.
         the rfc's literal "gives its segments back": segments given back with
         their records strand every root in them. The driver is a module of its
         own with one entry per path.
+      Critic 2026-09-07 round 1, two lenses: six findings, three taken. The
+        pressure loop read an empty harvest under a bound as an empty heap and
+        ended with garbage standing and the thread unarmed — a bounded round
+        that ends the loop now arms it. A full batch head was copied through
+        the ordinary write, which always takes the growth path, and is spliced
+        with the segments behind it instead, taking the charge that growth
+        would have made. The row form's walk gave up silently in a release
+        build where a row named no entity; it refuses in every build now.
+        Taken as prose rather than as code: two false sentences in
+        `merge_candidates`'s contract, which said it moves no bytes in the
+        ledger and has no last resort, and the claim that a destructor's unwind
+        takes the collecting flag down — a destructor is `extern "C"` and
+        cannot unwind into that frame. Verified and not a defect — the union's
+        free decision, which the second lens attacked over six heap shapes and
+        found sound; and the second arena the pressure path opens over the same
+        workspace.
       handoff: `cycle::collect` is the order, and `gc`'s two collecting entries
         call `collect_off_the_poll`. `collect_under_pressure` is built and
         called by nothing — the allocation slow path is S36.15's — and it

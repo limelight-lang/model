@@ -114,7 +114,13 @@ impl<'a> Membership<'a> {
             }
             Self::Rows { touched, .. } => {
                 let placed = unsafe { walk_unreachable_rows(touched, visit) };
-                debug_assert!(
+                // In every build, because a walk that stops early hands its
+                // caller a part of the membership and says nothing: the guards
+                // of the members it did not reach stay on, the sever leaves
+                // their edges standing, and no counter of the finalization
+                // chain sees it — the chain counts by `len`, which the
+                // construction took over the whole set.
+                assert!(
                     placed,
                     "a row that named an entity at construction names none now"
                 );

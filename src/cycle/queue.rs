@@ -850,14 +850,21 @@ pub(crate) fn detach_candidates() -> InFlightBatch {
 /// undo (Y6's permanent miss).
 ///
 /// **It has no refusal to report**, which is what lets `ActiveTrace`'s drop
-/// call it on an unwind: the copy below takes at most one growth, and the
-/// growth path's own last resort is the overflow buffer
-/// ([`register_candidate`]).
+/// call it on an unwind. What it does have is the growth path's own last
+/// resorts: the copy below takes at most one growth, and that growth spends a
+/// spare cell, or draws the critical reserve and arms this thread with it, or
+/// writes to the overflow buffer — whose bound is an abort, as it is for any
+/// registration ([`register_candidate`]). A close that reaches the last of
+/// those is a thread whose pool has been refusing across polls.
 ///
-/// **It moves no bytes in the ledger.** The spliced segments left the write
-/// position full and stay charged; a candidate write charges nothing; and the
-/// emptied head was the write segment, whose payload was never charged
-/// ([`release_queue_segments`]).
+/// **What it moves in the ledger is that growth and nothing else.** The
+/// spliced segments left the write position full and stay charged, a candidate
+/// write charges nothing, and the emptied head was the write segment, whose
+/// payload was never charged ([`release_queue_segments`]). Two things do move
+/// it. A growth inside the copy charges the payload of the segment it
+/// displaces, exactly as the same growth would on the release path. And a head
+/// the detach caught at capacity is spliced rather than copied, which is where
+/// that segment leaves the write position, so it takes the same charge there.
 pub(crate) fn merge_candidates(mut batch: InFlightBatch) {
     let head = batch.head;
     if head.is_null() {
@@ -894,13 +901,30 @@ pub(crate) fn merge_candidates(mut batch: InFlightBatch) {
     while !unsafe { (*tail).next }.is_null() {
         tail = unsafe { (*tail).next };
     }
+
+    // A head the detach caught at capacity is spliced with them, that rule
+    // holding of it too. It is the case a copy would pay most for — a full
+    // head cannot fit the room a live head has left, so copying one always
+    // takes the growth path.
+    if fill == SEGMENT_CAPACITY {
+        unsafe { (*tail).next = head };
+        // The charge the ordinary growth makes when a full segment leaves the
+        // write position, made here because this is where that segment leaves
+        // it: the detach caught it before the charge, and
+        // [`release_queue_segments`] discharges one payload for every segment
+        // behind the head.
+        gc_metadata::charge(BLOCK_PAYLOAD);
+        return;
+    }
+
     unsafe { (*tail).next = (*head).next };
+
     unsafe { (*head).next = std::ptr::null_mut() };
 
-    // The head is the one segment the splice cannot take, being part-filled;
-    // its entries go in through the ordinary write instead. That is one growth
-    // at most: what is copied fits the room the live write segment has left
-    // plus one fresh segment, both capacities being the same.
+    // A part-filled head is the one segment the splice cannot take, so its
+    // entries go in through the ordinary write. That is one growth at most:
+    // what is copied fits the room the live write segment has left plus one
+    // fresh segment, both capacities being the same.
     for index in 0..fill {
         let entity = unsafe { segment_entries(head).add(index).read() };
         unsafe { append_entry(state, entity) };

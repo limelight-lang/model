@@ -38,13 +38,15 @@
 //!
 //! # It allocates nothing in a release build, and it cannot be refused
 //!
-//! Every input is already in hand — the member list is the caller's and the
+//! Every input is already in hand — the membership is the caller's and the
 //! counts are the heap's — so this module holds no memory, asks for none, and
-//! has no failure of its own to report. The one exception is the premise
-//! check's in-degree array, which a debug build alone allocates. What it
-//! answers is a [`ValidationResult`], and `Unreachable` is a reading rather
-//! than permission: the finalization protocol that acts on it is `PLAN.md`
-//! S36.3 onward, and it runs after this call rather than inside it.
+//! has no failure of its own to report. The exceptions are the two debug
+//! checks, which a release build does not run at all: each materialises the
+//! membership as a sorted list, because a check indexed by member is what
+//! neither form hands out, and the premise check allocates its in-degree array
+//! beside it. What this module answers is a [`ValidationResult`], and
+//! `Unreachable` is a reading rather than permission: the finalization
+//! protocol that acts on it runs after this call rather than inside it.
 //!
 //! **The premise is checked rather than argued**: a debug build runs it
 //! member by member, because the sum cannot see a defect that invents an
