@@ -17,27 +17,9 @@ fn the_premise_check_walks_every_member_s_cells_once() {
         .build();
 
     let mut arena = Arena::new();
-    let mut context = LLContext { arena: &mut arena };
-    let ring: Vec<*mut Object> = (0..MEMBERS)
-        .map(|_| unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) })
-        .collect();
+    let ring = unsafe { ring(&mut arena, [node; MEMBERS]) };
 
-    unsafe {
-        for (index, &holder) in ring.iter().enumerate() {
-            store_prop(
-                &mut arena,
-                holder,
-                prop_offset(0),
-                ring[(index + 1) % MEMBERS],
-            );
-        }
-
-        for &entity in &ring {
-            assert!(!ll_release(entity as *mut RcHeader));
-        }
-    }
-
-    let mut members: Vec<*mut RcHeader> = ring.iter().map(|&m| m as *mut RcHeader).collect();
+    let mut members = ring.map(|member| member as *mut RcHeader);
     let before = premise_cell_walks();
     assert_eq!(
         unsafe { validate_component(&mut members, 0) },
@@ -49,18 +31,5 @@ fn the_premise_check_walks_every_member_s_cells_once() {
         "one walk per member: the in-degrees are counted in a single pass over the edges"
     );
 
-    unsafe {
-        for &entity in &ring {
-            ll_retain(entity as *mut RcHeader);
-        }
-
-        for &entity in &ring {
-            store_prop(&mut arena, entity, prop_offset(0), std::ptr::null_mut());
-        }
-
-        for &entity in &ring {
-            assert!(ll_release(entity as *mut RcHeader));
-            ll_object_die(entity);
-        }
-    }
+    unsafe { dismantle_ring(&mut arena, ring) };
 }

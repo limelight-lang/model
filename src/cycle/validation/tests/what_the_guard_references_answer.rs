@@ -20,19 +20,7 @@ fn a_guarded_ring_is_unreachable_only_when_the_guard_references_are_subtracted()
         .build();
 
     let mut arena = Arena::new();
-    let mut context = LLContext { arena: &mut arena };
-    let first = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-
-    unsafe {
-        store_prop(&mut arena, first, prop_offset(0), second);
-        store_prop(&mut arena, second, prop_offset(0), first);
-        assert!(!ll_release(first as *mut RcHeader));
-        assert!(!ll_release(second as *mut RcHeader));
-    }
-
-    let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
-    shadow_arena.reset();
+    let [first, second] = unsafe { traced_unreachable_ring(&mut arena, [node, node]) };
 
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     for &member in &members {
@@ -55,13 +43,6 @@ fn a_guarded_ring_is_unreachable_only_when_the_guard_references_are_subtracted()
             assert_eq!(mutator_unguard_release(member), 1);
         }
 
-        ll_retain(first as *mut RcHeader);
-        ll_retain(second as *mut RcHeader);
-        store_prop(&mut arena, first, prop_offset(0), std::ptr::null_mut());
-        store_prop(&mut arena, second, prop_offset(0), std::ptr::null_mut());
-        for entity in [first, second] {
-            assert!(ll_release(entity as *mut RcHeader));
-            ll_object_die(entity);
-        }
+        dismantle_ring(&mut arena, [first, second]);
     }
 }

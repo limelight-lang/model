@@ -1,7 +1,9 @@
 use super::*;
 use crate::class::ClassBuilder;
 use crate::cycle::shadow::Color;
-use crate::cycle::testing::{row_color, traced_unreachable_from};
+use crate::cycle::testing::{
+    dismantle_ring, ring, row_color, traced_unreachable_from, traced_unreachable_ring,
+};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;

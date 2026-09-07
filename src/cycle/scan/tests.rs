@@ -12,60 +12,10 @@ use super::*;
 use crate::class::ClassBuilder;
 use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::row::take_edge_dispatches;
-use crate::cycle::testing::row_color;
+use crate::cycle::testing::{dismantle_ring, ring, row_color};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
-use crate::memory::context::LLContext;
-use crate::object::{Object, ll_object_die, new_constructed};
-use crate::refcount::{MemoryCategory, ll_release, ll_retain};
-use crate::test_support::{prop_offset, store_prop};
-
-/// A two-member ring in the GC heap, each member naming the other, and
-/// the fixture's own reference to the first member released — so the
-/// ring is held from outside by whatever references to `second` the
-/// caller has left standing.
-///
-/// # Safety
-/// The caller runs on a quiescent heap and tears the ring down through
-/// [`drop_ring`].
-unsafe fn ring(arena: &mut Arena, name: &str) -> (*mut Object, *mut Object) {
-    let node = ClassBuilder::new(name).prop("next", true).build();
-    let mut context = LLContext { arena };
-    let first = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-
-    unsafe {
-        store_prop(arena, first, prop_offset(0), second);
-        store_prop(arena, second, prop_offset(0), first);
-        assert!(!ll_release(first as *mut RcHeader));
-    }
-
-    (first, second)
-}
-
-/// Break the ring and free both members, whatever the trace decided:
-/// the collector frees nothing yet, so the fixture is what has to.
-///
-/// `held` names the members whose outside reference the test released,
-/// which is the count this has to put back before the slots can go.
-///
-/// # Safety
-/// The two objects are a ring [`ring`] built, and no other reference to
-/// either is live.
-unsafe fn drop_ring(arena: &mut Arena, members: (*mut Object, *mut Object), held: &[*mut Object]) {
-    unsafe {
-        for member in held {
-            ll_retain(*member as *mut RcHeader);
-        }
-
-        store_prop(arena, members.0, prop_offset(0), std::ptr::null_mut());
-        store_prop(arena, members.1, prop_offset(0), std::ptr::null_mut());
-        for member in [members.0, members.1] {
-            assert!(ll_release(member as *mut RcHeader));
-            ll_object_die(member);
-        }
-    }
-}
+use crate::refcount::{ll_release, ll_retain};
 
 /// The ring the fixture still holds by its second member. The trace
 /// reaches the first member before that reference is known — its row is
@@ -75,7 +25,11 @@ unsafe fn drop_ring(arena: &mut Arena, members: (*mut Object, *mut Object), held
 fn a_ring_held_from_outside_scans_live_through_the_member_that_is_held() {
     let _g = test_guard();
     let mut arena = Arena::new();
-    let (first, second) = unsafe { ring(&mut arena, "ScanHeldNode") };
+    let node = ClassBuilder::new("ScanHeldNode").prop("next", true).build();
+    let [first, second] = unsafe { ring(&mut arena, [node, node]) };
+    // The reference the fixture holds into the ring, which is what the scan
+    // has to spread from.
+    unsafe { ll_retain(second as *mut RcHeader) };
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
     assert_eq!(
@@ -99,7 +53,13 @@ fn a_ring_held_from_outside_scans_live_through_the_member_that_is_held() {
     );
 
     shadow_arena.reset();
-    unsafe { drop_ring(&mut arena, (first, second), &[first]) };
+    unsafe {
+        assert!(
+            !ll_release(second as *mut RcHeader),
+            "the outside reference"
+        );
+        dismantle_ring(&mut arena, [first, second]);
+    }
 }
 
 /// The same ring with nothing outside it, which is the case counting
@@ -109,10 +69,12 @@ fn a_ring_held_from_outside_scans_live_through_the_member_that_is_held() {
 fn a_ring_no_one_holds_is_colored_potentially_unreachable_whole() {
     let _g = test_guard();
     let mut arena = Arena::new();
-    let (first, second) = unsafe { ring(&mut arena, "ScanWhiteNode") };
-    // The second member's outside reference goes too, which is the whole
-    // of the difference from the test above.
-    assert!(!unsafe { ll_release(second as *mut RcHeader) });
+    // No reference into the ring stands, which is the whole of the difference
+    // from the test above.
+    let node = ClassBuilder::new("ScanWhiteNode")
+        .prop("next", true)
+        .build();
+    let [first, second] = unsafe { ring(&mut arena, [node, node]) };
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
     assert_eq!(
@@ -133,7 +95,7 @@ fn a_ring_no_one_holds_is_colored_potentially_unreachable_whole() {
     }
 
     shadow_arena.reset();
-    unsafe { drop_ring(&mut arena, (first, second), &[first, second]) };
+    unsafe { dismantle_ring(&mut arena, [first, second]) };
 }
 
 /// What one scan of the two-member ring costs in block dispatches: one per
@@ -155,7 +117,11 @@ fn a_ring_no_one_holds_is_colored_potentially_unreachable_whole() {
 fn a_scan_resolves_no_row_at_a_pop() {
     let _g = test_guard();
     let mut arena = Arena::new();
-    let (first, second) = unsafe { ring(&mut arena, "ScanDispatchNode") };
+    let node = ClassBuilder::new("ScanDispatchNode")
+        .prop("next", true)
+        .build();
+    let [first, second] = unsafe { ring(&mut arena, [node, node]) };
+    unsafe { ll_retain(second as *mut RcHeader) };
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
     assert_eq!(
@@ -175,5 +141,11 @@ fn a_scan_resolves_no_row_at_a_pop() {
     );
 
     shadow_arena.reset();
-    unsafe { drop_ring(&mut arena, (first, second), &[first]) };
+    unsafe {
+        assert!(
+            !ll_release(second as *mut RcHeader),
+            "the outside reference"
+        );
+        dismantle_ring(&mut arena, [first, second]);
+    }
 }

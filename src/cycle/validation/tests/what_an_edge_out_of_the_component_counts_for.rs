@@ -20,18 +20,13 @@ fn a_reference_the_component_holds_is_no_reference_into_it() {
         .build();
 
     let mut arena = Arena::new();
+    let [first, second] = unsafe { ring(&mut arena, [node, node]) };
     let mut context = LLContext { arena: &mut arena };
-    let first = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
     let outside = unsafe { new_constructed(&mut context, outsider, MemoryCategory::GcHeap) };
 
-    unsafe {
-        store_prop(&mut arena, first, prop_offset(0), second);
-        store_prop(&mut arena, second, prop_offset(0), first);
-        store_prop(&mut arena, first, prop_offset(1), outside);
-        assert!(!ll_release(first as *mut RcHeader));
-        assert!(!ll_release(second as *mut RcHeader));
-    }
+    // The edge out of the component, which the trace must read as a live
+    // external rather than as a member.
+    unsafe { store_prop(&mut arena, first, prop_offset(1), outside) };
 
     let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
     assert_eq!(
@@ -49,14 +44,10 @@ fn a_reference_the_component_holds_is_no_reference_into_it() {
     );
 
     unsafe {
-        ll_retain(first as *mut RcHeader);
-        ll_retain(second as *mut RcHeader);
-        store_prop(&mut arena, first, prop_offset(0), std::ptr::null_mut());
-        store_prop(&mut arena, second, prop_offset(0), std::ptr::null_mut());
-        store_prop(&mut arena, first, prop_offset(1), std::ptr::null_mut());
-        for entity in [first, second, outside] {
-            assert!(ll_release(entity as *mut RcHeader));
-            ll_object_die(entity);
-        }
+        // The ring's death releases the edge at property 1, so the outsider
+        // goes with it rather than before it.
+        dismantle_ring(&mut arena, [first, second]);
+        assert!(ll_release(outside as *mut RcHeader));
+        ll_object_die(outside);
     }
 }

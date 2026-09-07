@@ -85,18 +85,10 @@ fn a_ring_no_one_holds_reads_internally_balanced() {
     let node = ClassBuilder::new("MarkRingNode").prop("next", true).build();
 
     let mut arena = Arena::new();
-    let mut context = LLContext { arena: &mut arena };
-    let first = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-
-    unsafe {
-        store_prop(&mut arena, first, prop_offset(0), second);
-        store_prop(&mut arena, second, prop_offset(0), first);
-        // The ring is garbage from here: each member is held by the other
-        // and by nothing else, which is the case no counting can reclaim.
-        assert!(!ll_release(first as *mut RcHeader));
-        assert!(!ll_release(second as *mut RcHeader));
-    }
+    // Each member is held by the other and by nothing else, which is the case
+    // no counting can reclaim. The trace is this case's own, so the untraced
+    // builder is the one it takes.
+    let [first, second] = unsafe { ring(&mut arena, [node, node]) };
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
     assert_eq!(
@@ -113,16 +105,7 @@ fn a_ring_no_one_holds_reads_internally_balanced() {
     }
 
     shadow_arena.reset();
-    unsafe {
-        ll_retain(first as *mut RcHeader);
-        ll_retain(second as *mut RcHeader);
-        store_prop(&mut arena, first, prop_offset(0), std::ptr::null_mut());
-        store_prop(&mut arena, second, prop_offset(0), std::ptr::null_mut());
-        for member in [first, second] {
-            assert!(ll_release(member as *mut RcHeader));
-            ll_object_die(member);
-        }
-    }
+    unsafe { dismantle_ring(&mut arena, [first, second]) };
 }
 
 /// The same ring with one reference into it from outside, which is the case the
@@ -135,17 +118,10 @@ fn a_ring_held_from_outside_keeps_the_holder_s_count() {
     let node = ClassBuilder::new("MarkHeldNode").prop("next", true).build();
 
     let mut arena = Arena::new();
-    let mut context = LLContext { arena: &mut arena };
-    let first = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-
-    unsafe {
-        store_prop(&mut arena, first, prop_offset(0), second);
-        store_prop(&mut arena, second, prop_offset(0), first);
-        // Only the first member's outside reference goes: the fixture
-        // itself is what still holds the second.
-        assert!(!ll_release(first as *mut RcHeader));
-    }
+    let [first, second] = unsafe { ring(&mut arena, [node, node]) };
+    // The reference from outside the ring, which is the whole of the
+    // difference between this case and the one above it.
+    unsafe { ll_retain(second as *mut RcHeader) };
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
     assert_eq!(
@@ -162,13 +138,11 @@ fn a_ring_held_from_outside_keeps_the_holder_s_count() {
 
     shadow_arena.reset();
     unsafe {
-        ll_retain(first as *mut RcHeader);
-        store_prop(&mut arena, first, prop_offset(0), std::ptr::null_mut());
-        store_prop(&mut arena, second, prop_offset(0), std::ptr::null_mut());
-        for member in [first, second] {
-            assert!(ll_release(member as *mut RcHeader));
-            ll_object_die(member);
-        }
+        assert!(
+            !ll_release(second as *mut RcHeader),
+            "the outside reference"
+        );
+        dismantle_ring(&mut arena, [first, second]);
     }
 }
 

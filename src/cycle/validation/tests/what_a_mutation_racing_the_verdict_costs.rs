@@ -23,17 +23,9 @@ fn a_reference_taken_after_the_verdict_leaves_the_ring_externally_referenced() {
         .build();
 
     let mut arena = Arena::new();
+    let [first, second] = unsafe { ring(&mut arena, [node, node]) };
     let mut context = LLContext { arena: &mut arena };
-    let first = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
-
-    unsafe {
-        store_prop(&mut arena, first, prop_offset(0), second);
-        store_prop(&mut arena, second, prop_offset(0), first);
-        assert!(!ll_release(first as *mut RcHeader));
-        assert!(!ll_release(second as *mut RcHeader));
-    }
 
     let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
     shadow_arena.reset();
@@ -52,14 +44,7 @@ fn a_reference_taken_after_the_verdict_leaves_the_ring_externally_referenced() {
     unsafe {
         assert!(ll_release(keeper as *mut RcHeader));
         ll_object_die(keeper);
-        ll_retain(first as *mut RcHeader);
-        ll_retain(second as *mut RcHeader);
-        store_prop(&mut arena, first, prop_offset(0), std::ptr::null_mut());
-        store_prop(&mut arena, second, prop_offset(0), std::ptr::null_mut());
-        for entity in [first, second] {
-            assert!(ll_release(entity as *mut RcHeader));
-            ll_object_die(entity);
-        }
+        dismantle_ring(&mut arena, [first, second]);
     }
 }
 
@@ -80,19 +65,11 @@ fn the_same_ring_without_the_store_is_unreachable() {
         .build();
 
     let mut arena = Arena::new();
+    let [first, second] = unsafe { ring(&mut arena, [node, node]) };
     let mut context = LLContext { arena: &mut arena };
-    let first = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
-    let second = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
     // Built here and written into nowhere: the two arms differ by the
     // store and by nothing else, allocations included.
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
-
-    unsafe {
-        store_prop(&mut arena, first, prop_offset(0), second);
-        store_prop(&mut arena, second, prop_offset(0), first);
-        assert!(!ll_release(first as *mut RcHeader));
-        assert!(!ll_release(second as *mut RcHeader));
-    }
 
     let mut shadow_arena = unsafe { traced_unreachable_from(first, &[first, second]) };
     shadow_arena.reset();
@@ -107,13 +84,6 @@ fn the_same_ring_without_the_store_is_unreachable() {
     unsafe {
         assert!(ll_release(keeper as *mut RcHeader));
         ll_object_die(keeper);
-        ll_retain(first as *mut RcHeader);
-        ll_retain(second as *mut RcHeader);
-        store_prop(&mut arena, first, prop_offset(0), std::ptr::null_mut());
-        store_prop(&mut arena, second, prop_offset(0), std::ptr::null_mut());
-        for entity in [first, second] {
-            assert!(ll_release(entity as *mut RcHeader));
-            ll_object_die(entity);
-        }
+        dismantle_ring(&mut arena, [first, second]);
     }
 }

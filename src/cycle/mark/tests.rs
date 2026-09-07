@@ -1,7 +1,7 @@
 use super::*;
 use crate::class::ClassBuilder;
 use crate::cycle::shadow::Color;
-use crate::cycle::testing::row_word;
+use crate::cycle::testing::{dismantle_ring, ring, row_word};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BlockPool, force_oom, test_guard};
 use crate::memory::context::LLContext;

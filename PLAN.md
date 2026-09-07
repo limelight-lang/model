@@ -901,7 +901,7 @@ is about them.
         either way, a weak reference being uncounted. 785 tests at one thread,
         `cargo +1.94 fmt --check` clean, no new warning. The fixture code is
         about 200 lines shorter.
-- [ ] S45.2 The scan, mark and validation sites
+- [x] S45.2 The scan, mark and validation sites
       done: `scan::tests::ring` and its `drop_ring` are gone — a case that held
         a member releases what it retained and calls `dismantle_ring`; the two
         inline rings of `mark::tests::what_the_trace_subtracts` and the sites
@@ -911,6 +911,15 @@ is about them.
         keeper allocation ahead of the trace, so the two arms still differ by
         one store
       tier: T1 · role: —
+      handoff: two cases held a member by never spending its creation
+        reference, and hold it by a retain now — `scan`'s held ring and
+        `mark`'s `a_ring_held_from_outside_keeps_the_holder_s_count`. The count
+        the row reads is the same; what changes is that the member carries a
+        candidate bit and a queue entry, as every other fixture's members
+        already do. `what_an_edge_out_of_the_component_counts_for` frees its
+        outsider after the ring rather than before: the ring's death releases
+        the edge at property 1 that holds it. 785 tests at one thread and at
+        four.
 - [ ] S45.3 The reclamation group, and the sweep
       done: the four inline sites and the two builders of `reclamation/tests/`
         are converted, `read_as_unreachable` deleted with its last caller, and
