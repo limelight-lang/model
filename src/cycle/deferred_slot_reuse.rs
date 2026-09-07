@@ -412,12 +412,11 @@ pub(crate) struct ActiveTrace {
     /// The candidate chain this collection detached, until the window closes.
     /// `None` before [`ActiveTrace::detach_candidates`].
     ///
-    /// **There is no way to take it out, and that is deliberate.** A
-    /// disposition that keeps some roots owes two operations at once — taking
-    /// the batch and giving its segments back — and half of that pair is a
-    /// batch nothing can end: `restore_candidates` refuses a lane a destructor
-    /// has refilled and the drop refuses a batch that still holds a chain.
-    /// S36.7 builds the pair with the driver that needs it.
+    /// **There is no way to take it out, and that is deliberate.** A batch out
+    /// of the window is one nothing can end: only a merge back into the lane
+    /// discharges it, and its drop refuses a batch that still holds a chain.
+    /// The close performs that merge whatever the teardown wrote into the lane
+    /// meanwhile (`crate::cycle::queue::merge_candidates`).
     batch: Option<crate::cycle::queue::InFlightBatch>,
     /// Declared before the arena, and therefore dropped before it: the stack's
     /// control line stands in a region of the workspace, which the arena's drop
@@ -538,29 +537,79 @@ impl ActiveTrace {
     }
 }
 
+// Whether this thread's next close raises between the row sweep and the
+// returns it withheld.
+//
+// Fault injection, tests only, and for a state that has no other way in: the
+// disposition of the batch cannot refuse, and the two calls around it — the
+// sweep and the returns — are the ones the case is about. What could raise
+// here in production is an assertion inside the pool the merge's own growth
+// reaches, which no test can stage from outside.
+#[cfg(test)]
+thread_local! {
+    static PANIC_IN_CLOSE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Arm the injection for **one** close of this thread, and disarm it when this
+/// guard dies — including on the unwind the injected panic raises.
+///
+/// What it stages is an unwind out of the close past the sweep: the rows are
+/// gone by then, so the withheld returns are made by the drop that runs behind
+/// it rather than abandoned (`dev/DECISIONS.md`, "the row sweep runs ahead of
+/// the candidate restore").
+#[cfg(test)]
+pub(crate) struct InjectedCloseUnwind;
+
+#[cfg(test)]
+impl InjectedCloseUnwind {
+    pub(crate) fn arm() -> Self {
+        PANIC_IN_CLOSE.with(|armed| armed.set(true));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for InjectedCloseUnwind {
+    fn drop(&mut self) {
+        PANIC_IN_CLOSE.with(|armed| armed.set(false));
+    }
+}
+
+/// Raise the armed unwind and disarm it, and do nothing at all without
+/// `cfg(test)`.
+#[inline]
+fn fire_injected_close_unwind() {
+    #[cfg(test)]
+    if PANIC_IN_CLOSE.with(|armed| armed.replace(false)) {
+        panic!("the injected close unwind");
+    }
+}
+
 impl Drop for ActiveTrace {
     fn drop(&mut self) {
         // First of all, and taken whether or not anything was withheld: after
         // the window falls, a physical return may recommission the block whose
-        // shadow pointer this sweep must null. Ahead of the restore below, so
-        // that a refusal raised there unwinds into a drop whose rows are gone
-        // and whose withheld returns can therefore be made rather than
-        // abandoned (`dev/DECISIONS.md`, "the row sweep runs ahead of the
-        // candidate restore").
+        // shadow pointer this sweep must null. Ahead of the disposition below,
+        // so that an unwind raised past this line — out of the pool the merge's
+        // own growth can reach — leaves a drop whose rows are gone and whose
+        // withheld returns can therefore be made rather than abandoned
+        // (`dev/DECISIONS.md`, "the row sweep runs ahead of the candidate
+        // restore").
         self.arena.sweep_rows();
         self.returns.rows_are_gone();
 
-        // A batch still here was disposed of by nothing, so every root in it
-        // keeps its registration and its records go back to the lane they came
-        // out of. It reads no row and no withheld slot, and `ll_free`'s
+        // Every root of the batch keeps its registration, so its record goes
+        // back to the lane it came out of — joined to whatever the teardown
+        // wrote there, which on the ordinary path is the severing's own
+        // candidates. It reads no row and no withheld slot, and `ll_free`'s
         // candidate arm reads the entity's own bit rather than the lane its
         // record stands in, so nothing above or below turns on where this
-        // stands between them. It stays ahead of the returns, whose `ll_free`
-        // is the one call on this path that could refill the lane its
-        // assertion wants empty.
+        // stands between them.
         if let Some(batch) = self.batch.take() {
-            crate::cycle::queue::restore_candidates(batch);
+            crate::cycle::queue::merge_candidates(batch);
         }
+
+        fire_injected_close_unwind();
 
         self.returns.close_window();
         self.returns.dispose_withheld(Disposition::Return);

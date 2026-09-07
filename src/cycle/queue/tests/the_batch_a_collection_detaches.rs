@@ -1,5 +1,5 @@
-//! The detach and the restore: one collection takes the whole active chain,
-//! and a trace that disposed of nothing puts it back.
+//! The detach and the merge: one collection takes the whole active chain, and
+//! the close joins it back into whatever the lane holds by then.
 //!
 //! Y12 clause 2 gives the trace's reader a detached buffer, and clause 5 says
 //! what happens to a root it did not dispose of: it keeps its registration
@@ -40,10 +40,10 @@ fn roots_of(batch: &InFlightBatch) -> Vec<*mut RcHeader> {
     roots
 }
 
-/// The pair, over a chain of two segments: the lane is empty between them and
-/// identical afterwards.
+/// The pair over an untouched lane, and a chain of two segments: the lane is
+/// empty between them and identical afterwards.
 #[test]
-fn a_detach_empties_the_lane_and_a_restore_puts_it_back() {
+fn a_detach_empties_the_lane_and_a_merge_puts_it_back() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the cells start full");
@@ -83,7 +83,7 @@ fn a_detach_empties_the_lane_and_a_restore_puts_it_back() {
         "the batch has as many records as the lane did"
     );
 
-    restore_candidates(batch);
+    merge_candidates(batch);
     assert_eq!(candidate_count(), before);
     assert_eq!(segment_count(), 2);
     assert_eq!(
@@ -97,7 +97,7 @@ fn a_detach_empties_the_lane_and_a_restore_puts_it_back() {
 
 /// The clause the pair exists to keep: a record per bit, and one lane per
 /// record. Every token the two lanes held before the detach is in the batch or
-/// in the overflow buffer, never in both, and the restore leaves the same set.
+/// in the overflow buffer, never in both, and the merge leaves the same set.
 #[test]
 fn every_token_crosses_the_detach_exactly_once() {
     let _g = test_guard();
@@ -110,7 +110,7 @@ fn every_token_crosses_the_detach_exactly_once() {
 
     // A second record in the same lane whose bit is down. The pair is what
     // makes the bit assertions below able to fail: with one entity the walk
-    // could only catch a clear, and a detach or a restore that set a bit on
+    // could only catch a clear, and a detach or a merge that set a bit on
     // every root it passed would keep every token set equal and still be
     // wrong.
     let mut bitless = candidate(2);
@@ -148,7 +148,7 @@ fn every_token_crosses_the_detach_exactly_once() {
     );
     assert_bits(chained_entity, bitless_entity);
 
-    restore_candidates(batch);
+    merge_candidates(batch);
     let mut after = Vec::new();
     collect_lane_tokens(&mut after);
     assert_eq!(after, before, "the set of records is what it was");
@@ -163,7 +163,7 @@ fn every_token_crosses_the_detach_exactly_once() {
 /// a detach of two words can be held to (`dev/DECISIONS.md`, "the detach of a
 /// candidate chain draws no segment").
 #[test]
-fn neither_the_detach_nor_the_restore_asks_for_memory() {
+fn neither_the_detach_nor_the_merge_asks_for_memory() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the cells are stocked ahead of the path");
@@ -193,11 +193,11 @@ fn neither_the_detach_nor_the_restore_asks_for_memory() {
     assert_eq!(BlockPool::global().blocks_out(), blocks_before);
     assert_eq!(gc_metadata::thread_stats(), stats_before);
 
-    restore_candidates(batch);
+    merge_candidates(batch);
     assert_eq!(
         allocation_probe::take_allocations(),
         (0, 0),
-        "and so is the restore"
+        "and so is the merge into an untouched lane"
     );
     assert_eq!(BlockPool::global().blocks_out(), blocks_before);
     assert_eq!(gc_metadata::thread_stats(), stats_before);
@@ -206,61 +206,135 @@ fn neither_the_detach_nor_the_restore_asks_for_memory() {
     reset();
 }
 
-/// A registration while a batch is out takes the growth path, because the
-/// write position is empty. That is the state the restore refuses: putting the
-/// batch's head back would drop the fresh segment out of the chain with its own
-/// roots' bits standing.
-///
-/// In a child process because the refusal is an assertion: the failing path
-/// leaves a chain nothing owns, and a test that unwound through it would hand
-/// the next test a pool short two blocks.
+/// A registration while a batch is out takes the growth path, the write
+/// position being empty, and that is the ordinary collection's own state: its
+/// severing runs inside the trace window and registers the live children it
+/// displaces. The merge joins the two chains rather than writing one over the
+/// other — every record of both stands in one lane afterwards, and the batch's
+/// part-filled head is copied in and its block given to a cell.
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "spawns a child process, which Miri's isolation forbids"
-)]
-fn a_restore_over_a_lane_that_grew_again_fails() {
-    const CHILD: &str = "LL_QUEUE_RESTORE_OVER_A_GROWN_LANE_CHILD";
-    if std::env::var_os(CHILD).is_some() {
-        let _g = test_guard();
-        reset();
-        let _ = refill_spares();
+fn a_merge_over_a_lane_that_grew_again_keeps_both_records() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares(), "the cells start full");
 
-        let mut header = candidate(2);
-        assert!(unsafe { !release(&raw mut header) });
-        let batch = detach_candidates();
+    let mut detached = candidate(2);
+    let detached_entity = &raw mut detached;
+    assert!(unsafe { !release(detached_entity) });
+    let batch = detach_candidates();
 
-        let mut later = candidate(2);
-        assert!(unsafe { !release(&raw mut later) });
-        assert_eq!(
-            segment_count(),
-            1,
-            "the registration grew a lane of its own"
-        );
-
-        restore_candidates(batch);
-        return;
-    }
-
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .arg("--exact")
-        .arg("cycle::queue::tests::the_batch_a_collection_detaches::a_restore_over_a_lane_that_grew_again_fails")
-        .arg("--nocapture")
-        .env(CHILD, "1")
-        .output()
-        .expect("the child runs this test again");
-    assert!(
-        !output.status.success(),
-        "the restore refuses the grown lane"
+    let mut severed = candidate(2);
+    let severed_entity = &raw mut severed;
+    assert!(unsafe { !release(severed_entity) });
+    assert_eq!(
+        segment_count(),
+        1,
+        "the registration grew a lane of its own"
     );
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("a candidate was registered while a batch was detached"),
-        "and it says which rule it refused on"
+
+    let blocks_before = BlockPool::global().blocks_out();
+    let spares_before = spare_count();
+    // The peak never falls on its own, so it is lowered before the reading a
+    // merge must leave alone (`gc_metadata::lower_thread_peak_to_current`).
+    gc_metadata::lower_thread_peak_to_current();
+    let stats_before = gc_metadata::thread_stats();
+
+    merge_candidates(batch);
+
+    let mut after = Vec::new();
+    collect_lane_tokens(&mut after);
+    assert_eq!(
+        after,
+        vec![severed_entity, detached_entity],
+        "the newer record first, and the batch's behind it"
     );
+    assert_eq!(segment_count(), 1, "in one chain rather than two");
+    assert_eq!(
+        spare_count(),
+        spares_before + 1,
+        "and the emptied head went to a cell"
+    );
+    assert_eq!(
+        BlockPool::global().blocks_out(),
+        blocks_before,
+        "rather than to the pool"
+    );
+    assert_eq!(
+        gc_metadata::thread_stats(),
+        stats_before,
+        "the ledger reads what it read: the copy charges nothing and the head \
+         was never charged"
+    );
+
+    reset();
 }
 
-/// A batch is restored or the process stops. Dropping one silently would leave
+/// The splice, over a batch of two segments: the full segment behind the
+/// batch's head goes behind the whole of the live chain, which is where the
+/// rule that every segment but the head is full still holds of it. A
+/// part-filled segment landing there instead would be a chain
+/// [`candidate_count`] reads as longer than it is.
+#[test]
+fn a_merged_batch_keeps_its_full_segment_behind_the_live_chain() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares(), "the cells start full");
+
+    let mut filler = candidate(2);
+    let filler_entity = &raw mut filler;
+    let mut oldest = candidate(2);
+    let oldest_entity = &raw mut oldest;
+    assert!(unsafe { !release(oldest_entity) });
+    fill_write_segment(filler_entity);
+
+    let mut newest = candidate(2);
+    let newest_entity = &raw mut newest;
+    assert!(unsafe { !release(newest_entity) });
+    assert_eq!(segment_count(), 2, "a full segment behind the write one");
+
+    let batch = detach_candidates();
+
+    // Both cells went to the two growths above, and the reserve is empty under
+    // `reset`. Without this fill the registration below would find every
+    // allocation path refused and land in the overflow buffer, which is a lane
+    // the merge never touches — the case would then pass over an untouched
+    // write position and prove nothing.
+    assert!(refill_spares(), "the registration below grows from a cell");
+
+    let mut severed = candidate(2);
+    let severed_entity = &raw mut severed;
+    assert!(unsafe { !release(severed_entity) });
+    assert_eq!(
+        segment_count(),
+        1,
+        "the registration grew a lane of its own"
+    );
+    assert_eq!(overflow_len(), 0, "and no entry went to the tier below");
+
+    merge_candidates(batch);
+
+    assert_eq!(segment_count(), 2, "the head, and the batch's full segment");
+    assert_eq!(
+        candidate_count(),
+        2 + SEGMENT_CAPACITY,
+        "counted by the fill rule, which holds only while the segment behind \
+         the head is the full one"
+    );
+
+    let mut after = Vec::new();
+    collect_lane_tokens(&mut after);
+    assert_eq!(after.len(), 2 + SEGMENT_CAPACITY, "and the walk agrees");
+    assert_eq!(
+        &after[..3],
+        &[severed_entity, newest_entity, oldest_entity],
+        "the records of the two write positions first, then the full \
+         segment's own oldest"
+    );
+
+    reset();
+}
+
+/// A batch is merged back or the process stops. Dropping one silently would leave
 /// every root in it carrying `CANDIDATE_BIT` with no record behind it, which
 /// the gate then refuses to register again for the life of the process.
 #[test]
@@ -268,7 +342,7 @@ fn a_restore_over_a_lane_that_grew_again_fails() {
     miri,
     ignore = "spawns a child process, which Miri's isolation forbids"
 )]
-fn a_batch_dropped_instead_of_restored_fails() {
+fn a_batch_dropped_instead_of_merged_fails() {
     const CHILD: &str = "LL_QUEUE_BATCH_DROPPED_CHILD";
     if std::env::var_os(CHILD).is_some() {
         let _g = test_guard();
@@ -283,24 +357,24 @@ fn a_batch_dropped_instead_of_restored_fails() {
 
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
-        .arg("cycle::queue::tests::the_batch_a_collection_detaches::a_batch_dropped_instead_of_restored_fails")
+        .arg("cycle::queue::tests::the_batch_a_collection_detaches::a_batch_dropped_instead_of_merged_fails")
         .arg("--nocapture")
         .env(CHILD, "1")
         .output()
         .expect("the child runs this test again");
     assert!(
         !output.status.success(),
-        "an unrestored batch stops the process"
+        "a batch nothing merged back stops the process"
     );
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("dropped instead of restored"),
+        String::from_utf8_lossy(&output.stderr).contains("dropped instead of merged back"),
         "and it says what was dropped"
     );
 }
 
 /// The empty answer: a thread that registered nothing detaches a batch that
-/// holds nothing, and restoring it is a no-op rather than a null write into the
-/// write position.
+/// holds nothing, and merging it back is a no-op rather than a null write into
+/// the write position.
 #[test]
 fn an_empty_lane_detaches_an_empty_batch() {
     let _g = test_guard();
@@ -309,7 +383,7 @@ fn an_empty_lane_detaches_an_empty_batch() {
     let batch = detach_candidates();
     assert!(batch.is_empty());
     assert!(roots_of(&batch).is_empty());
-    restore_candidates(batch);
+    merge_candidates(batch);
     assert_eq!(candidate_count(), 0);
     assert_eq!(segment_count(), 0);
 

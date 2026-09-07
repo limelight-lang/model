@@ -18,7 +18,7 @@
 //! the roots are the caller's batch; the phases read the batch twice and write
 //! neither it nor any entity. A trace that gives up leaves the heap
 //! byte-identical, and what it owes afterwards is the arena's reset and the
-//! batch's restore — both of them
+//! batch's merge back into the lane — both of them
 //! `crate::cycle::deferred_slot_reuse::ActiveTrace`'s at its close.
 //!
 //! # What a root at zero costs

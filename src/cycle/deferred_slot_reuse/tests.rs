@@ -2457,67 +2457,21 @@ fn a_window_dropped_before_its_rows_are_gone_abandons_what_it_withheld() {
     unsafe { crate::memory::stdapi::ll_free(keeper as *mut u8) };
 }
 
-/// An unwind out of the candidate restore returns what the window withheld:
-/// the sweep has run by then, so the rows that would make a return a reuse are
-/// gone and the drop's own pass gives every stacked slot back.
+/// An unwind out of the close past the row sweep returns what the window
+/// withheld: the rows that would make a return a reuse are gone by then, so
+/// the drop's own pass gives every stacked slot back.
 ///
-/// This is what S44.6's order buys, and the restore's refusal is the only
-/// panic site the drop has ahead of its own returns — a candidate registered
-/// while the batch is detached (`queue::restore_candidates`). Before the sweep
-/// was hoisted this same unwind abandoned the slot and the block holding it
-/// for the life of the process.
-///
-/// In a child process, as the queue's own cases of that refusal are: the
-/// refused restore leaves the batch's chain owned by nothing, and a test that
-/// unwound through it in this process would hand every case after it a pool
-/// two blocks short.
+/// This is what S44.6's order buys, and it is staged rather than provoked. The
+/// disposition of the batch is a merge into whatever the lane holds and has no
+/// refusal of its own (`queue::merge_candidates`), so the only unwind between
+/// the sweep and the returns is an injected one
+/// ([`InjectedCloseUnwind`]). Before the sweep was hoisted this same unwind
+/// abandoned the slot and the block holding it for the life of the process.
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "spawns a child process, which Miri's isolation forbids"
-)]
-fn an_unwind_out_of_the_candidate_restore_returns_what_was_withheld() {
-    const CHILD: &str = "LL_TRACE_ABANDON_CHILD";
+fn an_unwind_out_of_the_close_returns_what_was_withheld() {
     const CLASS: usize = ENTITY_SIZE * 8;
 
-    if std::env::var_os(CHILD).is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--exact")
-            .arg(
-                "cycle::deferred_slot_reuse::tests::\
-                 an_unwind_out_of_the_candidate_restore_returns_what_was_withheld",
-            )
-            .arg("--nocapture")
-            .env(CHILD, "1")
-            .output()
-            .expect("the child runs this case again");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            output.status.success(),
-            "the child read the returning close: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        // A child that matched no test name also exits zero, so the count is
-        // read rather than the status alone: a rename that left this literal
-        // behind would otherwise leave the case passing over nothing.
-        assert!(
-            stdout.contains("1 passed"),
-            "the child ran this case rather than an empty filter: {stdout}"
-        );
-        return;
-    }
-
     let _guard = test_guard();
-
-    // A candidate before the window, so the batch the trace detaches holds a
-    // chain: a restore of an empty batch returns without reaching the refusal.
-    let root = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
-    assert!(!root.is_null());
-    let root = unsafe { live_entity(root, 2) };
-    assert!(
-        !unsafe { crate::refcount::ll_release(root) },
-        "the non-final decrement registered a candidate"
-    );
 
     let keeper = unsafe { crate::memory::heap::entity_alloc(CLASS) };
     let victim = unsafe { crate::memory::heap::entity_alloc(CLASS) };
@@ -2527,14 +2481,11 @@ fn an_unwind_out_of_the_candidate_restore_returns_what_was_withheld() {
     let block = (victim as usize & !crate::memory::block_pool::BLOCK_MASK) as *mut u8;
 
     let mut window = ActiveTrace::open().expect("the pool funds the trace window");
+    // Detached and empty, which is all the case needs of it: the disposition
+    // refuses on neither arm, so a registered root would decide nothing here
+    // and would leave a withheld slot behind the case.
     window.detach_candidates();
     unsafe { ensure_row(window.arena(), victim, 1) };
-
-    // The refusal the drop raises on: a lane refilled while the batch is out.
-    let later = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
-    assert!(!later.is_null());
-    let later = unsafe { live_entity(later, 2) };
-    assert!(!unsafe { crate::refcount::ll_release(later) });
 
     let occupied_before = unsafe { crate::memory::heap::block_occupancy(block) };
     unsafe { crate::refcount::set_header_refcount(victim, 0) };
@@ -2545,10 +2496,12 @@ fn an_unwind_out_of_the_candidate_restore_returns_what_was_withheld() {
         "the death was withheld"
     );
 
-    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let armed = InjectedCloseUnwind::arm();
+    let raised = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         drop(window);
     }));
-    assert!(refused.is_err(), "the restore was expected to refuse");
+    drop(armed);
+    assert!(raised.is_err(), "the close was expected to unwind");
 
     assert_eq!(
         unsafe { crate::refcount::slot_state(victim) },
@@ -2558,7 +2511,7 @@ fn an_unwind_out_of_the_candidate_restore_returns_what_was_withheld() {
     assert_eq!(
         unsafe { crate::memory::heap::block_occupancy(block) },
         occupied_before - 1,
-        "and the return was made, the sweep having run before the refusal"
+        "and the return was made, the sweep having run before the unwind"
     );
 
     let served = unsafe { crate::memory::heap::entity_alloc(CLASS) };

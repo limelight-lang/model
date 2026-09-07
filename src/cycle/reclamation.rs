@@ -45,15 +45,13 @@
 //! Entries. Every deferred drop is a counted release, so a child that survives
 //! it takes a non-final decrement and the candidate gate admits it: the drop
 //! writes the thread's live lane. On the ordinary path the teardown runs inside
-//! its own trace, whose batch was detached before the mark, and
-//! `cycle::queue::restore_candidates` refuses in every build to restore a batch
-//! over a lane something has since written. That is the design's own answer
-//! read from the other side: the ordinary path **disposes of** its detached
-//! chain rather than restoring it, "the releases the sever performs [being]
-//! non-final decrements" (`rfc/model/gc/rc-cycle.md`, "Concurrency"). The
-//! disposal is the driver's, `PLAN.md` S36.7, and until it lands the built
-//! close restores — so the first collection that drains a surviving child ends
-//! at that refusal rather than in a wrong state.
+//! its own trace, whose batch was detached before the mark, so the lane the
+//! close finds is not the lane the detach emptied — which is why the close
+//! joins the two chains rather than writing one over the other
+//! (`cycle::queue::merge_candidates`). That is the design's own clause, "the
+//! releases the sever performs [being] non-final decrements", read from the
+//! side of the entries it produces (`rfc/model/gc/rc-cycle.md`,
+//! "Concurrency").
 //!
 //! # What a member the queue still names costs
 //!

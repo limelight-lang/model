@@ -299,6 +299,22 @@ pub(crate) unsafe fn register_candidate(entity: *mut RcHeader) {
     if state.is_null() {
         state = ensure_queue_base_or_abort();
     }
+
+    unsafe { append_entry(state, entity) };
+}
+
+/// Write one entry into the lane of the thread `state` belongs to, growing the
+/// chain where the write segment is full or absent.
+///
+/// The entry alone: no flag is read and none is written, so the entity may be
+/// one already registered — which is what [`merge_candidates`] copies back —
+/// as well as the live one [`register_candidate`] admits.
+///
+/// # Safety
+/// `state` is this thread's base-block pointer as [`OWNER_STATE`] holds it,
+/// carrying the provenance of the whole block ([`append_to_overflow`] reaches
+/// past the control line through it).
+unsafe fn append_entry(state: *mut OwnerCycleState, entity: *mut RcHeader) {
     let q = unsafe { owner_state_ref(state) };
     let write_segment = q.write_segment.get();
     let write_len = q.write_len.get();
@@ -681,12 +697,13 @@ pub(crate) fn drain_overflow() {
 /// head hangs off [`BlockHeader::next`], as it did in the lane this came out
 /// of, so a batch of any length is these two words and no copy.
 ///
-/// **A batch that is dropped instead of restored strands every root in it** —
+/// **A batch that is dropped instead of merged back strands every root in it**
+/// —
 /// each one carrying `CANDIDATE_BIT` with no record behind it, which
 /// [`crate::refcount::CANDIDATE_GATE_MASK`] then refuses to register again for
 /// the life of the process (`rfc/model/gc/cycle/questions.md`, Y6). The drop
 /// below is what says so, and it is the reason this type has one.
-#[must_use = "a batch that is not restored strands every root in it"]
+#[must_use = "a batch that is not merged back strands every root in it"]
 pub(crate) struct InFlightBatch {
     head: *mut BlockHeader,
     /// Entries in [`InFlightBatch::head`]. Meaningless when the head is null.
@@ -731,7 +748,7 @@ impl Drop for InFlightBatch {
 
         assert!(
             self.head.is_null(),
-            "a detached candidate batch was dropped instead of restored"
+            "a detached candidate batch was dropped instead of merged back"
         );
     }
 }
@@ -815,38 +832,44 @@ pub(crate) fn detach_candidates() -> InFlightBatch {
     }
 }
 
-/// Put a batch back into the active lane it came out of, every root still
-/// registered and every record where it was.
+/// Join a batch back into this thread's live lane: every root still
+/// registered, and every record in the one chain a later detach takes.
 ///
-/// This is the disposition of a trace that reclaimed nothing — an abort, and
-/// the ordinary end as well while no other disposition takes the batch first;
-/// S36.7 builds the one that does. A root the trace did not dispose of keeps
-/// its registration, its bit uncleared and its entry back in its own lane
-/// (`rfc/model/gc/cycle/questions.md`, Y12 clause 5).
+/// This is the disposition of every collection, the abort and the ordinary end
+/// alike. A root the collection did not free keeps its registration and its
+/// entry (`rfc/model/gc/cycle/questions.md`, Y12 clause 5); a member it did
+/// free keeps its entry too, that entry being what holds the freed slot out of
+/// the allocator's hands until it is retired (`dev/DECISIONS.md`, "the commit
+/// clears no candidate bit, and a member the queue names keeps its slot
+/// withheld"; the retirement is `PLAN.md` S39.1's).
 ///
-/// **The write position must still be empty, and the check is in every build
-/// except an unwind.** Nothing registers a candidate between the detach and
-/// here while nothing but mark and scan runs there: they write no entity, so no
-/// decrement runs under them. A refused restore keeps the chain in the batch,
-/// which the process then keeps: the roots are not lost, the memory is, and the
-/// message names the rule that was broken.
+/// **The lane a batch comes back to is not the lane it left.** The ordinary
+/// collection tears down inside its own trace window (`dev/DECISIONS.md`, "the
+/// member list is the pressure path's alone"), and every sever releases the
+/// live children of a member: each such release registers a candidate, which
+/// installs a fresh segment in the write position the detach emptied. So the
+/// two chains are joined rather than one written over the other. Writing the
+/// batch's head into an occupied write position would drop that segment out of
+/// the chain with its own roots' bits standing, which no later decrement can
+/// undo (Y6's permanent miss).
 ///
-/// **A teardown does register candidates, so a disposition takes the batch
-/// before the first destructor runs.** The ordinary collection keeps its rows
-/// through the teardown (`dev/DECISIONS.md`, "the member list is the pressure
-/// path's alone"), so the trace window outlives the severing that releases the
-/// live children of a member the exact test found unreachable; each such
-/// release registers a candidate, which installs a fresh segment in the empty
-/// write position. Restoring over
-/// that segment would drop it out of the chain with its own roots' bits
-/// standing, which no later decrement can undo, so the assertion refuses it.
-/// What a disposition needs instead is to take the batch and give its segments
-/// back, and S36.7 builds that pair: neither half is useful alone, a batch
-/// taken out of the window being one nothing can end.
-pub(crate) fn restore_candidates(mut batch: InFlightBatch) {
-    if batch.head.is_null() {
+/// **It has no refusal to report**, which is what lets `ActiveTrace`'s drop
+/// call it on an unwind: the copy below takes at most one growth, and the
+/// growth path's own last resort is the overflow buffer
+/// ([`register_candidate`]).
+///
+/// **It moves no bytes in the ledger.** The spliced segments left the write
+/// position full and stay charged; a candidate write charges nothing; and the
+/// emptied head was the write segment, whose payload was never charged
+/// ([`release_queue_segments`]).
+pub(crate) fn merge_candidates(mut batch: InFlightBatch) {
+    let head = batch.head;
+    if head.is_null() {
         return;
     }
+
+    let fill = batch.fill;
+    batch.head = std::ptr::null_mut();
 
     let state = owner_state();
     // The batch is non-empty, so the thread that detached it had a base block,
@@ -857,23 +880,47 @@ pub(crate) fn restore_candidates(mut batch: InFlightBatch) {
         "the queue base block left with a batch out"
     );
     let q = unsafe { owner_state_ref(state) };
-    if !q.write_segment.get().is_null() {
-        // Off an unwind this is the defect the check exists for. On one it
-        // would be the second panic, raised from `ActiveTrace`'s drop glue,
-        // and a panic during a panic ends the process with the first
-        // message lost — the same arm and the same reason as
-        // [`return_workspace_base`]'s. The batch is left holding its chain,
-        // whose segments the process then keeps.
-        assert!(
-            std::thread::panicking(),
-            "a candidate was registered while a batch was detached"
-        );
+
+    if q.write_segment.get().is_null() {
+        // Nothing has registered since the detach, so the chain goes back the
+        // way it came out: two words and no copy. That is every collection
+        // that freed nothing, and every abort.
+        q.write_segment.set(head);
+        q.write_len.set(fill);
         return;
     }
 
-    q.write_segment.set(batch.head);
-    q.write_len.set(batch.fill);
-    batch.head = std::ptr::null_mut();
+    // The entries written since the detach are newer than every entry of the
+    // batch, so the batch goes behind the whole of the live chain — which is
+    // also where the rule that every segment behind the head is full still
+    // holds of its full segments ([`walk_chain`]).
+    let mut tail = q.write_segment.get();
+    while !unsafe { (*tail).next }.is_null() {
+        tail = unsafe { (*tail).next };
+    }
+    unsafe { (*tail).next = (*head).next };
+    unsafe { (*head).next = std::ptr::null_mut() };
+
+    // The head is the one segment the splice cannot take, being part-filled;
+    // its entries go in through the ordinary write instead. That is one growth
+    // at most: what is copied fits the room the live write segment has left
+    // plus one fresh segment, both capacities being the same.
+    for index in 0..fill {
+        let entity = unsafe { segment_entries(head).add(index).read() };
+        unsafe { append_entry(state, entity) };
+    }
+
+    // To a spare cell rather than to the reserve wherever one is empty: the
+    // next growth is the one this collection's own severing takes, and a cell
+    // it can reach is worth more than a block the pool holds.
+    let spare_count = q.spare_count.get();
+    if spare_count < SPARE_SEGMENTS {
+        q.spares[spare_count].set(head);
+        q.spare_count.set(spare_count + 1);
+        return;
+    }
+
+    gc_metadata::release_to_critical(head);
 }
 
 /// Take one spare, or null when both cells are empty.
