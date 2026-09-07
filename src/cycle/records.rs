@@ -1,11 +1,13 @@
 //! A chain of fixed-size records over segments its owner supplies.
 //!
-//! One collection structure holds an unbounded number of small records and
-//! knows a bound on neither: the trace's worklist, whose depth is the traced
-//! subgraph's. A fixed array would abort a collection the memory could serve,
-//! and a growing vector would own an allocation this crate refuses the
-//! collector (`PLAN.md`, S36.11). So the records are held in segments, each
-//! one a header line and the records behind it, threaded both ways.
+//! Two collection structures hold an unbounded number of small records and
+//! know a bound on neither: the trace's worklist, whose depth is the traced
+//! subgraph's, and the deferred drops of a teardown, whose length is the
+//! component's external children. A fixed array would abort a collection the
+//! memory could serve, and a growing vector would own an allocation this crate
+//! refuses the collector (`PLAN.md`, S36.11). So the records are held in
+//! segments, each one a header line and the records behind it, threaded both
+//! ways.
 //!
 //! **The chain allocates nothing.** A caller hands it a region and the
 //! capacity that region holds, and where the region came from is that caller's
@@ -13,17 +15,21 @@
 //! bump, one at the first push ([`crate::cycle::arena`],
 //! [`crate::cycle::stack`]). That is what lets one chain serve users whose
 //! memory comes from different places, and it is why [`RecordChain::push`]
-//! reports a full append position rather than growing.
+//! reports a full append position rather than growing. A user that cannot act
+//! on a refusal draws its regions ahead of the first push instead, against
+//! [`RecordChain::room`] ([`crate::cycle::reclamation`]).
 //!
 //! **Each segment carries its own capacity**, which a boundary crossing reads
 //! instead of a constant, so a chain of unequal segments hands its records
-//! back exactly. Every segment the one user attaches is the same size, so no
-//! chain of unequal ones stands today: the second size went with the withheld
-//! returns' chain (`PLAN.md`, S44.2).
+//! back exactly. Each of the two users attaches segments of one size of its
+//! own, so no chain of unequal ones stands today.
 //!
-//! One access order: [`RecordChain::pop`] takes the newest record, which is
-//! what a descent needs. A reader of every record oldest first stood here for
-//! the withheld returns' replay and went with it (`PLAN.md`, S44.2).
+//! Two access orders, one per user. [`RecordChain::pop`] takes the newest
+//! record, which is what a descent needs, and [`RecordChain::drain`] hands
+//! every record over oldest first, which is what a replay in the order the
+//! records were written needs — the deferred drops of a cycle teardown, whose
+//! children are dropped in the order the sever displaced them
+//! ([`crate::cycle::reclamation`]).
 //!
 //! **The records are `Copy` and no drop glue runs over them.** A segment is
 //! raw memory the owner rewinds or releases whole, so a record whose death
@@ -213,6 +219,95 @@ impl<T: Copy> RecordChain<T> {
         self.open(segment);
     }
 
+    /// Records the chain takes before it owes another region: the room left in
+    /// the append position, plus the whole of every segment an earlier crossing
+    /// left above it.
+    ///
+    /// A user that measures its walk against this figure before the walk starts
+    /// makes every push of that walk unfailing, which is what a caller writing
+    /// into memory it cannot restore needs ([`crate::cycle::reclamation`]). It
+    /// counts nothing below the append position: those segments are full, and a
+    /// chain fills and empties from the same end.
+    pub(crate) fn room(&self) -> usize {
+        let mut room = (self.limit.get() as usize - self.cursor.get() as usize) / size_of::<T>();
+        let mut segment = unsafe { (*self.current.get()).next.get() };
+        while !segment.is_null() {
+            room += unsafe { (*segment).capacity };
+            segment = unsafe { (*segment).next.get() };
+        }
+
+        room
+    }
+
+    /// Attach `region` above the newest segment, leaving the append position
+    /// where it is.
+    ///
+    /// [`extend`](Self::extend) is the same act for a user that has just filled
+    /// its append position: it attaches above the current segment and opens it.
+    /// This one serves a reservation taken before the first push, where
+    /// segments an earlier walk emptied already stand above the append position
+    /// and the new region belongs behind them.
+    ///
+    /// # Safety
+    /// As [`over`](Self::over).
+    pub(crate) unsafe fn attach(&self, region: *mut u8, capacity: usize) {
+        let mut top = self.current.get();
+        loop {
+            let above = unsafe { (*top).next.get() };
+            if above.is_null() {
+                break;
+            }
+
+            top = above;
+        }
+
+        let segment = unsafe { Segment::write_header(region, capacity, top) };
+        unsafe { (*top).next.set(segment) };
+    }
+
+    /// Hand every record to `visit` oldest first and leave the chain empty over
+    /// the segments it holds.
+    ///
+    /// The order is the append order, which is what a user replaying an act in
+    /// the order it was performed needs; [`pop`](Self::pop) is the other
+    /// direction and serves a descent. Every segment below the append position
+    /// is full — the chain fills one and advances — so the count each one hands
+    /// over is its own capacity, and the append position hands over what stands
+    /// below its cursor.
+    ///
+    /// **The chain is emptied before the first visit runs**, over the bounds
+    /// this call read, so an unwind out of a visit leaves records nobody drops
+    /// rather than records a second drain hands out again. `visit` may not
+    /// reach this chain for the same reason: a push from inside would write
+    /// into a record this walk has not read yet.
+    pub(crate) fn drain(&self, mut visit: impl FnMut(T)) {
+        let last = self.current.get();
+        let filled_in_last = (self.cursor.get() as usize
+            - unsafe { Segment::records::<T>(last) } as usize)
+            / size_of::<T>();
+        self.open(self.base);
+
+        let mut segment = self.base;
+        loop {
+            let records = unsafe { Segment::records::<T>(segment) };
+            let filled = if segment == last {
+                filled_in_last
+            } else {
+                unsafe { (*segment).capacity }
+            };
+
+            for i in 0..filled {
+                visit(unsafe { records.add(i).read() });
+            }
+
+            if segment == last {
+                break;
+            }
+
+            segment = unsafe { (*segment).next.get() };
+        }
+    }
+
     /// Whether the chain holds no record.
     pub(crate) fn is_empty(&self) -> bool {
         self.current.get() == self.base
@@ -243,3 +338,6 @@ impl<T: Copy> RecordChain<T> {
         count
     }
 }
+
+#[cfg(test)]
+mod tests;

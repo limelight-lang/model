@@ -357,10 +357,11 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         // reached the free list while an entry still names it would leave a
         // root aimed at memory about to be handed out again. What prevents it
         // is the candidate arm below, which withholds such a slot instead of
-        // freeing it. The bit that arm reads is cleared by the owner at its
-        // exact reading, which S36.5 builds, and at thread exit, which S39.1
-        // does; until then a slot withheld here is withheld for the life of
-        // the process.
+        // freeing it. Nothing clears the bit that arm reads — thread exit
+        // leaves it standing and a collection's commit frees a member into the
+        // arm rather than around it — so a slot withheld here is withheld for
+        // the life of the process, and `PLAN.md` S39.1 is the step that
+        // chooses the fate of the entry behind it.
     }
 
     // **A second free of one entity does nothing.** The flags bit taken here
@@ -436,12 +437,15 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // zero-count member out of the pool (`dev/DECISIONS.md`, "A block's `used`
     // falls at the slot's return").
     //
-    // Nothing retires such an entry yet: the clear of this bit and the return
-    // of the slot are `PLAN.md` S36.6's and S39.1's, and until one of them
-    // lands a slot withheld here is withheld for the life of the process. The
-    // retirement will hand the slot back through this same entry point, so it
-    // owes the mark the take above set a clear of its own; without that clear
-    // its free reads as a repeat and the slot never returns
+    // A collection's commit reaches this arm like any other death: a member
+    // the queue still names is torn down and its slot withheld, which is what
+    // keeps the entry's address readable for the trace that pops it
+    // (`crate::cycle::mark`, the zero-count root; `crate::cycle::reclamation`
+    // is the teardown). Nothing retires such an entry yet, so the slot is
+    // withheld for the life of the process and `PLAN.md` S39.1 is the step
+    // that chooses the fate. That retirement will come through this same entry
+    // point, so it owes the mark the take above set a clear of its own;
+    // without that clear its free reads as a repeat and the slot never returns
     // (`crate::refcount::DEAD_IN_PLACE`).
     if crate::refcount::is_registered_candidate(flags) {
         return;

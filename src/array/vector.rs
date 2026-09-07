@@ -229,13 +229,17 @@ impl Vector {
     /// The counterpart of the hash's `sever_entries`, and shorter for the
     /// reason the whole type is shorter — there are no string keys to
     /// hand out beside the values, and no holes to skip.
-    pub(crate) fn sever_entries(&mut self, head: &StorageHead, displaced: &mut Vec<*mut RcHeader>) {
+    pub(crate) fn sever_entries(
+        &mut self,
+        head: &StorageHead,
+        mut displaced: impl FnMut(*mut RcHeader),
+    ) {
         for i in 0..head.used() {
             let at = self.element_ptr(head, i);
             let value = unsafe { load_element(at) };
             unsafe { store_element(at, Value::null()) };
             if value.is_refcounted() {
-                displaced.push(value.entity_ptr());
+                displaced(value.entity_ptr());
             }
         }
 

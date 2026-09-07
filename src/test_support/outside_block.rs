@@ -233,7 +233,7 @@ unsafe fn walk_plain(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)
 
 /// Empty every cell and hand its former occupant back undropped, the
 /// drain's contract for the group.
-unsafe fn sever(entity: *mut RcHeader, displaced: &mut Vec<*mut RcHeader>) {
+unsafe fn sever(entity: *mut RcHeader, displaced: &mut dyn FnMut(*mut RcHeader)) {
     let block = unsafe { block_at::<PlainCells>(entity as *mut u8) };
     if block.is_null() {
         return;
@@ -242,7 +242,7 @@ unsafe fn sever(entity: *mut RcHeader, displaced: &mut Vec<*mut RcHeader>) {
     unsafe {
         yield_cells::<PlainCells>(block, &mut |cell| {
             crate::cells::empty_cell(cell);
-            displaced.push(cell.child);
+            displaced(cell.child);
         })
     };
 }

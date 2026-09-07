@@ -64,7 +64,7 @@ fn the_sever_empties_the_vector_and_hands_the_children_out() {
     }
 
     let mut displaced = Vec::new();
-    unsafe { sever_counted_children(a, &mut displaced) };
+    unsafe { sever_counted_children(a, |child| displaced.push(child)) };
     assert_eq!(displaced, vec![held as *mut RcHeader]);
     assert!(
         unsafe { (*storage_head(a)).used() } == 0,

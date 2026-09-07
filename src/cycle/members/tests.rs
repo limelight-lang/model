@@ -63,7 +63,8 @@ fn two_rings() -> TwoRings {
 /// **The candidate bit is cleared by hand first**, as every case of this crate
 /// that frees a registered entity does: `ll_free`'s candidate arm withholds the
 /// slot of anything whose bit still stands, and nothing in production retires a
-/// record yet (`PLAN.md` S36.5 and S39.1).
+/// record yet — a collection's commit frees a member into that arm rather than
+/// around it (`crate::cycle::reclamation`; `PLAN.md` S39.1).
 fn tear_down(rings: TwoRings) {
     let TwoRings {
         mut arena,

@@ -67,8 +67,8 @@ fn a_reference_taken_after_the_verdict_leaves_the_ring_externally_referenced() {
 /// unreachable. Without it the refusal above could be the fixture's rather
 /// than the store's.
 ///
-/// Unreachable is where this step stops — the free is `PLAN.md` S36.5's,
-/// and the fixture tears the ring down by hand.
+/// Unreachable is where this step stops — the free is
+/// `cycle::reclamation`'s — and the fixture tears the ring down by hand.
 #[test]
 fn the_same_ring_without_the_store_is_unreachable() {
     let _g = test_guard();

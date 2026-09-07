@@ -1193,7 +1193,11 @@ impl Table {
     /// reading it would act on. The index is settled the same way —
     /// every bucket reads `NONE` and every hole's link is cut, so no
     /// chain reaches a hole and an insert after the sever walks nothing.
-    pub(crate) fn sever_entries(&mut self, head: &StorageHead, displaced: &mut Vec<*mut RcHeader>) {
+    pub(crate) fn sever_entries(
+        &mut self,
+        head: &StorageHead,
+        mut displaced: impl FnMut(*mut RcHeader),
+    ) {
         for i in 0..head.used() {
             let e = self.entry(head, i);
             if e.is_hole() {
@@ -1215,11 +1219,11 @@ impl Table {
             }
 
             if value.is_refcounted() {
-                displaced.push(value.entity_ptr());
+                displaced(value.entity_ptr());
             }
 
             if !key.is_null() {
-                displaced.push(key as *mut RcHeader);
+                displaced(key as *mut RcHeader);
             }
         }
 

@@ -1228,7 +1228,7 @@ pub unsafe fn release_children(a: *mut LLArray) {
 /// # Safety
 /// `a` must be a live array entity whose storage is readable and
 /// writable.
-pub(crate) unsafe fn sever_counted_children(a: *mut LLArray, displaced: &mut Vec<*mut RcHeader>) {
+pub(crate) unsafe fn sever_counted_children(a: *mut LLArray, displaced: impl FnMut(*mut RcHeader)) {
     match unsafe { (*a).head.tag() } {
         StorageTag::Hash => {
             let (table, head) = unsafe { as_table_mut(a) };

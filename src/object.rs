@@ -497,12 +497,12 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::cells::CellReader>(
 pub(crate) unsafe fn sever_counted_slots(
     base: *mut u8,
     cls: &crate::class::Class,
-    displaced: &mut Vec<*mut RcHeader>,
+    mut displaced: impl FnMut(*mut RcHeader),
 ) {
     unsafe {
         for_each_body_cell::<crate::cells::PlainCells>(base, cls, &mut |cell| {
             crate::cells::empty_cell(cell);
-            displaced.push(cell.child);
+            displaced(cell.child);
         })
     };
 }

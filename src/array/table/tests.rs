@@ -113,7 +113,7 @@ impl Owned {
     fn sever(&mut self) -> Vec<*mut RcHeader> {
         let (table, head) = unsafe { crate::array::entity::as_table_mut(self.0) };
         let mut displaced = Vec::new();
-        table.sever_entries(head, &mut displaced);
+        table.sever_entries(head, |child| displaced.push(child));
         displaced
     }
 }

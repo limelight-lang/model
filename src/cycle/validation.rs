@@ -98,8 +98,8 @@ pub(crate) enum ValidationResult {
 ///
 /// **Nothing is written**, neither an entity nor a shadow row, so a
 /// component this refuses costs the caller nothing to undo. The guard is
-/// `PLAN.md` S36.3's, the destructors S36.4's, the sever and the free
-/// S36.5's.
+/// [`crate::cycle::finalization`]'s, and the sever and the free
+/// [`crate::cycle::reclamation`]'s.
 ///
 /// # Safety
 /// Every member is an entity header of this thread's GC heap whose

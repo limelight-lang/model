@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-06 · Active: S36, from S36.5. S44 has one step left, S44.5,
+Updated: 2026-09-07 · Active: S36, from S36.6. S44 has one step left, S44.5,
 and it waits on Edmond's word.
 S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
@@ -23,8 +23,9 @@ measurement rather than for its direction. S36 is the work in front:
 its S36.9 stays open on the deny run a wired collection owes, S36.12 closed on
 2026-09-06 with the pressure path's harvest, S36.3 closed the same day with the
 guard references and the weak window, S36.4 the same day with the destructors
-and the revalidation behind them, and S36.5 — the sever, the free and the
-deferred drops — is the next of its steps to be built.
+and the revalidation behind them, S36.5 on 2026-09-07 with the sever, the frees
+and the deferred drops, and S36.6 — the maturation stamp — is the next of its
+steps to be built.
 S43 closed the withheld-return window: past its region the module draws
 nothing, a death in memory the collection never met is returned at once, a
 marked slot of another thread's block is stacked rather than listing its
@@ -100,16 +101,6 @@ the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
 than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
 
-- **Which step retires a candidate record at commit.** S34.2's law names "the
-  drain's corpse rule, or S36.5 commit for an in-flight root"; four comments
-  name S36.6 instead — `refcount`'s `DEAD_IN_PLACE` and `clear_candidate_bit`,
-  its `expect(dead_code)` reason, and `stdapi::ll_free`'s candidate arm — and
-  so does `dev/DECISIONS.md`, "a second `ll_free` of an entity is refused, and
-  the mark is the bit it is refused on". Neither step's `done:` mentions the
-  retirement at all: S36.5's is the sever and the free, S36.6's is the
-  maturation stamp alone. The act needs a criterion in whichever step gets it,
-  and the citations on the other side move in the same commit.
-
 - **Which destructors "a destructor ran anywhere" counts.**
   `rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 5 gates
   the second reading on a destructor having run anywhere in the commit, and
@@ -121,6 +112,17 @@ guard lowers it on the unwind as well as on the return.
   skip is sound under the first reading by the induction written at
   `Revalidation::revalidate`; which reading the specification means is
   unresolved, and it is `rfc`'s sentence to sharpen.
+
+- **A candidate freed inside a reset.** `memory::stdapi::ll_free`'s reset-window
+  arms stand ahead of its candidate arm, so a retained-block member whose free
+  arrives while a reset is in flight is absorbed there and never reaches the
+  withholding. A collection inside a reset's destructor is contemplated
+  (`cycle::deferred_slot_reuse`), and a promoted survivor can become a candidate
+  after its category is rewritten, so the two can meet: the free is absorbed,
+  the queue entry stands, and whether the block may go home with that slot named
+  turns on `retained::has_live_occupants` reading a dead-in-place slot as
+  occupied. Neither comment at the arm considers a candidate, and nobody has
+  traced it. Raised by the Critic's second round on S36.5, 2026-09-07.
 
 - **`exact test` is a term the glossary retires** in favour of *exact
   validation* (`rfc/dev/GLOSSARY.md`, "Deprecated terms"), and it stands 45
@@ -562,8 +564,9 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
       handoff: **it waits on three later stages, and the plan's order had it
         first.** Every clause but one was about code that did not exist when
         the step was written: the dirty pass exists now — `cycle::mark` and
-        `cycle::scan` — the corpse mark landed with S34.3, and commit's free
-        is S36.5's.
+        `cycle::scan` — the corpse mark landed with S34.3, and commit's free landed
+        with S36.5 — which clears no bit, so what this step's clause needs from
+        it is the death rather than the retirement.
         The one clause that is about today's code — the bit is never cleared at
         acquittal — holds vacuously, nothing in the crate clearing `ENROLLED`
         at all (checked 2026-08-29; `refcount.rs` only sets it). And the test
@@ -2405,22 +2408,108 @@ stage claiming the frees while building none of them.
         that throws. Release sets `panic = "abort"`, so there it ends the
         process; in a test build every value of the chain drops silently under
         the unwind and every guard it wrote is stranded.
-- [ ] S36.5 Sever, free and the deferred drops
+- [x] S36.5 Sever, free and the deferred drops
       done: internal edges are severed with external children collected; the
         guards come off through the counted release and each member reaching
         zero dies through the ordinary death path into S36.2's parking; the
-        deferred-drop queue — severed children and the weak notify's displaced
-        map values — drains only after the last member's free, the order proven
-        by a test-only sequence probe; a weak cell re-created on a condemned
-        member is cleared by the free-time `HAS_WEAK_REFERENCES` notification
+        deferred-drop queue — the severed external children — drains only after
+        the last member's free, the order proven by a test-only sequence probe;
+        a weak cell re-created on a condemned member is cleared by the free-time
+        `HAS_WEAK_REFERENCES` notification
       tier: T2 · role: Code Reviewer
-      note 2026-09-06 — the retirement clears `DEAD_IN_PLACE` before it hands
-        the slot back. S44.3 sets that bit at the head of `ll_free`, on the
-        flags load the candidate arm already makes, so a withheld slot still
-        carries it while its record stands; a retirement that offers the same
-        pointer to `ll_free` again is refused there and the slot is lost.
-        `refcount::clear_dead_in_place` is the hand-back, and
-        `block_pool::test_guard` counts the refusals such a path leaves.
+      correction 2026-09-07 — the `done:` clause named a second population for
+        the queue, "the weak notify's displaced map values", and no producer of
+        it exists: `rfc/model/weak-references.md` marks map subscription
+        "(future)", and `weak::table::remove` answers one canonical cell and
+        displaces no counted reference. Edmond ruled the map can wait, so the
+        half is struck here and the work is a backlog item of its own — "A weak
+        map, and the second kind of death subscriber", which carries the shape
+        the mechanism has to take, the thread-local sink included.
+      note 2026-09-06, superseded — it read the retirement of a candidate record
+        as this step's, clearing `DEAD_IN_PLACE` before handing the slot back.
+        The Critic's first round showed the clear is not available to a commit
+        at all, and the teardown takes no such path: see the Critic record below
+        and `dev/DECISIONS.md`, "the commit clears no candidate bit, and a
+        member the queue names keeps its slot withheld".
+      Sage 2026-09-07, the stage's pre-code gate: ruled the queue a
+        `RecordChain<*mut RcHeader>` the collection arena owns — the record
+        chain's second user, its segments the same bump's, emptied at the end of
+        every component and drained oldest first; the refusal taken before the
+        first cell is emptied, a refused component left whole with its guards
+        off; the `Vec` sink replaced by `impl FnMut` at five signatures and
+        `&mut dyn FnMut` at the `OutsideCells` function pointer; and the code in
+        a module of its own, `cycle::reclamation`, entered through
+        `GuardedComponent`. Two of its rulings were overturned by the Critic and
+        both are recorded below. Baseline recorded: 759 tests, and S36.4's Miri
+        figure over `cycle::finalization`.
+      Critic 2026-09-07 round 1: nine findings, all taken. **The high one
+        overturned the Sage's candidate-bit ruling**, which had the commit clear
+        the bit ahead of each member's free: `mark::schedule_root_if_unvisited`
+        reads a root's refcount out of the body and says it may only because the
+        mutator does not free a slot an entry names, `ActiveTrace`'s close
+        restores its batch rather than disposing of it, and an entry can be
+        written into the live lane by a step-4 destructor and reach no
+        disposition at all. All three were verified in the sources before the
+        ruling was reversed. The rest: two cases of one file shared fixture
+        statics and could overwrite each other at four threads; the
+        outside-cells group had no stated obligation to sever what it walks; the
+        refusal path's two docs promised a state the code does not leave, a
+        member whose guard was its last reference being freed there; `attach`
+        and a multi-segment drain had no case; and six comments the code
+        contradicted, `release_queue_segments` as a lawful clearing among them.
+      Critic 2026-09-07 round 2: eight findings, seven taken. **The high one
+        overturned the Sage's costing of the reservation**: the bound read off
+        the layouts is `2 × used` for a table, so a ring holding an array of a
+        million integers asks for eight megabytes of records it would never
+        write — and asks for them on the pressure path, where the refusal
+        floats the very component whose release would relieve the pressure. The
+        count is a walk now, exact, and the sever's own obligation is checked
+        against it on both sides. The second high one: the candidate case's
+        assertion passed under the defect it named, the free list being a stack
+        whose head was the other member's slot; it takes two probes now. Also
+        taken: the group contract stated one-sidedly, the sorted slice `reclaim`
+        needs and the ordinary path may not have, the lane the drain refills
+        against `restore_candidates`' every-build assertion, the cost of the
+        candidate-bit overturn understated in `dev/DECISIONS.md` by a block per
+        dead candidate and a lane that only grows, and three stale sentences.
+        The eighth is a new `Fog` line, the reset window's absorb arm standing
+        ahead of the candidate arm.
+      handoff: `src/cycle/reclamation.rs` is `reclaim(component, members, arena)
+        -> Reclaimed` and `DeferredDrops`; the cases are four groups under
+        `src/cycle/reclamation/tests/`. `RecordChain` gains `room`, `attach` and
+        `drain` with three cases of its own; `TraceScratchArena` owns the queue
+        and gains `reserve_drops`, `push_drop`, `drain_drops`; `cells::
+        sever_cells` and four signatures under it take a closure instead of a
+        `Vec`; `refcount::severed_edge_release` is the narrow decrement an
+        internal edge takes; `GuardedComponent::release` is the refusal path's
+        discharge.
+      handoff: 773 tests at one thread and three times at four, 773
+        `hash-folding`, 777 `debug-journal` three times, `cargo build
+        --release`, `cargo bench --no-run`, `cargo +1.94 fmt --check` clean,
+        `cargo check --lib --tests` warning-free and 473 citations with the same
+        seven residues. Miri at two threads: `cycle::reclamation` 11 passed in
+        12.3 s of its own clock against 20 s of the wall, `cycle::records` 3 in
+        5.4 s, `cycle::stack` 5 and `cycle::arena` 29 clean over the same
+        change. Eight source mutations, each caught by the case that owns it:
+        the child dropped where the sever meets it, the membership test skipped,
+        the drain moved ahead of the frees, the candidate bit cleared at the
+        commit, the reservation drawing nothing, the internal edge taking the
+        counted release, the drain reversed, and the refusal discharging the
+        component without releasing its guards.
+      handoff: what S36.6 and S36.7 inherit. The drain's releases refill the
+        thread's candidate lane, and `queue::restore_candidates` refuses in
+        every build to restore a batch over a lane something has written since —
+        so the driver owes the disposal the design names
+        (`rfc/model/gc/rc-cycle.md`, "Concurrency"), and the built
+        `ActiveTrace` close restores. `reclaim` reads a sorted member slice,
+        which only the pressure path has. And a member the queue still names is
+        freed into a withheld slot, so a commit reclaims the memory of every
+        member no entry names and none of the rest until S39.1 retires the
+        entries.
+      handoff: untested, and no step owns it: the refusal path over a component
+        holding a member whose guard is its last reference — that member is
+        freed inside `GuardedComponent::release`, and the case that exercises
+        the refusal has no such member.
 - [ ] S36.6 Commit writes the maturation stamp
       done: on the owning thread, after judgement, each proven-live component is
         stamped as a unit — current epoch and `min(age) + 1` saturated at 3, one
@@ -2450,6 +2539,17 @@ stage claiming the frees while building none of them.
         and leaves none behind (`dev/DECISIONS.md`, "the member list is the
         pressure path's alone")
       tier: T2 · role: Sage → Critic
+      note 2026-09-07 — the driver owes the disposal of its detached batch, and
+        the built `ActiveTrace` close restores instead. S36.5's deferred drops
+        are counted releases, so a surviving external child registers as a
+        candidate in the very operation that drops it, and
+        `queue::restore_candidates` refuses in every build to restore a batch
+        over a lane written since. The design already rules it — the ordinary
+        path "disposes of" its detached chain rather than restoring
+        (`rfc/model/gc/rc-cycle.md`, "Concurrency") — and until this step lands
+        it, the first collection that drops a surviving child ends at that
+        refusal. The same step owes `reclaim` a sorted member slice, or the
+        second membership test the path off the poll would need instead.
 - [ ] S36.8 Elide the redundant exact test after an in-line owner trace
       done: when mark and scan run synchronously on the owning mutator at one
         consistent point, a condemned component proceeds directly to the owner
@@ -3166,6 +3266,39 @@ in `dev/INDEX.md`. What it did not do is below.
   on the child thread itself — the peak exactly at the base block and both
   spare segments, in both builds, and both current figures at zero. Seen red
   on a build whose `ll_thread_init` refills no spares.
+- [ ] **A weak map, and the second kind of death subscriber.**
+  `rfc/model/weak-references.md` names two subscriber kinds and the crate
+  builds one: the canonical `WeakReference` cell. The other is a map keyed by
+  object identity, marked "(future)" there, and S36.5's `done:` clause was
+  written against it — "the weak notify's displaced map values" — so half that
+  clause named a population no producer can make. The clause was struck and
+  the work is here (Edmond, 2026-09-07: it can wait).
+
+  What it is: an ordinary GC-heap entity over the same `array::Table` that
+  `Map` reuses, its key uncounted and its value counted, so a trace reads one
+  half of each entry and the map keeps no key alive. What it costs the weak
+  table: a target's row stops being one subscriber and becomes a list — one
+  cell plus one record per map naming that target — which is what the row's
+  reserved tag bits were left for.
+
+  **Where it meets this stage:** the death notification displaces a counted
+  value per map entry, and the two sites cannot agree on when to drop it. An
+  ordinary death may release it inline, being a cascade of releases already; a
+  cycle death may not, because between the sever and the last free no user
+  code runs (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and
+  reclamation", step 6). One body serves both — `weak::notify_death`, which a
+  cycle teardown reaches through the ordinary death path — and it cannot be
+  told which site it is on by a parameter, `dispose` being a C ABI function
+  pointer. The shape that answers it: the teardown arms a thread-local sink
+  for the length of its own run and the notification reads it, so a displaced
+  value goes to `cycle::reclamation`'s queue there and to an inline release
+  everywhere else. The queue takes it unchanged — the record is one entity
+  pointer, and a second producer writes the same eight bytes.
+
+  Two smaller obligations come with it: an arena-resident key belongs on the
+  arena's weak log, the way a cell's target does, and the last subscriber
+  leaving clears `HAS_WEAK_REFERENCES` so an ordinary death stops asking the
+  table.
 - [ ] **The ladder's refusal has nowhere to go.**
   `InsertOutcome::AdmissionDenied` is answered inside the crate — a null
   from `ll_cow_separate`, a `false` from `element::set` — because the

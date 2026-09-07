@@ -8,6 +8,116 @@ never edited or deleted.
 
 ---
 
+## 2026-09-07 — the commit clears no candidate bit, and a member the queue names keeps its slot withheld
+
+Owner: S36.5. Ruled by the Sage the other way at the stage's pre-change gate and
+overturned by the Critic's first round, which is the `Fog` line "Which step
+retires a candidate record at commit" answered: neither S36.5 nor S36.6, because
+the clear is not available to a commit at all.
+
+**Decided:** `cycle::reclamation::reclaim` frees every member through the
+ordinary death path and touches `CANDIDATE_BIT` on none of them. A member the
+queue still names is therefore torn down into a withheld slot — `ll_free` takes
+the mark and the candidate arm keeps the address out of the allocator's hands —
+and the slot comes back when the entry is retired, which `PLAN.md` S39.1 owns
+and nothing builds today.
+
+**Why the clear was refused.** `cycle::mark::schedule_root_if_unvisited` reads a
+root's refcount out of the body before it reads any cell, and says in its own
+comment that it may do so "because the mutator does not free an entity the root
+queue names". Clearing the bit at the commit removes exactly that invariant, and
+three things then follow: `ActiveTrace`'s close **restores** the batch rather
+than disposing of it, so the entries go back to the lane naming freed slots; an
+entry can be written into the live lane during step 4, by a destructor whose
+`$this->next = null` releases a member the gate admits, and no disposition of
+the batch reaches that one; and on the pressure path the freed slot is on the
+free list before the deferred drops run, so the next destructor's allocation
+can take it. The next trace then reads a new occupant's count as the old
+entity's, and a recommissioned block reads as kind 0 with a null class word.
+
+**What it costs**, and it is more than the slot. A withheld slot keeps its
+block out of the pool — `used` falls at the return and never at the
+withholding — so one dead candidate pins 64 KiB, and a program that collects a
+thousand rings whose members landed in a thousand blocks pins 64 MB until the
+retirement lands. The entries go back to the lane at every close and are never
+retired, so the lane grows for the life of the process and every later trace
+pays a refcount load per dead entry; a driver whose pressure loop is "trace
+again while the queue still holds candidates" has to read that lane's growth as
+what it is, or it does not terminate (`PLAN.md` S36.7). This is still the right
+side of the trade — a slot withheld is memory nobody uses, a slot returned
+under a standing entry is a wild read — but the trade is against a leak with a
+block-sized unit, not a slot-sized one.
+
+---
+
+## 2026-09-07 — the teardown takes room for its children before it empties the first cell
+
+Owner: S36.5. Ruled by the Sage at the stage's pre-change gate.
+
+**Decided:** `cycle::reclamation::reclaim` walks the component's cells once
+before it empties any of them, counts the children that fall outside the
+membership, takes room for exactly that many deferred drops out of the
+collection arena, and answers `Reclaimed::AllocationFailed` with nothing
+written when the arena refuses. Past the reservation every push of that
+teardown answers true, and a push that does not is an `assert!` in every build.
+A refused component keeps its edges, its counts and its candidate bits, its
+guards come off through the counted release, and it stands as floating garbage
+for a later trace to propose again.
+
+**Why:** the sever has no answer to a refusal met halfway through it. The cells
+are already null, the members are not yet freed, and dropping a displaced child
+inline is the one act step 6 forbids — a child's destructor is user code, and
+the whole point of deferring it is that no user code runs between the first
+null and the last free (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and
+reclamation", step 6). Ending the process was refused against
+`dev/DECISIONS.md`, "under memory starvation a collection ends itself and gives
+back everything"; un-severing was refused because a holed table's index is
+wiped and its links cut, which no undo restores.
+
+**The count is strided rather than read off the layouts**, which is the
+Sage's own costing overturned by the Critic's second round. A figure read from
+a class's run lengths and an array's `used` is an upper bound whose ratio to
+what a component writes is unbounded, and the unbounded case is the pressure
+case: a ring holding an array of a million integers would ask for eight
+megabytes of records it would never write, be refused, float, and be proposed
+again by the very driver the refusal was meant to serve. The walk costs one
+more stride over the component — the validation before it and the sever after
+it each make the same one — and it buys two things. The reservation asks for
+what the sever will queue. And the figure being exact makes the sever's own
+obligation checkable: the children queued equal the children counted, asserted
+in every build on both sides, which is what stands under the contract a class
+with cells outside its body carries (`cells::OutsideCells::sever`, whose two
+polarities have a case each).
+
+---
+
+## 2026-09-07 — the deferred-drop queue is the collection arena's, and it is the record chain's second user
+
+Owner: S36.5. Ruled by the Sage at the stage's pre-change gate.
+
+**Decided:** the children a sever displaces out of a component wait in a
+`RecordChain<*mut RcHeader>` that `cycle::arena::TraceScratchArena` owns, over
+segments of its own bump, and the chain is emptied at the end of every
+component. `RecordChain` gains the reader that hands records back oldest first,
+which is the order the sever displaced them in and the order the ordinary
+teardown would have released the same cells in.
+
+**Why the arena owns it:** the segments die at the arena's reset, and a value
+holding a chain over memory it does not own would make that lifetime a caller
+promise its own drop cannot check — the reason the arena already owns the
+trace's worklist. Which arena a teardown gets is the driver's (`PLAN.md`
+S36.7): a collection off the poll hands over the trace's own, and one an
+allocation failure started hands over a second arena opened over the same
+workspace, its rows having gone back with the blocks.
+
+**What was refused:** a structure of its own beside `records`, which was built
+for exactly this shape and had one user; the array drain's `WorkList`, which is
+private to `array::entity` and stands in mutator memory; and a queue that takes
+its bytes straight from `memory::gc_metadata`, which would duplicate the
+arena's reserve-first return order.
+
+---
+
 ## 2026-09-06 — the revalidation of a component and its teardown are adjacent
 
 Owner: S36.4. Ruled by the Sage at the stage's pre-change gate.

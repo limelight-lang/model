@@ -118,7 +118,16 @@ pub(crate) struct OutsideCells {
     /// `Value` and a bare `NULL`: in a table entry the first zeroes the
     /// collision link into a self-referencing chain and the second reads
     /// as an integer key rather than a hole.
-    pub sever: unsafe fn(*mut RcHeader, &mut Vec<*mut RcHeader>),
+    ///
+    /// **It hands over no more occupants than [`walk_plain`](Self::walk_plain)
+    /// yields cells** over the same instance. A cycle teardown takes room for a
+    /// component's displaced children against that walk and cannot act on a
+    /// refusal once it has begun to empty cells, so a group that severs a cell
+    /// its walk does not yield ends the run at the queue's assertion
+    /// ([`crate::cycle::reclamation`]). A map whose
+    /// entry holds a key beside its value is the shape to watch: both are
+    /// occupants, so the walk yields both.
+    pub sever: unsafe fn(*mut RcHeader, &mut dyn FnMut(*mut RcHeader)),
     /// Release the storage itself, as the last act of the ordinary
     /// dispose (`object.rs`, the field teardown). Dispose is the only
     /// caller: a
@@ -474,9 +483,16 @@ pub(crate) unsafe fn empty_cell(cell: Cell) {
     }
 }
 
-/// Sever every counted cell of `entity`: empty the cell and collect the
-/// child it held into `displaced`, **without dropping it** — the caller
-/// owes one drop per entry.
+/// Sever every counted cell of `entity`: empty the cell and hand the child
+/// it held to `displaced`, **without dropping it** — the caller owes one
+/// drop per child it is handed.
+///
+/// `displaced` is called once per child and may not sever anything itself:
+/// this walk is inside the layout it is striding. It takes a child rather
+/// than a cell because no caller writes the cell again — the sever has
+/// already emptied it — and it is a closure rather than a container because
+/// the memory a collection's teardown holds its children in comes from the
+/// memory manager (`PLAN.md` S36.9; [`crate::cycle::reclamation`]).
 ///
 /// **The single sever dispatch**, beside [`trace_cells`], and it goes
 /// through that walker rather than striding again: one layout, one
@@ -493,14 +509,10 @@ pub(crate) unsafe fn empty_cell(cell: Cell) {
 /// # Safety
 /// `entity` is a live entity of `kind` whose cells are readable and
 /// writable, and no other thread writes them.
-#[expect(
-    dead_code,
-    reason = "the commit stage that severs a condemned component is S36.5"
-)]
 pub(crate) unsafe fn sever_cells(
     entity: *mut RcHeader,
     kind: u32,
-    displaced: &mut Vec<*mut RcHeader>,
+    mut displaced: impl FnMut(*mut RcHeader),
 ) {
     const OBJECT: u32 = EntityKind::Object as u32;
     const LAZY: u32 = EntityKind::Lazy as u32;
@@ -517,7 +529,7 @@ pub(crate) unsafe fn sever_cells(
         REFERENCE => unsafe {
             trace_cells::<PlainCells>(entity, kind, |cell| {
                 empty_cell(cell);
-                displaced.push(cell.child);
+                displaced(cell.child);
             });
         },
         OBJECT | LAZY => unsafe {
@@ -527,7 +539,7 @@ pub(crate) unsafe fn sever_cells(
             let cls = (*(entity as *mut Object)).class;
             crate::object::for_each_body_cell::<PlainCells>(entity as *mut u8, cls, &mut |cell| {
                 empty_cell(cell);
-                displaced.push(cell.child);
+                displaced(cell.child);
             });
 
             // A class whose cells lie outside its body empties them
@@ -537,7 +549,7 @@ pub(crate) unsafe fn sever_cells(
             // class with cells outside itself carries one flag and one
             // group of five").
             if let Some(group) = crate::class::Class::outside_cells(cls) {
-                (group.sever)(entity, displaced);
+                (group.sever)(entity, &mut displaced);
             }
         },
         // Severing an array is the table's, not `empty_cell`'s: a

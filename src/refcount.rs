@@ -108,9 +108,9 @@ pub const OWNERSHIP_MARK: u32 = 1 << 9;
 /// at death and at no other point — **never when a trace finds it
 /// externally referenced**, because candidate registration is
 /// edge-triggered and clearing it there is a permanent miss (S34.2,
-/// `rfc/model/gc/rc-cycle.md`). The one other clearing is the undo of a
-/// registration whose entry was never written, which is the same owner
-/// reducing the same incomplete state.
+/// `rfc/model/gc/rc-cycle.md`). A registration cannot fail, so a bit set
+/// always names an entry and there is no undo to clear it for
+/// ([`crate::refcount::release_word`]).
 pub const CANDIDATE_BIT: u32 = 1 << 10;
 
 /// Entity has weak references (side table exists).
@@ -172,8 +172,11 @@ pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 /// published, which goes through `crate::memory::stdapi::free_unpublished`. A
 /// path that frees such a slot without clearing first leaks it, its free being
 /// read as a repeat. The
-/// candidate retirement is the one such path not built yet, and it owes the
-/// clear (`PLAN.md` S36.6 and S39.1).
+/// retirement of an entry naming a withheld slot is the one such path not built
+/// yet, and it owes the clear (`PLAN.md` S39.1). A collection's commit frees a
+/// member the queue still names into exactly that state: the free takes the
+/// mark, the candidate arm withholds the slot, and the entry stays the record
+/// of it (`crate::cycle::reclamation`).
 pub const DEAD_IN_PLACE: u32 = 1 << 15;
 
 /// The entity is a live **escapee**: a request-arena object that one or
@@ -1014,14 +1017,20 @@ pub(crate) fn is_registered_candidate(flags: u32) -> bool {
 /// is still alive is one no later decrement can register again, and the ring it
 /// closes is a permanent miss (`rfc/model/gc/cycle/questions.md`, Y6). The two
 /// lawful clearings are the zero-count member retirement in
-/// [`crate::cycle::queue::release_queue_segments`] and the free a collection's
-/// commit performs, which is `PLAN.md` S36.6's.
+/// **No production path clears it today**, and the two that look as though
+/// they should do not: thread exit gives the queue's segments back and leaves
+/// every entity's bit standing, which it names as a permanent miss
+/// ([`crate::cycle::queue::release_queue_segments`]), and a collection's commit
+/// withholds a member's slot rather than returning it, the entry naming that
+/// slot being the record that keeps the address readable
+/// ([`crate::cycle::reclamation`]). `PLAN.md` S39.1 is the step that chooses
+/// the fate of an entry whose entity is torn down.
 #[inline]
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the retirement that clears it is `PLAN.md` S39.1's, and the commit's free S36.6's"
+        reason = "the retirement that clears an entry's bit is `PLAN.md` S39.1's"
     )
 )]
 pub(crate) unsafe fn clear_candidate_bit(header: *mut RcHeader) {
@@ -1035,6 +1044,20 @@ pub(crate) unsafe fn clear_candidate_bit(header: *mut RcHeader) {
 pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
     let refcount = unsafe { refcount_load(header) };
     unsafe { refcount_store(header, refcount + 1) };
+}
+
+/// The `-1` of an internal edge a cycle teardown severed, as a narrow counter
+/// store: returns the new refcount, which is above zero for as long as the
+/// member's guard stands.
+///
+/// The counter store rather than [`ll_release`] because the member is about to
+/// be freed: a decrement the candidate gate admits writes a queue entry naming
+/// a slot that goes back inside the same window, and the entry is a raw pointer
+/// whose retirement would read a count out of somebody else's slot
+/// (`crate::cycle::reclamation`).
+#[inline]
+pub(crate) unsafe fn severed_edge_release(header: *mut RcHeader) -> u32 {
+    unsafe { mutator_unguard_release(header) }
 }
 
 /// The teardown guard's `-1`, the counter twin of

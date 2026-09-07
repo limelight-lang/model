@@ -166,8 +166,12 @@ unsafe fn free_list(list: *mut Registered) {
 /// reach this very block, and it must find the slot already null rather
 /// than a reference it could read a second time.
 unsafe fn tear_down(block: *mut u8, layout: *const Class) {
+    // The `Vec` is this pass's own and not a collection's: thread exit runs
+    // outside a collection, on the machine stack, and the sink the sever takes
+    // is whatever its caller can hold (`PLAN.md` S36.9's rule binds the bytes
+    // cycle collection owns).
     let mut displaced: Vec<*mut RcHeader> = Vec::new();
-    unsafe { crate::object::sever_counted_slots(block, &*layout, &mut displaced) };
+    unsafe { crate::object::sever_counted_slots(block, &*layout, |child| displaced.push(child)) };
     for child in displaced {
         unsafe { crate::memory::barrier::drop_ref(MemoryCategory::LongLived, child) };
     }

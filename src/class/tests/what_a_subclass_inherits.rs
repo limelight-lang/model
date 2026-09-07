@@ -27,7 +27,7 @@ unsafe fn probe_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) {}
 
 unsafe fn probe_sever(
     _: *mut crate::refcount::RcHeader,
-    _: &mut Vec<*mut crate::refcount::RcHeader>,
+    _: &mut dyn FnMut(*mut crate::refcount::RcHeader),
 ) {
 }
 

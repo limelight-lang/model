@@ -13,12 +13,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 /// Dismantle the ring the fixture built: take each guard reference off, break
 /// both edges and free both members.
 ///
-/// The finalization stops before the sever and the free (`PLAN.md` S36.5), so
-/// a case that ran one owes this by hand.
+/// The finalization stops before the sever and the free
+/// ([`crate::cycle::reclamation`]), so a case that ran one owes this by hand.
 ///
 /// **The guard comes off through `mutator_unguard_release`, which is the
-/// counter's twin of the guard's `+1` and not the counted release S36.5 will
-/// perform:** it stores a count and starts no teardown at zero.
+/// counter's twin of the guard's `+1` and not the counted release the teardown
+/// performs:** it stores a count and starts no teardown at zero.
 ///
 /// # Safety
 /// Both members are live objects of this thread's GC heap, each carrying one

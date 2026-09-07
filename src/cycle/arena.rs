@@ -101,6 +101,7 @@
 
 use crate::cycle::deferred_slot_reuse::RETURNS_BASE_BYTES;
 use crate::cycle::members::MEMBERS_BASE_BYTES;
+use crate::cycle::reclamation::{DeferredDrops, SEGMENT_BYTES as DROP_SEGMENT_BYTES};
 use crate::cycle::row::{Population, RowKey};
 use crate::cycle::shadow::{self, Color, RowArray};
 use crate::cycle::stack::{SEGMENT_BYTES, TraceStack, WorklistEntry};
@@ -108,6 +109,7 @@ use crate::cycle::stack::{SEGMENT_BYTES, TraceStack, WorklistEntry};
 use crate::memory::block_pool::BlockPool;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
 use crate::memory::gc_metadata;
+use crate::refcount::RcHeader;
 
 /// What one meeting of an entity answers: its row, or the two reasons
 /// there is none.
@@ -325,6 +327,11 @@ pub(crate) struct TraceScratchArena {
     /// The trace's worklist, whose segments are this bump's
     /// ([`crate::cycle::stack`]).
     worklist: TraceStack,
+    /// The children a teardown's sever displaced out of the component it is
+    /// tearing down, held until the last member's free
+    /// ([`crate::cycle::reclamation`]). Segments of this bump, like the
+    /// worklist's, and emptied once per component.
+    drops: DeferredDrops,
     /// Bytes of this arena's bump already charged to the manager's
     /// ledger, so that [`reset`](TraceScratchArena::reset) discharges exactly
     /// what was charged and a re-entered reset discharges nothing.
@@ -386,6 +393,7 @@ impl TraceScratchArena {
             open_capacity: WORKSPACE_BUMP_BYTES,
             touched: std::ptr::null_mut(),
             worklist: TraceStack::new(),
+            drops: DeferredDrops::new(),
             published: 0,
             harvest: Harvest::Unarmed,
         })
@@ -635,6 +643,23 @@ impl TraceScratchArena {
         // with entities still queued, and every one of them carries a row
         // pointer into an array this call is about to unstamp.
         self.worklist.rewind();
+
+        // The queue's segments are this bump's too, and a child still standing
+        // in one is a reference nothing will ever drop. That is a leak rather
+        // than a corruption, and it is reported where a teardown can still be
+        // blamed for it rather than at the next collection's first push.
+        //
+        // Silent while another panic unwinds, as every drop of the
+        // finalization chain is: an unwind out of a sever strands the children
+        // it had queued along with every guard it had written, and a second
+        // panic here would end the process without the message that says what
+        // went wrong (`crate::cycle::finalization`; the throwing destructor is
+        // `PLAN.md` S39.1's).
+        debug_assert!(
+            self.drops.is_empty() || std::thread::panicking(),
+            "a teardown left children queued: every component drains its own"
+        );
+        self.drops.rewind();
         self.clear_touched_rows();
     }
 
@@ -906,6 +931,61 @@ impl TraceScratchArena {
     /// when the closure is exhausted.
     pub(crate) fn pop_work(&mut self) -> Option<WorklistEntry> {
         self.worklist.pop()
+    }
+
+    /// Take room for `children` deferred drops, or answer **false** when both
+    /// allocation paths refused a segment.
+    ///
+    /// This is the whole of a teardown's refusal point: past it every
+    /// [`push_drop`](Self::push_drop) of that teardown answers true, which is
+    /// what a walk already writing into a component needs
+    /// ([`crate::cycle::reclamation`]). Segments an earlier component emptied
+    /// are counted before a new one is drawn, so a commit of many small
+    /// components draws once.
+    pub(crate) fn reserve_drops(&mut self, children: usize) -> bool {
+        while self.drops.room() < children {
+            let region = self.alloc(DROP_SEGMENT_BYTES);
+            if region.is_null() {
+                return false;
+            }
+
+            unsafe { self.drops.take(region) };
+        }
+
+        true
+    }
+
+    /// Queue one child the sever displaced out of the component, or answer
+    /// **false** when the reservation this teardown took was too small — which
+    /// is a defect of the bound rather than a refusal a caller can act on.
+    pub(crate) fn push_drop(&mut self, child: *mut RcHeader) -> bool {
+        self.drops.push(child)
+    }
+
+    /// Hand every queued child to `visit` in the order the sever displaced
+    /// them, and leave the queue empty over the segments it holds.
+    ///
+    /// `visit` runs user code — a child's destructor — and may not reach this
+    /// arena. What stands between it and a second collection is an abort rather
+    /// than a proof: a trace opened while this thread holds the workspace ends
+    /// the process ([`crate::cycle::queue::lend_workspace_base`]), and the
+    /// driver that keeps a destructor's allocation failure from starting one is
+    /// `PLAN.md` S36.7's.
+    pub(crate) fn drain_drops(&mut self, visit: impl FnMut(*mut RcHeader)) {
+        self.drops.drain(visit);
+    }
+
+    /// Whether the deferred-drop queue holds no child, which is the state each
+    /// component's teardown begins and ends in.
+    pub(crate) fn deferred_drops_are_empty(&self) -> bool {
+        self.drops.is_empty()
+    }
+
+    /// Segments the deferred-drop queue holds, emptied ones included. Tests
+    /// only ([`DeferredDrops::segment_count`]).
+    #[cfg(test)]
+    pub(crate) fn drop_segment_count(&self) -> usize {
+        self.drops.segment_count()
     }
 
     /// Take one more block, or answer false when both allocation paths refuse.

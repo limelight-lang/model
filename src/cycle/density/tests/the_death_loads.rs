@@ -51,9 +51,9 @@
 //!
 //! # What these loads may not claim
 //!
-//! The teardown is unbuilt — S36.3's guard, S36.4's destructors and S36.5's
-//! sever and deferred drops are all open — so the frees below are the shape
-//! of that path rather than the path. Two consequences:
+//! The teardown these frees stand for is `cycle::reclamation`'s, and the frees
+//! below are its shape rather than the path itself: a measurement written
+//! against the sever would move with it. Two consequences:
 //!
 //! - **no tail.** A component's members here carry one property each and no
 //!   external children, so no acyclic garbage dies behind them, and a real
@@ -175,7 +175,8 @@ fn a_killing_load(class_bytes: usize, fillers_between: usize) -> DeathLoad {
     }
 }
 
-/// Trace, read the rows, then run the teardown S36.5 will run — inside the
+/// Trace, read the rows, then run the teardown `cycle::reclamation` runs —
+/// inside the
 /// still-open window, which is where a collection's own deaths happen — and
 /// time the close that follows it.
 ///
@@ -218,7 +219,7 @@ fn collect_and_kill(fixture: Fixture) -> DeathReading {
         .collect();
     let close_lines = lines_of(&dying);
 
-    // The shape `tear_down` uses, and S36.5's: hold every member while the
+    // The shape `tear_down` uses, and the teardown's: hold every member while the
     // ring's edges go, then release and die. The candidate bit is cleared
     // first because `ll_free` refuses the queue window before it reaches the
     // trace window, and a member's registration still stands in the detached

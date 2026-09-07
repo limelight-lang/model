@@ -113,7 +113,8 @@
 //! What outlives the values is
 //! written into the members — the guard reference, until the counted release
 //! this module makes over a component it reads as externally referenced or the
-//! caller's sever takes it off (`PLAN.md` S36.5), and a nulled cell, which is
+//! caller's teardown takes it off through the release that frees the member
+//! ([`crate::cycle::reclamation`]), and a nulled cell, which is
 //! irrevocable by design (`rfc/model/weak-references.md`, "Death
 //! notification").
 //!
@@ -196,11 +197,12 @@ impl Finalization {
     /// **A member confirmed once must not be offered again.** The exact validation
     /// is given `guard_refs_per_member` of zero here, so a member that already
     /// carries a guard reference reads as externally referenced, and a second
-    /// guard on it would be released once (`PLAN.md` S36.5).
+    /// guard on it would be released once.
     ///
     /// **What this writes cannot be undone by the value that wrote it.** No
     /// type of this chain holds a member list, so the guards come off where a
-    /// member list exists: the caller's sever (`PLAN.md` S36.5), or
+    /// member list exists: the caller's teardown
+    /// ([`crate::cycle::reclamation::reclaim`]), or
     /// [`release_guards`] over a component the revalidation reads as
     /// externally referenced. An unwind out of this call reaches neither and
     /// strands the guards it has already written. Two debug assertions stand inside it: the exact
@@ -274,7 +276,8 @@ impl Drop for Finalization {
 /// the destructor pass holds it while user code runs, and a destructor may
 /// create a weak reference to a member whose gate bit the invalidation cleared
 /// (`rfc/model/weak-references.md`, "Death notification"). Such a cell is
-/// nulled by the free-time notification instead, which is `PLAN.md` S36.5's.
+/// nulled by the free-time notification the member's own death delivers
+/// (`object::ll_default_dispose`, phase 2's first act).
 ///
 /// [`Invalidated::destructors`] takes this by value, which is what keeps the
 /// invalidation ahead of the first destructor of the finalization.
@@ -368,7 +371,8 @@ impl DestructorPass {
     /// this sentence holds them together, and a kind admitted here but not
     /// there would have its class word read out of a field that is not one.
     /// What runs is phase 1 alone (`object::run_user_destructor`) — the child
-    /// releases and the free are the sever's, `PLAN.md` S36.5 — and "exactly
+    /// releases and the free are the teardown's
+    /// ([`crate::cycle::reclamation::reclaim`]) — and "exactly
     /// once" is the header's `DESTRUCTOR_RAN`.
     ///
     /// **User code runs here.** It may store, release, allocate or resurrect,
@@ -471,7 +475,8 @@ impl Revalidation {
     ///
     /// [`Revalidated::Unreachable`] carries the component's guards, which the
     /// sever, the free and [`GuardedComponent::guards_released`] take off
-    /// (`PLAN.md` S36.5); [`Revalidated::ExternallyReferenced`] has taken them
+    /// ([`crate::cycle::reclamation::reclaim`]);
+    /// [`Revalidated::ExternallyReferenced`] has taken them
     /// off already, so its component is the driver's to forget — **and the
     /// slice may name a freed entity when it does**, a member whose guard was
     /// its last reference having died in the release.
@@ -605,10 +610,12 @@ impl<'a> GuardedComponent<'a> {
     /// the guard reference off every member, which ends this component's
     /// finalization.
     ///
-    /// The sever and the free are `PLAN.md` S36.5's — they walk the same
-    /// members, null the internal edges and let each member reaching zero die
-    /// through the ordinary death path. This is the statement that it
-    /// happened, and the only thing that lets the value go quietly.
+    /// The sever and the free are [`crate::cycle::reclamation::reclaim`]'s —
+    /// it walks the same members, nulls the internal edges and lets each
+    /// member reaching zero die through the ordinary death path. This is the
+    /// statement that it happened, and one of the two things that let the
+    /// value go quietly; [`release`](Self::release) is the other, and it tears
+    /// nothing down.
     ///
     /// # Safety
     /// The teardown of this component is complete before this returns, and no
@@ -621,6 +628,33 @@ impl<'a> GuardedComponent<'a> {
     /// component and its teardown are adjacent"). Nothing here can check it —
     /// the value holds a count and no member identity.
     pub(crate) unsafe fn guards_released(mut self) {
+        self.revalidation.members_released += self.members;
+        self.released = true;
+    }
+
+    /// End this component's finalization without a teardown: every member gets
+    /// its true count back through the counted release, and the component
+    /// stands as floating garbage — destructors behind it, weak cells null,
+    /// candidate bits up — for a later trace to propose again.
+    ///
+    /// The one caller is a teardown that could not get the memory its own
+    /// children need and has written nothing yet
+    /// ([`crate::cycle::reclamation::reclaim`]). What this does is what the
+    /// [`Revalidated::ExternallyReferenced`] arm does, on a component read as
+    /// unreachable, so **a member whose guard was its last reference is freed
+    /// here** and the caller's slice can name a freed entity afterwards.
+    ///
+    /// # Safety
+    /// As [`release_guards`], and `members` is this component's whole
+    /// membership, unsevered.
+    pub(crate) unsafe fn release(mut self, members: &[*mut RcHeader]) {
+        debug_assert_eq!(
+            members.len(),
+            self.members,
+            "the component released and the component read again are the same"
+        );
+
+        unsafe { release_guards(members) };
         self.revalidation.members_released += self.members;
         self.released = true;
     }

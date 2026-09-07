@@ -42,12 +42,13 @@ versions live in `docs/history/`, marked at the top.
   | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
   | `mark` | the trace: trial deletion over the rows | none |
   | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | none until S36.7 |
-  | `records` | `RecordChain`, the segmented record chain the trace's worklist is built on, and its one user since the withheld returns took the stack | none |
+  | `records` | `RecordChain`, the segmented record chain the trace's worklist and the teardown's deferred drops are built on: `pop` serves a descent, `drain` a replay in append order | none |
   | `stack` | the trace worklist, 256-entry segments out of the arena | none |
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
   | `trace` | both phases over one detached batch, in the order the rows require: every root marks before any root scans | none until S36.7 |
   | `validation` | the owner's exact validation of one component, and the zero-count-member rule | none until S36.7; `cycle::finalization` is what acts on its answer |
   | `finalization` | the guard reference on every member of a confirmed component, the weak cells naming them nulled before any destructor, the destructor pass over the whole commit and the second reading each component takes with the guard subtracted | none until S36.7 |
+  | `reclamation` | the teardown of a component the second reading kept: the room taken before the first cell is emptied, the sever, the frees through the ordinary death path, and the queue the displaced external children wait in | none until S36.7 |
   | `density` | test builds only: what share of a touched block's slots one trace met, and, in `tests::the_death_loads`, what the window's close costs in time and in cache lines | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a
@@ -627,7 +628,8 @@ thread").
 
 The collection workspace's two fixed regions — one 64 KiB block a thread draws
 at its first collection and keeps until it exits, whose head the bump does not
-grant. First the withheld returns' control line, 64 bytes
+grant. What the bump behind them serves is the rows, the trace's worklist and
+the teardown's deferred-drop queue, in that order of appearance. First the withheld returns' control line, 64 bytes
 (`cycle::deferred_slot_reuse`); behind it the member list, a control line and
 1,024 eight-byte records, 8,256 bytes (`cycle::members`). Prefix 8,320 and bump
 56,960, both pinned by `const` assertions in `cycle::arena`. The list is what a

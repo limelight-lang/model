@@ -39,7 +39,9 @@
 //! teardown and one on the answer a component's reading gives it, the writes
 //! they make standing in the members' own headers until a counted release
 //! takes them off — its own, over a component it reads as externally
-//! referenced, or the caller's sever (`PLAN.md` S36.5).
+//! referenced, or the teardown's ([`reclamation`], which holds the queue of
+//! children its sever displaced out of a component — segments of the arena's
+//! bump, emptied at the end of every component).
 //!
 //! **A collection's memory is refusable, and the refusal ends the collection
 //! rather than the process.** A refused block leaves the heap byte-identical,
@@ -111,7 +113,18 @@ pub(crate) mod deferred_slot_reuse;
 #[cfg(test)]
 pub(crate) mod density;
 pub(crate) mod queue;
-// The record chain the trace's worklist is built on.
+// The teardown of a confirmed component: the sever, the frees and the drops
+// they displaced. Reached from the driver S36.7 builds, and from nothing else.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the driver that tears a confirmed component down is `PLAN.md` S36.7's"
+    )
+)]
+pub(crate) mod reclamation;
+// The record chain the trace's worklist and the teardown's deferred drops are
+// built on.
 pub(crate) mod records;
 pub(crate) mod row;
 // The second phase, and the proposal a collection reads: reached from
