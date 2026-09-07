@@ -47,13 +47,37 @@ pub(crate) enum TraceOutcome {
     AllocationFailed,
 }
 
-/// Trace `batch`: mark from every root, then scan from every root.
+/// Every root of the batch, which is what a collection with room for the
+/// answer traces.
+pub(crate) const ALL_ROOTS: usize = usize::MAX;
+
+/// Trace the first `roots` roots of `batch`: mark from each, then scan from
+/// each.
 ///
 /// A refusal in either phase ends the whole trace rather than the root that met
 /// it. In the mark that is forced — a partial mark leaves rows subtracted by an
 /// incomplete closure, and no colour drawn from them means anything. In the
 /// scan the same rule applies one phase later: a colour is a proposal until
 /// the exact test reads it, so an abandoned scan keeps none.
+///
+/// **A bound on the roots is conservative and not a partial answer.** A root
+/// left untraced subtracts no edge from any row, so every row this trace reads
+/// stands at or above the count the whole batch would have left it at, and a
+/// row read as potentially unreachable under the bound would read the same
+/// without it. What the bound loses is the garbage the untraced roots name,
+/// which keeps its registration and is the next trace's
+/// (`rfc/model/gc/rc-cycle.md`, "Cost model": trace precision affects cost and
+/// latency rather than safety). [`ALL_ROOTS`] is the collection that wants
+/// none of it; the bound is the pressure path's, whose answer has to fit a
+/// region of fixed size ([`crate::cycle::members`]).
+///
+/// **Both phases take the same prefix**, which is the same requirement as the
+/// order between them: a root marked and not scanned leaves its closure's rows
+/// subtracted and uncoloured.
+///
+/// The roots traced come back with the answer, because the caller that bounds
+/// them needs to know what the bound was worth: the batch carries no count and
+/// the walk is the only place one is taken.
 ///
 /// # Safety
 /// As [`mark`]: every root is an entity header of this thread's heap whose slot
@@ -63,10 +87,22 @@ pub(crate) enum TraceOutcome {
 pub(crate) unsafe fn trace_batch(
     arena: &mut TraceScratchArena,
     batch: &InFlightBatch,
-) -> TraceOutcome {
-    let marked = batch.walk_roots(|root| unsafe { mark(arena, root) } == MarkResult::Complete);
-    if !marked {
-        return TraceOutcome::AllocationFailed;
+    roots: usize,
+) -> (TraceOutcome, usize) {
+    let mut traced = 0;
+    let mut refused = false;
+    batch.walk_roots(|root| {
+        if traced == roots {
+            return false;
+        }
+
+        traced += 1;
+        refused = unsafe { mark(arena, root) } != MarkResult::Complete;
+        !refused
+    });
+
+    if refused {
+        return (TraceOutcome::AllocationFailed, traced);
     }
 
     // Between the phases and only here: both dispatch over the same
@@ -75,12 +111,22 @@ pub(crate) unsafe fn trace_batch(
     // The body is empty without `cfg(test)`.
     crate::cycle::row::note_phase_boundary();
 
-    let scanned = batch.walk_roots(|root| unsafe { scan(arena, root) } == ScanResult::Complete);
-    if !scanned {
-        return TraceOutcome::AllocationFailed;
+    let mut scanned = 0;
+    batch.walk_roots(|root| {
+        if scanned == traced {
+            return false;
+        }
+
+        scanned += 1;
+        refused = unsafe { scan(arena, root) } != ScanResult::Complete;
+        !refused
+    });
+
+    if refused {
+        return (TraceOutcome::AllocationFailed, traced);
     }
 
-    TraceOutcome::Complete
+    (TraceOutcome::Complete, traced)
 }
 
 #[cfg(test)]

@@ -18,7 +18,7 @@ use crate::cycle::arena::RowLookup;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
 use crate::cycle::row::{EdgeTarget, RowKey, resolve_edge_target};
 use crate::cycle::shadow;
-use crate::cycle::trace::{TraceOutcome, trace_batch};
+use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::BLOCK_MASK;
 use crate::memory::block_pool::test_guard;
@@ -186,7 +186,7 @@ fn collect() -> Reading {
     let _ = crate::cycle::row::take_edge_dispatches();
     let (arena, batch) = active.rows_and_roots();
     assert_eq!(
-        unsafe { trace_batch(arena, batch) },
+        unsafe { trace_batch(arena, batch, ALL_ROOTS).0 },
         TraceOutcome::Complete,
         "the trace completed, so its rows are a whole closure"
     );
@@ -463,7 +463,10 @@ fn the_walk_draws_nothing_and_moves_no_ledger_figure() {
         let mut active = ActiveTrace::open().expect("the pool funded the trace window");
         active.detach_candidates();
         let (arena, batch) = active.rows_and_roots();
-        assert_eq!(unsafe { trace_batch(arena, batch) }, TraceOutcome::Complete);
+        assert_eq!(
+            unsafe { trace_batch(arena, batch, ALL_ROOTS).0 },
+            TraceOutcome::Complete
+        );
 
         crate::memory::gc_metadata::lower_thread_peak_to_current();
         let before = crate::memory::gc_metadata::thread_stats();

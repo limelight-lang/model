@@ -196,7 +196,7 @@ fn collect_and_kill(fixture: Fixture) -> DeathReading {
 
     let (trace_arena, batch) = active.rows_and_roots();
     assert_eq!(
-        unsafe { trace_batch(trace_arena, batch) },
+        unsafe { trace_batch(trace_arena, batch, ALL_ROOTS).0 },
         TraceOutcome::Complete,
         "the trace completed, so its rows are a whole closure"
     );

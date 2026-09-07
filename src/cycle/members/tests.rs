@@ -3,7 +3,7 @@ use super::*;
 use crate::class::ClassBuilder;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
 use crate::cycle::testing::open_arena;
-use crate::cycle::trace::{TraceOutcome, trace_batch};
+use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
@@ -94,7 +94,7 @@ fn trace_and_close(capacity: Option<u32>) -> bool {
     active.detach_candidates();
     let outcome = {
         let (arena, batch) = active.rows_and_roots();
-        unsafe { trace_batch(arena, batch) }
+        unsafe { trace_batch(arena, batch, ALL_ROOTS).0 }
     };
     assert_eq!(outcome, TraceOutcome::Complete);
 

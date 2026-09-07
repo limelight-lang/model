@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-07 · Active: S36, from S36.7. S44 has one step left, S44.5,
+Updated: 2026-09-07 · Active: S36, from S36.15. S44 has one step left, S44.5,
 and it waits on Edmond's word.
 S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
@@ -24,10 +24,12 @@ its S36.9 stays open on the deny run a wired collection owes, S36.12 closed on
 2026-09-06 with the pressure path's harvest, S36.3 closed the same day with the
 guard references and the weak window, S36.4 the same day with the destructors
 and the revalidation behind them, S36.5 on 2026-09-07 with the sever, the frees
-and the deferred drops, and S36.6 the same day with the maturation stamp and
-the epoch counter under it. S36.7 — the collection behind the ABI — is the next
-of its steps to be built, and it is what gives the modules of `cycle` their
-first production caller.
+and the deferred drops, S36.6 the same day with the maturation stamp and the
+epoch counter under it, and S36.7 the same day with the collection behind the
+ABI — `cycle::collect`, which is the first production caller the modules of
+`cycle` have. Two of its steps are the debts that left with it: S36.15 puts the
+collection under pressure behind the allocation failure that should start it,
+and S36.16 carries the merge and the two paths back into `rfc`.
 S43 closed the withheld-return window: past its region the module draws
 nothing, a death in memory the collection never met is returned at once, a
 marked slot of another thread's block is stacked rather than listing its
@@ -2725,7 +2727,7 @@ stage claiming the frees while building none of them.
         is the zero its own publication wrote. What would revive the hazard is
         a path that publishes an entity without `publish_header`, or a stamp
         written outside a commit; the zeroing S38.0 owes is cheap either way.
-- [ ] S36.7 Wire the collection into the ABI
+- [x] S36.7 Wire the collection into the ABI
       done: `ll_gc_collect_cycles` runs a collection and reports what it
         reclaimed, and `ll_gc_maybe_collect` fires on the armed pending flag and
         nowhere earlier; a test arms the flag, shows nothing collected before
@@ -2740,17 +2742,54 @@ stage claiming the frees while building none of them.
         and leaves none behind (`dev/DECISIONS.md`, "the member list is the
         pressure path's alone")
       tier: T2 · role: Sage → Critic
-      note 2026-09-07 — the driver owes the disposal of its detached batch, and
-        the built `ActiveTrace` close restores instead. S36.5's deferred drops
-        are counted releases, so a surviving external child registers as a
-        candidate in the very operation that drops it, and
-        `queue::restore_candidates` refuses in every build to restore a batch
-        over a lane written since. The design already rules it — the ordinary
-        path "disposes of" its detached chain rather than restoring
-        (`rfc/model/gc/rc-cycle.md`, "Concurrency") — and until this step lands
-        it, the first collection that drops a surviving child ends at that
-        refusal. The same step owes `reclaim` a sorted member slice, or the
-        second membership test the path off the poll would need instead.
+      note 2026-09-07 — the second `done:` is met in substance and not in
+        staging, and the difference is named rather than smoothed. The
+        population past the region's capacity is collected whole and leaves
+        nothing behind, which the case pins; but it takes three traces rather
+        than two — one that overflows and two that harvest — and it calls
+        `collect_under_pressure` directly instead of reaching it through a
+        forced refusal. Nothing can reach it that way yet: the allocation slow
+        path does not call a collection, which is S36.15, and `FORCE_OOM` held
+        over the trace itself refuses the rows rather than the teardown.
+      Sage 2026-09-07: four rulings, all executed. The commit is the whole
+        unreachable set rather than a partition into components — the identity
+        the exact validation compares holds per member, so a union that meets
+        the sum meets it member by member, and what the union costs is
+        precision in the two arms that refuse. The membership is one type with
+        two forms rather than a member list built for the ordinary path, which
+        the rfc forbids, or a second implementation of the three modules that
+        read one. The batch's disposition is a merge into the live lane, not
+        the rfc's literal "gives its segments back": segments given back with
+        their records strand every root in them. The driver is a module of its
+        own with one entry per path.
+      handoff: `cycle::collect` is the order, and `gc`'s two collecting entries
+        call `collect_off_the_poll`. `collect_under_pressure` is built and
+        called by nothing — the allocation slow path is S36.15's — and it
+        halves its roots on a harvest overflow, arms the thread where one root
+        still overflows, and traces again after a bounded teardown that freed.
+        Five cases in `src/cycle/collect/tests.rs`; four source mutations were
+        run and each was caught by the case that owns it.
+      handoff: three debts leave with this step and are steps of their own.
+        S36.15 puts the pressure collection behind the allocation failure that
+        should start it. S36.16 carries the merge and the two paths back into
+        `rfc`, whose "Concurrency" section still says the segments go back.
+        And `queue::merge_candidates` copies its part-filled head one record at
+        a time, which is a memcpy nobody has measured against.
+- [ ] S36.15 The allocation slow path starts a collection   *(after S36.7)*
+      done: a refusal on the entity allocation path runs
+        `cycle::collect::collect_under_pressure` and retries the allocation on
+        the memory it returned, and a test whose heap holds one garbage ring
+        allocates past the pool's last block and is served rather than refused;
+        a second test shows the path taken once rather than per refusal inside
+        one allocation
+      tier: T2 · role: Critic
+      note: the collection is built and reached from nothing, which the
+        `expect(dead_code)` on `collect_under_pressure` reports. What this step
+        decides is where the call stands — `memory::heap`'s refill, or the
+        entity factory above it — and what a collection that freed nothing owes
+        the caller that is about to raise memory-exhausted
+        (`rfc/runtime/exceptions.md`).
+
 - [ ] S36.8 Elide the redundant exact test after an in-line owner trace
       done: when mark and scan run synchronously on the owning mutator at one
         consistent point, a condemned component proceeds directly to the owner
@@ -2770,6 +2809,21 @@ stage claiming the frees while building none of them.
         collection's consistency window between the final scan decision and
         guard acquisition; encode that boundary in the API so a future caller
         cannot pass a stale condemned list as an in-line proof.
+
+- [ ] S36.16 Carry the collection's two paths into `rfc`   *(after S36.7)*
+      done: `model/gc/rc-cycle.md`'s "Concurrency" says the ordinary path
+        merges its detached chain into the live lane rather than giving its
+        segments back, and says why a segment given back with its records
+        strands every root in it; `cycle/questions.md` Y12 clause 5 names the
+        merge as what performs it; and the commit's unit — the whole
+        unreachable set rather than a partition into components — is written
+        down with the precision it costs
+      tier: T2 · role: —
+      note: the `rfc` repository's plan owns the edit, and this step is the
+        pointer at it from here (`dev/WORKFLOW.md`: a debt the other plan owns
+        is never written as this plan's `S<n>`). What was built is
+        `queue::merge_candidates` and `cycle::collect`.
+
 
 ## S37 — Maturation and the two class gates
 

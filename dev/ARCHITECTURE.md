@@ -403,8 +403,9 @@ write them. Each is load-bearing for at least two modules.
     only at a clean point, and the crate has two of them: the ABI's
     `ll_gc_collect_cycles`, and the `ll_gc_maybe_collect` poll, whose
     one caller inside the crate is `object::ll_release_vector`'s
-    backedge. The allocation slow path becomes the third when S36.7
-    wires the collection an allocation failure starts. The rule is a
+    backedge. The allocation slow path becomes the third when S36.15
+    puts the call to `cycle::collect::collect_under_pressure` there; the
+    collection it would start is built. The rule is a
     correctness requirement rather than a policy: a store lowers the old
     value's count before overwriting the pointer, and a collection
     firing in that window would subtract one reference twice

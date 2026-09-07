@@ -513,13 +513,6 @@ impl ActiveTrace {
     /// `capacity` is what this harvest takes before it gives up, and the
     /// driver of an ordinary collection arms nothing at all: that path keeps
     /// its arena through the teardown and reads the rows themselves.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the driver that collects under pressure is `PLAN.md` S36.7's"
-        )
-    )]
     pub(crate) fn arm_harvest(&mut self, capacity: u32) -> bool {
         self.arena.arm_harvest(capacity)
     }

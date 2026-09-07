@@ -169,7 +169,7 @@ fn every_root_marks_before_any_root_scans() {
             vec![alpha as *mut RcHeader, beta as *mut RcHeader],
             "the control arm above ran the order the batch offers"
         );
-        unsafe { trace_batch(arena, batch) }
+        unsafe { trace_batch(arena, batch, ALL_ROOTS).0 }
     };
     assert_eq!(outcome, TraceOutcome::Complete);
     assert_eq!(
@@ -221,7 +221,7 @@ fn a_refusal_in_the_mark_abandons_the_whole_trace() {
     let oom = force_oom();
     let outcome = {
         let (arena, batch) = active.rows_and_roots();
-        unsafe { trace_batch(arena, batch) }
+        unsafe { trace_batch(arena, batch, ALL_ROOTS).0 }
     };
     drop(oom);
 

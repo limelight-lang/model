@@ -67,14 +67,6 @@ impl<'a> Membership<'a> {
     /// **The caller's own order is gone when this returns**, so nothing may be
     /// held parallel to the slice by index: an array indexed after this names
     /// a different member (`rfc/model/gc/cycle/questions.md`, Y6).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the pressure path that hands over a harvested list is the \
-                      second half of `PLAN.md` S36.7"
-        )
-    )]
     pub(crate) fn listed(members: &'a mut [*mut RcHeader]) -> Self {
         members.sort_unstable();
         Self::Listed(members)

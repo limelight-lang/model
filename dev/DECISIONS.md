@@ -8,6 +8,68 @@ never edited or deleted.
 
 ---
 
+## 2026-09-07 — the commit is the whole unreachable set, the rows are one form of its membership, and the batch is merged back
+
+Owner: S36.7. Ruled by the Sage on Edmond's standing instruction, over the four
+choices the step's own text and three module docs had deferred to it.
+
+**The commit is the union rather than a partition into components.** Nothing
+partitions the rows the scan colours, and the union is sound where a partition
+would be: the identity the exact validation compares holds per member — every
+in-component edge into a member is a counted reference a member holds — so a
+set whose sums meet meets the identity member by member, and nothing is freed
+because a neighbour balanced it. What the union costs is precision in the two
+arms that refuse. One destructor that resurrects a member keeps the whole
+collection's set for a later trace instead of one component of it, and one
+teardown whose children the arena refuses does the same. Both are latency,
+which the design licenses outright: "a missed cycle remains eligible for a
+later collection". **The rejected option** was a partition, which needs
+per-entity visited state after the scan; the only place for it is the row, and
+a write into a row after the scan is what the readership rule forbids — mark
+and scan are its only writers. What decides whether the partition ever pays is
+a measurement of how often a destructor resurrects, which S40.1 can take.
+
+**The membership is one type with two forms.** `cycle::membership::Membership`
+answers three questions — how many members, each member once, is this child one
+— and the pressure path's harvested list and the rows a collection off the poll
+keeps both answer them. The three modules a commit reads through are written
+once. **Two options were rejected.** A member list built for the ordinary path
+out of the collection's own bump is a list and an allocation, which is what the
+2026-09-03 ruling and the rfc sentence behind it forbid. A second
+implementation of the validation, the finalization writes and the sever is
+three modules twice for one predicate; the crate refused the same sharing once
+before, for the mark and the scan, and that refusal turned on the two answers
+having nothing in common — here both forms answer the same question with the
+same meaning.
+
+**The batch's disposition is a merge into the live lane.** The design says the
+collection "takes the batch and gives its segments back", and giving a segment
+back with its records in it strands every root in that segment: a root the
+collection did not free keeps `CANDIDATE_BIT` and the gate refuses to register
+it again for the life of the process, and a member it did free keeps the entry
+that holds its slot out of the allocator's hands until S39.1 retires it. So
+`queue::merge_candidates` joins the two chains — the batch's full segments
+behind the live chain, its part-filled head copied in, its block to a spare
+cell — and `restore_candidates` with its refusal is gone. The merge has no
+refusal of its own, which is what lets the window's close call it while a panic
+unwinds. Carrying the amendment back to `rfc` is S36.16.
+
+**The driver is a module of its own, one entry per path.** `cycle::collect`,
+because the two paths differ in three places — where the window closes, which
+membership form, whether they loop — and a mode parameter would put all three
+branches inside one body. `gc` stays the ABI.
+
+**What the loop under pressure stops on, and why it terminates.** A harvest
+overflow halves the roots and traces again; at one root still overflowing the
+collection arms the thread and ends, that component being past what the region
+can hold and the poll's collection having no region to overflow. A teardown
+that freed something under a bound is followed by another trace, and a round
+that freed nothing ends the loop. The stopping condition is progress rather
+than an empty queue, because the lane does not shrink: every entry goes back at
+the close, freed slot or not ("the commit clears no candidate bit").
+
+---
+
 ## 2026-09-07 — `confirmed_ring` takes the shared builder after all, and the exclusion list is three names shorter
 
 Owner: S45. A correction to the entry below it, "the ring fixture is two

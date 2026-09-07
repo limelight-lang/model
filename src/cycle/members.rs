@@ -221,13 +221,6 @@ pub(crate) unsafe fn end_harvest() {
 ///
 /// The records stand until the answer is dropped, and the region takes no
 /// second arming for as long as it lives.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the teardown that reads the list is `PLAN.md` S36.7's"
-    )
-)]
 pub(crate) fn take_standing() -> Option<StandingMembers> {
     let control = MEMBER_LIST.with(Cell::get);
     if control.is_null() || MEMBER_LIST_HELD.with(Cell::get) {
@@ -247,13 +240,6 @@ pub(crate) struct StandingMembers {
     control: *mut MemberControl,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the teardown that reads the list is `PLAN.md` S36.7's"
-    )
-)]
 impl StandingMembers {
     /// The entities the sweep took, in the order it met them: block by block
     /// of the touched list, and by ascending row inside each block.
@@ -263,6 +249,18 @@ impl StandingMembers {
     pub(crate) fn entities(&self) -> &[*mut RcHeader] {
         let fill = unsafe { (*self.control).fill.get() } as usize;
         unsafe { std::slice::from_raw_parts(records(self.control), fill) }
+    }
+
+    /// The same records, to be read as a membership.
+    ///
+    /// The mutability is the sort's: a membership over a list is tested by
+    /// binary search, so the driver hands the region itself over and the order
+    /// [`entities`](Self::entities) documents is gone from that point on
+    /// (`crate::cycle::membership::Membership::listed`). Nothing else reads
+    /// that order, and nothing is held parallel to the list by index.
+    pub(crate) fn entities_mut(&mut self) -> &mut [*mut RcHeader] {
+        let fill = unsafe { (*self.control).fill.get() } as usize;
+        unsafe { std::slice::from_raw_parts_mut(records(self.control), fill) }
     }
 
     /// Whether the trace met more unreachable entities than the region holds,

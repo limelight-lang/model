@@ -65,6 +65,16 @@ pub(crate) fn is_armed() -> bool {
     DUE.with(|due| due.get())
 }
 
+/// Lower the flag, for a case whose subject is an arming.
+///
+/// A fixture arms this thread as a side effect — the queue's growth draws the
+/// reserve, and a draw arms — so a case that means to see its own arming
+/// starts from a flag it lowered rather than from one it assumed down.
+#[cfg(test)]
+pub(crate) fn disarm() {
+    take_due();
+}
+
 /// ABI: run a cycle collection now, whether or not one was armed. Returns
 /// entities reclaimed.
 ///
