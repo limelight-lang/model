@@ -131,6 +131,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("ADMITTED", false),
         ("ALLOCATING", false),
         ("BLOCKS", false),
+        ("COLLECTING", false),
         ("CRITICAL", true),
         ("CURRENT_CONTEXT", false),
         ("DEFERRED_RETURNS", false),

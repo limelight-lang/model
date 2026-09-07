@@ -6,7 +6,7 @@
 //! **owner's side** of that contract: the write, the growth and the
 //! funding. The read side belongs to whoever holds the trace token:
 //! `cycle::mark` traces from one root, and the collection that draws
-//! those roots out of this queue is S36.7's. The accelerator that reads
+//! those roots out of this queue is `cycle::collect`. The accelerator that reads
 //! another thread's queue arrives at S38.1, with the claim it needs.
 //!
 //! # The three storage paths
@@ -713,10 +713,6 @@ pub(crate) struct InFlightBatch {
 impl InFlightBatch {
     /// Whether the batch holds no root at all, which is a collection that
     /// found an empty queue.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the collection that asks is S36.7")
-    )]
     pub(crate) fn is_empty(&self) -> bool {
         self.head.is_null()
     }

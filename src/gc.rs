@@ -2,11 +2,11 @@
 //!
 //! What the compiler emits calls to, and what those calls owe the rest of
 //! the runtime. The collector behind them is `rc-cycle`
-//! (`rfc/model/gc/rc-cycle.md`), which is not built yet: the two strategies
-//! that used to live here — `rc-trace`'s candidate buffer and trial
-//! deletion, and `rc-walk`'s epoch handshake — were deleted on 2026-08-26
-//! (`dev/DECISIONS.md`), and the code is on the branch
-//! `archive/pre-rc-cycle`.
+//! (`rfc/model/gc/rc-cycle.md`), and the order it runs in is
+//! `crate::cycle::collect`. The two strategies that used to live here —
+//! `rc-trace`'s candidate buffer and trial deletion, and `rc-walk`'s epoch
+//! handshake — were deleted on 2026-08-26 (`dev/DECISIONS.md`), and the code
+//! is on the branch `archive/pre-rc-cycle`.
 //!
 //! **The four symbols survive the deletion because three of the module's
 //! four duties are not the collector's.** The checkpoint pair is the
@@ -18,9 +18,10 @@
 //! RFC as a symbol rather than as a mechanism
 //! (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 //!
-//! Until stage S36.7 wires `rc-cycle` in, the two collecting entries
-//! collect nothing and report zero. Cyclic garbage is retained; acyclic
-//! garbage dies by counting as it always did.
+//! The two collecting entries run the collection that keeps its rows through
+//! its teardown, which is the path of a caller that is not short of memory.
+//! The one an allocation failure starts is `crate::cycle::collect`'s other
+//! entry and reaches this module through no symbol.
 
 thread_local! {
     /// Whether this thread owes a collection at its next clean point.
@@ -67,14 +68,17 @@ pub(crate) fn is_armed() -> bool {
 /// ABI: run a cycle collection now, whether or not one was armed. Returns
 /// entities reclaimed.
 ///
-/// Reports zero: no collector is wired. The body arrives with stage S36.7.
+/// The collection keeps its rows through the teardown, which is the path of a
+/// caller that is not short of memory
+/// (`crate::cycle::collect::collect_off_the_poll`). Zero is every answer short
+/// of a teardown, the refusals included.
 ///
 /// # Safety
 /// Callable at a safepoint of the calling mutator — refcounts and edges
 /// consistent (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
-    0
+    unsafe { crate::cycle::collect::collect_off_the_poll() }
 }
 
 /// ABI: fire a collection only if one was *armed*, else do nothing. This is
@@ -84,8 +88,8 @@ pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
 /// thresholds — is the compiler's decision, outside this crate; the runtime
 /// records "due" and collects here, where the graph is clean.
 ///
-/// Collects nothing today, and refills the reserve regardless: the refill
-/// is not conditional on there being a collector.
+/// The four refills below happen whether or not the fire does, an unarmed poll
+/// being the ordinary case and the refills being what every poll owes.
 ///
 /// # Safety
 /// Callable at a safepoint of the calling mutator.
@@ -130,10 +134,9 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         return 0;
     }
 
-    // Armed, so fire — which reports zero until S36.7 wires a collection
-    // in. The disarm above happens whether or not the fire collects
-    // anything: an arming is an event and not a state, and a thread that
-    // stayed armed would fire at every poll for the rest of its life.
+    // Armed, so fire. The disarm above happens whether or not the fire
+    // collects anything: an arming is an event and not a state, and a thread
+    // that stayed armed would fire at every poll for the rest of its life.
     unsafe { ll_gc_collect_cycles() }
 }
 

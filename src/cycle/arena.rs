@@ -1025,13 +1025,6 @@ impl TraceScratchArena {
     /// membership of a collection off the poll, and `crate::cycle::density`
     /// measures over it. It is a borrow of the arena's own memory and stays
     /// valid until [`clear_touched_rows`](Self::clear_touched_rows) runs.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the driver that takes the rows as a membership is `PLAN.md` S36.7's"
-        )
-    )]
     pub(crate) fn touched_head(&self) -> *mut RowArray {
         self.touched
     }

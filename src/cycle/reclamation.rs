@@ -75,7 +75,7 @@
 //! over memory it does not own would make that lifetime a promise its drop
 //! cannot check.
 //!
-//! **Which arena is the driver's to say** (`PLAN.md` S36.7). A collection off
+//! **Which arena is the driver's to say** (`crate::cycle::collect`). A collection off
 //! the safepoint poll runs its teardown inside its own trace and hands that
 //! trace's arena over; a collection an allocation failure started has given
 //! every block back before the teardown, and what it hands over is a second

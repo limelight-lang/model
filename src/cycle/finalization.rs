@@ -338,6 +338,14 @@ pub(crate) struct Invalidated {
 
 impl Invalidated {
     /// Members guarded, over every component the finalization confirmed.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "a driver counts the membership it holds; this reading of \
+                      the chain's own count is a test's"
+        )
+    )]
     pub(crate) fn members(&self) -> usize {
         self.members
     }

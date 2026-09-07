@@ -23,33 +23,35 @@ versions live in `docs/history/`, marked at the top.
 
 ## Entry points
 
-- **No collection runs yet.** `rc-walk`, `rc-trace` and `rc-satb` were
-  deleted on 2026-08-26 and the design in force, `rc-cycle`
-  (`rfc/model/gc/rc-cycle.md`), is built in parts: a garbage ring is
-  retained, acyclic garbage dies by counting. What survives of the old
-  code and why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`,
-  2026-08-26; the code is on the branch `archive/pre-rc-cycle`. `PLAN.md`
-  S34 through S40 build the replacement in `src/cycle/`. What each module
-  does and what it may not know is `dev/ARCHITECTURE.md`'s `cycle` row;
-  where each one is:
+- **A collection runs off the poll and off the explicit fire**, and
+  `cycle::collect` is the order it runs the modules below it in. The design
+  is `rc-cycle` (`rfc/model/gc/rc-cycle.md`); `rc-walk`, `rc-trace` and
+  `rc-satb` were deleted on 2026-08-26, and what survives of the old code and
+  why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26, the
+  code being on the branch `archive/pre-rc-cycle`. What is not built yet is
+  the collection an allocation failure starts, the maturation prune and the
+  second thread — `PLAN.md` S36 through S40. What each module does and what
+  it may not know is `dev/ARCHITECTURE.md`'s `cycle` row; where each one is:
 
   | module | what is there | production caller |
   |---|---|---|
   | `queue` | the per-thread candidate queue, its base block, spares and overflow buffer, and the cell that lends the collection workspace | `refcount::release_word`, `gc`'s poll |
   | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its stack of withheld returns through the dead entities, and the detached candidate batch a collection traces | `stdapi::ll_free` |
-  | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | none until S36.7 |
+  | `collect` | the order a collection runs in, the two paths it takes through them, and the flag that refuses a collection reached from inside one | `gc`'s two collecting entries |
+  | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | `cycle::collect` |
   | `shadow` | the row: two bits of colour over thirty of working count | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
   | `epoch` | the process's count of closed commits, and the two-bit epoch a maturation stamp carries: `(commits / 64) % 4` | `cycle::finalization`, which reads it at a commit's start and advances it at its close |
   | `mark` | the trace: trial deletion over the rows | none |
-  | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | none until S36.7 |
+  | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | none until the pressure path lands |
+  | `membership` | the two forms a commit's membership takes — the harvested list and the rows a collection off the poll keeps — behind the three questions every reader asks of one | `cycle::collect`, and the three modules a commit reads through |
   | `records` | `RecordChain`, the segmented record chain the trace's worklist and the teardown's deferred drops are built on: `pop` serves a descent, `drain` a replay in append order | none |
   | `stack` | the trace worklist, 256-entry segments out of the arena | none |
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
-  | `trace` | both phases over one detached batch, in the order the rows require: every root marks before any root scans | none until S36.7 |
-  | `validation` | the owner's exact validation of one component, and the zero-count-member rule | none until S36.7; `cycle::finalization` is what acts on its answer |
-  | `finalization` | the guard reference on every member of a confirmed component, the weak cells naming them nulled before any destructor, the destructor pass over the whole commit, the second reading each component takes with the guard subtracted, and the maturation stamp every component read as externally referenced takes at either reading | none until S36.7 |
-  | `reclamation` | the teardown of a component the second reading kept: the room taken before the first cell is emptied, the sever, the frees through the ordinary death path, and the queue the displaced external children wait in | none until S36.7 |
+  | `trace` | both phases over one detached batch, in the order the rows require: every root marks before any root scans | `cycle::collect` |
+  | `validation` | the owner's exact validation of one component, and the zero-count-member rule | `cycle::finalization`, which is what acts on its answer |
+  | `finalization` | the guard reference on every member of a confirmed component, the weak cells naming them nulled before any destructor, the destructor pass over the whole commit, the second reading each component takes with the guard subtracted, and the maturation stamp every component read as externally referenced takes at either reading | `cycle::collect` |
+  | `reclamation` | the teardown of a component the second reading kept: the room taken before the first cell is emptied, the sever, the frees through the ordinary death path, and the queue the displaced external children wait in | `cycle::collect` |
   | `density` | test builds only: what share of a touched block's slots one trace met, and, in `tests::the_death_loads`, what the window's close costs in time and in cache lines | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a
@@ -60,11 +62,11 @@ versions live in `docs/history/`, marked at the top.
   16 320 its rows reserve, which is what the group bitmap bought
   (`dev/BENCHMARKS.md`, 2026-08-27).
 
-  A member list is derived from the potentially unreachable rows on one
-  path only, and S36.12's slice (b) builds it: the collection an allocation
-  failure started harvests them into a fixed region of the workspace, while
-  the ordinary collection off the poll keeps its rows through the teardown
-  and reads them directly (`dev/DECISIONS.md`, "the member list is the
+  A member list is derived from the potentially unreachable rows on one path
+  only: the collection an allocation failure started harvests them into a
+  fixed region of the workspace, while the ordinary collection off the poll
+  keeps its rows through the teardown and reads them as its membership
+  (`cycle::membership`, and `dev/DECISIONS.md`, "the member list is the
   pressure path's alone").
 - What a slot's first eight bytes read: `refcount::slot_state`, three
   states over the count and one flag — live, dead in place, free. A slot is
@@ -107,8 +109,9 @@ versions live in `docs/history/`, marked at the top.
   scenario test sees the pair and never one half.
 - GC C ABI and the safepoint: `src/gc.rs` — the four symbols the
   compiler emits calls to (`ll_gc_collect_cycles`, `ll_gc_maybe_collect`,
-  `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`). The two collecting
-  entries report zero until S36.7. The poll has four duties in order:
+  `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`). The two collecting entries
+  run `cycle::collect`'s collection off the poll. The poll has four duties
+  before it, in order:
   refill the log reserve, refill the critical reserve, refill the queue's
   spare segments, drain its overflow buffer.
 - Static blocks and thread exit: `src/static_block.rs` — the per-thread

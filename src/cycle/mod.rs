@@ -2,11 +2,10 @@
 //!
 //! The design is `rfc/model/gc/rc-cycle.md` and is normative; this module
 //! is its implementation as `PLAN.md`'s S34 through S40 build it. Nothing
-//! here collects yet: the crate retains a garbage ring and reclaims
-//! acyclic garbage by counting, and `gc::ll_gc_collect_cycles` reports
-//! zero until S36.7 wires a collection in. **Candidates are gathered
-//! all the same** — [`queue`] takes one from every non-final decrement,
-//! so that when the trace arrives it has a root set rather than a heap.
+//! [`collect`] is the order the rest of them run in, and the two ABI entries
+//! of `crate::gc` are its callers. **Candidates are gathered by the mutator**
+//! — [`queue`] takes one from every non-final decrement — so that when a trace
+//! arrives it has a root set rather than a heap.
 //!
 //! # What lives here, and what does not
 //!
@@ -75,30 +74,24 @@
 //! the slot returns all run after it, untokened — which is why
 //! [`validation`] re-reads the heap instead.
 
-// `ActiveTrace` owns the `TraceScratchArena`, fixing sweep-before-return even
-// before the production collection opens one in S36.7.
+// `ActiveTrace` owns the `TraceScratchArena`, which the collection opens.
 pub(crate) mod arena;
+// The order the pieces below run in, and the two paths a collection takes
+// through them. The ABI entries of `crate::gc` are its callers.
+pub(crate) mod collect;
 // The validation over a component the scan proposed, reached from
-// [`finalization`], which is where its answer is acted on and which no
-// production path runs until S36.7.
+// [`finalization`], which is where its answer is acted on.
 pub(crate) mod validation;
 // The guard references and the weak-reference invalidation a confirmed
 // component takes, the destructors that run behind both, and the second
 // reading of each component the guard is subtracted in.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the driver that opens a finalization is `PLAN.md` S36.7's"
-    )
-)]
 pub(crate) mod finalization;
 // The count of closed commits and the epoch a maturation stamp carries. Read
 // by the commit that writes a stamp and, once S37.1 lands, by the descent that
 // reads one.
 pub(crate) mod epoch;
 // The first phase of a trace, reached from [`trace`] rather than from a
-// collection: the collection that drives one is S36.7's.
+// collection.
 pub(crate) mod mark;
 // The list a pressure collection takes out of its rows before the blocks go
 // back, and the region of the workspace it stands in.
@@ -106,24 +99,9 @@ pub(crate) mod members;
 // The two forms a commit's membership takes — the harvested list, and the rows
 // a collection off the poll keeps — behind the three questions every reader of
 // one asks.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the driver that reads a commit's membership is `PLAN.md` S36.7's"
-    )
-)]
 pub(crate) mod membership;
 // Physical slot return waits while a trace can still address the slot's shadow
-// row. The production trace that opens the window arrives in S36.7; S36.2
-// builds the window and the return-path half first.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the production trace that opens this window is `PLAN.md` S36.7's"
-    )
-)]
+// row. The window is what [`collect`] opens a collection inside.
 pub(crate) mod deferred_slot_reuse;
 // The traced-slot and traced-group reading a measurement takes off the
 // touched list after a trace. Test builds only.
@@ -134,33 +112,21 @@ pub(crate) mod queue;
 // arena whose bump its segments come from.
 pub(crate) mod drops;
 // The teardown of a confirmed component: the sever, the frees, and the drops
-// of the children the sever displaced. `reclaim` is reached from the driver
-// S36.7 builds and from nothing else; the queue type beside it is the arena's.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the driver that tears a confirmed component down is `PLAN.md` S36.7's"
-    )
-)]
+// of the children the sever displaced. `reclaim` is reached from [`collect`]
+// and from nothing else; the queue type beside it is the arena's.
 pub(crate) mod reclamation;
 // The record chain the trace's worklist and the teardown's deferred drops are
 // built on.
 pub(crate) mod records;
 pub(crate) mod row;
 // The second phase, and the proposal a collection reads: reached from
-// [`trace`], which S36.7 drives.
+// [`trace`], which [`collect`] drives.
 pub(crate) mod scan;
 pub(crate) mod shadow;
 // The worklist both phases of a trace share, held by the arena whose memory
 // it stands on.
 pub(crate) mod stack;
-// The two phases of one trace, in the order the rows require. Dead until a
-// collection drives them, which is S36.7.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the collection that drives both phases is S36.7")
-)]
+// The two phases of one trace, in the order the rows require.
 pub(crate) mod trace;
 // The row readers and the ring fixtures the collector's tests share. Test
 // builds only.
