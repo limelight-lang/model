@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-07 · Active: S45, then S36 from S36.7. S44 has one step left, S44.5,
+Updated: 2026-09-07 · Active: S36, from S36.7. S44 has one step left, S44.5,
 and it waits on Edmond's word.
 S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
@@ -857,7 +857,7 @@ a second time; S44.4 last, a measurement being of what is built.
         describe the stack instead
       tier: T2 · role: —
 
-## S45 — One ring fixture for the cycle tests
+## S45 — One ring fixture for the cycle tests  [closed 2026-09-07]
 
 Goal: the ring every collector test needs is built in one place. Twenty sites
 under `src/cycle/` create the same two or three objects, link them through
