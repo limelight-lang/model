@@ -7,6 +7,54 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-07 — an empty pool is not a refusal of what the buffer arena can serve
+
+**What happened.**
+`template::tests::the_instance_as_an_ordinary_entity::`
+`a_refused_store_gives_the_instances_slot_back` forced the block pool to
+refuse and asserted that `ll_template_new` failed on the escape copy of an
+arena string. It failed one run in twenty of `cargo test --lib` — measured 1
+in 20 on the S36.5 tree and 1 in 20 at `fe7956c` before that stage, in a
+worktree of its own — on the assertion that the build was refused. The build
+had not been refused at all.
+
+**Why it was possible.** A long-lived payload does not come from the pool
+until the buffer arena has nothing of its own: the arena rotates onto an
+adopted block first, then onto any owned tail with room, and only then asks
+the pool (`dev/DECISIONS.md`, 2026-08-05). So the forced refusal is a refusal
+of that copy only on a thread whose arena holds neither — and the test harness
+reuses its threads across cases, which is where the one in twenty came from.
+The first repair, filling the current block's room before forcing the pool,
+moved the rate to 1 in 30 and no further: the adopted block is a second source
+and its supply depends on which other threads have exited.
+
+**Why it was not caught.** The case never proved the refusal it was named
+for. It asserted the build's answer — a null — which a refusal and a
+success-that-should-not-have-happened cannot both produce, but which any
+other failure of the build produces too. `dev/POSTMORTEM.md` already carries
+that shape under "a forced-refusal test that never proved the refusal", and
+`memory::buffer_arena::REFUSALS` exists because of it; this case did not read
+it.
+
+**What was done.** The copy is refused by `buffer_arena::
+FORCE_REFUSE_LONGLIVED`, the injection built for exactly this path, and the
+case asserts `refusals()` moved. The pool's refusal stays where its own
+subject is — the entity probe — and is dropped before the build, because left
+standing it refuses the copy's *entity* first and the case then reads a build
+that failed for a reason it does not name, which is what the first attempt at
+the repair hit. Verified: the case red 10 of 10 under a probe that warmed the
+arena before the old form, green 10 of 10 under the same probe after; red on a
+mutation that lowers the injection; and 30 full-suite runs with no failure
+against 1 in 20 before.
+
+**The rule it leaves.** A test that forces a refusal reads the counter that
+says the refusal happened. A pool emptied by `force_oom` refuses the
+allocations that ask the pool, and every allocator above it that holds memory
+of its own — the buffer arena, the entity heap's partial blocks, the critical
+reserve — serves without asking.
+
+---
+
 ## 2026-09-06 — an assertion over "the block's shadow stamp" was vacuous for half the population it was written for
 
 **What happened.** S36.12 (b)'s two cases about the sweep read what a

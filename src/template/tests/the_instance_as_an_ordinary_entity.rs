@@ -142,9 +142,33 @@ fn a_refused_store_gives_the_instances_slot_back() {
         unsafe { crate::memory::stdapi::ll_free(probe) };
         let _ = crate::memory::stdapi::take_refused_frees();
 
-        let t = unsafe { ll_template_new(ctx, cls, &*shape, &held, MemoryCategory::GcHeap) };
+        // The pool's refusal is the entity side's and ends with it: left
+        // standing over the build below, it refuses the copy's own *entity*
+        // first and the case reads a build that failed for a reason it does
+        // not name.
         drop(oom);
+
+        // **The copy is refused by the injection rather than by an empty
+        // pool**, and that is what makes the case deterministic. An empty pool
+        // is not a refusal of a long-lived payload at all: the buffer arena
+        // rotates onto its own tails and onto a block adopted from the
+        // abandoned list before it asks the pool (`dev/DECISIONS.md`,
+        // 2026-08-05), so whether the copy was refused depended on what had run
+        // on this thread and on which threads had exited — one run in twenty
+        // read a build that was never refused (`dev/POSTMORTEM.md`, "an empty
+        // pool is not a refusal of what the buffer arena can serve").
+        use std::sync::atomic::Ordering::Relaxed;
+        let before = crate::memory::buffer_arena::refusals();
+        crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED.store(true, Relaxed);
+        let t = unsafe { ll_template_new(ctx, cls, &*shape, &held, MemoryCategory::GcHeap) };
+        crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED.store(false, Relaxed);
+
         assert!(t.is_null(), "the escape copy was refused, so the build was");
+        assert!(
+            crate::memory::buffer_arena::refusals() > before,
+            "and the refusal was the injected one, not a build that failed \
+             for a reason this case does not name"
+        );
         assert_eq!(
             crate::memory::stdapi::take_refused_frees(),
             0,

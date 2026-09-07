@@ -3319,27 +3319,6 @@ in `dev/INDEX.md`. What it did not do is below.
   arena's weak log, the way a cell's target does, and the last subscriber
   leaving clears `HAS_WEAK_REFERENCES` so an ordinary death stops asking the
   table.
-- [ ] **A second gate flake, measured 2026-09-07 and pre-existing.**
-  `template::tests::the_instance_as_an_ordinary_entity::`
-  `a_refused_store_gives_the_instances_slot_back` fails 1 run in 20 of
-  `cargo test --lib` on the assertion that the escape copy was refused —
-  measured 1 in 20 on the working tree of S36.5 and 1 in 20 at `fe7956c`
-  before it, in a worktree of its own, so the step did not introduce it.
-
-  **What it looks like.** The case forces the pool to refuse and expects
-  `ll_template_new` to fail on the copy of a payload past `MAX_SMALL`. That
-  copy is a buffer-arena chunk, and the buffer arena rotates onto an adopted
-  tail and then onto any owned tail before it asks the pool
-  (`dev/DECISIONS.md`, 2026-08-05), so a thread whose buffer arena still has
-  room serves the copy with the pool refusing throughout. The harness reuses
-  its threads across cases, so whether that room exists depends on what ran on
-  the thread before — which is the shape of a one-in-twenty.
-
-  **Why it is not fixed here.** The repair is not the one line the reclamation
-  refusal case needed: draining the thread's critical reserve does not close
-  this path, and exhausting a thread's buffer arena before the refusal is a
-  fixture the crate has nowhere yet. Left for a decision rather than guessed
-  at, with the measurement recorded so the next reader starts from a number.
 - [ ] **The ladder's refusal has nowhere to go.**
   `InsertOutcome::AdmissionDenied` is answered inside the crate — a null
   from `ll_cow_separate`, a `false` from `element::set` — because the
