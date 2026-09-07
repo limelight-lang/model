@@ -99,12 +99,15 @@ fn neither_the_write_nor_the_overflow_allocates_or_asks_the_pool() {
 #[test]
 fn a_growth_with_no_spare_draws_the_reserve_and_arms_the_poll() {
     let _g = test_guard();
+    let class = candidate_class("ArmingCandidate");
+    let mut arena = Arena::new();
+    let first = unsafe { allocated_candidate(&mut arena, class, 2) };
+
     reset();
     assert!(crate::memory::critical::replenish(), "the reserve is full");
     assert_eq!(spare_count(), 0, "no cell is stocked for this one");
 
-    let mut first = candidate(2);
-    assert!(unsafe { !release(&raw mut first) });
+    assert!(unsafe { !release(first) });
     assert_eq!(
         segment_count(),
         1,
@@ -115,9 +118,10 @@ fn a_growth_with_no_spare_draws_the_reserve_and_arms_the_poll() {
         "a reserve draw is what asks for a collection"
     );
 
-    // The poll disarms as it fires. Nothing collects yet, so what the
-    // fire reports is zero either way; what the pair of assertions reads
-    // is that the arming reached the poll and did not survive it.
+    // The poll disarms as it fires, and the collection behind the arming
+    // reads one root that no traced edge subtracts from, so it frees
+    // nothing and reports zero. What the pair of assertions reads is that
+    // the arming reached the poll and did not survive it.
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
     assert!(!crate::gc::is_armed(), "the poll disarmed it");
     assert_eq!(
@@ -126,6 +130,7 @@ fn a_growth_with_no_spare_draws_the_reserve_and_arms_the_poll() {
         "and refilled the cells behind it"
     );
 
+    unsafe { dismantle_candidate(first) };
     reset();
 }
 
@@ -180,15 +185,20 @@ fn every_allocation_path_refused_puts_the_entry_in_the_overflow_buffer() {
 #[test]
 fn the_poll_drains_the_overflow_buffer_into_the_queue() {
     let _g = test_guard();
+    let class = candidate_class("DrainedCandidate");
+    let mut arena = Arena::new();
+    let entity = unsafe { allocated_candidate(&mut arena, class, 2) };
+
     reset();
     assert_eq!(spare_count(), 0);
     crate::memory::critical::drain_for_test();
 
-    let mut header = candidate(2);
-    let entity = &raw mut header;
     unsafe { release(entity) };
     assert_eq!(overflow_len(), 1);
 
+    // The poll drains the buffer and then fires the collection the
+    // overflow armed, which frees nothing: the entry it traces names a
+    // root a reference of this case still holds.
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
 
     assert_eq!(overflow_len(), 0, "the poll emptied it");
@@ -203,6 +213,7 @@ fn the_poll_drains_the_overflow_buffer_into_the_queue() {
         "and the entry still names the entity"
     );
 
+    unsafe { dismantle_candidate(entity) };
     reset();
 }
 
@@ -241,13 +252,18 @@ fn a_drain_with_no_room_leaves_the_overflow_buffer_alone() {
 #[test]
 fn a_bulk_release_polls_on_its_own_backedge() {
     let _g = test_guard();
+    let count = POLL_STRIDE + 1;
+    let class = candidate_class("BulkReleaseCandidate");
+    let mut arena = Arena::new();
+    // Allocated ahead of the emptying below, the entities being the run's
+    // input rather than part of what it is measured on.
+    let entities: Vec<*mut RcHeader> = (0..count)
+        .map(|_| unsafe { allocated_candidate(&mut arena, class, 2) })
+        .collect();
+
     reset();
     crate::memory::critical::drain_for_test();
     assert_eq!(spare_count(), 0, "no spare cell to start from");
-
-    let count = POLL_STRIDE + 1;
-    let mut headers: Vec<RcHeader> = (0..count).map(|_| candidate(2)).collect();
-    let entities: Vec<*mut RcHeader> = headers.iter_mut().map(|h| &raw mut *h).collect();
 
     unsafe { crate::object::ll_release_vector(entities.as_ptr(), count) };
 
@@ -261,6 +277,10 @@ fn a_bulk_release_polls_on_its_own_backedge() {
         count,
         "and every candidate is in the queue"
     );
+
+    for &entity in &entities {
+        unsafe { dismantle_candidate(entity) };
+    }
 
     reset();
 }

@@ -766,11 +766,6 @@ const _: () = assert!(
 /// `header` must point to a live heap entity beginning with `RcHeader`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_release(entity: *mut RcHeader) -> bool {
-    // A non-zero decrement is where `rc-cycle` registers a candidate
-    // (`rfc/model/gc/rc-cycle.md`); the queue that receives it is S34,
-    // so nothing is registered yet and a garbage ring is retained until
-    // it lands. The epoch handshake this branch used to acknowledge died
-    // with the collector that owned it.
     unsafe { release_word(entity) }
 }
 

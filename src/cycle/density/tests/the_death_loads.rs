@@ -149,9 +149,9 @@ struct DeathLoad {
 /// and let the last collection kill it.
 ///
 /// The killing collection is the last on this thread and nothing collects
-/// after it: `ActiveTrace::drop` restores the batch, so the write lane then
-/// holds records naming freed slots, and a ninth collection would offer them
-/// to `trace_batch` as roots.
+/// after it: `ActiveTrace::drop` merges the batch back into the lane, so the
+/// write lane then holds records naming freed slots, and a ninth collection
+/// would offer them to `trace_batch` as roots.
 fn a_killing_load(class_bytes: usize, fillers_between: usize) -> DeathLoad {
     let name = format!("DeathLoad{class_bytes}x{fillers_between}");
     let class = a_class(&name, props_for(class_bytes));

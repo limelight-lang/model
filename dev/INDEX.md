@@ -40,7 +40,7 @@ versions live in `docs/history/`, marked at the top.
   | `collect` | the order a collection runs in, the two paths it takes through them, and the flag that refuses a collection reached from inside one | `gc`'s two collecting entries; the path under pressure waits on `PLAN.md` S36.15 |
   | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | `cycle::collect` |
   | `shadow` | the row: two bits of colour over thirty of working count | none |
-  | `row` | `resolve_edge_target`, which row a traced edge resolves to | none |
+  | `row` | `resolve_edge_target`, which row a traced edge resolves to, and the test-build assertion that the target stands in memory this process carved for blocks | none |
   | `epoch` | the process's count of closed commits, and the two-bit epoch a maturation stamp carries: `(commits / 64) % 4` | `cycle::finalization`, which reads it at a commit's start and advances it at its close |
   | `mark` | the trace: trial deletion over the rows | none |
   | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | `cycle::collect`'s path under pressure |

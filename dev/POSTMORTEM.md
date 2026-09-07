@@ -7,6 +7,48 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-07 — a fixture that was sound became undefined behaviour when the poll grew a collection
+
+**What happened.** Miri over `cycle::` reported "trying to retag from
+<wildcard> for SharedReadWrite permission" at
+`block_pool::collector_load_block_kind`, reached from
+`cycle::row::resolve_edge_target` under the poll's collection in
+`cycle::queue::tests::where_a_full_segment_comes_from::`
+`a_bulk_release_polls_on_its_own_backedge`. The run took 81 minutes to reach
+it and stopped there, so the modules after `queue` were never interpreted.
+Three cases of that one module carry the defect, and every other command of
+the gate is green on all three.
+
+**Why it was possible.** The queue's `candidate` fixture is an `RcHeader` in a
+local, which the registration path never dereferences — the fixture's own
+comment said so, and it was true until S36.7 wired `ll_gc_maybe_collect` to
+`cycle::collect`. From that commit a poll that finds the thread armed traces
+the lane, and the trace resolves a root by reading the block header under its
+address. A header in a local has no block under it, so the read lands in
+whatever the allocator put at that offset; the address-to-block step is an
+integer-to-pointer cast, which is why Stacked Borrows refuses it rather than
+answering. Two of the three cases arm the thread by the reserve draw they are
+about, and the third is the bulk release that refills its funding mid-run.
+
+**Why it was not caught.** A release build reads a `u32` out of foreign memory,
+answers a kind the match refuses and traces on, so the suite is green and the
+heap is untouched. No other instrument here reads that address: Miri is the
+one that sees it, it runs at the close of a block rather than of a step, and
+its report on the block that landed this arrived after the push.
+
+**What was done.** The three cases build their candidates as live GC-heap
+objects (`cycle::queue::tests::allocated_candidate`) and take them down before
+they end. `cycle::row::resolve_edge_target` carries a `#[cfg(test)]` assertion
+that an edge target stands in a carved region or a registered OS-direct run;
+it was verified by putting the old fixture back, and its message names the
+fixture rather than the runtime. The bare header stays legitimate in the other
+forty-eight uses, where no collection can run.
+
+**The rule it leaves.** A fixture's premise about what does not read its memory
+expires when a production caller arrives, and nothing in the build reports the
+expiry. What holds such a premise is a check on the reading side — here one
+assertion in the dispatch every traced edge passes.
+
 ## 2026-09-07 — an empty pool is not a refusal of what the buffer arena can serve
 
 **What happened.**

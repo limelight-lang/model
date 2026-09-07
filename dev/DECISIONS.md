@@ -8,6 +8,26 @@ never edited or deleted.
 
 ---
 
+## 2026-09-07 — the guard on a traced edge target stands in the row dispatch rather than at registration
+
+Owner: the Miri failure of the same day (`dev/POSTMORTEM.md`, "a fixture that
+was sound became undefined behaviour when the poll grew a collection").
+
+A candidate is an entity of the GC heap by contract, so a fixture that
+registers something else can be caught where the claim is made —
+`queue::register_candidate` — or where it costs something,
+`row::resolve_edge_target`. Registration was refused as the site: the queue's
+own cases register a header in a local deliberately, forty-eight of them, and
+nothing traces those. A check there would turn every one into an allocated
+object and buy no soundness, the registration path dereferencing no entry it
+writes.
+
+The dispatch is where an address is first read as a block header, so an
+assertion there fires when the fault is about to happen and at no other time.
+It costs a walk of the pool's region registry per traced edge in a test build.
+The registry's snapshot allocates, so it is asked only where the regions
+answer no, an OS-direct run being the one population no region contains.
+
 ## 2026-09-07 — a bounded round that frees nothing arms the thread, and a full batch head is spliced rather than copied
 
 Owner: S36.7's Critic round, which found both. Refines the entry below it of the

@@ -129,6 +129,15 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
     // keeps it in the one place that owns block addresses.
     let header = BlockHeader::of_ptr(child as *const u8);
     let block = header as usize;
+    #[cfg(test)]
+    assert!(
+        stands_where_a_block_can(child as usize, block),
+        "a traced edge target at {:#x} lies in no block of this process, so the \
+         kind read below is not a block header: a fixture registered a candidate \
+         that is not an entity of the GC heap",
+        child as usize
+    );
+
     let kind = unsafe { collector_load_block_kind(&raw const (*header).kind) };
     match kind {
         BLOCK_KIND_ENTITY => EdgeTarget::Tracked(RowKey {
@@ -299,6 +308,38 @@ thread_local! {
 fn note_dispatch() {
     #[cfg(test)]
     EDGE_DISPATCHES.with(|count| count.set(count.get() + 1));
+}
+
+/// Whether `child` stands in memory this process carved for blocks: a
+/// region of the pool, or the OS-direct run the large-entity registry
+/// names under `block`.
+///
+/// What it stands between is a test fixture and undefined behaviour. The
+/// dispatch below reads the block header under an entity's address, and an
+/// address of any other memory has no header there — an ordinary build
+/// reads whatever stands at that offset, answers a kind the match refuses
+/// and traces on, so the only other instrument that sees it is Miri
+/// (`dev/WORKFLOW.md`, Miri). A registered candidate is an entity of the
+/// GC heap by contract (`crate::cycle::queue::register_candidate`), so a
+/// failure here is a fixture's and not the runtime's.
+///
+/// The region walk takes no allocation; the registry's snapshot does, and
+/// is asked only where the regions answer no, an OS-direct run being the
+/// one population no region contains.
+///
+/// A failure aborts the run rather than failing one case: the frames above
+/// this one are reached through `extern "C"`, where a panic ends the
+/// process. The message is therefore at the head of the output and the
+/// cases after it did not run.
+#[cfg(test)]
+fn stands_where_a_block_can(child: usize, block: usize) -> bool {
+    let mut in_region = false;
+    crate::memory::block_pool::BlockPool::global().for_each_region(|base| {
+        let base = base as usize;
+        in_region |= child >= base && child < base + crate::memory::block_pool::REGION_SIZE;
+    });
+
+    in_region || crate::memory::large_entity::snapshot().contains(&block)
 }
 
 /// Dispatches this thread has made since this last answered, which it

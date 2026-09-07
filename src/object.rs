@@ -226,8 +226,8 @@ pub unsafe extern "C" fn ll_object_new_in(cell: *mut u8, class: *const Class) ->
 /// around the run — the acknowledgement at entry, before any death, and
 /// the full poll after the last release, where the run's transients are
 /// back at their true counts. Each entry is a batched release;
-/// destructors run in vector order. Both halves have empty bodies while
-/// no collector is wired (`gc.rs`).
+/// destructors run in vector order. Both halves have empty bodies,
+/// `rc-cycle` having no handshake for them to serve (`gc.rs`).
 ///
 /// # Safety
 /// Every element must point to a live heap entity beginning with
