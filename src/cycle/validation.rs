@@ -188,8 +188,11 @@ pub(crate) unsafe fn validate_component(
 /// Run in a debug build alone — `debug_assert!` keeps its argument
 /// compiled in every build and executes it in none but that one. Every
 /// member's cells are walked once, and an in-degree array indexed by the
-/// member's position in the sorted slice takes the count; it is the one
-/// allocation of this module, and a debug build makes it. The check is
+/// member's position in the sorted slice takes the count. That array and the
+/// sorted list it indexes are two of the three global allocations a debug
+/// build makes per call, the third being the list
+/// [`every_member_is_a_gc_heap_entity_once`] builds for the check that runs
+/// ahead of this one; each is freed before the call returns. The check is
 /// here because the sum cannot check its own premise: a defect that
 /// invents an in-edge into one member and loses a real one in another
 /// meets the sum exactly, and frees a component a live reference holds.
@@ -265,11 +268,32 @@ fn note_premise_walk() {
     PREMISE_CELL_WALKS.with(|walks| walks.set(walks.get() + 1));
 }
 
-/// How many members' cells the premise check has walked on this thread.
-#[cfg(all(test, debug_assertions))]
+/// How many members' cells the premise check has walked on this thread. Zero
+/// in a release test build, where the check itself does not run.
+#[cfg(test)]
 pub(crate) fn premise_cell_walks() -> usize {
     PREMISE_CELL_WALKS.with(std::cell::Cell::get)
 }
+
+/// Global allocations one [`validate_component`] makes **past its zero-count
+/// return**: three in a debug build and none in a release one, each of them
+/// inside a `debug_assert!` and each freed before the call returns.
+///
+/// The arm that answers [`ValidationResult::ZeroCountMember`] costs one rather
+/// than three, its return standing between the membership check and the premise
+/// check, and it records no premise walk — so a bracket that contains one reads
+/// this figure as zero and is short by that one. No case of the deny run reaches
+/// it, and a case that does owes a calibration of its own.
+///
+/// A case that asks what a collection asks the allocator subtracts this rather
+/// than asserting a bare zero, the premise check being the one site of the
+/// collection path the GC-memory contract exempts (`PLAN.md` S36.9). What pins
+/// the figure is
+/// `validation::tests::what_the_premise_check_costs::a_validation_allocates_what_its_debug_checks_allocate`,
+/// which reads it off the call rather than deriving it.
+#[cfg(test)]
+pub(crate) const EXEMPT_ALLOCATIONS_PER_VALIDATION: usize =
+    if cfg!(debug_assertions) { 3 } else { 0 };
 
 #[cfg(test)]
 mod tests;

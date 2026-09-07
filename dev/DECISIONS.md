@@ -8,6 +8,65 @@ never edited or deleted.
 
 ---
 
+## 2026-09-07 — a deny case subtracts the debug checks by reading them, not by writing the figure down
+
+Owner: S36.9's closing run, the composite deny gate over a wired collection.
+
+**The gate runs in the debug profile**, which is where `cargo test --lib` runs,
+and `cycle::validation`'s two `debug_assert!`s allocate three `Vec`s per
+`validate_component` — the two sorted lists `members_in_address_order` builds
+and the in-degree array between them. A release build runs neither check. So a
+case that asserts a bare zero cannot exist in the gate, and the question is what
+it asserts instead.
+
+**It asserts `walks / members` validations' worth of exempt allocations**, the
+walk count coming from `validation::premise_cell_walks` and the membership from
+the case's own fixture: one validation walks every member's cells once, so their
+quotient is how many validations the commit ran. The per-validation figure is
+`validation::EXEMPT_ALLOCATIONS_PER_VALIDATION`, pinned by a calibration case
+that brackets `validate_component` alone and reads three in a debug build and
+none in a release one.
+
+**Refused, with reasons.** A figure derived from the fixture and written into
+the case pins the fixture rather than the property, and goes stale with every
+edit of the graph. A `cfg(test)` door in `validation` that suspends the two
+checks for the bracket adds production code for a test and turns off an
+assertion. A counter incremented beside each exempt allocation certifies the
+sites that increment it, which is the failure mode the audits keep finding, and
+`premise_cell_walks` already counts the pass that allocates. A release-only case
+never runs in the gate, and the gate is what exists.
+
+**What this buys and what it costs.** The constant is the exemption's site
+count, so a fourth allocation inside those checks reddens every arm — seen, by
+adding one. The cost is that the exemption's text has to be right: it stood at
+one site for two audits and the code has three, and a site the constant does not
+know about is a hole in the instrument rather than a failure of it.
+
+---
+
+## 2026-09-07 — the trace's edge-target assertion asks the run registry for membership rather than a list
+
+Owner: S36.9's deny run, which read the allocations as the collection's.
+
+**`cycle::row::stands_where_a_block_can` is a `cfg(test)` assertion on every
+edge dispatch**, and it called `large_entity::snapshot()`, which builds a `Vec`.
+A test build therefore made one global allocation per traced edge whose target
+is an OS-direct run — eight of them in the first fixture that held one, four in
+the trace and four in the commit, against six the exemption explains.
+
+**The registry answers membership without listing itself now**
+(`large_entity::holds_run`). What the repair trades is a counted allocation for
+an uncounted lock: the assertion took `RUNS` before and takes it still, and the
+allocation probe reads pool requests as its proxy for a lock rather than the
+lock itself, so no case reads this one. Test builds alone take it. The 2026-09-02 ruling that built the intrusive list
+refused a visiting `for_each_run`, because a visitor that frees or allocates
+re-enters the same mutex on its own thread; a closed membership test takes no
+visitor and cannot. The list's own contract already said "what the list answers
+is membership", and `snapshot` stays for the enumerator that needs the
+addresses.
+
+---
+
 ## 2026-09-07 — a collection is refused while an arena reset is in flight
 
 Owner: S36.15's Critic round, which found it while attacking the new caller;

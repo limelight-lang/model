@@ -7,6 +7,58 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-07 — a case that failed left another case's fixtures live, and a third case aborted the process
+
+**What happened.** The first case of the new deny run over a collection
+(`cycle::collect::tests::what_a_collection_asks_the_allocator`) turned the whole
+suite into a process abort: `string::tests::the_inline_layout::`
+`the_walker_counts_a_heap_string_as_a_leaf` ended on
+`slice::from_raw_parts requires the pointer to be aligned and non-null` inside
+`Class::ptr_runs`, reached from `cells::heap_census`. The new case passed on its
+own and passed beside that one; the abort needed a third module,
+`cycle::deferred_slot_reuse`, and took eleven bisecting runs to reduce.
+
+**The chain, in the order it runs.** The new case's members are freed and their
+slots withheld by the entries naming them (`PLAN.md` S39.2), so its block never
+empties and is abandoned part-filled at thread exit. Its class was three Box
+properties, which is 64 bytes, and 64 is `ENTITY_SIZE` in the module that broke
+— adoption is by exact class index in both directions
+(`heap::Heap::adopt` and `heap::Heap::abandon_all`), so the width is what put
+the two cases in one block. `Heap::alloc_no_block` adopts an abandoned block of
+the requested class before it asks the pool, so
+`deferred_slot_reuse::tests::the_close_returns_a_marked_slot_to_a_live_owner`
+adopted it and failed its own first assertion — "the class opened a second block
+before the first was full" — which is a case whose premise is a block it filled
+itself. It fills that block with fake entities, `live_entity` writing an
+`RcHeader` of kind `Object` and a count, and it frees every one of them on its
+last four lines. A case that panics before those lines leaves them standing, and
+they read `Live`. The census walks every slot of every carved region whose state
+is `Live` and reads its class word; a fake has whatever was in the slot. The
+abort names the case that censused rather than either case that made it
+possible.
+
+**Why nothing caught it.** No single case sees two links of that chain. The fake
+entity is legal in the case that builds one, since none of them censuses the
+heap; the adoption is legal in every case that allocates; and the first failure
+in the chain is a panic that libtest reports as one failing case, which the
+process abort then buries under a different case's name. Miri does not see it
+either — the read is of initialised memory holding the wrong thing.
+
+**What was done, and each half was seen to fix its own.** `dead_entity` writes
+the class word, so a fake the census reaches is walked rather than dereferenced
+blind: with that alone the abort became five ordinary failures. The deny cases
+then took size classes of their own, the way
+`memory::heap::tests::the_collection_a_refusal_starts` sizes its classes: with
+that the five went green.
+
+**The rule that follows.** A case whose collection leaves a block **part
+filled** takes a size class of its own, because the block outlives the case and
+the next thread wanting that class adopts it and finds occupants it did not put
+there. A case that fills every block it takes may keep a shared width: an
+adopter is served nothing by a full block and asks the pool. And a fixture that writes a bare header
+into a slot writes the class word too, because the reach of a `Live` slot is the
+whole process rather than the case.
+
 ## 2026-09-07 — a fixture that was sound became undefined behaviour when the poll grew a collection
 
 **What happened.** Miri over `cycle::` reported "trying to retag from

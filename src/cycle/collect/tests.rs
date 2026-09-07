@@ -502,3 +502,5 @@ fn a_collection_reached_from_a_destructor_is_refused() {
     // process: the next collection of this thread runs.
     assert!(CollectingThread::take().is_some());
 }
+
+mod what_a_collection_asks_the_allocator;

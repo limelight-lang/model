@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::class::Class;
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
@@ -13,6 +14,32 @@ use crate::refcount::{EntityKind, MemoryCategory, RcHeader};
 
 const ENTITY_SIZE: usize = 64;
 
+/// The class every fake entity of this module carries, built once.
+///
+/// A header alone is not enough for a fake that reads live: the crate's heap
+/// census walks every slot of every carved region whose state is `Live` and
+/// reads its class word, so an entity of kind `Object` with garbage there is a
+/// slot the census dereferences. The fakes outlive their case — the block
+/// holding them is abandoned rather than emptied when the thread that filled it
+/// exits — so the census that reads them belongs to some later case
+/// (`memory::heap::for_each_entity_slot`, `cells::heap_census`).
+fn fake_class() -> *const Class {
+    static CLASS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let class = *CLASS.get_or_init(|| {
+        // The build draws immortal memory, so `FORCE_OOM` refuses it and
+        // answers null. A null cached here would stand for the life of the
+        // process and give every later fake the empty class word this write
+        // exists to prevent, so the refusal ends the case instead.
+        let class = crate::class::ClassBuilder::new("DeferredSlotFake").build();
+        assert!(
+            !class.is_null(),
+            "the fake class is built under a refused allocation; build it before the window"
+        );
+        class as usize
+    });
+    class as *const Class
+}
+
 unsafe fn dead_entity(slot: *mut u8) -> *mut RcHeader {
     let header = slot as *mut RcHeader;
     unsafe {
@@ -21,6 +48,7 @@ unsafe fn dead_entity(slot: *mut u8) -> *mut RcHeader {
             EntityKind::Object.to_flags(),
         ));
         crate::refcount::set_header_refcount(header, 0);
+        (&raw mut (*(slot as *mut Object)).class).write(fake_class());
     }
     header
 }

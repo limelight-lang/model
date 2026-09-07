@@ -252,6 +252,33 @@ pub(crate) fn snapshot() -> Vec<usize> {
     out
 }
 
+/// Whether `block` is one of the registered runs, answered without building
+/// the list.
+///
+/// The membership question [`snapshot`] is usually asked for, on the one
+/// caller that asks it inside a trace: `cycle::row`'s edge-target assertion
+/// runs on every dispatch, and a `Vec` per OS-direct edge would put a global
+/// allocation on the collection path of a test build — which is the very
+/// thing a deny case over a collection is there to read
+/// (`PLAN.md` S36.9).
+///
+/// It takes no visitor, so nothing a caller supplies can free a run or
+/// re-enter [`RUNS`] while the lock is held.
+#[cfg(test)]
+pub(crate) fn holds_run(block: usize) -> bool {
+    let runs = RUNS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut run = runs.head;
+    while !run.is_null() {
+        if run as usize == block {
+            return true;
+        }
+
+        run = unsafe { (*run).next };
+    }
+
+    false
+}
+
 /// The registry of OS-direct runs: the head of a list whose nodes are the
 /// runs themselves, linked through [`LargeEntityHeader`]'s `prev` and
 /// `next`. One address per run and nothing else, because a run's occupant
@@ -306,7 +333,8 @@ unsafe impl Send for Runs {}
 /// **Every taker recovers a poisoned lock rather than propagating it, and
 /// what makes that sound is that no section stores before its last panic
 /// site**: [`link`] and [`unlink`] assert and then write raw pointers
-/// only, and [`snapshot`] allocates under the lock but mutates nothing, so
+/// only, [`snapshot`] allocates under the lock but mutates nothing, and
+/// [`holds_run`] reads `next` and compares, so
 /// a panic here cannot leave a half-linked list. Propagating instead would
 /// abort — [`unlink`] is reached from `stdapi::ll_free`, whose C-ABI
 /// callers `object::ll_entity_die` and `stdapi::ll_c_free` turn an unwind

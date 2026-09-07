@@ -20,7 +20,10 @@ its region and the block walks, S44.3 turned the mark into the bit a second
 slower than the chain on every arm; all five are closed. Edmond kept the stack
 on that reading, and the stage's `Done when:` was rewritten to ask for the
 measurement rather than for its direction. S36 is the work in front:
-its S36.9 stays open on the deny run a wired collection owes, S36.12 closed on
+its S36.9 has the deny run a wired collection owed — five cases, green, three
+mutations seen red — and stays open on one ruling that is Edmond's: whether the
+reset's disclosed exemption covers the frames a destructor's `ll_arena_reset`
+enters from inside a collection, S36.12 closed on
 2026-09-06 with the pressure path's harvest, S36.3 closed the same day with the
 guard references and the weak window, S36.4 the same day with the destructors
 and the revalidation behind them, S36.5 on 2026-09-07 with the sever, the frees
@@ -1566,6 +1569,131 @@ stage claiming the frees while building none of them.
         index/registry/snapshot ownership plus the direct-large registry audit,
         done 2026-09-02.
         Only their composite source audit and deny test close this checkbox.
+      Sage 2026-09-07 (the closing run's gate): the run is one module of five
+        cases under `cycle::collect::tests`, each driving a production entry and
+        each proving it collected by an observation the answer alone cannot
+        make; the exempt figure is read off `premise_cell_walks` rather than
+        written down, and a `cfg(test)` door in `validation`, a second exempt
+        counter and a release-only case are refused with reasons
+        (`dev/DECISIONS.md`, "a deny case subtracts the debug checks by reading
+        them, not by writing the figure down"); frees are asserted beside
+        allocations, the audit having reserved the sites that give memory back;
+        the calibration of the exempt figure is taken before the first edit of
+        the run, the instrument-first rule of slice (f); and no operation count,
+        `.tbss` figure or timed run is owed, the step adding no production code.
+        Taken whole. Where the run departs: the Sage expected the ordinary arm's
+        three member returns to be popped by the close, and they are not — a
+        member is a registered candidate, and `ll_free`'s candidate arm answers
+        ahead of the trace window's, so exactly one return is withheld and it is
+        the child's, which takes its holder's edge as its creation reference and
+        never reaches the candidate gate. The child's run is unlinked at the
+        close as the Sage said.
+      progress 2026-09-07 — S36.9g the composite deny run:
+        `cycle::collect::tests::what_a_collection_asks_the_allocator`, five
+        cases over the two production entries. Ordinary and parking are one
+        case, the ordinary path's close being the parking: a three-ring with an
+        OS-direct child whose free is withheld by the trace window alone and
+        replayed at the close, where `large_entity::free` unlinks the run and
+        returns the mapping. Neither counter sees that return, an unmap being no
+        global free, so the registry is what the case asks before and after —
+        which is also what the audit's reserved free-shaped sites need, none of
+        them being reachable from these five. Weak
+        nulls a cell a destructor then reads. Retained collects two survivors a
+        reset promoted, `resolve_edge_target` answering `Population::Retained`.
+        Pressure drives `collect_under_pressure`, whose close gives the blocks
+        back before the teardown. The abort refuses a growth mid-trace — both
+        allocation paths closed, the pool by this thread's budget and the
+        reserve by draining it — over a ring sized from `WORKSPACE_BUMP_BYTES`
+        and `shadow::bytes_for` so that the row arrays pass what the workspace
+        holds; it answers zero, gives back every block, and the same entry over
+        the same graph collects the ring once the budget is lifted. Measured:
+        every arm draws the exempt figure and no more, frees exactly it, and the
+        abort arm draws `(0, 1)` — one refused pool request and no heap
+        allocation. Three mutations were seen red and restored:
+        `record_death`'s null-window return deleted reddens three of the four
+        collecting arms; the retained arm passes, alone as well as beside the
+        others, and **why it does is not established** — the reading that the
+        boxed `died_set` was already drawn does not survive `close_and_flush`,
+        which frees it at every outermost close, so the arm either does not
+        reach `record_death` or reaches it at no cost, and which of the two is
+        open; a
+        `Vec::push` in `dispose_withheld` reddens the arm with a withheld
+        return, and a fourth allocation in `member_counts_cover_internal_edges`
+        reddens every validating arm and the calibration case.
+      repair 2026-09-07 — the run's first reading was fourteen where the
+        exemption explains six, and both halves of the excess were the
+        instrument's rather than the collection's. Eight came from
+        `cycle::row::stands_where_a_block_can`, a `cfg(test)` assertion on every
+        edge dispatch that called `large_entity::snapshot` to ask a membership
+        question; it asks `holds_run` now, which builds nothing
+        (`dev/DECISIONS.md`, "the trace's edge-target assertion asks the run
+        registry for membership rather than a list"). The remaining six are the
+        exemption itself, whose text named one site while the code has three —
+        a text error rather than an allocation, and the three are production
+        source under `debug_assertions` rather than `cfg(test)`
+        (`dev/DECISIONS.md`, "a deny case subtracts the debug checks by reading
+        them, not by writing the figure down").
+      gaps 2026-09-07 — what the five cases do not enter, named by the Critic
+        round so a later case is written for them rather than assumed covered:
+        `ValidationResult::ZeroCountMember` and `ExternallyReferenced`, and with
+        them the maturation stamp — every arm's component is confirmed on both
+        readings, and the zero-count arm costs one exempt allocation rather than
+        three and records no walk, so a case that reaches it owes a calibration
+        of its own; a destructor that resurrects a member; the sever's displaced
+        children, every child of these five graphs being a member, so the queue
+        the pressure path's second arena exists for stays empty; the pressure
+        path's overflow and its two arming endings, which
+        `a_population_past_the_harvest_region_is_collected_over_several_traces`
+        drives without a probe; a destructor that allocates, and the
+        `ll_arena_reset` the open ruling turns on; an entity with array cells,
+        which is where `array::entity`'s debug `HashSet` stands; and a
+        cross-thread free out of a collection. Two limits of the instrument
+        beside them: the probe's counters are per thread, so work moved to a
+        helper thread would be off the counter, and a release test build asserts
+        `(0, 0)`, which a dead counter also satisfies — the debug build's
+        positive figure is what proves the counter live, and the calibration
+        case the exempt figure rests on asserts `(0, 0)` in a release build too,
+        so nothing pins the instrument there. And the cases keep their memory:
+        each takes a width nothing else builds, so the blocks their withheld
+        slots hold are never adopted either — four blocks at the wide classes,
+        eight at the abort case's, and one retained block with two occupants,
+        out of circulation for the life of the process.
+      audit 2026-09-07 — the composite source audit re-run over `cycle` whole,
+        `weak` and its table, `cells`, `object`'s dispose path, `gc_metadata`,
+        `retained`, `large_entity`, `critical`, `block_pool`, `heap`, `arena`,
+        `stdapi`, `reset_window` and `promote` for reachability, and `array`
+        for the one site the reachability walk found there. **The collection's
+        own frames hold no owning container**: none exists in the non-test
+        source of any of the modules above outside `reset_window` and the two
+        exemptions below, and the
+        `.extend`/`.push` sites of `cycle` are `RecordChain` and `LazyChain`
+        over manager regions. What stands between the clause and met is one
+        reading and two exemptions. The reading: since S36.15
+        `CollectingThread::take` refuses while `reset_window::is_open()`, and
+        the only opener is `promote::arena_reset_full`, so a collection's own
+        frames never run under a window — the sites of `reset_window` fire only
+        when a step-4 destructor calls `ll_arena_reset`
+        (`memory/context.rs:126`), and the deaths that reach them there are the
+        reset's drain's rather than the collection's reclamation. Whether the
+        disclosed `promote` exemption covers those frames is the ruling of
+        2026-09-02, still Edmond's. The site list is **six** rather than five:
+        `died_set`'s `Box::into_raw(Box::new(HashSet::new()))`
+        (`reset_window.rs:175`) stands on the same death path as the insert at
+        `:224` and was named by neither earlier audit. The second exemption is
+        new and is the instrument's: `array::entity::separate` keeps an
+        `entered: HashSet` under `debug_assertions` (`array/entity.rs:506`),
+        reached from a destructor's store through `barrier` and
+        `object::escape_copy`, so a deny case whose destructor writes an array
+        into a longer-lived slot reads a figure this run does not subtract —
+        none of the five does, and the hole is in the instrument rather than in
+        the code.
+      audit 2026-09-07, beside the path — two further C-ABI entries a step-4
+        destructor reaches that allocate globally, of the same class as
+        `ll_arena_reset`: `static_block::ll_static_block_register`
+        (`static_block.rs:96`, `:107`, `:111`) and the lazy `BufferArena` of
+        `buffer_arena::with_buffer_arena` (`:818`), once per thread on the first
+        long-lived payload, which `weak::table::draw` can reach. The free side
+        of the buffer arena touches neither, so a teardown cannot trip it.
       done: every block owned by the candidate queue or a collection is drawn
         through one memory-manager wrapper, carries
         `BLOCK_KIND_GC_METADATA` while held, and is counted once — the kind is
@@ -1613,11 +1741,19 @@ stage claiming the frees while building none of them.
         `Arc` clone itself allocates nothing. Either their backing moves under
         the manager or the registry is redesigned at its owning layer; there
         is no cycle-path exemption.
-        The one site the composite audit exempts by name is
-        `validation::member_counts_cover_internal_edges`'s in-degree `Vec`:
-        it runs under `debug_assertions` alone, on the owning thread, and no
-        release build allocates it (S42.1, 2026-09-01; the S42 Code Reviewer
-        asked that the exemption stand here rather than in the closed stage).
+        The sites the composite audit exempts are `cycle::validation`'s two
+        `debug_assert!`s, which allocate **three** `Vec`s per
+        `validate_component` — the sorted list `members_in_address_order`
+        builds for each of the two checks, and the in-degree array of
+        `member_counts_cover_internal_edges` between them. They run under
+        `debug_assertions` alone, on the owning thread, and each is freed
+        before the call returns (S42.1, 2026-09-01, which named one of the
+        three; the S42 Code Reviewer asked that the exemption stand here
+        rather than in the closed stage). The figure is
+        `validation::EXEMPT_ALLOCATIONS_PER_VALIDATION` and the deny run
+        subtracts it per validation rather than asserting a bare zero
+        (`dev/DECISIONS.md`, "a deny case subtracts the debug checks by reading
+        them, not by writing the figure down").
 - [x] S36.14 Decide the retained index's owning layer   *(before S36.9's slice e)*
       done: the choice is recorded in `dev/DECISIONS.md` with the rejected side
         and its reason — either the present registry keeps its shape and only

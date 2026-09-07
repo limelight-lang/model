@@ -323,9 +323,13 @@ fn note_dispatch() {
 /// GC heap by contract (`crate::cycle::queue::register_candidate`), so a
 /// failure here is a fixture's and not the runtime's.
 ///
-/// The region walk takes no allocation; the registry's snapshot does, and
-/// is asked only where the regions answer no, an OS-direct run being the
-/// one population no region contains.
+/// Neither half allocates: the region walk builds nothing, and the run
+/// registry answers membership without listing itself
+/// (`memory::large_entity::holds_run`). That matters here because this
+/// assertion stands on the trace's edge dispatch, where an allocation of its
+/// own would be read as the collection's (`PLAN.md` S36.9). The registry is
+/// asked only where the regions answer no, an OS-direct run being the one
+/// population no region contains.
 ///
 /// A failure aborts the run rather than failing one case: the frames above
 /// this one are reached through `extern "C"`, where a panic ends the
@@ -339,7 +343,7 @@ fn stands_where_a_block_can(child: usize, block: usize) -> bool {
         in_region |= child >= base && child < base + crate::memory::block_pool::REGION_SIZE;
     });
 
-    in_region || crate::memory::large_entity::snapshot().contains(&block)
+    in_region || crate::memory::large_entity::holds_run(block)
 }
 
 /// Dispatches this thread has made since this last answered, which it
