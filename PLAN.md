@@ -11,7 +11,8 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-09 · Active: S40, from S40.1. S36 has S36.8 left; S44 has one step left, S44.5,
+Updated: 2026-09-09 · Active: S40, from S40.3. S40.1 waits only on its Phase-D corpus arm;
+S36 has S36.8 left; S44 has one step left, S44.5,
 and it waits on Edmond's word.
 The single-thread retirement sequence is S39.3 (candidate lifetime through
 reset), then S39.2 (complete retirement and compaction), then S39.4 (measure
@@ -3827,7 +3828,7 @@ Goal: the one number the design still lacks.
         slots, so this arm is Phase-D-blocked in the same way S37.2 is blocked
         on `classes.md`; the synthetic arm is not, and it is what the row form
         can be decided on if Phase D is far.
-- [ ] S40.0 Redraw `docs/architecture.md`'s diagrams
+- [x] S40.0 Redraw `docs/architecture.md`'s diagrams
       done: the four modules the diagrams show that no longer exist are gone
         from them, `rc-cycle`'s own boundaries are drawn as built, and the
         banner added on 2026-08-26 comes off with them; `dev/ARCHITECTURE.md`
@@ -3838,6 +3839,16 @@ Goal: the one number the design still lacks.
         reads as structure that exists. It sits here rather than earlier
         because the boundaries are not real until S38 closes; S40 is simply
         the last stage that will still be open.
+      handoff: closed 2026-09-09. The stale banner is gone; the layer and
+        wiring diagrams contain `gc` as the ABI, `cells`, and the built
+        `cycle::{queue, collect, arena/rows/deferred reuse, mark/scan,
+        membership/validation, finalization/reclamation}` boundary. The old
+        top-level `walk`, `epoch`, `collector` and `deferred_free` nodes are
+        absent, and the responsibility table and the death and collection
+        sequences agree. The comparison found and repaired the same stale
+        "not built" claim in `src/lib.rs` and the deleted `forget_candidate`
+        dependency in `dev/ARCHITECTURE.md`. PlantUML parses all five diagrams
+        in headless `-checkonly` mode; `git diff --check` passes.
 - [ ] S40.3 Count the workspace and the cache traffic   *(before S40.2)*
       done: per collection counters report unique roots, `V`, `E`, touched
         blocks and groups, row bytes reserved and written, distinct row/group

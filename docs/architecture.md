@@ -8,22 +8,10 @@ whom, who is responsible for what, and the key use cases as
 sequences. When a boundary changes, both files change in the same
 commit (`dev/WORKFLOW.md`).
 
-> **The collector half of every diagram below is out of date since
-> 2026-08-26, and is kept rather than redrawn.** Four modules the diagrams
-> show no longer exist: `gc` as a collector (the file survives as the GC ABI
-> and the safepoint, and reports zero), `epoch`, `collector` and
-> `deferred_free`. The violet "rc-walk feature only" layer is gone entirely,
-> and so is the feature. `walk` is now `cells` and carries the tracer alone.
->
-> They are not redrawn here because the replacement, `rc-cycle`
-> (`rfc/model/gc/rc-cycle.md`), is not built: a diagram of an unbuilt
-> collector would read as structure that exists, which is the failure this
-> banner exists to avoid. The stages that build it are S34 through S40 of
-> `PLAN.md`, and the diagrams are redrawn when the boundaries they show are
-> real. What the deleted modules looked like is on `archive/pre-rc-cycle`.
->
-> Everything outside the collector — the arenas, the heap, the block pool,
-> the store barrier, the object model — is current.
+The diagrams show the implementation, not the destination. The in-line
+`rc-cycle` path is built; its future collector-thread accelerator is not and is
+therefore absent. The deleted `rc-walk` and `rc-trace` structures remain on
+`archive/pre-rc-cycle`, not in this picture.
 
 Diagrams are PlantUML, embedded as fenced blocks; render on demand
 (IDE plugin or any PlantUML processor). No generated images are
@@ -31,20 +19,20 @@ committed.
 
 ## Layers and who knows whom
 
-Knowledge flows downward: a module may use anything at or below its
-own layer. Exactly seven upward edges exist (dashed, red) — all of
-them entity death or GC scheduling, each entered at a named point.
-Anything new pointing up is a design event, not an edit.
+Knowledge flows downward: a module may use anything at or below its own layer.
+The sanctioned upward edges are dashed and red; their complete entry-point
+list is in `dev/ARCHITECTURE.md`. Anything new pointing up is a design event,
+not an edit.
 
 ```plantuml
 @startuml
 skinparam shadowing false
 skinparam defaultTextAlignment center
 
-rectangle "**L4 — collectors**\ngc · walk · epoch° · collector° · promote" as L4
+rectangle "**L4 — collectors**\ngc (ABI) · cells · cycle · promote" as L4
 rectangle "**L3 — object model**\nobject · class · reference · weak · intern" as L3
 rectangle "**LB — mutation**\nmemory/barrier" as LB
-rectangle "**L2 — memory manager**\ncontext · arena · heap · immortal · buffer\nbuffer_arena · reserve · stats · stdapi · deferred_free°" as L2
+rectangle "**L2 — memory manager**\ncontext · arena · heap · immortal · buffer · buffer_arena\nreserve · critical · retained · stats · stdapi · routing · large_entity · reset_window" as L2
 rectangle "**L1 — entity substrate**\nrefcount · value" as L1
 rectangle "**L0 — block supply**\nblock_pool" as L0
 
@@ -54,28 +42,28 @@ LB -down-> L2
 L2 -down-> L1
 L1 -down-> L0
 
-L1 .up.> L4 #red : ""refcount -> gc"" arm candidate (rc-trace)\n""refcount -> epoch"" death-branch checkpoint (rc-walk)
+L1 .up.> L4 #red : ""refcount -> cycle/queue""\nregister a non-final decrement
 L2 .up.> L4 #red : ""context -> promote"" ll_arena_reset
 L2 .up.> L3 #red : ""arena -> weak""\nreset drains the weak log
+L2 .up.> L4 #red : ""heap -> cycle""\nthread init / exit
 LB .up.> L3 #red : ""barrier -> object""\ndrop_ref cascade
-L3 .up.> L4 #red : ""object -> gc""\nforget candidate at death
+L3 .up.> L4 #red : ""object -> gc"" checkpoint bracket\n""object kinds -> cells"" trace adapters
 L3 -> L3 #red : ""class -> object""\ndispose default (data, not a call)
 
 note right of L0
-  ° = rc-walk feature only
   solid: knowledge flows down
-  red dashed: the only calls up
+  red dashed: sanctioned calls up
 end note
 @enduml
 ```
 
 ### Full wiring
 
-Every structural production edge between modules (ubiquitous hubs
-omitted: everyone → `refcount`/`value`, context resolution, the
-`stdapi` free funnel; block supply drawn once, package-level). Dense
-by nature — use the layer picture above for orientation and this one
-for lookup.
+Principal structural production edges between modules; the exhaustive table is
+`dev/ARCHITECTURE.md`. Ubiquitous hubs are omitted here: everyone →
+`refcount`/`value`, context resolution, the `stdapi` free funnel, and
+package-level block supply. Use the layer picture above for orientation and
+this one for the collector boundary.
 
 ```plantuml
 @startuml
@@ -86,10 +74,16 @@ skinparam nodesep 30
 skinparam ranksep 35
 
 package "L4 - collectors" as P4 {
-  [gc] as gc
-  [walk] as walk
-  [epoch] as epoch #E6E0F8
-  [collector] as collector #E6E0F8
+  [gc ABI] as gc
+  [cells] as cells
+  package "cycle" as cycle {
+    [queue] as cycle_queue
+    [collect] as cycle_collect
+    [arena + rows + deferred reuse] as cycle_rows
+    [mark + scan] as cycle_trace
+    [membership + validation] as cycle_validate
+    [finalization + reclamation] as cycle_commit
+  }
   [promote] as promote
 }
 package "L3 - object model" as P3 {
@@ -110,9 +104,10 @@ package "L2 - memory manager" as P2 {
   [buffer] as buffer
   [buffer_arena] as buffer_arena
   [reserve] as reserve
+  [critical] as critical
+  [retained] as retained
   [stats] as stats
   [stdapi] as stdapi
-  [deferred_free] as deferred #E6E0F8
 }
 package "L1 - entity substrate" as P1 {
   [refcount] as refcount
@@ -122,27 +117,34 @@ package "L0 - block supply" as P0 {
   [block_pool] as pool
 }
 
-' structural production edges (hubs omitted: everyone -> refcount/value,
-' context resolution, the stdapi free funnel, per-module pool supply)
-collector --> epoch
-collector --> walk
-collector --> heap : snapshots
-collector --> class
-epoch --> walk
-epoch --> deferred
-gc --> walk
-gc --> object
-gc --> weak
-gc --> barrier
+' principal structural production edges (hubs omitted as above)
+gc --> cycle_collect : collect / poll
 gc --> reserve : refill at poll
+gc --> critical : refill at poll
+gc --> cycle_queue : refill + drain overflow
+cycle_collect --> cycle_queue : detach / merge / retire
+cycle_collect --> cycle_rows : trace window + scratch
+cycle_collect --> cycle_trace
+cycle_collect --> cycle_validate
+cycle_collect --> cycle_commit
+cycle_trace --> cells : counted children
+cycle_trace --> cycle_rows : shadow rows
+cycle_validate --> cells : exact edge reading
+cycle_commit --> cells : sever children
+cycle_commit --> weak : null cells
+cycle_commit --> object : destructors + death
+cycle_rows --> heap : slot arithmetic
+cycle_rows --> retained : survivor positions
+cycle_rows --> critical : overflow blocks
 promote --> arena
 promote --> object
 promote --> weak
-walk --> heap
-walk --> object
-walk --> reference
-walk --> weak
-walk --> barrier
+promote --> retained : publish survivor lists
+cells --> heap
+cells --> object
+cells --> reference
+cells --> weak
+cells --> barrier
 object --> class
 object --> reference
 object --> barrier
@@ -157,6 +159,7 @@ reference --> barrier
 weak --> object
 weak --> heap
 weak --> arena : weak log
+weak --> buffer_arena : table storage
 barrier --> arena : logs
 context --> arena
 context --> heap
@@ -166,7 +169,7 @@ buffer_arena --> buffer
 heap --> reserve
 arena --> reserve
 stdapi --> heap
-stdapi --> deferred
+stdapi --> cycle_rows : defer reuse in trace
 value --> refcount
 P2 --> pool : get / put blocks
 
@@ -177,18 +180,18 @@ PB -[hidden]down-> P2
 P2 -[hidden]down-> P1
 P1 -[hidden]down-> P0
 
-' the seven sanctioned upward edges
-refcount .up.> gc #red : arm candidate
-refcount .up.> epoch #red : death checkpoint
+' sanctioned upward edges
+refcount .up.> cycle_queue #red : register candidate
 arena .up.> weak #red : reset drain
 context .up.> promote #red : ll_arena_reset
-object .up.> gc #red : forget candidate
+object .up.> gc #red : checkpoint bracket
+object .up.> cells #red : trace adapter
 barrier .up.> object #red : drop_ref cascade
 class .up.> object #red : dispose default (data)
+heap .up.> cycle_queue #red : thread init / exit
 @enduml
 ```
 
-Violet components exist only under the `rc-walk` cargo feature.
 `block_pool` knows nothing above itself; its references to
 heap/reserve are the shared test-lock harness.
 
@@ -205,10 +208,11 @@ resources, invariants) is in `dev/ARCHITECTURE.md`.
 | `immortal` | global bump region, never freed | contents of what it hosts |
 | `buffer` | growable headerless payload over the mounted arena | entity lifecycle |
 | `buffer_arena` | long-lived buffer blocks, per-block free lists, pressure modes | the object heap, entities |
-| `reserve` | two blocks per thread so barrier log growth cannot fail | what a log records |
+| `reserve` | two blocks per thread for store-barrier log growth | what a log records |
+| `critical` | eight blocks per thread shared by candidate-queue and collection overflow | what either consumer stores |
+| `retained` | survivor-list lookup and held-occupant accounting for retained arena blocks | entity kinds and verdicts |
 | `stats` | block-granular telemetry, zero hot-path tax | per-object events |
 | `stdapi` | size-less malloc/free front door; routes by block kind | entity semantics |
-| `deferred_free` *(rc-walk)* | activity flag; parked-free lists through bytes 8–15; post-epoch flush | which kinds park (stdapi filters), verdicts |
 | `context` | `LLContext` + TLS current context; composition root; `ll_arena_reset` ABI | class layout, GC strategy |
 | `barrier` *(hot)* | store-barrier micro-ops: publish (`store_ptr`/`store_box`), `drop_ref`, escape recording | per-site composition (lowering's) |
 | `refcount` | the 8-byte header at offset 0: refcount + flag word; retain/release | entity bodies, blocks, when to collect |
@@ -218,10 +222,9 @@ resources, invariants) is in `dev/ARCHITECTURE.md`.
 | `object` | factory, constructed hook, three-phase death, kind-switched `ll_entity_die` | collector internals, block internals |
 | `reference` | the `&` reference box, entity kind 3 | classes |
 | `weak` | weak cell (kind 11) = canonical `WeakReference`; per-thread weak table; every notification rule | *when* to notify — the death sites' duty |
-| `gc` | rc-trace cycle collector (Bacon–Rajan); arm-vs-fire; the `ll_gc_maybe_collect` poll | arming policy (compiler's) |
-| `walk` | kind-dispatched tracer, census, whole-heap collection, Phase-4 drains | slots and occupancy (heap's side) |
-| `epoch` *(rc-walk)* | mutator side: handshake ack, verdict queue, non-reentrant checkpoint | collector phases |
-| `collector` *(rc-walk)* | collector side: steppable epoch state machine, Phases 1–3 | freeing (never frees), the weak table |
+| `gc` | GC ABI, per-thread due flag, poll refills and dispatch into `cycle::collect` | collector internals and arming policy |
+| `cells` | kind-dispatched counted-child trace and sever adapters | slots and occupancy (heap's side) |
+| `cycle` | candidate queue; in-line mark/scan over shadow rows; exact validation; finalization, reclamation and owner retirement | entity-kind layout and size-class arithmetic |
 | `promote` | arena death with promotion: fixpoint, edge count, retain blocks, release log | copying/evacuation (future) |
 
 ## Use cases
@@ -236,7 +239,6 @@ participant object
 participant arena
 participant heap
 participant immortal
-participant epoch #E6E0F8
 
 caller -> object : ll_object_new(ctx, class, category)
 alt category = RequestArena
@@ -295,22 +297,20 @@ end
 skinparam shadowing false
 participant "release site" as site
 participant refcount
-participant gc
+participant "cycle/queue" as queue
 participant object
 participant weak
 participant barrier
 participant stdapi
-participant deferred_free as deferred #E6E0F8
+participant "cycle/deferred_slot_reuse" as reuse
 
 site -> refcount : ll_release(entity)
-alt refcount still > 0 (GcHeap object, rc-trace)
-  refcount -> gc : buffer_candidate — arm only
-  note right : collection fires later,\nat a clean point
+alt non-final decrement admitted by candidate gate
+  refcount -> queue : register_candidate
+  note right : append only; collection fires\nlater at a safepoint or pressure
 else refcount reached 0
-  note over refcount : rc-walk: the 1 -> 0 branch acks the\nepoch handshake before any teardown;\npickup rides the outermost dispose's exit.\nBatched runs (2026-07-28 split):\nll_gc_checkpoint_ack, then ll_release_batch\nper reference, ll_gc_checkpoint after
   site -> object : ll_entity_die (kind switch)
   object -> object : phase 1 — pre-destructor,\nresurrection check
-  object -> gc : forget_candidate (rc-trace)\nbefore any child drops
   object -> weak : notify_death (if HAS_WEAK_REFERENCES)
   note right : first act of phase 2
   loop counted children (class runs)
@@ -318,8 +318,12 @@ else refcount reached 0
   end
   alt GcHeap
     object -> stdapi : ll_free (size-less funnel)
-    opt rc-walk epoch active
-      stdapi -> deferred : park — recycle waits,\nidentity holds for the walker
+    alt a candidate record still names the slot
+      stdapi -> stdapi : mark dead in place;\nowner retirement returns it
+    else an active trace has stamped its block
+      stdapi -> reuse : push the return on the\ndead-entity stack
+    else neither condition holds
+      stdapi -> stdapi : return slot now
     end
   else RequestArena
     note over object : memory stays;\narena reset reclaims
@@ -361,30 +365,38 @@ arena -> pool : return every other block\n(reserve-drawn included)
 @enduml
 ```
 
-### UC5 — rc-walk collection epoch
+### UC5 — In-line cycle collection
 
 ```plantuml
 @startuml
 skinparam shadowing false
-participant "collector thread" as collector #E6E0F8
-participant epoch #E6E0F8
-participant "mutator thread" as mutator
-participant heap
-participant walk
-participant deferred_free as deferred #E6E0F8
+participant "mutator safepoint" as mutator
+participant "gc ABI" as gc
+participant "cycle/collect" as driver
+participant "cycle/queue" as queue
+participant "trace window + arena" as arena
+participant "mark + scan" as trace
+participant "validation + finalization" as finalization
+participant reclamation
 
-collector -> epoch : open — publish activity flag,\nsoft handshake
-mutator -> epoch : checkpoint acks the handshake
-note right : flag observed before\nany snapshot is taken
-collector -> heap : snapshot_entity_blocks\n(no bump cursor)
-collector -> collector : phase 1 — walk,\nthree-way classification
-collector -> collector : phase 2 — judge
-collector -> collector : phase 3 — condemn (collector-private),\nsnapshot-compare re-check
-collector -> epoch : post confirmations\n(acquittals are dropped in private —\neager death, 2026-07-27)
-mutator -> epoch : next checkpoint drains
-epoch -> walk : drain_confirmed —\ncorpse rule, phase 4 exact test,\nthen die
-collector -> deferred : epoch closes —\nclear activity flag
-mutator -> deferred : flush parked frees\n(owning thread only)
-note over collector, deferred : the collector never frees;\nits only shared writes\nare epoch stamps
+mutator -> gc : ll_gc_collect_cycles / armed poll
+gc -> driver : collect_off_the_poll
+driver -> arena : open trace window over\nresident workspace
+driver -> queue : detach candidate lane
+queue --> driver : roots
+driver -> trace : mark every root, then scan every root
+trace -> trace : shadow counts -> live /\npotentially unreachable rows
+driver -> finalization : membership from rows
+finalization -> finalization : exact validation; guards;\nnull weak cells; destructors; revalidate
+alt confirmed unreachable
+  finalization -> reclamation : sever internal edges; free members
+  reclamation -> reclamation : drop displaced external children
+else live / refused / resurrected
+  finalization --> queue : candidates remain registered
+end
+driver -> arena : close after commit
+arena -> queue : sweep rows; return deferred slots;\nmerge detached records
+driver -> queue : retire completed candidate deaths
+note over mutator, reclamation : the ordinary path keeps rows through teardown;\nthe pressure path harvests a bounded member list\nand returns trace blocks first
 @enduml
 ```

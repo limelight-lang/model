@@ -9,9 +9,9 @@
 //! Three cycle collectors were deleted on 2026-08-26 — `rc-walk`, the
 //! barrier-free concurrent walk that was the default build; `rc-trace`, the
 //! stop-the-thread candidate-buffer tracer; and `rc-satb`, designed and never
-//! built. The one design in force is `rc-cycle`
-//! (`rfc/model/gc/rc-cycle.md`), and it is not built yet either, so this
-//! crate collects no cycles at all until S36 of `PLAN.md` wires one in.
+//! built. The design in force is `rc-cycle` (`rfc/model/gc/rc-cycle.md`),
+//! whose in-line owner path is implemented by `crate::cycle::collect`. Its
+//! collector-thread accelerator remains planned.
 //!
 //! **Every line of the deleted code, and every document that described it, is
 //! on the branch `archive/pre-rc-cycle`** — in this repository and in `rfc`,
