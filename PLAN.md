@@ -11,8 +11,12 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-07 · Active: S36, from S36.15. S44 has one step left, S44.5,
+Updated: 2026-09-09 · Active: S39, from S39.2. S36 has S36.8 left; S44 has one step left, S44.5,
 and it waits on Edmond's word.
+The single-thread retirement sequence is S39.3 (candidate lifetime through
+reset), then S39.2 (complete retirement and compaction), then S39.4 (measure
+an earlier pressure-path return). S39.3 protects the existing mark as well as
+the new retirement and is a correctness prerequisite, not a performance task.
 S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
 its region and the block walks, S44.3 turned the mark into the bit a second
@@ -127,17 +131,6 @@ guard lowers it on the unwind as well as on the return.
   skip is sound under the first reading by the induction written at
   `Revalidation::revalidate`; which reading the specification means is
   unresolved, and it is `rfc`'s sentence to sharpen.
-
-- **A candidate freed inside a reset.** `memory::stdapi::ll_free`'s reset-window
-  arms stand ahead of its candidate arm, so a retained-block member whose free
-  arrives while a reset is in flight is absorbed there and never reaches the
-  withholding. A collection inside a reset's destructor is contemplated
-  (`cycle::deferred_slot_reuse`), and a promoted survivor can become a candidate
-  after its category is rewritten, so the two can meet: the free is absorbed,
-  the queue entry stands, and whether the block may go home with that slot named
-  turns on `retained::has_live_occupants` reading a dead-in-place slot as
-  occupied. Neither comment at the arm considers a candidate, and nobody has
-  traced it. Raised by the Critic's second round on S36.5, 2026-09-07.
 
 - **`exact test` is a term the glossary retires** in favour of *exact
   validation* (`rfc/dev/GLOSSARY.md`, "Deprecated terms"), and it stands 45
@@ -3379,9 +3372,16 @@ window there is.
         measured as the churn held across one collection
       tier: T2 · role: —
 
-## S39 — Thread exit  (carried from S29.2)
+## S39 — Candidate retirement and thread exit  (exit carried from S29.2)
 
-- [ ] S39.1 Exit waits, collects, and drains its four chains   *(after S36.4)*
+The retirement work below is single-threaded. The working order is S39.3 →
+S39.2 → S39.4; S39.1 uses the retirement S39.2 builds. The discussion in
+`dev/COLLECTOR-MUTATOR-MEMORY-PROTOCOL.md`, S1/S3 and R1/R2, and its
+claim-by-claim review are supporting analysis, not normative design. Their
+C1–C6/P1 worker contracts add no task here: concurrency remains in S38 with
+its existing blockers.
+
+- [ ] S39.1 Exit waits, collects, and drains its four chains   *(after S36.4 and S39.2)*
       done: `ll_thread_exit` **waits** while any trace holds rows over this
         thread's blocks, **collects**, and then retires its chains before
         handing the heap over — the queue, the overflow buffer, the
@@ -3434,14 +3434,113 @@ window there is.
         reader", which a doc comment saying "these leak" satisfies with S29.2's
         defect intact.
 
-- [ ] S39.2 The owner's read of a zero-count entry retires it   *(after S36.15)*
-      done: at the owner's detach or read, an entry whose entity reads zero and
-        whose teardown has run is dropped rather than merged back, its
-        `CANDIDATE_BIT` and `DEAD_IN_PLACE` cleared and its slot returned
-        through `ll_free`; under S36.15's pool cap a heap holding one garbage
-        ring allocates past the pool's last block and is served rather than
-        refused; and S36.15's case that reads the slot as still withheld is
-        flipped in the same commit
+- [x] S39.3 Establish candidate lifetime through the arena reset   *(before S39.2)*
+      done: a queue entry retains its own allocation identity through reset,
+        not merely a readable zero-count header; follow a real promoted
+        survivor from its category rewrite through registration, the reset's
+        deferred releases, any absorbed free and publication of the retained
+        index, and establish that its slot and block cannot be reused while
+        the entry stands; a regression exercises the reachable path and the
+        subsequent ordinary mark after reset, and any repair is seen red
+        before the fix; if a proposed transition is impossible, the invariant
+        excluding it is encoded and tested rather than replaced by a fixture
+        that constructs an unsupported state
+      done: cover reset entered by a GC destructor as well as a reset outside
+        collection, and a second reset before retirement; allocation/reuse
+        checks establish the held slot's identity, and Miri covers the later
+        header read; a zero count plus `DEAD_IN_PLACE` is never used as proof
+        of that identity, because a slot already on the free list can carry
+        the same pair; no path solves the test by dropping a live registration
+      tier: T2 · role: Sage → Critic
+      note: moved from Fog, "A candidate freed inside a reset", raised on
+        S36.5 on 2026-09-07. `ll_free`'s reset arms precede its candidate arm;
+        promotion rewrites the category before the deferred-release drain,
+        and `retained::register` does not count a dead-in-place survivor as a
+        live occupant. The combination needs a reachable case and a lifetime
+        argument; an exploitable failure is not claimed without reproducing it.
+      note: this blocks more than the new retirement. Today's
+        `mark::schedule_root_if_unvisited` already dereferences a queued
+        address before applying the zero-count rule. It therefore relies on
+        the same invariant now, which makes this a correctness prerequisite
+        before further retirement work rather than a later cleanup question.
+      handoff: the invariant must hold after the reset has closed. Refusing
+        retirement only while `reset_window::is_open()` is true does not prove
+        that an entry left by an earlier reset still names its own allocation.
+      handoff: closed 2026-09-09. A retained block's low count now includes a
+        dead-in-place occupant exactly when `CANDIDATE_BIT` says the owner queue
+        still names it. The reset may absorb that occupant's first free, but
+        `retained::register` establishes the count before it can return the
+        block; S39.2's owner retirement will clear both slot bits and spend the
+        count through the ordinary retained `ll_free` arm. An unregistered
+        dead-in-place occupant remains uncounted because no later free exists
+        to spend a count taken for it.
+      handoff: the Sage gate kept the live-survivor path unchanged. The Critic
+        then folded the flags into `slot_state_with_flags`: a live slot remains
+        one count-half load, and a zero-count slot takes that load plus one
+        flags-half load, with no duplicate read. There is no manager or global
+        allocation, no new refusal, and no second cache line. The pre-change reset
+        slice was 9/9; the regression was then seen red with the candidate's
+        retained block already stamped `BLOCK_KIND_FREE` while its queue entry
+        remained. A second mutation that counted every dead-in-place survivor
+        was rejected by the existing dead-at-registration case after that case
+        was made to carry the real free mark.
+      handoff: two real allocator-backed regressions cover the outer reset, a
+        second reset before retirement, the later ordinary mark, and a reset
+        entered by a cycle member's destructor. Miri first caught the latter
+        fixture taking a fresh `&mut Arena` after saving its raw pointer; the
+        builder now uses that same pointer. The two cases then passed under
+        Miri, 2 tests in 8.39 s on Miri's clock. Critic review replaced the
+        correlated `(state, Option<flags>)` result with flags carried by the
+        two zero-count variants, so reset contains no `expect` for that
+        invariant. The free-list assertion stands at both physical doors —
+        the local return and `free_remote`, including direct `free_foreign` —
+        and its two-door case passed under Miri in 23.04 s on Miri's clock.
+      handoff: verified at 822 tests — one run and three at four threads,
+        `hash-folding` 822, `debug-journal` 828 three times, release without
+        warnings, every bench target built, and `+1.94 fmt --check`. The
+        citation pass remains at its known 500 citations and 7 misses; none is
+        in a changed source. The abstract R2 checker beside the supporting
+        protocol document remains green at 5,260 exhaustive cases.
+
+- [ ] S39.2 The owner's read retires completed deaths across the whole queue   *(after S36.15 and S39.3)*
+      done: at an exact owner reading, every entry whose own allocation is
+        still held, whose entity reads zero and whose teardown has completed
+        is retired, including
+        entries in the detached batch, the active chain and overflow; live and
+        unprocessed registrations survive exactly once; its `CANDIDATE_BIT`
+        and `DEAD_IN_PLACE` are cleared at hand-back and its slot is returned
+        through `ll_free` only after the last membership read and the relevant
+        shadow sweep; a zero-count entity whose teardown has not finished is
+        not returned
+      done: live records are compacted without holes, every segment behind
+        the published head remains full, and surplus segments go back to the
+        spare cells/reserve with exact payload accounting: one payload
+        discharge for each charged full segment eliminated, no duplicate
+        discharge, and the originally uncharged heads and the final head
+        accounted for separately; the complete retirement and combination
+        ask for no new block and no global allocation
+      done: the detached batch and active chain may BOTH have partial heads;
+        save both head/fill bounds before joining the chains for a
+        reverse/compact/reverse pass, or implement an equivalent bounded
+        traversal, so the old interior partial head is never read to capacity;
+        cover dead entries in spliced full segments as well as either head,
+        empty/all-dead/all-live chains, exact-capacity output and nonempty
+        overflow; tests verify record identity, every published read bound,
+        segment ownership and ledger balance under a pool that refuses
+      done: the close keeps an owner for the batch and every pending return
+        throughout the interval after `sweep_rows` and before publication of
+        the compacted queue; injected unwind at the transition boundaries
+        retains every unretired registration and every not-yet-returned slot
+        obligation, with no duplicate free; it does not depend on
+        `InFlightBatch::drop` to restore a batch, because that drop is silent
+        while panicking; temporary reversed links and partial-head bounds
+        remain recoverable by the cleanup owner
+      done: under S36.15's pool cap a heap holding one garbage ring allocates
+        past the pool's last block and is served rather than refused;
+        S36.15's withheld-slot case is flipped in the same commit; mutation
+        checks reject a retirement that filters only the copied partial head,
+        omits a full segment or overflow, loses the second partial bound,
+        asks for a block, or strands the batch on unwind
       tier: T2 · role: Critic
       note: this is Y12 clause 7 — "the owner drops the entry, clears the bit
         and returns the slot at its exact reading" — resting on
@@ -3454,6 +3553,53 @@ window there is.
         this debt read from the pressure loop's side — the freed entries stand
         in the lane where the next bound re-selects them — so what this step
         makes pay is that loop's second round.
+      note: `merge_candidates` currently splices full segments without reading
+        their entries and copies only a partial head. Filtering that copy
+        alone leaves dead entries in every spliced segment. The single-chain
+        R2 model covers one partial head; it is not evidence for combining two
+        chains until both original fill bounds are carried through the pass.
+        Y12 clause 2's stale disposal wording is not this step's authority;
+        the existing merge and the allocation-identity invariant are its inputs.
+      handoff: the real-entity fixture prerequisite carried by S39.1 belongs
+        here before cleanup starts dereferencing entries; a bare stack header
+        or duplicated filler pointer is not a candidate allocation the owner
+        may retire. S39.1 then consumes the tested retirement operation.
+
+- [ ] S39.4 Measure early slot return on the successful pressure teardown   *(after S39.2)*
+      done: split `reclaim` at the successful path's boundary after ALL sever
+        and ALL member guard releases, and before `drain_drops`; finish the
+        component's guard ownership and all use of `Membership` and
+        `StandingMembers`, save the result count, run S39.2's retirement, and
+        only then release the deferred external children; retain their arena
+        and strong references throughout, and keep `CollectingThread` held
+        until their drain and the final cleanup have finished
+      done: the early path is taken only after successful `reserve_drops`
+        and a complete sever; resurrection and reservation refusal retain
+        their existing release order and receive final cleanup, with no
+        promise of an early return before their user destructors; the second
+        retirement after `drain_drops` re-establishes S39.3's lifetime
+        precondition even when an external child's destructor entered reset;
+        never reset/sweep the deferred-drops arena while it still holds children
+      done: a test drives an external child's destructor through allocation
+        under a cap and observes whether a returned member slot can serve it,
+        then verifies no later step reads the old membership; cover a reset
+        in that destructor, additional candidate deaths, reservation refusal
+        and resurrection, using real allocator-backed entities
+      done: record back-to-back measurements against S39.2 with final cleanup
+        alone: slots/bytes actually reusable at entry to the external drain,
+        peak held memory, allocations served/refused inside external
+        destructors, queue passes/records moved and total collection time;
+        include no-external-child and allocation-free-destructor controls,
+        and matching/nonmatching requested size classes; count the external
+        children as still strongly held until the drain, rather than counting
+        their memory as an early saving; keep or reject the earlier return
+        from these measurements, explicitly recording a zero or negative gain
+      tier: T2 · role: Sage → Bench → Critic
+      note: this is the single-thread S3 proposal, not part of the retirement
+        correctness repair and not a worker handoff. Closing the step requires
+        the measurement and the resulting decision, not an argument that
+        freeing earlier must help. A rejected experiment leaves S39.2's
+        ordinary final cleanup in place.
 
 ## S40 — Measure the trace's density and decide the row form
 
@@ -3496,7 +3642,10 @@ Goal: the one number the design still lacks.
         them: all slots is `RowArray::row_count`, occupied is
         `BlockPrivate::used` for `Slotted` and the `holds` word's low half for
         `Retained`, and a large entity is 1 by construction and marked
-        arithmetic. Groups met are recorded beside rows met, the chunked form's
+        arithmetic. Since S39.3, both of the first two occupancy readings count
+        a dead candidate slot whose physical return is withheld: `used` by not
+        decrementing yet, and `holds` by the retained count established at
+        reset publication. Groups met are recorded beside rows met, the chunked form's
         directory being one entry per group of eight. Calibration is four
         anchors and a negative one; the load is S40.3's own population, sizes
         2, 16, 256 and 381, dense and one-entity-per-block, ordinary and

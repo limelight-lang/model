@@ -70,6 +70,60 @@ fn free_then_alloc_reuses_slot() {
     unsafe { heap.free(b) };
 }
 
+/// Both free-list boundaries guard the candidate allocation-identity
+/// invariant: owner retirement clears the registration before it returns the
+/// slot. The direct calls are deliberate — ordinary `ll_free` refuses this
+/// state before it reaches either boundary being tested.
+#[test]
+#[cfg(debug_assertions)]
+fn a_candidate_registration_cannot_reach_a_local_or_remote_entity_free_list() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut heap = Heap::new_entity();
+    let slot = heap.alloc(64);
+    assert!(!slot.is_null());
+    let header = slot as *mut crate::refcount::RcHeader;
+    unsafe {
+        header.write(crate::refcount::RcHeader::new(
+            crate::refcount::MemoryCategory::GcHeap,
+            crate::refcount::EntityKind::Object.to_flags(),
+        ));
+        crate::refcount::set_header_refcount(header, 0);
+        crate::refcount::update_header_flags(header, |flags| {
+            flags | crate::refcount::DEAD_IN_PLACE | crate::refcount::CANDIDATE_BIT
+        });
+    }
+
+    fn says_candidate_still_stands(refusal: Box<dyn std::any::Any + Send>) {
+        let message = refusal
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| refusal.downcast_ref::<&str>().copied())
+            .unwrap_or("non-string panic");
+        assert!(
+            message.contains("candidate registration standing"),
+            "the free-list refusal reported another assertion: {message}"
+        );
+    }
+
+    let local =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { heap.free(slot) }));
+    says_candidate_still_stands(
+        local.expect_err("the local list accepted a slot whose candidate bit still stood"),
+    );
+
+    let remote = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        free_foreign(slot)
+    }));
+    says_candidate_still_stands(
+        remote.expect_err("the remote list accepted a slot whose candidate bit still stood"),
+    );
+
+    unsafe {
+        crate::refcount::clear_candidate_bit(header);
+        heap.free(slot);
+    }
+}
+
 #[test]
 fn too_large_returns_null() {
     let mut heap = Heap::new();

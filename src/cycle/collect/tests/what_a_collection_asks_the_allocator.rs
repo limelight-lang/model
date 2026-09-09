@@ -387,7 +387,7 @@ fn a_collection_of_retained_survivors_asks_only_what_its_debug_checks_ask() {
     assert_eq!(freed, MEMBERS, "both survivors");
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), MEMBERS);
     assert_eq!(
-        unsafe { crate::memory::retained::live_occupant_count(block) } as usize,
+        unsafe { crate::memory::retained::held_occupant_count(block) } as usize,
         MEMBERS,
         "and the block still counts them, the entries naming their slots withholding \
          the return (`PLAN.md` S39.2)"

@@ -1006,29 +1006,60 @@ pub(crate) enum SlotState {
     Free,
 }
 
+/// The same state with the flags already read for a zero-count slot.
+/// Keeping them inside those two variants makes the correlation structural:
+/// a live slot has no flags reading, while either zero-count answer carries
+/// exactly the flags load that decided it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SlotStateReading {
+    Live,
+    DeadInPlace { flags: u32 },
+    Free { flags: u32 },
+}
+
 /// Which of the three states `header` is in.
 ///
 /// **The one definition of the occupancy test**, and every walker that
 /// reads a slot's first word goes through it: `heap::for_each_entity_slot`
 /// and the census over it, `heap::describe_slot`, and `retained::is_occupied`,
-/// which `register` counts a retained block's live occupants through. A count
-/// above zero answers without the second load, so a live slot is settled by
-/// one load.
+/// which extends the live answer with the registered-dead allocation identity
+/// a retained block must hold. A count above zero answers without the second
+/// load, so a live slot is settled by one load.
 ///
 /// # Safety
 /// `header` addresses a slot of a commissioned entity block, readable at
 /// its first eight bytes.
 #[inline]
 pub(crate) unsafe fn slot_state(header: *const RcHeader) -> SlotState {
+    match unsafe { slot_state_with_flags(header) } {
+        SlotStateReading::Live => SlotState::Live,
+        SlotStateReading::DeadInPlace { .. } => SlotState::DeadInPlace,
+        SlotStateReading::Free { .. } => SlotState::Free,
+    }
+}
+
+/// [`slot_state`] together with the flags load that decided either zero-count
+/// state. [`SlotStateReading::Live`] means the count alone answered and the
+/// flags were not read.
+///
+/// This is for a caller that needs to refine a zero-count state by another
+/// flag without loading the flags half twice. The order and access widths are
+/// otherwise exactly [`slot_state`]'s.
+///
+/// # Safety
+/// As [`slot_state`].
+#[inline]
+pub(crate) unsafe fn slot_state_with_flags(header: *const RcHeader) -> SlotStateReading {
     if unsafe { refcount_load(header) } != 0 {
-        return SlotState::Live;
+        return SlotStateReading::Live;
     }
 
-    if unsafe { flags_load(header) } & DEAD_IN_PLACE != 0 {
-        return SlotState::DeadInPlace;
+    let flags = unsafe { flags_load(header) };
+    if flags & DEAD_IN_PLACE != 0 {
+        return SlotStateReading::DeadInPlace { flags };
     }
 
-    SlotState::Free
+    SlotStateReading::Free { flags }
 }
 
 /// Take the slot for the free in progress, and hand back the flags as they

@@ -151,7 +151,7 @@ unsafe fn retained_survivor_pair() -> (
         BLOCK_KIND_RETAINED
     );
     assert_eq!(
-        unsafe { crate::memory::retained::live_occupant_count(block as usize) },
+        unsafe { crate::memory::retained::held_occupant_count(block as usize) },
         2
     );
     (arena, holders, survivors, block)
@@ -1191,7 +1191,7 @@ fn a_stamped_retained_survivor_is_marked_and_stacked() {
         "and the holder's own slot took the second mark rather than nothing"
     );
     assert_eq!(
-        unsafe { crate::memory::retained::live_occupant_count(block as usize) },
+        unsafe { crate::memory::retained::held_occupant_count(block as usize) },
         1,
         "a marked survivor is a counted survivor: its decrement is what the \
          withheld return owes"
@@ -1702,7 +1702,7 @@ fn the_close_returns_two_marked_survivors_of_one_block() {
     }
 
     assert_eq!(
-        unsafe { crate::memory::retained::live_occupant_count(block as usize) },
+        unsafe { crate::memory::retained::held_occupant_count(block as usize) },
         2,
         "and neither has been counted down: the mark is what owes the decrement"
     );
@@ -2729,7 +2729,7 @@ fn a_panic_inside_a_retained_survivors_return_gives_back_the_one_below_it() {
         "and the raising survivor is still its own block's occupant"
     );
     assert_eq!(
-        unsafe { crate::memory::retained::live_occupant_count(second_block as usize) },
+        unsafe { crate::memory::retained::held_occupant_count(second_block as usize) },
         1
     );
 

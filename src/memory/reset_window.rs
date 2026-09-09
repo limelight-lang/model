@@ -26,12 +26,12 @@
 //! flight, or — when a destructor of an outer reset drove this one — the
 //! outer window, which frees it at its own close.
 //!
-//! The window also **absorbs** one free rather than deferring it: a
-//! corpse in a retained block whose occupant count is not established
-//! yet. Its death is already accounted for, because `retained::register`
-//! declines to count an occupant whose header reads zero, and replaying
-//! that free afterwards would take the block's live count below its true
-//! occupancy and hand it to the pool under living survivors.
+//! The window also **absorbs** one free rather than deferring it: an
+//! unregistered corpse in a retained block whose occupant count is not
+//! established yet. Its death is already accounted for, because
+//! `retained::register` declines to count it. A registered candidate is the
+//! exception: the register counts its held slot, so owner-side retirement has
+//! one count to spend and the raw queue pointer keeps its allocation identity.
 //!
 //! A `Cell<*mut _>` rather than a `RefCell<Vec<_>>`: a `Vec` in a
 //! thread-local registers drop glue, and this path is reachable from
@@ -358,12 +358,12 @@ pub(crate) fn depth() -> usize {
 /// corpse, whose death the reset accounts for by not counting it.
 /// **True** means the caller drops the free entirely.
 ///
-/// False outside a reset, and false for a block that counts a live
-/// occupant: that count belongs to an earlier reset, which counted this
-/// occupant as live, and its death is the event that will eventually
-/// return the block. The count and not the list is what is asked, so a
+/// False outside a reset, and false for a block that counts a held occupant:
+/// that count either belongs to an earlier reset's live occupant or to a dead
+/// candidate awaiting retirement, and a later free is the event that will
+/// eventually return the block. The count and not the list is what is asked, so a
 /// block whose reset could place no list still counts its deaths
-/// (`memory::retained::has_live_occupants`).
+/// (`memory::retained::has_held_occupants`).
 ///
 /// # Safety
 /// `block` is the header of a mapped block stamped `BLOCK_KIND_RETAINED`.
@@ -372,7 +372,7 @@ pub(crate) unsafe fn absorbs_retained_free(block: usize) -> bool {
         return false;
     }
 
-    !unsafe { crate::memory::retained::has_live_occupants(block) }
+    !unsafe { crate::memory::retained::has_held_occupants(block) }
 }
 
 #[cfg(test)]

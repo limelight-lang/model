@@ -71,6 +71,14 @@ static INNER_ARENA: AtomicUsize = AtomicUsize::new(0);
 static INNER_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 static INNER_SLOT_CLASS: AtomicUsize = AtomicUsize::new(0);
 static HELD_BOX: AtomicUsize = AtomicUsize::new(0);
+static GC_RESET_ARENA: AtomicUsize = AtomicUsize::new(0);
+
+/// A cycle member's destructor entering the reset prepared by its test.
+unsafe extern "C" fn reset_the_candidate_arena(_object: *mut Object) {
+    let arena = GC_RESET_ARENA.load(Ordering::Relaxed) as *mut Arena;
+    assert!(!arena.is_null(), "the collection had no arena to reset");
+    unsafe { arena_reset_full(arena) };
+}
 
 /// A second arena for a nested reset, and a heap box holding `victim` so
 /// that `victim` escapes and is promoted by the **outer** reset. The box
@@ -395,6 +403,198 @@ fn a_survivor_promoted_at_refcount_zero_is_not_read_as_a_zero_count_member() {
         assert!(crate::refcount::ll_release(cache as *mut RcHeader));
         ll_object_die(cache);
     }
+}
+
+/// Two deferred releases reach one survivor after its category was rewritten:
+/// the first registers it as a candidate and the second tears it down.  The
+/// reset must retain the allocation behind that registration, not merely the
+/// zero-count header bytes, through its own close and a later reset.  The mark
+/// is the production reader that makes this a lifetime rule rather than an
+/// accounting-only one.
+#[test]
+fn a_candidate_killed_by_the_reset_keeps_its_allocation_through_the_next_reset() {
+    let _g = crate::memory::block_pool::test_guard();
+    crate::cycle::queue::release_queue_segments();
+
+    let survivor_cls = ClassBuilder::new("QueuedResetSurvivor")
+        .prop("edge", true)
+        .build();
+    let release_owner_cls = ClassBuilder::new("QueuedResetReleaseOwner")
+        .prop("first", true)
+        .prop("second", true)
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+    set_current_context(context_ptr);
+
+    let survivor =
+        unsafe { new_constructed(context_ptr, survivor_cls, MemoryCategory::RequestArena) };
+    let release_owner =
+        unsafe { new_constructed(context_ptr, release_owner_cls, MemoryCategory::RequestArena) };
+    unsafe {
+        killed_by_the_drain_at(
+            arena_ptr,
+            release_owner,
+            16,
+            survivor as *mut RcHeader,
+            Tag::Object,
+        );
+        killed_by_the_drain_at(
+            arena_ptr,
+            release_owner,
+            32,
+            survivor as *mut RcHeader,
+            Tag::Object,
+        );
+        arena_reset_full(arena_ptr);
+    }
+
+    let survivor_header = survivor as *mut RcHeader;
+    assert_eq!(unsafe { crate::refcount::entity_refcount(survivor) }, 0);
+    let flags = unsafe { crate::refcount::mutator_flags(survivor_header) };
+    assert_ne!(flags & crate::refcount::CANDIDATE_BIT, 0);
+    assert_ne!(flags & crate::refcount::DEAD_IN_PLACE, 0);
+
+    let mut registrations = Vec::new();
+    crate::cycle::queue::collect_lane_tokens(&mut registrations);
+    assert_eq!(
+        registrations
+            .iter()
+            .filter(|&&entry| entry == survivor_header)
+            .count(),
+        1,
+        "the survivor owns exactly one candidate registration"
+    );
+    assert_eq!(
+        unsafe { block_kind(survivor as *const u8) },
+        crate::memory::block_pool::BLOCK_KIND_RETAINED,
+        "the reset returned the block while its queue entry still named a slot"
+    );
+
+    let next_cls = ClassBuilder::new("AfterQueuedReset").build();
+    let next = unsafe { new_constructed(context_ptr, next_cls, MemoryCategory::RequestArena) };
+    assert_ne!(
+        next, survivor,
+        "the next reset reused the allocation a candidate entry still names"
+    );
+    unsafe { arena_reset_full(arena_ptr) };
+    assert_eq!(
+        unsafe { block_kind(survivor as *const u8) },
+        crate::memory::block_pool::BLOCK_KIND_RETAINED,
+        "a later reset returned the candidate's retained block"
+    );
+
+    let mut scratch = crate::cycle::testing::open_arena();
+    assert_eq!(
+        unsafe { crate::cycle::mark::mark(&mut scratch, survivor_header) },
+        crate::cycle::mark::MarkResult::Complete
+    );
+    scratch.reset();
+
+    crate::cycle::queue::release_queue_segments();
+    for registration in registrations {
+        unsafe {
+            crate::refcount::clear_candidate_bit(registration);
+            crate::refcount::clear_dead_in_place(registration);
+            crate::memory::stdapi::ll_free(registration as *mut u8);
+        }
+    }
+    set_current_context(std::ptr::null_mut());
+}
+
+/// The same allocation-identity boundary when the reset is entered from a
+/// cycle member's destructor.  This direction is permitted: collection from
+/// inside a reset is refused, but a collection destructor may itself reset an
+/// arena, and the candidate born there must outlive the outer commit.
+#[test]
+fn a_candidate_killed_by_a_gc_destructors_reset_outlives_the_collection() {
+    let _g = crate::memory::block_pool::test_guard();
+    crate::cycle::queue::release_queue_segments();
+
+    let survivor_cls = ClassBuilder::new("GcResetSurvivor")
+        .prop("edge", true)
+        .build();
+    let release_owner_cls = ClassBuilder::new("GcResetReleaseOwner")
+        .prop("first", true)
+        .prop("second", true)
+        .build();
+    let resetting_cls = ClassBuilder::new("GcResettingMember")
+        .prop("next", true)
+        .destructor(reset_the_candidate_arena as *const ())
+        .build();
+    let other_cls = ClassBuilder::new("GcResetOtherMember")
+        .prop("next", true)
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+    set_current_context(context_ptr);
+
+    let survivor =
+        unsafe { new_constructed(context_ptr, survivor_cls, MemoryCategory::RequestArena) };
+    let release_owner =
+        unsafe { new_constructed(context_ptr, release_owner_cls, MemoryCategory::RequestArena) };
+    unsafe {
+        killed_by_the_drain_at(
+            arena_ptr,
+            release_owner,
+            16,
+            survivor as *mut RcHeader,
+            Tag::Object,
+        );
+        killed_by_the_drain_at(
+            arena_ptr,
+            release_owner,
+            32,
+            survivor as *mut RcHeader,
+            Tag::Object,
+        );
+    }
+
+    GC_RESET_ARENA.store(arena_ptr as usize, Ordering::Relaxed);
+    let ring = unsafe { crate::cycle::testing::ring(&mut *arena_ptr, [resetting_cls, other_cls]) };
+    assert_eq!(unsafe { crate::gc::ll_gc_collect_cycles() }, 2);
+    GC_RESET_ARENA.store(0, Ordering::Relaxed);
+
+    let survivor_header = survivor as *mut RcHeader;
+    assert_eq!(unsafe { crate::refcount::entity_refcount(survivor) }, 0);
+    assert_eq!(
+        unsafe { block_kind(survivor as *const u8) },
+        crate::memory::block_pool::BLOCK_KIND_RETAINED,
+        "the destructor's reset returned a block still named by the queue"
+    );
+
+    let mut scratch = crate::cycle::testing::open_arena();
+    assert_eq!(
+        unsafe { crate::cycle::mark::mark(&mut scratch, survivor_header) },
+        crate::cycle::mark::MarkResult::Complete
+    );
+    scratch.reset();
+
+    let mut registrations = Vec::new();
+    crate::cycle::queue::collect_lane_tokens(&mut registrations);
+    assert_eq!(
+        registrations
+            .iter()
+            .filter(|&&entry| entry == survivor_header)
+            .count(),
+        1
+    );
+    crate::cycle::queue::release_queue_segments();
+    for registration in registrations {
+        unsafe {
+            crate::refcount::clear_candidate_bit(registration);
+            crate::refcount::clear_dead_in_place(registration);
+            crate::memory::stdapi::ll_free(registration as *mut u8);
+        }
+    }
+    set_current_context(std::ptr::null_mut());
+    let _ = ring;
 }
 
 /// Two holders of a COW child, both reached in a **later** round than the

@@ -125,7 +125,7 @@ pub(crate) struct TraceDensity {
     /// list the reset wrote once; the occupancy is the count word, which
     /// every occupant's death lowers, so the two are equal only until
     /// the first death inside the block
-    /// (`crate::memory::retained::live_occupant_count`). The share a
+    /// (`crate::memory::retained::held_occupant_count`). The share a
     /// trace meets is not fixed either — a block holding one traced
     /// survivor among fourteen untraced ones reads what an entity block
     /// of fifteen slots would.
@@ -231,7 +231,7 @@ unsafe fn read_block(array: *mut RowArray) -> BlockDensity {
     let occupied = match population {
         Population::Slotted => unsafe { crate::memory::heap::block_occupancy(block) },
         Population::Retained => unsafe {
-            crate::memory::retained::live_occupant_count(block as usize)
+            crate::memory::retained::held_occupant_count(block as usize)
         },
         Population::SingleEntity => unreachable!("answered above"),
     };

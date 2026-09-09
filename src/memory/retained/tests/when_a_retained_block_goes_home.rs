@@ -40,14 +40,17 @@ fn the_last_live_occupant_empties_the_block() {
     );
 }
 
-/// An occupant already dead when the list is published is not counted,
-/// or the block would wait forever for a death that has happened.
+/// An unregistered occupant already dead when the list is published is not
+/// counted, even when its free has taken the slot. Otherwise the block would
+/// wait forever for a death that has happened. A registered dead candidate is
+/// the separate case whose future owner retirement does spend a count.
 #[test]
 fn an_occupant_dead_at_registration_holds_nothing() {
     let _g = crate::memory::block_pool::test_guard();
     let (block, cells, live) = walkable_index(2);
     let _empty = unsafe {
         live[0].write(1);
+        live[1].write(u64::from(crate::refcount::DEAD_IN_PLACE) << 32);
         register(block, &cells, list_room(block, 2))
     };
 
@@ -55,7 +58,10 @@ fn an_occupant_dead_at_registration_holds_nothing() {
         unsafe { occupant_freed(block) },
         "the dead occupant was counted live"
     );
-    unsafe { live[0].write(0) };
+    unsafe {
+        live[0].write(0);
+        live[1].write(0);
+    }
     give_back(block);
     assert_eq!(kind_of(block), BLOCK_KIND_FREE);
 }
@@ -91,7 +97,7 @@ fn the_last_death_on_another_thread_finds_the_list() {
                     std::hint::spin_loop();
                 }
 
-                while !unsafe { has_live_occupants(block) } {
+                while !unsafe { has_held_occupants(block) } {
                     std::hint::spin_loop();
                 }
 

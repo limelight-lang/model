@@ -6,6 +6,17 @@ located.
 
 ## Modules
 
+Design proposal: [Collector–mutator memory protocol](COLLECTOR-MUTATOR-MEMORY-PROTOCOL.md)
+— collector-initiated memory retention, result handoff, owner-side slot
+retirement, and the synchronous fallback under memory pressure. Includes
+text diagrams and implementation prerequisites; not a description of built
+worker support.
+
+Its [claim-by-claim review](COLLECTOR-MUTATOR-MEMORY-REVIEW.md) separates
+implemented behavior, RFC contracts, proposals and unresolved guarantees;
+the abstract compaction model is in
+[tools/check_memory_protocol_compaction.py](tools/check_memory_protocol_compaction.py).
+
 Knowledge map: `dev/ARCHITECTURE.md` — how the crate works *together*:
 layers and the sanctioned upward edges, the per-module knowledge table
 ("does not know" is the contract), shared resources including the

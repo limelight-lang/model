@@ -27,22 +27,25 @@
 //! addresses; entities, classes, refcounts and verdicts belong to the
 //! layers above. It reads the first eight bytes of one of them, in one
 //! place and for one purpose: `refcount::slot_state` decides how many of a
-//! list's addresses are alive when the list is published.
+//! list's addresses still hold an allocation the block must retain when the
+//! list is published.
 //!
 //! # The one requirement on an address
 //!
 //! Every address in a published list stays **readable** for as long as
 //! the list is published. Both enumerators read its first eight bytes
 //! without first testing that the block still exists, which they may because a
-//! retained block leaves circulation only once its last survivor is gone,
+//! retained block leaves circulation only once its last live survivor or
+//! registered dead candidate has returned its slot,
 //! and the list itself is in memory that leaves circulation no earlier: a
 //! block holding another block's list is held for it, through the count
 //! word, until that block returns.
 //!
 //! # The count word
 //!
-//! One 64-bit word on the collector line: live occupants in the low half,
-//! and in the high half everything else the block is held for — a payload
+//! One 64-bit word on the collector line: held occupant slots in the low half
+//! — live survivors and dead candidates awaiting owner retirement — and in
+//! the high half everything else the block is held for — a payload
 //! the reset could not carry out, and a survivor list of another block
 //! standing in this one ([`pin`]). The word is decremented atomically by
 //! whichever thread performs a free, because `ll_free` is an ABI entry
@@ -71,7 +74,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::memory::block_pool::{BLOCK_KIND_FREE, BlockHeader, BlockPool, store_block_kind};
 use crate::memory::heap::{block_hold_count, block_survivor_list, publish_block_survivor_list};
 
-/// One live occupant, in the low half of the count word.
+/// One held occupant slot, in the low half of the count word.
 const OCCUPANT: u64 = 1;
 /// One thing the block is held for beyond its occupants, in the high half:
 /// a pinned payload, a list of another block, or the reset's own count.
@@ -90,8 +93,9 @@ unsafe fn count_word(block: usize) -> *const AtomicU64 {
 }
 
 /// Publish `occupants`, the survivors promoted in retained block `block`,
-/// as its survivor list at `destination`, and count how many of them are
-/// alive.
+/// as its survivor list at `destination`, and count how many of their slots
+/// the block must keep: every live occupant, and every dead occupant whose
+/// candidate registration still names its allocation.
 ///
 /// `destination` is `occupants.len()` words the arena placed for the list
 /// (`promote::place_survivor_lists`): inside `block`'s own tail, or
@@ -103,12 +107,12 @@ unsafe fn count_word(block: usize) -> *const AtomicU64 {
 /// returns by its deaths, and every edge into it answers untracked for
 /// its life ([`occupant_index`]).
 ///
-/// **An occupant already dead when the list is published is not counted.**
-/// It has had its one death and will never reach [`occupant_freed`], so
-/// counting it would hold the block for a survivor that no longer
-/// exists — which is exactly the case a heap box behind `&` produces:
-/// the element it made an escapee is promoted, and the box's logged
-/// release kills it in the same reset, before the list exists.
+/// **An occupant already dead when the list is published is counted only when
+/// its candidate registration is still live.** An unregistered death has had
+/// its one free and will never reach [`occupant_freed`], so counting it would
+/// hold the block for nobody. A registered death is the opposite: its queue
+/// entry will later return the slot through that same decrement, and until
+/// then the block is what keeps the raw entry tied to its own allocation.
 ///
 /// **True when the block is empty already**, which is that same case
 /// taken to its end: every occupant died inside the reset and nothing
@@ -125,7 +129,7 @@ unsafe fn count_word(block: usize) -> *const AtomicU64 {
 /// no trace may address it yet.
 #[must_use = "true means the block is empty and the caller owes it to the pool"]
 pub(crate) unsafe fn register(block: usize, occupants: &[usize], destination: *mut usize) -> bool {
-    let live = occupants
+    let held = occupants
         .iter()
         .filter(|&&address| unsafe { is_occupied(address) })
         .count() as u64;
@@ -142,8 +146,8 @@ pub(crate) unsafe fn register(block: usize, occupants: &[usize], destination: *m
     // could still read null to that decrement, and the holder's hold
     // would never be spent.
     unsafe { publish_block_survivor_list(block as *mut u8, destination, occupants.len()) };
-    let held = unsafe { (*count_word(block)).fetch_add(live, Ordering::AcqRel) } + live;
-    held == 0
+    let count = unsafe { (*count_word(block)).fetch_add(held, Ordering::AcqRel) } + held;
+    count == 0
 }
 
 /// One more thing the block is held for beyond its occupants: a payload
@@ -276,36 +280,43 @@ pub(crate) unsafe fn release_emptied(block: usize) {
     }
 }
 
-/// Whether a survivor's slot holds a live entity, which `register` counts
-/// through and which is the only thing this module reads through an
-/// address.
+/// Whether a survivor's slot still holds an allocation identity the retained
+/// block must keep. A live entity does. So does a dead-in-place registered
+/// candidate: the queue holds only its address and its later retirement is the
+/// event that reaches [`occupant_freed`]. A dead unregistered survivor does
+/// not, because no later event can spend a count taken for it.
 ///
-/// `heap::for_each_entity_slot` asks the same question of these same
-/// addresses through the same predicate rather than through this
-/// function, so the two answer alike without one calling the other.
+/// `DEAD_IN_PLACE` alone is not enough: an ordinary dead survivor has no later
+/// free with which to spend a count. The candidate bit is the
+/// allocation-identity obligation — it names the queue entry whose owner
+/// retirement will make that later free. Every address here belongs to the
+/// retained block being published. Such a block has no stride or per-slot free
+/// list, and nothing republishes into it: the slot keeps its allocation
+/// identity until the block as a whole returns. Counting this registration is
+/// what prevents that return while the raw queue pointer stands.
 ///
-/// The state comes through `refcount`'s predicate rather than as a word of
-/// its own, because the addresses in a list are promoted survivors —
-/// published GC-heap headers whose byte 6 a collector writes
-/// (`dev/DECISIONS.md`, "the header's access width is a correctness
-/// rule"). `heap::for_each_entity_slot` applies this same test to these
-/// same addresses, so the two must read at one width and answer alike.
-///
-/// **A survivor whose `ll_free` has already run is counted dead here**, and
-/// that is what the caller wants: the block's live count is the occupants it
-/// still has. Such a survivor carries the bit `ll_free` takes
-/// (`crate::refcount::DEAD_IN_PLACE`), which is one of the two zero-count
-/// states this predicate answers alike.
+/// The state and its flags come from one `refcount` reading so the zero-count
+/// arm loads the narrow flags half once (`dev/DECISIONS.md`, "the header's
+/// access width is a correctness rule"). The ordinary heap enumerator asks a
+/// different question — which entities are live — and therefore continues to
+/// skip every zero-count slot.
 ///
 /// # Safety
 /// `address` must be readable at its first eight bytes, which is the count
 /// and the mutator's half of the flags.
 unsafe fn is_occupied(address: usize) -> bool {
-    let state = unsafe { crate::refcount::slot_state(address as *const crate::refcount::RcHeader) };
-    state == crate::refcount::SlotState::Live
+    match unsafe {
+        crate::refcount::slot_state_with_flags(address as *const crate::refcount::RcHeader)
+    } {
+        crate::refcount::SlotStateReading::Live => true,
+        crate::refcount::SlotStateReading::DeadInPlace { flags } => {
+            crate::refcount::is_registered_candidate(flags)
+        }
+        crate::refcount::SlotStateReading::Free { .. } => false,
+    }
 }
 
-/// Whether `block` counts a live occupant. A reset in flight asks it about
+/// Whether `block` counts an occupant whose allocation is still held. A reset in flight asks it about
 /// a block it retained, whose count it has not established yet, to tell
 /// its own zero-count member from an occupant an earlier reset counted
 /// (`memory::reset_window::absorbs_retained_free`).
@@ -316,7 +327,7 @@ unsafe fn is_occupied(address: usize) -> bool {
 ///
 /// # Safety
 /// As [`count_word`].
-pub(crate) unsafe fn has_live_occupants(block: usize) -> bool {
+pub(crate) unsafe fn has_held_occupants(block: usize) -> bool {
     // Relaxed: the word's own value is the whole answer and nothing is
     // read behind it; a free that is not absorbed goes on to the
     // decrement, which synchronises on its own.
@@ -324,26 +335,26 @@ pub(crate) unsafe fn has_live_occupants(block: usize) -> bool {
     word & OCCUPANTS != 0
 }
 
-/// How many live occupants `block` counts, which is the second
+/// How many held occupant slots `block` counts, which is the second
 /// denominator of a traced-slot density (`PLAN.md` S40.1).
 ///
-/// The low half of the same word [`has_live_occupants`] tests, and a
+/// The low half of the same word [`has_held_occupants`] tests, and a
 /// different number from [`occupant_count`]: the survivor list is the
-/// index space the reset wrote once and the count word is what is alive
-/// in it now, so the two separate at the first death inside a retained
-/// block.
+/// index space the reset wrote once and the count word is what is alive or
+/// still registered in it now, so the two separate at the first unregistered
+/// death inside a retained block.
 ///
 /// # Safety
 /// As [`count_word`].
 #[cfg(test)]
-pub(crate) unsafe fn live_occupant_count(block: usize) -> u32 {
-    // Relaxed, as `has_live_occupants` loads it: the value is the whole
+pub(crate) unsafe fn held_occupant_count(block: usize) -> u32 {
+    // Relaxed, as `has_held_occupants` loads it: the value is the whole
     // answer and nothing is read behind it.
     let word = unsafe { (*count_word(block)).load(Ordering::Relaxed) };
     (word & OCCUPANTS) as u32
 }
 
-/// Whether nothing holds `block`: no live occupant, no pinned payload, no
+/// Whether nothing holds `block`: no held occupant slot, no pinned payload, no
 /// list of another block, no count of the reset's own. What the reset's
 /// return of an emptied block asserts before releasing it.
 ///

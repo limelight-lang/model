@@ -312,8 +312,9 @@ struct BlockCollector {
     /// and published with a release store; every lookup acquire-loads it
     /// (`crate::memory::retained`).
     survivors: AtomicPtr<usize>,
-    /// What holds a retained block: live occupants in the low half, and
-    /// in the high half the payloads it is pinned for and the survivor
+    /// What holds a retained block: held occupant slots in the low half — live
+    /// survivors and dead candidates awaiting owner retirement — and in the
+    /// high half the payloads it is pinned for and the survivor
     /// lists of other blocks standing in it. Decremented atomically by
     /// whichever thread frees, because `ll_free` is ABI; the arithmetic
     /// is `crate::memory::retained`'s.
@@ -1037,6 +1038,18 @@ impl Heap {
             return Self::free_remote(block, ptr);
         }
 
+        // Owner retirement clears the candidate registration before the
+        // physical return. Reversing that order would put a slot on this list
+        // while a raw queue pointer still names its old allocation.
+        debug_assert!(
+            unsafe { (*block).kind.load(Ordering::Relaxed) } != BLOCK_KIND_ENTITY
+                || unsafe {
+                    crate::refcount::mutator_flags(ptr as *const crate::refcount::RcHeader)
+                } & crate::refcount::CANDIDATE_BIT
+                    == 0,
+            "an entity slot reached a free list with its candidate registration standing"
+        );
+
         // Ours: the rest of the header is ours to borrow exclusively.
         let b = unsafe { &mut (*block).private };
 
@@ -1068,6 +1081,17 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn free_remote(block: *mut HeapBlockHeader, ptr: *mut u8) {
+        // The thread with no heap of its own enters here through `free_foreign`
+        // rather than through `Heap::free`, so this is the common boundary for
+        // both entrances to the remote list.
+        debug_assert!(
+            unsafe { (*block).kind.load(Ordering::Relaxed) } != BLOCK_KIND_ENTITY
+                || unsafe {
+                    crate::refcount::mutator_flags(ptr as *const crate::refcount::RcHeader)
+                } & crate::refcount::CANDIDATE_BIT
+                    == 0,
+            "an entity slot reached a remote free list with its candidate registration standing"
+        );
         let slot = ptr as *mut FreeSlot;
         // The one field this thread may touch. Everything else in the header
         // belongs to the owner, which is mutating it as we run, so no
@@ -2655,10 +2679,11 @@ pub unsafe fn for_each_entity_slot(mut visit: impl FnMut(*mut crate::refcount::R
             }
 
             // A retained former-arena block carries no stride, so its
-            // occupants are the survivor list the reset left in its
-            // header. The occupancy test is the same word: a survivor
-            // that has since died reads refcount 0 and is skipped exactly
-            // as a free slot is (`memory/retained.rs`). A null list is a
+            // occupants are the survivor list the reset left in its header.
+            // This enumerator asks which entities are live, so a survivor that
+            // has since died reads refcount 0 and is skipped even when its
+            // candidate registration makes `memory::retained` keep the slot's
+            // allocation identity. A null list is a
             // block retained for a payload alone, which holds no entity
             // this walk can name.
             if kind == crate::memory::block_pool::BLOCK_KIND_RETAINED {

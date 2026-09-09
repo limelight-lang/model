@@ -325,7 +325,7 @@ fn a_holder_emptied_inside_the_reset_is_read_after_the_list_placed_in_it() {
             "the full block's list was not placed in the current block"
         );
         assert!(
-            !unsafe { crate::memory::retained::has_live_occupants(shape.second_block) },
+            !unsafe { crate::memory::retained::has_held_occupants(shape.second_block) },
             "the current block's survivor outlived the reset, so this test proves nothing"
         );
         assert_eq!(

@@ -8,6 +8,38 @@ never edited or deleted.
 
 ---
 
+## 2026-09-09 — a registered dead survivor is a held occupant until owner retirement
+
+Owner: S39.3, candidate allocation identity through arena reset.
+
+**A retained block's low count names slots whose allocation identity it still
+holds, not only entities whose refcount is nonzero.** Most deaths inside the
+reset remain uncounted: their free is absorbed and no later event could spend a
+count taken for them. A dead-in-place survivor carrying `CANDIDATE_BIT` is the
+exception. Its queue entry is a raw address, and owner retirement will later
+clear the two bits and return that slot through `ll_free`; counting it makes
+that later return the event that spends the retained-block occupant count.
+
+Without the exception, the reset publishes zero occupants and returns the
+whole block while the queue entry remains. The next mark reads a header through
+an address whose allocation identity is already gone. Refusing collection only
+while the reset is open cannot repair that state after the reset closes.
+
+**Refused, with reasons.** Counting every `DEAD_IN_PLACE` survivor leaks a
+block: an ordinary completed death has no later free. Keeping a separate pin
+for registered candidates makes retirement choose a second return protocol,
+although its required final act is already the retained occupant free. Moving
+the candidate arm ahead of reset absorption withholds the slot but still leaves
+the unpublished occupant count at zero, so the reset can return the containing
+block underneath it.
+
+The live-survivor path is unchanged. Only a dead-in-place list entry takes one
+flags-half load, shared with the state decision, to distinguish the candidate
+bit; it asks for no memory and introduces no refusal. Until S39.2 supplies the
+first production retirement, each affected 64 KiB retained block stays out of
+circulation for the life of the process; the cause is a candidate killed after
+promotion but before its reset published the retained count.
+
 ## 2026-09-07 — a deny case subtracts the debug checks by reading them, not by writing the figure down
 
 Owner: S36.9's closing run, the composite deny gate over a wired collection.

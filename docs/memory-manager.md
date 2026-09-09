@@ -133,8 +133,9 @@ the reserved 256.
 `refill` writes the reciprocal, the size class and a null shadow pointer
 for a `BLOCK_KIND_ENTITY` block. A **retained** block carries the shadow
 pointer, the address and length of its survivor list and one atomic
-count word — live occupants in the low half, pinned payloads and the
-lists of other blocks standing in it in the high half. The reset zeroes
+count word — held occupant slots in the low half (live survivors and dead
+candidates awaiting owner retirement), pinned payloads and the lists of other
+blocks standing in it in the high half. The reset zeroes
 the whole line before `store_block_kind` publishes the block as retained
 (`promote::retain_block`, `heap::clear_collector_line`), because the
 block's previous life may have left a collection's array pointer or an
@@ -362,7 +363,7 @@ size.
 **What does not.** The arena kind, which recycles nothing, so identity
 holds without parking. A retained block rides for a reason of its own:
 nothing is recycled inside it, former arena memory having neither stride
-nor free list, but the death of its last live occupant hands the whole
+nor free list, but the return of its last held occupant slot hands the whole
 block to the pool, and a block reissued mid-epoch is the identity loss
 parking exists to prevent.
 
@@ -743,9 +744,11 @@ the system and the passes after the fixpoint still read one header word
 of every address they hold; an inner window hands what it parked to the
 window outside it, so only the outermost close frees anything. The free
 of a corpse in a block whose occupant count is not established yet is
-absorbed, since the list published at the end of the reset declines to
-count an occupant whose header reads zero and there is no count for that
-death to spend.
+absorbed. The list published at the end of the reset declines to count an
+unregistered occupant whose header reads zero, because no later event could
+spend that count. A corpse whose candidate registration still names it is
+counted instead: its owner-side retirement is the later free that spends the
+count, and the block keeps the entry tied to its allocation until then.
 And every completed teardown is recorded, which is how the passes after
 the fixpoint tell a corpse from a live survivor — and how the COW
 reconciliation of step 2 gets the two correction terms that replace a
@@ -791,11 +794,13 @@ bump allocator left them mixed-size with no stride, so the walk cannot
 divide an offset by a size class the way it does in an entity block.
 Without it a retained block's occupants are root sources and a ring
 living entirely among promoted survivors is never collected. The list is
-frozen — nothing allocates into a dead arena — and a survivor that later
-dies leaves refcount 0 behind, which is the walk's own occupancy test, so
-a stale entry is skipped like an unoccupied slot. Nothing republishes into a
-retained block, so such an entry keeps the flags bit its free took for as long
-as the block stands. No process-wide table names
+frozen — nothing allocates into a dead arena — and a survivor that later dies
+leaves refcount 0 behind, so the walk skips its row. When a candidate entry
+still names that survivor, its dead-in-place slot is nevertheless counted as
+held until owner-side retirement; otherwise the whole retained block could be
+reissued beneath the raw queue pointer. Nothing republishes into a retained
+block, so such an entry keeps the flags bit its free took for as long as the
+block stands. No process-wide table names
 retained blocks: every reader holds the block's address, and the
 test-only enumerator finds the blocks by their kind in the region scan.
 

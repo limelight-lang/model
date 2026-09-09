@@ -24,6 +24,11 @@ fn a_live_slot_answers_from_the_count_alone() {
     let mut live = header(1);
     let live = &raw mut live;
     assert_eq!(unsafe { slot_state(live) }, SlotState::Live);
+    assert_eq!(
+        unsafe { slot_state_with_flags(live) },
+        SlotStateReading::Live,
+        "a live reading did not stop before the flags half"
+    );
 
     unsafe { update_header_flags(live, |flags| flags | DEAD_IN_PLACE) };
     assert_eq!(
@@ -49,6 +54,14 @@ fn a_zero_count_is_read_apart_by_the_mark() {
     assert!(
         unsafe { take_slot_for_free(slot) }.is_some(),
         "the first free takes the slot"
+    );
+    let SlotStateReading::DeadInPlace { flags } = (unsafe { slot_state_with_flags(slot) }) else {
+        panic!("the taken zero-count slot did not carry its flags")
+    };
+    assert_ne!(
+        flags & DEAD_IN_PLACE,
+        0,
+        "the state and the flags came from different readings"
     );
     assert_eq!(
         unsafe { slot_state(slot) },
