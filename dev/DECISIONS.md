@@ -8,6 +8,28 @@ never edited or deleted.
 
 ---
 
+## 2026-09-09 — corrupt queue entries remain outside the cleanup recovery contract
+
+`Compaction::drop` continues a valid interrupted retirement and does not catch
+its own panic. The two operations that may raise in an otherwise valid pass are
+ordered so cleanup cannot repeat them: `Publish` advances before either ledger
+adjustment, and a pending slot crosses to `ll_free` before that call. A queue
+entry whose address is already corrupt is different. A debug validity check may
+panic while `Records` reads it; cleanup then retries the same unreadable entry,
+and a second panic during unwind aborts the debug process.
+
+That abort is accepted. No recovery can preserve an unreadable registration:
+skipping it silently loses the only record behind a set candidate bit, while
+catching the cleanup panic hides that loss and lets execution continue on a
+corrupt queue. The first panic and its address remain in the report. This is a
+corruption boundary, not an unwind guarantee for a supported execution.
+
+Injection point 8 also leaves the second ledger adjustment deliberately undone.
+With seven dead overflow records the exact residue is 56 bytes: the queue is
+already published and the phase must not replay the first segment discharge.
+The regression asserts that residue, then repairs the test-only global counter
+so later cases do not inherit the injected interruption.
+
 ## 2026-09-09 — merge keeps its bounded partial-head cost, and publish advances first
 
 Follow-up Critic review of S39.2 found two costs hidden by the first closure.

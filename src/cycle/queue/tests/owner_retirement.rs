@@ -1,6 +1,6 @@
 use super::*;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, budget_blocks};
-use crate::memory::gc_metadata::thread_stats;
+use crate::memory::gc_metadata::{self, thread_stats};
 use crate::test_support::allocation_probe;
 
 /// Every record owns a distinct allocator-backed object, including the fillers.
@@ -74,6 +74,11 @@ fn run_shape(
         }
     }
     let chain_survivors = expected.len() - overflow_survivors;
+    let skipped_ledger_bytes = if fault == Some(8) {
+        (overflow - overflow_survivors) * size_of::<*mut RcHeader>()
+    } else {
+        0
+    };
     let before_segments = held_segments(Some(&batch));
     let blocks_before = thread_stats().current_blocks();
     // Unlike FORCE_OOM, this refusal counts requests before refusing them.
@@ -142,9 +147,21 @@ fn run_shape(
         thread_stats().current_bytes_in_use(),
         baseline
             + segments.saturating_sub(1) * BLOCK_PAYLOAD
-            + overflow_survivors * size_of::<*mut RcHeader>(),
+            + overflow_survivors * size_of::<*mut RcHeader>()
+            + skipped_ledger_bytes,
         "only final interiors and surviving overflow records stay charged"
     );
+    if skipped_ledger_bytes != 0 {
+        assert_eq!(
+            skipped_ledger_bytes,
+            7 * size_of::<*mut RcHeader>(),
+            "point 8 deliberately skips the second publish adjustment"
+        );
+        // Fault injection interrupted the second half of a non-transactional
+        // instrument update. Repair that test-only residue so this thread can
+        // continue to use the process ledger after proving its exact size.
+        gc_metadata::discharge(skipped_ledger_bytes);
+    }
     for entity in expected {
         assert_ne!(unsafe { mutator_flags(entity) } & CANDIDATE_BIT, 0);
         unsafe { dismantle_candidate(entity) };
@@ -195,7 +212,7 @@ fn an_unwind_with_unreversed_segments_keeps_both_halves() {
 #[test]
 fn an_unwind_between_publish_ledger_updates_does_not_repeat_the_first_discharge() {
     let _g = test_guard();
-    run_shape(SEGMENT_CAPACITY + 3, SEGMENT_CAPACITY + 5, 0, 1, Some(8));
+    run_shape(SEGMENT_CAPACITY + 3, SEGMENT_CAPACITY + 5, 7, 1, Some(8));
 }
 
 #[test]

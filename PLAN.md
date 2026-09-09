@@ -3637,6 +3637,17 @@ its existing blockers.
         updates reproduces the Critic's double panic and SIGABRT at point 8;
         adding a whole-batch record walk makes the bounded-merge counter test
         fail with 1 pass and 16,326 reads/moves instead of 0/3.
+      handoff: final review residue — point 8 now carries seven dead overflow
+        records and observes the deliberately skipped second adjustment as an
+        exact 56-byte ledger residue before repairing the test instrument.
+        `Compaction::drop` does not recover a corrupt queue entry: a debug
+        validity panic in `Records` may repeat during cleanup and abort the
+        process. This is recorded as the chosen corruption boundary in
+        `dev/DECISIONS.md`, "corrupt queue entries remain outside the cleanup
+        recovery contract"; valid-pass raising sites remain single-attempt.
+        The final matrix remains 826/8 and 830/10 under `debug-journal`; the
+        added decision citation moves the citation count to 499 with the same
+        seven known misses, and RFC linkcheck remains clean.
 
 
 - [ ] S39.4 Measure early slot return on the successful pressure teardown   *(after S39.2)*

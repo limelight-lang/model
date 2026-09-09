@@ -293,6 +293,15 @@ impl Compaction {
 
 impl Drop for Compaction {
     fn drop(&mut self) {
+        // A valid queue makes this continuation non-panicking: the ledger
+        // phase has advanced already, and ownership crosses to `ll_free`
+        // before that call. A panic while reading an invalid entry means the
+        // queue was corrupt before cleanup; repeating Records may then panic
+        // again and abort a debug process. That boundary is deliberate. The
+        // only alternative is to abandon registrations whose addresses can no
+        // longer be read, and catching the second panic would disguise that
+        // loss (`dev/DECISIONS.md`, "corrupt queue entries remain outside the
+        // cleanup recovery contract").
         self.run(false);
     }
 }
