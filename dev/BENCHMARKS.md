@@ -28,6 +28,29 @@ built driver must produce and stamp the live components Y9 specifies. The
 table below remains only as the record of the invalid calibration and why its
 exact reproducibility did not validate its premise.
 
+**Correction to the correction.** Removing the policy simulator did not
+require removing its stateless row census. That deletion discarded a valid,
+allocation-free denominator together with the invalid age transition and made
+the corrective record hide its own cost. `cycle::density::internal_edges` is
+therefore restored with a deliberately narrower result: recoverable internal
+in-edges and saturated rows, nothing else. It owns no state across collections,
+accepts no threshold, reads no epoch or header stamp, and cannot report a
+pruned share. The ring calibration fixes 16 internal edges; the saturated-row
+calibration keeps its row out of the edge total; the existing allocation and
+GC-ledger bracket covers both density and edge readings. The future pruning
+measurement must supply its numerator from the production byte-6 producer S37.1
+builds rather than extending this census into another policy model.
+
+Four mutations calibrate the restored census rather than its deleted policy:
+using refcount without subtracting the shadow count fails the retained case;
+ignoring the initialized-group bit reads all fifteen stale rows instead of
+eight; using a large entity's array row count drops its self-edge; and letting
+a saturated row reach subtraction fails before it can contaminate the total.
+The old no-increment and strict-threshold mutations below calibrated only the
+withdrawn age policy and are not evidence for this census.
+The `cycle::density` Miri slice over the restored visitor is clean at 11
+passed, 5 ignored, 73.64 s on Miri's clock.
+
 **Machine:** dev box, shared with interactive work. **Base:** `ca5e1d7`,
 `rustc 1.96.0`. **Not a corpus reading:** the corpus arm remains blocked on a
 driver over this crate's heap with Phase D.

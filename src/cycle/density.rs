@@ -57,8 +57,9 @@
 //! initialise the very rows the reading is about. Test builds only.
 
 use crate::cycle::arena::TraceScratchArena;
-use crate::cycle::row::Population;
+use crate::cycle::row::{Population, entity_at};
 use crate::cycle::shadow::{self, Color, RowArray};
+use crate::refcount::header_refcount;
 
 /// What one trace met in one touched block.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -135,6 +136,16 @@ pub(crate) struct TraceDensity {
     pub(crate) single_entity: PopulationDensity,
 }
 
+/// Internal in-edges recoverable from the rows one completed mark left.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) struct InternalEdgeCensus {
+    /// `refcount - shadow count`, summed only where the shadow count is exact.
+    pub(crate) recoverable_internal_edges: u64,
+    /// Met rows whose shadow count is a lower bound. They contribute to
+    /// neither an edge numerator nor denominator and are reported apart.
+    pub(crate) saturated_rows: u64,
+}
+
 /// Read every touched block of `arena`, newest first, and hand each
 /// reading to `visit`.
 ///
@@ -175,6 +186,96 @@ pub(crate) unsafe fn totals(arena: &TraceScratchArena) -> TraceDensity {
     }
 
     density
+}
+
+/// Count the internal in-edges a completed mark found.
+///
+/// For a non-saturated row, mark copied the entity's refcount and subtracted
+/// one for every internal in-edge it encountered. The difference between the
+/// current header refcount and the remaining shadow count is therefore the
+/// number of internal in-edges targeting this entity. A later scan changes
+/// only colour, so the same reading is valid after a completed trace.
+///
+/// This is deliberately **not** a maturation simulator. It carries no age or
+/// identity across collections, reads no stamp or epoch, groups no component,
+/// and applies no threshold. A caller measuring pruning must combine this
+/// denominator with the production stamp producer S37.1 builds; this function
+/// cannot manufacture that policy by construction.
+///
+/// # Safety
+/// As [`totals`]. Every met row was produced by a completed mark and no entity
+/// refcount or edge changed before this read; a test may instead construct a
+/// row directly when its block-to-entity mapping is valid and its supplied
+/// shadow count is the exact post-mark count the case claims (or saturation,
+/// which is excluded before subtraction).
+pub(crate) unsafe fn internal_edges(arena: &TraceScratchArena) -> InternalEdgeCensus {
+    let mut census = InternalEdgeCensus::default();
+    census.saturated_rows = unsafe {
+        for_each_recoverable_internal_edge_target(arena, |_entity, edges| {
+            census.recoverable_internal_edges = census
+                .recoverable_internal_edges
+                .checked_add(edges)
+                .expect("the internal-edge census cannot overflow");
+        })
+    };
+    census
+}
+
+/// Hand every non-saturated target and its recoverable internal in-edge count
+/// to `visit`, and answer how many saturated rows were excluded.
+///
+/// This is the reusable row boundary rather than another policy layer: S37.1
+/// can inspect the production stamp of each yielded target without copying the
+/// population and saturation rules, while no age or threshold enters here.
+///
+/// # Safety
+/// As [`internal_edges`].
+unsafe fn for_each_recoverable_internal_edge_target(
+    arena: &TraceScratchArena,
+    mut visit: impl FnMut(*mut crate::refcount::RcHeader, u64),
+) -> u64 {
+    let mut saturated_rows = 0;
+    let mut array = arena.touched_head();
+    while !array.is_null() {
+        let block = unsafe { (*array).block };
+        let population = unsafe { (*array).population };
+        let row_count = if population == Population::SingleEntity {
+            1
+        } else {
+            unsafe { (*array).row_count }
+        };
+
+        for index in 0..row_count {
+            let word = if population == Population::SingleEntity {
+                unsafe { *crate::memory::large_entity::shadow_row(block) }
+            } else {
+                if !unsafe { shadow::group_is_initialized(array, index) } {
+                    continue;
+                }
+                unsafe { *shadow::row(array, index) }
+            };
+            if shadow::color(word) == Color::Untouched {
+                continue;
+            }
+            if shadow::is_saturated(word) {
+                saturated_rows += 1;
+                continue;
+            }
+
+            let entity = unsafe { entity_at(block, population, index) }
+                .expect("a touched row names a live entity");
+            let references = u64::from(unsafe { header_refcount(entity) });
+            let shadow_count = u64::from(shadow::count(word));
+            let edges = references
+                .checked_sub(shadow_count)
+                .expect("the owner mark left no shadow count above the refcount");
+            visit(entity, edges);
+        }
+
+        array = unsafe { (*array).next };
+    }
+
+    saturated_rows
 }
 
 /// One array's reading.

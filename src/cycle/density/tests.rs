@@ -151,6 +151,9 @@ fn tear_down(fixture: Fixture) {
 struct Reading {
     /// Rows and groups met, per population.
     density: TraceDensity,
+    /// Internal in-edges the completed mark left recoverable, with saturated
+    /// rows kept apart.
+    internal_edges: InternalEdgeCensus,
     /// Row resolutions the mark phase made: one per root the batch
     /// offered and one per counted child it descended into. An edge
     /// count is this less the roots.
@@ -192,10 +195,19 @@ fn collect() -> Reading {
     );
 
     let density = unsafe { totals(arena) };
+    let internal_edges = unsafe { internal_edges(arena) };
+    assert_eq!(
+        internal_edges.saturated_rows,
+        density.slotted.rows_saturated
+            + density.retained.rows_saturated
+            + density.single_entity.rows_saturated,
+        "density and the edge census agree on every saturated row"
+    );
     let newest_array = arena.touched_head() as usize;
     let arena_blocks = arena.blocks_held();
     Reading {
         density,
+        internal_edges,
         arena_blocks,
         newest_array,
         mark_resolutions: crate::cycle::row::take_dispatches_in_mark_phase(),
@@ -419,6 +431,8 @@ fn a_second_collection_reads_past_no_stale_row_of_the_first() {
         first.newest_array, second.newest_array,
         "the second collection's array stands on the first collection's bytes"
     );
+    assert_eq!(first.internal_edges.recoverable_internal_edges, 15);
+    assert_eq!(second.internal_edges.recoverable_internal_edges, 8);
 
     let (first, second) = (first.density, second.density);
     assert_eq!(
@@ -444,14 +458,14 @@ fn a_second_collection_reads_past_no_stale_row_of_the_first() {
     );
 }
 
-/// The walk itself takes nothing from either allocator and moves
-/// neither ledger figure.
+/// The density and internal-edge readings take nothing from either allocator
+/// and move neither ledger figure.
 ///
-/// The claim the module's own doc makes, and the one that keeps a
-/// density from being a reading of the instrument: a walk that drew a
-/// block would put its own bytes into the figures it reports.
+/// The claim the module's own doc makes, and the one that keeps either result
+/// from being a reading of the instrument: a walk that drew a block would put
+/// its own bytes into the figures it reports.
 #[test]
-fn the_walk_draws_nothing_and_moves_no_ledger_figure() {
+fn the_density_and_edge_readings_draw_nothing_and_move_no_ledger_figure() {
     let _g = test_guard();
     let (allocations, before, after) = on_a_fresh_thread(|| {
         let class = a_class("DensityWalkCost", props_for(64));
@@ -472,9 +486,15 @@ fn the_walk_draws_nothing_and_moves_no_ledger_figure() {
         let before = crate::memory::gc_metadata::thread_stats();
         let _ = crate::test_support::allocation_probe::take_allocations();
         let density = unsafe { totals(arena) };
+        let internal_edges = unsafe { internal_edges(arena) };
         let allocations = crate::test_support::allocation_probe::take_allocations();
         let after = crate::memory::gc_metadata::thread_stats();
         assert_eq!(density.slotted.rows_met, 16, "the walk read the rows");
+        assert_eq!(
+            internal_edges.recoverable_internal_edges, 16,
+            "and recovered the ring's edges"
+        );
+        assert_eq!(internal_edges.saturated_rows, 0);
 
         drop(active);
         tear_down(fixture);
@@ -484,7 +504,7 @@ fn the_walk_draws_nothing_and_moves_no_ledger_figure() {
     assert_eq!(
         allocations,
         (0, 0),
-        "the walk made no heap allocation and asked the pool for no block"
+        "the readings made no heap allocation and asked the pool for no block"
     );
     assert_eq!(
         after, before,
@@ -496,31 +516,40 @@ fn the_walk_draws_nothing_and_moves_no_ledger_figure() {
 ///
 /// A working count of [`shadow::COUNT_MAX`] means "at least this many
 /// references", so `refcount - count` is not an in-edge count for it and
-/// a pruned-edge simulation may not fold it in at zero. The rows are met
+/// an internal-edge census may not fold it in at zero. The rows are met
 /// through `ensure_row` rather than through a trace: saturating one by
 /// counting would need `2^30 - 1` references, and what is under test is
 /// the reading rather than the arithmetic that produced it.
 #[test]
 fn a_saturated_row_is_met_and_counted_apart() {
     let _g = test_guard();
-    let density = on_a_fresh_thread(|| {
+    let (density, internal_edges) = on_a_fresh_thread(|| {
         let class = a_class("DensitySaturated", props_for(64));
         let fixture = build(class, 2, &[]);
         let block = (fixture.entities[0] as usize & !BLOCK_MASK) as *mut u8;
 
         let mut arena = crate::cycle::testing::open_arena();
         met(unsafe { arena.ensure_row(slotted_row(block, 0), shadow::COUNT_MAX) });
-        met(unsafe { arena.ensure_row(slotted_row(block, 1), 1) });
+        met(unsafe { arena.ensure_row(slotted_row(block, 1), 0) });
         let density = unsafe { totals(&arena) };
+        let internal_edges = unsafe { internal_edges(&arena) };
         arena.reset();
         tear_down(fixture);
-        density
+        (density, internal_edges)
     });
 
     assert_eq!(density.slotted.rows_met, 2, "both rows were met");
     assert_eq!(
         density.slotted.rows_saturated, 1,
         "and one of the two carries a lower bound rather than a total"
+    );
+    assert_eq!(
+        internal_edges.saturated_rows, 1,
+        "the edge census reports the lower-bound row apart too"
+    );
+    assert_eq!(
+        internal_edges.recoverable_internal_edges, 1,
+        "and keeps the ordinary row's one recoverable edge"
     );
 }
 
@@ -534,7 +563,7 @@ fn a_saturated_row_is_met_and_counted_apart() {
 #[test]
 fn a_retained_block_reports_its_survivor_list_and_the_share_met_of_it() {
     let _g = test_guard();
-    let (density, survivors) = on_a_fresh_thread(|| {
+    let (density, internal_edges, survivors) = on_a_fresh_thread(|| {
         let holder_class = a_class("DensityRetainedHolderCase", props_for(80));
         let member_class = a_class("DensityRetainedMemberCase", props_for(64));
 
@@ -581,6 +610,7 @@ fn a_retained_block_reports_its_survivor_list_and_the_share_met_of_it() {
         }
 
         let density = unsafe { totals(&arena_rows) };
+        let internal_edges = unsafe { internal_edges(&arena_rows) };
         arena_rows.reset();
 
         // The holder is the only reference the four survivors have, so
@@ -594,7 +624,7 @@ fn a_retained_block_reports_its_survivor_list_and_the_share_met_of_it() {
             ll_object_die(holder);
         }
 
-        (density, survivors.len())
+        (density, internal_edges, survivors.len())
     });
 
     let retained = density.retained;
@@ -613,6 +643,8 @@ fn a_retained_block_reports_its_survivor_list_and_the_share_met_of_it() {
         "two of the four were met, and the reading is that share"
     );
     assert_eq!(density.slotted, PopulationDensity::default());
+    assert_eq!(internal_edges.recoverable_internal_edges, 0);
+    assert_eq!(internal_edges.saturated_rows, 0);
 }
 
 /// A large entity reports one row of one, out of its own block header.
@@ -624,28 +656,12 @@ fn a_retained_block_reports_its_survivor_list_and_the_share_met_of_it() {
 #[test]
 fn a_large_entity_reports_one_row_of_one() {
     let _g = test_guard();
-    let density = on_a_fresh_thread(|| {
+    let (density, internal_edges) = on_a_fresh_thread(|| {
         let class = wide_class("DensityLargeEntity", POOLED_FILLERS, None);
-        let mut arena = Arena::new();
-        let mut context = LLContext { arena: &mut arena };
-        let entity = unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) };
-
-        let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(entity as *mut RcHeader) })
-        else {
-            panic!("a large entity resolves to a row");
-        };
-
-        assert_eq!(row.population, Population::SingleEntity);
-        let mut arena_rows = crate::cycle::testing::open_arena();
-        met(unsafe { arena_rows.ensure_row(row, 1) });
-        let density = unsafe { totals(&arena_rows) };
-        arena_rows.reset();
-        unsafe {
-            assert!(ll_release(entity as *mut RcHeader));
-            ll_object_die(entity);
-        }
-
-        density
+        let fixture = build(class, 1, &[0]);
+        let reading = collect();
+        tear_down(fixture);
+        (reading.density, reading.internal_edges)
     });
 
     let single = density.single_entity;
@@ -656,6 +672,8 @@ fn a_large_entity_reports_one_row_of_one() {
     assert_eq!(single.groups, 1);
     assert_eq!(single.groups_met, 1);
     assert_eq!(density.slotted, PopulationDensity::default());
+    assert_eq!(internal_edges.recoverable_internal_edges, 1);
+    assert_eq!(internal_edges.saturated_rows, 0);
 }
 
 /// The negative anchor: a populated block no root reaches contributes

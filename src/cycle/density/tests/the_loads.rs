@@ -156,6 +156,10 @@ fn every_collection_agrees(load: &Load) {
         first.density.slotted.rows_met, load.members as u64,
         "and met one row per component member"
     );
+    assert_eq!(
+        first.internal_edges.recoverable_internal_edges, load.members as u64,
+        "and recovered one internal edge per ring member"
+    );
     for (index, reading) in load.collections.iter().enumerate().skip(1) {
         // The density and the row resolutions, and deliberately not
         // `newest_array`: a load that bumps past the workspace draws its
@@ -164,12 +168,14 @@ fn every_collection_agrees(load: &Load) {
         assert_eq!(
             (
                 reading.density,
+                reading.internal_edges,
                 reading.mark_resolutions,
                 reading.trace_resolutions,
                 reading.arena_blocks
             ),
             (
                 first.density,
+                first.internal_edges,
                 first.mark_resolutions,
                 first.trace_resolutions,
                 first.arena_blocks
@@ -296,11 +302,13 @@ fn the_retained_arm() {
             assert_eq!(
                 (
                     reading.density,
+                    reading.internal_edges,
                     reading.mark_resolutions,
                     reading.trace_resolutions
                 ),
                 (
                     first.density,
+                    first.internal_edges,
                     first.mark_resolutions,
                     first.trace_resolutions
                 ),
@@ -320,6 +328,11 @@ fn the_retained_arm() {
         assert_eq!(
             first.density.retained.occupied, first.density.retained.index_space,
             "a survivor list carries no free position"
+        );
+        assert_eq!(
+            first.internal_edges.recoverable_internal_edges,
+            size as u64 + 1,
+            "the retained ring and the holder's edge are all recovered"
         );
 
         println!(

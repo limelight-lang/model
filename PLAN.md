@@ -3853,6 +3853,24 @@ Goal: the one number the design still lacks.
         in `dev/POSTMORTEM.md`. S40.1's synthetic pruning arm is open again: it
         waits for S37.1 to build the live-component producer Y9 requires before
         it can calibrate the same byte the corpus run will read.
+      correction 2026-09-09, round 2 — the first correction discarded too
+        much and did not price that choice. The age/threshold policy and its
+        ladder stay removed, but the independent completed-mark census is
+        restored as `density::internal_edges`: sum `refcount - shadow count`
+        for exact rows and report saturated rows apart. It holds no state
+        between collections, accepts no `k`, reads no epoch or stamp and cannot
+        claim a pruned share. Its 16-edge ring and saturated-row calibrations
+        sit inside the ordinary gate, and the allocation/GC-ledger bracket
+        covers the census beside density. S40.1 therefore retains its valid
+        denominator while its production-derived numerator remains blocked on
+        S37.1. Sage and Critic independently accepted this boundary; their
+        review added the reusable target visitor, checked accumulation, the
+        explicit synthetic-row safety clause and positive retained/large
+        coverage. Four source mutations were seen red: using refcount without
+        subtracting the shadow count, ignoring the initialized-group bit,
+        treating a large entity's array row count as its index space, and
+        failing to exclude a saturated row. The targeted Miri slice is clean
+        at 11 passed, 5 ignored, 73.64 s on Miri's clock.
       handoff: the corpus arm needs a driver over `ll-model`'s own heap. The
         recorded corpus instruments read PHP's heap, which has no blocks and no
         slots, so this arm is Phase-D-blocked in the same way S37.2 is blocked

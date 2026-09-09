@@ -36,12 +36,17 @@ epoch, hiding turnover; and the ledger used a raw address on a load with no
 death or slot reuse, hiding false inheritance by a later occupant. Miri proved
 the pointer walk valid, not the semantic link to the producer.
 
-**What was done.** The generic side-table simulator and ladder test were
-removed. The benchmark entry is retained but headed `WITHDRAWN`, states the
-zero production-equivalent result, and cannot be cited as a choice of `k`.
-S40.1 is open again. S37.1 now owns an explicit prerequisite: build or name the
-component membership and owner disposition that stamps scan-live components,
-then test unequal member ages and epoch turnover before measuring pruning.
+**What was done.** The generic side-table policy and ladder test were removed.
+The first correction also removed the stateless `refcount - shadow count`
+census, although that half neither carried the false age rule nor persisted an
+address; the deletion price was not named. The census was restored as a narrow
+`InternalEdgeCensus` with only recoverable edges and saturated rows, while age,
+thresholds, epoch and cross-collection identity remain absent. The benchmark
+entry is retained but headed `WITHDRAWN`, states the zero production-equivalent
+result, and cannot be cited as a choice of `k`. S40.1 is open again. S37.1 now
+owns an explicit prerequisite: build or name the component membership and owner
+disposition that stamps scan-live components, then test unequal member ages and
+epoch turnover before measuring pruning.
 
 **The rule that follows.** A policy simulation identifies every production
 producer and consumer of the simulated state and runs its calibration through
