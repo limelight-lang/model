@@ -52,7 +52,7 @@ use crate::cycle::finalization::{Finalization, Revalidated};
 use crate::cycle::members::MEMBER_CAPACITY;
 use crate::cycle::membership::Membership;
 use crate::cycle::reclamation::{DeferredReclamation, reclaim_before_drops};
-use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch};
+use crate::cycle::trace::{ALL_ROOTS, OwnerTrace, TraceOutcome, trace_batch, trace_owner_batch};
 use crate::cycle::validation::ValidationResult;
 
 thread_local! {
@@ -198,18 +198,11 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
         return 0;
     }
 
-    if unsafe { trace_batch(arena, batch, ALL_ROOTS) }.0 != TraceOutcome::Complete {
-        return 0;
-    }
-
-    // The rows this trace wrote, read as the commit's membership. They stand
-    // until the window's close sweeps them, which is after everything below.
-    let touched = window.arena().touched_head();
-    let Some(members) = (unsafe { Membership::rows(touched) }) else {
+    let Ok(Some(trace)) = (unsafe { trace_owner_batch(arena, batch) }) else {
         return 0;
     };
 
-    unsafe { commit(&members, window.arena()) }
+    unsafe { commit_owner_trace(trace) }
 }
 
 /// Collect this thread's candidates for a caller that has run out of memory,
@@ -447,8 +440,12 @@ impl HarvestedMembers {
 /// Every member of `members` is an entity of this thread's GC heap whose slot
 /// is still its own, the membership is valid for the whole call, and the call
 /// runs on the owning thread with no mutator beside it.
-unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> usize {
-    match unsafe { commit_before_drops(members, arena) } {
+/// Commit a complete owner trace before its consistency window is released.
+///
+/// The proof is consumed by finalization before `arena` is used for
+/// reclamation, so its borrow cannot escape into teardown or user code.
+unsafe fn commit_owner_trace(trace: OwnerTrace<'_>) -> usize {
+    match unsafe { commit_owner_trace_before_drops(trace) } {
         Some((freed, deferred)) => {
             deferred.drain();
             freed
@@ -524,6 +521,34 @@ unsafe fn commit_before_drops<'a>(
             // candidate bit and a later trace proposes it again.
             Revalidated::ExternallyReferenced => {}
         }
+    }
+
+    revalidation.close();
+    reclaimed
+}
+
+/// The owner-trace equivalent of [`commit_before_drops`].  It differs only in
+/// the first confirmation: the proof is current through guard acquisition;
+/// the destructor-triggered revalidation below is deliberately shared.
+unsafe fn commit_owner_trace_before_drops<'a>(
+    trace: OwnerTrace<'_>,
+) -> Option<(usize, DeferredReclamation<'a>)> {
+    let mut finalization = Finalization::begin();
+    let (members, arena) = unsafe { finalization.confirm_owner_trace(trace) };
+    let arena = unsafe { &mut *arena };
+
+    let mut pass = finalization.seal().destructors();
+    unsafe { pass.run(&members) };
+
+    let mut revalidation = pass.close();
+    let mut reclaimed = None;
+    match unsafe { revalidation.revalidate(&members) } {
+        Revalidated::Unreachable(component) => {
+            if let Some(deferred) = unsafe { reclaim_before_drops(component, &members, arena) } {
+                reclaimed = Some((members.len(), deferred));
+            }
+        }
+        Revalidated::ExternallyReferenced => {}
     }
 
     revalidation.close();

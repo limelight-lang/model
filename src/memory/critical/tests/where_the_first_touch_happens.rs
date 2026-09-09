@@ -159,6 +159,9 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("POOL_REQUESTS", false),
         ("PREMISE_CELL_WALKS", false),
         ("PRESSURE_COLLECTIONS", false),
+        // Test-only const Cell; the owner-trace entry counter registers no
+        // destructor and therefore adds no release-path first-touch cost.
+        ("PRE_TEARDOWN_EXACT_TEST_ENTRIES", false),
         ("QUEUE_WORK", false), // test-only const Cell, no destructor registration
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
         ("RESERVE", true),

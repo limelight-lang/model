@@ -12,6 +12,7 @@ use super::*;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::members::MEMBER_CAPACITY;
 use crate::cycle::testing::ring;
+use crate::cycle::validation::take_exact_test_entries;
 use crate::gc::{ll_gc_collect_cycles, ll_gc_maybe_collect};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{force_oom, test_guard};
@@ -34,6 +35,25 @@ fn a_completed_collection_retires_its_dead_candidates() {
 
 /// Destructor bodies run since a case last cleared it.
 static DESTRUCTOR_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// The ordinary owner path retains its completed trace proof through guard
+/// acquisition, so it need not enter the pre-teardown exact test.
+#[test]
+fn an_in_line_owner_trace_enters_no_pre_teardown_exact_test() {
+    let _g = test_guard();
+    crate::cycle::queue::release_queue_segments();
+    let mut arena = Arena::new();
+    let class = node_class("OwnerTraceProofNode", counting_destructor as *const ());
+    let _ring = unsafe { ring(&mut arena, [class, class]) };
+
+    assert_eq!(take_exact_test_entries(), 0, "the fixture starts clean");
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 2);
+    assert_eq!(
+        take_exact_test_entries(),
+        0,
+        "the completed owner trace reaches guards without re-reading members"
+    );
+}
 
 unsafe extern "C" fn counting_destructor(_object: *mut Object) {
     DESTRUCTOR_RUNS.fetch_add(1, Ordering::Relaxed);
