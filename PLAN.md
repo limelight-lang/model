@@ -3578,9 +3578,12 @@ its existing blockers.
         held. Pressure also retires after each standing list ends so a later
         bounded round and the allocator's retry can use the slots. The final
         pass may revisit surviving records after the last pressure round;
-        a nonempty active lane also needs a header-free combination pass
-        before final retirement. These are correctness cleanup costs, not an
-        early external-drain optimization; S39.4 owns that experiment.
+        a nonempty active lane is first combined with the detached chain.
+        That combination now moves only the records needed to reconcile the
+        two partial heads and splices every full segment; it does no full
+        record pass. Final retirement is the one whole-queue pass. These are
+        correctness cleanup costs, not an early external-drain optimization;
+        S39.4 owns that experiment.
       handoff: Sage pre-change and Critic post-change readings were performed
         locally, without an independent agent. The baseline and lifetime/budget
         review are in `dev/DECISIONS.md`, "owner retirement compacts both
@@ -3600,7 +3603,19 @@ its existing blockers.
         refuses before counting; the fixture now uses `budget_blocks(0)` and
         sees that mutation fail with one request instead of zero. Eight small
         unwind boundaries and a partially reversed multisegment case pass,
-        along with the real trace-close and collection-gate unwind cases.
+        along with the trace-close combination and collection-gate unwind
+        cases.
+      handoff: follow-up Critic 2026-09-09 found `Publish` repeatable between
+        its two ledger updates. The phase now advances and the queue is
+        published before either update; injected point 8 after the segment
+        adjustment proves drop does not repeat it. The merge was also restored
+        to bounded partial-head work: its regression carries two full segments
+        and observes zero record passes and exactly three reads/moves. Test-only
+        `queue::take_queue_work` records whole record passes, records read and
+        records moved per thread; S39.4 therefore has its baseline instrument
+        before it changes this path. The `collect_off_the_poll` contract now
+        distinguishes a refused trace's unchanged graph from the final guard's
+        lawful retirement of older completed deaths.
       handoff: verification — 831 tests total: default 823 passed/8 ignored,
         one ordinary run and three at four threads; `hash-folding` 823/8;
         `debug-journal` 827 passed/10 ignored, three runs. Release builds with
@@ -3614,6 +3629,14 @@ its existing blockers.
         OS-direct ring hit its 180-second limit; neither is a completed Miri
         check. Both pass natively. No concurrent collector is built or tested
         by this step. The next experiment is S39.4.
+      handoff: follow-up verification — default 826 passed/8 ignored, one run
+        and three at four threads; `hash-folding` 826/8; `debug-journal`
+        830 passed/10 ignored, three runs; release, every benchmark target and
+        `+1.94 fmt --check` pass. The small two-head merge passes under Miri
+        (21.01 s on Miri's clock). Moving the phase advance behind the ledger
+        updates reproduces the Critic's double panic and SIGABRT at point 8;
+        adding a whole-batch record walk makes the bounded-merge counter test
+        fail with 1 pass and 16,326 reads/moves instead of 0/3.
 
 
 - [ ] S39.4 Measure early slot return on the successful pressure teardown   *(after S39.2)*
@@ -3639,7 +3662,8 @@ its existing blockers.
       done: record back-to-back measurements against S39.2 with final cleanup
         alone: slots/bytes actually reusable at entry to the external drain,
         peak held memory, allocations served/refused inside external
-        destructors, queue passes/records moved and total collection time;
+        destructors, queue passes/records moved (from
+        `queue::take_queue_work`) and total collection time;
         include no-external-child and allocation-free-destructor controls,
         and matching/nonmatching requested size classes; count the external
         children as still strongly held until the drain, rather than counting

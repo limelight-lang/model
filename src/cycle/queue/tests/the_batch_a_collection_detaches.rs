@@ -520,3 +520,90 @@ fn an_empty_lane_detaches_an_empty_batch() {
 
     reset();
 }
+
+/// Full segments do not enter the merge's record loop. Only the detached
+/// partial head moves into the active head, and the counter records that bound
+/// for S39.4 before its experiment can change the same path.
+#[test]
+fn a_merge_moves_only_what_fits_between_the_two_partial_heads() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+
+    let mut detached = candidate(2);
+    let detached_entity = &raw mut detached;
+    unsafe { append_entry(owner_state(), detached_entity) };
+    fill_write_segment(detached_entity);
+    unsafe { append_entry(owner_state(), detached_entity) };
+    fill_write_segment(detached_entity);
+    assert!(
+        refill_spares(),
+        "the final partial head has its own segment"
+    );
+    for _ in 0..3 {
+        unsafe { append_entry(owner_state(), detached_entity) };
+    }
+    let batch = detach_candidates();
+
+    assert!(refill_spares());
+    let mut active = candidate(2);
+    let active_entity = &raw mut active;
+    for _ in 0..5 {
+        unsafe { append_entry(owner_state(), active_entity) };
+    }
+
+    let _ = take_queue_work();
+    merge_candidates(batch);
+    assert_eq!(
+        take_queue_work(),
+        QueueWork {
+            record_passes: 0,
+            records_read: 3,
+            records_moved: 3,
+        }
+    );
+    assert_eq!(candidate_count(), 2 * SEGMENT_CAPACITY + 8);
+    assert_eq!(segment_count(), 3);
+
+    reset();
+}
+
+/// When the detached head does not fit, the merge takes records from its end.
+/// Its untouched prefix can therefore become the output head without a second
+/// shift across the records that remain there.
+#[test]
+fn a_merge_leaves_the_detached_heads_prefix_in_place() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+
+    let mut detached = candidate(2);
+    let detached_entity = &raw mut detached;
+    for _ in 0..5 {
+        unsafe { append_entry(owner_state(), detached_entity) };
+    }
+    let batch = detach_candidates();
+
+    assert!(refill_spares());
+    let mut active = candidate(2);
+    let active_entity = &raw mut active;
+    for _ in 0..SEGMENT_CAPACITY - 2 {
+        unsafe { append_entry(owner_state(), active_entity) };
+    }
+
+    let _ = take_queue_work();
+    merge_candidates(batch);
+    assert_eq!(
+        take_queue_work(),
+        QueueWork {
+            record_passes: 0,
+            records_read: 2,
+            records_moved: 2,
+        }
+    );
+    assert_eq!(candidate_count(), SEGMENT_CAPACITY + 3);
+    assert_eq!(segment_count(), 2);
+    assert_eq!(write_segment_entry(0), detached_entity);
+
+    reset();
+}

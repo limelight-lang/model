@@ -210,7 +210,8 @@ field is lent to):
   (`refcount::CANDIDATE_GATE_MASK`), so a constant landing on any of them
   would make the gate refuse candidates for a reason the design does not
   have. `CANDIDATE_BIT` is written by `refcount::release_word` beside the queue
-  entry and cleared at the drain; the two proofs have no writer, and the
+  entry and cleared only by the owner's exact retirement of that entry; the
+  thread-exit drain deliberately leaves it standing. The two proofs have no writer, and the
   steps that give them one are S37.2 and S37.3;
 - bit 11, `IS_ESCAPEE` — repurposes the refcount as the escapee
   hold-count (see invariant 5);
@@ -229,8 +230,9 @@ field is lent to):
   physical return, not the header, and the withheld ones are found through the
   window's own stack rather than through any bit. What hands a slot back is
   `refcount::publish_header`, the trace window's close ahead of its return,
-  the reset window's flush, and every path that frees a slot it never published
-  (`memory::stdapi::free_unpublished`). The count stays zero under it, so `refcount::slot_state` is the
+  the reset window's flush, owner candidate retirement, and every path that
+  frees a slot it never published (`memory::stdapi::free_unpublished`). The
+  count stays zero under it, so `refcount::slot_state` is the
   one occupancy test and a guard test bans the two-way one. The bit carried
   `STRING_OUT_OF_LINE` until the string's two layouts became the kind codes 8
   and 9, and taking it fills the mutator's half: a further mutator flag needs
@@ -315,9 +317,8 @@ arena, whose blocks go to the process-global pool, after every step above
 that can still free a buffer into it → the thread's heaps are dropped and
 their blocks are abandoned or returned.
 
-**5. Cycle collection — not yet end to end.** A garbage ring is still
-retained: nothing calls a collection. The pieces exist and stand in this
-order — a non-final decrement registers the entity (`refcount` → `queue`);
+**5. In-line cycle collection.** A non-final decrement registers the entity
+(`refcount` → `queue`);
 a trace opens its trace scratch arena over the thread's workspace and then
 its window inside a region of that workspace, the one refusal left being a
 thread's first collection failing to draw the workspace at all
@@ -327,9 +328,13 @@ what survives; `validation` re-reads the members on the owning thread before
 anything is freed. `finalization` guards the
 component, nulls the weak cells naming it, runs the destructors and reads it
 again; `reclamation` severs, frees and drops. The caller that runs them in that
-order is `cycle::collect`, and the two ABI entries of `gc` reach it. The design
-is `rfc/model/gc/rc-cycle.md`, and what is still missing from the path is the
-collection an allocation failure starts.
+order is `cycle::collect`; explicit collection and the safepoint poll use the
+ordinary path, while an entity-allocation refusal uses the bounded-harvest
+pressure path. Once membership and shadow readers have ended, owner retirement
+removes completed deaths and returns their slots. Combining the detached and
+active candidate chains moves only records between their partial heads and
+splices full tails; retirement is the one whole-queue record pass. The design
+is `rfc/model/gc/rc-cycle.md`; the concurrent worker remains unbuilt.
 
 ## Cross-module invariants
 

@@ -164,9 +164,12 @@ impl Drop for CollectingThread {
 /// distinguished here: a thread already collecting, a workspace the memory
 /// manager refused, an empty candidate lane, a trace that met a refused
 /// allocation path, a set the exact validation read as live, and a teardown
-/// whose children the arena refused. What each of them costs is the collection
-/// and nothing else — no root loses its registration, and the heap is
-/// byte-identical wherever the trace gave up
+/// whose children the arena refused. Before final owner retirement, each
+/// refusal leaves the graph it was reading byte-identical and no live root
+/// loses its registration. The `CollectingThread` guard then removes completed
+/// deaths left by this or an earlier collection, so a zero answer does not
+/// promise that the candidate queue, its dead slots or their blocks remain
+/// byte-identical
 /// (`dev/DECISIONS.md`, "under memory starvation a collection ends itself and
 /// gives back everything").
 ///

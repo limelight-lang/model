@@ -829,11 +829,69 @@ pub(crate) fn detach_candidates() -> InFlightBatch {
 }
 
 /// Combine a detached batch and the active lane without drawing memory.
-/// Both partial-head bounds survive until compaction finishes. Record order
-/// across segments is unspecified; each registration survives exactly once.
-/// This operation does not read entity headers and performs no retirement.
-pub(crate) fn merge_candidates(batch: InFlightBatch) {
-    compaction::finish(batch, false);
+///
+/// With no active lane this is the original two-word publication. With two
+/// lanes, only their partial heads need moving: fill the active head from the
+/// batch head, splice the full tails, and, where the two heads do not fit in
+/// one segment, publish the compacted remainder as the new head. Thus the work
+/// is bounded by the records in the two partial heads rather than by the whole
+/// queue. No entity header is read and no registration is retired.
+pub(crate) fn merge_candidates(mut batch: InFlightBatch) {
+    let batch_head = batch.head;
+    if batch_head.is_null() {
+        return;
+    }
+
+    let state = owner_state();
+    assert!(
+        !state.is_null(),
+        "the queue base block left with a batch out"
+    );
+    let q = unsafe { owner_state_ref(state) };
+    let active_head = q.write_segment.get();
+    if active_head.is_null() {
+        q.write_segment.set(batch_head);
+        q.write_len.set(batch.fill);
+        batch.head = std::ptr::null_mut();
+        return;
+    }
+
+    let active_fill = q.write_len.get();
+    let copied = (SEGMENT_CAPACITY - active_fill).min(batch.fill);
+    let copied_from = batch.fill - copied;
+    for index in 0..copied {
+        let entry = unsafe { segment_entries(batch_head).add(copied_from + index).read() };
+        unsafe {
+            segment_entries(active_head)
+                .add(active_fill + index)
+                .write(entry)
+        };
+    }
+    note_queue_work(0, copied, copied);
+
+    let mut active_tail = active_head;
+    while !unsafe { (*active_tail).next }.is_null() {
+        active_tail = unsafe { (*active_tail).next };
+    }
+    let batch_tail = unsafe { (*batch_head).next };
+    unsafe { (*active_tail).next = batch_tail };
+
+    if copied == batch.fill {
+        q.write_len.set(active_fill + copied);
+        unsafe { (*batch_head).next = std::ptr::null_mut() };
+        batch.head = std::ptr::null_mut();
+        return_surplus_segment(q, batch_head);
+        return;
+    }
+
+    // The records copied above came from the end, so the remainder already
+    // occupies the batch head's prefix and needs no second move.
+    let remaining = copied_from;
+    unsafe { (*batch_head).next = active_head };
+    q.write_segment.set(batch_head);
+    q.write_len.set(remaining);
+    batch.head = std::ptr::null_mut();
+    gc_metadata::charge(BLOCK_PAYLOAD);
 }
 
 /// Retire completed deaths at the owner's exact reading, and compact the lane
@@ -848,6 +906,56 @@ pub(crate) unsafe fn retire_candidates() {
 }
 
 mod compaction;
+
+fn return_surplus_segment(q: &OwnerCycleState, segment: *mut BlockHeader) {
+    let spare_count = q.spare_count.get();
+    if spare_count < SPARE_SEGMENTS {
+        q.spares[spare_count].set(segment);
+        q.spare_count.set(spare_count + 1);
+    } else {
+        gc_metadata::release_to_critical(segment);
+    }
+}
+
+#[cfg(test)]
+/// Work whose cost changes when retirement moves within a collection.
+///
+/// A record pass begins only when every chain and overflow record is eligible
+/// for inspection. Partial-head reconciliation is counted by the individual
+/// reads and writes and does not claim a whole pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct QueueWork {
+    pub(crate) record_passes: usize,
+    pub(crate) records_read: usize,
+    pub(crate) records_moved: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static QUEUE_WORK: Cell<QueueWork> = const { Cell::new(QueueWork {
+        record_passes: 0,
+        records_read: 0,
+        records_moved: 0,
+    }) };
+}
+
+#[inline]
+fn note_queue_work(_passes: usize, _read: usize, _moved: usize) {
+    #[cfg(test)]
+    let _ = QUEUE_WORK.try_with(|work| {
+        let mut value = work.get();
+        value.record_passes += _passes;
+        value.records_read += _read;
+        value.records_moved += _moved;
+        work.set(value);
+    });
+}
+
+#[cfg(test)]
+/// Return this thread's queue work since the previous reading and zero it.
+pub(crate) fn take_queue_work() -> QueueWork {
+    QUEUE_WORK.with(|work| work.replace(QueueWork::default()))
+}
 
 /// Take one spare, or null when both cells are empty.
 #[inline]

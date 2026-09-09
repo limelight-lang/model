@@ -47,6 +47,7 @@ fn run_shape(
     fault: Option<usize>,
 ) {
     reset();
+    let _ = take_queue_work();
     assert!(refill_spares());
     let baseline = thread_stats().current_bytes_in_use();
     let mut arena = Arena::new();
@@ -90,6 +91,15 @@ fn run_shape(
     } else {
         compaction::finish(batch, true);
         assert_eq!(allocation_probe::take_allocations(), (0, 0));
+        assert_eq!(
+            take_queue_work(),
+            QueueWork {
+                record_passes: 1,
+                records_read: entities.len(),
+                records_moved: expected.len(),
+            },
+            "retirement exposes the baseline S39.4 will compare"
+        );
     }
     let mut actual = Vec::new();
     collect_lane_tokens(&mut actual);
@@ -143,6 +153,7 @@ fn run_shape(
     assert_eq!(candidate_count(), 0);
     assert_eq!(overflow_len(), 0);
     assert_eq!(thread_stats().current_bytes_in_use(), baseline);
+    let _ = take_queue_work();
     reset();
 }
 
@@ -182,6 +193,12 @@ fn an_unwind_with_unreversed_segments_keeps_both_halves() {
 }
 
 #[test]
+fn an_unwind_between_publish_ledger_updates_does_not_repeat_the_first_discharge() {
+    let _g = test_guard();
+    run_shape(SEGMENT_CAPACITY + 3, SEGMENT_CAPACITY + 5, 0, 1, Some(8));
+}
+
+#[test]
 fn a_zero_count_without_completed_teardown_is_not_retired() {
     let _g = test_guard();
     reset();
@@ -200,7 +217,7 @@ fn a_zero_count_without_completed_teardown_is_not_retired() {
 }
 
 #[test]
-fn an_unwinding_trace_close_restores_both_candidate_chains() {
+fn a_trace_close_combines_both_candidate_chains_before_retirement() {
     let _g = test_guard();
     reset();
     assert!(refill_spares());
@@ -213,8 +230,7 @@ fn an_unwinding_trace_close_restores_both_candidate_chains() {
     for entity in [first, second] {
         unsafe { dismantle_candidate(entity) };
     }
-    let _injection = compaction::inject(5);
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(window))).is_err());
+    drop(window);
     let mut registrations = Vec::new();
     collect_lane_tokens(&mut registrations);
     registrations.sort_unstable();

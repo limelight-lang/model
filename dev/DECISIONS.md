@@ -8,6 +8,29 @@ never edited or deleted.
 
 ---
 
+## 2026-09-09 — merge keeps its bounded partial-head cost, and publish advances first
+
+Follow-up Critic review of S39.2 found two costs hidden by the first closure.
+First, `Publish` changed the ledger before advancing its phase. A panic between
+the segment and overflow adjustments made cleanup repeat the first adjustment;
+with an already inconsistent ledger that second discharge panicked during
+unwind and aborted the process. The queue is now published and the phase moves
+to `ReturnSegments` before either adjustment. Injection point 8 stands after
+the first adjustment and proves that drop does not repeat it. This closes the
+second ordinary raising boundary of cleanup; ownership already crosses to
+`ll_free` before that potentially raising call, so it is not retried either.
+
+Second, combining two live lanes does not use the retirement compactor. The
+first implementation read and rewrote every record before the final retirement
+read them all again. The merge now moves only the suffix of the detached
+partial head that fits in the active partial head, then splices the full tails.
+Any detached remainder is already a prefix and becomes the sole partial output
+head. An empty active lane remains a two-word publication. The test instrument
+`queue::take_queue_work` counts whole record passes, records read and records
+moved per thread: a merge carrying two full segments reports zero passes and
+three reads/moves, while retirement reports one pass, every record read and
+one write per survivor. This is the baseline S39.4 measures against.
+
 ## 2026-09-09 — owner retirement compacts both bounded chains before publication
 
 S39.2 pre-change review (Sage role, performed locally): the queue baseline

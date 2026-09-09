@@ -312,13 +312,23 @@ and returns the slot through `ll_free`. Live and unfinished registrations
 survive. The retained occupancy count includes registered dead survivors until
 this return spends their count.
 
-Queue combination saves both input head/fill bounds, packs entries into the
-existing segments and reverses the occupied prefix so only the output head
-can be partial. Overflow is compacted in place. No block is drawn; surplus
-segments replenish spare cells and then return to the critical reserve. Only
-output interior segments remain payload-charged. A fixed cleanup frame owns
-both partial bounds, the read/write cursors, reversed links and any pending
-slot until publication, including during unwind between those transitions.
+Queue combination does not run the retirement compactor. An empty active lane
+takes the detached head/fill pair directly. With two lanes, the merge copies
+only `min(SEGMENT_CAPACITY - active_fill, batch_fill)` records from the end of
+the detached partial head into the active partial head, then splices the full
+tails. Taking records from the end leaves any detached remainder at the front,
+ready to become the sole partial output head. It reads no entity header and
+does no full record pass.
+
+Retirement saves both input head/fill bounds, packs surviving entries into the
+existing segments and reverses the occupied prefix so only the output head can
+be partial. Overflow is compacted in place. No block is drawn; surplus segments
+replenish spare cells and then return to the critical reserve. Only output
+interior segments remain payload-charged. A fixed cleanup frame owns both
+partial bounds, the read/write cursors, reversed links and any pending slot
+until publication, including during unwind between those transitions. Its
+publish phase makes the queue visible and advances the phase before either
+ledger update, so unwind cannot repeat a completed discharge.
 
 The free path reaches no allocator at all: the window's own memory is one
 64-byte control line at the head of the workspace the arena already holds, and

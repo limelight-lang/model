@@ -157,6 +157,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("POOL_REQUESTS", false),
         ("PREMISE_CELL_WALKS", false),
         ("PRESSURE_COLLECTIONS", false),
+        ("QUEUE_WORK", false), // test-only const Cell, no destructor registration
         ("RESERVE", true),
         ("RING", false),
         ("ROWS_READ", false),

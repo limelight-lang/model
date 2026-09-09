@@ -106,6 +106,7 @@ pub(super) fn finish(mut batch: InFlightBatch, retire: bool) {
     // The temporary queue is private until publication; overflow bounds are
     // owned here too. No entity code or allocation callback is run by packing.
     q.overflow_len.set(0);
+    note_queue_work(1, 0, 0);
     gc_metadata::mark_peak((pass.bounds[0] + pass.bounds[1]) * size_of::<*mut RcHeader>());
     checkpoint(0);
     pass.run(true);
@@ -156,6 +157,7 @@ impl Compaction {
                             .add(self.write_fill)
                             .write(self.pending)
                     };
+                    note_queue_work(0, 0, 1);
                     self.write_fill += 1;
                 } else {
                     unsafe {
@@ -163,6 +165,7 @@ impl Compaction {
                             .add(self.overflow_write)
                             .write(self.pending);
                     }
+                    note_queue_work(0, 0, 1);
                     self.overflow_write += 1;
                 }
                 self.pending = std::ptr::null_mut();
@@ -182,6 +185,7 @@ impl Compaction {
                     }
                     let entry = unsafe { segment_entries(self.read).add(self.read_index).read() };
                     self.read_index += 1;
+                    note_queue_work(0, 1, 0);
                     self.take(entry);
                     if inject {
                         checkpoint(1);
@@ -192,6 +196,7 @@ impl Compaction {
                     let entry =
                         unsafe { overflow_entries(self.state).add(self.overflow_read).read() };
                     self.overflow_read += 1;
+                    note_queue_work(0, 1, 0);
                     self.take(entry);
                     if inject {
                         checkpoint(1);
@@ -221,6 +226,16 @@ impl Compaction {
                 }
                 Phase::Reverse => self.phase = Phase::Publish,
                 Phase::Publish => {
+                    // Nothing below may be repeated by this frame's drop. The
+                    // queue is visible before the ledger updates, so a corrupt
+                    // ledger reports once without losing the chain on unwind.
+                    self.phase = Phase::ReturnSegments;
+                    let q = unsafe { owner_state_ref(self.state) };
+                    q.write_segment.set(self.reverse);
+                    q.write_len.set(self.write_fill);
+                    q.overflow_len.set(self.overflow_write);
+                    self.reverse = std::ptr::null_mut();
+
                     // Each original interior was charged once; neither input
                     // head was charged. The output charges every kept segment
                     // except its final head, including exact-capacity output.
@@ -234,15 +249,12 @@ impl Compaction {
                             (charged_after - self.charged_segments) * BLOCK_PAYLOAD,
                         );
                     }
+                    if inject {
+                        checkpoint(8);
+                    }
                     gc_metadata::discharge(
                         (self.overflow_bound - self.overflow_write) * size_of::<*mut RcHeader>(),
                     );
-                    let q = unsafe { owner_state_ref(self.state) };
-                    q.write_segment.set(self.reverse);
-                    q.write_len.set(self.write_fill);
-                    q.overflow_len.set(self.overflow_write);
-                    self.reverse = std::ptr::null_mut();
-                    self.phase = Phase::ReturnSegments;
                     if inject {
                         checkpoint(6);
                     }
