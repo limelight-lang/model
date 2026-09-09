@@ -79,6 +79,10 @@ versions live in `docs/history/`, marked at the top.
   keeps its rows through the teardown and reads them as its membership
   (`cycle::membership`, and `dev/DECISIONS.md`, "the member list is the
   pressure path's alone").
+- Owner candidate retirement: `cycle/queue/compaction.rs` combines two bounded
+  chains without drawing blocks, compacts overflow and returns completed deaths
+  after membership and shadow readers end. `queue/tests/owner_retirement.rs`
+  checks identity, segment ownership, payload charges and unwind boundaries.
 - What a slot's first eight bytes read: `refcount::slot_state`, three
   states over the count and one flag — live, dead in place, free. A slot is
   dead in place when `ll_free` has taken it and nobody has handed it back

@@ -89,7 +89,23 @@ fn a_detach_empties_the_lane_and_a_merge_puts_it_back() {
     assert_eq!(
         write_segment_entry(0),
         second_entity,
-        "the head goes back to the write position with its own fill"
+        "an empty active lane restores the original head"
+    );
+    let mut restored = Vec::new();
+    collect_lane_tokens(&mut restored);
+    assert_eq!(
+        restored
+            .iter()
+            .filter(|&&entry| entry == second_entity)
+            .count(),
+        1
+    );
+    assert_eq!(
+        restored
+            .iter()
+            .filter(|&&entry| entry == first_entity)
+            .count(),
+        SEGMENT_CAPACITY
     );
 
     reset();
@@ -206,12 +222,8 @@ fn neither_the_detach_nor_the_merge_asks_for_memory() {
     reset();
 }
 
-/// A registration while a batch is out takes the growth path, the write
-/// position being empty, and that is the ordinary collection's own state: its
-/// severing runs inside the trace window and registers the live children it
-/// displaces. The merge joins the two chains rather than writing one over the
-/// other — every record of both stands in one lane afterwards, and the batch's
-/// part-filled head is copied in and its block given to a cell.
+/// A registration made while the batch is out owns a different partial head.
+/// Combining the two retains both records and returns the surplus segment.
 #[test]
 fn a_merge_over_a_lane_that_grew_again_keeps_both_records() {
     let _g = test_guard();
@@ -260,22 +272,18 @@ fn a_merge_over_a_lane_that_grew_again_keeps_both_records() {
         "rather than to the pool"
     );
     assert_eq!(
-        gc_metadata::thread_stats(),
-        stats_before,
-        "the ledger reads what it read: the copy charges nothing and the head \
-         was never charged"
+        gc_metadata::thread_stats().current_bytes_in_use(),
+        stats_before.current_bytes_in_use(),
+        "neither partial input head was charged"
     );
 
     reset();
 }
 
-/// The splice, over a batch of two segments: the full segment behind the
-/// batch's head goes behind the whole of the live chain, which is where the
-/// rule that every segment but the head is full still holds of it. A
-/// part-filled segment landing there instead would be a chain
-/// [`candidate_count`] reads as longer than it is.
+/// A batch with an interior full segment combines with a partial active head.
+/// Every record survives, and the published chain has one partial head only.
 #[test]
-fn a_merged_batch_keeps_its_full_segment_behind_the_live_chain() {
+fn a_merged_batch_publishes_only_full_segments_behind_the_head() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the cells start full");
@@ -324,23 +332,24 @@ fn a_merged_batch_keeps_its_full_segment_behind_the_live_chain() {
     let mut after = Vec::new();
     collect_lane_tokens(&mut after);
     assert_eq!(after.len(), 2 + SEGMENT_CAPACITY, "and the walk agrees");
+    for entry in [severed_entity, newest_entity, oldest_entity] {
+        assert_eq!(after.iter().filter(|&&found| found == entry).count(), 1);
+    }
     assert_eq!(
-        &after[..3],
-        &[severed_entity, newest_entity, oldest_entity],
-        "the records of the two write positions first, then the full \
-         segment's own oldest"
+        after
+            .iter()
+            .filter(|&&found| found == filler_entity)
+            .count(),
+        SEGMENT_CAPACITY - 1
     );
 
     reset();
 }
 
-/// A head the detach caught at capacity is spliced with the segments behind
-/// it rather than copied in. Copying one always takes the growth path — a full
-/// head cannot fit the room a live head has left — and the segment it would
-/// displace is charged either way, so the splice takes that charge where the
-/// growth would have.
+/// Two uncharged input heads yield one charged interior and one uncharged
+/// output head. Neither a spare cell nor a new block is consumed.
 #[test]
-fn a_full_batch_head_is_spliced_and_charged_rather_than_copied() {
+fn combining_a_full_and_partial_head_charges_one_output_interior() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the cells start full");
@@ -370,7 +379,7 @@ fn a_full_batch_head_is_spliced_and_charged_rather_than_copied() {
     assert_eq!(
         segment_count(),
         2,
-        "the head went into the chain rather than through the write"
+        "both input segments remain in the packed output"
     );
     assert_eq!(
         candidate_count(),
@@ -386,23 +395,30 @@ fn a_full_batch_head_is_spliced_and_charged_rather_than_copied() {
     assert_eq!(
         gc_metadata::thread_stats().current_bytes_in_use(),
         charged_before + BLOCK_PAYLOAD,
-        "and the segment that left the write position carries its payload"
+        "the output interior carries one payload charge"
     );
 
     let mut after = Vec::new();
     collect_lane_tokens(&mut after);
     assert_eq!(after.len(), 1 + SEGMENT_CAPACITY);
-    assert_eq!(&after[..2], &[severed_entity, oldest_entity]);
+    for entry in [severed_entity, oldest_entity] {
+        assert_eq!(after.iter().filter(|&&found| found == entry).count(), 1);
+    }
+    assert_eq!(
+        after
+            .iter()
+            .filter(|&&found| found == filler_entity)
+            .count(),
+        SEGMENT_CAPACITY - 1
+    );
 
     reset();
 }
 
-/// The copy of a part-filled head can fill the live write segment, and then it
-/// takes the growth path — one growth at most, because what is copied fits the
-/// room the live head has left plus one fresh segment. The records survive it
-/// whichever tier funds the segment.
+/// A full active head and a partial detached head already hold enough storage
+/// for their combined records. Both segments remain, with no overflow append.
 #[test]
-fn a_copy_that_fills_the_live_head_grows_once_and_keeps_every_record() {
+fn a_merge_uses_input_storage_when_the_active_head_is_full() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the cells start full");
@@ -433,13 +449,9 @@ fn a_copy_that_fills_the_live_head_grows_once_and_keeps_every_record() {
     assert_eq!(
         segment_count(),
         2,
-        "which is the growth the copy took, and only one"
+        "the two input segments provide all output storage"
     );
-    assert_eq!(
-        overflow_len(),
-        0,
-        "funded by a cell rather than by the tier below"
-    );
+    assert_eq!(overflow_len(), 0, "no record needed the overflow buffer");
 
     let mut after = Vec::new();
     collect_lane_tokens(&mut after);

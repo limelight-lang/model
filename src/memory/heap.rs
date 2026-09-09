@@ -2184,13 +2184,11 @@ unsafe fn entity_alloc_once(size: usize) -> *mut u8 {
 /// (`rfc/runtime/exceptions.md`, "Allocation failure is an ordinary
 /// exception").
 ///
-/// **What a collection returns is its members' bodies and the slots of their
-/// non-cyclic children.** A member is a registered candidate, and `ll_free`
-/// withholds such a slot until an entry is retired, which is `PLAN.md` S39.2;
-/// an entity the candidate gate never admitted — a string, a weak cell, a
-/// reference box, any kind at or above eight — is freed by the sever and its
-/// slot returns at once (`refcount::CANDIDATE_GATE_MASK`). A component of objects alone therefore
-/// returns nothing this path can use, and the retry behind it is refused.
+/// **A collection returns completed candidate slots at the owner's final
+/// reading.** The commit first withholds them through `ll_free`; after the
+/// membership and shadow readers end, `cycle::queue::retire_candidates`
+/// removes their entries and makes their physical returns. The retry can use
+/// those slots even when the pool refuses every new block.
 ///
 /// **A collection fires here because this site is a clean point**, the third
 /// in this crate (`dev/ARCHITECTURE.md`, "Arm vs fire"): the design puts the

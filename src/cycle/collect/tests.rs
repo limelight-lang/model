@@ -21,6 +21,17 @@ use crate::refcount::{MemoryCategory, RcHeader, SlotState, ll_release, ll_retain
 use crate::test_support::{prop_offset, store_prop};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[test]
+fn a_completed_collection_retires_its_dead_candidates() {
+    let _g = test_guard();
+    crate::cycle::queue::release_queue_segments();
+    let mut arena = Arena::new();
+    let class = node_class("RetiredRing", counting_destructor as *const ());
+    let _ring = unsafe { ring(&mut arena, [class; 3]) };
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 3);
+    assert_eq!(crate::cycle::queue::candidate_count(), 0);
+}
+
 /// Destructor bodies run since a case last cleared it.
 static DESTRUCTOR_RUNS: AtomicUsize = AtomicUsize::new(0);
 
@@ -232,13 +243,12 @@ fn a_bounded_round_that_frees_nothing_hands_the_rest_to_the_poll() {
     }
 }
 
-/// The other producer of a fruitless bounded round, and the one the loop
-/// cannot see coming: a prefix that names only slots this collection has
-/// already freed. An entry is never retired, so the dead stand where the next
-/// bound re-selects them, and the round after a paying one meets nothing.
-/// The ring behind them is handed to the poll rather than read as absent.
+/// A component that cannot fit in the bounded harvest region even alone.
+/// Retiring the pairs removes their roots;
+/// the remaining component still exceeds the region even at a one-root bound.
+/// The poll keeps rows rather than harvesting and can collect it.
 #[test]
-fn a_prefix_of_freed_slots_ends_the_pressure_path_with_an_arming() {
+fn a_component_past_the_harvest_capacity_is_left_for_the_poll() {
     let _g = test_guard();
     let class = node_class(
         "CollectPressureDeadPrefixNode",
@@ -247,8 +257,8 @@ fn a_prefix_of_freed_slots_ends_the_pressure_path_with_an_arming() {
     let mut arena = Arena::new();
 
     // Exactly what one harvest holds, registered first, and one component past
-    // it behind them: the first bound frees the pairs, and the bound after
-    // that lands on their entries.
+    // it behind them: the first bound frees the pairs, whose entries retire
+    // before the next round tries the remaining component.
     let pairs = MEMBER_CAPACITY as usize / 2;
     let mut members = Vec::with_capacity(pairs * 2);
     for _ in 0..pairs {
@@ -266,7 +276,7 @@ fn a_prefix_of_freed_slots_ends_the_pressure_path_with_an_arming() {
     );
     assert!(
         crate::gc::is_armed(),
-        "so the round that met only their entries hands the rest to the poll"
+        "the remaining component exceeds the region even at a one-root bound"
     );
     assert_eq!(
         unsafe { slot_state(ring[0] as *mut RcHeader) },

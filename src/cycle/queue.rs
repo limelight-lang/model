@@ -717,7 +717,7 @@ impl InFlightBatch {
         self.head.is_null()
     }
 
-    /// Take every root in the batch in [`walk_chain`]'s order — the newest
+    /// Take every root in the batch in [`walk_chain`]'s order — the head
     /// segment first and, inside each segment, the oldest entry first — and
     /// stop at the first `visit` that answers false. **False** when it stopped
     /// early.
@@ -749,7 +749,7 @@ impl Drop for InFlightBatch {
     }
 }
 
-/// Every entry of a chain whose head holds `fill` entries, newest segment
+/// Every entry of a chain whose head holds `fill` entries, head segment
 /// first, stopping at the first `visit` that answers false. **False** when it
 /// stopped early.
 ///
@@ -828,124 +828,26 @@ pub(crate) fn detach_candidates() -> InFlightBatch {
     }
 }
 
-/// Join a batch back into this thread's live lane: every root still
-/// registered, and every record in the one chain a later detach takes.
-///
-/// This is the disposition of every collection, the abort and the ordinary end
-/// alike. A root the collection did not free keeps its registration and its
-/// entry (`rfc/model/gc/cycle/questions.md`, Y12 clause 5); a member it did
-/// free keeps its entry too, that entry being what holds the freed slot out of
-/// the allocator's hands until it is retired (`dev/DECISIONS.md`, "the commit
-/// clears no candidate bit, and a member the queue names keeps its slot
-/// withheld"; the retirement is `PLAN.md` S39.2's).
-///
-/// **The lane a batch comes back to is not the lane it left.** The ordinary
-/// collection tears down inside its own trace window (`dev/DECISIONS.md`, "the
-/// member list is the pressure path's alone"), and every sever releases the
-/// live children of a member: each such release registers a candidate, which
-/// installs a fresh segment in the write position the detach emptied. So the
-/// two chains are joined rather than one written over the other. Writing the
-/// batch's head into an occupied write position would drop that segment out of
-/// the chain with its own roots' bits standing, which no later decrement can
-/// undo (Y6's permanent miss).
-///
-/// **It has no refusal to report**, which is what lets `ActiveTrace`'s drop
-/// call it on an unwind. What it does have is the growth path's own last
-/// resorts, and the copy below reaches them exactly as a registration does: a
-/// spare cell, then the critical reserve — drawn, and arming this thread with
-/// it — then the overflow buffer, whose bound is an abort
-/// ([`register_candidate`]). One growth serves the whole copy where a segment
-/// is to be had; where none is, every remaining record takes the refused path
-/// of its own. A close that reaches the abort is a thread whose pool has been
-/// refusing across polls.
-///
-/// **What it moves in the ledger is what those paths move.** The spliced
-/// segments left the write position full and stay charged, a candidate write
-/// into a segment charges nothing, and the emptied head was the write segment,
-/// whose payload was never charged ([`release_queue_segments`]). Three things
-/// do move it: a growth inside the copy charges the payload of the segment it
-/// displaces; a record that reaches the overflow buffer charges its own eight
-/// bytes; and a head the detach caught at capacity is spliced rather than
-/// copied, which is where that segment leaves the write position, so it takes
-/// the growth's charge there.
-pub(crate) fn merge_candidates(mut batch: InFlightBatch) {
-    let head = batch.head;
-    if head.is_null() {
-        return;
-    }
-
-    let fill = batch.fill;
-    batch.head = std::ptr::null_mut();
-
-    let state = owner_state();
-    // The batch is non-empty, so the thread that detached it had a base block,
-    // and a base block belongs to the thread's life rather than to a
-    // collection's ([`release_queue_base`]).
-    assert!(
-        !state.is_null(),
-        "the queue base block left with a batch out"
-    );
-    let q = unsafe { owner_state_ref(state) };
-
-    if q.write_segment.get().is_null() {
-        // Nothing has registered since the detach, so the chain goes back the
-        // way it came out: two words and no copy. That is every collection
-        // that freed nothing, and every abort.
-        q.write_segment.set(head);
-        q.write_len.set(fill);
-        return;
-    }
-
-    // The entries written since the detach are newer than every entry of the
-    // batch, so the batch goes behind the whole of the live chain — which is
-    // also where the rule that every segment behind the head is full still
-    // holds of its full segments ([`walk_chain`]).
-    let mut tail = q.write_segment.get();
-    while !unsafe { (*tail).next }.is_null() {
-        tail = unsafe { (*tail).next };
-    }
-
-    // A head the detach caught at capacity is spliced with them, that rule
-    // holding of it too. It is the case a copy would pay most for — a full
-    // head cannot fit the room a live head has left, so copying one always
-    // takes the growth path.
-    if fill == SEGMENT_CAPACITY {
-        unsafe { (*tail).next = head };
-        // The charge the ordinary growth makes when a full segment leaves the
-        // write position, made here because this is where that segment leaves
-        // it: the detach caught it before the charge, and
-        // [`release_queue_segments`] discharges one payload for every segment
-        // behind the head.
-        gc_metadata::charge(BLOCK_PAYLOAD);
-        return;
-    }
-
-    unsafe { (*tail).next = (*head).next };
-
-    unsafe { (*head).next = std::ptr::null_mut() };
-
-    // A part-filled head is the one segment the splice cannot take, so its
-    // records go in through the ordinary write. One growth serves them all
-    // where a segment is to be had — what is copied fits the room the live
-    // write segment has left plus one fresh segment, both capacities being the
-    // same — and where none is, each record takes the refused path itself.
-    for index in 0..fill {
-        let entity = unsafe { segment_entries(head).add(index).read() };
-        unsafe { append_entry(state, entity) };
-    }
-
-    // To a spare cell rather than to the reserve wherever one is empty: the
-    // next growth is the one this collection's own severing takes, and a cell
-    // it can reach is worth more than a block the pool holds.
-    let spare_count = q.spare_count.get();
-    if spare_count < SPARE_SEGMENTS {
-        q.spares[spare_count].set(head);
-        q.spare_count.set(spare_count + 1);
-        return;
-    }
-
-    gc_metadata::release_to_critical(head);
+/// Combine a detached batch and the active lane without drawing memory.
+/// Both partial-head bounds survive until compaction finishes. Record order
+/// across segments is unspecified; each registration survives exactly once.
+/// This operation does not read entity headers and performs no retirement.
+pub(crate) fn merge_candidates(batch: InFlightBatch) {
+    compaction::finish(batch, false);
 }
+
+/// Retire completed deaths at the owner's exact reading, and compact the lane
+/// and overflow without drawing memory. A live or unfinished death stays
+/// registered. Surplus segments replenish the spare cells, then the reserve.
+///
+/// # Safety
+/// No membership or shadow reader can still name an entry being retired, and
+/// no arena reset is open. Every entry still names its own held allocation.
+pub(crate) unsafe fn retire_candidates() {
+    compaction::finish(detach_candidates(), true);
+}
+
+mod compaction;
 
 /// Take one spare, or null when both cells are empty.
 #[inline]

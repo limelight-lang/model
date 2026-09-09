@@ -19,8 +19,9 @@
 //! it knows them only through their two interfaces.
 //!
 //! The candidate queue is the exception that proves the split: it knows
-//! neither, holding entity pointers it never dereferences and pool
-//! blocks it never carves.
+//! neither layout, holding entity pointers and pool blocks it never carves.
+//! Owner retirement reads the entity's count/free mark through `refcount`
+//! and returns its slot through `memory::stdapi::ll_free`.
 //!
 //! # What each module owns, and for how long
 //!

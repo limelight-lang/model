@@ -8,6 +8,49 @@ never edited or deleted.
 
 ---
 
+## 2026-09-09 — owner retirement compacts both bounded chains before publication
+
+S39.2 pre-change review (Sage role, performed locally): the queue baseline
+passes 41 tests. The real three-member collection regression fails with three
+dead registrations left rather than zero. The existing merge walks the active
+segments, splices full segments unread and copies at most one partial head;
+it can draw a spare/reserve block or consume overflow for that copy.
+
+The replacement keeps both original head/fill bounds on the cleanup frame.
+It packs records forward across the existing segment storage, then reverses
+the occupied prefix so that only the published head can be partial. A write
+cannot catch unread input: every skipped partial tail and retired record adds
+space behind the read cursor. Overflow is compacted in its own bounded array.
+This costs one reading per record, at most one pointer copy per survivor and
+linear segment walks. It draws no manager block and owns no global allocation;
+its extra working set is a fixed cleanup frame and the entity header read for
+each candidate. A live entity needs only the count read; a zero-count entity
+also needs the flags read. There is no new refusal.
+
+The cleanup owner must retain read/write cursors, both partial bounds, a pending
+return and both halves of any reversed chain until publication. Its drop
+finishes the operation with fault injection disabled. Retirement is allowed
+only after membership reads and shadow sweeps; a pressure collection therefore
+also needs cleanup after its standing list ends. A count of zero without the
+completed-free mark is kept. The allocation-identity premise is the registered
+occupancy established by the preceding reset repair, not the mark alone.
+
+Post-change Critic reading was local, not an independent agent review. It
+kept the two-word restore when no active chain needs combining. Ordinary
+retirement runs after the trace window's drop; pressure also retires after
+each standing list ends. A final guard pass remains even after a pressure
+round has already retired, so the implementation deliberately pays another
+reading of survivors there. A nonempty active lane needs a header-free merge
+pass before the final retirement pass.
+
+The cleanup frame survives the injected queue transitions, including a pending
+slot whose marks have been cleared and a partly reversed chain. Ownership
+crosses to `ll_free` before the call: an allocator panic is not retried because
+the slot might already have been returned or unmapped. This is a boundary of
+the recovery claim, as it is for the existing trace-window returns; no rollback
+inside a raising allocator is claimed. A nested gate guard lowers `COLLECTING`
+even when retirement itself raises. Verification is recorded in S39.2.
+
 ## 2026-09-09 — a registered dead survivor is a held occupant until owner retirement
 
 Owner: S39.3, candidate allocation identity through arena reset.

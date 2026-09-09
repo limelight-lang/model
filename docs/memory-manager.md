@@ -11,13 +11,12 @@ not built, it says so. Superseded versions live in
 [`docs/history/`](history/) and are marked as such; the rule that keeps
 this file honest is in [`dev/WORKFLOW.md`](../dev/WORKFLOW.md).
 
-> **The crate has no cycle collector as of 2026-08-26.** `rc-walk`,
-> `rc-trace` and `rc-satb` were deleted whole — code and documents — and
-> `rc-cycle` (`rfc/model/gc/rc-cycle.md`) is the only design in force and is
-> not built. Until S36 of `PLAN.md` wires a collection in, a garbage ring is
-> retained; acyclic garbage dies by counting as it always did. Passages below
-> that describe a collector are dated and marked, and the code they described
-> is on the branch `archive/pre-rc-cycle`.
+> **The in-line cycle collector is `rc-cycle`.** Ordinary collections retain
+> shadow rows through teardown; pressure collections harvest a bounded member
+> list and return trace storage before teardown. Both retire completed
+> candidate slots after their membership readers finish. The collector worker
+> remains planned. The deleted `rc-walk`, `rc-trace` and `rc-satb` code and
+> documents are preserved on `archive/pre-rc-cycle`.
 
 ---
 
@@ -304,6 +303,22 @@ the bump over the thread's workspace and gives back every block above it. The
 returns come before the reset so that a panic in the hand-back still finds them
 made; the sweep comes first so that an unwind anywhere after it returns what
 the window withheld instead of abandoning it.
+
+Candidate retirement runs after the collection's last membership read: after
+`ActiveTrace` closes on the ordinary path, and after the standing harvested
+list ends on the pressure path. It removes only zero-count entries whose
+teardown has reached `ll_free`, clears `CANDIDATE_BIT` and `DEAD_IN_PLACE`,
+and returns the slot through `ll_free`. Live and unfinished registrations
+survive. The retained occupancy count includes registered dead survivors until
+this return spends their count.
+
+Queue combination saves both input head/fill bounds, packs entries into the
+existing segments and reverses the occupied prefix so only the output head
+can be partial. Overflow is compacted in place. No block is drawn; surplus
+segments replenish spare cells and then return to the critical reserve. Only
+output interior segments remain payload-charged. A fixed cleanup frame owns
+both partial bounds, the read/write cursors, reversed links and any pending
+slot until publication, including during unwind between those transitions.
 
 The free path reaches no allocator at all: the window's own memory is one
 64-byte control line at the head of the workspace the arena already holds, and

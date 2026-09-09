@@ -142,6 +142,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("EDGE_DISPATCHES", false),
         ("EXIT_GUARD", true),
         ("EXIT_PHASE", false),
+        ("FAIL_AT", false), // test-only const Cell, no destructor registration
         ("FREED", false),
         ("HEAP", false),
         ("LATE_CELL", false),

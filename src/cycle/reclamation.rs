@@ -61,9 +61,9 @@
 //! trace that pops it reads a refcount out of the body to apply the zero-count
 //! rule (`crate::cycle::mark`). **This teardown clears no bit** — the entity is
 //! torn down, its children released and its weak cells nulled, and the address
-//! stays readable and out of the allocator's hands. The step that retires an
-//! entry whose entity is gone, and hands the slot back with it, is `PLAN.md`
-//! S39.2.
+//! stays readable and out of the allocator's hands. After the collection's
+//! membership and shadow readers end, `queue::retire_candidates` removes the
+//! completed deaths and returns their slots through `ll_free`.
 //!
 //! # Why the queue is the arena's
 //!

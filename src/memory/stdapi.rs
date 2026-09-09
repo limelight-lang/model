@@ -352,16 +352,8 @@ pub unsafe fn ll_free(ptr: *mut u8) {
             "entity freed at a live refcount {refcount} at {:#x}",
             ptr as usize
         );
-        // The same hazard one field up is answered by an arm rather than by a
-        // check here: the candidate queue holds raw pointers, so a slot that
-        // reached the free list while an entry still names it would leave a
-        // root aimed at memory about to be handed out again. What prevents it
-        // is the candidate arm below, which withholds such a slot instead of
-        // freeing it. Nothing clears the bit that arm reads — thread exit
-        // leaves it standing and a collection's commit frees a member into the
-        // arm rather than around it — so a slot withheld here is withheld for
-        // the life of the process, and `PLAN.md` S39.2 is the step that
-        // chooses the fate of the entry behind it.
+        // A registered slot cannot enter a free list. Owner retirement removes
+        // the record and clears its two slot bits before returning through here.
     }
 
     // **A second free of one entity does nothing.** The flags bit taken here
@@ -437,16 +429,9 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // zero-count member out of the pool (`dev/DECISIONS.md`, "A block's `used`
     // falls at the slot's return").
     //
-    // A collection's commit reaches this arm like any other death: a member
-    // the queue still names is torn down and its slot withheld, which is what
-    // keeps the entry's address readable for the trace that pops it
-    // (`crate::cycle::mark`, the zero-count root; `crate::cycle::reclamation`
-    // is the teardown). Nothing retires such an entry yet, so the slot is
-    // withheld for the life of the process and `PLAN.md` S39.2 is the step
-    // that chooses the fate. That retirement will come through this same entry
-    // point, so it owes the mark the take above set a clear of its own;
-    // without that clear its free reads as a repeat and the slot never returns
-    // (`crate::refcount::DEAD_IN_PLACE`).
+    // The commit withholds registered members until its last membership read
+    // and row sweep. The owner's queue retirement then removes each completed
+    // death, clears CANDIDATE_BIT and DEAD_IN_PLACE, and calls this same free.
     if crate::refcount::is_registered_candidate(flags) {
         return;
     }

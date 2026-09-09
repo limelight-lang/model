@@ -139,7 +139,17 @@ pub(crate) fn take_pressure_collections() -> usize {
 
 impl Drop for CollectingThread {
     fn drop(&mut self) {
-        COLLECTING.with(|collecting| collecting.set(false));
+        struct LowerGate;
+        impl Drop for LowerGate {
+            fn drop(&mut self) {
+                COLLECTING.with(|collecting| collecting.set(false));
+            }
+        }
+        let _lower_gate = LowerGate;
+        // This guard outlives every trace window, membership and scratch arena
+        // of either collection path, including their unwind cleanup. Keep the
+        // collecting gate held until the final slot returns have finished.
+        unsafe { crate::cycle::queue::retire_candidates() };
     }
 }
 
@@ -237,10 +247,9 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
 ///
 /// **The entity allocation path starts one**, on the refusal that would
 /// otherwise be the caller's memory-exhausted
-/// ([`crate::memory::heap::entity_alloc`]). What it returns to that caller is a
-/// member's body rather than its slot: a member is a registered candidate and
-/// `ll_free` withholds such a slot until an entry is retired (`PLAN.md`
-/// S39.2).
+/// ([`crate::memory::heap::entity_alloc`]). Completed candidate slots return
+/// after the standing membership ends, before another bounded round and before
+/// this function returns to the allocation retry.
 ///
 /// # Safety
 /// As [`collect_off_the_poll`], and the caller holds no allocation in flight
@@ -310,6 +319,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
         }
 
         drop(standing);
+        unsafe { crate::cycle::queue::retire_candidates() };
         freed += taken;
         if taken > 0 && roots != ALL_ROOTS {
             // A bound was in force and it paid, so the roots past it are worth
@@ -320,15 +330,10 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
 
         if roots != ALL_ROOTS {
             // **A bounded round that freed nothing says nothing about the
-            // roots past the bound**, so this is not "there is no more
-            // garbage" and must not be read as one. Two things produce it and
-            // neither is rare: a prefix that names only slots this loop has
-            // already freed — an entry is never retired, so the dead stand in
-            // the lane where the next bound re-selects them (`dev/DECISIONS.md`,
-            // "the commit clears no candidate bit") — and a prefix whose roots
-            // are live. What the collection can still do for its caller is
-            // hand the rest to the poll, whose own collection keeps its rows
-            // and has no region to overflow.
+            // roots past the bound**, so this is not proof that no garbage
+            // remains. Completed deaths have been retired, but a prefix of
+            // externally referenced roots can still hide a ring past the
+            // bound. The poll keeps its rows and has no region to overflow.
             crate::gc::arm();
         }
 

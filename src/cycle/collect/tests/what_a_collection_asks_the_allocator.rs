@@ -51,24 +51,9 @@ fn exempt_allocations(walks: usize, members: usize) -> usize {
 /// A class of `properties` Box properties whose instance fits one size class
 /// exactly, with a destructor and with the ring's edge at `prop_offset(0)`.
 ///
-/// **The exact fit is what keeps the case's blocks its own**, and it is not
-/// decoration: the members a case frees keep their slots, the entry naming each
-/// one withholding the return (`PLAN.md` S39.2), so the block never empties and
-/// is abandoned full when the thread exits. A case that reasons over a block of
-/// its class as one it filled itself then reads foreign occupants
-/// (`memory::heap::tests::the_collection_a_refusal_starts`, which sizes its
-/// classes the same way, and `dev/POSTMORTEM.md`, 2026-09-07).
-///
-/// Exactness pins that this instance does not round up into another class's
-/// bucket. It does not stop a narrower instance from rounding up into this one,
-/// so a width shared with the suite is chosen only where the case leaves its
-/// blocks **full** — an adopter of a full block is served nothing by it and asks
-/// the pool, which is the premise other cases stand on.
-///
-/// The price is stated rather than hidden: a block of a width nothing else
-/// builds is never adopted either, so what these cases withhold stays out of
-/// circulation for the life of the process. Four blocks at the four wide
-/// classes, and eight at the abort case's.
+/// Exact sizing makes block occupancy predictable. Separate widths keep these
+/// fixtures independent of one another; completed registered slots return at
+/// the owner's final reading, after every membership reader has finished.
 fn a_class_of_its_own(name: &str, properties: usize, destructor: *const ()) -> *const Class {
     let mut builder = ClassBuilder::new(name).prop("next", true);
     let fillers: Vec<String> = (1..properties).map(|index| format!("f{index}")).collect();
@@ -123,6 +108,26 @@ fn block_of(entity: *mut Object) -> usize {
     BlockHeader::of_ptr(entity as *const u8) as usize
 }
 
+#[test]
+fn registered_large_candidates_return_their_mappings_at_owner_retirement() {
+    let _g = test_guard();
+    crate::cycle::queue::release_queue_segments();
+    let class = os_direct_class("RetiredLargeRing");
+    let mut arena = Arena::new();
+    let members = unsafe { ring(&mut arena, [class; 2]) };
+    let runs = members.map(block_of);
+    assert!(
+        runs.iter()
+            .all(|&run| crate::memory::large_entity::holds_run(run))
+    );
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 2);
+    assert!(
+        runs.iter()
+            .all(|&run| !crate::memory::large_entity::holds_run(run))
+    );
+    assert_eq!(crate::cycle::queue::candidate_count(), 0);
+}
+
 /// The ordinary path, and with it the frames a large body's death enters: a
 /// garbage ring holding one child whose body is an OS-direct run.
 ///
@@ -151,9 +156,8 @@ fn an_ordinary_collection_asks_only_what_its_debug_checks_ask() {
     let mut context = LLContext { arena: &mut arena };
     // The child takes the edge as its creation reference rather than through
     // the barrier: no decrement happens, so the candidate gate never sees it
-    // and no queue entry names its body. That is what lets its free run to the
-    // end inside the collection instead of standing withheld past it
-    // (`PLAN.md` S39.2).
+    // and no queue entry names its body. Its free therefore belongs to the
+    // trace window rather than the owner's later candidate retirement.
     let child = unsafe {
         let child = new_constructed(&mut context, wide, MemoryCategory::GcHeap);
         *Object::prop_at(members[0], prop_offset(1)) =
@@ -198,7 +202,7 @@ fn an_ordinary_collection_asks_only_what_its_debug_checks_ask() {
         marked, 1,
         "one return was withheld and popped by the close, and it is the child's: \
          a member is a registered candidate, and `ll_free`'s candidate arm answers \
-         ahead of the trace window's (`PLAN.md` S39.2)"
+         ahead of the trace window's"
     );
     assert!(
         !crate::memory::large_entity::holds_run(run),
@@ -308,10 +312,8 @@ fn a_collection_that_nulls_a_weak_cell_asks_only_what_its_debug_checks_ask() {
 /// this reads is the collection that follows it.
 ///
 /// **This is the one case with no size class of its own, and it does not need
-/// one**: its members stand in a retained block, which no thread adopts. What
-/// it does leave is that block, with two occupants the entries naming their
-/// slots withhold for the life of the process, and every later heap census
-/// visits them.
+/// one**: its members stand in a retained block, which no thread adopts. The
+/// block remains held through the membership reading and returns at retirement.
 #[test]
 fn a_collection_of_retained_survivors_asks_only_what_its_debug_checks_ask() {
     let _g = test_guard();
@@ -387,10 +389,13 @@ fn a_collection_of_retained_survivors_asks_only_what_its_debug_checks_ask() {
     assert_eq!(freed, MEMBERS, "both survivors");
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), MEMBERS);
     assert_eq!(
-        unsafe { crate::memory::retained::held_occupant_count(block) } as usize,
-        MEMBERS,
-        "and the block still counts them, the entries naming their slots withholding \
-         the return (`PLAN.md` S39.2)"
+        unsafe {
+            crate::memory::block_pool::load_block_kind(
+                &raw const (*(block as *const BlockHeader)).kind,
+            )
+        },
+        crate::memory::block_pool::BLOCK_KIND_FREE,
+        "owner retirement returned the retained block; its count word is no longer readable as retained"
     );
 
     let exempt = exempt_allocations(walks, MEMBERS);

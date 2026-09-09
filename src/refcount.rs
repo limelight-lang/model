@@ -172,9 +172,8 @@ pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 /// (`crate::memory::reset_window`); and every path that frees a slot it never
 /// published, which goes through `crate::memory::stdapi::free_unpublished`. A
 /// path that frees such a slot without clearing first leaks it, its free being
-/// read as a repeat. The
-/// retirement of an entry naming a withheld slot is the one such path not built
-/// yet, and it owes the clear (`PLAN.md` S39.2). A collection's commit frees a
+/// read as a repeat. Owner retirement clears both slot bits before hand-back.
+/// A collection's commit frees a
 /// member the queue still names into exactly that state: the free takes the
 /// mark, the candidate arm withholds the slot, and the entry stays the record
 /// of it (`crate::cycle::reclamation`).
@@ -1157,22 +1156,11 @@ pub(crate) fn is_registered_candidate(flags: u32) -> bool {
 /// is still alive is one no later decrement can register again, and the ring it
 /// closes is a permanent miss (`rfc/model/gc/cycle/questions.md`, Y6).
 ///
-/// **No production path clears it today**, and the two that look as though
-/// they should do not: thread exit gives the queue's segments back and leaves
-/// every entity's bit standing, which it names as a permanent miss
-/// ([`crate::cycle::queue::release_queue_segments`]), and a collection's commit
-/// withholds a member's slot rather than returning it, the entry naming that
-/// slot being the record that keeps the address readable
-/// ([`crate::cycle::reclamation`]). `PLAN.md` S39.2 is the step that chooses
-/// the fate of an entry whose entity is torn down.
+/// Owner retirement clears this bit together with `DEAD_IN_PLACE` before
+/// `ll_free`. This separate operation is for fixtures that dismantle a queue
+/// manually; production uses the combined write in `queue::compaction`.
 #[inline]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the retirement that clears an entry's bit is `PLAN.md` S39.2's"
-    )
-)]
+#[cfg(test)]
 pub(crate) unsafe fn clear_candidate_bit(header: *mut RcHeader) {
     unsafe { update_header_flags(header, |flags| flags & !CANDIDATE_BIT) };
 }

@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-09 · Active: S39, from S39.2. S36 has S36.8 left; S44 has one step left, S44.5,
+Updated: 2026-09-09 · Active: S39, from S39.4. S36 has S36.8 left; S44 has one step left, S44.5,
 and it waits on Edmond's word.
 The single-thread retirement sequence is S39.3 (candidate lifetime through
 reset), then S39.2 (complete retirement and compaction), then S39.4 (measure
@@ -72,13 +72,13 @@ without the flood ladder 32 tests in 79 s, the ladder's own module 14 in
 clean. `array::entity` is the expensive one and is taken by test rather
 than whole; the copy tests of that module ran 25 in 59 s.
 
-**The crate collects no cycles.** S30 deleted `rc-walk`, `rc-trace` and
-`rc-satb` on 2026-08-26 and the design in force is unbuilt, so a garbage ring
-is retained and acyclic garbage dies by counting. The stages below build
-`rc-cycle`; what the deletion took, what it kept and why is `dev/DECISIONS.md`
-under that date, and the old code is on `archive/pre-rc-cycle`. S28 was
-abandoned rather than closed by the same ruling, and S29 was split — its
-second half is carried as S39.
+**The crate collects cycles in-line.** S36.7 wired the collector and
+S36.15 its allocation-pressure caller. Ordinary collections keep rows through
+teardown; pressure collections harvest a bounded member list. The worker is
+still S38's. S30 deleted `rc-walk`, `rc-trace` and `rc-satb` on 2026-08-26;
+that code is on `archive/pre-rc-cycle` and its removal is recorded in
+`dev/DECISIONS.md`. S28 was abandoned by that ruling, and S29's second half
+is carried as S39.
 
 **The stages below went through a Critic round and four Sage rulings on
 2026-08-26**, on Edmond's instruction, and are the amended form. The rulings and their reasons are in `dev/DECISIONS.md`.
@@ -2960,12 +2960,14 @@ stage claiming the frees while building none of them.
         refusal it raises memory-exhausted on, with no second collection for
         that raise (`rfc/runtime/exceptions.md`, "Allocation failure is an
         ordinary exception"); under a test-only cap on the blocks the pool
-        hands out, a heap holding one garbage ring runs exactly one collection,
-        asks the pool exactly once more
-        (`memory::block_pool::take_pool_requests`) and is refused, the arming
-        state read with it; and a second case reads the other polarity — every
-        member of that ring is torn down and its slot still withheld, which is
-        why the retry is refused, and it goes red when S39.2 lands
+        hands out, a heap holding one garbage ring reuses all three member
+        slots after a collection, then refuses the request that exhausts those
+        returns too; the run reads two collection entries and three pool
+        requests, with the arming state beside them. A separate empty-queue
+        control still collects once, asks the pool twice and refuses. The
+        occupancy/address case verifies that all three member slots return
+        *(criterion updated by S39.2 on 2026-09-09; the original withholding
+        polarity was seen red before the assertions were flipped)*
       tier: T2 · role: Critic
       Sage 2026-09-07: the criterion "allocates past the pool's last block and
         is served rather than refused" could not be met here and moves to
@@ -3502,7 +3504,7 @@ its existing blockers.
         in a changed source. The abstract R2 checker beside the supporting
         protocol document remains green at 5,260 exhaustive cases.
 
-- [ ] S39.2 The owner's read retires completed deaths across the whole queue   *(after S36.15 and S39.3)*
+- [x] S39.2 The owner's read retires completed deaths across the whole queue   *(after S36.15 and S39.3)*
       done: at an exact owner reading, every entry whose own allocation is
         still held, whose entity reads zero and whose teardown has completed
         is retired, including
@@ -3564,6 +3566,55 @@ its existing blockers.
         here before cleanup starts dereferencing entries; a bare stack header
         or duplicated filler pointer is not a candidate allocation the owner
         may retire. S39.1 then consumes the tested retirement operation.
+      handoff: closed 2026-09-09. `queue::compaction` saves both
+        original head/fill bounds, compacts forward through the existing
+        segments and reverses the occupied prefix before publication. Overflow
+        compacts within its own array. Original interior charges minus final
+        interior charges are discharged exactly once; surplus segments go to
+        spare cells and then the critical reserve. Combining into an empty
+        active lane without retirement retains the original two-word restore.
+      handoff: retirement runs from `CollectingThread::drop`, after every
+        window, membership and arena has ended, with the collecting gate still
+        held. Pressure also retires after each standing list ends so a later
+        bounded round and the allocator's retry can use the slots. The final
+        pass may revisit surviving records after the last pressure round;
+        a nonempty active lane also needs a header-free combination pass
+        before final retirement. These are correctness cleanup costs, not an
+        early external-drain optimization; S39.4 owns that experiment.
+      handoff: Sage pre-change and Critic post-change readings were performed
+        locally, without an independent agent. The baseline and lifetime/budget
+        review are in `dev/DECISIONS.md`, "owner retirement compacts both
+        bounded chains before publication". Critic found two cleanup details:
+        the collecting gate needs a nested drop so a raising retirement still
+        lowers it, and ownership must cross to `ll_free` before the call,
+        because retrying a free interrupted inside the allocator can duplicate
+        a return. The frame recovers every queue-transition injection; it does
+        not claim rollback inside a raising allocator operation.
+      handoff: the real-object fixtures cover both partial heads, full
+        interiors, empty/all-dead/all-live output, exact capacity, overflow,
+        segment identity and ledger balance under a zero-block budget. Eight
+        mutations were seen failing: heads-only retirement, omitted overflow,
+        lost second bound, a pool request, omitted unwind cleanup, uncleared
+        free mark, a charged final head and unfinished-teardown retirement.
+        The pool-request mutation initially passed under `FORCE_OOM`, which
+        refuses before counting; the fixture now uses `budget_blocks(0)` and
+        sees that mutation fail with one request instead of zero. Eight small
+        unwind boundaries and a partially reversed multisegment case pass,
+        along with the real trace-close and collection-gate unwind cases.
+      handoff: verification — 831 tests total: default 823 passed/8 ignored,
+        one ordinary run and three at four threads; `hash-folding` 823/8;
+        `debug-journal` 827 passed/10 ignored, three runs. Release builds with
+        no warnings, every benchmark target builds, and `+1.94 fmt --check`
+        passes. The citation checker reports 498 citations and the same seven
+        known misses; RFC linkcheck finds no broken file or anchor.
+      handoff: Miri completed the ordinary retirement regression, the eight
+        small unwind boundaries (final run: 21.63 s on Miri's clock), and
+        the GC-destructor reset/retirement case (26.36 s on Miri's clock).
+        The full two-chain fixture hit its 240-second wall limit and the
+        OS-direct ring hit its 180-second limit; neither is a completed Miri
+        check. Both pass natively. No concurrent collector is built or tested
+        by this step. The next experiment is S39.4.
+
 
 - [ ] S39.4 Measure early slot return on the successful pressure teardown   *(after S39.2)*
       done: split `reclaim` at the successful path's boundary after ALL sever

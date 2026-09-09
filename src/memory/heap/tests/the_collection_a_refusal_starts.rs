@@ -4,9 +4,8 @@
 //! Every case runs on a thread of its own, because what it needs is an entity
 //! heap whose block for one size class it filled itself — the harness reuses
 //! its threads, and a class an earlier case allocated in holds a block with
-//! room that would serve the request these mean to refuse. Each also leaves
-//! three withheld slots behind, so the class is one no other case drains
-//! ([`a_class_of_its_own`]).
+//! room that would serve the request these mean to refuse. Each case fills
+//! every available slot before observing the pool cap.
 //!
 //! The injection is `block_pool::budget_blocks` rather than `FORCE_OOM`: a
 //! budget refuses this thread only, and refuses after counting the request, so
@@ -25,9 +24,8 @@ use crate::refcount::{RcHeader, SlotState, slot_state};
 ///
 /// **Each case of this module passes a different count**, because a block is
 /// adopted by size class and not by class: `Heap::alloc_no_block` takes an
-/// abandoned block of the requested class before it asks the pool, and every
-/// case here abandons one holding three permanently withheld slots. Sharing a
-/// class would let one case's leak land in the next case's arithmetic.
+/// abandoned block of the requested class before it asks the pool. Distinct
+/// widths keep the two fixtures' occupancy readings independent.
 ///
 /// Two properties are asserted. The size class is an exact fit, so how many
 /// slots a block holds is arithmetic rather than a guess. And it is not the
@@ -163,10 +161,13 @@ fn a_refusal_starts_one_collection_and_asks_once_more() {
     .join()
     .unwrap();
 
-    assert_eq!(collections, 1, "one collection for the refused request");
     assert_eq!(
-        requests, 2,
-        "the attempt that found no room, and the retry behind the collection"
+        collections, 2,
+        "the served retry and the final exhausted request each collect once"
+    );
+    assert_eq!(
+        requests, 3,
+        "one refused pool request before the served retry, then two at final exhaustion"
     );
     assert!(
         !armed,
@@ -216,12 +217,10 @@ fn a_refusal_with_nothing_to_collect_asks_once() {
     );
 }
 
-/// Why that retry is refused: the collection tore the ring down and every
-/// member's slot is still withheld, the entry naming it being what holds it out
-/// of the allocator's hands. `PLAN.md` S39.2 retires that entry, and this case
-/// is the polarity it flips.
+/// The retry can reuse all three member slots under a pool cap: retirement
+/// lowers occupancy and a later allocation returns each original address.
 #[test]
-fn a_freed_member_keeps_its_slot_out_of_the_allocators_hands() {
+fn a_freed_members_slot_serves_the_retry_under_the_pool_cap() {
     let _g = crate::memory::block_pool::test_guard();
 
     let (states, expected_occupants, occupants, reused) = std::thread::spawn(|| {
@@ -267,7 +266,7 @@ fn a_freed_member_keeps_its_slot_out_of_the_allocators_hands() {
 
         drop(_budgeted);
         unsafe { give_back(&taken) };
-        (states, occupants_before + taken_here, occupants, reused)
+        (states, occupants_before + taken_here - 3, occupants, reused)
     })
     .join()
     .unwrap();
@@ -279,8 +278,10 @@ fn a_freed_member_keeps_its_slot_out_of_the_allocators_hands() {
     );
     assert_eq!(
         occupants, expected_occupants,
-        "and the block still counts the three: `used` rose by the slots the loop took out of it \
-         and fell for none, a return being what lowers it"
+        "retirement returned all three member slots before their reuse"
     );
-    assert_eq!(reused, 0, "so no retry was handed a member's slot back");
+    assert_eq!(
+        reused, 3,
+        "the cap forces all three member slots to serve later requests"
+    );
 }

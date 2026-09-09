@@ -72,12 +72,16 @@ static INNER_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 static INNER_SLOT_CLASS: AtomicUsize = AtomicUsize::new(0);
 static HELD_BOX: AtomicUsize = AtomicUsize::new(0);
 static GC_RESET_ARENA: AtomicUsize = AtomicUsize::new(0);
+static GC_RESET_CANDIDATE: AtomicUsize = AtomicUsize::new(0);
+static GC_RESET_CANDIDATE_KIND: AtomicUsize = AtomicUsize::new(0);
 
 /// A cycle member's destructor entering the reset prepared by its test.
 unsafe extern "C" fn reset_the_candidate_arena(_object: *mut Object) {
     let arena = GC_RESET_ARENA.load(Ordering::Relaxed) as *mut Arena;
     assert!(!arena.is_null(), "the collection had no arena to reset");
     unsafe { arena_reset_full(arena) };
+    let candidate = GC_RESET_CANDIDATE.load(Ordering::Relaxed) as *const u8;
+    GC_RESET_CANDIDATE_KIND.store(unsafe { block_kind(candidate) } as usize, Ordering::Relaxed);
 }
 
 /// A second arena for a nested reset, and a heap box holding `victim` so
@@ -510,7 +514,7 @@ fn a_candidate_killed_by_the_reset_keeps_its_allocation_through_the_next_reset()
 /// inside a reset is refused, but a collection destructor may itself reset an
 /// arena, and the candidate born there must outlive the outer commit.
 #[test]
-fn a_candidate_killed_by_a_gc_destructors_reset_outlives_the_collection() {
+fn a_candidate_killed_by_a_gc_destructors_reset_is_retired_after_the_collection() {
     let _g = crate::memory::block_pool::test_guard();
     crate::cycle::queue::release_queue_segments();
 
@@ -557,42 +561,29 @@ fn a_candidate_killed_by_a_gc_destructors_reset_outlives_the_collection() {
     }
 
     GC_RESET_ARENA.store(arena_ptr as usize, Ordering::Relaxed);
+    GC_RESET_CANDIDATE.store(survivor as usize, Ordering::Relaxed);
+    GC_RESET_CANDIDATE_KIND.store(usize::MAX, Ordering::Relaxed);
     let ring = unsafe { crate::cycle::testing::ring(&mut *arena_ptr, [resetting_cls, other_cls]) };
     assert_eq!(unsafe { crate::gc::ll_gc_collect_cycles() }, 2);
     GC_RESET_ARENA.store(0, Ordering::Relaxed);
-
-    let survivor_header = survivor as *mut RcHeader;
-    assert_eq!(unsafe { crate::refcount::entity_refcount(survivor) }, 0);
+    GC_RESET_CANDIDATE.store(0, Ordering::Relaxed);
     assert_eq!(
-        unsafe { block_kind(survivor as *const u8) },
-        crate::memory::block_pool::BLOCK_KIND_RETAINED,
-        "the destructor's reset returned a block still named by the queue"
+        GC_RESET_CANDIDATE_KIND.load(Ordering::Relaxed),
+        crate::memory::block_pool::BLOCK_KIND_RETAINED as usize,
+        "the reset must retain the allocation until the outer membership ends"
     );
 
-    let mut scratch = crate::cycle::testing::open_arena();
-    assert_eq!(
-        unsafe { crate::cycle::mark::mark(&mut scratch, survivor_header) },
-        crate::cycle::mark::MarkResult::Complete
-    );
-    scratch.reset();
-
+    // The return is observed through the queue and block kind, never through
+    // a header whose allocation the collection has already returned.
     let mut registrations = Vec::new();
     crate::cycle::queue::collect_lane_tokens(&mut registrations);
+    assert!(registrations.is_empty());
     assert_eq!(
-        registrations
-            .iter()
-            .filter(|&&entry| entry == survivor_header)
-            .count(),
-        1
+        unsafe { block_kind(survivor as *const u8) },
+        crate::memory::block_pool::BLOCK_KIND_FREE,
+        "final owner retirement returned the reset-killed candidate's block"
     );
     crate::cycle::queue::release_queue_segments();
-    for registration in registrations {
-        unsafe {
-            crate::refcount::clear_candidate_bit(registration);
-            crate::refcount::clear_dead_in_place(registration);
-            crate::memory::stdapi::ll_free(registration as *mut u8);
-        }
-    }
     set_current_context(std::ptr::null_mut());
     let _ = ring;
 }
