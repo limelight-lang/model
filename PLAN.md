@@ -3864,9 +3864,12 @@ Goal: the one number the design still lacks.
         covers the census beside density. S40.1 therefore retains its valid
         denominator while its production-derived numerator remains blocked on
         S37.1. Sage and Critic independently accepted this boundary; their
-        review added the reusable target visitor, checked accumulation, the
-        explicit synthetic-row safety clause and positive retained/large
-        coverage. Four source mutations were seen red: using refcount without
+        review added a target visitor private to the test-only measurement
+        module, checked accumulation, the explicit synthetic-row safety clause
+        and positive retained/large coverage. It is not a production hook:
+        S37.1 owns the traversal in `mark`, and only a later measurement may
+        reuse this visitor after that path writes real stamps. Four source
+        mutations were seen red: using refcount without
         subtracting the shadow count, ignoring the initialized-group bit,
         treating a large entity's array row count as its index space, and
         failing to exclude a saturated row. The targeted Miri slice is clean

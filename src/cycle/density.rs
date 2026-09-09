@@ -224,9 +224,11 @@ pub(crate) unsafe fn internal_edges(arena: &TraceScratchArena) -> InternalEdgeCe
 /// Hand every non-saturated target and its recoverable internal in-edge count
 /// to `visit`, and answer how many saturated rows were excluded.
 ///
-/// This is the reusable row boundary rather than another policy layer: S37.1
-/// can inspect the production stamp of each yielded target without copying the
-/// population and saturation rules, while no age or threshold enters here.
+/// This is a test-only extraction point, not a production hook: `density` is
+/// compiled only under `cfg(test)` and this function is private to it. S37.1
+/// owns its traversal in `mark` and cannot call this function. After that
+/// production path exists, a measurement in this module may reuse this visitor
+/// to inspect the stamps it wrote without adding age or threshold policy here.
 ///
 /// # Safety
 /// As [`internal_edges`].
