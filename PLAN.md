@@ -3083,6 +3083,17 @@ stage claiming the frees while building none of them.
         collection's consistency window between the final scan decision and
         guard acquisition; encode that boundary in the API so a future caller
         cannot pass a stale condemned list as an in-line proof.
+      note 2026-09-09 — the first owner-proof attempt (`195ddc5`) is withdrawn
+        by `faad4f2`. A fixed heap did make the stale-count and zero-count arms
+        unreachable, but `validate_component` also independently derives
+        `IN(m)` from the members' cells and compares it with the row machinery's
+        proposal before any destructor runs. Removing it turns a row-arithmetic,
+        grouping, saturation, reverse-index or placement defect from a refused
+        collection into irreversible user destructors. It also removes the
+        ordinary path's `ExternallyReferenced -> stamp_component` producer,
+        narrowing Y9 to post-destructor resurrection. A future shortcut must
+        retain an equally early independent check and preserve that producer;
+        the decision is in `dev/DECISIONS.md` and `rfc`'s journal.
 
 - [x] S36.16 Carry the collection's two paths into `rfc`   *(after S36.7)*
       done: `model/gc/rc-cycle.md`'s "Concurrency" says the ordinary path

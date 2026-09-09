@@ -8,6 +8,32 @@ never edited or deleted.
 
 ---
 
+## 2026-09-09 — retain the pre-destructor cross-check on the owner path
+
+The synchronous owner trace keeps `validate_component` before guards and user
+code. Its heap is fixed between scan and that call, so the stale-count and
+zero-count answers cannot arise there; that fact is not sufficient to remove
+the call. The validation independently derives each member's internal incoming
+edge count by walking the members' cells and compares it with the proposal
+formed through rows, groups, saturation, reverse indexing and row placement.
+
+**Why.** A disagreement is a collector defect, not a live component. Before
+the first destructor the validation refuses it without writing a guard or
+nulling a weak cell. After a destructor there is no inverse operation: a false
+unreachable verdict has already run user code on a live object. The attempted
+owner-proof shortcut (`195ddc5`) was therefore reverted by `faad4f2`.
+
+**Also retained.** An ordinary pre-destructor `ExternallyReferenced` result
+stamps the component. Removing the call made that producer reachable only from
+post-destructor revalidation, which further narrowed the already insufficient
+producer for Y9.
+
+**Cost.** The ordinary path keeps the two membership walks and their debug
+premise checks. S36.8 remains open: a later optimization must retain an equally
+early independent cross-check and the pre-destructor maturation producer.
+
+---
+
 ## 2026-09-09 — keep early pressure retirement before external-child drops
 
 S39.4 split successful reclamation after the complete sever, every member free
