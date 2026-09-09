@@ -11,7 +11,8 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-09 · Active: S40, from S40.3. S40.1 waits only on its Phase-D corpus arm;
+Updated: 2026-09-09 · Active: S40, from S40.1. Its pruning arm first waits on S37.1's
+live-component stamp producer, then on the Phase-D corpus driver;
 S36 has S36.8 left; S44 has one step left, S44.5,
 and it waits on Edmond's word.
 The single-thread retirement sequence is S39.3 (candidate lifetime through
@@ -3153,6 +3154,20 @@ stage is what makes a trace affordable rather than what tunes it.
         and an age of `min + 1`, a live ring reaches age 3 at its third commit
         and the fourth collection is the one that prunes its edges, read off
         this step's counter.
+      correction 2026-09-09: **the write-side prerequisite is not built.** Y9
+        requires a commit to stamp each component it reads as externally
+        referenced, so that a later edge stops at the mature live core. The
+        current production membership contains only rows scan left
+        `PotentiallyUnreachable`; `Finalization::confirm` and the destructor
+        revalidation can stamp that membership when an exact reading changes,
+        but no path presents the ordinary `Color::Live` population to
+        `stamp_component`. Before adding the edge-side read, this step must
+        build or name the component membership and owner disposition that
+        stamps those live rows, together with S37.4's one-token dormant-lane
+        transition. A one-entity fixture cannot discharge the requirement:
+        the test must include unequal member ages and show the component-wide
+        `min(age) + 1`, plus a turnover that makes the stamp stale. This is a
+        prerequisite correction, not permission to stamp rows individually.
       handoff: the root-side reading — "traced only after it has stayed a
         candidate across `k` collections" — was struck from this step and from
         `rc-cycle.md`'s summary bullet on 2026-08-26. It is not a second
@@ -3823,6 +3838,21 @@ Goal: the one number the design still lacks.
         suppressing the live-age increment, changing `age >= k` to `age > k`,
         and charging a saturated row as one internal edge. The targeted Miri
         slice is clean at 12 passed, 5 ignored, 78.18 s on Miri's clock.
+      correction 2026-09-09 — **the pruning result and the Critic verdict
+        above are withdrawn.** The simulator incremented age for `Color::Live`,
+        but the built driver constructs membership only from
+        `Color::PotentiallyUnreachable`, and both `stamp_component` calls stamp
+        only that membership. The three externally held self-cycles that
+        supplied every reported prune are therefore never stamped; the fourth
+        enters membership but is unreachable and is not stamped. Against the
+        producer in the crate, the load reads 0 / 32 at every `k`, not 18, 12
+        and 8. The simulator also omitted the component-wide `min(age) + 1`,
+        the 64-commit epoch turnover, and identity across slot reuse, keying
+        history by a bare address. It and its test are removed. The table stays
+        in `dev/BENCHMARKS.md` only as a withdrawn record, and the root cause is
+        in `dev/POSTMORTEM.md`. S40.1's synthetic pruning arm is open again: it
+        waits for S37.1 to build the live-component producer Y9 requires before
+        it can calibrate the same byte the corpus run will read.
       handoff: the corpus arm needs a driver over `ll-model`'s own heap. The
         recorded corpus instruments read PHP's heap, which has no blocks and no
         slots, so this arm is Phase-D-blocked in the same way S37.2 is blocked

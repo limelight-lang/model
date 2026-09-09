@@ -7,6 +7,48 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-09 — the pruning simulation aged rows the production stamp cannot reach
+
+**What happened.** S40.1 reported that maturation thresholds 1, 2 and 3 would
+prune 18, 12 and 8 of 32 traced edges on four staggered self-cycles. The
+simulation advanced an entity's side-table age when scan coloured its row
+`Live`. The production driver does not stamp that population: its membership
+walk enumerates only rows coloured `PotentiallyUnreachable`, and both calls to
+`finalization::stamp_component` receive that membership. All 18, 12 and 8
+edges therefore belonged to entities the built producer would leave unstamped.
+The production-equivalent answer on the same load is zero in all three
+columns.
+
+**Why it was possible.** The pre-change ruling checked the order — read the
+old age, then advance from the current verdict — but did not trace the
+population from scan through `Membership::rows` into both stamp call sites.
+It treated the design sentence "a component read externally referenced is
+stamped" as if the built driver already produced such a component. Y9 does
+require that producer, but S37.1 and S37.4 have not built the live-component
+membership and dormant-token disposition it needs. A design contract was used
+as evidence of current reachability.
+
+**Why the tests did not catch it.** The ladder asserted the simulator's chosen
+ages, so mutations of increment and threshold arithmetic correctly made it
+red while saying nothing about byte 6. Every component had one entity, hiding
+the production rule `min(age) + 1`; eight traces stayed inside the 64-commit
+epoch, hiding turnover; and the ledger used a raw address on a load with no
+death or slot reuse, hiding false inheritance by a later occupant. Miri proved
+the pointer walk valid, not the semantic link to the producer.
+
+**What was done.** The generic side-table simulator and ladder test were
+removed. The benchmark entry is retained but headed `WITHDRAWN`, states the
+zero production-equivalent result, and cannot be cited as a choice of `k`.
+S40.1 is open again. S37.1 now owns an explicit prerequisite: build or name the
+component membership and owner disposition that stamps scan-live components,
+then test unequal member ages and epoch turnover before measuring pruning.
+
+**The rule that follows.** A policy simulation identifies every production
+producer and consumer of the simulated state and runs its calibration through
+the same population boundary. Reproducing arithmetic, catching mutations and
+passing Miri do not validate a simulated state transition that production
+cannot perform.
+
 ## 2026-09-07 — a case that failed left another case's fixtures live, and a third case aborted the process
 
 **What happened.** The first case of the new deny run over a collection

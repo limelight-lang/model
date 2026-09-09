@@ -8,13 +8,31 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
-## 2026-09-09 — S40.1 the simulated pruned-edge share: 56.25 %, 37.5 % and 25 % at k of 1, 2 and 3
+## 2026-09-09 — WITHDRAWN: the 56.25 %, 37.5 % and 25 % pruning ladder aged scan-live rows the built collector never stamps
+
+**Withdrawn the same day.** This was a calibration of threshold arithmetic,
+not a measurement of the policy the crate has built. `scan` colours each
+externally held self-cycle `Live`, while the production membership enumerates
+only `PotentiallyUnreachable` rows. Both calls to `stamp_component` receive
+that membership, so none of the three `Live` self-cycles below takes a
+maturation stamp; the fourth enters membership but remains unreachable and is
+not stamped either. With the built producer, every pruning column on this load
+is therefore **0 / 32**, not 18, 12 and 8.
+
+The test-only simulator and its ladder test were removed rather than retained
+as a prospective corpus instrument. They also modelled age per address instead
+of `min(age) + 1` per component, modelled no 64-commit epoch turnover, and let a
+reused slot inherit an earlier occupant's age. S37.1 now carries the missing
+prerequisite explicitly: before a pruning measurement can read byte 6, the
+built driver must produce and stamp the live components Y9 specifies. The
+table below remains only as the record of the invalid calibration and why its
+exact reproducibility did not validate its premise.
 
 **Machine:** dev box, shared with interactive work. **Base:** `ca5e1d7`,
 `rustc 1.96.0`. **Not a corpus reading:** the corpus arm remains blocked on a
 driver over this crate's heap with Phase D.
 
-**What was measured:** after each complete mark and scan, the test-only
+**What the withdrawn instrument measured:** after each complete mark and scan, the test-only
 `cycle::density::simulate_pruned_edges` walks the touched rows. For every
 non-saturated row it recovers internal in-edges as live refcount minus the
 shadow count left by the mark. A harness-owned address-to-age table carries the
@@ -41,7 +59,7 @@ on every pass. Eight full traces give `n >= k + 2` for every threshold.
 | 8 | 4 | 3 | 3 | 3 | 0 |
 | **total / 32** | **32** | **18 / 56.25 %** | **12 / 37.5 %** | **8 / 25 %** | **0** |
 
-The run is reproducible with:
+The run was reproduced at `7e19558` before the instrument was removed with:
 
 ```text
 cargo test --release --lib density::tests::the_loads::the_pruned_edge_share -- --nocapture
@@ -51,18 +69,19 @@ cargo test --release --lib density::tests::the_loads::the_pruned_edge_share -- -
 saved. It bounds pruned edge dispatches from above and saved traversal work
 from below, because pruning one edge can remove a subtree and can also make a
 later edge unreachable in an order-dependent way. It says nothing about
-recall. A saturated row has no recoverable internal-edge count and is reported
-apart; the gated saturated-row calibration proves it contributes to neither
-the numerator nor denominator. Finally, the three percentages describe this
-deliberately staggered synthetic population. They complete S40.1's simulation
-but do not choose the production `k`; that requires the blocked corpus arm.
+recall. A saturated row has no recoverable internal-edge count and was reported
+apart; its calibration showed it contributed to neither numerator nor
+denominator. The three percentages describe only the simulator's deliberately
+staggered ages. They do not complete S40.1 and are not evidence about any
+production `k`.
 
-**Verification:** the exact eight-row ladder is a non-ignored test in the
-ordinary gate. It failed under three independent mutations: no increment for a
-live verdict, strict `age > k` in place of `age >= k`, and one invented edge
-for a saturated row. The `cycle::density` Miri slice is clean at 12 passed, 5
-ignored, 78.18 s on Miri's clock. The full gate reports 831 passed / 9 ignored;
-the `debug-journal` arm reports 835 / 11 in each of three runs.
+**Historical verification of the calibration, not of the policy:** the exact
+eight-row ladder was a non-ignored test and failed under three independent
+mutations: no increment for a live verdict, strict `age > k` in place of
+`age >= k`, and one invented edge for a saturated row. The
+`cycle::density` Miri slice was clean at 12 passed, 5 ignored, 78.18 s on
+Miri's clock. Those checks established that the code calculated its stipulated
+ages; none established that production would write those ages.
 
 ## Method
 
