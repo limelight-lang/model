@@ -3932,7 +3932,7 @@ Goal: the one number the design still lacks.
         here. A persistent 64 KiB block removes manager churn, not cache fills
         and not the sparse-row cost. S40.2 changes representation only from
         these data.
-- [ ] S40.4 Price the trace a refused allocation repeats   *(after S36.15)*
+- [x] S40.4 Price the trace a refused allocation repeats   *(after S36.15)*
       done: the cost of the pressure path at the memory ceiling is measured —
         a heap with no collectable garbage, a lane of `n` registered entries,
         and one refused allocation per attempt — and the decision that follows
@@ -3952,6 +3952,17 @@ Goal: the one number the design still lacks.
         and there is none between calls. What makes the number worth taking
         rather than guessing is that S39.2 changes it: a lane that shrinks at
         each retirement is a different curve.
+      handoff: closed 2026-09-09. The release probe runs 127 immediately
+        refused allocations over 1, 64 and 1,024 live registered roots, and
+        proves that every attempt traced exactly that many roots. The middle
+        medians of three 31-sample runs are 0.45, 2.87 and 39.9 us per refusal;
+        full ranges and command are in `dev/BENCHMARKS.md`. **No remembered
+        empty result is added.** A live candidate may die between failures;
+        its registered slot is withheld until owner retirement, and this crate
+        has no existing event that can clear a negative cache without skipping
+        that return. Candidate enrolment is insufficient because it does not
+        cover this death. A throttle needs a separately designed queue-change
+        generation, not a boolean on the allocation path.
 
 - [ ] S40.2 Decide chunks or not
       done: the decision and its reason are in `dev/DECISIONS.md`, quoting a

@@ -16,10 +16,11 @@ use crate::gc::{ll_gc_collect_cycles, ll_gc_maybe_collect};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{force_oom, test_guard};
 use crate::memory::context::LLContext;
-use crate::object::{Object, new_constructed};
+use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, RcHeader, SlotState, ll_release, ll_retain, slot_state};
 use crate::test_support::{prop_offset, store_prop};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 #[test]
 fn a_completed_collection_retires_its_dead_candidates() {
@@ -92,6 +93,107 @@ unsafe fn long_ring(arena: &mut Arena, class: *const Class, members: usize) -> V
     }
 
     ring
+}
+
+/// One live candidate root: the holder is an external reference, so trial
+/// deletion traces the node but cannot collect it.  The release of the node's
+/// creation reference is what registers the candidate.
+unsafe fn live_candidate_lane(arena: &mut Arena, members: usize) -> Vec<*mut Object> {
+    let node = ClassBuilder::new("PressureRepeatNode")
+        .prop("next", true)
+        .build();
+    let holder = ClassBuilder::new("PressureRepeatHolder")
+        .prop("held", true)
+        .build();
+    let mut context = LLContext { arena: &mut *arena };
+    let mut holders = Vec::with_capacity(members);
+
+    for _ in 0..members {
+        let node = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
+        let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
+        unsafe { store_prop(arena, keeper, prop_offset(0), node) };
+        assert!(
+            !unsafe { ll_release(node as *mut RcHeader) },
+            "the holder, rather than the creation reference, keeps this root live"
+        );
+        holders.push(keeper);
+    }
+
+    holders
+}
+
+/// The middle duration of one arm, in nanoseconds.
+fn median_nanos(samples: &mut [Duration]) -> u128 {
+    samples.sort_unstable();
+    samples[samples.len() / 2].as_nanos()
+}
+
+/// Repeated failed allocations with a nonempty live candidate lane are the
+/// S40.4 workload.  This is ignored because its timing belongs in the dated
+/// benchmark record, not in the ordinary correctness gate.
+#[test]
+#[ignore = "S40.4 measurement; record three release runs in dev/BENCHMARKS.md"]
+fn measure_refused_pressure_trace_repetition() {
+    const ATTEMPTS: usize = 127;
+    const SIZES: [usize; 3] = [1, 64, 1_024];
+    const SAMPLES: usize = 31;
+
+    let _guard = test_guard();
+    for members in SIZES {
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            let mut arena = Arena::new();
+            let holders = unsafe { live_candidate_lane(&mut arena, members) };
+            assert_eq!(
+                crate::cycle::queue::candidate_count(),
+                members,
+                "every fixture member registered once"
+            );
+
+            let size = unsafe { (*(*holders[0]).class).object_size } as usize;
+            let budget = crate::memory::block_pool::budget_blocks(0);
+            // Fill any adopted blocks before timing. Its final refusal takes
+            // one pressure pass; every timed request then refuses immediately.
+            let mut occupied = Vec::new();
+            loop {
+                let slot = unsafe { crate::memory::heap::entity_alloc(size) };
+                if slot.is_null() {
+                    break;
+                }
+                occupied.push(slot);
+            }
+            let _ = take_pressure_roots_traced();
+
+            let start = Instant::now();
+            for _ in 0..ATTEMPTS {
+                assert!(
+                    unsafe { crate::memory::heap::entity_alloc(size) }.is_null(),
+                    "the budget keeps every timed allocation refused"
+                );
+            }
+            samples.push(start.elapsed());
+            assert_eq!(
+                take_pressure_roots_traced(),
+                ATTEMPTS * members,
+                "each refused allocation traced this lane once"
+            );
+
+            drop(budget);
+            for slot in occupied {
+                unsafe { crate::memory::stdapi::free_unpublished(slot) };
+            }
+            for holder in holders {
+                assert!(unsafe { ll_release(holder as *mut RcHeader) });
+                unsafe { ll_object_die(holder) };
+            }
+            unsafe { crate::cycle::queue::retire_candidates() };
+        }
+        let median = median_nanos(&mut samples);
+        println!(
+            "S40.4: {members} live candidates, {ATTEMPTS} refusals: median {median} ns ({} ns/refusal)",
+            median / ATTEMPTS as u128
+        );
+    }
 }
 
 /// The population the harvest region cannot hold in one reading: the driver

@@ -198,6 +198,40 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-09 — S40.4 a refused allocation repeats the whole live candidate lane
+
+**Machine:** dev box shared with interactive work, not pinned. **Build:**
+`--release`, rustc 1.96.0. **Command**, run three times after one build:
+
+```
+cargo test --release --lib measure_refused_pressure_trace_repetition -- --ignored --nocapture --test-threads=1
+```
+
+**Method.** The ignored in-binary probe builds a lane of `n` live nodes, each
+held by an outside object. Their creation-reference release registers the node,
+but trial deletion cannot reclaim it. It fills the request size class under a
+zero-block budget, discards the setup refusal, then times 127 immediately
+refused `entity_alloc` calls. A test-only trace-root counter proves each timed
+call completed one trace over exactly `n` roots; an empty lane cannot produce a
+fast result. Each arm reports the median of 31 samples; the table takes the
+middle median of three executions.
+
+| live registered roots | medians over 127 refusals (ns) | middle median | per refusal |
+| ---: | --- | ---: | ---: |
+| 1 | 56,011 / 61,534 / 57,255 | 57,255 ns | 0.45 us |
+| 64 | 368,760 / 358,253 / 363,967 | 363,967 ns | 2.87 us |
+| 1,024 | 5,070,437 / 4,994,831 / 5,131,368 | 5,070,437 ns | 39.9 us |
+
+The cost is approximately linear in roots over this fixture. It does not price
+descent through a live closure, a timed workload, or a trace that frees a
+matching-size slot; it prices the exact no-garbage retry the allocation path
+repeats. No negative cache is added: a registered candidate may die between
+failures, and its slot is withheld until owner retirement. The current runtime
+has no event that can clear such a cache without delaying that return;
+enrolment alone misses the death. `dev/DECISIONS.md`, 2026-09-09, records the
+decision.
+
+
 ## 2026-09-09 — S39.4 early pressure retirement returns matching slots at one extra queue pass
 
 **Machine:** dev box shared with interactive work, not pinned. **Build:**

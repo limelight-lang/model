@@ -8,6 +8,31 @@ never edited or deleted.
 
 ---
 
+## 2026-09-09 — do not cache an empty pressure collection
+
+An allocation refusal continues to run one pressure collection and one retry;
+the runtime stores no "last collection freed nothing" bit. The S40.4 probe
+measured the repeated no-garbage arm at 0.45 us per refusal for one live
+candidate, 2.87 us for 64 and 39.9 us for 1,024. That is a real linear cost,
+not a reason to turn an unproved invalidation into a fast path.
+
+**Why.** A registered candidate can die between two allocation failures. Its
+slot is withheld until `retire_candidates` consumes the record, so a cached
+empty answer that skips the trace also skips the only owner action that can
+return that slot. New candidate enrolment cannot clear the cache correctly: it
+does not happen at this death. The existing queue exposes no generation that
+includes both events.
+
+**Rejected.** A boolean cleared at enrolment, and a boolean never cleared until
+an allocation succeeds. The first strands an already-dead candidate; the second
+turns a temporary zero-yield result into an unbounded refusal loop.
+
+**Cost.** Repeated failures pay the measured trace. A later throttle must first
+design and measure a queue-change generation covering both registration and
+registered-candidate death; it is not added opportunistically to allocation.
+
+---
+
 ## 2026-09-09 — retain the pre-destructor cross-check on the owner path
 
 The synchronous owner trace keeps `validate_component` before guards and user

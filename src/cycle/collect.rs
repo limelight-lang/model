@@ -128,6 +128,10 @@ thread_local! {
     /// parallel — which is also what makes a case that panics before it reads
     /// the count harmless: the thread it left a count on is its own.
     static PRESSURE_COLLECTIONS: Cell<usize> = const { Cell::new(0) };
+    /// Roots a pressure collection offered to a completed trace since the
+    /// last reading.  The S40.4 probe reads this beside its time, so a fast
+    /// empty lane cannot be mistaken for the cost of a refused allocation.
+    static PRESSURE_ROOTS_TRACED: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Pressure collections opened on this thread since this last answered, which
@@ -135,6 +139,13 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn take_pressure_collections() -> usize {
     PRESSURE_COLLECTIONS.with(|count| count.replace(0))
+}
+
+/// Roots completed pressure traces offered on this thread since this last
+/// answered.
+#[cfg(test)]
+pub(crate) fn take_pressure_roots_traced() -> usize {
+    PRESSURE_ROOTS_TRACED.with(|roots| roots.replace(0))
 }
 
 impl Drop for CollectingThread {
@@ -285,6 +296,11 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
                 break;
             }
         };
+
+        #[cfg(test)]
+        PRESSURE_ROOTS_TRACED.with(|traced| {
+            traced.set(traced.get() + standing.roots_traced);
+        });
 
         if standing.overflowed() {
             // The list is empty after an overflow, so nothing is torn down and
