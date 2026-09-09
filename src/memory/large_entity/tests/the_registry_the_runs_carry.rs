@@ -89,7 +89,7 @@ fn a_run_freed_from_the_middle_the_head_or_the_tail_leaves_the_rest_linked() {
     unsafe { free(a, BLOCK_KIND_ENTITY_LARGE_RUN) };
     assert_eq!(
         ours(&before),
-        Vec::new(),
+        Vec::<usize>::new(),
         "and the last of them leaves none of the three behind"
     );
 }

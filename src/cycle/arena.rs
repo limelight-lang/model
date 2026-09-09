@@ -218,6 +218,29 @@ thread_local! {
     static PANIC_IN_RESET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// One pressure teardown reservation to refuse on this thread. This is
+    /// below the trace's allocations, so an integration case can reach the
+    /// precise pre-sever refusal rather than aborting the earlier trace.
+    static REFUSE_DROP_RESERVATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) struct RefuseDropReservation(bool);
+
+#[cfg(test)]
+pub(crate) fn refuse_drop_reservation() -> RefuseDropReservation {
+    RefuseDropReservation(REFUSE_DROP_RESERVATION.with(|armed| armed.replace(true)))
+}
+
+#[cfg(test)]
+impl Drop for RefuseDropReservation {
+    fn drop(&mut self) {
+        REFUSE_DROP_RESERVATION.with(|armed| armed.set(self.0));
+    }
+}
+
 /// Arm the injection for **one** reset of this thread, and disarm it when this
 /// guard dies — including on the unwind the injected panic itself raises, so
 /// nothing of it reaches the next test on the thread.
@@ -932,6 +955,11 @@ impl TraceScratchArena {
     /// are counted before a new one is drawn, so a commit of many small
     /// components draws once.
     pub(crate) fn reserve_drops(&mut self, children: usize) -> bool {
+        #[cfg(test)]
+        if REFUSE_DROP_RESERVATION.with(|armed| armed.replace(false)) {
+            return false;
+        }
+
         // The room is read once and counted up rather than asked for again per
         // segment: the answer walks every segment the chain holds, so asking
         // it k times over m kept segments is quadratic in a call whose whole

@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-09 · Active: S39, from S39.4. S36 has S36.8 left; S44 has one step left, S44.5,
+Updated: 2026-09-09 · Active: S40, from S40.1. S36 has S36.8 left; S44 has one step left, S44.5,
 and it waits on Edmond's word.
 The single-thread retirement sequence is S39.3 (candidate lifetime through
 reset), then S39.2 (complete retirement and compaction), then S39.4 (measure
@@ -3628,7 +3628,7 @@ its existing blockers.
         The full two-chain fixture hit its 240-second wall limit and the
         OS-direct ring hit its 180-second limit; neither is a completed Miri
         check. Both pass natively. No concurrent collector is built or tested
-        by this step. The next experiment is S39.4.
+        by this step. S39.4 consumes this baseline.
       handoff: follow-up verification — default 826 passed/8 ignored, one run
         and three at four threads; `hash-folding` 826/8; `debug-journal`
         830 passed/10 ignored, three runs; release, every benchmark target and
@@ -3650,7 +3650,7 @@ its existing blockers.
         seven known misses, and RFC linkcheck remains clean.
 
 
-- [ ] S39.4 Measure early slot return on the successful pressure teardown   *(after S39.2)*
+- [x] S39.4 Measure early slot return on the successful pressure teardown   *(after S39.2)*
       done: split `reclaim` at the successful path's boundary after ALL sever
         and ALL member guard releases, and before `drain_drops`; finish the
         component's guard ownership and all use of `Membership` and
@@ -3686,6 +3686,30 @@ its existing blockers.
         the measurement and the resulting decision, not an argument that
         freeing earlier must help. A rejected experiment leaves S39.2's
         ordinary final cleanup in place.
+      handoff: closed 2026-09-09. Reclamation now yields a linear deferred-drop
+        owner only after complete sever, all member frees and all guard
+        releases. The pressure driver drops `Membership` and
+        `StandingMembers`, retires, drains the still-strong external children,
+        and retires again. Reservation refusal and resurrection do not enter
+        the early arm. A reset and an additional completed candidate death in
+        an external destructor are covered by the final pass.
+      handoff: the in-binary A/B probe alternated 31 pairs per form and ran
+        three times in release mode. Early retirement returned two 1,024-byte
+        slots before drain; a matching destructor allocation under a zero-block
+        cap reused one and changed refusal to success. No-child,
+        allocation-free and nonmatching controls showed no consumed-slot or
+        peak-memory gain. The exact cost is one queue pass and, with the live
+        external-child entry, one read and one move; median time was 0.4--6.3%
+        higher, too close to box noise for a speed claim. The early placement
+        is kept for the demonstrated pressure allocation. Full figures are in
+        `dev/BENCHMARKS.md`; the decision is in `dev/DECISIONS.md`.
+      handoff: verification — default 830 passed/9 ignored, one ordinary run
+        and three at four threads; `hash-folding` 830/9; `debug-journal`
+        834 passed/11 ignored, three runs. Release builds without warnings,
+        every benchmark target builds, and `+1.94 fmt --check` passes. The
+        four new correctness cases pass under Miri in 26.39 s on Miri's clock.
+        The citation checker reports 499 citations and the same seven known
+        misses; RFC linkcheck finds no broken file or anchor.
 
 ## S40 — Measure the trace's density and decide the row form
 

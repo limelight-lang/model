@@ -306,7 +306,12 @@ the window withheld instead of abandoning it.
 
 Candidate retirement runs after the collection's last membership read: after
 `ActiveTrace` closes on the ordinary path, and after the standing harvested
-list ends on the pressure path. It removes only zero-count entries whose
+list ends on the pressure path. On a successful pressure teardown, it runs
+once after the complete sever and all member guard releases, before the
+deferred external children are dropped, so their destructors can allocate
+from the returned member slots. A second retirement after those drops covers
+candidate deaths and arena resets they caused. Reservation refusal and
+resurrection take only the final cleanup. It removes only zero-count entries whose
 teardown has reached `ll_free`, clears `CANDIDATE_BIT` and `DEAD_IN_PLACE`,
 and returns the slot through `ll_free`. Live and unfinished registrations
 survive. The retained occupancy count includes registered dead survivors until

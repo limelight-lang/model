@@ -11,6 +11,11 @@
 //! outside it is held in [`DeferredDrops`] until the frees are behind, because
 //! its release runs its destructor.
 //!
+//! The test-only `reclaim` wrapper drains them immediately. The pressure
+//! driver uses [`reclaim_before_drops`]: its linear answer holds those same
+//! references while the driver ends the membership and returns completed
+//! member slots, then the answer's drain runs the child destructors.
+//!
 //! # What a refusal costs, and where it is taken
 //!
 //! The queue's memory is the collection arena's, and the arena answers null
@@ -90,6 +95,7 @@ use crate::refcount::{MemoryCategory, RcHeader, severed_edge_release};
 
 /// What [`reclaim`] did with one component.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg(test)]
 pub(crate) enum Reclaimed {
     /// Every member was severed, freed and un-guarded, and every displaced
     /// child outside the component was dropped.
@@ -108,6 +114,41 @@ pub(crate) enum Reclaimed {
     /// allocation paths answered null, and what follows is the collection's own
     /// end rather than the process's.
     AllocationFailed,
+}
+
+/// External children held past a completed sever and every member free.
+///
+/// The component and its membership are finished before this value exists.
+/// What remains is owned by `arena`: one counted reference per queued child,
+/// kept until [`DeferredReclamation::drain`] releases it. This split is the
+/// successful pressure path's safe point for owner candidate retirement — no
+/// member address is read afterwards, while a child's destructor may allocate
+/// from a member slot the retirement returned.
+#[must_use = "the severed external children still carry counted references"]
+pub(crate) struct DeferredReclamation<'a> {
+    arena: &'a mut TraceScratchArena,
+    drained: bool,
+}
+
+impl DeferredReclamation<'_> {
+    /// Release every external child after the caller's between-phase work.
+    pub(crate) fn drain(mut self) {
+        self.drained = true;
+        self.arena.drain_drops(|child| unsafe {
+            // The owner category is `GcHeap` for every member: the validation
+            // answers about counted entities alone, so the drop needs no read
+            // of a header that is no longer there.
+            drop_ref(MemoryCategory::GcHeap, child);
+        });
+    }
+}
+
+impl Drop for DeferredReclamation<'_> {
+    fn drop(&mut self) {
+        if !self.drained && !std::thread::panicking() {
+            panic!("a completed sever's external children were not drained");
+        }
+    }
 }
 
 /// Tear one confirmed component down: sever its internal edges, free every
@@ -136,11 +177,38 @@ pub(crate) enum Reclaimed {
 /// beside it, and the caller reads no other component until it returns
 /// (`dev/DECISIONS.md`, "the revalidation of a component and its teardown are
 /// adjacent").
+#[cfg(test)]
 pub(crate) unsafe fn reclaim(
     component: GuardedComponent<'_>,
     members: &Membership<'_>,
     arena: &mut TraceScratchArena,
 ) -> Reclaimed {
+    let Some(deferred) = (unsafe { reclaim_before_drops(component, members, arena) }) else {
+        return Reclaimed::AllocationFailed;
+    };
+
+    deferred.drain();
+    Reclaimed::Freed
+}
+
+/// Complete a component's sever, frees and guard discharge, leaving only its
+/// external children held in the arena.
+///
+/// `None` is the reservation refusal. A returned value names no member and
+/// performs no further membership read; it is therefore safe for the caller
+/// to release the membership and retire completed candidate entries before
+/// draining the external children.
+///
+/// # Safety
+/// Every member is an entity of this thread's GC heap carrying exactly one
+/// guard reference and named once in `members`; the caller owns this thread's
+/// heap. The returned value must be drained before its arena is reset or
+/// dropped.
+pub(crate) unsafe fn reclaim_before_drops<'a>(
+    component: GuardedComponent<'_>,
+    members: &Membership<'_>,
+    arena: &'a mut TraceScratchArena,
+) -> Option<DeferredReclamation<'a>> {
     // The most a count without identity can check: the answer and the
     // membership describe the same component. In every build, because a caller
     // that paired the wrong two would tear down a component nothing read again.
@@ -164,7 +232,7 @@ pub(crate) unsafe fn reclaim(
 
     if !arena.reserve_drops(external_children) {
         unsafe { component.release(members) };
-        return Reclaimed::AllocationFailed;
+        return None;
     }
 
     debug_assert!(
@@ -220,16 +288,11 @@ pub(crate) unsafe fn reclaim(
     // that withholds it while a trace can still address its row (`PLAN.md`
     // S36.2).
     unsafe { release_guards(members) };
-
-    arena.drain_drops(|child| unsafe {
-        // The owner category is `GcHeap` for every member: the validation
-        // answers about counted entities alone, so the drop needs no read of a
-        // header that is no longer there.
-        drop_ref(MemoryCategory::GcHeap, child);
-    });
-
     unsafe { component.guards_released() };
-    Reclaimed::Freed
+    Some(DeferredReclamation {
+        arena,
+        drained: false,
+    })
 }
 
 #[cfg(test)]

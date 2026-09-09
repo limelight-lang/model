@@ -8,6 +8,36 @@ never edited or deleted.
 
 ---
 
+## 2026-09-09 — keep early pressure retirement before external-child drops
+
+S39.4 split successful reclamation after the complete sever, every member free
+and every guard release. At that point `Membership`, `StandingMembers` and the
+guarded-component answer are finished. A linear deferred-reclamation value
+keeps the arena and one counted reference to every external child, so owner
+retirement may return member slots before their destructors run. Reservation
+refusal and resurrection never produce that value and therefore take no early
+pass. The mandatory pass after the drain covers a child destructor that enters
+arena reset or creates another completed candidate death.
+
+The release-profile A/B probe restores S39.2's final-only placement through a
+test-only switch and alternates 31 pairs per form. Across three executions the
+early arm returned two 1,024-byte slots before the drain. In the matching-size
+form one of them served the destructor allocation under a zero-block budget;
+final-only refused it. The no-child and allocation-free controls used none of
+the returned slots, and a nonmatching request still failed. Sampled peak held
+memory did not fall. The exact queue price was one extra whole-record pass;
+with an external child that was one extra read and one move because its live
+entry survived the early compaction. Timing medians were 0.4--6.3% higher in
+the early arm, within or just above this box's noise floor and with no speed
+claim.
+
+The early placement stays. Its measured gain is not general memory reduction:
+it is the narrower pressure guarantee that a matching destructor request can
+use memory the just-completed teardown already freed. The extra pass is paid
+only after a successful pressure teardown; the controls and the nonmatching
+case record where it buys nothing. Full figures and reproduction command are
+in `dev/BENCHMARKS.md`, 2026-09-09 S39.4.
+
 ## 2026-09-09 — corrupt queue entries remain outside the cleanup recovery contract
 
 `Compaction::drop` continues a valid interrupted retirement and does not catch

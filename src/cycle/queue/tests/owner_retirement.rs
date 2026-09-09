@@ -103,7 +103,7 @@ fn run_shape(
                 records_read: entities.len(),
                 records_moved: expected.len(),
             },
-            "retirement exposes the baseline S39.4 will compare"
+            "retirement exposes S39.4's final-only baseline"
         );
     }
     let mut actual = Vec::new();

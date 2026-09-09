@@ -51,7 +51,7 @@ use crate::cycle::deferred_slot_reuse::ActiveTrace;
 use crate::cycle::finalization::{Finalization, Revalidated};
 use crate::cycle::members::MEMBER_CAPACITY;
 use crate::cycle::membership::Membership;
-use crate::cycle::reclamation::{Reclaimed, reclaim};
+use crate::cycle::reclamation::{DeferredReclamation, reclaim_before_drops};
 use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch};
 use crate::cycle::validation::ValidationResult;
 
@@ -235,10 +235,10 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
 /// **A teardown that freed something under a bound is followed by another
 /// trace**, on the memory it just returned, because the roots the bound left
 /// out are exactly the garbage this call was asked for. A round that freed
-/// nothing ends the loop, which is what makes it terminate: the lane it traces
-/// does not shrink — every entry goes back at the close, freed slot or not
-/// (`dev/DECISIONS.md`, "the commit clears no candidate bit") — so the
-/// stopping condition is progress rather than an empty queue.
+/// nothing ends the loop, which is what makes it terminate. The trace close
+/// restores every entry, then owner retirement removes completed deaths; live
+/// registrations remain, so an empty queue is not the stopping condition and
+/// progress is.
 ///
 /// **A round that ends the loop without having read the whole lane arms the
 /// thread.** That is a bounded round — one that overflowed at a single root,
@@ -268,7 +268,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     let mut freed = 0;
     let mut roots = ALL_ROOTS;
     loop {
-        let mut standing = match unsafe { trace_and_harvest(roots) } {
+        let standing = match unsafe { trace_and_harvest(roots) } {
             Traced::Harvested(standing) => standing,
             // Nothing was registered, so there is nothing this path can do and
             // nothing for a later poll to do either.
@@ -316,12 +316,15 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
                 break;
             };
 
-            let members = Membership::listed(standing.members.entities_mut());
-            taken = unsafe { commit(&members, &mut arena) };
+            taken = unsafe { commit_under_pressure(standing.members, &mut arena) };
             arena.reset();
+        } else {
+            drop(standing);
         }
 
-        drop(standing);
+        // Always repeat after the external drops: their destructors may enter
+        // an arena reset or create further completed candidate deaths. On a
+        // refused or resurrected component this is the only retirement.
         unsafe { crate::cycle::queue::retire_candidates() };
         freed += taken;
         if taken > 0 && roots != ALL_ROOTS {
@@ -445,6 +448,59 @@ impl HarvestedMembers {
 /// is still its own, the membership is valid for the whole call, and the call
 /// runs on the owning thread with no mutator beside it.
 unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> usize {
+    match unsafe { commit_before_drops(members, arena) } {
+        Some((freed, deferred)) => {
+            deferred.drain();
+            freed
+        }
+        None => 0,
+    }
+}
+
+/// Commit one harvested pressure membership and retire its completed members
+/// before releasing their external children.
+///
+/// Owning `standing` is the phase boundary: its listed membership is scoped to
+/// the commit, then the standing list is released before retirement. The
+/// deferred-reclamation value keeps the arena and every queued counted child
+/// reference alive across that interval (`dev/DECISIONS.md`, "keep early
+/// pressure retirement before external-child drops").
+unsafe fn commit_under_pressure(
+    mut standing: crate::cycle::members::StandingMembers,
+    arena: &mut TraceScratchArena,
+) -> usize {
+    let outcome = {
+        let members = Membership::listed(standing.entities_mut());
+        unsafe { commit_before_drops(&members, arena) }
+    };
+
+    drop(standing);
+    let Some((freed, deferred)) = outcome else {
+        return 0;
+    };
+
+    if early_retirement_enabled() {
+        #[cfg(test)]
+        let candidates_before = crate::cycle::queue::candidate_count();
+        unsafe { crate::cycle::queue::retire_candidates() };
+        #[cfg(test)]
+        EARLY_RETURNED_SLOTS.with(|returned| {
+            returned.set(
+                returned.get()
+                    + candidates_before.saturating_sub(crate::cycle::queue::candidate_count()),
+            )
+        });
+    }
+    deferred.drain();
+    freed
+}
+
+/// Run a commit through the completed member frees, leaving only its deferred
+/// external drops outstanding.
+unsafe fn commit_before_drops<'a>(
+    members: &Membership<'_>,
+    arena: &'a mut TraceScratchArena,
+) -> Option<(usize, DeferredReclamation<'a>)> {
     let mut finalization = Finalization::begin();
     let confirmed = members.len() > 0
         && unsafe { finalization.confirm(members) } == ValidationResult::Unreachable;
@@ -455,12 +511,12 @@ unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> usi
     }
 
     let mut revalidation = pass.close();
-    let mut freed = 0;
+    let mut reclaimed = None;
     if confirmed {
         match unsafe { revalidation.revalidate(members) } {
             Revalidated::Unreachable(component) => {
-                if unsafe { reclaim(component, members, arena) } == Reclaimed::Freed {
-                    freed = members.len();
+                if let Some(deferred) = unsafe { reclaim_before_drops(component, members, arena) } {
+                    reclaimed = Some((members.len(), deferred));
                 }
             }
             // The set is live: a destructor resurrected a member, and the
@@ -471,7 +527,49 @@ unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> usi
     }
 
     revalidation.close();
-    freed
+    reclaimed
+}
+
+#[cfg(not(test))]
+#[inline]
+fn early_retirement_enabled() -> bool {
+    true
+}
+
+#[cfg(test)]
+thread_local! {
+    /// S39.4's in-binary A/B arm. Production has no branch: it always takes
+    /// the early retirement. A measurement can restore S39.2's final-only
+    /// placement without maintaining a second source tree.
+    static EARLY_RETIREMENT: Cell<bool> = const { Cell::new(true) };
+    static EARLY_RETURNED_SLOTS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn early_retirement_enabled() -> bool {
+    EARLY_RETIREMENT.with(Cell::get)
+}
+
+#[cfg(test)]
+fn take_early_returned_slots() -> usize {
+    EARLY_RETURNED_SLOTS.with(|returned| returned.replace(0))
+}
+
+#[cfg(test)]
+struct FinalOnlyRetirement(bool);
+
+#[cfg(test)]
+impl FinalOnlyRetirement {
+    fn take() -> Self {
+        Self(EARLY_RETIREMENT.with(|enabled| enabled.replace(false)))
+    }
+}
+
+#[cfg(test)]
+impl Drop for FinalOnlyRetirement {
+    fn drop(&mut self) {
+        EARLY_RETIREMENT.with(|enabled| enabled.set(self.0));
+    }
 }
 
 #[cfg(test)]

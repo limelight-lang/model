@@ -139,6 +139,8 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("DIED", false),
         ("DISPATCHES_AT_PHASE_BOUNDARY", false),
         ("DUE", false),
+        ("EARLY_RETIREMENT", false), // test-only const Cell, no destructor registration
+        ("EARLY_RETURNED_SLOTS", false), // test-only const Cell, no destructor registration
         ("EDGE_DISPATCHES", false),
         ("EXIT_GUARD", true),
         ("EXIT_PHASE", false),
@@ -158,6 +160,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PREMISE_CELL_WALKS", false),
         ("PRESSURE_COLLECTIONS", false),
         ("QUEUE_WORK", false), // test-only const Cell, no destructor registration
+        ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
         ("RESERVE", true),
         ("RING", false),
         ("ROWS_READ", false),

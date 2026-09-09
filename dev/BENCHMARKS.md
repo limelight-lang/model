@@ -100,6 +100,50 @@ is safe to write down; a number that will not reproduce is worse than
 no number, because the next person will trust it.
 
 
+## 2026-09-09 — S39.4 early pressure retirement returns matching slots at one extra queue pass
+
+**Machine:** dev box shared with interactive work, not pinned. **Build:**
+`--release`, rustc 1.96.0. **Command**, run three times after one build:
+
+```
+cargo test --release --lib measure_early_pressure_retirement -- --ignored --test-threads=1 --nocapture
+```
+
+**Method.** The ignored in-binary probe alternates 31 final-only/early pairs
+per form; each execution reports the median of each arm. The table takes the
+median of those three reported medians. Both arms run the same S39.2 code. A
+test-only switch skips only the new retirement between guard release and the
+external drain in the final-only arm. `queue::take_queue_work` supplies the
+structural queue counts. A zero-block pool budget makes a destructor request
+observable as either reuse or refusal. The peak is the maximum pool blocks out
+at collection entry, external-destructor entry and collection return, minus
+the pre-fixture reading; it is a sampled fixture high-water mark, not RSS.
+
+Every component has two 1,024-byte members. The matching destructor requests
+that class; the nonmatching one requests the adjacent smaller class. The
+external child is strongly held by the deferred-drop arena until its drain and
+is not counted as an early saving.
+
+| form | placement | returned before drain | destructor allocation | fixture peak | queue passes / reads / moves | median time |
+| --- | --- | ---: | --- | ---: | ---: | ---: |
+| no external child | final-only | 0 / 0 B | none | 64 KiB | 2 / 2 / 0 | 972 ns |
+| no external child | early | 2 / 2,048 B | none | 64 KiB | 3 / 2 / 0 | 1,033 ns |
+| allocation-free destructor | final-only | 0 / 0 B | none | 64 KiB | 2 / 3 / 0 | 1,743 ns |
+| allocation-free destructor | early | 2 / 2,048 B | none | 64 KiB | 3 / 4 / 1 | 1,785 ns |
+| matching size class | final-only | 0 / 0 B | 0 served, 1 refused | 64 KiB | 2 / 3 / 0 | 1,759 ns |
+| matching size class | early | 2 / 2,048 B; 1 reused | 1 served, 0 refused | 64 KiB | 3 / 4 / 1 | 1,766 ns |
+| nonmatching size class | final-only | 0 / 0 B | 0 served, 1 refused | 128 KiB | 2 / 3 / 0 | 1,734 ns |
+| nonmatching size class | early | 2 / 2,048 B | 0 served, 1 refused | 128 KiB | 3 / 4 / 1 | 1,773 ns |
+
+The timing direction is +0.4% to +6.3% for early retirement; most of that
+range is at this machine's stated noise floor, so no timing effect is claimed.
+The queue cost and allocation result are deterministic. Peak held memory is
+unchanged, and neither control nor the nonmatching allocation consumes an
+early slot. The matching arm changes a real pressure-path refusal into one
+successful allocation, so the early placement is **kept** despite the extra
+pass. Its benefit is size-class-local availability, not a lower general peak.
+
+
 ## 2026-09-06 — S44.4 the close against the chain: the stack costs 25 % more where the deaths share a block and 63 % more where they do not
 
 **Machine:** dev box, shared with interactive work, load average 2.5–3.1 over

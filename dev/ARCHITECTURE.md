@@ -331,7 +331,10 @@ again; `reclamation` severs, frees and drops. The caller that runs them in that
 order is `cycle::collect`; explicit collection and the safepoint poll use the
 ordinary path, while an entity-allocation refusal uses the bounded-harvest
 pressure path. Once membership and shadow readers have ended, owner retirement
-removes completed deaths and returns their slots. Combining the detached and
+removes completed deaths and returns their slots. A successful pressure
+teardown ends its standing membership after the complete sever and every
+member guard release, retires there, and only then drops the external children
+held by the reclamation arena; it retires again after their user code. Combining the detached and
 active candidate chains moves only records between their partial heads and
 splices full tails; retirement is the one whole-queue record pass. The design
 is `rfc/model/gc/rc-cycle.md`; the concurrent worker remains unbuilt.

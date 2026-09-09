@@ -85,7 +85,9 @@ versions live in `docs/history/`, marked at the top.
   checks identity, segment ownership, payload charges and unwind boundaries.
 - Queue-work measurement: test-only `cycle::queue::take_queue_work` reports
   whole record passes, records read and records moved for the current thread;
-  S39.4 uses it to compare final-only and early retirement.
+  `collect/tests/when_pressure_retires_members.rs` uses it for S39.4's
+  final-only/early A/B probe and covers the matching allocation, reset,
+  additional death, resurrection and reservation-refusal boundaries.
 - What a slot's first eight bytes read: `refcount::slot_state`, three
   states over the count and one flag — live, dead in place, free. A slot is
   dead in place when `ll_free` has taken it and nobody has handed it back

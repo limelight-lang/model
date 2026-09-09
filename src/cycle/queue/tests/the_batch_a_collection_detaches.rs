@@ -523,7 +523,7 @@ fn an_empty_lane_detaches_an_empty_batch() {
 
 /// Full segments do not enter the merge's record loop. Only the detached
 /// partial head moves into the active head, and the counter records that bound
-/// for S39.4 before its experiment can change the same path.
+/// as S39.4's baseline before its experiment changes the same path.
 #[test]
 fn a_merge_moves_only_what_fits_between_the_two_partial_heads() {
     let _g = test_guard();
