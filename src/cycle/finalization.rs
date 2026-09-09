@@ -176,10 +176,8 @@
 
 use std::marker::PhantomData;
 
-use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::epoch;
 use crate::cycle::membership::Membership;
-use crate::cycle::trace::OwnerTrace;
 use crate::cycle::validation::{ValidationResult, validate_component};
 use crate::object::{Object, ll_entity_die, run_user_destructor};
 use crate::refcount::{
@@ -280,36 +278,6 @@ impl Finalization {
         // finalization and reclamation", steps 2 and 3).
         unsafe { members.for_each(|member| weak::notify_member(member)) };
         result
-    }
-
-    /// Admit the membership a completed in-line owner trace proved
-    /// unreachable, then take its guards and invalidate its weak cells.
-    ///
-    /// `OwnerTrace` is the boundary the ordinary path keeps from the final
-    /// scan decision through this call.  Unlike a speculative result, it did
-    /// not release that window or combine observations from distinct instants,
-    /// so repeating [`validate_component`] would only re-read the counts and
-    /// cells scan just established.  The post-destructor revalidation remains
-    /// in [`Revalidation::revalidate`] and is not affected by this shortcut.
-    ///
-    /// # Safety
-    /// The proof came from [`crate::cycle::trace::trace_owner_batch`] on this
-    /// owning thread, and is consumed before its trace window is released.
-    pub(crate) unsafe fn confirm_owner_trace<'a>(
-        &mut self,
-        trace: OwnerTrace<'a>,
-    ) -> (Membership<'a>, *mut TraceScratchArena) {
-        let (members, arena) = trace.into_parts();
-        debug_assert!(members.len() > 0, "an owner proof has a member");
-
-        unsafe {
-            members.for_each(|member| {
-                mutator_guard_retain(member);
-                self.members += 1;
-            })
-        };
-        unsafe { members.for_each(|member| weak::notify_member(member)) };
-        (members, arena)
     }
 
     /// Close the finalization: no component joins it after this, and the

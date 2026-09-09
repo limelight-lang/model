@@ -517,11 +517,14 @@ impl ActiveTrace {
         self.arena.arm_harvest(capacity)
     }
 
-    /// The trace's working memory, exposed to window tests only.
+    /// The trace's working memory. No arena reference can outlive the window,
+    /// which is what makes the close order above enforceable by the type.
     ///
-    /// Production code holds this borrow through [`OwnerTrace`] instead; a
-    /// test constructs rows directly to exercise the close protocol.
-    #[cfg(test)]
+    /// **The collection does not reset it.** The close does, in an order this
+    /// module owns: the sweep nulls every row, and only then may a withheld
+    /// return hand memory back to the allocator. The
+    /// arena's own blocks go back after those returns
+    /// (`crate::cycle::arena::TraceScratchArena::sweep_rows`).
     pub(crate) fn arena(&mut self) -> &mut crate::cycle::arena::TraceScratchArena {
         &mut self.arena
     }

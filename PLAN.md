@@ -3083,16 +3083,6 @@ stage claiming the frees while building none of them.
         collection's consistency window between the final scan decision and
         guard acquisition; encode that boundary in the API so a future caller
         cannot pass a stale condemned list as an in-line proof.
-      progress 2026-09-09: the ordinary path now carries a non-Send
-        `OwnerTrace` from a completed mark/scan to guard acquisition. It owns
-        the rows-derived membership and borrows the trace arena, so neither a
-        reset nor a second trace can intervene; consuming it is the only route
-        to `Finalization::confirm_owner_trace`. The pressure path cannot carry
-        that proof across its close-and-harvest boundary and retains
-        `validate_component`. A test counts zero pre-teardown exact entries on
-        the ordinary owner path; the destructor-triggered revalidation is not
-        counted and remains built. The future posted-worker-result case and
-        the 2/16/256 read benchmark remain open with S38's producer.
 
 - [x] S36.16 Carry the collection's two paths into `rfc`   *(after S36.7)*
       done: `model/gc/rc-cycle.md`'s "Concurrency" says the ordinary path

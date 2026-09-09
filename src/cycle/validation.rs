@@ -61,21 +61,6 @@ use crate::cycle::membership::Membership;
 use crate::object::header_category;
 use crate::refcount::{MemoryCategory, RcHeader, header_refcount};
 
-#[cfg(test)]
-thread_local! {
-    /// Pre-teardown exact validations entered on this test thread since the
-    /// last reading. Revalidation after user code is a distinct mandatory
-    /// phase and does not contribute here.
-    static PRE_TEARDOWN_EXACT_TEST_ENTRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Pre-teardown exact validations entered on this test thread since this last
-/// answered.
-#[cfg(test)]
-pub(crate) fn take_exact_test_entries() -> usize {
-    PRE_TEARDOWN_EXACT_TEST_ENTRIES.with(|entries| entries.replace(0))
-}
-
 /// What the exact test answered about one component.
 ///
 /// **The answer is the one refusal the finalization protocol has**, so a
@@ -136,10 +121,6 @@ pub(crate) unsafe fn validate_component(
     members: &Membership<'_>,
     guard_refs_per_member: u32,
 ) -> ValidationResult {
-    #[cfg(test)]
-    if guard_refs_per_member == 0 {
-        PRE_TEARDOWN_EXACT_TEST_ENTRIES.with(|entries| entries.set(entries.get() + 1));
-    }
     debug_assert!(members.len() > 0, "a component has a member");
     debug_assert!(
         unsafe { every_member_is_a_gc_heap_entity_once(members) },

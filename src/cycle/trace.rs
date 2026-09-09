@@ -31,10 +31,8 @@
 
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::mark::{MarkResult, mark};
-use crate::cycle::membership::Membership;
 use crate::cycle::queue::InFlightBatch;
 use crate::cycle::scan::{ScanResult, scan};
-use std::marker::PhantomData;
 
 /// What a trace over a whole batch answered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -52,71 +50,6 @@ pub(crate) enum TraceOutcome {
 /// Every root of the batch, which is what a collection with room for the
 /// answer traces.
 pub(crate) const ALL_ROOTS: usize = usize::MAX;
-
-/// The result of a complete trace that still holds its owner's consistency
-/// window.
-///
-/// This is deliberately not an arbitrary [`Membership`].  The only
-/// constructor below runs both trace phases over the live batch and retains a
-/// mutable borrow of their arena.  That borrow prevents the caller from
-/// resetting the window, tracing another batch, or mutating its rows before it
-/// hands this proof to finalization.  A pressure collection closes its window
-/// to harvest a list before it commits, so it cannot obtain this value and
-/// must retain the ordinary exact validation.
-///
-/// It is non-`Send` for the same reason as the owner trace: the proof says
-/// about one mutator's current heap, not a snapshot another thread may commit.
-pub(crate) struct OwnerTrace<'a> {
-    membership: Membership<'a>,
-    arena: *mut TraceScratchArena,
-    _arena: PhantomData<&'a mut TraceScratchArena>,
-    _batch: PhantomData<&'a InFlightBatch>,
-    _not_send: PhantomData<*mut ()>,
-}
-
-impl<'a> OwnerTrace<'a> {
-    /// Consume the proof after its consistency boundary has been observed.
-    ///
-    /// The raw arena pointer becomes usable only after consuming `self`: the
-    /// lifetime marker above prevents a safe caller from resetting or lending
-    /// the arena while the proof still stands.
-    pub(crate) fn into_parts(self) -> (Membership<'a>, *mut TraceScratchArena) {
-        (self.membership, self.arena)
-    }
-}
-
-/// Trace every root of `batch` and retain the owner-side proof where scan
-/// completed.
-///
-/// The proof exists only while this collection has not released the trace
-/// window.  In particular, callers must consume it before making a call that
-/// can run a mutator; [`OwnerTrace`] makes doing so require an explicit API
-/// boundary instead of a comment beside a stale membership list.
-///
-/// # Safety
-/// As [`trace_batch`].
-pub(crate) unsafe fn trace_owner_batch<'a>(
-    arena: &'a mut TraceScratchArena,
-    batch: &'a InFlightBatch,
-) -> Result<Option<OwnerTrace<'a>>, TraceOutcome> {
-    if unsafe { trace_batch(arena, batch, ALL_ROOTS) }.0 != TraceOutcome::Complete {
-        return Err(TraceOutcome::AllocationFailed);
-    }
-
-    let touched = arena.touched_head();
-    let members = unsafe { Membership::rows(touched) }.ok_or(TraceOutcome::AllocationFailed)?;
-    if members.len() == 0 {
-        return Ok(None);
-    }
-
-    Ok(Some(OwnerTrace {
-        membership: members,
-        arena,
-        _arena: PhantomData,
-        _batch: PhantomData,
-        _not_send: PhantomData,
-    }))
-}
 
 /// Trace the first `roots` roots of `batch`: mark from each, then scan from
 /// each.
