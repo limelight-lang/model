@@ -132,6 +132,7 @@ thread_local! {
     /// last reading.  The S40.4 probe reads this beside its time, so a fast
     /// empty lane cannot be mistaken for the cost of a refused allocation.
     static PRESSURE_ROOTS_TRACED: Cell<usize> = const { Cell::new(0) };
+    static COUNT_PRESSURE_ROOTS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Pressure collections opened on this thread since this last answered, which
@@ -146,6 +147,11 @@ pub(crate) fn take_pressure_collections() -> usize {
 #[cfg(test)]
 pub(crate) fn take_pressure_roots_traced() -> usize {
     PRESSURE_ROOTS_TRACED.with(|roots| roots.replace(0))
+}
+
+#[cfg(test)]
+pub(crate) fn count_pressure_roots(enabled: bool) {
+    COUNT_PRESSURE_ROOTS.with(|counting| counting.set(enabled));
 }
 
 impl Drop for CollectingThread {
@@ -298,9 +304,11 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
         };
 
         #[cfg(test)]
-        PRESSURE_ROOTS_TRACED.with(|traced| {
-            traced.set(traced.get() + standing.roots_traced);
-        });
+        if COUNT_PRESSURE_ROOTS.with(Cell::get) {
+            PRESSURE_ROOTS_TRACED.with(|traced| {
+                traced.set(traced.get() + standing.roots_traced);
+            });
+        }
 
         if standing.overflowed() {
             // The list is empty after an overflow, so nothing is torn down and

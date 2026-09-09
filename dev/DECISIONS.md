@@ -13,23 +13,25 @@ never edited or deleted.
 An allocation refusal continues to run one pressure collection and one retry;
 the runtime stores no "last collection freed nothing" bit. The S40.4 probe
 measured the repeated no-garbage arm at 0.45 us per refusal for one live
-candidate, 2.87 us for 64 and 39.9 us for 1,024. That is a real linear cost,
+candidate, 3.08 us for 64 and 42.7 us for 1,024. That is a real linear cost,
 not a reason to turn an unproved invalidation into a fast path.
 
 **Why.** A registered candidate can die between two allocation failures. Its
 slot is withheld until `retire_candidates` consumes the record, so a cached
 empty answer that skips the trace also skips the only owner action that can
-return that slot. New candidate enrolment cannot clear the cache correctly: it
-does not happen at this death. The existing queue exposes no generation that
-includes both events.
+return that slot. It can also become garbage through a non-final decrement
+while its candidate bit remains set, so neither a new registration nor death
+need occur. The existing queue exposes no generation that covers every
+relevant refcount or graph transition.
 
 **Rejected.** A boolean cleared at enrolment, and a boolean never cleared until
 an allocation succeeds. The first strands an already-dead candidate; the second
 turns a temporary zero-yield result into an unbounded refusal loop.
 
 **Cost.** Repeated failures pay the measured trace. A later throttle must first
-design and measure a queue-change generation covering both registration and
-registered-candidate death; it is not added opportunistically to allocation.
+design and measure an invalidator covering every relevant refcount and graph
+transition of already registered candidates; it is not added opportunistically
+to allocation.
 
 ---
 

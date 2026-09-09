@@ -16,7 +16,7 @@ use crate::gc::{ll_gc_collect_cycles, ll_gc_maybe_collect};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{force_oom, test_guard};
 use crate::memory::context::LLContext;
-use crate::object::{Object, ll_object_die, new_constructed};
+use crate::object::{Object, ll_object_die, ll_object_new, new_constructed, object_constructed};
 use crate::refcount::{MemoryCategory, RcHeader, SlotState, ll_release, ll_retain, slot_state};
 use crate::test_support::{prop_offset, store_prop};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -135,6 +135,7 @@ fn median_nanos(samples: &mut [Duration]) -> u128 {
 #[ignore = "S40.4 measurement; record three release runs in dev/BENCHMARKS.md"]
 fn measure_refused_pressure_trace_repetition() {
     const ATTEMPTS: usize = 127;
+    const STRUCTURAL_ATTEMPTS: usize = 3;
     const SIZES: [usize; 3] = [1, 64, 1_024];
     const SAMPLES: usize = 31;
 
@@ -152,17 +153,38 @@ fn measure_refused_pressure_trace_repetition() {
 
             let size = unsafe { (*(*holders[0]).class).object_size } as usize;
             let budget = crate::memory::block_pool::budget_blocks(0);
-            // Fill any adopted blocks before timing. Its final refusal takes
-            // one pressure pass; every timed request then refuses immediately.
+            // Fill any adopted blocks with published objects. The final
+            // refusal may run a collection, so raw unpublished slots are not
+            // permitted to survive across it.
             let mut occupied = Vec::new();
+            let mut context = LLContext { arena: &mut arena };
             loop {
-                let slot = unsafe { crate::memory::heap::entity_alloc(size) };
-                if slot.is_null() {
+                let object = unsafe {
+                    ll_object_new(&mut context, (*holders[0]).class, MemoryCategory::GcHeap)
+                };
+                if object.is_null() {
                     break;
                 }
-                occupied.push(slot);
+                assert!(unsafe { object_constructed(&mut context, object) });
+                occupied.push(object);
             }
             let _ = take_pressure_roots_traced();
+
+            // Count a separate, untimed prefix.  The timed loop below keeps
+            // the test-only root counter disabled; its only test build tax is
+            // the disabled flag read, which the benchmark record names.
+            let _ = take_pressure_collections();
+            crate::cycle::collect::count_pressure_roots(true);
+            for _ in 0..STRUCTURAL_ATTEMPTS {
+                assert!(unsafe { crate::memory::heap::entity_alloc(size) }.is_null());
+            }
+            crate::cycle::collect::count_pressure_roots(false);
+            assert_eq!(take_pressure_collections(), STRUCTURAL_ATTEMPTS);
+            assert_eq!(
+                take_pressure_roots_traced(),
+                STRUCTURAL_ATTEMPTS * members,
+                "each structural refusal ran exactly one trace over this lane"
+            );
 
             let start = Instant::now();
             for _ in 0..ATTEMPTS {
@@ -172,15 +194,11 @@ fn measure_refused_pressure_trace_repetition() {
                 );
             }
             samples.push(start.elapsed());
-            assert_eq!(
-                take_pressure_roots_traced(),
-                ATTEMPTS * members,
-                "each refused allocation traced this lane once"
-            );
 
             drop(budget);
-            for slot in occupied {
-                unsafe { crate::memory::stdapi::free_unpublished(slot) };
+            for object in occupied {
+                assert!(unsafe { ll_release(object as *mut RcHeader) });
+                unsafe { ll_object_die(object) };
             }
             for holder in holders {
                 assert!(unsafe { ll_release(holder as *mut RcHeader) });

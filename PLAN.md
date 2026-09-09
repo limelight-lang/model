@@ -3955,14 +3955,16 @@ Goal: the one number the design still lacks.
       handoff: closed 2026-09-09. The release probe runs 127 immediately
         refused allocations over 1, 64 and 1,024 live registered roots, and
         proves that every attempt traced exactly that many roots. The middle
-        medians of three 31-sample runs are 0.45, 2.87 and 39.9 us per refusal;
-        full ranges and command are in `dev/BENCHMARKS.md`. **No remembered
+        medians of three 31-sample runs are 0.45, 3.08 and 42.7 us per refusal;
+        individual run medians and command are in `dev/BENCHMARKS.md`. **No remembered
         empty result is added.** A live candidate may die between failures;
         its registered slot is withheld until owner retirement, and this crate
         has no existing event that can clear a negative cache without skipping
         that return. Candidate enrolment is insufficient because it does not
-        cover this death. A throttle needs a separately designed queue-change
-        generation, not a boolean on the allocation path.
+        cover this death, and an already registered live candidate may become
+        garbage without either event. A throttle needs a separately designed
+        invalidator for all relevant refcount and graph transitions, not a
+        boolean on the allocation path.
 
 - [ ] S40.2 Decide chunks or not
       done: the decision and its reason are in `dev/DECISIONS.md`, quoting a
