@@ -226,6 +226,74 @@ fn the_sparse_arm() {
     }
 }
 
+/// Four one-edge components that become proven live one collection apart.
+///
+/// The fourth never gets an external reference and is the negative arm: its
+/// scan verdict resets its simulated age on every pass. The other three make
+/// the thresholds distinguishable instead of reporting the harness's chosen
+/// age back as one all-or-nothing number.
+#[test]
+fn the_pruned_edge_share() {
+    let _g = test_guard();
+    let readings = on_a_fresh_thread(|| {
+        let class = a_class("PrunedEdgeLoad", props_for(64));
+        let fixtures: Vec<Fixture> = (0..4).map(|_| build(class, 1, &[0])).collect();
+        let mut externally_held = [false; 4];
+        let mut ages = SimulatedAges::default();
+        let mut readings = Vec::with_capacity(COLLECTIONS);
+
+        for collection in 0..COLLECTIONS {
+            if collection < 3 {
+                unsafe { ll_retain(fixtures[collection].entities[0] as *mut RcHeader) };
+                externally_held[collection] = true;
+            }
+            readings.push(collect_with_ages(Some(&mut ages)));
+        }
+
+        for (fixture, held) in fixtures.into_iter().zip(externally_held) {
+            if held {
+                assert!(
+                    !unsafe { ll_release(fixture.entities[0] as *mut RcHeader) },
+                    "the self-edge still stands after the external reference leaves"
+                );
+            }
+            tear_down(fixture);
+        }
+        readings
+    });
+
+    let expected = [
+        [0, 0, 0],
+        [1, 0, 0],
+        [2, 1, 0],
+        [3, 2, 1],
+        [3, 3, 2],
+        [3, 3, 3],
+        [3, 3, 3],
+        [3, 3, 3],
+    ];
+    println!("\n== four one-edge components, live from collections 1/2/3/never ==");
+    println!("  n  internal_edges  pruned_k1  pruned_k2  pruned_k3  saturated");
+    for (index, reading) in readings.iter().enumerate() {
+        let pruning = reading.pruning.expect("this load carried the age ledger");
+        assert_eq!(
+            pruning.traced_internal_edges, 4,
+            "every full trace found the four self-edges"
+        );
+        assert_eq!(pruning.pruned_at, expected[index]);
+        assert_eq!(pruning.saturated_rows, 0);
+        println!(
+            "  {:<2} {:<15} {:<10} {:<10} {:<10} {}",
+            index + 1,
+            pruning.traced_internal_edges,
+            pruning.pruned_at[0],
+            pruning.pruned_at[1],
+            pruning.pruned_at[2],
+            pruning.saturated_rows
+        );
+    }
+}
+
 /// The retained arm: a component the arena's reset moved into retained
 /// blocks, whose index space is a survivor list rather than a slot
 /// stride.

@@ -3798,6 +3798,30 @@ Goal: the one number the design still lacks.
         itself makes 0 allocations, 0 pool requests and moves no `gc_metadata`
         figure. This does not close S40.1: the pruned-edge share at `k` of 1, 2
         and 3 remains, and the corpus arm stays Phase-D-blocked.
+      progress 2026-09-09 — the pruned-edge simulation. A harness-owned side
+        table ages each entity from the scan's own verdict over eight full
+        traces; the reading before the verdict reports internal in-edges as
+        `refcount - shadow count`, with saturated rows excluded from both
+        numerator and denominator and reported apart. Four one-edge components
+        become live at collections 1, 2, 3 and never. Across all 32 traced
+        edges, `k = 1` would prune 18 (56.25 %), `k = 2` 12 (37.5 %), and
+        `k = 3` 8 (25 %); the per-collection ladder and the construction are in
+        `dev/BENCHMARKS.md`, 2026-09-09. These are edge upper bounds and saved-
+        work lower bounds, not recall or a subtree count. This closes the
+        synthetic work of S40.1; the step remains open only on its Phase-D-
+        blocked corpus arm, so the figures do not settle S37.1's production
+        `k` by themselves.
+      Critic 2026-09-09: the simulation stays test-only, adds no operation to
+        a production trace, reads each met row once after the scan and owns
+        only its harness `HashMap`. Its result is a policy calibration whose
+        liveness schedule the harness chose, not workload evidence; the plan
+        and benchmark record refuse to promote it into a choice of `k`.
+        Saturation is excluded rather than read as zero internal edges, queue
+        roots are absent from the numerator, and the age is tested before the
+        current verdict advances it. Three source mutations were seen red:
+        suppressing the live-age increment, changing `age >= k` to `age > k`,
+        and charging a saturated row as one internal edge. The targeted Miri
+        slice is clean at 12 passed, 5 ignored, 78.18 s on Miri's clock.
       handoff: the corpus arm needs a driver over `ll-model`'s own heap. The
         recorded corpus instruments read PHP's heap, which has no blocks and no
         slots, so this arm is Phase-D-blocked in the same way S37.2 is blocked

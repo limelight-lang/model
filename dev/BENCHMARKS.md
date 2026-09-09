@@ -8,6 +8,62 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-09 — S40.1 the simulated pruned-edge share: 56.25 %, 37.5 % and 25 % at k of 1, 2 and 3
+
+**Machine:** dev box, shared with interactive work. **Base:** `ca5e1d7`,
+`rustc 1.96.0`. **Not a corpus reading:** the corpus arm remains blocked on a
+driver over this crate's heap with Phase D.
+
+**What was measured:** after each complete mark and scan, the test-only
+`cycle::density::simulate_pruned_edges` walks the touched rows. For every
+non-saturated row it recovers internal in-edges as live refcount minus the
+shadow count left by the mark. A harness-owned address-to-age table carries the
+scan's verdict to the next trace: `Live` increments, capped at three, and
+`PotentiallyUnreachable` resets to zero. The prune reading is taken before that
+update, matching S37.1's order — an edge tests the stamp written by a previous
+commit. No header maturation bit is read or written.
+
+**The load:** four disjoint self-cycles, hence four traced internal edges per
+collection. The first gains an external reference before collection 1, the
+second before collection 2, the third before collection 3, and the fourth
+never does. The fourth is the negative control: its scan verdict resets its age
+on every pass. Eight full traces give `n >= k + 2` for every threshold.
+
+| collection | traced internal edges | pruned at k=1 | pruned at k=2 | pruned at k=3 | saturated rows |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 4 | 0 | 0 | 0 | 0 |
+| 2 | 4 | 1 | 0 | 0 | 0 |
+| 3 | 4 | 2 | 1 | 0 | 0 |
+| 4 | 4 | 3 | 2 | 1 | 0 |
+| 5 | 4 | 3 | 3 | 2 | 0 |
+| 6 | 4 | 3 | 3 | 3 | 0 |
+| 7 | 4 | 3 | 3 | 3 | 0 |
+| 8 | 4 | 3 | 3 | 3 | 0 |
+| **total / 32** | **32** | **18 / 56.25 %** | **12 / 37.5 %** | **8 / 25 %** | **0** |
+
+The run is reproducible with:
+
+```text
+cargo test --release --lib density::tests::the_loads::the_pruned_edge_share -- --nocapture
+```
+
+**Limits:** this counts edges whose targets would be opaque, not work actually
+saved. It bounds pruned edge dispatches from above and saved traversal work
+from below, because pruning one edge can remove a subtree and can also make a
+later edge unreachable in an order-dependent way. It says nothing about
+recall. A saturated row has no recoverable internal-edge count and is reported
+apart; the gated saturated-row calibration proves it contributes to neither
+the numerator nor denominator. Finally, the three percentages describe this
+deliberately staggered synthetic population. They complete S40.1's simulation
+but do not choose the production `k`; that requires the blocked corpus arm.
+
+**Verification:** the exact eight-row ladder is a non-ignored test in the
+ordinary gate. It failed under three independent mutations: no increment for a
+live verdict, strict `age > k` in place of `age >= k`, and one invented edge
+for a saturated row. The `cycle::density` Miri slice is clean at 12 passed, 5
+ignored, 78.18 s on Miri's clock. The full gate reports 831 passed / 9 ignored;
+the `debug-journal` arm reports 835 / 11 in each of three runs.
+
 ## Method
 
 ```

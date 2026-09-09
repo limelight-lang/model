@@ -63,7 +63,7 @@ versions live in `docs/history/`, marked at the top.
   | `validation` | the owner's exact validation of one component, and the zero-count-member rule | `cycle::finalization`, which is what acts on its answer |
   | `finalization` | the guard reference on every member of a confirmed component, the weak cells naming them nulled before any destructor, the destructor pass over the whole commit, the second reading each component takes with the guard subtracted, and the maturation stamp every component read as externally referenced takes at either reading | `cycle::collect` |
   | `reclamation` | the teardown of a component the second reading kept: the room taken before the first cell is emptied, the sever, the frees through the ordinary death path, and the queue the displaced external children wait in | `cycle::collect` |
-  | `density` | test builds only: what share of a touched block's slots one trace met, and, in `tests::the_death_loads`, what the window's close costs in time and in cache lines | none |
+  | `density` | test builds only: what share of a touched block's slots one trace met, the internal edges an age threshold would prune through a harness-owned side table, and, in `tests::the_death_loads`, what the window's close costs in time and in cache lines | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a
   count at the field's bound is a floor and absorbs every subtraction, so

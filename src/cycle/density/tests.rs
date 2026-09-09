@@ -167,6 +167,9 @@ struct Reading {
     /// arrays here, and a case about reused arena memory has to say so
     /// rather than assume it.
     newest_array: usize,
+    /// The optional S40.1 age simulation. Density-only cases leave it absent;
+    /// the pruning load carries one ledger through all eight collections.
+    pruning: Option<PrunedEdgeShare>,
 }
 
 /// One collection over the candidates this thread holds, and the reading
@@ -177,6 +180,12 @@ struct Reading {
 /// refused trace subtracts an incomplete closure and its density would
 /// be a number about a trace that did not happen.
 fn collect() -> Reading {
+    collect_with_ages(None)
+}
+
+/// The same collection, optionally carrying the simulation's side table
+/// across repeated full traces of one population.
+fn collect_with_ages(ages: Option<&mut SimulatedAges>) -> Reading {
     let mut active = ActiveTrace::open().expect("the pool funded the trace window");
     active.detach_candidates();
 
@@ -192,6 +201,7 @@ fn collect() -> Reading {
     );
 
     let density = unsafe { totals(arena) };
+    let pruning = ages.map(|ages| unsafe { simulate_pruned_edges(arena, ages) });
     let newest_array = arena.touched_head() as usize;
     let arena_blocks = arena.blocks_held();
     Reading {
@@ -200,6 +210,7 @@ fn collect() -> Reading {
         newest_array,
         mark_resolutions: crate::cycle::row::take_dispatches_in_mark_phase(),
         trace_resolutions: crate::cycle::row::take_edge_dispatches(),
+        pruning,
     }
 }
 
@@ -503,18 +514,23 @@ fn the_walk_draws_nothing_and_moves_no_ledger_figure() {
 #[test]
 fn a_saturated_row_is_met_and_counted_apart() {
     let _g = test_guard();
-    let density = on_a_fresh_thread(|| {
+    let (density, pruning) = on_a_fresh_thread(|| {
         let class = a_class("DensitySaturated", props_for(64));
         let fixture = build(class, 2, &[]);
         let block = (fixture.entities[0] as usize & !BLOCK_MASK) as *mut u8;
 
         let mut arena = crate::cycle::testing::open_arena();
-        met(unsafe { arena.ensure_row(slotted_row(block, 0), shadow::COUNT_MAX) });
-        met(unsafe { arena.ensure_row(slotted_row(block, 1), 1) });
+        let saturated = met(unsafe { arena.ensure_row(slotted_row(block, 0), shadow::COUNT_MAX) });
+        let ordinary = met(unsafe { arena.ensure_row(slotted_row(block, 1), 1) });
+        unsafe {
+            shadow::recolor(saturated, Color::Live);
+            shadow::recolor(ordinary, Color::Live);
+        }
         let density = unsafe { totals(&arena) };
+        let pruning = unsafe { simulate_pruned_edges(&arena, &mut SimulatedAges::default()) };
         arena.reset();
         tear_down(fixture);
-        density
+        (density, pruning)
     });
 
     assert_eq!(density.slotted.rows_met, 2, "both rows were met");
@@ -522,6 +538,15 @@ fn a_saturated_row_is_met_and_counted_apart() {
         density.slotted.rows_saturated, 1,
         "and one of the two carries a lower bound rather than a total"
     );
+    assert_eq!(
+        pruning.saturated_rows, 1,
+        "the pruning reading reports the lower-bound row apart too"
+    );
+    assert_eq!(
+        pruning.traced_internal_edges, 0,
+        "and does not invent an internal-edge count for either row"
+    );
+    assert_eq!(pruning.pruned_at, [0, 0, 0]);
 }
 
 /// A retained block reports its survivor list as the index space, and

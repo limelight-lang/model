@@ -1,4 +1,5 @@
-//! What share of a touched block's slots one trace met, read after the
+//! What share of a touched block's slots one trace met, and how many internal
+//! edges a proposed maturation threshold would have pruned, read after the
 //! trace and before the arena's reset (`PLAN.md` S40.1).
 //!
 //! # Why the reading is taken from the rows rather than from the path
@@ -51,14 +52,20 @@
 //!
 //! # What this module owns
 //!
-//! Nothing. It reads rows the caller's arena holds, allocates nothing
-//! and writes nothing — including no row: it goes through
+//! The density reading owns nothing. It reads rows the caller's arena holds,
+//! allocates nothing and writes nothing — including no row: it goes through
 //! [`shadow::row`] and never through `ensure_row`, whose meeting would
-//! initialise the very rows the reading is about. Test builds only.
+//! initialise the very rows the reading is about. The pruning simulation owns
+//! one harness-side [`HashMap`] of entity address to age and updates it after
+//! each reading; it is deliberately not collection memory and no production
+//! build compiles this module. Test builds only.
+
+use std::collections::HashMap;
 
 use crate::cycle::arena::TraceScratchArena;
-use crate::cycle::row::Population;
+use crate::cycle::row::{Population, entity_at};
 use crate::cycle::shadow::{self, Color, RowArray};
+use crate::refcount::{MATURATION_AGE_MAX, header_refcount};
 
 /// What one trace met in one touched block.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -135,6 +142,32 @@ pub(crate) struct TraceDensity {
     pub(crate) single_entity: PopulationDensity,
 }
 
+/// Ages a measurement carries from one full trace to the next.
+///
+/// This is deliberately a harness-owned side table rather than the header's
+/// maturation field: S40.1 measures the policy before S37.1 writes or reads
+/// that field. An address disappears from the table only with the fixture
+/// that owns it, so a measurement must not reuse one ledger across two heaps.
+#[derive(Default)]
+pub(crate) struct SimulatedAges {
+    ages: HashMap<usize, u32>,
+}
+
+/// The internal edges a full trace found, and how many an edge-side
+/// maturation test would have pruned at each proposed threshold.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) struct PrunedEdgeShare {
+    /// Internal in-edges of non-saturated rows. This is the denominator for
+    /// every threshold below.
+    pub(crate) traced_internal_edges: u64,
+    /// Edges whose target entered this trace at age 1, 2 or 3 respectively.
+    pub(crate) pruned_at: [u64; MATURATION_AGE_MAX as usize],
+    /// Rows whose shadow count is a lower bound. Their internal in-edge count
+    /// cannot be recovered, so neither numerator nor denominator includes
+    /// them.
+    pub(crate) saturated_rows: u64,
+}
+
 /// Read every touched block of `arena`, newest first, and hand each
 /// reading to `visit`.
 ///
@@ -175,6 +208,94 @@ pub(crate) unsafe fn totals(arena: &TraceScratchArena) -> TraceDensity {
     }
 
     density
+}
+
+/// Simulate the edge-side maturation test over one completed trace.
+///
+/// The mark leaves `refcount - internal in-edges` in every non-saturated
+/// shadow row, so the internal in-edges targeting that entity are recoverable
+/// as `refcount - shadow::count`. The age tested for this trace is the ledger's
+/// value on entry; only after the reading is taken does the scan's verdict age
+/// a live entity or reset an unreachable one. This mirrors the order S37.1
+/// will have: prune on the stamp a previous commit wrote, then write the next
+/// stamp after the current full trace.
+///
+/// The result counts edges, not the descendants those edges alone reached.
+/// It therefore bounds pruned edge dispatches from above and saved work from
+/// below: pruning one edge may make later edges and whole subtrees unreachable
+/// to the walk, depending on descent order. It says nothing about recall.
+///
+/// # Safety
+/// As [`totals`], and every met row belongs to a completed scan. `ages` is
+/// private to this heap and outlives every trace included in the run.
+pub(crate) unsafe fn simulate_pruned_edges(
+    arena: &TraceScratchArena,
+    ages: &mut SimulatedAges,
+) -> PrunedEdgeShare {
+    let mut answer = PrunedEdgeShare::default();
+    let mut array = arena.touched_head();
+    while !array.is_null() {
+        let block = unsafe { (*array).block };
+        let population = unsafe { (*array).population };
+        let row_count = if population == Population::SingleEntity {
+            1
+        } else {
+            unsafe { (*array).row_count }
+        };
+
+        for index in 0..row_count {
+            let word = if population == Population::SingleEntity {
+                unsafe { *crate::memory::large_entity::shadow_row(block) }
+            } else {
+                if !unsafe { shadow::group_is_initialized(array, index) } {
+                    continue;
+                }
+                unsafe { *shadow::row(array, index) }
+            };
+
+            let color = shadow::color(word);
+            if color == Color::Untouched {
+                continue;
+            }
+            debug_assert_ne!(
+                color,
+                Color::Unclassified,
+                "the pruning simulation reads a completed scan"
+            );
+
+            let entity = unsafe { entity_at(block, population, index) }
+                .expect("a touched row names a live entity");
+            let address = entity as usize;
+            let age = ages.ages.get(&address).copied().unwrap_or(0);
+
+            if shadow::is_saturated(word) {
+                answer.saturated_rows += 1;
+            } else {
+                let references = u64::from(unsafe { header_refcount(entity) });
+                let external = u64::from(shadow::count(word));
+                let internal = references
+                    .checked_sub(external)
+                    .expect("the owner trace left no count above the refcount");
+                answer.traced_internal_edges += internal;
+                for threshold in 1..=MATURATION_AGE_MAX {
+                    if age >= threshold {
+                        answer.pruned_at[threshold as usize - 1] += internal;
+                    }
+                }
+            }
+
+            let next_age = if color == Color::Live {
+                (age + 1).min(MATURATION_AGE_MAX)
+            } else {
+                0
+            };
+            ages.ages.insert(address, next_age);
+        }
+
+        array = unsafe { (*array).next };
+    }
+
+    answer
 }
 
 /// One array's reading.
