@@ -32,15 +32,16 @@
 //! the trace, and a trace that stops at its budget or at a refused block
 //! leaves every header as it found it.
 //!
-//! **The producer built here is narrower than the maturation policy.** Both
-//! call sites receive a [`Membership`] made from rows scan left
-//! `PotentiallyUnreachable`; an ordinary row scan already proved `Live` is not
-//! in that membership and therefore cannot reach [`stamp_component`]. Y9 also
-//! requires those live components to mature, because they are the core a later
-//! edge-side prune stops at. Building their component membership and moving
-//! their one candidate token to the deferred lane is the prerequisite recorded
-//! under `PLAN.md` S37.1/S37.4. Nothing here licenses stamping live rows one by
-//! one: the age remains the component-wide minimum plus one.
+//! **The producer here is one of the commit's two, and it is the narrower.**
+//! Both call sites receive a [`Membership`] made from rows scan left
+//! `PotentiallyUnreachable`, so what they stamp is a set the scan proposed for
+//! teardown whose exact validation disagreed. The rows the scan proved `Live`
+//! — the core a later edge-side prune stops at — are
+//! [`crate::cycle::maturation`]'s, which runs earlier in the same commit and
+//! under the same epoch. Neither producer stamps a row one by one: the age is
+//! the component-wide minimum plus one on both, and what differs is only how
+//! the component is identified. The token a live root keeps is still offered
+//! to every collection; moving it to the deferred lane is `PLAN.md` S37.6.
 //!
 //! # The order is the type's rather than the caller's
 //!
@@ -278,6 +279,15 @@ impl Finalization {
         // finalization and reclamation", steps 2 and 3).
         unsafe { members.for_each(|member| weak::notify_member(member)) };
         result
+    }
+
+    /// The epoch every stamp of this commit carries, which the live
+    /// components take as well ([`crate::cycle::maturation`]).
+    ///
+    /// Read once at [`Finalization::begin`], so that the two producers of a
+    /// stamp write one epoch even where a turnover falls between them.
+    pub(crate) fn epoch(&self) -> u32 {
+        self.epoch
     }
 
     /// Close the finalization: no component joins it after this, and the

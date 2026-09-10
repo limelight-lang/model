@@ -8,6 +8,53 @@ never edited or deleted.
 
 ---
 
+## 2026-09-10 — the live population is stamped by component, and the component is the strongly connected one
+
+A commit stamps every entity its scan coloured `Live`, with the epoch it read
+at the finalization's start and an age one more than the minimum current-epoch
+age over that entity's strongly connected component in the traced live
+subgraph. Until now the only producer was the exact validation's
+`ExternallyReferenced` arm, whose membership is rows the scan proposed as
+unreachable, so the mature live core the descent is meant to stop at was never
+stamped at all. The Sage's ruling is the gate of `PLAN.md` S37.0; the
+definition was carried into `rfc` first (`rfc/dev/DECISIONS.md`, same
+heading), because Y9 and `rc-cycle.md` call the word normative without
+defining it.
+
+**Why the strongly connected component.** The minimum rule ages a unit whose
+membership is the same at every reading. The traced closure is not one: the
+median candidate root reaches all 381 objects of the corpus, so the closure is
+the live set, and any entity met for the first time reads age zero and holds
+every member at age one. Refused with it: the per-root first-reach partition,
+which equals the closure on that corpus and moves with the batch order, and
+per-entity ageing, which `rfc` Y9 forbids by name.
+
+**What it costs.** A third descent, of the scan's shape, over the live
+subgraph: per entity a row load and store, a kind load and one expansion of
+its cells, and per edge a frame, a block dispatch and a row load. Its peak
+memory is the part the operation counts hide: the component stack holds every
+visited vertex until its root closes, which on a heap whose live core is one
+component is the whole live population at sixteen bytes each, and the frame
+stack holds the out-edges of every vertex on the current path. Both draw
+segments of the worklist's size from the arena's bump, and they draw them
+**before** `reclamation` reserves room for the children a sever displaces, so
+a descent that emptied the pool can turn a confirmed teardown into a refused
+reservation — the component is kept for a later collection, which is latency
+and not a lost cycle. The
+component index is Pearce's single index, held in the working count of the
+entity's own row — a field no production reader takes between the scan and the
+arena's reset, which `shadow::write_live_index` states and
+`cycle::density`'s narrowed contract respects. The frames are the trace's own
+worklist, empty since the scan; the component stack takes segments of the same
+size from the same bump.
+
+**Cost of the two boundaries drawn around it.** It runs before the first guard,
+because step 4 can free a member and a stamp written after it would land in
+whatever occupies the slot next. It runs on the ordinary path alone, because a
+collection an allocation failure started holds a list and no rows, and its
+segments would come out of the memory that collection exists to return: a
+thread that only ever collects under pressure never matures its live core.
+
 ## 2026-09-09 — do not cache an empty pressure collection
 
 An allocation refusal continues to run one pressure collection and one retry;

@@ -238,6 +238,61 @@ pub(crate) unsafe fn for_each_unreachable(
     unsafe { crate::cycle::shadow::for_each_unreachable(array, visit) }
 }
 
+/// Visit the index of every row of `block` the scan left
+/// [`Color::Live`](crate::cycle::shadow::Color), stopping where `visit`
+/// answers false, and answer **false when it stopped early**.
+///
+/// The sibling of [`for_each_unreachable`] over the other colour, and here for
+/// the same reason: a large entity's colour is a word of its own block header,
+/// and the dispatch that knows so is this module's. Its reader is the
+/// maturation descent ([`crate::cycle::maturation`]).
+///
+/// # Safety
+/// As [`for_each_unreachable`].
+pub(crate) unsafe fn for_each_live(
+    array: *mut crate::cycle::shadow::RowArray,
+    block: *mut u8,
+    population: Population,
+    visit: impl FnMut(u32) -> bool,
+) -> bool {
+    let mut visit = visit;
+    if population == Population::SingleEntity {
+        crate::cycle::shadow::note_row_read();
+        let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
+        if crate::cycle::shadow::color(row) != crate::cycle::shadow::Color::Live {
+            return true;
+        }
+
+        return visit(SINGLE_ENTITY_INDEX);
+    }
+
+    unsafe { crate::cycle::shadow::for_each_live(array, visit) }
+}
+
+/// The row at `index` of `block`, which is what a walk over
+/// [`for_each_live`] holds an index into.
+///
+/// It is the address of the row rather than its word, because the maturation
+/// descent writes there ([`crate::cycle::maturation`]). A large entity's row
+/// stands in its block header and its index is [`SINGLE_ENTITY_INDEX`], which
+/// is the whole of the dispatch.
+///
+/// # Safety
+/// As [`entity_at`]: `block` is the header of the live block `population`
+/// describes, and `index` is a row index of that block's array.
+pub(crate) unsafe fn row_at(
+    array: *mut crate::cycle::shadow::RowArray,
+    block: *mut u8,
+    population: Population,
+    index: u32,
+) -> *mut u32 {
+    if population == Population::SingleEntity {
+        return unsafe { crate::memory::large_entity::shadow_row(block) };
+    }
+
+    unsafe { crate::cycle::shadow::row(array, index) }
+}
+
 /// The entity the row at `index` of `block` carries the working count for,
 /// which is what [`resolve_edge_target`] answers backwards: it takes an
 /// address to a row, and this takes a row to its address.
@@ -374,6 +429,50 @@ pub(crate) fn note_phase_boundary() {
     DISPATCHES_AT_PHASE_BOUNDARY.with(|at| at.set(EDGE_DISPATCHES.with(std::cell::Cell::get)));
 }
 
+/// Record where the trace's dispatches ended and the maturation descent's
+/// begin, which is the second boundary of a collection
+/// ([`crate::cycle::maturation`]). The body is empty without `cfg(test)`.
+#[inline]
+pub(crate) fn note_descent_boundary() {
+    #[cfg(test)]
+    DISPATCHES_AT_DESCENT_BOUNDARY.with(|at| at.set(EDGE_DISPATCHES.with(std::cell::Cell::get)));
+}
+
+/// Add what the descent just made to its own total, which is read by
+/// [`take_dispatches_in_the_descent`]. The body is empty without `cfg(test)`.
+///
+/// **The end of the descent and not the end of the commit.** Everything past
+/// it resolves rows of its own — the exact validation asks a membership about
+/// every out-edge of every member, twice, and the teardown walks them again —
+/// so a total taken from the boundary to the end of the collection would call
+/// all of that the descent's.
+#[inline]
+pub(crate) fn note_descent_end() {
+    #[cfg(test)]
+    DISPATCHES_IN_DESCENT.with(|total| {
+        let boundary = DISPATCHES_AT_DESCENT_BOUNDARY.with(std::cell::Cell::get);
+        total.set(total.get() + EDGE_DISPATCHES.with(std::cell::Cell::get) - boundary);
+    });
+}
+
+/// Dispatches the mark and the scan made together, counting from the
+/// [`take_edge_dispatches`] before them, which this leaves at zero.
+///
+/// It is recorded whichever path the commit took, so a reading after a
+/// collection under pressure answers that collection's trace rather than the
+/// last one that had rows.
+#[cfg(test)]
+pub(crate) fn take_dispatches_before_the_descent() -> usize {
+    DISPATCHES_AT_DESCENT_BOUNDARY.with(|at| at.replace(0))
+}
+
+/// Dispatches the maturation descents made since this last answered, which it
+/// leaves at zero. Zero after a collection under pressure, which runs none.
+#[cfg(test)]
+pub(crate) fn take_dispatches_in_the_descent() -> usize {
+    DISPATCHES_IN_DESCENT.with(|total| total.replace(0))
+}
+
 /// Dispatches the last completed mark phase made, counting from the
 /// [`take_edge_dispatches`] before it, which this leaves at zero.
 ///
@@ -388,6 +487,14 @@ pub(crate) fn note_phase_boundary() {
 #[cfg(test)]
 pub(crate) fn take_dispatches_in_mark_phase() -> usize {
     DISPATCHES_AT_PHASE_BOUNDARY.with(|at| at.replace(0))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Dispatches standing when the maturation descent started.
+    static DISPATCHES_AT_DESCENT_BOUNDARY: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Dispatches the maturation descents made since the last reading.
+    static DISPATCHES_IN_DESCENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]

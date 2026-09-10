@@ -1,5 +1,14 @@
 //! What share of a touched block's slots one trace met, read after the
-//! trace and before the arena's reset (`PLAN.md` S40.1).
+//! trace and before the commit (`PLAN.md` S40.1).
+//!
+//! **Before the commit and not merely before the arena's reset.** The commit
+//! runs the maturation descent, which takes the working count of every row the
+//! scan left live for its own component index
+//! (`crate::cycle::maturation`). Past that call a live row reads as a count
+//! this module would report as internal edges, and the first component closed
+//! reads as saturated; both figures would be the descent's arithmetic rather
+//! than the trace's. A row the scan left potentially unreachable is untouched
+//! by it and carries what the trace left.
 //!
 //! # Why the reading is taken from the rows rather than from the path
 //!
@@ -194,16 +203,19 @@ pub(crate) unsafe fn totals(arena: &TraceScratchArena) -> TraceDensity {
 /// one for every internal in-edge it encountered. The difference between the
 /// current header refcount and the remaining shadow count is therefore the
 /// number of internal in-edges targeting this entity. A later scan changes
-/// only colour, so the same reading is valid after a completed trace.
+/// only colour, so the same reading is valid after a completed trace and
+/// invalid after the commit, whose descent takes the count of every live row
+/// (module doc).
 ///
 /// This is deliberately **not** a maturation simulator. It carries no age or
 /// identity across collections, reads no stamp or epoch, groups no component,
 /// and applies no threshold. A caller measuring pruning must combine this
-/// denominator with the production stamp producer S37.1 builds; this function
-/// cannot manufacture that policy by construction.
+/// denominator with the stamps S37.0's producer writes and the descent S37.1
+/// builds; this function cannot manufacture that policy by construction.
 ///
 /// # Safety
-/// As [`totals`]. Every met row was produced by a completed mark and no entity
+/// As [`totals`]. Every met row was produced by a completed mark, no commit has
+/// run over these rows, and no entity
 /// refcount or edge changed before this read; a test may instead construct a
 /// row directly when its block-to-entity mapping is valid and its supplied
 /// shadow count is the exact post-mark count the case claims (or saturation,
@@ -231,7 +243,8 @@ pub(crate) unsafe fn internal_edges(arena: &TraceScratchArena) -> InternalEdgeCe
 /// to inspect the stamps it wrote without adding age or threshold policy here.
 ///
 /// # Safety
-/// As [`internal_edges`].
+/// As [`internal_edges`], and the call stands before the commit that would
+/// take the live rows' counts for the maturation descent (module doc).
 unsafe fn for_each_recoverable_internal_edge_target(
     arena: &TraceScratchArena,
     mut visit: impl FnMut(*mut crate::refcount::RcHeader, u64),

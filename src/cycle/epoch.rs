@@ -2,7 +2,8 @@
 //! two-bit stamp a maturation carries.
 //!
 //! A maturation stamp says that the collection of one epoch read a component
-//! as externally referenced, and the epoch is what retires it: past the
+//! as held from outside — its exact validation reading it as externally
+//! referenced, or its scan proving it live — and the epoch is what retires it: past the
 //! turnover a stamp of an earlier epoch reads as no stamp at all, so a
 //! component that lost its last external reference while it was mature is
 //! traced again instead of being pruned for ever

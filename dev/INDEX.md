@@ -50,13 +50,14 @@ versions live in `docs/history/`, marked at the top.
   | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its stack of withheld returns through the dead entities, and the detached candidate batch a collection traces | `stdapi::ll_free` |
   | `collect` | the order a collection runs in, the two paths it takes through them, and the flag that refuses a collection reached from inside one | `gc`'s two collecting entries, and `memory::heap::entity_alloc` for the path under pressure |
   | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | `cycle::collect` |
-  | `shadow` | the row: two bits of colour over thirty of working count | none |
+  | `shadow` | the row: two bits of colour over thirty of working count, which past the scan belong to `cycle::maturation` in a live row | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to, and the test-build assertion that the target stands in memory this process carved for blocks | none |
   | `epoch` | the process's count of closed commits, and the two-bit epoch a maturation stamp carries: `(commits / 64) % 4` | `cycle::finalization`, which reads it at a commit's start and advances it at its close |
   | `mark` | the trace: trial deletion over the rows | none |
+  | `maturation` | the descent that stamps the live components a commit read: strongly connected components over the rows the scan left live, Pearce's single index held in the row's own count, and the age one more than the component's youngest member | `cycle::collect`, inside the commit and before the first guard |
   | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | `cycle::collect`'s path under pressure |
   | `membership` | the two forms a commit's membership takes — the harvested list and the rows a collection off the poll keeps — behind the three questions every reader asks of one | `cycle::collect`, and the three modules a commit reads through |
-  | `records` | `RecordChain`, the segmented record chain the trace's worklist and the teardown's deferred drops are built on: `pop` serves a descent, `drain` a replay in append order | none |
+  | `records` | `RecordChain`, the segmented record chain the trace's worklist and the teardown's deferred drops are built on: `pop` serves a descent, `drain` a replay in append order, `for_each_from_top` a reading that takes nothing out | none |
   | `stack` | the trace worklist, 256-entry segments out of the arena | none |
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | none |
   | `trace` | both phases over one detached batch, in the order the rows require: every root marks before any root scans | `cycle::collect` |

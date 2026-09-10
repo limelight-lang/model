@@ -133,12 +133,15 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("BLOCKS", false),
         ("BLOCK_BUDGET", false),
         ("COLLECTING", false),
+        ("COUNTS", false),               // test-only const Cell, no drop glue
         ("COUNT_PRESSURE_ROOTS", false), // test-only const Cell, no drop glue
         ("CRITICAL", true),
         ("CURRENT_CONTEXT", false),
         ("DEFERRED_RETURNS", false),
         ("DIED", false),
+        ("DISPATCHES_AT_DESCENT_BOUNDARY", false), // test-only const Cell, no drop glue
         ("DISPATCHES_AT_PHASE_BOUNDARY", false),
+        ("DISPATCHES_IN_DESCENT", false), // test-only const Cell, no drop glue
         ("DUE", false),
         ("EARLY_RETIREMENT", false), // test-only const Cell, no destructor registration
         ("EARLY_RETURNED_SLOTS", false), // test-only const Cell, no destructor registration
@@ -162,6 +165,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PRESSURE_COLLECTIONS", false),
         ("PRESSURE_ROOTS_TRACED", false), // test-only const Cell, no drop glue
         ("QUEUE_WORK", false),            // test-only const Cell, no destructor registration
+        ("REFUSE_AT_VERTEX", false),      // test-only const Cell, no drop glue
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
         ("RESERVE", true),
         ("RING", false),

@@ -352,6 +352,11 @@ pub(crate) struct TraceScratchArena {
     /// The trace's worklist, whose segments are this bump's
     /// ([`crate::cycle::stack`]).
     worklist: TraceStack,
+    /// The maturation descent's component stack: every live vertex it has
+    /// visited and not yet assigned to a component
+    /// ([`crate::cycle::maturation`]). Segments of this bump, like the
+    /// worklist's, and empty outside that descent.
+    components: TraceStack,
     /// The children a teardown's sever displaced out of the component it is
     /// tearing down, held until the last member's free
     /// ([`crate::cycle::reclamation`]). Segments of this bump, like the
@@ -418,6 +423,7 @@ impl TraceScratchArena {
             open_capacity: WORKSPACE_BUMP_BYTES,
             touched: std::ptr::null_mut(),
             worklist: TraceStack::new(),
+            components: TraceStack::new(),
             drops: DeferredDrops::new(),
             published: 0,
             harvest: Harvest::Unarmed,
@@ -668,6 +674,10 @@ impl TraceScratchArena {
         // with entities still queued, and every one of them carries a row
         // pointer into an array this call is about to unstamp.
         self.worklist.rewind();
+        // The descent that fills it ends inside the commit, so a stack still
+        // holding a vertex here belongs to one that unwound
+        // ([`crate::cycle::maturation`]).
+        self.components.rewind();
 
         // The queue's segments are this bump's too, and a child still standing
         // in one is a reference nothing will ever drop. That is a leak rather
@@ -792,6 +802,12 @@ impl TraceScratchArena {
         debug_assert!(
             self.worklist.is_empty(),
             "the worklist is drained before the rows it points into are unstamped"
+        );
+        // The descent's own stack carries the same pointer in the same field,
+        // so it owes the same emptiness ([`crate::cycle::maturation`]).
+        debug_assert!(
+            self.components.is_empty(),
+            "the component stack is drained before the rows it points into are unstamped"
         );
 
         // This collection's own state rather than the thread's list: the list
@@ -943,6 +959,46 @@ impl TraceScratchArena {
     /// when the closure is exhausted.
     pub(crate) fn pop_work(&mut self) -> Option<WorklistEntry> {
         self.worklist.pop()
+    }
+
+    /// Put a visited live vertex on the maturation descent's component stack,
+    /// or answer **false** when both allocation paths refused a segment.
+    ///
+    /// The stack the descent pops a whole component off, so it takes segments
+    /// of its own rather than sharing the worklist: the two stand at the same
+    /// time, the worklist carrying the frames of the path and this one the
+    /// vertices that path has visited ([`crate::cycle::maturation`]).
+    pub(crate) fn push_component(&mut self, entry: WorklistEntry) -> bool {
+        if self.components.push_into_current(entry) {
+            return true;
+        }
+
+        if !self.components.advance_to_kept() {
+            let region = self.alloc(SEGMENT_BYTES);
+            if region.is_null() {
+                return false;
+            }
+
+            unsafe { self.components.extend(region, SEGMENT_ENTRIES) };
+        }
+
+        self.components.push_into_current(entry)
+    }
+
+    /// The newest vertex of the component stack, or `None` when it holds none.
+    pub(crate) fn pop_component(&mut self) -> Option<WorklistEntry> {
+        self.components.pop()
+    }
+
+    /// Read the component stack from the newest vertex down, stopping where
+    /// `visit` answers false, and leave it as it was.
+    ///
+    /// What the descent takes the minimum of a component's ages over before it
+    /// pops that component: nothing here allocates, so the pops that follow
+    /// cannot be refused in the middle of one component
+    /// ([`crate::cycle::records::RecordChain::for_each_from_top`]).
+    pub(crate) fn for_each_component_from_top(&self, visit: impl FnMut(&WorklistEntry) -> bool) {
+        self.components.for_each_from_top(visit);
     }
 
     /// Take room for `children` deferred drops, or answer **false** when both

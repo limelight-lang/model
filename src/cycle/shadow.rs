@@ -216,6 +216,28 @@ pub(crate) unsafe fn recolor(row: *mut u32, color: Color) {
     unsafe { row.write(compose(color, count(word))) };
 }
 
+/// Give a row the maturation descent's own index, keeping its colour.
+///
+/// **The working count of a row the scan left [`Color::Live`] belongs to that
+/// descent from the moment it starts** ([`crate::cycle::maturation`]): the
+/// trace is over, the count has answered the only question the scan asks of
+/// it, and no production reader takes it again before the arena's reset. A row
+/// of any other colour is still the count the trace left, and this call
+/// refuses one in a test build.
+///
+/// # Safety
+/// As [`recolor`].
+#[inline]
+pub(crate) unsafe fn write_live_index(row: *mut u32, index: u32) {
+    let word = unsafe { *row };
+    debug_assert_eq!(
+        color(word),
+        Color::Live,
+        "the descent's index goes into a row the scan proved live"
+    );
+    unsafe { row.write(compose(Color::Live, index)) };
+}
+
 /// Rows one group covers, and the number of rows a group init writes at
 /// once. Eight rows is 32 bytes, so a group init is half a cache line,
 /// and one bit per group puts the whole bitmap of the widest block —
@@ -482,6 +504,32 @@ pub(crate) const fn group_count(row_count: u32) -> u32 {
 /// `array` is an initialised array whose collection has been scanned.
 pub(crate) unsafe fn for_each_unreachable(
     array: *mut RowArray,
+    visit: impl FnMut(u32) -> bool,
+) -> bool {
+    unsafe { for_each_of_color(array, Color::PotentiallyUnreachable, visit) }
+}
+
+/// Visit the index of every row of `array` the scan left [`Color::Live`],
+/// stopping where `visit` answers false, and answer **false when it stopped
+/// early**.
+///
+/// The population the maturation descent walks, and the one the teardown never
+/// reads: a live row names an entity this collection proved held from outside
+/// ([`crate::cycle::maturation`]).
+///
+/// # Safety
+/// As [`for_each_unreachable`].
+pub(crate) unsafe fn for_each_live(array: *mut RowArray, visit: impl FnMut(u32) -> bool) -> bool {
+    unsafe { for_each_of_color(array, Color::Live, visit) }
+}
+
+/// The walk both colours take: met groups only, one row read per index.
+///
+/// # Safety
+/// As [`for_each_unreachable`].
+unsafe fn for_each_of_color(
+    array: *mut RowArray,
+    wanted: Color,
     mut visit: impl FnMut(u32) -> bool,
 ) -> bool {
     let row_count = unsafe { (*array).row_count };
@@ -493,7 +541,7 @@ pub(crate) unsafe fn for_each_unreachable(
 
         for index in first..(first + GROUP).min(row_count) {
             note_row_read();
-            if color(unsafe { *row(array, index) }) != Color::PotentiallyUnreachable {
+            if color(unsafe { *row(array, index) }) != wanted {
                 continue;
             }
 

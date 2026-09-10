@@ -11,8 +11,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-10 · Active: S40, from S40.1. Its pruning arm first waits on S37.1's
-live-component stamp producer, then on the Phase-D corpus driver;
+Updated: 2026-09-10 · Active: S37, from S37.6. S37.0 closed the same day with
+the live-component stamp producer the Sage ruled a step of its own, so S37.1's
+edge-side read has the write side it waited on and S40.1's pruning arm has the
+byte it calibrates; the corpus arm of S40.1 still waits on the Phase-D driver;
 S36 has S36.8 left; S44 has one step left, S44.5,
 and it waits on Edmond's word. **S34 closed and was deleted on 2026-09-10**,
 its last step being the law that only the owner reduces state; what outlived
@@ -2711,6 +2713,107 @@ Goal: the trace stops following the whole heap. On a booted Laravel corpus the
 subgraph reachable from a median candidate root is 381 of 381 objects, so this
 stage is what makes a trace affordable rather than what tunes it.
 
+- [x] S37.0 The commit stamps the live components it read   *(before S37.1)*
+      done: at every collection off the poll, each entity the scan coloured
+        `Live` carries this commit's epoch and an age one more than the minimum
+        current-epoch age over its **strongly connected component in the traced
+        live subgraph**, written by a descent over the rows that runs after the
+        scan and before the first guard; two rings joined by one one-way edge
+        under a single keeper stamp at different ages inside one closure and at
+        one age within each ring; a member joined to a ring between two commits
+        holds that ring at age 1 while the other ring climbs; a commit under a
+        pinned later epoch writes age 1 with the new epoch; a segment refusal
+        injected inside the descent leaves every component stamped whole or
+        untouched, read off a `#[cfg(test)]` counter of components closed, rows
+        visited, stack high-water and refusals; a collection under pressure
+        stamps through the exact validation alone, read off the same counter; a
+        root whose row read `Live` and a root of a set the commit read as
+        externally referenced each keep their one token and stand in the
+        deferred lane at the close, a root whose set was freed is retired, and
+        every other root is back in the active lane; the mark's and the scan's
+        dispatch counters stand at the recorded baseline, the descent's own
+        counted under a phase of its own
+      tier: T2 · role: Critic
+      Critic 2026-09-10: five findings, no broken arithmetic in the descent
+        itself; all five repaired in the same step. The component stack holds
+        the whole live population where the live core is one component, and it
+        draws its segments before `reclamation` reserves room for the children
+        a sever displaces — so a descent that emptied the pool turns a
+        confirmed teardown into a refused reservation; the peak and that
+        ordering were named nowhere, and are now in the module doc and in
+        `dev/DECISIONS.md`. The descent's "own phase" ran to the end of the
+        commit, so it counted the exact validation's and the teardown's
+        dispatches as its own, and the one case reading it agreed by the
+        accident that its fixture tore nothing down: the phase closes at the
+        descent's end now (`row::note_descent_end`) and the case commits over a
+        ring it frees. The journal entry claimed a narrowing of
+        `cycle::density`'s contract that had not been made, and past a commit
+        that module's census reads a component index as an in-edge count and
+        raises: the contract is narrowed to "before the commit" for real.
+        `write_maturation_stamp` and `cycle::epoch` still named one producer.
+        And `clear_touched_rows` checked one of the two chains that carry row
+        pointers.
+      correction 2026-09-10: **the disposition clause moves to S37.6**, before
+        anything was built to it, and this step closes on the rest. The
+        producer and the disposition are two results and the second is a
+        change to the lane discipline S37.4 closed the same week: the batch
+        would have to be partitioned per root, which is a third destination in
+        `queue::compaction`'s unwind-safe pass, and a step whose verdict can
+        read "half done" says nothing. The Sage's ruling is unchanged and S37.6
+        carries the clause word for word; what is lost until it lands is that a
+        root read live is offered to every collection instead of waiting for
+        the turnover, which is the cost this crate already pays today.
+      Sage 2026-09-10 (S37.1's pre-change gate, which created this step): the
+        unit is the strongly connected component of the traced live subgraph,
+        and the descent is Pearce's single-index algorithm run iteratively over
+        the rows, `rindex` held in the row word's 30-bit count — a field no
+        production reader of a `Live` row touches past the scan. The frames and
+        the component stack draw the worklist's segments from the arena's bump,
+        so a refusal ends the descent with every closed component stamped whole
+        and the heap in a state a later collection reads correctly. It runs on
+        the ordinary path alone: the pressure path has given its blocks back
+        before the commit, and the descent would draw the memory that
+        collection exists to return. Refused by name: the whole `Live`
+        population as one unit, because any reachable allocation and any member
+        unmet at the previous reading pin the minimum at 0 and nothing matures;
+        the per-root first-reach partition, which equals the closure on the
+        corpus and moves with the batch order; per-entity ageing, and its
+        disguise as a partition by current age; a minimum taken over stamped
+        members alone, which changes Y9's formula and is S37.5's question
+        rather than this step's; stamping during the mark or the scan, which
+        breaks the byte-identical abort; stamping after the exact validation,
+        which writes into slots user code may have freed; folding the component
+        index into the mark, which taxes the collections the prune makes cheap;
+        and a second array beside the rows.
+      note: this is the producer S37.1's correction of 2026-09-09 required be
+        built before the edge-side read, and what S40.1's pruning arm waits on.
+        `rfc` carries the definition of "component" for the stamp first — Y9 and
+        `rc-cycle.md`'s age-based pruning bullet use the word without defining
+        it, and this crate calls those normative.
+      handoff: `cycle::maturation`, called from `commit_before_drops` after
+        `Finalization::begin` and before the first guard, on a `Membership`
+        that carries rows. Pearce's single index lives in the working count of
+        the entity's own row, which `shadow::write_live_index` writes and
+        `cycle::density`'s narrowed contract stays clear of; the frames are the
+        trace's worklist and the component stack is the arena's new
+        `components` chain. Verified on the final tree: 845 passed, 0 failed,
+        10 ignored, three times at eight threads, `hash-folding` once and
+        `debug-journal` 849 three times; `--list` diffed against the pre-change
+        tree, six additions and no removal; release, `cargo bench --no-run`,
+        `cargo +1.94 fmt --check` and `cargo doc` (44 warnings, all the
+        pre-existing private-item class) clean, `citations.py` 504 with the
+        same seven residues. Five source mutations seen red: the maximum age
+        for the minimum, per-entity ageing, a stale-epoch stamp keeping its
+        age, an edge into a visited vertex lowering nothing, and the root test
+        removed. Miri at two threads on the final tree, three slices:
+        `cycle::maturation` 6 passed, 11.26 s on Miri's clock and 14.6 s of
+        wall; `collect::tests::what_a_live_reading_leaves_registered` 1 passed,
+        24.71 s and 18.8 s; `collect::tests::when_the_turnover_reoffers` 3
+        passed, 226.19 s and 8 m 23 s. The descent adds no integer-to-pointer
+        cast — the frame's kind tag keeps the pointer's provenance and the
+        visit index is `ptr::without_provenance_mut`. What the step does not
+        do is S37.6.
+
 - [ ] S37.1 The maturation stamp is an edge-side prune
       done: mark's descent reads the stamp with one single-byte load; an **edge
         target** whose stamp epoch equals the current epoch (mod 4) and whose
@@ -2762,6 +2865,9 @@ stage is what makes a trace affordable rather than what tunes it.
         the test must include unequal member ages and show the component-wide
         `min(age) + 1`, plus a turnover that makes the stamp stale. This is a
         prerequisite correction, not permission to stamp rows individually.
+      Sage 2026-09-10 (pre-change gate): the write-side producer that
+        correction demands is a step of its own, S37.0, and the edge-side read
+        below waits on it. Nothing of this step's own criterion moved.
       handoff: the root-side reading — "traced only after it has stayed a
         candidate across `k` collections" — was struck from this step and from
         `rc-cycle.md`'s summary bullet on 2026-08-26. It is not a second
@@ -2861,6 +2967,24 @@ stage is what makes a trace affordable rather than what tunes it.
         chooses the acquittal rate, so the number is its own input read back.
         The step needs S37.4's buffer and a corpus, and the corpus is
         Phase-D-blocked in the same way S40.1's corpus arm is.
+- [ ] S37.6 The close disposes of a batch per root   *(after S37.0)*
+      done: at the close of a collection off the poll, a root whose row read
+        `Live` and a root of a set the commit read as externally referenced
+        each keep their one token and stand in the deferred lane, a root whose
+        set the commit freed is retired, and every other root is back in the
+        active lane; a batch mixing the three is what a red test drives, read
+        through `collect_lane_tokens` and `candidate_count` rather than through
+        a count of one lane; and the deferred lane's fill bound is respected on
+        the mixed batch as it is on the whole one
+      tier: T2 · role: Critic
+      note: split out of S37.0 on 2026-09-10, whose correction says why. The
+        mechanism is the Sage's of that day, unchanged: a mark in the entry's
+        reserved low bits, set by a walk over the batch after the commit and
+        while the rows still stand, and one pass of `queue::compaction` with
+        three destinations. S37.4's whole-batch deferral is its special case,
+        so the two cases of `cycle/collect/tests/when_the_turnover_reoffers.rs`
+        keep their expected outcomes.
+
 - [ ] S37.2 The acyclic gate
       done: the factory stamps bit 8 from the class's own answer — waits on
         `rfc` `model/classes.md` declaring a target per pointer slot

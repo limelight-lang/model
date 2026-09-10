@@ -49,6 +49,7 @@ use std::cell::Cell;
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
 use crate::cycle::finalization::{Finalization, Revalidated};
+use crate::cycle::maturation::stamp_live_components;
 use crate::cycle::members::MEMBER_CAPACITY;
 use crate::cycle::membership::Membership;
 use crate::cycle::reclamation::{DeferredReclamation, reclaim_before_drops};
@@ -631,6 +632,11 @@ unsafe fn commit_before_drops<'a>(
     fire_injected_verdict_race();
 
     let mut finalization = Finalization::begin();
+    // Before the first guard and before the early answer a commit with nothing
+    // to tear down takes: a live heap with no garbage in it is exactly the
+    // collection whose components the descent is here to mature
+    // (`crate::cycle::maturation`).
+    unsafe { stamp_live_components(members, arena, finalization.epoch()) };
     let initial = if members.len() == 0 {
         ValidationResult::ZeroCountMember
     } else {

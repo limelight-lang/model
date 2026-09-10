@@ -308,6 +308,41 @@ impl<T: Copy> RecordChain<T> {
         }
     }
 
+    /// Read records from the newest down, stopping where `visit` answers
+    /// false, and leave the chain as it was.
+    ///
+    /// The reading a pop cannot give: a caller that must know something about
+    /// a run of records before it takes them out — the run's minimum, its
+    /// length — would otherwise pop them into a second structure and pay a
+    /// region for it. **Nothing here allocates**, so a run read by this call
+    /// can be popped whole afterwards with no refusal in the middle.
+    ///
+    /// `visit` may not reach this chain: it holds the cursor of a walk that
+    /// has not finished.
+    pub(crate) fn for_each_from_top(&self, mut visit: impl FnMut(&T) -> bool) {
+        let mut segment = self.current.get();
+        let mut cursor = self.cursor.get();
+        loop {
+            let records = unsafe { Segment::records::<T>(segment) };
+            while cursor > records {
+                cursor = unsafe { cursor.sub(1) };
+                if !visit(unsafe { &*cursor }) {
+                    return;
+                }
+            }
+
+            // The segment below is full, as it is for the pop: a chain
+            // advances only when its append position has no room left.
+            let previous = unsafe { (*segment).previous.get() };
+            if previous.is_null() {
+                return;
+            }
+
+            segment = previous;
+            cursor = unsafe { Segment::records::<T>(previous).add((*previous).capacity) };
+        }
+    }
+
     /// Whether the chain holds no record.
     pub(crate) fn is_empty(&self) -> bool {
         self.current.get() == self.base
@@ -422,6 +457,14 @@ impl<T: Copy> LazyChain<T> {
         match self.records.as_ref() {
             Some(chain) => unsafe { chain.attach(region, capacity) },
             None => self.records = Some(unsafe { RecordChain::over(region, capacity) }),
+        }
+    }
+
+    /// Read records from the newest down without taking them out
+    /// ([`RecordChain::for_each_from_top`]).
+    pub(crate) fn for_each_from_top(&self, visit: impl FnMut(&T) -> bool) {
+        if let Some(chain) = self.records.as_ref() {
+            chain.for_each_from_top(visit);
         }
     }
 

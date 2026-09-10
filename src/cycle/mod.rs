@@ -94,6 +94,9 @@ pub(crate) mod epoch;
 // The first phase of a trace, reached from [`trace`] rather than from a
 // collection.
 pub(crate) mod mark;
+// The stamp a commit writes into the live components its trace read, which is
+// what a later trace's descent stops at.
+pub(crate) mod maturation;
 // The list a pressure collection takes out of its rows before the blocks go
 // back, and the region of the workspace it stands in.
 pub(crate) mod members;

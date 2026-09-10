@@ -912,8 +912,10 @@ pub(crate) unsafe fn read_maturation_stamp(header: *const RcHeader) -> Maturatio
 /// Write the maturation stamp of a **published** header, and leave the rest of
 /// the byte as it stands.
 ///
-/// The one writer is the owning thread's commit, over a component its exact
-/// validation read as externally referenced (`crate::cycle::finalization`).
+/// The writer is the owning thread's commit, through either of its two
+/// producers: the component its exact validation read as externally referenced
+/// (`crate::cycle::finalization`), and the strongly connected components of
+/// the live subgraph its trace walked (`crate::cycle::maturation`).
 /// The access is one byte wide at [`MATURATION_STAMP_BYTE`], so it overlaps
 /// neither the counter nor the mutator's two bytes of the flags, and the
 /// read-modify-write is safe against no second writer rather than against
