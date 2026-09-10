@@ -30,7 +30,7 @@ this one is reasoning from practice, not a stated rule)*
 
 ```
 cargo test --lib
-cargo test --lib -- --test-threads=4      # three times
+cargo test --lib -- --test-threads=8      # three times
 cargo build --release
 cargo bench --no-run
 ```
@@ -45,11 +45,12 @@ without it a deleted export is found by a release, not by a commit.
 The three threaded runs are not ceremony: several defects here only
 appear under contention, and one flake took three runs to surface.
 
-The width is capped at 4 because the development box is shared with
-interactive work (decision 2026-08-03). That weakens the gate: the two
-flakes on record were found at 16 and at 32 threads (`POSTMORTEM.md`,
-`heap.rs`, `buffer_arena.rs`), and a narrower run reaches those
-interleavings less often. A wider run on a machine that can spare the
+The width is 8 since 2026-09-10, raised from the 4 of decision
+2026-08-03: the development box is still shared with interactive work,
+and Edmond ruled 8 affordable on it. The gate is still narrower than the
+runs that caught the two flakes on record, found at 16 and at 32 threads
+(`POSTMORTEM.md`, `heap.rs`, `buffer_arena.rs`), and reaches those
+interleavings less often than they do. A wider run on a machine that can spare the
 cores stays worth doing before a release; it is no longer the
 per-commit gate.
 
@@ -66,7 +67,7 @@ same number of tests and a count tells them apart in neither direction
 (diffed byte for byte on 2026-08-26; both arms listed 576 on 2026-08-26 and 609 on 2026-09-01, the difference being tests added since):
 
 ```
-LL_HASH_SEED=<any> cargo test --lib --features hash-folding -- --test-threads=4
+LL_HASH_SEED=<any> cargo test --lib --features hash-folding -- --test-threads=8
 ```
 
 Run it once. Without `LL_HASH_SEED` it
@@ -84,7 +85,7 @@ the death paths, which is where a site on a path §9.7 forbids shows up as
 an abort rather than a failure. So the suite runs again with it:
 
 ```
-cargo test --lib --features debug-journal -- --test-threads=4
+cargo test --lib --features debug-journal -- --test-threads=8
 ```
 
 Three times, for the reason the run above is run three times: what this
