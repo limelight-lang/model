@@ -633,6 +633,7 @@ fn a_collection_reached_from_a_destructor_is_refused() {
     assert!(CollectingThread::take().is_some());
 }
 
+mod how_a_close_disposes_of_its_roots;
 mod what_a_collection_asks_the_allocator;
 mod what_a_live_reading_leaves_registered;
 mod when_pressure_retires_members;

@@ -95,6 +95,11 @@ fn a_matured_ring_that_loses_its_keeper_is_collected_at_the_turnover_and_not_bef
         }
     };
 
+    // The close's deferral takes a segment for the deferred lane's head out of
+    // the spare cells, and `release_queue_segments` left them empty: without
+    // one the marked records fall back to the active lane, which is the
+    // fallback S37.6 owns and a different case's subject.
+    assert!(crate::cycle::queue::refill_spares());
     assert_eq!(
         unsafe { collect_with_a_reference_taken_mid_trace(&mut arena, keeper, members[0]) },
         0,
@@ -187,6 +192,8 @@ fn a_ring_whose_mates_matured_apart_is_collected_at_the_turnover() {
         }
     };
 
+    // As the case above: the deferral takes a spare for the lane's head.
+    assert!(crate::cycle::queue::refill_spares());
     assert_eq!(
         unsafe { collect_with_a_reference_taken_mid_trace(&mut arena, early_keeper, first) },
         0

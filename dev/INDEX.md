@@ -46,7 +46,7 @@ versions live in `docs/history/`, marked at the top.
 
   | module | what is there | production caller |
   |---|---|---|
-  | `queue` | the per-thread candidate queue, its base block, spares and overflow buffer, and the cell that lends the collection workspace | `refcount::release_word`, `gc`'s poll |
+  | `queue` | the per-thread candidate queue, its two lanes, base block, spares and overflow buffer, and the cell that lends the collection workspace; `compaction` is the one pass that combines them, with three destinations — the active lane, the deferred one and `ll_free` | `refcount::release_word`, `gc`'s poll |
   | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its stack of withheld returns through the dead entities, and the detached candidate batch a collection traces | `stdapi::ll_free` |
   | `collect` | the order a collection runs in, the two paths it takes through them, and the flag that refuses a collection reached from inside one | `gc`'s two collecting entries, and `memory::heap::entity_alloc` for the path under pressure |
   | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | `cycle::collect` |

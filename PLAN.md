@@ -11,10 +11,11 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-10 · Active: S37, from S37.6. S37.0 closed the same day with
-the live-component stamp producer the Sage ruled a step of its own, so S37.1's
-edge-side read has the write side it waited on and S40.1's pruning arm has the
-byte it calibrates; the corpus arm of S40.1 still waits on the Phase-D driver;
+Updated: 2026-09-10 · Active: S37, from S37.1. S37.0 and S37.6 closed the same
+day — the live-component stamp producer and the per-root disposition — so the
+edge-side read has both halves its correction of 2026-09-09 demanded, and
+S40.1's pruning arm has the byte it calibrates; the corpus arm of S40.1 still
+waits on the Phase-D driver;
 S36 has S36.8 left; S44 has one step left, S44.5,
 and it waits on Edmond's word. **S34 closed and was deleted on 2026-09-10**,
 its last step being the law that only the owner reduces state; what outlived
@@ -2814,6 +2815,100 @@ stage is what makes a trace affordable rather than what tunes it.
         visit index is `ptr::without_provenance_mut`. What the step does not
         do is S37.6.
 
+- [x] S37.6 The close disposes of a batch per root   *(after S37.0, before S37.1)*
+      done: at the close of a collection off the poll, a root whose row read
+        `Live` and a root of a set the commit read as externally referenced
+        each keep their one token and stand in the deferred lane, a root whose
+        set the commit freed is retired, and every other root is back in the
+        active lane; a batch mixing the three is what a red test drives, read
+        through `collect_lane_tokens` and `candidate_count` rather than through
+        a count of one lane; and the deferred lane's fill bound is respected on
+        the mixed batch as it is on the whole one
+      tier: T2 · role: Critic
+      correction 2026-09-10: the criterion says a live root stands in the
+        deferred lane, and the Sage's mechanism makes that true **only while a
+        spare segment stands**: an append that finds both cells empty sends the
+        record to the active lane instead, which is the one destination that
+        cannot refuse. Read the clause with that proviso — a live root stands
+        in the deferred lane where the lane can take it, and is offered to the
+        next collection where it cannot. The fill-bound clause is answered by
+        the reading rather than by a case of this crate: a lane takes 8,160
+        records per segment and the widest population any case builds is 4,077,
+        so the append's growth arm is exercised by nothing and the debt is in
+        the residual list below.
+      note: split out of S37.0 on 2026-09-10, whose correction says why. The
+        mechanism is the Sage's of that day, unchanged: a mark in the entry's
+        reserved low bits, set by a walk over the batch after the commit and
+        while the rows still stand, and one pass of `queue::compaction` with
+        three destinations. S37.4's whole-batch deferral is its special case,
+        so the two cases of `cycle/collect/tests/when_the_turnover_reoffers.rs`
+        keep their expected outcomes.
+      Sage 2026-09-10 (a price the gate ruling did not name): the pass has one
+        read cursor and one write cursor in the one segment list, and
+        `Compaction::drop` re-runs it to completion, so a third destination
+        cannot be a second output cursor there — splitting one chain of
+        segments into two needs segments neither input supplied. Ruled: the
+        deferred lane becomes a **side exit** beside `ll_free`, its head taking
+        a spare segment, and **an append that finds both spare cells empty
+        sends the entry to the in-place output instead**, which is Y12 clause 8
+        read literally and keeps a token out of no lane, the one destination
+        that cannot refuse being the fallback. Refused: two output cursors,
+        which would draw segments out of list order and re-argue all eight
+        checkpoints for a deficit the two cells already cover; and a
+        whole-batch rule with a sharper predicate, because it is right only on
+        `Unreachable` and `ExternallyReferenced` and leaves the live roots of a
+        `ZeroCountMember` or a refused teardown re-traced at every collection —
+        a correctness that would rest on an unmeasured frequency. `Free`
+        outranks `Deferred`; the reserve is never drawn for the lane; the
+        pressure path keeps `defer_candidates` and its lift, the cells being
+        emptiest exactly there.
+      Critic 2026-09-10: no path found on which a token reaches the wrong lane,
+        no lane or two, and nine findings beside it; seven repaired here. The
+        close made **two** full compaction passes where it used to make one —
+        the disposition's own and the guard's retirement over the same lane —
+        so the guard now skips its pass where the close is itself a retiring
+        one. Checkpoint 9 and the whole deferred arm were reachable by no
+        injection, the one harness passing `deferred_at: None`:
+        `owner_retirement::a_deferring_pass_survives_an_unwind_at_each_of_its_boundaries`
+        drops the pass on each of the ten boundaries over a batch whose records
+        are marked, dead, both and neither, and the Critic's own mutation —
+        the boundary raised above the clear — reads back as one entity twice.
+        The mixed batch reached two destinations of three; the third is the
+        teardown's own registration, which arrives while the batch is out and
+        therefore unmarked. A module doc claimed 4,077 roots were more than a
+        segment holds, which is 8,160. `DEFERRED_MARK` took bit 0 out of the
+        four the module doc reserves for a dirty reader's marks, and the ledger
+        there now says which bits are whose. Two readers were missing from
+        `walk_chain`'s list, and `finish`'s early return carried a clause no
+        caller can reach. Two findings became debts in the residual list
+        instead: the close no longer sweeps the deferred lane, and the lane's
+        second segment is written by no case. Its finding on the order of the
+        marks against the disposition arrived repaired — the same defect was
+        found from this side and the two lines reordered.
+      handoff: the mark is `queue::DEFERRED_MARK`, bit 0 of a stored entry,
+        written by `InFlightBatch::mark_for_deferral` from
+        `ActiveTrace::mark_roots_for_deferral` while the rows still stand and
+        read once, by `compaction::stage_entry`, which masks it off before
+        anything else sees the pointer. The disposition is selected before the
+        first mark, so an unwind out of the marking walk still routes the batch
+        through the masking pass. Verified on the final tree: 849 passed, 0
+        failed, 10 ignored, three times at eight threads, `hash-folding` once,
+        `debug-journal` 853 three times; `--list` diffed against the pre-step
+        tree, four additions and no removal; release, `cargo bench --no-run`,
+        `cargo +1.94 fmt --check`, `cargo doc` (44 warnings, all the
+        pre-existing private-item class), `citations.py` 505 with the same
+        seven residues. Four mutations seen red: a live root not marked, the
+        turnover mirror moved at every append, the fallback's condition
+        inverted, and the mark not masked off the entry — that last aborts the
+        process rather than failing a case. Miri at two threads on the final
+        tree, three slices: the deferring-pass case 1 passed, 24.97 s on Miri's
+        clock and 19.8 s of wall; the three disposition cases 20.33 s and
+        16.8 s; `queue::tests::the_tokens_every_lane_holds` 7 passed, 72.49 s
+        and 53.7 s. A run over `cycle::queue::tests::owner_retirement` whole was
+        killed at 25 minutes and left an empty log, so nothing is claimed from
+        it. Three existing cases moved with the contract rather than being
+        muted, each named in the commit.
+
 - [ ] S37.1 The maturation stamp is an edge-side prune
       done: mark's descent reads the stamp with one single-byte load; an **edge
         target** whose stamp epoch equals the current epoch (mod 4) and whose
@@ -2967,24 +3062,6 @@ stage is what makes a trace affordable rather than what tunes it.
         chooses the acquittal rate, so the number is its own input read back.
         The step needs S37.4's buffer and a corpus, and the corpus is
         Phase-D-blocked in the same way S40.1's corpus arm is.
-- [ ] S37.6 The close disposes of a batch per root   *(after S37.0)*
-      done: at the close of a collection off the poll, a root whose row read
-        `Live` and a root of a set the commit read as externally referenced
-        each keep their one token and stand in the deferred lane, a root whose
-        set the commit freed is retired, and every other root is back in the
-        active lane; a batch mixing the three is what a red test drives, read
-        through `collect_lane_tokens` and `candidate_count` rather than through
-        a count of one lane; and the deferred lane's fill bound is respected on
-        the mixed batch as it is on the whole one
-      tier: T2 · role: Critic
-      note: split out of S37.0 on 2026-09-10, whose correction says why. The
-        mechanism is the Sage's of that day, unchanged: a mark in the entry's
-        reserved low bits, set by a walk over the batch after the commit and
-        while the rows still stand, and one pass of `queue::compaction` with
-        three destinations. S37.4's whole-batch deferral is its special case,
-        so the two cases of `cycle/collect/tests/when_the_turnover_reoffers.rs`
-        keep their expected outcomes.
-
 - [ ] S37.2 The acyclic gate
       done: the factory stamps bit 8 from the class's own answer — waits on
         `rfc` `model/classes.md` declaring a target per pointer slot
@@ -3987,6 +4064,35 @@ in `dev/INDEX.md`. What it did not do is below.
   on the child thread itself — the peak exactly at the base block and both
   spare segments, in both builds, and both current figures at zero. Seen red
   on a build whose `ll_thread_init` refills no spares.
+- [ ] **The deferred lane is not swept, and the close no longer sweeps it.**
+  `defer_candidates` lifted the active lane and ran the retirement pass over
+  the deferred one, so a record whose entity had died gave its slot back on the
+  way in; `dispose_candidates`, which the ordinary close now uses, reads the
+  deferred lane not at all, and `retire_candidates` walks the active lane
+  alone. A record deferred at one collection whose entity dies afterwards
+  therefore withholds its slot until the turnover. The population this applies
+  to grew with S37.6 from "the batch of an `ExternallyReferenced` commit" to
+  "every root any collection read live". Teaching retirement to walk the
+  deferred lane was refused under S37.4 — its work would become proportional to
+  the accumulated deferred set — so what is owed is either a sweep bounded like
+  the re-offer's or a statement that the turnover is the bound. At thread exit
+  such a record is `release_queue_segments`'s, which is S39.1's.
+  done: the interval a deferred record can withhold a slot for is stated with
+  its bound, and a case shows it.
+
+- [ ] **The deferred lane's second segment is written by no case.** A lane
+  takes `SEGMENT_CAPACITY` — 8,160 — records per segment, and the widest
+  candidate population this crate's cases build is the 4,077 of
+  `queue::tests::where_a_full_segment_comes_from::`
+  `a_bulk_release_polls_on_its_own_backedge`. So the growth arm of
+  `compaction::Compaction::append_to_deferred_lane` and the `deferred_heads`
+  term of the ledger beside it are exercised by nothing, and a mutation that
+  deletes either stays green. `the_tokens_every_lane_holds::`
+  `a_deferred_lane_of_two_segments_comes_back_whole` builds two segments
+  through `defer_candidates`, which is the other machine.
+  done: a case drives the append past one segment, or a `#[cfg(test)]` seam
+  puts the lane at its bound without the population behind it.
+
 - [ ] **A weak map, and the second kind of death subscriber.**
   `rfc/model/weak-references.md` names two subscriber kinds and the crate
   builds one: the canonical `WeakReference` cell. The other is a map keyed by

@@ -8,6 +8,48 @@ never edited or deleted.
 
 ---
 
+## 2026-09-10 — the deferred lane is a side exit of the compaction pass, and a refused spare sends the root back to the active lane
+
+The close of a collection off the poll disposes of its batch per root: a
+record whose entity died is retired, a record marked for the deferred lane is
+appended there, and every other record joins the active lane. The mark is bit 0
+of the stored entry, set by a walk over the batch after the commit while the
+rows still stand — `Color::Live`, or `Color::PotentiallyUnreachable` when the
+exact validation read the proposed set as externally referenced.
+
+**Why a side exit rather than a second output.** `compaction::finish` walks one
+segment list with a read cursor ahead of a write cursor in that same list, and
+`Compaction::drop` re-runs the state machine to completion on an unwind. A
+second output cursor in that list would have to draw segments out of list
+order, which is a different pass and re-argues all eight checkpoints; the
+deficit it would solve is at most two segments, which is what the two spare
+cells hold. The lane's head therefore comes from `take_spare` and the entry is
+written straight into it, outside the list the cursors are consuming.
+
+**What a refused spare does.** Both cells can stand empty — step 4's own
+registrations draw them — and the append then sends the record to the in-place
+output, which cannot refuse. The root is offered to the next collection
+instead of waiting for the turnover, which costs recall on that root and
+nothing else. The reserve is not drawn for the lane: a segment the deferred
+lane keeps is one the reserve does not get back, and a draw inside the drop's
+re-run would be the second panic the cleanup contract excludes.
+
+**Rejected:** two output cursors in one pass (above); a whole-batch rule with a
+sharper predicate, which is right on `Unreachable` and `ExternallyReferenced`
+and leaves the live roots of a `ZeroCountMember` or a refused teardown
+re-traced at every collection, so its correctness would rest on a frequency
+nobody has measured; and refilling the spare cells at the start of an ordinary
+collection, which `collect/tests/what_a_collection_asks_the_allocator.rs`
+refuses by name — a collection asks the allocator only what its debug checks
+ask.
+
+**Cost.** `retire_candidates` walks the active lane alone, so a deferred record
+naming an entity that dies afterwards withholds its slot until the turnover.
+Before this, only an `ExternallyReferenced` reading deferred; now every live
+root does, so that withholding is the ordinary case rather than the rare one.
+The deferral's own pass retires the deaths it can see on the way in, which
+bounds it to deaths that happen after the close.
+
 ## 2026-09-10 — the live population is stamped by component, and the component is the strongly connected one
 
 A commit stamps every entity its scan coloured `Live`, with the epoch it read

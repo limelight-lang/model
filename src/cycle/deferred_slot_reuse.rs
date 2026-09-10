@@ -102,6 +102,8 @@
 
 use std::cell::Cell;
 
+use crate::cycle::arena::find_initialized_row;
+use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow::{self, Color};
 use crate::memory::block_pool::{BLOCK_KIND_ENTITY, BLOCK_KIND_RETAINED, BlockHeader};
 
@@ -551,14 +553,51 @@ impl ActiveTrace {
             .expect("a pressure close takes one detached batch")
     }
 
-    /// Select the owner-side deferred disposition for the trace's original
-    /// records, as the reading at `at_commits` decided it. Only an exact
-    /// `ExternallyReferenced` reading may call this, and the count is the one
-    /// that reading saw (`crate::cycle::queue::defer_candidates`).
-    pub(crate) fn defer_batch_on_close(&mut self, at_commits: u64) {
+    /// Mark every root this collection may defer, and answer how many were
+    /// marked.
+    ///
+    /// A root whose row the scan left [`Color::Live`] is one this collection
+    /// read and proved held from outside; a root whose row it left
+    /// [`Color::PotentiallyUnreachable`] is one of them too when
+    /// `externally_referenced` — the commit's own exact validation read the
+    /// proposed set that way. Every other root is left alone: a root of a
+    /// set the commit refused is garbage that is not collectible yet, and the
+    /// deferred lane would hide it for a whole epoch.
+    ///
+    /// **The rows are read here because here is where they still stand.** The
+    /// close sweeps them, and past that a root's colour cannot be recovered at
+    /// any price (`PLAN.md` S37.6).
+    pub(crate) fn mark_roots_for_deferral(&mut self, externally_referenced: bool) -> usize {
+        let batch = self
+            .batch
+            .as_mut()
+            .expect("only a detached batch is marked");
+        batch.mark_for_deferral(|root| {
+            let EdgeTarget::Tracked(key) = (unsafe { resolve_edge_target(root) }) else {
+                return false;
+            };
+
+            match unsafe { find_initialized_row(key) } {
+                Some(row) => match shadow::color(unsafe { *row }) {
+                    Color::Live => true,
+                    Color::PotentiallyUnreachable => externally_referenced,
+                    _ => false,
+                },
+                None => false,
+            }
+        })
+    }
+
+    /// Select the owner-side disposition for the trace's original records: the
+    /// marked pass, with `at_commits` the commit count the reading that set
+    /// those marks saw (`crate::cycle::queue::dispose_candidates`).
+    ///
+    /// A close that never reaches this merges the batch back whole, which is
+    /// every path that gave up before the commit.
+    pub(crate) fn dispose_batch_on_close(&mut self, at_commits: u64) {
         assert!(
             self.batch.is_some(),
-            "only a detached batch can be deferred"
+            "only a detached batch has a disposition"
         );
         self.defer_at_commits = Some(at_commits);
     }
@@ -569,7 +608,7 @@ impl ActiveTrace {
         if restore_batch {
             if let Some(batch) = self.batch.take() {
                 match self.defer_at_commits {
-                    Some(at_commits) => crate::cycle::queue::defer_candidates(batch, at_commits),
+                    Some(at_commits) => crate::cycle::queue::dispose_candidates(batch, at_commits),
                     None => crate::cycle::queue::merge_candidates(batch),
                 }
             }

@@ -92,7 +92,18 @@ thread_local! {
 /// counted references go with them. The thread itself is clean — the window
 /// closed, the returns made, the batch merged, the workspace given back — and
 /// that memory is lost for the life of the process.
-struct CollectingThread;
+struct CollectingThread {
+    /// Whether this guard's drop still owes the owner retirement pass.
+    ///
+    /// A collection off the poll retires inside its own close — the pass that
+    /// disposes of its batch is a retiring one — and a second pass over the
+    /// same lane would read and rewrite every record of it again for nothing
+    /// (`crate::cycle::queue::dispose_candidates`). The pressure path and every
+    /// collection that gave up before its close still owe it: the first retires
+    /// between its rounds and can leave deaths behind after the last, and the
+    /// second never ran a pass at all.
+    retire_on_drop: Cell<bool>,
+}
 
 impl CollectingThread {
     /// Take the right, or answer `None` where this thread may not collect.
@@ -113,7 +124,15 @@ impl CollectingThread {
         }
 
         COLLECTING.with(|collecting| collecting.set(true));
-        Some(Self)
+        Some(Self {
+            retire_on_drop: Cell::new(true),
+        })
+    }
+
+    /// Say that the close of this collection is the retirement pass, so that
+    /// the drop below does not make a second one.
+    fn retirement_runs_at_the_close(&self) {
+        self.retire_on_drop.set(false);
     }
 }
 
@@ -167,7 +186,9 @@ impl Drop for CollectingThread {
         // This guard outlives every trace window, membership and scratch arena
         // of either collection path, including their unwind cleanup. Keep the
         // collecting gate held until the final slot returns have finished.
-        unsafe { crate::cycle::queue::retire_candidates() };
+        if self.retire_on_drop.get() {
+            unsafe { crate::cycle::queue::retire_candidates() };
+        }
     }
 }
 
@@ -228,9 +249,18 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
     };
 
     let outcome = unsafe { commit(&members, window.arena()) };
-    if outcome.initial == ValidationResult::ExternallyReferenced {
-        window.defer_batch_on_close(outcome.at_commits);
-    }
+    // Per root and not per batch: one trace answers about as many components
+    // as its lane holds roots, and the three answers go three ways
+    // (`PLAN.md` S37.6).
+    //
+    // **The disposition is selected before the first mark is written.** The
+    // pass it selects is the one that takes a mark off an entry again, so an
+    // unwind out of the marking walk still leaves every entry masked; the
+    // ordinary merge does not mask, and a marked entry reaching a lane through
+    // it would be read as an entity address one byte along.
+    window.dispose_batch_on_close(outcome.at_commits);
+    _collecting.retirement_runs_at_the_close();
+    window.mark_roots_for_deferral(outcome.initial == ValidationResult::ExternallyReferenced);
     outcome.freed
 }
 

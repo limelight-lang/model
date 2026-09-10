@@ -202,16 +202,14 @@ fn the_poll_drains_the_overflow_buffer_into_the_queue() {
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
 
     assert_eq!(overflow_len(), 0, "the poll emptied it");
-    assert_eq!(
-        candidate_count(),
-        1,
-        "into the queue the refill made room in"
-    );
-    assert_eq!(
-        write_segment_entry(0),
-        entity,
-        "and the entry still names the entity"
-    );
+    // Into the queue the refill made room in, and then out of its active lane
+    // again: the collection read this root live, and the close of a collection
+    // off the poll puts a live root in the deferred lane (`PLAN.md` S37.6).
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(deferred_count(), 1);
+    let mut tokens = Vec::new();
+    collect_lane_tokens(&mut tokens);
+    assert_eq!(tokens, vec![entity], "and the entry still names the entity");
 
     unsafe { dismantle_candidate(entity) };
     reset();
@@ -272,10 +270,17 @@ fn a_bulk_release_polls_on_its_own_backedge() {
         0,
         "the backedge poll refilled the cells and drained what had overflowed"
     );
+    // Every candidate is in the queue, and the lane it stands in is the close's
+    // to choose: the collection this poll ran read them all live, so the ones
+    // it had a spare segment for went to the deferred lane (`PLAN.md` S37.6).
     assert_eq!(
-        candidate_count(),
+        candidate_count() + deferred_count(),
         count,
         "and every candidate is in the queue"
+    );
+    assert!(
+        deferred_count() > 0,
+        "the reading deferred what the spare cells had room for"
     );
 
     for &entity in &entities {

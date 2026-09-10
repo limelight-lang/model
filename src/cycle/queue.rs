@@ -24,8 +24,13 @@
 //! (Y12 clause 1), so the write is uncontended by construction and needs
 //! no read-modify-write. An entry is one pointer to an entity header.
 //! Slots are sixteen-byte aligned in every size class
-//! (`memory::heap::SIZE_CLASSES`), so an entry's low four bits are free
-//! and reserved for the marks a dirty reader writes (Y12 clause 7).
+//! (`memory::heap::SIZE_CLASSES`), so an entry's low four bits are free and
+//! carry the marks a reader writes over an entry it does not own. **Bit 0 is
+//! the close's**, which is where it says a root belongs to the deferred lane
+//! ([`DEFERRED_MARK`]); bits 1 to 3 are the dirty reader's, which is what Y12
+//! clause 7 reserves them for and what S38.1 builds. Both are written over a
+//! detached batch and read once, and neither survives the pass that disposes
+//! of it.
 //!
 //! A **segment is one 64 KiB pool block**, which is the only unit both
 //! allocation paths dispense (`rfc/model/gc/cycle/questions.md`, Y12
@@ -774,6 +779,57 @@ impl InFlightBatch {
     }
 }
 
+/// The bit a close's disposition reads off a batch entry: the root it names
+/// belongs to the deferred lane rather than to the active one.
+///
+/// Bit 0 of the stored pointer, which an entity header never carries: the
+/// smallest size class is sixteen bytes, so the low four bits are clear and
+/// the module doc's ledger says which of them belongs to whom. It is written
+/// by [`InFlightBatch::mark_for_deferral`] after the commit and read once, by
+/// the pass that disposes of the batch; every path that hands an entry to
+/// anything else masks it off first (`crate::cycle::queue::compaction`).
+pub(crate) const DEFERRED_MARK: usize = 1;
+
+impl InFlightBatch {
+    /// Mark every entry whose root `deferrable` answers true for, and answer
+    /// how many were marked.
+    ///
+    /// The walk is [`walk_chain`]'s, open-coded because this one needs the
+    /// address of the entry and not its value, and it rests on the same rule:
+    /// the head carries the fill and every segment behind it is full. The
+    /// entity handed to the predicate carries no mark — a batch is marked
+    /// once, by the close of the collection that traced it, which the
+    /// assertion below holds.
+    pub(crate) fn mark_for_deferral(
+        &mut self,
+        mut deferrable: impl FnMut(*mut RcHeader) -> bool,
+    ) -> usize {
+        let mut marked = 0;
+        let mut segment = self.head;
+        let mut bound = self.fill;
+        while !segment.is_null() {
+            for index in 0..bound {
+                let slot = unsafe { segment_entries(segment).add(index) };
+                let entry = unsafe { slot.read() };
+                debug_assert_eq!(
+                    entry.addr() & DEFERRED_MARK,
+                    0,
+                    "a batch entry was marked twice"
+                );
+                if deferrable(entry) {
+                    unsafe { slot.write(entry.map_addr(|address| address | DEFERRED_MARK)) };
+                    marked += 1;
+                }
+            }
+
+            segment = unsafe { (*segment).next };
+            bound = SEGMENT_CAPACITY;
+        }
+
+        marked
+    }
+}
+
 impl Drop for InFlightBatch {
     fn drop(&mut self) {
         // Silent while another panic is unwinding. This one would be the
@@ -800,15 +856,18 @@ impl Drop for InFlightBatch {
 /// the head holds [`SEGMENT_CAPACITY`], and that holds because a segment leaves
 /// the write position only when it is full.
 ///
-/// Six others rest on the same rule, and the list is what a reader sweeps when
-/// S38.1 ends it. [`candidate_count`] and [`deferred_count`] count by it,
+/// Eight others rest on the same rule, and the list is what a reader sweeps
+/// when S38.1 ends it. [`candidate_count`] and [`deferred_count`] count by it,
 /// deliberately without this walk, so that the two readings cross-check;
 /// [`release_queue_segments`] discharges one payload per segment behind the
 /// head, once for each chain; [`append_with_new_segment`] carries a
 /// `debug_assert` of it at the growth; `write_segment_entry` reads one entry of
 /// the head alone, bounded by the same fill; and `compaction::Compaction::bound`
 /// answers [`SEGMENT_CAPACITY`] for every segment that is not one of its two
-/// input heads.
+/// input heads. [`InFlightBatch::mark_for_deferral`] open-codes this walk,
+/// needing the address of an entry rather than its value; and
+/// `compaction::Compaction::append_to_deferred_lane` writes the rule from the
+/// other side, linking a fresh head ahead of one it has just filled.
 fn walk_chain(
     head: *mut BlockHeader,
     fill: usize,
@@ -939,6 +998,26 @@ pub(crate) fn merge_candidates(mut batch: InFlightBatch) {
     gc_metadata::charge(BLOCK_PAYLOAD);
 }
 
+/// Dispose of a traced batch entry by entry: a record whose entity completed
+/// its death is retired, a record [`InFlightBatch::mark_for_deferral`] marked
+/// goes to the deferred lane, and every other record joins the active one.
+///
+/// `at_commits` is the process's commit count as the reading that decided the
+/// marks saw it, and it is recorded only where the deferred lane goes from
+/// empty to occupied — the oldest deferred record is what decides when the
+/// owner owes a re-offer, as it is for [`defer_candidates`].
+///
+/// **A marked record joins the active lane when the deferred one cannot take
+/// it.** The lane's head grows by a spare segment, and both cells can stand
+/// empty — step 4's own registrations draw them. The record is then offered to
+/// the next collection instead of waiting for the turnover, which costs recall
+/// on that root and nothing else: the one destination that cannot refuse is
+/// the one the fallback names, so no token is ever in no lane
+/// (`rfc/model/gc/cycle/questions.md`, Y12 clause 8).
+pub(crate) fn dispose_candidates(batch: InFlightBatch, at_commits: u64) {
+    compaction::finish(batch, true, Some(at_commits));
+}
+
 /// Move a traced batch into this owner's deferred lane, sweeping out the
 /// records whose entities completed their deaths on the way.
 ///
@@ -982,7 +1061,7 @@ pub(crate) fn defer_candidates(batch: InFlightBatch, at_commits: u64) {
 
     owner_state.write_segment.set(deferred_head);
     owner_state.write_len.set(deferred_fill);
-    compaction::finish(batch, true);
+    compaction::finish(batch, true, None);
 }
 
 /// The active lane while the deferral borrows the write cells for the deferred
@@ -1071,7 +1150,7 @@ pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
 /// No membership or shadow reader can still name an entry being retired, and
 /// no arena reset is open. Every entry still names its own held allocation.
 pub(crate) unsafe fn retire_candidates() {
-    compaction::finish(detach_candidates(), true);
+    compaction::finish(detach_candidates(), true, None);
 }
 
 mod compaction;

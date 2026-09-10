@@ -87,14 +87,14 @@ fn run_shape(
     if let Some(point) = fault {
         let _injection = compaction::inject(point);
         let raised = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            compaction::finish(batch, true);
+            compaction::finish(batch, true, None);
         }));
         assert!(
             raised.is_err(),
             "the selected boundary was reached: {point}"
         );
     } else {
-        compaction::finish(batch, true);
+        compaction::finish(batch, true, None);
         assert_eq!(allocation_probe::take_allocations(), (0, 0));
         assert_eq!(
             take_queue_work(),
@@ -280,5 +280,87 @@ fn an_unwind_in_final_retirement_lowers_the_collection_gate() {
         0
     );
     assert_eq!(crate::cycle::collect::take_pressure_collections(), 1);
+    reset();
+}
+
+/// The disposition that sends records to the deferred lane survives an unwind
+/// at every one of its own boundaries: no record is written twice, none is
+/// lost, and a record that is both marked and dead takes the retirement rather
+/// than the lane.
+///
+/// The pass the rest of this file exercises defers nothing — it is given
+/// `None` — so the arm that appends to the deferred lane, and the boundary
+/// that closes it, are reached by nothing else
+/// (`PLAN.md` S37.6, and the Critic round of 2026-09-10 that named the hole).
+#[test]
+fn a_deferring_pass_survives_an_unwind_at_each_of_its_boundaries() {
+    for fault in 0..10 {
+        reset();
+        let mut arena = Arena::new();
+        let class = candidate_class("DeferringUnwind");
+        let mut entities = Vec::new();
+        for _ in 0..6 {
+            entities.push(append_real(&mut arena, class, false));
+        }
+
+        // Every third record dies before the pass, and every other record is
+        // marked, so one record is both — the ranking the Sage's ruling put on
+        // the two answers.
+        let mut expected = Vec::new();
+        for (index, &entity) in entities.iter().enumerate() {
+            if index % 3 == 0 {
+                unsafe { dismantle_candidate(entity) };
+            } else {
+                expected.push(entity);
+            }
+        }
+        expected.sort_unstable();
+
+        // The lane's head comes out of a spare cell, and the pass may need one
+        // whatever the fault does.
+        assert!(refill_spares());
+        let mut batch = detach_candidates();
+        let mut seen = 0;
+        batch.mark_for_deferral(|_| {
+            seen += 1;
+            seen % 2 == 0
+        });
+
+        let _injection = compaction::inject(fault);
+        let raised = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            compaction::finish(batch, true, Some(11));
+        }));
+        // Two boundaries this shape does not reach: 7 returns surplus segments
+        // and 8 discharges the overflow buffer's ledger, and six records in one
+        // segment leave neither with anything to do. The state below is
+        // asserted whether the pass unwound or ran to its end.
+        assert!(
+            raised.is_err() || fault == 7 || fault == 8,
+            "the boundary was reached: {fault}"
+        );
+
+        let mut actual = Vec::new();
+        collect_lane_tokens(&mut actual);
+        actual.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "every surviving record stands in one lane and in one place, past \
+             a fault at {fault}"
+        );
+        assert_eq!(
+            candidate_count() + deferred_count(),
+            expected.len(),
+            "and the two fills add up to them, past a fault at {fault}"
+        );
+        assert!(
+            deferred_count() > 0,
+            "the pass reached its deferred arm, past a fault at {fault}"
+        );
+
+        for entity in expected {
+            unsafe { dismantle_candidate(entity) };
+        }
+    }
+
     reset();
 }
