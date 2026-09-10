@@ -99,7 +99,7 @@ fn batch_batched(c: &mut Criterion, cls: *const Class) {
 /// count never reaching zero. This is the path a collector's enrolment
 /// is paid on — a non-zero decrement is what `rc-cycle` enrols
 /// (`rfc/model/gc/rc-cycle.md`) — so the figure here is the floor the
-/// enrolment will be measured against when S34 lands.
+/// registration is measured against.
 fn retain_release(c: &mut Criterion, cls: *const Class) {
     let obj = unsafe {
         let obj = ll_object_new_abi(std::ptr::null_mut(), cls, MemoryCategory::GcHeap as u32);

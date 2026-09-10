@@ -11,10 +11,13 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-09 · Active: S40, from S40.1. Its pruning arm first waits on S37.1's
+Updated: 2026-09-10 · Active: S40, from S40.1. Its pruning arm first waits on S37.1's
 live-component stamp producer, then on the Phase-D corpus driver;
 S36 has S36.8 left; S44 has one step left, S44.5,
-and it waits on Edmond's word.
+and it waits on Edmond's word. **S34 closed and was deleted on 2026-09-10**,
+its last step being the law that only the owner reduces state; what outlived
+it is in the journals, and the two debts it carried without an owner are in
+`## Fog` and in the backlog below.
 The single-thread retirement sequence is S39.3 (candidate lifetime through
 reset), then S39.2 (complete retirement and compaction), then S39.4 (measure
 an earlier pressure-path return). S39.3 protects the existing mark as well as
@@ -60,7 +63,7 @@ are the backlog.
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S33, S35,
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S35,
 S41, S42 and S43. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -122,6 +125,16 @@ the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
 than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
 
+- **What a process-wide `pthread_key` would buy the reserve draw.** Four
+  thread-locals of this crate carry drop glue, and the first touch of one
+  registers a TLS destructor whose failure ends the process rather than
+  reporting (`dev/DECISIONS.md`, "what the first touch of a thread-local with
+  drop glue may cost"). `ll_thread_init` touches all four, so the death is
+  deterministic in place; the class itself is still there for a thread that
+  never runs init. A guard on a key taken once at process start, where a
+  failure is reportable, would remove it if `pthread_setspecific` allocates
+  nothing per thread — which nobody has read, on any target. Named when the
+  reserve's first touch was decided on 2026-08-29 and priced nowhere since.
 - **Which destructors "a destructor ran anywhere" counts.**
   `rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 5 gates
   the second reading on a destructor having run anywhere in the commit, and
@@ -154,477 +167,6 @@ guard lowers it on the unwind as well as on the return.
   glossary was silent now say this instead.
 
 ---
-
-## S34 — The root queue, enrolment and parking
-
-Goal: candidates reach the collector without the mutator paying for a data
-structure, and an entity that dies while enrolled leaves no dangling pointer.
-
-- [x] S34.1 The queue against Y12's contract
-      done: **all eight** clauses hold, and where a clause constrains a reader
-        that does not exist yet "hold" means the code contradicts none of it and
-        says which half it does not build — clause 6 is the one that needs
-        saying, its reserve draw being built and its reserve *mode* not, there
-        being no collection to walk a root; so a failed growth never drops a
-        root, no allocation
-        happens on the enrolling thread's hot path, proven by a `#[cfg(test)]`
-        allocation counter bracketing the enrolment call rather than by defining
-        the growth path as not hot, and a second reader is either supported or
-        refused by construction rather than by a `debug_assert!`; clause 4's
-        second half is superseded by S34.2 and the step says so; the one arm the
-        runtime keeps is rebuilt here — a growth refusal or a reserve draw
-        during enrolment sets the pending flag, and the poll fires at the next
-        clean point, returning 0 until S36.7 wires the collection
-      tier: T2 · role: Critic
-      Critic 2026-08-27: eleven findings, and the two that changed the code are
-        the first two. `critical::draw` is a `try_with` on a thread-local with
-        drop glue, so its first touch registers a destructor and S34.1 put that
-        call on the release path where nothing can report — `ll_thread_init`
-        now fills all three reserves before the heap allocation that returns
-        early, and the residue is S34.5. And thread exit strands `ENROLLED` on
-        entities that outlive the thread through the abandoned list, which the
-        gate then refuses for ever: a permanent miss and not the "loss of
-        candidates" the comment called it, so the comment is rewritten and
-        S39.1 is told what it is choosing against.
-      Critic 2026-08-27: the rest were the instrument and the fixtures, and
-        four are now mutation-checked regressions that were not detectable
-        before — the drain test held no spare at the drain, the allocation
-        probe bracketed the growth path twice and the hot path never,
-        `FORCE_OOM` in the refusal test closed a door the path never knocks on
-        and hid an "ask the pool" fallback, and `fill_live_segment` set a count
-        over 8159 recycled words that S34.3's corpse rule would have
-        dereferenced. Also taken: the second `arm()` was unreachable, so the
-        draw and the refusal now arm independently and each has a test; a held
-        spare read `BLOCK_KIND_FREE`, now stamped at acquisition; and three
-        comments said what had stopped being true. Nothing was rejected.
-      handoff: the clause this step could not have been built against was
-        clause 3, and it was ruled on 2026-08-27 (`rfc/dev/PLAN.md` S8.2, and
-        the entry it names in `rfc/dev/DECISIONS.md`). What it hands the code: a
-        segment is one 64 KiB pool block and the queue is a chain of them; the
-        owner holds two spares in two pointer cells filled at thread init and at
-        every poll through the ordinary door, the live segment being a cell the
-        first enrolment swaps in; an overflow with both cells null draws the
-        critical reserve. What no ruling reaches is the reserve being spent too
-        — `rfc/dev/PLAN.md` S8.5 — so this step builds the reserve draw and
-        stops at its edge.
-      handoff: closed 2026-08-27. `cycle::queue` is the owner's side of the
-        contract: a chain of 64 KiB pool segments, two spare cells filled at
-        `ll_thread_init` and at every `ll_gc_maybe_collect`, the live segment a
-        cell the first enrolment swaps in, `critical::draw` when both cells are
-        empty, and the enrolled bit undone when both doors refuse. `refcount`'s
-        release path is its one caller and the edge is in `dev/ARCHITECTURE.md`.
-      handoff: verified at 514 tests — one run, three at four threads,
-        `hash-folding` 514, `debug-journal` 520 three times, release with no
-        warnings, `cargo bench --no-run`, `fmt --check`. Miri over `cycle::queue`
-        is clean at 10 tests, 10.73 s on its own clock. Every new test was seen
-        failing against a mutation of what it names, fifteen mutations in all.
-        Miri found the stage's one defect and it was the fixture's: a raw
-        pointer taken before a `&mut` call, invalidated by the retag —
-        `dev/WORKFLOW.md`'s rule about that was scoped to reentrancy tests and
-        is widened.
-      handoff: what this step did **not** build, and who owns it. The read side
-        is the collection's, S36.7, and the accelerator's swap S38.1's, so
-        nothing yet agrees
-        with a detaching reader about the fill cell — `rfc/dev/PLAN.md` S8.7.
-        The drain at thread exit returns blocks and drops entries, which S39.1
-        turns into a chosen fate. The corpse rule and the marks a reader writes
-        into an entry's low bits are S34.3's and the trace's; the four bits are free
-        and nothing writes them today.
-- [x] S34.5 Decide what the critical reserve's first touch may cost
-      done: `memory::critical`'s thread-local is reachable from `ll_release`
-        without the process depending on what registering a TLS destructor
-        costs — either its payload loses its drop glue and the blocks a thread
-        that never ran `ll_thread_exit` holds are returned another way, or the
-        cost is measured on this platform and recorded as acceptable with the
-        measurement named
-      tier: T2 · role: Critic
-      handoff: raised by the Critic on S34.1, 2026-08-27. `critical::draw` is a
-        `try_with` on a `thread_local!` whose payload has a `Drop`, so its
-        **first** touch on a thread registers a destructor, and on glibc that
-        registration allocates and terminates the process when it cannot. S34.1
-        put that call on the release path, where nothing can report.
-      handoff: what S34.1 did about it, and what it did not. `ll_thread_init`
-        now fills all three reserves before the heap allocation that can return
-        early, so every thread it runs on has touched the reserve while a
-        refusal was still reportable. What is left is the thread that never
-        calls `ll_thread_init` at all — a population `Critical::drop` and
-        `ThreadCache::drop` both say the crate serves — and for that one the
-        first touch is still `ll_release`'s. The claim about glibc is the
-        Critic's reading and is **not verified on this box**; verifying it is
-        part of this step.
-      handoff: S34.8 added a second registration on the same path, and it is
-        the same question. The lazy floor draw asks
-        `heap::thread_exit_will_run`, whose call is the arming of `EXIT_GUARD`
-        — a `thread_local!` with drop glue, so its first touch registers a
-        destructor exactly as `critical::draw`'s does, and from the same
-        release path on a thread that never ran `ll_thread_init`.
-      Critic 2026-08-29: five findings against the decision, not the code. The
-        two that mattered were about the record: the entry claimed a
-        registration death at init belongs to the class the floor's ruling
-        accepts, when that ruling accepts a *thread* refusal and a registration
-        failure kills the process; and it called the registration and the
-        floor's abort "the same edge", when one answers an empty block pool and
-        the other an empty glibc heap. Both rewritten. The census pin, the
-        second test's framing and the unpriced `pthread_key` arm were the other
-        three, all taken. One round: nothing was disputed.
-      handoff: closed 2026-08-29, and the arm taken is the second — the cost is
-        measured and recorded rather than removed. Verified on this box, not
-        assumed: the binary carries a weak `__cxa_thread_atexit_impl`, the
-        toolchain's `linux_like::register` discards its result, and Ubuntu
-        GLIBC 2.39-0ubuntu8.7 `calloc`s 32 bytes there and calls `__libc_fatal`
-        on a null — "Fatal glibc error: failed to register TLS destructor: out
-        of memory". It never returns a failure, so there is nothing for Rust to
-        have checked.
-      handoff: what the decision rests on, in `dev/DECISIONS.md`, "what the
-        first touch of a thread-local with drop glue may cost". Four
-        thread-locals in this crate have drop glue and `ll_thread_init` touches
-        all four, so the death is deterministic in place rather than scattered
-        over the release path — it is **not** converted into a refusable one,
-        and the entry says so. Three tests in
-        `memory::critical::tests::where_the_first_touch_happens`, the third a
-        census of every `thread_local!` in `src/` against a literal list, so a
-        fifth cannot appear unnoticed.
-      handoff: not priced, and named rather than dismissed: a guard built on a
-        `pthread_key_create` key taken once at process start, where the failure
-        is reportable. It would remove the unreportable class from both paths
-        if `pthread_setspecific` allocates nothing per thread, which was not
-        read. Whoever picks it up owns the per-target story too.
-- [x] S34.6 Make the enrolment unfailable, and delete the undo
-      done: `enrol` answers nothing and every door refusing lands the entry in
-        an escrow the same thread-local holds; the release path has no branch
-        left in which a set enrolled bit names no entry; the poll refills,
-        drains the escrow and only then fires, and a drain with no room leaves
-        the entries where they are rather than losing them or looping
-      tier: T2 · role: —
-      handoff: Edmond ruled on 2026-08-28 that nothing may be lost — the
-        mutator either collects itself or waits for the collector — and the
-        mechanism was ruled beside it (`rfc/dev/PLAN.md` S8.5, and the entry it
-        names in `rfc/dev/DECISIONS.md`). S34.1 had shipped the branch the
-        ruling forbids: it undid the bit and lost the edge, which is Y6's
-        permanent miss whenever that decrement was the ring's last external
-        release.
-      handoff: the escrow is one segment's capacity, 65 280 bytes of
-        thread-local per thread, sized on clause 3's own poll argument.
-        Overflowing it aborts, which is the funded class's last resort and is
-        the one state this module has no answer for.
-      handoff: the cost is measured and it is eager. `readelf -S` puts the test
-        binary's `.tbss` at 65 680 bytes, so the escrow is 99.4 % of the crate's
-        zero-initialised TLS image, and glibc allocates and zeroes that image
-        per thread. Trimming it is one constant and wants the ABI's poll bound
-        first (`rfc/runtime/exceptions.md`).
-      handoff: role `—` rather than Critic, unlike S34.1: the shape is a
-        ruling's and not a choice, and what a Critic would attack here — the
-        escrow's size and the abort behind it — is named in the ruling and in
-        `dev/DECISIONS.md` rather than decided in this step.
-      handoff: *(storage amended 2026-08-28.)* The escrow leaves the TLS image
-        for one allocator-issued floor block held for the thread's life; the
-        rework is S34.8, the ruling `rfc/dev/DECISIONS.md` "the escrow's floor
-        is allocator-issued". The 99.4 % TLS figure above stands as the
-        measurement that motivated the move.
-- [x] S34.7 Give the bulk release loop a poll of its own
-      done: `ll_release_vector` polls on its backedge every `POLL_STRIDE`
-        iterations, so a run of any length refills the queue's funding and
-        drains its escrow mid-run; a test releases a vector longer than the
-        stride with every door spent and finds the escrow empty and every
-        candidate queued at the end
-      tier: T2 · role: —
-      handoff: found by the consolidation pass on the ruling, not by a test.
-        The escrow was sized on "a whole segment cannot fill between two
-        polls", and that argument quantifies over loops the compiler emits;
-        `ll_release_vector`'s count is the caller's and the compiler polls only
-        after the call, so a container clear enrolled without bound. Before
-        this, a clear of some ninety thousand shared elements aborted with
-        memory free — eleven segments of funding and then the escrow.
-      handoff: the backedge is a legal fire point because iteration `i - 1` has
-        fully returned and `entities[i]` is unread, which is
-        `rfc/model/gc/strategies.md`'s own "between mutator operations". It
-        rests on a precondition `rfc/model/memory/bulk-operations.md` now
-        states: the caller severs every traced edge to an entry before
-        submitting the vector.
-- [x] S34.8 Move the escrow out of the TLS image into an allocator-issued floor
-      done: the escrow's storage is one 64 KiB pool block drawn at
-        `ll_thread_init` before the best-effort reserve fills and returned in
-        `retire_the_journal` after `queue::drain`; a refused draw fails thread
-        init through `ll_thread_init`'s new status return; a thread that never
-        ran init draws its floor lazily at first enrol, through the ordinary
-        door, and its refusal aborts; the lazy draw checks the exit phase and
-        aborts past `ll_thread_exit` instead of drawing; the block is stamped
-        `BLOCK_KIND_ARENA`; `ESCROW_ENTRIES`, `POLL_STRIDE` and the poll order
-        are unchanged, and the accounting tests name the floor block
-      tier: T2 · role: Critic
-      handoff: the ruling is `rfc/dev/DECISIONS.md` "the escrow's floor is
-        allocator-issued" (2026-08-28): per-life floor, a re-birth refusal
-        refuses the new life through the status return, and memory-hard
-        thread creation is a recorded trade, not a derivation.
-      Critic 2026-08-29 round 1: five findings, every one verified before it was
-        executed. `draw_floor` was not re-entrancy-safe and leaked a block per
-        registered thread under `debug-journal`; the ignore on the unregistered
-        thread's test gave a false reason; the status return had no enforcing
-        mechanism; a superseded TLS figure was quoted fresh in the module doc;
-        the drain test passed for a shallower reason. All five repaired.
-      Critic 2026-08-29 round 2, against those repairs: `ll_thread_init` funded
-        the thread without first asking whether anything would run its
-        teardown — the same question `draw_floor_or_abort` asks three lines
-        away — so a thread past the destruction of its guard's slot kept a
-        floor, two spares and two reserves for the life of the process; the new
-        leak test's exact count was unstable under a full `debug-journal` run,
-        the registry's deferred ring frees landing inside its bracket; and
-        `#[must_use]` stops at the crate boundary, where every `bench-external`
-        probe called the new signature bare. All three repaired; the device is
-        dropped here, at two rounds.
-      handoff: closed 2026-08-29 at 530 tests — three runs at four threads,
-        `hash-folding` 530, `debug-journal` 535, release with no warnings,
-        `cargo bench --no-run`, `cargo build --examples`, `cargo fmt --check`
-        clean. Every new test was seen failing against a mutation of what it
-        names: the floor never returned, the floor unstamped, the drain taking
-        it, init ignoring the refusal, the lazy draw arming nothing, the
-        re-entrancy re-check deleted, the teardown check deleted.
-      handoff: the measurement the ruling asked for is `dev/BENCHMARKS.md`,
-        "the escrow's move out of TLS": `.tbss` 65 784 bytes before against 496
-        after, both arms taken back to back on this box. What replaces them is
-        one 64 KiB block per live thread, so every exact `blocks_out` counts one
-        more per thread — the accounting tests say so where it matters.
-      handoff: `ll_thread_init` now answers `bool`, and `false` has two causes:
-        a refused floor, and a thread whose teardown will never run. Three
-        self-initialising paths are exempt from reading it
-        (`dev/DECISIONS.md`, "`ll_thread_init` answers"); everything else
-        asserts. The re-entrancy trap that produced the round-one leak is
-        `dev/POSTMORTEM.md`, "a draw re-entered itself through the journal".
-- [x] S34.9 Take the pool's memory from the OS, and delete Rust's allocator from its path
-      done: `carve_region` and the large-run path map their memory from the
-        operating system — `mmap` on unix, `VirtualAlloc` on windows — and
-        answer null when it refuses; no path reachable from `BlockPool::get`
-        calls Rust's global allocator, the refill batch and the thread cache
-        being fixed arrays and the region registry living in mappings
-        of its own rather than in a growable collection; a test forces the operating system to refuse
-        both mappings this path makes — the region and the registry's
-        chunk — and reads a report instead of losing the process, and a
-        refused carve is driven through `BlockPool::get` so the refill
-        loop's own accounting runs on the refusal branch
-      tier: T2 · role: Critic
-      handoff: ruled by Edmond 2026-08-29. `BlockPool::get`'s own contract says
-        "nothing on this path aborts", and three sites break it, because a
-        `Vec` that cannot allocate calls `handle_alloc_error`:
-        `Vec::with_capacity(REFILL_BATCH)` in `take_block`, the thread cache's
-        `blocks.append`, and `regions.push` in `carve_region`.
-        `memory/critical.rs` and `memory/heap.rs` already refuse that failure
-        mode by hand and say why.
-      handoff: it also pays a debt `memory/stdapi.rs` records in its own module
-        doc: while regions came from `std::alloc::alloc`, this manager could not
-        be installed as Rust's `#[global_allocator]`, because region carving
-        would re-enter `ll_alloc` with an alignment it refuses.
-      handoff: S34.8 depends on it. That step reports a refused floor block
-        through `ll_thread_init`'s new status return, and the report is only
-        true once the draw can refuse without killing the process.
-      handoff: closed 2026-08-29 at 524 tests — three runs at four threads,
-        `hash-folding` 524, `debug-journal` 530, release with no warnings,
-        `cargo bench --no-run`, `cargo fmt --check` clean once rustfmt was
-        installed on this toolchain. Every new test was seen failing against a
-        mutation of what it names: the chain built newest-first, the registry
-        refusal ignored, a refused region reported as carved, the `blocks_out`
-        undo deleted, the short batch's remainder dropped.
-      handoff: two Critic rounds on Fable, and the second found the first's
-        repairs wanting, which is why the device is dropped here rather than
-        after one. Round one: the `MAP_ANONYMOUS` fallback was wrong on
-        android and solaris, the criterion's refusal test did not exist and
-        had no seam to be written through, `bases()` rebuilt the `Vec` abort
-        under the registry lock, and `CachedBlocks::extend` could fill the
-        slot `put` needs. Round two, against those repairs: the visitor form
-        ran arbitrary code under a lock the allocator takes — the rule
-        `memory/large_entity.rs` states — so the registry's read path became
-        lock-free, `len` and `next` atomics published by release stores;
-        `mmap`'s `offset` was declared `i64` where 32-bit unix has a 32-bit
-        `off_t`; linux mips defines `MAP_ANONYMOUS` as 0x800 and slipped
-        through the gate built to stop it; the fault arming leaked on a panic
-        and became RAII.
-- [x] S34.10 Give Miri back a tree it can run
-      done: a targeted Miri run over a module that carves a region completes
-        instead of reporting undefined behaviour at `memory::os::map_aligned`,
-        and `dev/WORKFLOW.md`'s Miri section states what the arm costs — which
-        UB class Miri stops seeing in exchange
-      tier: T2 · role: Critic
-      handoff: found on 2026-08-29 while running Miri over S34.8's own pointer
-        writes. `map_aligned` over-maps and trims the head and the tail with
-        two partial `munmap`s, which is correct POSIX and which Miri's shim
-        does not model: it reports "incorrect layout on deallocation" and stops
-        the run. The first `BlockPool::get` of any test carves a region, so
-        this reaches every test that allocates — `refcount::tests::`
-        `who_may_read_a_header` passes only because it never asks the pool.
-      handoff: it is S34.9's debt, found after that step closed. Before it,
-        regions came from `std::alloc::alloc` and Miri ran; the WORKFLOW's Miri
-        section still describes a capability the tree has not had since.
-      handoff: what was tried and works, as a local patch that was **not**
-        committed: `#[cfg(not(miri))]` around the two trims and a `#[cfg(miri)]`
-        no-op `unmap`, which leaves the over-map in place and leans on
-        `-Zmiri-ignore-leaks`, the flag the WORKFLOW already prescribes. Under
-        it, `cycle::queue` ran 18 tests and `memory::heap` 20, both clean. The
-        cost is that Miri stops seeing anything about unmapping, which is the
-        trade the step has to state rather than assume.
-      Critic 2026-08-29: four findings. The no-op `unmap` above would have
-        disarmed three tests in `promote::tests::the_reset_reads_no_corpse`
-        that name Miri as their whole regression, which is rule 4's
-        prohibition applied to a tool rather than an assertion; the stated
-        cost was incomplete, an untrimmed mapping leaving a 64 KiB readable
-        apron at each end where an overrun past a region becomes invisible;
-        the evidence exercised only the mapping half; and the `unmap`
-        comment gave the wrong reason for the shim's refusal. All four taken.
-      handoff: closed 2026-08-29, and **not** by the patch the line above
-        describes. Under `cfg(miri)` the trims are skipped and a table in
-        `os.rs` remembers `(aligned, base, over)`, so `unmap` hands back the
-        whole mapping — an exact-layout deallocation the shim accepts, which
-        keeps an unmap an unmap. Verified by running: `cycle::queue` 20 tests,
-        `memory::stdapi` 14, `memory::large_entity` 5 — the last being the
-        module that returns mappings, and neither an "incorrect layout" report
-        nor the panic `unmap` raises on a missing table entry appeared.
-      handoff: **what is not verified, and it is the Critic's first finding
-        turned into a question.** The three `promote` tests can run again, but
-        whether they still exhibit their defect is unknown: the reconcile one
-        was run with `reset_window::park_large` returning false and passed in
-        176 s. Either that is not the mutation their comments mean, or the
-        arrangement needs a second half. They have been unrunnable under Miri
-        since 2026-08-26, so the claim in their doc comments has been stale
-        for three days and is not this arm's doing. Re-arming them is nobody's
-        step.
-
-- [x] S34.3 Parking a slot that dies enrolled
-      done: death runs in full — weak cells cleared first, then `__destruct`,
-        then children released — and the slot is withheld from the allocator
-        while a queue entry names it; the retirement reads the refcount, clears
-        the bit and returns the slot without touching the body; the return is
-        the crate's single slot-return path and the block's `used` falls
-        **there and never at the parking**, proven by a test that empties a
-        block around a parked corpse and shows the block reaching the pool only
-        at the return
-      tier: T2 · role: —
-      handoff: **the criterion was amended on 2026-08-29 and the clause that
-        moved is named here.** It said "the drain reads the refcount, retires a
-        zero-count entry"; what the drain is has no answer yet — the reader
-        that drains a queue is the collection's, S36.7, and
-        `cycle::queue::drain` is thread
-        exit's, whose fate for an entry S39.1 owns. Wiring the retirement into
-        that drain today would dereference entries, and the queue's own test
-        fixture writes bare `RcHeader`s on the stack rather than allocated
-        entities, deliberately and with a comment saying why: "nothing on this
-        path dereferences the entry it writes". A drain that read them would
-        read freed stack memory. So the mechanism is here and the wiring is
-        S39.1's, together with the fixture change it needs.
-      handoff: what landed. `memory::stdapi::ll_free` withholds an entity slot
-        whose header carries `ENROLLED`, ahead of every route and after the
-        reset window's own two guards — one door, because every slot return in
-        the crate reaches that one. Nothing is recorded: the queue entry is the
-        record, so `used` falls at the return and never at the parking, which
-        is what keeps such a block out of the pool. `refcount::is_enrolled` and
-        `clear_enrolled` are the two accessors, the second carrying an
-        `expect(dead_code)` naming S39.1 until a caller arrives.
-      handoff: two tests in `memory::stdapi::tests::`
-        `the_slot_a_queue_entry_names`, both seen failing with the parking
-        deleted: a block emptied around a parked corpse reaches the pool only
-        when the last slot returns, and a parked body still reads the count the
-        death left. Every `S34.3` citation in `src/`, `docs/` and the two maps
-        was swept in the same commit — the sites that named two windows now
-        name the one that is left, which is S36.2's.
-- [x] S34.4 Prove the corpse rule against arena reuse
-      done: a red-first test enrols, kills, resets the arena and drains, and the
-        category-zero clause is what makes it pass
-      tier: T1 · role: —
-      handoff: closed 2026-08-29.
-        `cycle::queue::tests::an_arena_entity_leaves_no_entry` builds a real
-        arena object, takes it through the decrement the gate judges, resets
-        the arena and watches a fresh one be handed the same block. Red against
-        the gate with `MEMORY_CATEGORY_MASK` removed: an entry appears, naming
-        a slot the reset then gives away.
-      handoff: **the first fixture was green against that mutation** and had to
-        be rebuilt. `release_word` returns before the decrement for a non-zero
-        category unless `COW` is set, so a plain arena object never reaches the
-        gate at all and the test proved nothing. The entity is shared on write
-        for that reason, which is the construction `the_enrolment_gate` uses
-        for the same clause; the test says so where it does it.
-      handoff: what the clause is worth, in one line, since the step exists to
-        record it: a GC-heap slot that dies enrolled is withheld by the free
-        (S34.3), and an arena slot has no free to withhold it — `ll_arena_reset`
-        returns the block whole — so an entry naming one would survive into the
-        next request's memory.
-
-- [x] S34.2 The law: only the owner reduces state
-      done: no dirty pass clears an enrolment bit, drops a queue entry or
-        returns a slot; a reader may mark an entry a corpse and pass it on; the
-        bit is cleared only by the owner consuming the one token that names a
-        dead entity — the drain's corpse rule, or S36.5 commit for an in-flight
-        root — and **never by death itself or at acquittal**, which agrees with
-        Y12 clause 4 as narrowed on 2026-08-26, "cleared by the owner only when
-        the entity reaches zero count", rather than superseding the "cleared
-        after the root is walked" that clause carried before; a test proves the acquittal case —
-        ring A↔B with an external X→B that is released after the trace read the
-        count — does not lose the ring, and the assertion is that a later
-        collection reclaims it, not merely that the bit is still set
-      tier: T2 · role: Critic
-      handoff: clause 4 and the law of 2026-08-26 contradicted each other, and
-        both were in the plan. The Sage ruled for the law: clearing on acquittal
-        is the permanent miss, because enrolment is edge-triggered.
-      handoff: the instant this step's test waits for was ruled on 2026-08-27
-        (`rfc/dev/PLAN.md` S8.3, and the entry it names in
-        `rfc/dev/DECISIONS.md`). A root read as externally referenced keeps its
-        bit and its record moves into the owner's deferred lane, and the first
-        poll whose commit count stands in a later epoch merges that lane back
-        into the active one (S37.4, closed). The test therefore forces
-        the counter forward through a `#[cfg(test)]` shorthand, runs the poll,
-        runs a collection and
-        asserts the ring reclaimed, which is the assertion this step demands
-        instead of "the bit is still set".
-      handoff: **it waits on three later stages, and the plan's order had it
-        first.** Every clause but one was about code that did not exist when
-        the step was written: the dirty pass exists now — `cycle::mark` and
-        `cycle::scan` — the corpse mark landed with S34.3, and commit's free landed
-        with S36.5 — which clears no bit, so what this step's clause needs from
-        it is the death rather than the retirement.
-        The one clause that is about today's code — the bit is never cleared at
-        acquittal — holds vacuously, nothing in the crate clearing `ENROLLED`
-        at all (checked 2026-08-29; `refcount.rs` only sets it). And the test
-        the step demands needs a collection to assert reclamation, which
-        `gc::ll_gc_collect_cycles` does not have until S36.7, plus the
-        maturation counter of S37.1 and the suspects buffer of S37.4 for the
-        instant it waits for. Moved last in the stage for that reason; the work
-        order takes it after S37.4.
-      correction 2026-09-10: the maturation counter of S37.1 is not among the
-        waits after all. S37.4 built the instant this step asks for — a poll
-        that finds the epoch moved re-offers the deferred lane — and the epoch
-        counter under it is S36.6's, closed. With S36.7 and S37.4 both closed
-        the step was workable, and the handoff of the sitting before this one
-        named S36.8 and S37.1 as the next open steps without seeing it.
-      Critic 2026-09-10 round 1: the case as first written disposed of nothing.
-        A component held live leaves a membership of length zero, so the commit
-        answers `ZeroCountMember` and the deferring arm the clause governs is
-        never reached; the record claim rested on `candidate_count`, which the
-        crate says in so many words cannot see a bit standing over no record;
-        and one ring cannot exhibit a lost token, being reached whole from
-        either of its roots. Accepted and rebuilt: two rings, token identity
-        through `queue::collect_lane_tokens`, keepers built before the rings so
-        that no allocation stands in the window where a ring is garbage, and
-        `refcount::take_admissions` for the decrement that registers nothing.
-      Critic 2026-09-10 round 2: the token multiset says nothing about which
-        lane holds a token, so a deferral of half the batch would pass while
-        `retire_candidates`, which walks the active lane alone, left two slots
-        withheld for the life of the thread; and zero is the answer to a
-        refused workspace as much as to a component read live. Accepted:
-        `candidate_count` beside every multiset reading, and the mark phase's
-        dispatch count. Its third finding was a production comment —
-        `queue::collect_lane_tokens` named two chains and walks three — and it
-        is repaired in the same commit.
-      handoff: the law holds in the code as it stands, and the reading is the
-        step's other half. `CANDIDATE_BIT` comes down at one production site,
-        `queue::compaction`'s retirement, and only for an entry
-        `slot_state_with_flags` reads as `DeadInPlace`;
-        `refcount::clear_candidate_bit` is `#[cfg(test)]` and says so; and
-        `memory::stdapi::ll_free` withholds the slot of any entity still
-        carrying the bit, so no pass but the owner's returns one.
-      handoff: the case is
-        `cycle/collect/tests/what_a_live_reading_leaves_registered.rs` — two
-        rings held from outside through one collection, both keepers dying
-        after it, a second collection freeing all four. Five mutations were
-        seen red and restored: one token dropped at the merge, two dropped,
-        every root's bit cleared at the close, the batch deferred at this
-        close, and the collection giving up before its trace. 838 passed at
-        eight threads, three runs.
 
 ## S44 — One stack for every withheld return
 
@@ -2862,7 +2404,8 @@ stage claiming the frees while building none of them.
         written").
       handoff: commit is the only writer because a mature stamp suppresses
         descent, which is a reduction of future suspicion and therefore the
-        owner's by the law of S34.2 — and because the mark writes into no
+        owner's by the law that only the owner reduces state
+        (`rfc/model/gc/cycle/questions.md`, Y12 clause 4) — and because the mark writes into no
         entity, which is what makes an aborted collection free.
       handoff: `src/cycle/epoch.rs` is `current()`, `commit_closed()` and a
         `#[cfg(test)]` `pin`; `refcount::{read,write}_maturation_stamp` and
@@ -4247,6 +3790,20 @@ own checkbox.
   has no document to serve and no owner. What outlived the deletion is named
   in that ruling and is where it says; the algorithm itself is Edmond's and is
   on the branch. Kept as one line so the name is findable, not as a task.
+- [ ] **The three `promote` tests that claim Miri as their whole regression.**
+  `the_reset_reads_no_zero_count_member`'s
+  `a_large_survivor_killed_by_the_drain_is_not_read_by_the_reconcile` and its
+  two neighbours guard the reset window against reading a large run after it
+  was unmapped, and their doc comments say `cargo test` passes the defect by
+  construction. They have run under Miri again since the `memory::os` arm that
+  keeps an oversized mapping whole, and whether
+  any of them still exhibits its defect is unverified: the reconcile one was
+  run on 2026-08-29 with `reset_window::park_large` returning false — the
+  mutation its neighbour's comment names — and passed in 176 s. Either that is
+  not the mutation those comments mean, or a second half of the arrangement is
+  missing. Each test is either seen failing under Miri against the mutation it
+  names, or its comment is corrected to say what it does prove.
+  `dev/WORKFLOW.md`, Miri, carries the same paragraph.
 - [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2
   transition waits on one — `dev/DECISIONS.md`, 2026-08-13, which also
   says what to confirm against `arrays.md` before opening it.

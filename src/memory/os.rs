@@ -7,7 +7,7 @@
 //! `std::alloc::alloc`'s callers route a refusal into `handle_alloc_error`,
 //! which aborts the process, and no caller can see it coming. So the pool's
 //! own memory comes from here instead, and the pool's path holds no `Vec`
-//! at all (`rfc/model/memory/heap-slot-allocation.md`; `PLAN.md` S34.9).
+//! at all (`rfc/model/memory/heap-slot-allocation.md`).
 //!
 //! It also unblocks installing this manager as Rust's `#[global_allocator]`.
 //! A region carved through Rust's allocator re-enters `ll_alloc` under such
@@ -46,7 +46,7 @@ pub(crate) fn map_aligned(bytes: usize, align: usize) -> *mut u8 {
 /// The operating system cannot be made to refuse a mapping to order, and
 /// every caller above this module reports exhaustion rather than aborting
 /// **only** on the branch that refusal takes — an untested branch there is
-/// a guess (`PLAN.md` S34.9).
+/// a guess.
 #[cfg(test)]
 pub(crate) mod fault {
     use std::sync::atomic::{AtomicIsize, Ordering};

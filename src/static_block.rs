@@ -63,7 +63,7 @@ thread_local! {
 ///
 /// **Refuses rather than aborts** when the list cannot grow, like every
 /// other growth point in this crate (`ll_thread_init`'s hand-rolled
-/// allocation; S34.1 owes the root queue the same). The cost
+/// allocation; the root queue refuses the same way). The cost
 /// of a refusal is named and bounded: that block's roots are not
 /// released at thread exit, so its graph leaks for the life of the
 /// process — the same outcome as before A6 existed, and better than

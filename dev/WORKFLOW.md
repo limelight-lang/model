@@ -272,7 +272,7 @@ closed stages, so `rfc`'s live S8 and this plan's deleted S8 are the same
 token; a sweep run here reads the citation as debris and the next one deletes
 it. A debt that belongs over there is cited the way any other cross-repository
 fact is — by the `rfc` document and its named section, which is where the
-question stands anyway. Found on 2026-08-27, when S34.1's comments named
+question stands anyway. Found on 2026-08-27, when the queue's comments named
 `rfc/dev/PLAN.md` S8.5 in four places and the sweep reported a dead stage.
 
 An
@@ -558,7 +558,7 @@ that is an artefact of the test rather than of the runtime.
 
 Reentrancy is where this was first paid — a fresh `&mut` per call
 invalidates the pointer `set_current_context` parked in TLS — but the rule
-is not about reentrancy. On 2026-08-27 it caught S34.1's queue tests,
+is not about reentrancy. On 2026-08-27 it caught the queue's own tests,
 which took `&raw mut header`, released through `&mut header`, and then
 read the flags back through the first pointer: three lines, one local, no
 TLS and no arena. **Anything a test holds a raw pointer to is released,
