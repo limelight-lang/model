@@ -521,7 +521,7 @@ for a pointer.
 
 **Three tests claim Miri as their whole regression, and whether any of
 them still exhibits its defect is unverified.**
-`promote::tests::the_reset_reads_no_corpse`'s
+`promote::tests::the_reset_reads_no_zero_count_member`'s
 `a_large_survivor_killed_by_the_drain_is_not_read_by_the_reconcile` and
 its two neighbours guard the reset window against reading a large run
 after it was unmapped, and their doc comments say `cargo test` passes the

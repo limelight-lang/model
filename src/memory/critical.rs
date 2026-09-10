@@ -21,14 +21,18 @@
 //! collection. The candidate queue's growth
 //! (`crate::cycle::queue`) reaches here on a different condition: its
 //! two spare cells are both empty, which means a poll's refill was
-//! already refused, and the draw puts the runtime in reserve mode. The
+//! already refused. **Reserve mode itself is not built**: `critical-reserve.md`
+//! and Y12 clause 6 ask that the runtime stay in it until every queued root
+//! has been walked, and nothing here carries such a state, the poll refilling
+//! unconditionally (`crate::cycle::queue`, "Why the growth path allocates
+//! nothing"). The
 //! third customer `critical-reserve.md` names, the mutator that cannot
 //! collect, arrives with S38.4 of `PLAN.md`; no partition among the
 //! three is built until one of their shares can be derived.
 //!
-//! **The queue is also the second caller of [`give_back`]**, its
-//! segments coming back at thread exit, which is why that drain runs
-//! before this reserve's own (`memory::heap::ll_thread_exit`).
+//! **The queue's segments come back before this reserve's own blocks do**,
+//! through `memory::gc_metadata::release_to_critical` at thread exit, which is
+//! why that drain runs first (`memory::heap::ll_thread_exit`).
 //!
 //! # What a drawn block owes
 //!
@@ -45,10 +49,10 @@ use crate::memory::block_pool::{
 };
 
 /// Blocks held back per thread: eight, which is 512 KiB and is
-/// `critical-reserve.md`'s 500 KB figure read at block granularity. The
+/// `critical-reserve.md`'s 500 KiB figure read at block granularity. The
 /// figure is a starting one rather than a measured one, and what would
-/// settle it is a workload — that document's "Sizing" says so of all
-/// three shares.
+/// settle it is a workload — that document's "Sizing evidence and open
+/// questions" says so of all three shares.
 ///
 /// What it buys, at four bytes a row: about thirty blocks of the
 /// smallest size class traced, more than a hundred at the middle
@@ -92,10 +96,11 @@ thread_local! {
 /// Fill the reserve to capacity, returning false if it could not be
 /// filled completely.
 ///
-/// Best-effort by construction: it runs at thread init and at
-/// safepoints, both places where a refusal is already reported by
-/// something else — the thread's first allocation returns null, and a
-/// poll that cannot refill leaves the drawn flag set for the next one.
+/// Best-effort by construction: its production caller is the safepoint
+/// poll (`crate::gc::ll_gc_maybe_collect`), where a refusal is already
+/// reported by something else — a poll that cannot fill the reserve leaves
+/// it short, and [`is_drawn`] reads that shortfall out of the count for the
+/// next poll.
 pub(crate) fn replenish() -> bool {
     CRITICAL
         .try_with(|c| {
@@ -165,8 +170,7 @@ pub(crate) fn draw() -> *mut BlockHeader {
 /// The caller passes back every block it holds, whatever allocation path it
 /// came through, and this decides: at capacity the block is ordinary memory
 /// again, below capacity it refills the reserve without waiting for a
-/// safepoint. That ordering is what leaves an aborted collection's retry with a
-/// reserve to draw on (module doc).
+/// safepoint (module doc, "What a drawn block owes").
 pub(crate) fn give_back(block: *mut BlockHeader) {
     assert_ne!(
         unsafe { load_block_kind(&raw const (*block).kind) },
@@ -213,8 +217,8 @@ pub(crate) fn give_back(block: *mut BlockHeader) {
 /// Whether the reserve is short and wants a safepoint to refill it.
 ///
 /// The count itself, rather than a flag a draw sets. A flag is false in the one
-/// state that most needs the poll: a thread whose `replenish` at init was
-/// refused holds nothing, has never drawn, and would never be asked again — the
+/// state that most needs the poll: a thread that has not reached its first
+/// safepoint holds nothing, has never drawn, and would never be asked — the
 /// poll skips it, the next pressure event finds the reserve allocation path
 /// empty, and the collection aborts having traced nothing.
 pub(crate) fn is_drawn() -> bool {
@@ -257,9 +261,8 @@ pub(crate) fn blocks_held() -> usize {
     CRITICAL.with(|c| c.borrow().held)
 }
 
-/// Tests only: give the blocks back, so a test that exhausts the pool
-/// starts from a known state. An emptied reserve reads as drawn, which
-/// is what it is.
+/// Give the blocks back, so a test that exhausts the pool starts from a known
+/// state.
 #[cfg(test)]
 pub(crate) fn drain_for_test() {
     drain();

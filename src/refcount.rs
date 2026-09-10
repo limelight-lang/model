@@ -104,14 +104,13 @@ pub const ACYCLIC_GATE: u32 = 1 << 8;
 /// stamp and the factory-side write are S37.3's.
 pub const OWNERSHIP_MARK: u32 = 1 << 9;
 
-/// A root-queue entry names this entity. Set by the release path before
-/// it writes the entry (`crate::cycle::queue`), and cleared by the owner
-/// at death and at no other point — **never when a trace finds it
-/// externally referenced**, because candidate registration is
-/// edge-triggered and clearing it there is a permanent miss (S34.2,
-/// `rfc/model/gc/rc-cycle.md`). A registration cannot fail, so a bit set
-/// always names an entry and there is no undo to clear it for
-/// ([`crate::refcount::release_word`]).
+/// A root-queue entry names this entity. Set by the release path before it
+/// writes the entry (`crate::cycle::queue`), and taken down by the owner's
+/// retirement of that entry, which acts on an entity only once its slot reads
+/// dead in place (`crate::cycle::queue::compaction`) — **never when a trace
+/// finds it externally referenced**, because candidate registration is
+/// edge-triggered and clearing it there is a permanent miss
+/// (`rfc/model/gc/cycle/questions.md`, Y12 clause 4).
 pub const CANDIDATE_BIT: u32 = 1 << 10;
 
 /// Entity has weak references (side table exists).
@@ -796,9 +795,10 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
     if refcount != 0 && may_become_a_candidate(flags) {
         note_admission();
 
-        // The bit goes down **before** the queue write, which Y12
-        // clause 4 requires: set after it, a second decrement landing in
-        // the window between the two registers the same entity twice. The
+        // The bit is set **before** the queue write, which
+        // `rfc/model/gc/cycle/questions.md`, Y12 clause 4 requires: set after
+        // it, a second decrement landing in the window between the two
+        // registers the same entity twice. The
         // word written is the one loaded above, so this store carries
         // every other mutator flag forward unchanged — which is sound
         // for the same reason the counter store above is, the entity's

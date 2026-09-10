@@ -109,6 +109,59 @@ fn an_empty_queue_answers_nothing() {
     reset();
 }
 
+/// An unwind inside the deferral's own pass leaves both lanes where the
+/// deferral would have left them: the active chain it lifted is back in the
+/// write cells, the batch stands in the deferred lane, and the overflow count
+/// it zeroed is restored. Without the guard the lifted chain is in no cell at
+/// all, and every record in it carries a candidate bit no lane names.
+#[test]
+fn an_unwind_inside_the_deferral_puts_the_active_lane_back() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+
+    let mut deferred = candidate(2);
+    let deferred_entity = &raw mut deferred;
+    assert!(unsafe { !release(deferred_entity) });
+    let batch = detach_candidates();
+
+    // Two records in the active lane against one in the batch, so that a lane
+    // holding the wrong chain answers a different count rather than the same.
+    let mut active = candidate(2);
+    let active_entity = &raw mut active;
+    assert!(unsafe { !release(active_entity) });
+    let mut second_active = candidate(2);
+    let second_active_entity = &raw mut second_active;
+    assert!(unsafe { !release(second_active_entity) });
+    let state = owner_state();
+    let mut overflowed = candidate(2);
+    let overflowed_entity = &raw mut overflowed;
+    unsafe { append_to_overflow(state, overflowed_entity) };
+    assert_eq!((candidate_count(), overflow_len()), (2, 1));
+
+    let _injection = compaction::inject(0);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| defer_candidates(batch, 0)))
+            .is_err()
+    );
+
+    assert_eq!(candidate_count(), 2, "the lifted active chain came back");
+    assert_eq!(deferred_count(), 1, "the batch stands in the deferred lane");
+    assert_eq!(overflow_len(), 1, "and the overflow count with it");
+    let mut tokens = Vec::new();
+    collect_lane_tokens(&mut tokens);
+    tokens.sort_unstable();
+    let mut expected = vec![
+        deferred_entity,
+        active_entity,
+        second_active_entity,
+        overflowed_entity,
+    ];
+    expected.sort_unstable();
+    assert_eq!(tokens, expected, "no record was dropped or duplicated");
+    reset();
+}
+
 /// Deferral preserves the original registrations as one deferred lane while a
 /// later decrement writes the active lane. Re-offer is the inverse ownership
 /// transition: no record is copied, dropped, or left in both lanes.

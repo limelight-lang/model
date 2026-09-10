@@ -15,9 +15,9 @@
 //! allocation reports null; carving from the operating system has no such
 //! edge (`stdapi.rs`).
 //!
-//! No dependency is taken for it. The crate has none, and the four symbols
-//! below are declared here and resolved by the C runtime that std links
-//! anyway.
+//! No dependency is taken for it. The crate has none, and the two symbols each
+//! target needs are declared here: `mmap` and `munmap` out of the C runtime
+//! that std links anyway, `VirtualAlloc` and `VirtualFree` out of kernel32.
 
 /// Reserve and commit `bytes` of zero-filled memory whose address is a
 /// multiple of `align`, or null when the operating system refuses.
@@ -38,7 +38,7 @@ pub(crate) fn map_aligned(bytes: usize, align: usize) -> *mut u8 {
         return std::ptr::null_mut();
     }
 
-    imp::map_aligned(bytes, align)
+    platform::map_aligned(bytes, align)
 }
 
 /// A refusal on demand, tests only.
@@ -102,15 +102,15 @@ pub(crate) mod fault {
 /// Give back a mapping obtained from [`map_aligned`].
 ///
 /// `ptr` and `bytes` must be the pointer that call returned and the size it
-/// was asked for; a partial release is not offered, because the trimming
-/// unix needs for alignment has already happened by the time the caller
-/// sees the pointer.
+/// was asked for. A partial release is not offered: what the caller holds is
+/// the whole of the object everywhere but under Miri, and under Miri it is a
+/// span of a mapping only this module can name.
 pub(crate) fn unmap(ptr: *mut u8, bytes: usize) {
-    imp::unmap(ptr, bytes)
+    platform::unmap(ptr, bytes)
 }
 
 #[cfg(unix)]
-mod imp {
+mod platform {
     use std::ffi::c_void;
 
     const PROT_READ: i32 = 1;
@@ -203,14 +203,14 @@ mod imp {
     /// The two `munmap`s are what keep the waste at zero rather than at
     /// one alignment per region.
     pub(super) fn map_aligned(bytes: usize, align: usize) -> *mut u8 {
-        let Some(over) = bytes.checked_add(align) else {
+        let Some(oversized_bytes) = bytes.checked_add(align) else {
             return std::ptr::null_mut();
         };
 
         let base = unsafe {
             mmap(
                 std::ptr::null_mut(),
-                over,
+                oversized_bytes,
                 PROT_READ | PROT_WRITE,
                 MAP_PRIVATE | MAP_ANONYMOUS,
                 -1,
@@ -225,19 +225,14 @@ mod imp {
         let aligned = (base + align - 1) & !(align - 1);
 
         // **Under Miri the oversized mapping is kept whole**, and
-        // [`whole`] remembers it so that [`unmap`] can hand back the
-        // same span it was given. Trimming means unmapping part of a
-        // mapping, which POSIX allows and Miri's `munmap` shim does not
-        // model: it reports "incorrect layout on deallocation" and ends
-        // the run, and since the first `BlockPool::get` of any test
-        // carves a region that put the whole crate out of reach of the
-        // one tool that sees its formal-UB class. What the arm costs is
-        // stated where the command is (`dev/WORKFLOW.md`, Miri): the
-        // mapping is wider than the object at both ends, so an access
-        // just past a region or a run lands inside a live allocation
-        // instead of outside one.
+        // [`whole`] remembers it so that [`unmap`] can hand back the same
+        // span it was given; why a trim cannot run there is that module's
+        // doc. What the arm costs is stated where the command is
+        // (`dev/WORKFLOW.md`, Miri): the mapping is wider than the object at
+        // both ends, so an access just past a region or a run lands inside a
+        // live allocation instead of outside one.
         #[cfg(miri)]
-        whole::remember(aligned, base, over);
+        whole::remember(aligned, base, oversized_bytes);
 
         #[cfg(not(miri))]
         {
@@ -246,7 +241,7 @@ mod imp {
                 unsafe { munmap(base as *mut c_void, head) };
             }
 
-            let tail = over - head - bytes;
+            let tail = oversized_bytes - head - bytes;
             if tail != 0 {
                 unsafe { munmap((aligned + bytes) as *mut c_void, tail) };
             }
@@ -272,15 +267,16 @@ mod imp {
     mod whole {
         use std::sync::Mutex;
 
-        /// `(aligned, base, over)` — what was handed out, where the
+        /// `(aligned, base, oversized_bytes)` — what was handed out, where the
         /// mapping starts, and how long it is.
         static MAPPINGS: Mutex<Vec<(usize, usize, usize)>> = Mutex::new(Vec::new());
 
-        pub(super) fn remember(aligned: usize, base: usize, over: usize) {
-            MAPPINGS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push((aligned, base, over));
+        pub(super) fn remember(aligned: usize, base: usize, oversized_bytes: usize) {
+            MAPPINGS.lock().unwrap_or_else(|e| e.into_inner()).push((
+                aligned,
+                base,
+                oversized_bytes,
+            ));
         }
 
         /// The mapping an aligned pointer sits in, forgotten as it is
@@ -291,14 +287,14 @@ mod imp {
         pub(super) fn take(aligned: usize) -> Option<(usize, usize)> {
             let mut mappings = MAPPINGS.lock().unwrap_or_else(|e| e.into_inner());
             let at = mappings.iter().position(|(a, _, _)| *a == aligned)?;
-            let (_, base, over) = mappings.swap_remove(at);
-            Some((base, over))
+            let (_, base, oversized_bytes) = mappings.swap_remove(at);
+            Some((base, oversized_bytes))
         }
     }
 
     pub(super) fn unmap(ptr: *mut u8, bytes: usize) {
         // Under Miri the span this caller holds is part of the untrimmed
-        // mapping [`map_aligned`] made, and `over > bytes` always — so
+        // mapping [`map_aligned`] made, and `oversized_bytes > bytes` always — so
         // the `munmap` a caller's own figures describe is the partial one
         // the shim refuses. The whole mapping goes back instead, which is
         // the exact-layout deallocation the shim accepts, and that keeps
@@ -309,9 +305,9 @@ mod imp {
         #[cfg(miri)]
         {
             let _ = bytes;
-            let (base, over) =
+            let (base, oversized_bytes) =
                 whole::take(ptr as usize).expect("unmap of a span this module did not hand out");
-            unsafe { munmap(base as *mut c_void, over) };
+            unsafe { munmap(base as *mut c_void, oversized_bytes) };
         }
 
         #[cfg(not(miri))]
@@ -322,7 +318,7 @@ mod imp {
 }
 
 #[cfg(windows)]
-mod imp {
+mod platform {
     use std::ffi::c_void;
 
     const MEM_COMMIT: u32 = 0x1000;

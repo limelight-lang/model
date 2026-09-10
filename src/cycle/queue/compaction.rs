@@ -19,7 +19,7 @@ enum Phase {
 
 struct Compaction {
     state: *mut OwnerCycleState,
-    partial: [*mut BlockHeader; 2],
+    partial_heads: [*mut BlockHeader; 2],
     bounds: [usize; 2],
     read: *mut BlockHeader,
     read_index: usize,
@@ -32,8 +32,8 @@ struct Compaction {
     overflow_write: usize,
     overflow_bound: usize,
     pending: *mut RcHeader,
-    pending_return: bool,
-    reverse: *mut BlockHeader,
+    pending_free: bool,
+    reversed_head: *mut BlockHeader,
     surplus: *mut BlockHeader,
     retire: bool,
     phase: Phase,
@@ -48,18 +48,18 @@ pub(super) fn finish(mut batch: InFlightBatch, retire: bool) {
         );
         return;
     }
-    let q = unsafe { owner_state_ref(state) };
-    let active = q.write_segment.get();
+    let owner_state = unsafe { owner_state_ref(state) };
+    let active = owner_state.write_segment.get();
     if !retire && active.is_null() {
-        q.write_segment.set(batch.head);
-        q.write_len.set(stored_len(batch.fill));
+        owner_state.write_segment.set(batch.head);
+        owner_state.write_len.set(stored_len(batch.fill));
         batch.head = std::ptr::null_mut();
         return;
     }
     let mut pass = Compaction {
         state,
-        partial: [active, batch.head],
-        bounds: [usize::from(q.write_len.get()), batch.fill],
+        partial_heads: [active, batch.head],
+        bounds: [usize::from(owner_state.write_len.get()), batch.fill],
         read: active,
         read_index: 0,
         write: active,
@@ -69,10 +69,10 @@ pub(super) fn finish(mut batch: InFlightBatch, retire: bool) {
         charged_segments: 0,
         overflow_read: 0,
         overflow_write: 0,
-        overflow_bound: usize::from(q.overflow_len.get()),
+        overflow_bound: usize::from(owner_state.overflow_len.get()),
         pending: std::ptr::null_mut(),
-        pending_return: false,
-        reverse: std::ptr::null_mut(),
+        pending_free: false,
+        reversed_head: std::ptr::null_mut(),
         surplus: std::ptr::null_mut(),
         retire,
         phase: Phase::Records,
@@ -80,7 +80,7 @@ pub(super) fn finish(mut batch: InFlightBatch, retire: bool) {
 
     // No fallible operation separates acquisition from joining the chains.
     // The frame owns both original bounds before either head becomes interior.
-    for head in pass.partial {
+    for head in pass.partial_heads {
         let mut segment = head;
         while !segment.is_null() {
             if segment != head {
@@ -101,11 +101,11 @@ pub(super) fn finish(mut batch: InFlightBatch, retire: bool) {
     pass.read = pass.head;
     pass.write = pass.head;
     batch.head = std::ptr::null_mut();
-    q.write_segment.set(std::ptr::null_mut());
-    q.write_len.set(0);
-    // The temporary queue is private until publication; overflow bounds are
-    // owned here too. No entity code or allocation callback is run by packing.
-    q.overflow_len.set(0);
+    owner_state.write_segment.set(std::ptr::null_mut());
+    owner_state.write_len.set(0);
+    // The temporary queue is private until publication, and the overflow
+    // bounds are owned here too.
+    owner_state.overflow_len.set(0);
     note_queue_work(1, 0, 0);
     gc_metadata::mark_peak((pass.bounds[0] + pass.bounds[1]) * size_of::<*mut RcHeader>());
     checkpoint(0);
@@ -115,7 +115,7 @@ pub(super) fn finish(mut batch: InFlightBatch, retire: bool) {
 impl Compaction {
     fn bound(&self) -> usize {
         for index in 0..2 {
-            if self.read == self.partial[index] {
+            if self.read == self.partial_heads[index] {
                 return self.bounds[index];
             }
         }
@@ -125,7 +125,7 @@ impl Compaction {
     fn run(&mut self, inject: bool) {
         while self.phase != Phase::Done {
             if !self.pending.is_null() {
-                if self.pending_return {
+                if self.pending_free {
                     // No checkpoint lies inside ll_free. The pointer remains
                     // owned here through the pre-return checkpoints, including
                     // the interval after its two slot bits have been cleared.
@@ -169,7 +169,7 @@ impl Compaction {
                     self.overflow_write += 1;
                 }
                 self.pending = std::ptr::null_mut();
-                self.pending_return = false;
+                self.pending_free = false;
                 if inject {
                     checkpoint(3);
                 }
@@ -186,7 +186,7 @@ impl Compaction {
                     let entry = unsafe { segment_entries(self.read).add(self.read_index).read() };
                     self.read_index += 1;
                     note_queue_work(0, 1, 0);
-                    self.take(entry);
+                    self.stage_entry(entry);
                     if inject {
                         checkpoint(1);
                     }
@@ -197,7 +197,7 @@ impl Compaction {
                         unsafe { overflow_entries(self.state).add(self.overflow_read).read() };
                     self.overflow_read += 1;
                     note_queue_work(0, 1, 0);
-                    self.take(entry);
+                    self.stage_entry(entry);
                     if inject {
                         checkpoint(1);
                     }
@@ -218,8 +218,8 @@ impl Compaction {
                 Phase::Reverse if !self.head.is_null() => {
                     let segment = self.head;
                     self.head = unsafe { (*segment).next };
-                    unsafe { (*segment).next = self.reverse };
-                    self.reverse = segment;
+                    unsafe { (*segment).next = self.reversed_head };
+                    self.reversed_head = segment;
                     if inject {
                         checkpoint(5);
                     }
@@ -230,11 +230,13 @@ impl Compaction {
                     // queue is visible before the ledger updates, so a corrupt
                     // ledger reports once without losing the chain on unwind.
                     self.phase = Phase::ReturnSegments;
-                    let q = unsafe { owner_state_ref(self.state) };
-                    q.write_segment.set(self.reverse);
-                    q.write_len.set(stored_len(self.write_fill));
-                    q.overflow_len.set(stored_len(self.overflow_write));
-                    self.reverse = std::ptr::null_mut();
+                    let owner_state = unsafe { owner_state_ref(self.state) };
+                    owner_state.write_segment.set(self.reversed_head);
+                    owner_state.write_len.set(stored_len(self.write_fill));
+                    owner_state
+                        .overflow_len
+                        .set(stored_len(self.overflow_write));
+                    self.reversed_head = std::ptr::null_mut();
 
                     // Each original interior was charged once; neither input
                     // head was charged. The output charges every kept segment
@@ -263,11 +265,11 @@ impl Compaction {
                     let segment = self.surplus;
                     self.surplus = unsafe { (*segment).next };
                     unsafe { (*segment).next = std::ptr::null_mut() };
-                    let q = unsafe { owner_state_ref(self.state) };
-                    let count = q.spare_count.get();
+                    let owner_state = unsafe { owner_state_ref(self.state) };
+                    let count = owner_state.spare_count.get();
                     if usize::from(count) < SPARE_SEGMENTS {
-                        q.spares[usize::from(count)].set(segment);
-                        q.spare_count.set(count + 1);
+                        owner_state.spares[usize::from(count)].set(segment);
+                        owner_state.spare_count.set(count + 1);
                     } else {
                         gc_metadata::release_to_critical(segment);
                     }
@@ -281,9 +283,9 @@ impl Compaction {
         }
     }
 
-    fn take(&mut self, entry: *mut RcHeader) {
+    fn stage_entry(&mut self, entry: *mut RcHeader) {
         self.pending = entry;
-        self.pending_return = self.retire
+        self.pending_free = self.retire
             && matches!(
                 unsafe { crate::refcount::slot_state_with_flags(entry) },
                 crate::refcount::SlotStateReading::DeadInPlace { .. }
@@ -295,13 +297,9 @@ impl Drop for Compaction {
     fn drop(&mut self) {
         // A valid queue makes this continuation non-panicking: the ledger
         // phase has advanced already, and ownership crosses to `ll_free`
-        // before that call. A panic while reading an invalid entry means the
-        // queue was corrupt before cleanup; repeating Records may then panic
-        // again and abort a debug process. That boundary is deliberate. The
-        // only alternative is to abandon registrations whose addresses can no
-        // longer be read, and catching the second panic would disguise that
-        // loss (`dev/DECISIONS.md`, "corrupt queue entries remain outside the
-        // cleanup recovery contract").
+        // before that call. What a corrupt one costs, and why the second panic
+        // is not caught, is `dev/DECISIONS.md`, "corrupt queue entries remain
+        // outside the cleanup recovery contract".
         self.run(false);
     }
 }
