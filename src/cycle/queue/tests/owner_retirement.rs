@@ -33,7 +33,7 @@ fn held_segments(batch: Option<&InFlightBatch>) -> Vec<*mut BlockHeader> {
             segment = unsafe { (*segment).next };
         }
     }
-    for spare in &q.spares[..q.spare_count.get()] {
+    for spare in &q.spares[..usize::from(q.spare_count.get())] {
         blocks.push(spare.get());
     }
     blocks
@@ -139,7 +139,7 @@ fn run_shape(
     if segments != 0 {
         let q = unsafe { owner_state_ref(owner_state()) };
         assert_eq!(
-            q.write_len.get(),
+            usize::from(q.write_len.get()),
             (chain_survivors - 1) % SEGMENT_CAPACITY + 1
         );
     }

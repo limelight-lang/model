@@ -98,8 +98,9 @@ pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
 /// thresholds — is the compiler's decision, outside this crate; the runtime
 /// records "due" and collects here, where the graph is clean.
 ///
-/// The four refills below happen whether or not the fire does, an unarmed poll
-/// being the ordinary case and the refills being what every poll owes.
+/// The reserve refills and queue maintenance below happen whether or not the
+/// fire does, an unarmed poll being the ordinary case and the maintenance
+/// being what every poll owes.
 ///
 /// # Safety
 /// Callable at a safepoint of the calling mutator.
@@ -139,6 +140,15 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // them. The order is load-bearing — draining before the refill would
     // put them straight back (`rfc/model/gc/cycle/questions.md`, Y12 clause 3).
     crate::cycle::queue::drain_overflow();
+
+    // A ring whose root sits in the deferred lane can be this thread's only
+    // garbage, so it cannot wait for a collection that an empty active queue
+    // would never start. The owner alone compares its full-width mirror and
+    // moves the records; arming here lets this same safepoint trace the
+    // re-offered roots.
+    if crate::cycle::queue::reoffer_deferred_if_epoch_moved(crate::cycle::epoch::commits()) {
+        arm();
+    }
 
     if !take_due() {
         return 0;

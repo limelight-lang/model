@@ -226,7 +226,11 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
         return 0;
     };
 
-    unsafe { commit(&members, window.arena()) }
+    let outcome = unsafe { commit(&members, window.arena()) };
+    if outcome.initial == ValidationResult::ExternallyReferenced {
+        window.defer_batch_on_close(outcome.at_commits);
+    }
+    outcome.freed
 }
 
 /// Collect this thread's candidates for a caller that has run out of memory,
@@ -285,7 +289,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     let mut freed = 0;
     let mut roots = ALL_ROOTS;
     loop {
-        let standing = match unsafe { trace_and_harvest(roots) } {
+        let mut standing = match unsafe { trace_and_harvest(roots) } {
             Traced::Harvested(standing) => standing,
             // Nothing was registered, so there is nothing this path can do and
             // nothing for a later poll to do either.
@@ -331,7 +335,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
         }
 
         let mut taken = 0;
-        if !standing.members.entities().is_empty() {
+        if !standing.members().entities().is_empty() {
             // The trace's own arena went back with its blocks, so the queue
             // the sever's displaced children wait in stands in a second one —
             // over the same workspace, which this thread holds whether or not
@@ -340,7 +344,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
                 break;
             };
 
-            taken = unsafe { commit_under_pressure(standing.members, &mut arena) };
+            taken = unsafe { commit_under_pressure(&mut standing, &mut arena, roots == ALL_ROOTS) };
             arena.reset();
         } else {
             drop(standing);
@@ -411,13 +415,17 @@ unsafe fn trace_and_harvest(roots: usize) -> Traced {
         return Traced::AllocationFailed;
     }
 
-    drop(window);
+    let batch = window.close_and_take_batch();
     match crate::cycle::members::take_standing() {
         Some(members) => Traced::Harvested(HarvestedMembers {
-            members,
+            members: Some(members),
+            batch: Some(batch),
             roots_traced,
         }),
-        None => Traced::AllocationFailed,
+        None => {
+            crate::cycle::queue::merge_candidates(batch);
+            Traced::AllocationFailed
+        }
     }
 }
 
@@ -439,14 +447,37 @@ enum Traced {
 /// caller's next decision, and the batch it was taken from is gone by then —
 /// the close merged it back into the lane.
 struct HarvestedMembers {
-    members: crate::cycle::members::StandingMembers,
+    members: Option<crate::cycle::members::StandingMembers>,
+    batch: Option<crate::cycle::queue::InFlightBatch>,
     roots_traced: usize,
 }
 
 impl HarvestedMembers {
     /// Whether the trace met more unreachable entities than the region holds.
     fn overflowed(&self) -> bool {
-        self.members.overflowed()
+        self.members().overflowed()
+    }
+
+    fn members(&self) -> &crate::cycle::members::StandingMembers {
+        self.members
+            .as_ref()
+            .expect("a harvested list stands before commit")
+    }
+
+    fn take_members(&mut self) -> crate::cycle::members::StandingMembers {
+        self.members.take().expect("a harvested list commits once")
+    }
+
+    fn take_batch(&mut self) -> crate::cycle::queue::InFlightBatch {
+        self.batch.take().expect("a harvested batch disposes once")
+    }
+}
+
+impl Drop for HarvestedMembers {
+    fn drop(&mut self) {
+        if let Some(batch) = self.batch.take() {
+            crate::cycle::queue::merge_candidates(batch);
+        }
     }
 }
 
@@ -471,13 +502,35 @@ impl HarvestedMembers {
 /// Every member of `members` is an entity of this thread's GC heap whose slot
 /// is still its own, the membership is valid for the whole call, and the call
 /// runs on the owning thread with no mutator beside it.
-unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> usize {
-    match unsafe { commit_before_drops(members, arena) } {
+struct CommitOutcome {
+    freed: usize,
+    initial: ValidationResult,
+    /// Commits closed process-wide as the reading itself saw them, which is
+    /// before this commit's own close counted one more. A batch that goes to
+    /// the deferred lane waits out the epoch of the reading that found it live,
+    /// not the epoch of the instant its window happens to close.
+    at_commits: u64,
+}
+
+unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> CommitOutcome {
+    let mut initial = ValidationResult::ZeroCountMember;
+    let mut at_commits = 0;
+    let freed = match unsafe {
+        commit_before_drops(members, arena, |result| {
+            initial = result;
+            at_commits = crate::cycle::epoch::commits();
+        })
+    } {
         Some((freed, deferred)) => {
             deferred.drain();
             freed
         }
         None => 0,
+    };
+    CommitOutcome {
+        freed,
+        initial,
+        at_commits,
     }
 }
 
@@ -489,16 +542,65 @@ unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> usi
 /// deferred-reclamation value keeps the arena and every queued counted child
 /// reference alive across that interval (`dev/DECISIONS.md`, "keep early
 /// pressure retirement before external-child drops").
+///
+/// `whole_lane` says whether the trace behind `standing` read every root of
+/// the batch. A bounded round reads a prefix of it, and the records behind
+/// that prefix name components no reading has answered for: they go back to the
+/// active lane whatever this one answered, because a root the deferred lane
+/// holds is a root no trace is offered until the turnover — and this path runs
+/// because the process is out of memory.
 unsafe fn commit_under_pressure(
-    mut standing: crate::cycle::members::StandingMembers,
+    standing: &mut HarvestedMembers,
     arena: &mut TraceScratchArena,
+    whole_lane: bool,
 ) -> usize {
+    struct BatchOwner(Option<crate::cycle::queue::InFlightBatch>);
+    impl BatchOwner {
+        fn restore(&mut self) {
+            crate::cycle::queue::merge_candidates(
+                self.0.take().expect("one pressure batch disposition"),
+            );
+        }
+
+        fn defer(&mut self, at_commits: u64) {
+            crate::cycle::queue::defer_candidates(
+                self.0.take().expect("one pressure batch disposition"),
+                at_commits,
+            );
+        }
+    }
+    impl Drop for BatchOwner {
+        fn drop(&mut self) {
+            if let Some(batch) = self.0.take() {
+                crate::cycle::queue::merge_candidates(batch);
+            }
+        }
+    }
+
+    let mut batch = BatchOwner(Some(standing.take_batch()));
+    let mut members = standing.take_members();
+    let mut reading = None;
     let outcome = {
-        let members = Membership::listed(standing.entities_mut());
-        unsafe { commit_before_drops(&members, arena) }
+        let listed = Membership::listed(members.entities_mut());
+        unsafe {
+            commit_before_drops(&listed, arena, |initial| {
+                reading = Some((initial, crate::cycle::epoch::commits()));
+            })
+        }
     };
 
-    drop(standing);
+    // The disposition follows the commit rather than riding inside it: the
+    // sweep the deferred lane takes on the way retires entities whose deaths
+    // this commit's own destructors completed, and it may not run while the
+    // membership still names them.
+    match reading {
+        Some((ValidationResult::ExternallyReferenced, at_commits)) if whole_lane => {
+            batch.defer(at_commits)
+        }
+        _ => batch.restore(),
+    }
+
+    drop(members);
     let Some((freed, deferred)) = outcome else {
         return 0;
     };
@@ -524,10 +626,18 @@ unsafe fn commit_under_pressure(
 unsafe fn commit_before_drops<'a>(
     members: &Membership<'_>,
     arena: &'a mut TraceScratchArena,
+    initial_disposition: impl FnOnce(ValidationResult),
 ) -> Option<(usize, DeferredReclamation<'a>)> {
+    fire_injected_verdict_race();
+
     let mut finalization = Finalization::begin();
-    let confirmed = members.len() > 0
-        && unsafe { finalization.confirm(members) } == ValidationResult::Unreachable;
+    let initial = if members.len() == 0 {
+        ValidationResult::ZeroCountMember
+    } else {
+        unsafe { finalization.confirm(members) }
+    };
+    initial_disposition(initial);
+    let confirmed = initial == ValidationResult::Unreachable;
 
     let mut pass = finalization.seal().destructors();
     if confirmed {
@@ -552,6 +662,91 @@ unsafe fn commit_before_drops<'a>(
 
     revalidation.close();
     reclaimed
+}
+
+// Mutation injection, tests only, and for a state one thread has no other way
+// into: a store that lands after this thread's trace has proposed a component
+// and before the exact validation reads its counts. What stages it in
+// production is another thread's store, and the reading it produces —
+// `ExternallyReferenced` over a component the trace read as unreachable — is
+// what defers a batch
+// (`cycle/validation/tests/what_a_mutation_racing_the_verdict_costs.rs`).
+//
+// The armed store is three raw pointers rather than a closure so that the cell
+// keeps the shape every other injection here has: no drop glue, so no
+// destructor registration at its first touch
+// (`memory/critical/tests/where_the_first_touch_happens.rs`).
+#[cfg(test)]
+thread_local! {
+    static STORE_BEFORE_VALIDATION: Cell<(
+        *mut crate::memory::arena::Arena,
+        *mut crate::object::Object,
+        *mut crate::object::Object,
+    )> = const {
+        Cell::new((std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()))
+    };
+}
+
+/// Arm one store for **one** collection of this thread, and disarm it when
+/// this guard dies — including on an unwind out of the collection.
+///
+/// The store writes `member` into `keeper`'s Box property at `prop_offset(0)`
+/// through the mutator's own barrier, which is what a racing thread would do
+/// at that instant. It runs with the trace's rows standing and the roots
+/// detached, so the reading that follows finds a reference the component does
+/// not hold.
+#[cfg(test)]
+pub(crate) struct InjectedVerdictRace;
+
+#[cfg(test)]
+impl InjectedVerdictRace {
+    pub(crate) fn arm(
+        arena: *mut crate::memory::arena::Arena,
+        keeper: *mut crate::object::Object,
+        member: *mut crate::object::Object,
+    ) -> Self {
+        STORE_BEFORE_VALIDATION.with(|armed| armed.set((arena, keeper, member)));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for InjectedVerdictRace {
+    fn drop(&mut self) {
+        STORE_BEFORE_VALIDATION.with(|armed| {
+            armed.set((
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ))
+        });
+    }
+}
+
+/// Run the armed store and disarm it, and do nothing at all without
+/// `cfg(test)`.
+#[inline]
+fn fire_injected_verdict_race() {
+    #[cfg(test)]
+    {
+        let (arena, keeper, member) = STORE_BEFORE_VALIDATION.with(|armed| {
+            armed.replace((
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ))
+        });
+        if !keeper.is_null() {
+            unsafe {
+                crate::test_support::store_prop(
+                    arena,
+                    keeper,
+                    crate::test_support::prop_offset(0),
+                    member,
+                )
+            };
+        }
+    }
 }
 
 #[cfg(not(test))]

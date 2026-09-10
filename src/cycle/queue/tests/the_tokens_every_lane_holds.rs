@@ -108,3 +108,247 @@ fn an_empty_queue_answers_nothing() {
 
     reset();
 }
+
+/// Deferral preserves the original registrations as one deferred lane while a
+/// later decrement writes the active lane. Re-offer is the inverse ownership
+/// transition: no record is copied, dropped, or left in both lanes.
+#[test]
+fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+
+    let mut first = candidate(2);
+    let first_entity = &raw mut first;
+    assert!(unsafe { !release(first_entity) });
+    let first_batch = detach_candidates();
+    // The count is the caller's: it stands for the commit the reading that
+    // found this batch live saw, and zero is as good as any other for a case
+    // whose probes are full-width.
+    defer_candidates(first_batch, 0);
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(deferred_count(), 1);
+
+    let mut second = candidate(2);
+    let second_entity = &raw mut second;
+    assert!(unsafe { !release(second_entity) });
+    let second_batch = detach_candidates();
+    defer_candidates(second_batch, 0);
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(deferred_count(), 2);
+
+    let mut tokens = Vec::new();
+    collect_lane_tokens(&mut tokens);
+    assert_eq!(tokens.len(), 2);
+    assert_eq!(
+        tokens
+            .iter()
+            .filter(|&&entry| entry == first_entity)
+            .count(),
+        1
+    );
+    assert_eq!(
+        tokens
+            .iter()
+            .filter(|&&entry| entry == second_entity)
+            .count(),
+        1
+    );
+
+    assert!(reoffer_deferred_if_epoch_moved(u64::MAX));
+    assert_eq!(candidate_count(), 2);
+    assert_eq!(deferred_count(), 0);
+    tokens.clear();
+    collect_lane_tokens(&mut tokens);
+    assert_eq!(tokens.len(), 2);
+    assert_eq!(
+        tokens
+            .iter()
+            .filter(|&&entry| entry == first_entity)
+            .count(),
+        1
+    );
+    assert_eq!(
+        tokens
+            .iter()
+            .filter(|&&entry| entry == second_entity)
+            .count(),
+        1
+    );
+    // A third deferral recorded at the same reading, so that the refusal below
+    // is the mirror's answer rather than the empty lane's: with nothing
+    // deferred the call returns on its first disjunct and an implementation
+    // that never wrote the mirror would pass it.
+    let mut third = candidate(2);
+    let third_entity = &raw mut third;
+    assert!(unsafe { !release(third_entity) });
+    defer_candidates(detach_candidates(), u64::MAX);
+    assert_eq!(
+        deferred_count(),
+        3,
+        "the deferral takes back the two re-offered records with the new one"
+    );
+    assert!(
+        !reoffer_deferred_if_epoch_moved(u64::MAX),
+        "the same full-width reading may not re-offer a second time"
+    );
+    assert_eq!(deferred_count(), 3, "the refused reading moved nothing");
+
+    reset();
+}
+
+/// A deferred lane of more than one segment, which is the merge arm the
+/// one-record cases never reach: the lane's head is full, so the batch's own
+/// head becomes the chain head instead of being copied into the room ahead of
+/// it. The chain's length is what `deferred_count` walks and what the queue's
+/// release has to discharge, and neither is exercised by a lane of one entry.
+#[test]
+fn a_deferred_lane_of_two_segments_comes_back_whole() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+
+    let mut filler = candidate(2);
+    let filler_entity = &raw mut filler;
+    assert!(unsafe { !release(filler_entity) });
+    fill_write_segment(filler_entity);
+    let mut grew = candidate(2);
+    let grew_entity = &raw mut grew;
+    assert!(unsafe { !release(grew_entity) });
+    assert_eq!(segment_count(), 2);
+
+    defer_candidates(detach_candidates(), 0);
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(deferred_count(), SEGMENT_CAPACITY + 1);
+
+    // The second deferral meets a full deferred head, so its own head is the
+    // one that survives as the chain's. The cells are refilled first: the
+    // growth above spent them, and a registration with no segment to write
+    // into lands in the overflow buffer, which is not the lane this case is
+    // about.
+    assert!(refill_spares());
+    let mut later = candidate(2);
+    let later_entity = &raw mut later;
+    assert!(unsafe { !release(later_entity) });
+    assert_eq!(
+        overflow_len(),
+        0,
+        "the record is in a segment, not the buffer"
+    );
+    defer_candidates(detach_candidates(), 0);
+    assert_eq!(deferred_count(), SEGMENT_CAPACITY + 2);
+
+    let mut tokens = Vec::new();
+    collect_lane_tokens(&mut tokens);
+    assert_eq!(tokens.len(), SEGMENT_CAPACITY + 2);
+    assert_eq!(
+        tokens
+            .iter()
+            .filter(|&&entry| entry == later_entity)
+            .count(),
+        1,
+        "the record of the second deferral is in the lane once"
+    );
+    assert_eq!(
+        tokens.iter().filter(|&&entry| entry == grew_entity).count(),
+        1
+    );
+
+    assert!(reoffer_deferred_if_epoch_moved(u64::MAX));
+    assert_eq!(deferred_count(), 0);
+    assert_eq!(
+        candidate_count(),
+        SEGMENT_CAPACITY + 2,
+        "every record of both segments came back"
+    );
+
+    reset();
+}
+
+/// A decrement while the candidate is deferred sees the standing bit and may
+/// not register it a second time. Re-offer joins its original token to records
+/// registered after the deferral.
+#[test]
+fn a_deferred_decrement_neither_duplicates_its_token_nor_loses_an_active_one() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+
+    let mut deferred = candidate(3);
+    let deferred_entity = &raw mut deferred;
+    assert!(unsafe { !release(deferred_entity) });
+    defer_candidates(detach_candidates(), 0);
+    assert_eq!(deferred_count(), 1);
+
+    assert!(unsafe { !release(deferred_entity) });
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(deferred_count(), 1);
+
+    let mut active = candidate(2);
+    let active_entity = &raw mut active;
+    assert!(unsafe { !release(active_entity) });
+    assert_eq!(candidate_count(), 1);
+
+    assert!(reoffer_deferred_if_epoch_moved(u64::MAX));
+    assert_eq!(candidate_count(), 2);
+    assert_eq!(deferred_count(), 0);
+    let mut tokens = Vec::new();
+    collect_lane_tokens(&mut tokens);
+    assert_eq!(
+        tokens
+            .iter()
+            .filter(|&&entry| entry == deferred_entity)
+            .count(),
+        1
+    );
+    assert_eq!(
+        tokens
+            .iter()
+            .filter(|&&entry| entry == active_entity)
+            .count(),
+        1
+    );
+
+    reset();
+}
+
+/// A record naming an entity whose death is complete gives its slot back on
+/// the way into the deferred lane. Without the sweep the slot would be
+/// withheld until the turnover, because retirement reads the active lane and
+/// the deferred one is offered to nothing until then
+/// (`rfc/model/gc/cycle/questions.md`, Y12 clause 8).
+#[test]
+fn a_deferral_retires_the_record_of_a_completed_death() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut arena = Arena::new();
+    let class = candidate_class("DeferredCompletedDeath");
+
+    let survivor = unsafe { allocated_candidate(&mut arena, class, 1) };
+    let dead = unsafe { allocated_candidate(&mut arena, class, 1) };
+    for entity in [survivor, dead] {
+        unsafe {
+            crate::refcount::update_header_flags(entity, |flags| flags | CANDIDATE_BIT);
+            append_entry(owner_state(), entity);
+        }
+    }
+    unsafe { dismantle_candidate(dead) };
+    assert_eq!(candidate_count(), 2);
+
+    defer_candidates(detach_candidates(), 0);
+    assert_eq!(
+        deferred_count(),
+        1,
+        "the completed death was retired on the way into the lane"
+    );
+    let mut tokens = Vec::new();
+    collect_lane_tokens(&mut tokens);
+    assert_eq!(tokens, vec![survivor]);
+
+    unsafe { dismantle_candidate(survivor) };
+    assert!(reoffer_deferred_if_epoch_moved(u64::MAX));
+    unsafe { retire_candidates() };
+    assert_eq!(candidate_count(), 0);
+    reset();
+}

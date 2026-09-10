@@ -635,3 +635,4 @@ fn a_collection_reached_from_a_destructor_is_refused() {
 
 mod what_a_collection_asks_the_allocator;
 mod when_pressure_retires_members;
+mod when_the_turnover_reoffers;

@@ -38,7 +38,7 @@
 //! in that membership and therefore cannot reach [`stamp_component`]. Y9 also
 //! requires those live components to mature, because they are the core a later
 //! edge-side prune stops at. Building their component membership and moving
-//! their one candidate token to the dormant lane is the prerequisite recorded
+//! their one candidate token to the deferred lane is the prerequisite recorded
 //! under `PLAN.md` S37.1/S37.4. Nothing here licenses stamping live rows one by
 //! one: the age remains the component-wide minimum plus one.
 //!

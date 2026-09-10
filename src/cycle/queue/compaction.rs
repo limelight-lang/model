@@ -52,14 +52,14 @@ pub(super) fn finish(mut batch: InFlightBatch, retire: bool) {
     let active = q.write_segment.get();
     if !retire && active.is_null() {
         q.write_segment.set(batch.head);
-        q.write_len.set(batch.fill);
+        q.write_len.set(stored_len(batch.fill));
         batch.head = std::ptr::null_mut();
         return;
     }
     let mut pass = Compaction {
         state,
         partial: [active, batch.head],
-        bounds: [q.write_len.get(), batch.fill],
+        bounds: [usize::from(q.write_len.get()), batch.fill],
         read: active,
         read_index: 0,
         write: active,
@@ -69,7 +69,7 @@ pub(super) fn finish(mut batch: InFlightBatch, retire: bool) {
         charged_segments: 0,
         overflow_read: 0,
         overflow_write: 0,
-        overflow_bound: q.overflow_len.get(),
+        overflow_bound: usize::from(q.overflow_len.get()),
         pending: std::ptr::null_mut(),
         pending_return: false,
         reverse: std::ptr::null_mut(),
@@ -232,8 +232,8 @@ impl Compaction {
                     self.phase = Phase::ReturnSegments;
                     let q = unsafe { owner_state_ref(self.state) };
                     q.write_segment.set(self.reverse);
-                    q.write_len.set(self.write_fill);
-                    q.overflow_len.set(self.overflow_write);
+                    q.write_len.set(stored_len(self.write_fill));
+                    q.overflow_len.set(stored_len(self.overflow_write));
                     self.reverse = std::ptr::null_mut();
 
                     // Each original interior was charged once; neither input
@@ -265,8 +265,8 @@ impl Compaction {
                     unsafe { (*segment).next = std::ptr::null_mut() };
                     let q = unsafe { owner_state_ref(self.state) };
                     let count = q.spare_count.get();
-                    if count < SPARE_SEGMENTS {
-                        q.spares[count].set(segment);
+                    if usize::from(count) < SPARE_SEGMENTS {
+                        q.spares[usize::from(count)].set(segment);
                         q.spare_count.set(count + 1);
                     } else {
                         gc_metadata::release_to_critical(segment);

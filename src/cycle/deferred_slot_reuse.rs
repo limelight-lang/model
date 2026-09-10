@@ -430,6 +430,8 @@ pub(crate) struct ActiveTrace {
     /// call gives the block back.
     returns: WithheldReturns,
     arena: crate::cycle::arena::TraceScratchArena,
+    closed: bool,
+    defer_at_commits: Option<u64>,
     // A window belongs to the TLS state of the thread that opened it. Moving
     // the guard would close another thread's window and strand this one's.
     _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -458,6 +460,8 @@ impl ActiveTrace {
             batch: None,
             returns,
             arena,
+            closed: false,
+            defer_at_commits: None,
             _not_send: std::marker::PhantomData,
         })
     }
@@ -528,6 +532,53 @@ impl ActiveTrace {
     pub(crate) fn arena(&mut self) -> &mut crate::cycle::arena::TraceScratchArena {
         &mut self.arena
     }
+
+    /// Close a pressure trace without choosing its candidate disposition, then
+    /// transfer the original batch to the pressure driver.
+    ///
+    /// A panic before the final transfer leaves `closed` false, so [`Drop`]
+    /// restores the batch normally. The caller that receives the batch owns
+    /// its exact-validation disposition and must restore or defer it.
+    pub(crate) fn close_and_take_batch(mut self) -> crate::cycle::queue::InFlightBatch {
+        assert!(
+            self.defer_at_commits.is_none(),
+            "a reading that chose the deferred lane cannot hand its batch on"
+        );
+        self.close(false);
+        self.closed = true;
+        self.batch
+            .take()
+            .expect("a pressure close takes one detached batch")
+    }
+
+    /// Select the owner-side deferred disposition for the trace's original
+    /// records, as the reading at `at_commits` decided it. Only an exact
+    /// `ExternallyReferenced` reading may call this, and the count is the one
+    /// that reading saw (`crate::cycle::queue::defer_candidates`).
+    pub(crate) fn defer_batch_on_close(&mut self, at_commits: u64) {
+        assert!(
+            self.batch.is_some(),
+            "only a detached batch can be deferred"
+        );
+        self.defer_at_commits = Some(at_commits);
+    }
+
+    fn close(&mut self, restore_batch: bool) {
+        self.arena.sweep_rows();
+        self.returns.rows_are_gone();
+        if restore_batch {
+            if let Some(batch) = self.batch.take() {
+                match self.defer_at_commits {
+                    Some(at_commits) => crate::cycle::queue::defer_candidates(batch, at_commits),
+                    None => crate::cycle::queue::merge_candidates(batch),
+                }
+            }
+        }
+        fire_injected_close_unwind();
+        self.returns.close_window();
+        self.returns.dispose_withheld(Disposition::Return);
+        self.arena.reset();
+    }
 }
 
 // Whether this thread's next close raises between the row sweep and the
@@ -580,6 +631,9 @@ fn fire_injected_close_unwind() {
 
 impl Drop for ActiveTrace {
     fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
         // First of all, and taken whether or not anything was withheld: after
         // the window falls, a physical return may recommission the block whose
         // shadow pointer this sweep must null. Ahead of the disposition below,
@@ -588,9 +642,6 @@ impl Drop for ActiveTrace {
         // withheld returns can therefore be made rather than abandoned
         // (`dev/DECISIONS.md`, "the row sweep runs ahead of the candidate
         // restore").
-        self.arena.sweep_rows();
-        self.returns.rows_are_gone();
-
         // Every root of the batch keeps its registration, so its record goes
         // back to the lane it came out of — joined to whatever the teardown
         // wrote there, which on the ordinary path is the severing's own
@@ -598,15 +649,6 @@ impl Drop for ActiveTrace {
         // candidate arm reads the entity's own bit rather than the lane its
         // record stands in, so nothing above or below turns on where this
         // stands between them.
-        if let Some(batch) = self.batch.take() {
-            crate::cycle::queue::merge_candidates(batch);
-        }
-
-        fire_injected_close_unwind();
-
-        self.returns.close_window();
-        self.returns.dispose_withheld(Disposition::Return);
-
         // The arena's own blocks name no slot, so they go back after the
         // returns rather than before them — which is what leaves every return
         // made when a panic in the hand-back sends this frame into the drops
@@ -614,7 +656,7 @@ impl Drop for ActiveTrace {
         // the high-water figure as it rewinds
         // (`crate::cycle::arena::TraceScratchArena`), and this window has no
         // residue to stand beside it.
-        self.arena.reset();
+        self.close(true);
     }
 }
 

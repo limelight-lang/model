@@ -557,16 +557,16 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         ring A↔B with an external X→B that is released after the trace read the
         count — does not lose the ring, and the assertion is that a later
         collection reclaims it, not merely that the bit is still set
-      tier: T2 · role: Sage → Critic
+      tier: T2 · role: Critic
       handoff: clause 4 and the law of 2026-08-26 contradicted each other, and
         both were in the plan. The Sage ruled for the law: clearing on acquittal
         is the permanent miss, because enrolment is edge-triggered.
       handoff: the instant this step's test waits for was ruled on 2026-08-27
         (`rfc/dev/PLAN.md` S8.3, and the entry it names in
-        `rfc/dev/DECISIONS.md`). An acquitted root parks in the owner's own
-        suspects buffer with its bit set, and the first collection after the
-        maturation epoch counter moves detaches that dormant lane beside the
-        active lane as one composite in-flight batch. The test therefore forces
+        `rfc/dev/DECISIONS.md`). A root read as externally referenced keeps its
+        bit and its record moves into the owner's deferred lane, and the first
+        poll whose commit count stands in a later epoch merges that lane back
+        into the active one (S37.4, closed). The test therefore forces
         the counter forward through a `#[cfg(test)]` shorthand, runs the poll,
         runs a collection and
         asserts the ring reclaimed, which is the assertion this step demands
@@ -1712,7 +1712,7 @@ stage claiming the frees while building none of them.
         allocator covers ordinary, retained, weak, parking and abort paths and
         performs zero global allocations. A source/ownership audit catches
         backing allocated before the denying window opened
-      tier: T2 · role: Sage → Critic
+      tier: T2 · role: Critic
       handoff: this supersedes S36.2's acceptance of `Box<Vec>` parking. A
         manager-issued block stamped merely `ARENA` is not enough: the manager
         must be able to answer how many bytes GC owns.
@@ -2182,8 +2182,8 @@ stage claiming the frees while building none of them.
         work. The batch is a two-word move-only value owned by the collection
         frame, refused a home in `OwnerCycleState`'s reserved word and in the
         workspace: nothing outside that frame ever has to find it. Its bounds
-        are the head and the head's fill alone, with no tail, S37.4's composite
-        detach adding one when it needs one. The overflow buffer is not part of
+        are the head and the head's fill alone, with no tail; S37.4's deferred
+        lane keeps a fill bound of its own rather than adding one here. The overflow buffer is not part of
         the batch and the detach may not assert it empty, the pressure path
         sharing the code. The restore asserts an empty write position **in
         every build**, that assertion being the whole difference between "no
@@ -3174,7 +3174,7 @@ stage is what makes a trace affordable rather than what tunes it.
         but no path presents the ordinary `Color::Live` population to
         `stamp_component`. Before adding the edge-side read, this step must
         build or name the component membership and owner disposition that
-        stamps those live rows, together with S37.4's one-token dormant-lane
+        stamps those live rows, together with S37.4's one-token deferred-lane
         transition. A one-entity fixture cannot discharge the requirement:
         the test must include unequal member ages and show the component-wide
         `min(age) + 1`, plus a turnover that makes the stamp stale. This is a
@@ -3195,49 +3195,77 @@ stage is what makes a trace affordable rather than what tunes it.
         epoch and this step prunes a live subgraph permanently and silently.
         The zeroing belongs to S38.0; this step's counters are what would show
         it missing.
-- [ ] S37.4 The deferred-candidate buffer and the turnover re-offer
-      done: acquittal never clears the candidate bit; a proven-live root parks
-        its **one existing token** in the owner's dormant lane, and every
-        deferred candidate is re-offered at **the owner's first safepoint poll
-        that finds the epoch counter moved**, never by enrolling or copying the
+- [x] S37.4 The deferred-candidate buffer and the turnover re-offer
+      done: a reading of `ExternallyReferenced` never clears the candidate bit;
+        the component's root keeps its **one existing token** and the trace's
+        batch moves into the owner's deferred lane, and every deferred
+        candidate is re-offered at **the owner's first safepoint poll that
+        finds the epoch counter moved**, never by registering or copying the
         entity a second time; red tests prove
         that a matured ring losing its last external reference mid-epoch is
         collected at that re-offer and not before, and that a ring whose mates
         carry unequal ages is likewise collected, so maturing apart costs recall
         rather than a permanent miss
-      tier: T2 · role: Sage → Critic
+      tier: T2 · role: Critic
       handoff: this is the backstop the withdrawn "retired on contact" clause
         was supposed to be and never was — eager clearing fires only when a
         trace touches the entity, and the stamp that wraps is exactly the one no
         trace touched for four epochs. It also collects YRC's 56 % saving on
         re-registration.
-      handoff: `CANDIDATE_BIT` means exactly one logical token in exactly one state:
-        `active → in-flight → dormant`, or consumer-retired after death;
-        epoch turnover detaches active and due-dormant heads/tails in O(1), and
-        an abort restores each sub-batch to the lane it came from without
-        allocation. A decrement while dormant sees the standing bit and cannot
-        add a duplicate. Store original enrolled
+      handoff: `CANDIDATE_BIT` means exactly one logical token in exactly one
+        state: `active → in-flight → deferred`, or consumer-retired after
+        death. A decrement while the token is deferred sees the standing bit
+        and cannot add a duplicate. Store original registered
         roots only — adding every traced live member manufactures tokens, and
         collapsing two roots in one component can miss it after a later split.
-      correction 2026-09-04: the criterion re-offered "at the first collection
-        after the heap's epoch advances", by detaching the dormant lane beside
-        the active one. `rfc/dev/DECISIONS.md`, closing Y12 clause 8, chooses
-        the poll over the collection **by name and with the failure case**: "a
-        thread whose only garbage is a parked ring has an empty queue …
-        waiting for a judgement would wait for ever, which is Y6's permanent
-        miss by another road". The rfc's mechanism there is a splice onto the
-        live queue, one link per segment, in the poll's fixed order — refill,
-        drain, splice. The batch-detach form this step proposed is what the
-        handoff below argues for; it is an amendment `rfc` owes, and until it
-        lands the splice is the contract. The retired word "suspects buffer"
-        goes with it (`rfc/dev/GLOSSARY.md`).
-      handoff: current queue segments cannot be spliced after filtering: only
-        the live head has a fill bound and every segment behind it is assumed
-        full. S36.12's per-batch/per-segment `read` and `used` bounds, or an
-        equivalent in-place compaction restoring full segments, are a hard
-        prerequisite. Tests count one token across active + in-flight + dormant
-        after repeated decrements, acquittals, partial segments, abort and
-        turnover; a dormant corpse keeps identity until its consumer retires it.
+      correction 2026-09-04, amended 2026-09-10: the criterion re-offered
+        "at the first collection after the heap's epoch advances", by
+        detaching the deferred lane beside the active one.
+        `rfc/dev/DECISIONS.md`, closing Y12 clause 8, chooses the poll over
+        the collection **by name and with the failure case**: "a thread whose
+        only garbage is a deferred ring has an empty queue … waiting for a
+        judgement would wait for ever, which is Y6's permanent miss by another
+        road". The whole-segment splice is no longer the contract either: only
+        a lane head carries a fill bound, so the re-offer is the bounded merge
+        of the deferred lane into the active one at the poll. The retired word
+        "suspects buffer" goes with it (`rfc/dev/GLOSSARY.md`).
+      closed 2026-09-10: the lane is `queue.rs`'s `deferred_segment` beside the
+        write segment, with its own fill bound and a full-width
+        `turnover_mirror`; `defer_candidates(batch, at_commits)` moves a batch
+        into it and `reoffer_deferred_if_epoch_moved` brings the whole lane
+        back at a poll whose commit count stands in a later epoch than the
+        mirror. `gc.rs` wires that call into `ll_gc_maybe_collect` and arms the
+        thread when it moves records, because a deferred ring can be a thread's
+        only garbage. The two criterion tests are
+        `cycle/collect/tests/when_the_turnover_reoffers.rs`; they stage the
+        reading with `InjectedVerdictRace`, the fourth injection of the crate's
+        own kind, because one thread's trace and its exact validation are a
+        call apart and no other seam produces the disagreement between them.
+      note 2026-09-10 — what the Critic round changed. Three defects and two
+        test holes, all repaired in the same step. The re-offer compared raw
+        commit counts, so any commit of any thread ended the deferral; it
+        compares turnovers now (`epoch::turnovers_of`). The mirror was read at
+        the disposition, which on the two paths falls on opposite sides of the
+        commit's own close and put the same event 0 or 64 commits apart; the
+        count is taken at the reading and passed in. A bounded round of the
+        pressure path deferred the whole lane including the roots its trace
+        never read — 2048 of them in the case now standing — so
+        `commit_under_pressure` takes `whole_lane` and restores instead. The
+        deferral also carried this thread's overflow buffer into the lane,
+        found while repairing the above; the buffer is withheld from the pass.
+        The lane's own name went with the round: the glossary's word is
+        deferred-candidate buffer, and `dormant` was a second name for one
+        thing.
+      note 2026-09-10 — the deferral retires completed deaths on the way in.
+        Nothing reads the deferred lane before the turnover, so a record that
+        names a dead entity withholds its slot for a whole epoch, and
+        `retire_candidates` reads the active lane alone. The parking pass is
+        therefore the retirement pass (`compaction::finish(batch, true)`),
+        which is `rfc` Y12 clause 8's own remedy made mandatory. Teaching
+        retirement to walk the deferred lane instead was refused: retirement
+        runs at every collection and every pressure round, and its work would
+        become proportional to the accumulated deferred set, which is the work
+        the deferral exists to remove.
 - [ ] S37.5 The turnover constant, against a corpus   *(after S37.4)*
       done: the suspects re-offer volume is measured at the epoch turnover on a
         corpus, and S37.1's 64-collection turnover is replaced by a number or
@@ -3750,7 +3778,7 @@ Goal: the one number the design still lacks.
         synthetic block whose traced share is fixed by construction; the same
         instrumented run records the pruned-edge share at `k` of 1, 2 and 3,
         which is what settles S37.1's first provisional constant
-      tier: T2 · role: Bench → Sage → Critic
+      tier: T2 · role: Bench → Critic
       Sage 2026-09-04 (pre-change gate): the step splits by the kind of number
         rather than by the mechanism. **The pruned-edge share is taken today by
         simulation**, and the simulation is honest: an entity's age is the
@@ -3924,7 +3952,7 @@ Goal: the one number the design still lacks.
         instructions, cycles, L1D/LLC/dTLB and branch misses plus manager draws;
         the control protocol is `dev/BENCHMARKS.md`'s and every cache conclusion
         remains a hypothesis until these counters measure it
-      tier: T2 · role: Sage → Critic
+      tier: T2 · role: Critic
       handoff: a widest flat row array reserves 16,408 bytes, or 257
         line-equivalents and 257–258 physical cache lines depending on
         alignment. First touch is proven only to write 121 bytes; how many

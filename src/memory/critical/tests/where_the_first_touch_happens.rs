@@ -166,6 +166,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("RESERVE", true),
         ("RING", false),
         ("ROWS_READ", false),
+        ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
         ("THREAD_BUFFER_ARENA", false),
         ("THREAD_CACHE", true),
         ("THREAD_FIGURES", false),

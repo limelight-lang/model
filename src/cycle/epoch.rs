@@ -75,12 +75,45 @@ fn epoch_of(commits: u64) -> u32 {
     ((commits / COMMITS_PER_EPOCH) % EPOCHS) as u32
 }
 
-/// Commits closed process-wide, which a case reads to see that a commit of its
-/// own was counted. The epoch itself moves once in 64, so it answers nothing
-/// about a single commit.
-#[cfg(test)]
+/// Commits closed process-wide.
+///
+/// The owner queue compares this full-width value with its private mirror at a
+/// safepoint. The low two epoch bits in a header cannot answer whether four
+/// turns elapsed while that owner was asleep.
 pub(crate) fn commits() -> u64 {
     COMMITS.load(Ordering::Relaxed)
+}
+
+/// How many turnovers `commits` closed commits stand past process start.
+///
+/// The owner queue compares this rather than [`current`]: the epoch itself
+/// wraps at four, and a lane whose owner slept through four turnovers would
+/// read as one that slept through none.
+pub(crate) fn turnovers_of(commits: u64) -> u64 {
+    commits / COMMITS_PER_EPOCH
+}
+
+/// A commit count inside the same turnover as `commits`, and one past that
+/// turnover's first commit.
+///
+/// A case that probes with `commits + 1` is asking a question about the
+/// process-global counter rather than about the queue: at 63 commits past a
+/// turnover the increment crosses one, and every other case's collections move
+/// that counter while this one runs.
+#[cfg(test)]
+pub(crate) fn one_commit_inside_the_turnover_of(commits: u64) -> u64 {
+    commits - commits % COMMITS_PER_EPOCH + 1
+}
+
+/// The commit count one turnover past `commits`, which a case passes to the
+/// owner poll in place of the counter.
+///
+/// Driving 64 real commits is what [`pin`] exists to avoid: the counter is
+/// process-global, so a case that closed a turnover would move every other
+/// thread's epoch under it.
+#[cfg(test)]
+pub(crate) fn one_turnover_past(commits: u64) -> u64 {
+    commits + COMMITS_PER_EPOCH
 }
 
 /// This thread's pinned epoch, or `None` when it reads the counter.
