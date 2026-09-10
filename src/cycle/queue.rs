@@ -1271,16 +1271,21 @@ pub(crate) fn candidate_count() -> usize {
     count
 }
 
-/// Every candidate token this thread's queue holds, the active chain and the
-/// overflow buffer both, appended to `out`: the chain in [`walk_chain`]'s
+/// Every candidate token this thread's queue holds, appended to `out`: the
+/// active chain in [`walk_chain`]'s order, then the deferred lane in the same
 /// order, then the overflow buffer oldest entry first.
 ///
-/// [`candidate_count`] answers the chain alone, and a count of one lane can
-/// state neither half of the rule this exists for — a `CANDIDATE_BIT` standing
-/// over no record anywhere, and one entity holding a record in two lanes at
-/// once. The batch a collection detaches is a third lane, held in the
-/// collection's own frame rather than here, so a caller holding one appends it
-/// itself.
+/// [`candidate_count`] answers the active chain alone, and a count of one lane
+/// can state neither half of the rule this exists for — a `CANDIDATE_BIT`
+/// standing over no record anywhere, and one entity holding a record in two
+/// lanes at once. The batch a collection detaches is a fourth lane, held in
+/// the collection's own frame rather than here, so a caller holding one
+/// appends it itself.
+///
+/// **What comes back says nothing about which lane a token is in**, the three
+/// being concatenated. A caller that asserts residence pairs this with
+/// [`candidate_count`] and [`deferred_count`]: the multiset gives identity and
+/// those two give the split.
 ///
 /// The entries are read and not dereferenced, exactly as the queue reads them:
 /// an entry may name an entity that has since been torn down

@@ -545,7 +545,7 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         returns the block whole — so an entry naming one would survive into the
         next request's memory.
 
-- [ ] S34.2 The law: only the owner reduces state
+- [x] S34.2 The law: only the owner reduces state
       done: no dirty pass clears an enrolment bit, drops a queue entry or
         returns a slot; a reader may mark an entry a corpse and pass it on; the
         bit is cleared only by the owner consuming the one token that names a
@@ -585,6 +585,46 @@ structure, and an entity that dies while enrolled leaves no dangling pointer.
         maturation counter of S37.1 and the suspects buffer of S37.4 for the
         instant it waits for. Moved last in the stage for that reason; the work
         order takes it after S37.4.
+      correction 2026-09-10: the maturation counter of S37.1 is not among the
+        waits after all. S37.4 built the instant this step asks for — a poll
+        that finds the epoch moved re-offers the deferred lane — and the epoch
+        counter under it is S36.6's, closed. With S36.7 and S37.4 both closed
+        the step was workable, and the handoff of the sitting before this one
+        named S36.8 and S37.1 as the next open steps without seeing it.
+      Critic 2026-09-10 round 1: the case as first written disposed of nothing.
+        A component held live leaves a membership of length zero, so the commit
+        answers `ZeroCountMember` and the deferring arm the clause governs is
+        never reached; the record claim rested on `candidate_count`, which the
+        crate says in so many words cannot see a bit standing over no record;
+        and one ring cannot exhibit a lost token, being reached whole from
+        either of its roots. Accepted and rebuilt: two rings, token identity
+        through `queue::collect_lane_tokens`, keepers built before the rings so
+        that no allocation stands in the window where a ring is garbage, and
+        `refcount::take_admissions` for the decrement that registers nothing.
+      Critic 2026-09-10 round 2: the token multiset says nothing about which
+        lane holds a token, so a deferral of half the batch would pass while
+        `retire_candidates`, which walks the active lane alone, left two slots
+        withheld for the life of the thread; and zero is the answer to a
+        refused workspace as much as to a component read live. Accepted:
+        `candidate_count` beside every multiset reading, and the mark phase's
+        dispatch count. Its third finding was a production comment —
+        `queue::collect_lane_tokens` named two chains and walks three — and it
+        is repaired in the same commit.
+      handoff: the law holds in the code as it stands, and the reading is the
+        step's other half. `CANDIDATE_BIT` comes down at one production site,
+        `queue::compaction`'s retirement, and only for an entry
+        `slot_state_with_flags` reads as `DeadInPlace`;
+        `refcount::clear_candidate_bit` is `#[cfg(test)]` and says so; and
+        `memory::stdapi::ll_free` withholds the slot of any entity still
+        carrying the bit, so no pass but the owner's returns one.
+      handoff: the case is
+        `cycle/collect/tests/what_a_live_reading_leaves_registered.rs` — two
+        rings held from outside through one collection, both keepers dying
+        after it, a second collection freeing all four. Five mutations were
+        seen red and restored: one token dropped at the merge, two dropped,
+        every root's bit cleared at the close, the batch deferred at this
+        close, and the collection giving up before its trace. 838 passed at
+        eight threads, three runs.
 
 ## S44 — One stack for every withheld return
 
