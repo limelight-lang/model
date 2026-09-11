@@ -221,6 +221,14 @@ producer for Y9.
 premise checks. S36.8 remains open: a later optimization must retain an equally
 early independent cross-check and the pre-destructor maturation producer.
 
+**Closed 2026-09-11.** The Sage found no such optimization: the retained
+cross-check is the cell walk of `validate_component` in full, since the scan
+keeps an edge's resolution only in the row and the set the in-degree is defined
+over does not exist until the scan ends. S36.8 is closed as refused; the one
+saving left, folding the count walk into the cell walk, is one traversal of
+eight or nine a collection makes and is a T1 behind an `rfc` amendment of
+finalization step 1, not a plan step.
+
 ---
 
 ## 2026-09-09 — keep early pressure retirement before external-child drops

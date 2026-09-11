@@ -21,7 +21,7 @@ prune they were built for — so the descent stops at the mature live core and
 S40.1's pruning arm has a counter rather than a simulation; the corpus arm of
 S40.1 still waits on the Phase-D driver, and S37.5 waits on the same corpus.
 Of what is left in S37, S37.2 is blocked outside this repository;
-S36 has S36.8 left; S44 has one step left, S44.5,
+S36 has S36.9 left, on Edmond's ruling; S44 has one step left, S44.5,
 and it waits on Edmond's word. **S34 closed and was deleted on 2026-09-10**,
 its last step being the law that only the owner reduces state; what outlived
 it is in the journals, and the two debts it carried without an owner are in
@@ -2655,7 +2655,7 @@ stage claiming the frees while building none of them.
         Verified at 805 tests, and Miri clean over `memory::heap` (24 in 271 s),
         `weak::` (21 in 42 s) and `cycle::collect` (9 in 720 s).
 
-- [ ] S36.8 Elide the redundant exact test after an in-line owner trace
+- [x] S36.8 Elide the redundant exact test after an in-line owner trace
       done: when mark and scan run synchronously on the owning mutator at one
         consistent point, a condemned component proceeds directly to the owner
         commit — guard acquisition, weak invalidation and finalization — without
@@ -2685,6 +2685,20 @@ stage claiming the frees while building none of them.
         narrowing Y9 to post-destructor resurrection. A future shortcut must
         retain an equally early independent check and preserve that producer;
         the decision is in `dev/DECISIONS.md` and `rfc`'s journal.
+      Sage 2026-09-11 (Final: refused): closed without the elision, on the
+        ruling of 2026-09-09. The retained check is the second walk of
+        `validate_component` in full: the internal in-degree is derived from
+        the members' cells and every out-edge is classified against the
+        membership, and no cheaper reading is independent of the rows, because
+        the scan keeps an edge's resolution only in the row, and the set `IN`
+        is defined over does not exist until the scan ends. The count's first
+        walk is the smaller term, and folding it into the cell walk saves one
+        traversal of eight or nine a collection makes; that is a T1 inside
+        `validation.rs` behind an `rfc` amendment of finalization step 1, not a
+        step here. The remaining criteria have no producer: the speculative
+        count names S38's worker, the keeper ring is the injected verdict race
+        in `collect.rs`, and the saved-reads benchmark measures a quantity the
+        ruling fixes at zero.
 
 - [x] S36.16 Carry the collection's two paths into `rfc`   *(after S36.7)*
       done: `model/gc/rc-cycle.md`'s "Concurrency" says the ordinary path
