@@ -22,13 +22,13 @@ use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::epoch;
 use crate::cycle::membership::Membership;
 use crate::cycle::queue::release_queue_segments;
-use crate::cycle::testing::ring;
+use crate::cycle::testing::{ages, ring, stamp_of};
 use crate::gc::ll_gc_collect_cycles;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
 use crate::object::{Object, new_constructed};
-use crate::refcount::{MemoryCategory, RcHeader, read_maturation_stamp};
+use crate::refcount::{MemoryCategory, RcHeader};
 use crate::test_support::{prop_offset, store_prop};
 
 /// A ring member: one counted Box property for the ring's own edge, and a
@@ -38,26 +38,6 @@ fn node_class(name: &str) -> *const Class {
         .prop("next", true)
         .prop("side", true)
         .build()
-}
-
-/// The epoch and age `entity` carries.
-///
-/// # Safety
-/// `entity` is a live entity of this thread's GC heap.
-unsafe fn stamp_of(entity: *mut Object) -> (u32, u32) {
-    let stamp = unsafe { read_maturation_stamp(entity as *const RcHeader) };
-    (stamp.epoch, stamp.age)
-}
-
-/// The ages `members` carry, in their order.
-///
-/// # Safety
-/// As [`stamp_of`].
-unsafe fn ages(members: &[*mut Object]) -> Vec<u32> {
-    members
-        .iter()
-        .map(|&member| unsafe { stamp_of(member) }.1)
-        .collect()
 }
 
 /// Two rings, the second reachable only through a one-way edge out of the

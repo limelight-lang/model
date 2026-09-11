@@ -21,7 +21,7 @@
 //! commit's epoch and one age more than the component carried
 //! ([`stamp_component`]). What the stamp buys is paid at the next collection —
 //! the descent stops at a mature edge target instead of following it
-//! (`PLAN.md` S37.1) — so the write is a reduction of future suspicion and
+//! (`crate::cycle::mark`) — so the write is a reduction of future suspicion and
 //! therefore the owner's alone, by the law that only the owner reduces state
 //! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial deletion",
 //! the ownership invariant).
@@ -811,8 +811,10 @@ pub(crate) unsafe fn release_guards(members: &Membership<'_>) {
 /// epoch contributes zero — a stale stamp is retired by being read against the
 /// epoch beside it rather than by a pass that clears it. The minimum is what
 /// keeps a member that joined this epoch from inheriting its mates' age: the
-/// descent S37.1 builds stops at a mature edge target, so a component is worth
-/// no more suspicion than its youngest member is.
+/// descent stops at a mature edge target (`crate::cycle::mark`), so a
+/// component is worth no more suspicion than its youngest member is — and a
+/// member already at the threshold is no longer in the component the descent
+/// reads, keeping its stamp until the turnover.
 ///
 /// A component read as unreachable reaches neither caller, and neither does one
 /// dropped for a member at count zero

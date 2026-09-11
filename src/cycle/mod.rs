@@ -88,8 +88,7 @@ pub(crate) mod validation;
 // reading of each component the guard is subtracted in.
 pub(crate) mod finalization;
 // The count of closed commits and the epoch a maturation stamp carries. Read
-// by the commit that writes a stamp and, once S37.1 lands, by the descent that
-// reads one.
+// by the commit that writes a stamp and by the descent that reads one.
 pub(crate) mod epoch;
 // The first phase of a trace, reached from [`trace`] rather than from a
 // collection.

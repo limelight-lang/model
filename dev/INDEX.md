@@ -52,8 +52,8 @@ versions live in `docs/history/`, marked at the top.
   | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | `cycle::collect` |
   | `shadow` | the row: two bits of colour over thirty of working count, which past the scan belong to `cycle::maturation` in a live row | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to, and the test-build assertion that the target stands in memory this process carved for blocks | none |
-  | `epoch` | the process's count of closed commits, and the two-bit epoch a maturation stamp carries: `(commits / 64) % 4` | `cycle::finalization`, which reads it at a commit's start and advances it at its close |
-  | `mark` | the trace: trial deletion over the rows | none |
+  | `epoch` | the process's count of closed commits, and the two-bit epoch a maturation stamp carries: `(commits / 64) % 4` | `cycle::finalization`, which reads it at a commit's start and advances it at its close, and `cycle::mark`, which reads it once per root |
+  | `mark` | the trace: trial deletion over the rows, and the prune that keeps it out of the mature live core — an edge target at the traversal age threshold under this collection's epoch that no candidate queue names is not descended into | none |
   | `maturation` | the descent that stamps the live components a commit read: strongly connected components over the rows the scan left live, Pearce's single index held in the row's own count, and the age one more than the component's youngest member | `cycle::collect`, inside the commit and before the first guard |
   | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | `cycle::collect`'s path under pressure |
   | `membership` | the two forms a commit's membership takes — the harvested list and the rows a collection off the poll keeps — behind the three questions every reader asks of one | `cycle::collect`, and the three modules a commit reads through |

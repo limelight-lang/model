@@ -1,12 +1,13 @@
 //! The mark: trial deletion from one candidate root, over the shadow
 //! rows and never over the heap.
 //!
-//! Per edge the trace subtracts one from the child's working count; per
-//! entity it meets a row once, and the count that row starts from is the
-//! entity's own refcount. A row that still reads above zero when the
+//! Per edge the trace follows, it subtracts one from the child's working
+//! count; per entity it meets a row once, and the count that row starts from
+//! is the entity's own refcount. A row that still reads above zero when the
 //! scan arrives is therefore held from outside the traced component
 //! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial
-//! deletion").
+//! deletion"). Two edges are not followed and take no subtraction: one out
+//! of the GC heap, and one into the mature live core (below).
 //!
 //! **No entity is written.** Mark and scan touch shadow rows, the met
 //! bitmap and this module's worklist, all three of them in the
@@ -17,14 +18,60 @@
 //! # The descent turns on the meeting
 //!
 //! An edge into an entity this collection has already expanded takes the
-//! decrement and stops there. That is the whole of what terminates the
-//! trace, and a ring re-entered at every in-edge would not terminate at
+//! decrement and stops there. That and the prune below are what terminate
+//! the trace, and a ring re-entered at every in-edge would not terminate at
 //! all. The bit saying which reach this was is `RowLookup::first_visit`,
 //! carried out of the meeting because the meeting is what destroys it
 //! (`crate::cycle::arena::TraceScratchArena::ensure_row`).
 //!
 //! The descent carries an explicit worklist rather than the machine
 //! stack, and why is `crate::cycle::stack`.
+//!
+//! # The mature live core is not descended into
+//!
+//! An edge target carrying this collection's epoch at an age that has reached
+//! [`TRAVERSAL_AGE_THRESHOLD`] is read as an opaque live external: the edge is
+//! neither subtracted nor expanded, exactly as an edge out of the GC heap is.
+//! That is the one mechanism in this design that bounds the closure — the
+//! subgraph a median candidate root reaches was the whole object population on
+//! the corpus of 2026-08-25 (`rfc/model/gc/cycle/questions.md`, Y9) — and what
+//! it costs is recall: a component that lost its last external reference while
+//! it was mature reads live at the trace that meets it, its root is deferred on
+//! that reading (`crate::cycle::deferred_slot_reuse`), and the turnover is what
+//! offers it again (`crate::cycle::queue::reoffer_deferred_if_epoch_moved`).
+//!
+//! **A target a queue entry names is never pruned, whatever its stamp**
+//! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial
+//! deletion"). What the exemption saves is a ring whose members are all
+//! registered: its garbage is found by the trace that meets it, every edge
+//! between members being an edge into a candidate. A ring one of whose mature
+//! members never observed a non-final decrement is not saved by it — the edge
+//! into that member is pruned, the ring reads live and its root waits for the
+//! turnover. That shape is ordinary rather than rare, since a live component
+//! is stamped whole and a member that was only ever retained is a normal
+//! population. The rule is about the target of an edge and not about the
+//! entity the trace started from, which is why it lives in [`visit_child`] and
+//! not in `resolve_edge_target`, whose second caller is the root's own
+//! meeting.
+//!
+//! **The prune cuts the subgraph the commit ages as well.** A pruned target
+//! has no row, so `crate::cycle::maturation`'s descent closes its neighbours'
+//! components without it and the target keeps its own stamp until the
+//! turnover; and a row that reads live only because an in-edge from a mature
+//! target was never subtracted ages on that reading and can reach the
+//! threshold itself. Both are recall paid inside one epoch and neither is a
+//! free (`rfc/model/gc/rc-cycle.md`, "What a commit stamps").
+//!
+//! **The epoch is one reading per call.** It is a division over a
+//! process-global counter (`crate::cycle::epoch::current`), so a reading per
+//! edge would put that on every edge of the trace; two roots of one collection
+//! that read the counter across a turnover prune less than one reading would,
+//! never more.
+//!
+//! **The trace writes no stamp.** A stamp of another epoch is retired by being
+//! read against the epoch beside it, never by being cleared in place, so
+//! everything this module does to a mature entity is one byte-wide load
+//! (`crate::refcount::read_maturation_stamp`).
 //!
 //! # What it owns, and what a refusal costs
 //!
@@ -61,17 +108,41 @@
 
 use crate::cells::{self, PlainCells};
 use crate::cycle::arena::{RowLookup, TraceScratchArena};
+use crate::cycle::epoch;
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
 use crate::cycle::stack::WorklistEntry;
-use crate::refcount::{RcHeader, header_refcount};
+use crate::refcount::{
+    MATURATION_AGE_MAX, RcHeader, header_refcount, is_registered_candidate, mutator_flags,
+    read_maturation_stamp,
+};
+
+/// The age at which an edge target stops being descended into: `k`, the
+/// traversal age threshold of `rfc/model/gc/rc-cycle.md`, "Candidate
+/// registration and trial deletion".
+///
+/// 3, provisional after the only published value of the design this rule comes
+/// from (`rfc/model/gc/cycle/questions.md`, Y9: promote age 3). What a real
+/// workload wants is the pruned-edge share at 1, 2 and 3, which `PLAN.md`
+/// S40.1 measures and this constant then takes or keeps.
+///
+/// A threshold above [`MATURATION_AGE_MAX`] would prune nothing, the age
+/// saturating there, so the assertion below is the whole of what the two
+/// numbers owe each other.
+pub(crate) const TRAVERSAL_AGE_THRESHOLD: u32 = 3;
+
+const _: () = assert!(
+    TRAVERSAL_AGE_THRESHOLD <= MATURATION_AGE_MAX,
+    "a threshold above the age field's bound prunes no edge at all"
+);
 
 /// What a mark from one root answered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MarkResult {
-    /// The closure is exhausted: every entity the root reaches through
-    /// the GC heap has been met, and every internal edge the trace found
-    /// has been subtracted from the row it points at.
+    /// The closure is exhausted: every entity the root reaches through the
+    /// GC heap short of a mature target has been met, and every edge the trace
+    /// followed between two met entities has been subtracted from the row it
+    /// points at.
     Complete,
     /// Both allocation paths refused, so the collection aborts. The heap is
     /// byte-identical and the arena's reset is the whole of the debt.
@@ -81,12 +152,16 @@ pub(crate) enum MarkResult {
 /// Trial-delete the component reachable from `root`, leaving the verdict
 /// to the scan.
 ///
-/// Every entity reached through the GC heap is met once, its row
-/// initialised from its refcount; every edge the trace finds between two
-/// met entities is subtracted from the target's row. Edges leaving the
-/// GC heap are counted as external references and followed no further,
-/// which is what keeps a ring through the arena — broken by the arena's
-/// own reset — out of the collector's reach (`crate::cycle::row`).
+/// Every entity the descent reaches is met once, its row initialised from
+/// its refcount; every edge the trace follows between two met entities is
+/// subtracted from the target's row. **Two populations are reached and not
+/// met**, and an edge into either is counted as an external reference and
+/// followed no further: what stands outside the GC heap, which keeps a ring
+/// through the arena — broken by the arena's own reset — out of the
+/// collector's reach (`crate::cycle::row`); and a mature edge target no queue
+/// entry names, for the epoch it matured in (module doc). Both raise the rows
+/// this trace leaves rather than lowering them, so what either costs is
+/// recall.
 ///
 /// `arena` belongs to the collection rather than to the root, and carries the
 /// worklist with it: a second root inside the first one's closure meets rows
@@ -107,6 +182,11 @@ pub(crate) enum MarkResult {
 /// `cells::trace_cells` may read an entity's cells plainly: on the owning
 /// thread, with no mutator running beside it.
 pub(crate) unsafe fn mark(arena: &mut TraceScratchArena, root: *mut RcHeader) -> MarkResult {
+    // Read here rather than taken from the caller: the prune is this module's
+    // rule, so a second caller of `mark` inherits it with no argument to
+    // forget, and the cost of the reading is one per root instead of one per
+    // edge (module doc).
+    let epoch = epoch::current();
     if !unsafe { schedule_root_if_unvisited(arena, root) } {
         return MarkResult::AllocationFailed;
     }
@@ -132,7 +212,7 @@ pub(crate) unsafe fn mark(arena: &mut TraceScratchArena, root: *mut RcHeader) ->
                     return;
                 }
 
-                refused = !visit_child(arena, cell.child);
+                refused = !visit_child(arena, cell.child, epoch);
             })
         };
 
@@ -202,19 +282,21 @@ unsafe fn schedule_root_if_unvisited(arena: &mut TraceScratchArena, root: *mut R
 /// external live reference and followed no further, which keeps the referent
 /// alive rather than reading it as unreachable on a row the trace guessed.
 ///
-/// **S37.1's maturation prune belongs at the head of this function**, above the
-/// block dispatch: a matured child is read as an opaque live external, which is
-/// the answer this function already gives an edge leaving the heap, so the
-/// prune adds a header test and no second dispatch. It cannot live in
-/// `resolve_edge_target`, because the prune is evaluated on the target of an
-/// edge and never on a root, and [`schedule_root_if_unvisited`] asks
-/// `resolve_edge_target` the same question (`rfc/model/gc/rc-cycle.md`,
-/// "Candidate registration and trial deletion").
+/// **A mature target takes the same answer**, and the test for it stands above
+/// the block dispatch: `epoch` is the collection's reading of the epoch, and a
+/// child that reads mature against it is left to the entity's own count
+/// without a dispatch of any kind (module doc, "The mature live core is not
+/// descended into").
 ///
 /// # Safety
 /// As [`mark`], and `child` is a counted child `cells::trace_cells`
 /// yielded, hence a live entity header.
-unsafe fn visit_child(arena: &mut TraceScratchArena, child: *mut RcHeader) -> bool {
+unsafe fn visit_child(arena: &mut TraceScratchArena, child: *mut RcHeader, epoch: u32) -> bool {
+    if unsafe { stands_as_an_opaque_live_external(child, epoch) } {
+        note_edge_pruned();
+        return true;
+    }
+
     let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(child) }) else {
         return true;
     };
@@ -241,6 +323,59 @@ unsafe fn visit_child(arena: &mut TraceScratchArena, child: *mut RcHeader) -> bo
             }
         }
     }
+}
+
+/// Whether the collections of `epoch` have read this edge target's component
+/// as held from outside often enough for the descent to stop at it.
+///
+/// Two fields of one byte decide the first half — an age that has reached
+/// [`TRAVERSAL_AGE_THRESHOLD`] under this collection's own epoch, a stamp of
+/// any other epoch reading as no age at all — and the mutator's flags decide
+/// the second: a target a queue entry names, in whichever lane that entry
+/// stands, is never pruned (module doc). The flags are read only where the stamp already
+/// says mature, which is why the two loads are in this order and not the
+/// reverse.
+///
+/// # Safety
+/// As [`visit_child`]: `child` is a live published entity header. The byte is
+/// the owning thread's to write and this is that thread, so the stamp read
+/// here is whole (`crate::refcount::read_maturation_stamp`).
+#[inline]
+unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, epoch: u32) -> bool {
+    let stamp = unsafe { read_maturation_stamp(child) };
+    stamp.age >= TRAVERSAL_AGE_THRESHOLD
+        && stamp.epoch == epoch
+        && !is_registered_candidate(unsafe { mutator_flags(child) })
+}
+
+/// Add one to [`EDGES_PRUNED`], and nothing at all without `cfg(test)`.
+///
+/// The counter is the trace's own and not the density instrument's: what it
+/// reports is an event no final row state records, a target the mark did not
+/// meet being indistinguishable from one no edge named
+/// (`PLAN.md` S40.1, whose pruned-edge share this is the built form of).
+#[inline]
+fn note_edge_pruned() {
+    #[cfg(test)]
+    EDGES_PRUNED.with(|count| count.set(count.get() + 1));
+}
+
+// Edges the marks of this thread have pruned (tests only). Per thread,
+// because a collection is.
+#[cfg(test)]
+thread_local! {
+    static EDGES_PRUNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Edges the marks of this thread pruned since this last answered, which it
+/// leaves at zero.
+///
+/// Reading and clearing together, for the reason
+/// [`crate::cycle::row::take_edge_dispatches`] does it: every caller prices
+/// the collections it drove, and what stands before them is another case's.
+#[cfg(test)]
+pub(crate) fn take_edges_pruned() -> usize {
+    EDGES_PRUNED.with(|count| count.replace(0))
 }
 
 #[cfg(test)]

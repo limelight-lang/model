@@ -23,6 +23,15 @@
 //! entity that points into a live core without being part of it age on its
 //! own.
 //!
+//! **The subgraph is the one the trace walked, and the prune cuts it.** A
+//! member at the threshold that no queue entry names is not descended into
+//! (`crate::cycle::mark`), so it has no row here: its mates close their
+//! component without it and it keeps its own stamp until the turnover. The
+//! membership is therefore the same at every reading of one epoch only until
+//! a member matures, which is what the rfc means by a component that "keeps
+//! its age until the turnover" (`rfc/model/gc/rc-cycle.md`, "What a commit
+//! stamps").
+//!
 //! # The descent, and where it keeps its state
 //!
 //! Pearce's single-index algorithm, run from an explicit stack: one number per

@@ -91,8 +91,9 @@ pub(crate) enum ScanResult {
 /// A row above zero is held from outside the trace, so it is coloured
 /// [`Color::Live`] and so is everything reachable from it; a row at zero that
 /// no live row reaches is [`Color::PotentiallyUnreachable`]. An entity the mark
-/// never met is left alone, which is where an edge out of the GC heap and an
-/// address the retained population cannot place both end.
+/// never met is left alone, which is where an edge out of the GC heap, an
+/// address the retained population cannot place, and an edge the mark pruned
+/// at a mature target all end (`crate::cycle::mark`).
 ///
 /// `arena` is the collection's and carries the worklist, as it does for the
 /// mark, and every root must have been marked before the first scan runs.
@@ -193,7 +194,8 @@ unsafe fn classify_and_schedule_entity(
 
 /// The row this collection met for `entity`, or `None` when it has none:
 /// an entity outside the GC heap, an address the retained population
-/// cannot place, or a slot the mark never reached.
+/// cannot place, a mature target the mark stopped at, or a slot the mark
+/// never reached.
 ///
 /// # Safety
 /// `entity` is an entity header whose slot is still its own and whose block is

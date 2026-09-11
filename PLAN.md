@@ -11,11 +11,13 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-10 · Active: S37, from S37.1. S37.0 and S37.6 closed the same
-day — the live-component stamp producer and the per-root disposition — so the
-edge-side read has both halves its correction of 2026-09-09 demanded, and
-S40.1's pruning arm has the byte it calibrates; the corpus arm of S40.1 still
-waits on the Phase-D driver;
+Updated: 2026-09-10 · Active: S37, from S37.3. S37.0, S37.6 and S37.1 closed
+the same day — the live-component stamp producer, the per-root disposition and
+the edge-side prune they were built for — so the descent stops at the mature
+live core and S40.1's pruning arm has a counter rather than a simulation; the
+corpus arm of S40.1 still waits on the Phase-D driver, and S37.5 waits on the
+same corpus. Of what is left in S37, S37.2 is blocked outside this repository
+and S37.3 is the factory-side and FFI-side write of the ownership mark;
 S36 has S36.8 left; S44 has one step left, S44.5,
 and it waits on Edmond's word. **S34 closed and was deleted on 2026-09-10**,
 its last step being the law that only the owner reduces state; what outlived
@@ -2909,7 +2911,7 @@ stage is what makes a trace affordable rather than what tunes it.
         it. Three existing cases moved with the contract rather than being
         muted, each named in the commit.
 
-- [ ] S37.1 The maturation stamp is an edge-side prune
+- [x] S37.1 The maturation stamp is an edge-side prune
       done: mark's descent reads the stamp with one single-byte load; an **edge
         target** whose stamp epoch equals the current epoch (mod 4) and whose
         age has reached `k` is treated as an **opaque live external and is not
@@ -2923,7 +2925,29 @@ stage is what makes a trace affordable rather than what tunes it.
         YRC's only known values, with `k` owed a measurement on a real workload
         and the turnover's owed at S37.5; a `#[cfg(test)]` counter reports edges
         pruned per collection
-      tier: T2 · role: —
+      tier: T2 · role: Critic
+      Critic 2026-09-11: no path on which a still-referenced entity is freed or
+        a row reads lower than the whole batch would leave it; the predicate is
+        stable inside one mark, the scan, the exact validation and the
+        teardown all read a pruned target as never met, and the byte-6 read
+        before the dispatch is legal for every population a counted child can
+        be. Seven findings beside it, all repaired here. The module doc argued
+        the root exemption from the ring it does not save — a ring one of whose
+        mature members never observed a non-final decrement is pruned at that
+        member and waits for the turnover, and that shape is ordinary; the doc
+        says so now and the test says which shape it is right on.
+        `MarkResult::Complete`, `mark`'s own contract and two sentences of the
+        module head still said every reached entity is met and the meeting is
+        the whole terminator. The prune cuts the subgraph `cycle::maturation`
+        ages — a mature member has no row, so its mates close without it and
+        it keeps its stamp — which `maturation`'s "same membership at every
+        reading" and `finalization`'s youngest-member sentence did not say. One
+        assertion of the first case could not fail with the prune off and is
+        marked a fixture check. "A root of some batch" was false of a deferred
+        entry. Its next attack — the exact validation's `RC − IN` over an edge
+        from a pruned target — read here: `validate_component` counts an edge
+        internal only where the child is a member, so a pruned target's edge
+        raises the sum and the component reads externally referenced.
       correction 2026-09-04: the criterion carried "the same test skipping a
         mature popped root entirely" and a counter of such roots, which
         `rfc/model/gc/rc-cycle.md` forbids by name and for soundness — "the rule
@@ -2970,6 +2994,29 @@ stage is what makes a trace affordable rather than what tunes it.
         closure, and its real content falls out of the prune at depth zero.
         Y9 calls the prune the only mechanism in this design that bounds the
         closure.
+      handoff: `cycle::mark::visit_child` tests the target before the block
+        dispatch: a stamp carrying this collection's epoch at
+        `TRAVERSAL_AGE_THRESHOLD` (3) over a target `CANDIDATE_BIT` does not
+        stand on is an opaque live external — no subtraction, no expansion, no
+        dispatch. **A queue root is the bit and not the batch**: the bit is the
+        wider set and the batch is not addressable from the mark, so every
+        entity it spares beyond the rfc's population costs a descent and never
+        a collection (`dev/DECISIONS.md`, 2026-09-10, "a queue root is the
+        candidate bit"). The epoch is read once per `mark` call, `current`
+        being a division over a process-global counter. `take_edges_pruned`
+        is the counter, thread-local and cleared as it answers. Verified on
+        the final tree: 852 passed, 0 failed, 10 ignored, three times at eight
+        threads, `hash-folding` once, `debug-journal` 856 three times;
+        `--list` diffed against a worktree at `15ce2ca` in all three
+        configurations, three additions and no removal; release,
+        `cargo bench --no-run`, `cargo +1.94 fmt --check`, `cargo doc` (45
+        warnings, the same 45 the pre-step tree prints) and `citations.py` at
+        508 with the same seven residues. Four mutations seen red: the prune
+        removed, the candidate test dropped, the epoch test dropped, and the
+        threshold lowered to 2. Miri at two threads on the final tree,
+        `cycle::mark::` 9 passed, 15.79 s on Miri's clock and 16.1 s of wall.
+        What the step does not do is the case in the residual list: the pair
+        of the prune's recall loss and the turnover that ends it.
       handoff: carried from S31 before that stage was deleted. **Two producers
         hand a member a stamp byte nobody wrote.** A recycled `heap::FreeSlot`
         preserves the dead entity's final header, so the slot arrives carrying
@@ -3125,8 +3172,12 @@ window there is.
       handoff: two debts carried from S31 before that stage was deleted. **The
         stale stamp byte** is this step's to zero, at both producers — a
         recycled `heap::FreeSlot` and a promoted survivor — because this is
-        where the second thread arrives and the byte stops being inert; S37.1
-        is what it breaks. And **`dev/WORKFLOW.md`'s ThreadSanitizer run has
+        where the second thread arrives and the byte stops being inert; the
+        prune in `cycle::mark` is what it breaks. Neither producer reaches a
+        reader today: `refcount::publish_header` stores the whole eight-byte
+        word, so a recycled slot carries no stamp of its previous occupant,
+        and nothing writes byte 6 of an arena entity, so a promoted survivor
+        arrives with it zero (read 2026-09-10). And **`dev/WORKFLOW.md`'s ThreadSanitizer run has
         selected no test since 2026-08-26**, its only one having lived in the
         deleted `collector::`, so the instrument that reports
         plain-against-atomic is         unavailable until this step gives it a pairing
@@ -3615,6 +3666,15 @@ Goal: the one number the design still lacks.
         control arm would not pay, kept for one second opinion in the
         calibration), repeats of a deterministic count, and any timed run.
         Taken whole.
+      note 2026-09-10 — the pruned-edge arm has a built instrument now, and
+        the simulation the ruling above priced does not model one of its
+        terms. `cycle::mark::take_edges_pruned` counts the edges a real
+        collection pruned, and the prune spares every target `CANDIDATE_BIT`
+        stands on — a bit cleared at death and at no other point, so it marks
+        every entity that ever observed a non-final decrement. A simulation
+        that ages by the scan's verdict alone counts those edges as pruned and
+        reads high. Reading the counter at `k` of 1 and 2 needs a seam over
+        `TRAVERSAL_AGE_THRESHOLD` that the constant does not have today.
       progress 2026-09-04 — the traced-slot instrument, and the range over the
         design's own size classes. `cycle::density` walks the touched list after
         a trace and before the arena's reset, reporting per block the index
@@ -4092,6 +4152,20 @@ in `dev/INDEX.md`. What it did not do is below.
   through `defer_candidates`, which is the other machine.
   done: a case drives the append past one segment, or a `#[cfg(test)]` seam
   puts the lane at its bound without the population behind it.
+
+- [ ] **The prune's own recall loss has no case.** The descent stops at a
+  mature edge target, so a ring one of whose members never observed a
+  non-final decrement — its creation reference moved into a cell rather than
+  released — is read live at the collection that meets it and collected at the
+  turnover that re-offers its root. Both halves are built and no case drives
+  them together: `cycle::mark::tests::where_the_descent_stops` proves the stop
+  and `cycle::collect::tests::when_the_turnover_reoffers` proves the re-offer,
+  the second staging its reading with `InjectedVerdictRace` because the
+  natural producer did not exist when it was written. What the fixture needs
+  is a store that moves a reference instead of retaining one, which
+  `test_support::store_prop` is not.
+  done: one case drives a mature ring through the collection that reads it
+  live and the turnover that collects it, with no injection.
 
 - [ ] **A weak map, and the second kind of death subscriber.**
   `rfc/model/weak-references.md` names two subscriber kinds and the crate

@@ -208,7 +208,7 @@ fn the_mirror_is_the_count_the_lane_started_at() {
     let node = node_class("MirroredNode", counting_destructor as *const ());
     let mut arena = Arena::new();
     let keeper_class = keeper_class("MirroredKeeper");
-    let mut hold = |arena: &mut Arena, ring: *mut Object| {
+    let hold = |arena: &mut Arena, ring: *mut Object| {
         let keeper = {
             let mut context = LLContext { arena: &mut *arena };
             unsafe { new_constructed(&mut context, keeper_class, MemoryCategory::GcHeap) }

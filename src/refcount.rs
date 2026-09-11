@@ -224,8 +224,8 @@ const MATURATION_STAMP_SHIFT: u32 = MATURATION_STAMP_BYTE as u32 * 8 - 32;
 /// The age the field holds, past which it stops counting: two bits.
 ///
 /// It is the field's bound and not the traversal's threshold — what age an
-/// edge target is pruned at is `PLAN.md` S37.1's `k`, which reads this field
-/// and is a policy over it.
+/// edge target is pruned at is `crate::cycle::mark::TRAVERSAL_AGE_THRESHOLD`,
+/// which reads this field and is a policy over it.
 pub(crate) const MATURATION_AGE_MAX: u32 = 3;
 
 /// The copy-on-write barrier's test, in the order `rfc/model/values.md`

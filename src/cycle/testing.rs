@@ -20,6 +20,12 @@
 //! `crate::cycle::shadow`). Beside them stand [`open_arena`], which hands the
 //! caller an arena to own, and [`traced_unreachable_from`], the trace a
 //! fixture runs before it asks about a component.
+//!
+//! [`stamp_of`] and [`ages`] read a header rather than a row, and they are
+//! here for the reason the row readers are: the maturation stamp has two test
+//! trees, the commit that writes it and the descent that stops at it, and a
+//! second copy of the read would be a second opinion about where the stamp
+//! lives.
 
 use crate::class::Class;
 use crate::cycle::arena::TraceScratchArena;
@@ -30,7 +36,7 @@ use crate::cycle::shadow::{self, Color, RowArray};
 use crate::memory::arena::Arena;
 use crate::memory::context::LLContext;
 use crate::object::{Object, ll_object_die, new_constructed};
-use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain};
+use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain, read_maturation_stamp};
 use crate::test_support::{prop_offset, store_prop};
 
 /// The row word the trace left for `entity`, read the way the scan
@@ -64,6 +70,30 @@ pub(crate) unsafe fn row_word(entity: *mut RcHeader) -> u32 {
 /// As [`row_word`].
 pub(crate) unsafe fn row_color(entity: *mut RcHeader) -> Color {
     shadow::color(unsafe { row_word(entity) })
+}
+
+/// The epoch and the age `entity`'s maturation stamp carries.
+///
+/// Read by both trees the stamp has: the commit that writes it
+/// (`crate::cycle::maturation`) and the descent that stops at it
+/// (`crate::cycle::mark`).
+///
+/// # Safety
+/// `entity` is a live entity of this thread's GC heap.
+pub(crate) unsafe fn stamp_of(entity: *mut Object) -> (u32, u32) {
+    let stamp = unsafe { read_maturation_stamp(entity as *const RcHeader) };
+    (stamp.epoch, stamp.age)
+}
+
+/// The ages `members` carry, in their order.
+///
+/// # Safety
+/// As [`stamp_of`].
+pub(crate) unsafe fn ages(members: &[*mut Object]) -> Vec<u32> {
+    members
+        .iter()
+        .map(|&member| unsafe { stamp_of(member) }.1)
+        .collect()
 }
 
 /// An arena over this thread's workspace, for a case that means to have one.

@@ -8,6 +8,45 @@ never edited or deleted.
 
 ---
 
+## 2026-09-10 — a queue root is the candidate bit, and the epoch is one reading per root
+
+The descent stops at an edge target whose maturation stamp carries this
+collection's epoch and an age that has reached the traversal age threshold
+(`cycle::mark::TRAVERSAL_AGE_THRESHOLD`, 3). Two readings of that rule were
+open, and both are settled here.
+
+**Which targets the rule spares.** `rfc/model/gc/rc-cycle.md` says it applies
+to a non-root target and never to a candidate-queue root, and the test for
+that is `CANDIDATE_BIT` — a queue entry names this entity — rather than
+membership of the batch being traced. The bit is the wider set: it stands for
+a record in the active lane, in the deferred one and in this batch alike, and
+the batch is not addressable from the mark anyway. Every entity it spares
+beyond the rfc's population is one the descent traces where it might have
+stopped, which costs a descent and never a collection. What the rule buys is
+the case it was written for: a ring whose members are all at the threshold
+becomes garbage through a decrement that registers one of them, and pruning
+the edges between registered members would leave that ring standing until the
+epoch turned over.
+
+**Where the epoch is read.** Once per `mark` call, so once per root.
+`epoch::current` is a division over a process-global counter, and a reading
+per edge would put that on every edge of the trace. Refused instead of a
+parameter threaded from `trace_batch`: the prune is the mark's own rule, and a
+second caller of `mark` — the fixtures are three today — would have to be told
+the epoch rather than inherit it. What the per-root reading costs is that two
+roots of one collection can read across a turnover; the later reading prunes
+less than the earlier one would, never more, and a row met at a higher count
+reads live.
+
+**What the prune costs, stated where the counters are.** A component that
+lost its last external reference while it was mature is not collected until
+the turnover re-offers its roots
+(`cycle::queue::reoffer_deferred_if_epoch_moved`). That is the price Y9 names
+for bounding the closure, and `PLAN.md` S40.1 is what measures the threshold
+against it.
+
+---
+
 ## 2026-09-10 — the deferred lane is a side exit of the compaction pass, and a refused spare sends the root back to the active lane
 
 The close of a collection off the poll disposes of its batch per root: a

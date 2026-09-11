@@ -210,8 +210,9 @@ pub(crate) unsafe fn totals(arena: &TraceScratchArena) -> TraceDensity {
 /// This is deliberately **not** a maturation simulator. It carries no age or
 /// identity across collections, reads no stamp or epoch, groups no component,
 /// and applies no threshold. A caller measuring pruning must combine this
-/// denominator with the stamps S37.0's producer writes and the descent S37.1
-/// builds; this function cannot manufacture that policy by construction.
+/// denominator with the stamps the commit writes (`crate::cycle::maturation`)
+/// and the prune the descent makes of them (`crate::cycle::mark`); this
+/// function cannot manufacture that policy by construction.
 ///
 /// # Safety
 /// As [`totals`]. Every met row was produced by a completed mark, no commit has
@@ -237,10 +238,10 @@ pub(crate) unsafe fn internal_edges(arena: &TraceScratchArena) -> InternalEdgeCe
 /// to `visit`, and answer how many saturated rows were excluded.
 ///
 /// This is a test-only extraction point, not a production hook: `density` is
-/// compiled only under `cfg(test)` and this function is private to it. S37.1
-/// owns its traversal in `mark` and cannot call this function. After that
-/// production path exists, a measurement in this module may reuse this visitor
-/// to inspect the stamps it wrote without adding age or threshold policy here.
+/// compiled only under `cfg(test)` and this function is private to it. The
+/// prune owns its traversal in `crate::cycle::mark` and cannot call this
+/// function; a measurement in this module may reuse this visitor to inspect
+/// the stamps a commit wrote, without adding age or threshold policy here.
 ///
 /// # Safety
 /// As [`internal_edges`], and the call stands before the commit that would

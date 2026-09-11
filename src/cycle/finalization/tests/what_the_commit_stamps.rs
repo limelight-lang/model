@@ -2,7 +2,7 @@
 //! the components it leaves unstamped.
 //!
 //! The stamp is what the next collection's descent reads to stop at an edge
-//! rather than follow it (`PLAN.md` S37.1), so the cases here are about which
+//! rather than follow it (`crate::cycle::mark`), so the cases here are about which
 //! components earn one and what age it carries. Every one of them drives the
 //! finalization chain by hand, as S36.7's driver will: the stamp is written at
 //! the reading that proves the component live, and the commit is counted at

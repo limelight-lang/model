@@ -145,6 +145,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("DUE", false),
         ("EARLY_RETIREMENT", false), // test-only const Cell, no destructor registration
         ("EARLY_RETURNED_SLOTS", false), // test-only const Cell, no destructor registration
+        ("EDGES_PRUNED", false),     // test-only const Cell, no drop glue
         ("EDGE_DISPATCHES", false),
         ("EXIT_GUARD", true),
         ("EXIT_PHASE", false),

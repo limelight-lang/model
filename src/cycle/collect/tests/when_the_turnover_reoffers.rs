@@ -160,9 +160,10 @@ fn a_matured_ring_that_loses_its_keeper_is_collected_at_the_turnover_and_not_bef
 /// costs is that accumulated age rather than the collection itself — the ring
 /// comes back to the lane whole at the turnover and dies there.
 ///
-/// No descent reads the stamp yet — S37.1 is what will make it prune an edge —
-/// so what stands here today is the arithmetic that produces the unequal ages
-/// and a collection that answers the same with them as without.
+/// The prune the descent makes of a mature stamp is `crate::cycle::mark`'s and
+/// is not what this case is about: no member here reaches the threshold, so
+/// what stands is the arithmetic that produces the unequal ages and a
+/// collection that answers the same with them as without.
 #[test]
 fn a_ring_whose_mates_matured_apart_is_collected_at_the_turnover() {
     let _g = test_guard();
