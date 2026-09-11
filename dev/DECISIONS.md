@@ -8,6 +8,40 @@ never edited or deleted.
 
 ---
 
+## 2026-09-11 — the ownership mark is the owned store's to move and the holder's `dispose` to honour
+
+**Decided by Edmond, recorded in `rfc` (`dev/DECISIONS.md`, "the ownership
+mark is moved by the store into a proven slot, and honoured by the holder's
+`dispose`")**, and this entry holds the crate's own choices under it. The
+mark moves inside `memory::barrier::store_ptr_owned` / `store_box_owned` —
+the plain publish, then off the displaced entity and onto the occupant —
+and lands only on a GC-heap occupant of a GC-heap holder: the one reader of
+it at a death is a GC-heap holder's `dispose`, an escapee's death is the
+reset's, and a heap child of an arena holder is released by the reset log.
+`ll_default_dispose` destroys a marked child through `ll_owned_child_die`:
+mark off, count written to zero by the narrow counter store, the ordinary
+death path — so the child's `dispose` reads the count any dying entity reads
+and a resurrecting `__destruct` keeps it, unmarked. The entry is exported
+because a generated `dispose` owes the same call, and `ClassBuilder::dispose`
+names the obligation.
+
+**Rejected:** clearing the mark in `drop_ref`, a flag test on the hot path at
+sites that prove nothing; an owned `drop` micro-op beside the owned store,
+which would owe the clear-before-decrement order to every emission site —
+the move inside the store puts it in one body; a same-entity early return in
+the move, which a mutation left green because clear-then-set writes the same
+word. The cycle collector reads the mark nowhere: a marked entity is a member
+of every confirmed set its holder is in, and the guard-release free of a
+member runs no destructor, so nothing resurrects one with the mark standing.
+
+**Cost:** the owned store reads the slot before and after the publish; the
+teardown loop loads each child's flags once more than `drop_ref` does, and
+the move loads the occupant's once more than the publish did — both on
+paths outside the crate's hot-path inventory, unmeasured. The runtime checks
+no part of the compiler's proof.
+
+---
+
 ## 2026-09-10 — a queue root is the candidate bit, and the epoch is one reading per root
 
 The descent stops at an edge target whose maturation stamp carries this

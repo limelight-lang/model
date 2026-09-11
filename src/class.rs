@@ -416,7 +416,9 @@ impl ClassBuilder {
     /// inherited rather than only the parent's.
     ///
     /// **A specialized dispose on a class with outside cells owes the
-    /// group's `free`**, which the default one makes for it.
+    /// group's `free`**, which the default one makes for it, **and owes
+    /// `ll_owned_child_die` for a child carrying the ownership mark**, which
+    /// the default one tests for at every counted cell.
     pub fn dispose(mut self, code: *const ()) -> Self {
         self.dispose = Some(code);
         self

@@ -8,6 +8,11 @@
 //! - [`store_ptr`] / [`store_box`] — **publish** a reference into an
 //!   8-byte pointer slot or a 16-byte `Value` slot: retain, category
 //!   barrier, write. No release: an initializing store is `store_*` alone.
+//! - `store_ptr_owned` / `store_box_owned` — the same publish into a
+//!   slot the compiler proved to be its occupant's only heap holder, followed
+//!   by the move of the ownership mark off the displaced entity and onto the
+//!   new occupant (`rfc/model/gc/strategies.md`, "The store barrier, as
+//!   micro-operations").
 //! - [`drop_ref`] — **drop** the entity a slot held, on overwrite, clear
 //!   or holder teardown: release, cascade. Independent of the slot's kind.
 //! - [`publish_child`] — the publish alone, for a holder whose slot this
@@ -37,7 +42,8 @@
 //! crate and may not reach the `extern "C"` twins at the foot of this file
 //! (`PLAN.md`, "Cross-cutting (every phase)"). Nothing else outside this
 //! crate calls them: the compiler's code reaches them as bitcode, and a
-//! Rust caller wants `ref_store`.
+//! Rust caller wants `ref_store`. The owned forms are `pub(crate)`: no
+//! benchmark drives them.
 
 use crate::memory::arena::Arena;
 use crate::memory::context::{LLContext, resolve_arena};
@@ -326,11 +332,7 @@ pub unsafe fn store_box(
     slot: *mut Value,
     new: Value,
 ) -> bool {
-    let new_ptr = if new.is_refcounted() {
-        new.entity_ptr()
-    } else {
-        std::ptr::null_mut()
-    };
+    let new_ptr = new.entity_or_null();
 
     let mut written = new;
     if !new_ptr.is_null() {
@@ -351,6 +353,84 @@ pub unsafe fn store_box(
 
     unsafe { write_value_slot(slot, written) };
     true
+}
+
+/// The owned form of [`store_ptr`], for a slot the compiler proved
+/// (`rfc/model/gc/strategies.md`, "The store barrier, as micro-operations"):
+/// the plain publish, then the ownership mark moves — the entity the slot held
+/// loses it, the entity the slot now names gains it — before the caller drops
+/// the displaced entity with the plain [`drop_ref`]. The order is the
+/// contract: the release path reads the displaced entity unmarked. A store of
+/// the entity the slot already holds keeps its mark; a null store clears the
+/// old occupant's. The mark lands only on a GC-heap occupant of a GC-heap
+/// holder, the holder's `dispose` being its one reader at a death
+/// (`crate::object::ll_owned_child_die`). A refused store moves nothing and
+/// reports as [`store_ptr`] does.
+///
+/// # Safety
+/// As [`store_ptr`], and the slot holds null or a live entity: unlike the
+/// plain form this one reads what the slot held.
+#[must_use]
+pub(crate) unsafe fn store_ptr_owned(
+    arena: *mut Arena,
+    owner_cat: MemoryCategory,
+    slot: *mut *mut RcHeader,
+    new: *mut RcHeader,
+) -> bool {
+    let displaced = unsafe { slot.read() };
+    if !unsafe { store_ptr(arena, owner_cat, slot, new) } {
+        return false;
+    }
+
+    unsafe { move_ownership_mark(owner_cat, displaced, slot.read()) };
+    true
+}
+
+/// The owned form of [`store_box`]; the contract is [`store_ptr_owned`]'s.
+///
+/// # Safety
+/// As [`store_box`], and the slot holds a `Value` whose entity, if any, is
+/// live.
+#[must_use]
+pub(crate) unsafe fn store_box_owned(
+    arena: *mut Arena,
+    owner_cat: MemoryCategory,
+    slot: *mut Value,
+    new: Value,
+) -> bool {
+    let displaced = unsafe { slot.read() }.entity_or_null();
+    if !unsafe { store_box(arena, owner_cat, slot, new) } {
+        return false;
+    }
+
+    unsafe { move_ownership_mark(owner_cat, displaced, slot.read().entity_or_null()) };
+    true
+}
+
+/// Move the ownership mark off `displaced` and onto `occupant`, either of
+/// which may be null; the same entity in both ends up marked as it was. The
+/// occupant takes the mark only as a GC-heap entity in a GC-heap holder —
+/// see [`store_ptr_owned`].
+///
+/// # Safety
+/// `displaced` and `occupant` each null or a live entity.
+unsafe fn move_ownership_mark(
+    owner_cat: MemoryCategory,
+    displaced: *mut RcHeader,
+    occupant: *mut RcHeader,
+) {
+    if !displaced.is_null() {
+        unsafe { crate::refcount::clear_ownership_mark(displaced) };
+    }
+
+    // A second load of a flags word the publish just loaded, unmeasured:
+    // a proven slot's store is not among the crate's listed hot paths.
+    if !occupant.is_null()
+        && owner_cat == MemoryCategory::GcHeap
+        && unsafe { crate::object::header_category(occupant) } == MemoryCategory::GcHeap
+    {
+        unsafe { crate::refcount::set_ownership_mark(occupant) };
+    }
 }
 
 /// The `drop` micro-op: **release** the entity a slot held after an
@@ -454,14 +534,7 @@ pub unsafe fn ref_store(
 ) -> bool {
     debug_assert!(!owner.is_null(), "a slot always has an owner");
     debug_assert_eq!(
-        {
-            let held = unsafe { slot.read() };
-            if held.is_refcounted() {
-                held.entity_ptr()
-            } else {
-                std::ptr::null_mut()
-            }
-        },
+        unsafe { slot.read() }.entity_or_null(),
         old,
         "old must be the entity the slot holds"
     );
@@ -533,6 +606,48 @@ pub unsafe extern "C" fn ll_store_box(
 ) -> bool {
     unsafe {
         store_box(
+            resolve_arena(ctx),
+            MemoryCategory::from_flags(owner_cat),
+            slot,
+            new,
+        )
+    }
+}
+
+/// C ABI: the owned form of [`ll_store_ptr`], for a compiler-proven slot.
+///
+/// # Safety
+/// As `store_ptr_owned`; `owner_cat` a valid `MemoryCategory` code (`0..=3`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_store_ptr_owned(
+    ctx: *mut LLContext,
+    owner_cat: u32,
+    slot: *mut *mut RcHeader,
+    new: *mut RcHeader,
+) -> bool {
+    unsafe {
+        store_ptr_owned(
+            resolve_arena(ctx),
+            MemoryCategory::from_flags(owner_cat),
+            slot,
+            new,
+        )
+    }
+}
+
+/// C ABI: the owned form of [`ll_store_box`], for a compiler-proven slot.
+///
+/// # Safety
+/// As `store_box_owned`; `owner_cat` a valid `MemoryCategory` code (`0..=3`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_store_box_owned(
+    ctx: *mut LLContext,
+    owner_cat: u32,
+    slot: *mut Value,
+    new: Value,
+) -> bool {
+    unsafe {
+        store_box_owned(
             resolve_arena(ctx),
             MemoryCategory::from_flags(owner_cat),
             slot,

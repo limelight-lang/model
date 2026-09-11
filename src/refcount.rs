@@ -99,9 +99,13 @@ pub const ARENA_RESET_MARK: u32 = 1 << 7;
 /// S37.2's, and it waits on `rfc` declaring a target per pointer slot.
 pub const ACYCLIC_GATE: u32 = 1 << 8;
 
-/// This entity's owner is proven, so no trace need consider it
-/// (`rfc/model/gc/rc-cycle.md`). **No producer yet** — the compiler's
-/// stamp and the factory-side write are S37.3's.
+/// A compiler-proven slot holds this entity: the store into that slot moved
+/// the mark here, and the next store into the slot moves it off
+/// (`crate::memory::barrier::store_ptr_owned`). Two readers: the candidate
+/// gate below, which registers no marked entity, and the holder's `dispose`,
+/// which destroys a marked child instead of releasing it
+/// (`crate::object::ll_owned_child_die`). Why both are sound is
+/// `rfc/model/gc/strategies.md`, "The store barrier, as micro-operations".
 pub const OWNERSHIP_MARK: u32 = 1 << 9;
 
 /// A root-queue entry names this entity. Set by the release path before it
@@ -1135,6 +1139,31 @@ pub(crate) unsafe fn clear_dead_in_place(header: *mut RcHeader) {
 pub(crate) unsafe fn update_header_flags(header: *mut RcHeader, f: impl FnOnce(u32) -> u32) {
     let flags = unsafe { flags_load(header) };
     unsafe { flags_store(header, f(flags)) };
+}
+
+/// Whether a compiler-proven slot holds this entity ([`OWNERSHIP_MARK`]).
+#[inline]
+pub(crate) fn is_owned(flags: u32) -> bool {
+    flags & OWNERSHIP_MARK != 0
+}
+
+/// Put the ownership mark on a **published** header, which only the store
+/// into a compiler-proven slot may do ([`OWNERSHIP_MARK`]).
+#[inline]
+pub(crate) unsafe fn set_ownership_mark(header: *mut RcHeader) {
+    unsafe { update_header_flags(header, |flags| flags | OWNERSHIP_MARK) };
+}
+
+/// Take the ownership mark off a **published** header: the entity is leaving
+/// its proven slot, or the slot's holder is dying with it. A header without
+/// the mark is left unwritten, so an unmarked displaced entity costs the load
+/// alone.
+#[inline]
+pub(crate) unsafe fn clear_ownership_mark(header: *mut RcHeader) {
+    let flags = unsafe { flags_load(header) };
+    if is_owned(flags) {
+        unsafe { flags_store(header, flags & !OWNERSHIP_MARK) };
+    }
 }
 
 /// Whether a queue entry names this entity — the bit the release path

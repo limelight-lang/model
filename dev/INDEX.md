@@ -124,8 +124,14 @@ versions live in `docs/history/`, marked at the top.
   one mask, each of them "this bit is zero" — GC-heap category, a kind a
   ring can close through, no acyclic proof, no ownership proof, not
   already a candidate. What it admits goes to
-  `cycle::queue::register_candidate`, which sets `CANDIDATE_BIT` first; the acyclic and ownership proofs it also reads
-  have no writer. What proves each condition live is a `#[cfg(test)]` counter
+  `cycle::queue::register_candidate`, which sets `CANDIDATE_BIT` first. The
+  ownership mark it reads is moved by `memory::barrier::store_ptr_owned` and
+  its box twin, the compiler's store into a proven slot, and read a second
+  time by `object::ll_default_dispose`, which destroys a marked child with its
+  holder through `ll_owned_child_die`, the entry a generated `dispose` calls
+  for the same (`rfc/model/gc/strategies.md`, "The store barrier, as
+  micro-operations"); the acyclic proof has no writer. What proves each
+  condition live is a `#[cfg(test)]` counter
   past the gate (`refcount::tests::the_candidate_gate`), because a
   scenario test sees the pair and never one half.
 - GC C ABI and the safepoint: `src/gc.rs` — the four symbols the
@@ -558,7 +564,8 @@ versions live in `docs/history/`, marked at the top.
   GC-heap entity in every case — `dev/DECISIONS.md`, 2026-08-08),
   `src/memory/stdapi.rs` (`ll_malloc`/`ll_c_free`/aligned),
   `src/memory/barrier.rs` (`ll_store_ptr`/`ll_store_box`/`ll_drop`/
-  `ll_ref_store`), `src/object.rs`
+  `ll_ref_store`, and `ll_store_ptr_owned`/`ll_store_box_owned` for a
+  compiler-proven slot), `src/object.rs`
   (`ll_object_die`, dispatching to the descriptor's `dispose` —
   `ll_default_dispose` the stand-in), `src/refcount.rs`
   (`ll_retain`/`ll_release`).
@@ -707,9 +714,10 @@ afterwards by `reconcile_cow_counts` (`dev/DECISIONS.md`, 2026-08-04).
   often for that. Measured as no change outside the noise floor (H11 in
   `dev/BENCHMARKS.md`).
 - Store barrier: the micro-ops `store_ptr` / `store_box` (publish) and
-  `drop_ref` (release the displaced entity), and the `ref_store`
-  composition; ABI `ll_store_ptr` / `ll_store_box` / `ll_drop` /
-  `ll_ref_store`.
+  `drop_ref` (release the displaced entity), the owned forms
+  `store_ptr_owned` / `store_box_owned` for a compiler-proven slot, and
+  the `ref_store` composition; ABI `ll_store_ptr` / `ll_store_box` /
+  `ll_drop` / `ll_ref_store`, `ll_store_ptr_owned` / `ll_store_box_owned`.
 - Arena bump: `Arena::alloc` → `ll_arena_alloc`.
 
 Measured by `cargo bench --bench standard -- our_heap` (larson,

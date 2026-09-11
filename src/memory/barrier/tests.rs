@@ -39,6 +39,7 @@ impl Holder {
 }
 
 mod the_ordinary_store;
+mod the_owned_store;
 mod what_a_counted_pair_costs_when_headers_miss;
 mod what_a_prefetch_recovers_from_a_cold_pair;
 mod what_a_store_costs_by_working_set;

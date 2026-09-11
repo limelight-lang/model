@@ -581,6 +581,11 @@ convenience composition (`store_box` + `drop`) for a Box-slot overwrite.
   the category barrier, then write the slot — 8 bytes for a bare pointer
   slot, the whole 16-byte `Value` for a Box slot. An initializing store is
   a publish alone: no old value, no drop.
+- **The owned publish (`store_ptr_owned` / `store_box_owned`).** The same
+  publish into a slot the compiler proved, followed by a move of the
+  ownership mark, bit 9 of the header, off the displaced entity and onto
+  the new occupant, ahead of the `drop`. What the mark means and buys is
+  `rfc/model/gc/strategies.md`, "The store barrier, as micro-operations".
 - **Drop.** Release the displaced entity, with full teardown if that was
   its last reference. One exception: a heap value displaced from an
   *arena* container is not released here at all — its release-at-reset

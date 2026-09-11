@@ -211,8 +211,11 @@ field is lent to):
   would make the gate refuse candidates for a reason the design does not
   have. `CANDIDATE_BIT` is written by `refcount::release_word` beside the queue
   entry and cleared only by the owner's exact retirement of that entry; the
-  thread-exit drain deliberately leaves it standing. The two proofs have no writer, and the
-  steps that give them one are S37.2 and S37.3;
+  thread-exit drain deliberately leaves it standing. `OWNERSHIP_MARK` is
+  moved by the barrier's owned store (`memory::barrier::store_ptr_owned`)
+  and read again by `object::ll_default_dispose`, which destroys a marked
+  child with its holder; `ACYCLIC_GATE` has no writer, and the step that
+  gives it one is S37.2;
 - bit 11, `IS_ESCAPEE` — repurposes the refcount as the escapee
   hold-count (see invariant 5);
 - bit 12, weak gate (`HAS_WEAK_REFERENCES`) — lent to `weak`; death

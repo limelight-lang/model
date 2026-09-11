@@ -626,11 +626,19 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
     // otherwise. `owner_cat` is this object's category — always GcHeap on
     // this path (only GcHeap objects reach full teardown; arena objects get
     // phase 1 only at reset), and passing it makes teardown's drop identical
-    // to the store barrier's.
+    // to the store barrier's. A child carrying the ownership mark is the
+    // exception: a compiler-proven slot of this object holds it, and it is
+    // destroyed here rather than released (`ll_owned_child_die`). The flags
+    // load that decides it is one `drop_ref` repeats two calls later,
+    // unmeasured: teardown's child loop is not among the listed hot paths.
     let owner_cat = unsafe { header_category(obj as *const RcHeader) };
     unsafe {
         for_each_counted_child(obj, |child| {
-            crate::memory::barrier::drop_ref(owner_cat, child);
+            if crate::refcount::is_owned(crate::refcount::mutator_flags(child)) {
+                ll_owned_child_die(child);
+            } else {
+                crate::memory::barrier::drop_ref(owner_cat, child);
+            }
         });
     }
 
@@ -649,6 +657,28 @@ pub unsafe extern "C" fn ll_default_dispose(obj: *mut Object) -> bool {
     }
 
     true
+}
+
+/// Destroy the child a compiler-proven slot holds, at its holder's death
+/// (`rfc/runtime/object-lifecycle.md`, "Phase 2 — Field and resource
+/// teardown: `drop`"): the mark comes off, the count is written to zero
+/// unread, and the ordinary death path runs, so a `__destruct` that stores
+/// `$this` resurrects the child as it would any entity, unmarked.
+///
+/// Exported for the `dispose` the compiler generates, which owes this call
+/// for a marked child as [`ll_default_dispose`] makes it; the `drop`
+/// micro-op stays blind to the mark (`crate::memory::barrier::drop_ref`).
+///
+/// # Safety
+/// `child` a live GC-heap entity carrying `OWNERSHIP_MARK`, held by the
+/// dying holder's slot alone.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_owned_child_die(child: *mut RcHeader) {
+    unsafe {
+        crate::refcount::clear_ownership_mark(child);
+        crate::refcount::set_header_refcount(child, 0);
+        ll_entity_die(child);
+    }
 }
 
 /// Teardown entry: dispatch to the class's `dispose` (phases 1–2), then

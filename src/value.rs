@@ -176,6 +176,18 @@ impl Value {
         self.payload as *mut RcHeader
     }
 
+    /// The entity header behind a refcounted Box, and null for any other
+    /// value — the form a slot walker wants, where a non-entity is "nothing
+    /// to release".
+    #[inline]
+    pub fn entity_or_null(&self) -> *mut RcHeader {
+        if self.is_refcounted() {
+            self.entity_ptr()
+        } else {
+            std::ptr::null_mut()
+        }
+    }
+
     /// Truth test never reads the payload for null/false/true.
     #[inline]
     pub fn is_truthy_tag(&self) -> Option<bool> {

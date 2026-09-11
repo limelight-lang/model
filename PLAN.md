@@ -11,13 +11,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-10 · Active: S37, from S37.3. S37.0, S37.6 and S37.1 closed
-the same day — the live-component stamp producer, the per-root disposition and
-the edge-side prune they were built for — so the descent stops at the mature
-live core and S40.1's pruning arm has a counter rather than a simulation; the
-corpus arm of S40.1 still waits on the Phase-D driver, and S37.5 waits on the
-same corpus. Of what is left in S37, S37.2 is blocked outside this repository
-and S37.3 is the factory-side and FFI-side write of the ownership mark;
+Updated: 2026-09-11 · Active: S37, with S37.3 closed on 2026-09-11 — the
+ownership mark is moved by the barrier's owned store and honoured by the
+holder's `dispose`. S37.0, S37.6 and S37.1 closed on 2026-09-10 — the
+live-component stamp producer, the per-root disposition and the edge-side
+prune they were built for — so the descent stops at the mature live core and
+S40.1's pruning arm has a counter rather than a simulation; the corpus arm of
+S40.1 still waits on the Phase-D driver, and S37.5 waits on the same corpus.
+Of what is left in S37, S37.2 is blocked outside this repository;
 S36 has S36.8 left; S44 has one step left, S44.5,
 and it waits on Edmond's word. **S34 closed and was deleted on 2026-09-10**,
 its last step being the law that only the owner reduces state; what outlived
@@ -3115,13 +3116,62 @@ stage is what makes a trace affordable rather than what tunes it.
       tier: T2 · role: —
       handoff: blocked outside this repository; the step is listed so the
         dependency is visible rather than discovered.
-- [ ] S37.3 The ownership mark
+- [x] S37.3 The ownership mark
       done: a proven-owned entity never enters the candidate set, and the
         compiler's stamp is honoured at bit 9
       tier: T2 · role: —
-      handoff: `refcount::ENROLMENT_GATE_MASK` already tests bit 9 and no
-        compiler stamps it, so this step's remaining content is the
-        factory-side and FFI-side write.
+      Edmond 2026-09-11: the mark is not the factory's — a store into a slot
+        the compiler proved moves it, the displaced entity losing it and the
+        new occupant gaining it, and the holder's `dispose` destroys a marked
+        child instead of releasing it, the count unread. Contract in `rfc`
+        first (`model/gc/strategies.md`, "The store barrier, as
+        micro-operations"; `dev/DECISIONS.md`, "the ownership mark is moved
+        by the store into a proven slot, and honoured by the holder's
+        `dispose`"), where the consolidation reader's ten findings were
+        repaired before the code: the rationale this session had attached
+        to the ruling ("the proven sites may have dropped their counting
+        pairs") contradicted the bound of 2026-08-26 and went; the proof
+        gained its third part, no ring closing through proven slots alone,
+        without which a ring of marked entities registers nowhere.
+      handoff: `memory::barrier::store_ptr_owned` / `store_box_owned` and
+        the ABI pair `ll_store_ptr_owned` / `ll_store_box_owned`; the move
+        is `move_ownership_mark`, and the mark lands only on a GC-heap
+        occupant of a GC-heap holder. `object::ll_owned_child_die` — mark
+        off, count written to zero, the ordinary death path — is what
+        `ll_default_dispose` calls for a marked child and what a generated
+        `dispose` owes. `refcount::is_owned`, `set_ownership_mark`,
+        `clear_ownership_mark`. Eleven cases in three new groups:
+        `barrier/tests/the_owned_store.rs`,
+        `object/tests/what_dies_with_its_holder.rs`,
+        `collect/tests/when_a_member_is_owned.rs`. Six mutations seen red:
+        the move removed, the dispose ignoring the mark, the mark not
+        cleared at the child's death, the count not zeroed, the gate
+        without bit 9, and the same-entity early return — which stayed
+        green, clear-then-set giving the same word, so the branch went.
+        Untested: the owned store's refusal (the plain store's refusal has
+        no barrier test either; `force_oom` does not reach a copy the
+        thread's block already has room for). Two reviewers on the final
+        tree (execution and intent, rule 11): the intent axis found the
+        collector's sever leaves a marked member's mark standing, which is
+        harmless because the guard-release free runs no destructor (step 4
+        ran it) — recorded in the decision's cost clause; the execution axis
+        gave ten findings, eight repaired (the owned forms' `# Safety`,
+        `pub(crate)`, `Value::entity_or_null` for the eighteenth copy of one
+        shape, `ll_owned_child_die` exported for a generated `dispose` with
+        the obligation on `ClassBuilder::dispose`, `DeadInPlace` per member
+        in the collect case, trimmed comments, the hot-path inventory) and
+        two accepted with a one-line comment (a flags word loaded twice on
+        the teardown path and once more in the owned store, unmeasured:
+        neither is a listed hot path). Verified on the final tree: 863
+        passed, 0 failed, 10 ignored, plain and three times at eight
+        threads; `hash-folding` once (863); `debug-journal` three times
+        (867, 12 ignored); release; `cargo bench --no-run`; `cargo +1.94 fmt
+        --check`; `cargo doc` 45 warnings, the same per file as the pre-step
+        tree's 45; `citations.py` 514 with the same seven residues; `--list`
+        diffed against the pre-step tree in all three configurations, eleven
+        additions and no removal. Miri two threads over the three new groups
+        and `the_ordinary_store`: 14 passed, 29.30 s Miri's clock, 31.0 s
+        wall.
 
 ## S38 — The claim and concurrency
 
@@ -4152,6 +4202,14 @@ in `dev/INDEX.md`. What it did not do is below.
   through `defer_candidates`, which is the other machine.
   done: a case drives the append past one segment, or a `#[cfg(test)]` seam
   puts the lane at its bound without the population behind it.
+
+- [ ] **The owned store's refusal has no case.** `store_ptr_owned` returns the
+  plain publish's `false` before moving any mark, and nothing drives that
+  branch: the copy a COW value takes leaving the arena is the only refusal a
+  publish has, and `force_oom` does not reach a copy the thread's block
+  already has room for. The plain store's refusal has no barrier case either.
+  done: a refused owned store leaves the displaced entity's mark and the
+  slot as they were, shown by a case whose refusal is the copy's.
 
 - [ ] **The prune's own recall loss has no case.** The descent stops at a
   mature edge target, so a ring one of whose members never observed a
