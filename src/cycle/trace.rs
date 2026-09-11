@@ -126,6 +126,9 @@ pub(crate) unsafe fn trace_batch(
         return (TraceOutcome::AllocationFailed, traced);
     }
 
+    // The scan's end is the trace's last row read off the poll, and the token
+    // has to stand through it; the probe is empty without `cfg(test)`.
+    crate::cycle::token::note_last_row_read();
     (TraceOutcome::Complete, traced)
 }
 

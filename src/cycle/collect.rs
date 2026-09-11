@@ -53,6 +53,7 @@ use crate::cycle::maturation::stamp_live_components;
 use crate::cycle::members::MEMBER_CAPACITY;
 use crate::cycle::membership::Membership;
 use crate::cycle::reclamation::{DeferredReclamation, reclaim_before_drops};
+use crate::cycle::token::HeldToken;
 use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch};
 use crate::cycle::validation::ValidationResult;
 
@@ -227,6 +228,10 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
         return 0;
     };
 
+    // Eligibility above, the token below: a thread that may not collect never
+    // waits for a token it could not use (`rfc/model/gc/rc-cycle.md`,
+    // "Check collection eligibility before waiting").
+    let token = HeldToken::take();
     let Some(mut window) = ActiveTrace::open() else {
         return 0;
     };
@@ -240,6 +245,12 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
     if unsafe { trace_batch(arena, batch, ALL_ROOTS) }.0 != TraceOutcome::Complete {
         return 0;
     }
+
+    // The scan has answered, and the right to trace ends here — before the
+    // exact validation and before the first destructor. The rows outlive it:
+    // what the release ends is the tracing, not the window
+    // (`crate::cycle::token`).
+    drop(token);
 
     // The rows this trace wrote, read as the commit's membership. They stand
     // until the window's close sweeps them, which is after everything below.
@@ -424,6 +435,10 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
 /// # Safety
 /// As [`collect_under_pressure`].
 unsafe fn trace_and_harvest(roots: usize) -> Traced {
+    // Held through the harvest, which is the last read of the touched list
+    // the token covers; the guard drops with the frame, after
+    // `close_and_take_batch`, and before the teardown the caller runs.
+    let _token = HeldToken::take();
     let Some(mut window) = ActiveTrace::open() else {
         return Traced::AllocationFailed;
     };

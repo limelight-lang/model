@@ -56,17 +56,19 @@
 //!
 //! **The shadow-row pointers are nulled earlier than that, and the
 //! instant is fixed by the design rather than by convenience.**
-//! [`TraceScratchArena::clear_touched_rows`] runs at the end of scan, where the
-//! trace token is released and where the last touch of any shadow row
-//! has already happened. Everything after that store runs untokened, and
-//! the slot returns are among it — so a block may reach the pool and be
-//! recommissioned while this collection's teardown is still running, and
-//! a sweep left until then would write into another collection's header
-//! word (`rfc/model/gc/rc-cycle.md`, "Concurrency" and "Death while
-//! enrolled"). [`TraceScratchArena::reset`] sweeps too, and that is the abort
-//! path: an abort can only be raised where memory is asked for, which is
-//! inside mark and scan, so an aborting collection has not reached the
-//! release instant.
+//! [`TraceScratchArena::clear_touched_rows`] runs at the window's close,
+//! which is the last touch of any shadow row: on the path under pressure
+//! that is the harvest sweep right after the scan, with the trace token
+//! still held, and the blocks go back before the teardown; on the path off
+//! the poll the window stays open through the teardown, every slot return
+//! waits for its close, and the sweep is that close. On neither path can a
+//! block reach the pool while a row of this collection still names it, so
+//! no later collection recommissions a block into a header word this one
+//! is about to null (`rfc/model/gc/rc-cycle.md`, "Concurrency" and "Death
+//! while enrolled"). [`TraceScratchArena::reset`] sweeps too, and that is
+//! the abort path: an abort can only be raised where memory is asked for,
+//! which is inside mark and scan, so an aborting collection has not reached
+//! its close.
 //!
 //! # What it does not hold
 //!
@@ -779,13 +781,13 @@ impl TraceScratchArena {
     /// Null the shadow-row pointer of every block this collection
     /// enrolled, and empty the list.
     ///
-    /// **Called at the end of scan**, where the trace token is released:
-    /// that is the last instant at which the blocks are guaranteed still
-    /// to be this collection's, because the slot returns that follow the
-    /// release can hand one to the pool and another collection can
-    /// recommission it (module doc). [`reset`](Self::reset) calls it
-    /// again, which is the abort path and a second call over an emptied
-    /// list.
+    /// **Called at the window's close** — right after the scan under
+    /// pressure, after the teardown off the poll — which is the last
+    /// instant at which the blocks are guaranteed still to be this
+    /// collection's: the slot returns the close makes can hand one to the
+    /// pool and another collection can recommission it (module doc).
+    /// [`reset`](Self::reset) calls it again, which is the abort path and a
+    /// second call over an emptied list.
     ///
     /// The rows themselves need no undoing: mark and scan write into no
     /// entity, so the pointer is the whole of what a collection leaves in
@@ -885,6 +887,9 @@ impl TraceScratchArena {
         }
 
         if self.harvest == Harvest::Running {
+            // The harvest was the trace's last row read, and the token has to
+            // stand through it; the probe is empty without `cfg(test)`.
+            crate::cycle::token::note_last_row_read();
             // Once per close: the state moves with the call, so the second
             // sweep a drop performs ends no harvest and reads no list the
             // driver may already have taken.

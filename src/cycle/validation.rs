@@ -32,9 +32,9 @@
 //! a counted reference a member holds, and the guard is one more. For the sums
 //! to meet while one member stands above the identity, another would have to
 //! stand below it, and none can. What the sum buys is memory — a release build
-//! stores no per-member in-degree, and the arena that would have funded one has
-//! gone back at the token's release; the debug premise check below keeps one
-//! for its own pass.
+//! stores no per-member in-degree, and on the pressure path the arena that
+//! would have funded one has gone back before this runs; the debug premise
+//! check below keeps one for its own pass.
 //!
 //! # It allocates nothing in a release build, and it cannot be refused
 //!

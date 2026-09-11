@@ -61,9 +61,8 @@
 //! [`ScanResult::AllocationFailed`] and abandons the trace with the heap
 //! untouched.
 //!
-//! The ordering the module rests on is the sweep: every row this file reads is
-//! read before the trace token is released, and the clearing of the shadow
-//! pointers is the last of those reads (`rfc/model/gc/rc-cycle.md`,
+//! The ordering the module rests on is the token: every row this file reads
+//! is read before the trace token is released (`rfc/model/gc/rc-cycle.md`,
 //! "Concurrency").
 
 use crate::cells::{self, PlainCells};

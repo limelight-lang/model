@@ -152,6 +152,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("FAIL_AT", false), // test-only const Cell, no destructor registration
         ("FREED", false),
         ("HEAP", false),
+        ("HELD_AT_LAST_ROW_READ", false), // test-only const Cell, no drop glue
         ("LATE_CELL", false),
         ("MARKED_SLOTS_VISITED", false),
         ("MEMBER_LIST", false),
@@ -176,6 +177,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("THREAD_CACHE", true),
         ("THREAD_FIGURES", false),
         ("THREAD_HEAP", false),
+        ("TOKEN", false), // const futex mutex, flag and condvar: no drop glue
         ("WEAK_TABLE", false),
         ("WINDOW", false),
         ("WRITTEN_BYTES", false),

@@ -11,9 +11,11 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-11 · Active: S37, with S37.3 closed on 2026-09-11 — the
-ownership mark is moved by the barrier's owned store and honoured by the
-holder's `dispose`. S37.0, S37.6 and S37.1 closed on 2026-09-10 — the
+Updated: 2026-09-11 · Active: S38, from S38.4; S38.1 closed on 2026-09-11 —
+the per-thread trace token, taken around the trace and waited on through a
+mutex. S37.3 closed the same day — the ownership mark is moved by the
+barrier's owned store and honoured by the holder's `dispose`. S37.0, S37.6
+and S37.1 closed on 2026-09-10 — the
 live-component stamp producer, the per-root disposition and the edge-side
 prune they were built for — so the descent stops at the mature live core and
 S40.1's pruning arm has a counter rather than a simulation; the corpus arm of
@@ -3236,7 +3238,7 @@ window there is.
         or first pressure — with its floor refusal following it; a mandatory
         floor drawn at first pressure is the worst moment
         (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued").
-- [ ] S38.1 The claim
+- [x] S38.1 The claim
       done: one flag **per mutator thread**, free or held, taken by CAS and
         released by one store; a waiter blocks on a mutex rather than spinning;
         it covers the **trace** over that thread's graph — the arena, the block
@@ -3245,6 +3247,53 @@ window there is.
         entry on the claimed thread alone while enrolment, release, allocation
         **and a second collector's trace of another thread** proceed
       tier: T2 · role: Critic
+      Critic 2026-09-11: ten findings, six repaired, three recorded as the
+        step's edge, one refuted. The release's upper bound was pinned by no
+        test — a `drop` right after the take stayed green — so a `cfg(test)`
+        probe reads the token at the trace's last row read, the scan's end off
+        the poll and the harvest sweep under pressure, and two mutations of the
+        release point are red now. `HeldToken` was `Send`: a `PhantomData`
+        binds it to its thread. The module doc named the pressure path's
+        release point as the scan; it is the harvest. The first case ran the
+        other thread's collection before this thread was blocked; it runs
+        while this one waits now, though two traces still never overlap in
+        time — the rfc's "may run concurrently" over disjoint blocks has no
+        case, and the plan's sentence does not ask for one. The first case
+        could hang on a pool refusal inside its fixture; the holder is
+        bounded. Recorded rather than built: on the poll path the token is
+        free while the rows stand, and whether a foreign holder may take it
+        over rows the teardown reads is the rfc's own open question, named in
+        the module doc; thread exit neither reads nor waits for the token,
+        which is S39.1's; a foreign holder's detach against the owner's lane
+        writes is A2's. Refuted: a lost wakeup — the waiter re-tests under the
+        mutex the releaser notifies under. The code reviewer added eleven,
+        nine repaired: four stale "the rows die at the token's release"
+        sentences in `arena`, `scan` and a test doc rewritten to the window's
+        close; whether a collection waited is read off the token's own count
+        of waits instead of sleeps and timings; the holder is a guard that
+        releases and joins on the unwind, and the pointer crosses threads in
+        a named `Send` wrapper; the probe moved to the harvest's end.
+      handoff: `cycle::token` — `TraceToken` (an `AtomicBool`, a futex
+        `Mutex<()>` and a `Condvar`, no drop glue, pinned by a const
+        assertion), `HeldToken` for the owner's take around its trace,
+        `this_thread_token` for a holder on another thread (only the cases
+        take it until S38.0's collector exists). `collect_off_the_poll` takes
+        it after the eligibility gate and drops it after `trace_batch`;
+        `trace_and_harvest` holds it to its frame's end, past the harvest. The
+        token is in the thread-local inventory of
+        `memory::critical::tests::where_the_first_touch_happens`. Five cases
+        in `token/tests/who_may_trace_this_thread.rs`; six mutations seen
+        red: the take removed on either path, the token taken before the
+        gate, the release moved after the commit, right after the take, and
+        before the harvest. Verified on the final tree: 868 passed, 0
+        failed, 10 ignored, plain and three times at eight threads;
+        `hash-folding` once (868); `debug-journal` three times (872/12);
+        release; `cargo bench --no-run`; `cargo +1.94 fmt --check`; `cargo
+        doc` 45 warnings, the same per file; `citations.py` 519 with the
+        same seven residues; `--list` diffed against the S37.3 tree in all
+        three configurations, five additions and no removal. Miri two
+        threads over the group: 5 passed, 13.10 s Miri's clock, 13.2 s
+        wall.
       handoff: the word was per process until 2026-08-29, when Edmond ruled the
         exclusion per thread (`rfc/dev/DECISIONS.md`, "a trace stays inside the
         blocks of the thread it claimed"). What licenses the narrowing is the

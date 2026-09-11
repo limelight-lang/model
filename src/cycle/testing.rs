@@ -110,9 +110,10 @@ pub(crate) fn open_arena() -> TraceScratchArena {
 /// Trace the fixture from one root and assert every entity named is
 /// unreachable, which is the state the exact test is asked about.
 ///
-/// The arena comes back so the caller resets it before validating: the rows
-/// die at the token's release and the exact test runs after it
-/// (`rfc/model/gc/rc-cycle.md`, "Concurrency").
+/// The arena comes back so the caller resets it before validating: on the
+/// pressure path the rows have gone back before the exact test runs, and this
+/// is the state such a case asks about (`rfc/model/gc/rc-cycle.md`,
+/// "Concurrency").
 ///
 /// # Safety
 /// As `mark` and `scan`: `root` is an entity header of this thread's heap
@@ -202,8 +203,8 @@ pub(crate) unsafe fn ring<const MEMBERS: usize>(
 /// A [`ring`] the trace has read as potentially unreachable, with the scratch
 /// arena reset behind it — the state an exact validation is asked about.
 ///
-/// The reset is here because the rows die at the trace token's release and
-/// everything that reads a row happens before it
+/// The reset is here because the rows die at the window's close, which on
+/// the pressure path is before the exact test
 /// (`rfc/model/gc/rc-cycle.md`, "Concurrency"); a case that wants a row after
 /// the trace builds its ring with [`ring`] and runs the phases itself.
 ///

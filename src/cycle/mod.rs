@@ -68,12 +68,14 @@
 //! exit inside an open window aborts, `ll_thread_exit` being
 //! `extern "C"` and having no caller to refuse to.
 //!
-//! The ordering the whole module rests on is one sentence: **the rows die at
-//! the trace token's release, and everything that reads a row happens before
-//! it** (`rfc/model/gc/rc-cycle.md`, "Concurrency"). The scan's sweep is
-//! therefore the last row read of a collection, and validation, teardown and
-//! the slot returns all run after it, untokened — which is why
-//! [`validation`] re-reads the heap instead.
+//! The ordering the whole module rests on is one sentence: **the right to
+//! trace ends at the token's release, and the rows die at the window's
+//! close** (`rfc/model/gc/rc-cycle.md`, "Concurrency"). The scan's end off
+//! the poll and the harvest sweep under pressure are the last things the token
+//! covers; validation, teardown and the slot returns run after its release,
+//! untokened, and [`validation`] re-reads the heap rather than a row. A collection off the poll keeps its rows open through the teardown
+//! ([`membership`]), a collection under pressure gives them back before it
+//! ([`members`]) — and on neither path does a row outlive its window.
 
 // `ActiveTrace` owns the `TraceScratchArena`, which the collection opens.
 pub(crate) mod arena;
@@ -129,6 +131,9 @@ pub(crate) mod shadow;
 // The worklist both phases of a trace share, held by the arena whose memory
 // it stands on.
 pub(crate) mod stack;
+// The per-thread trace token: taken by [`collect`] around its trace,
+// waited for by an owner whose graph a collector is tracing.
+pub(crate) mod token;
 // The two phases of one trace, in the order the rows require.
 pub(crate) mod trace;
 // The row readers and the ring fixtures the collector's tests share. Test

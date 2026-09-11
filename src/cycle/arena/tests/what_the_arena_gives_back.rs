@@ -268,11 +268,11 @@ fn the_sweep_reaches_every_block_of_the_chain() {
     crate::memory::critical::drain_for_test();
 }
 
-/// The sweep runs at the end of scan, not at the arena's reset, because
-/// the slot returns that follow the token's release can hand a block to
-/// the pool and another collection can recommission it. What that means
-/// here: after the sweep the list is empty, so the reset that follows
-/// cannot write into a header word that has changed owner.
+/// The sweep runs at the window's close, not at the arena's reset, because
+/// the slot returns that close makes can hand a block to the pool and
+/// another collection can recommission it. What that means here: after the
+/// sweep the list is empty, so the reset that follows cannot write into a
+/// header word that has changed owner.
 #[test]
 fn a_swept_list_is_not_swept_again_at_reset() {
     let _g = test_guard();
