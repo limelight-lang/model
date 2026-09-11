@@ -6,6 +6,11 @@ located.
 
 ## Modules
 
+Critical analysis: [Cycle improvement candidates](CYCLE-IMPROVEMENTS-CRITICAL-REVIEW.md)
+— dated source review, corrections to the Cangjie comparison, candidate
+optimizations, counterexamples and measurement requirements; not approved
+algorithm changes or new benchmark results.
+
 Design proposal: [Collector–mutator memory protocol](COLLECTOR-MUTATOR-MEMORY-PROTOCOL.md)
 — collector-initiated memory retention, result handoff, owner-side slot
 retirement, and the synchronous fallback under memory pressure. Includes
