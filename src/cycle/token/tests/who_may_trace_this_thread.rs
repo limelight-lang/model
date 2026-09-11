@@ -14,13 +14,12 @@
 use super::*;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::testing::ring;
+use crate::cycle::token::testing::{Handed, HeldByACollector, wait_for_a_waiter};
 use crate::gc::ll_gc_collect_cycles;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::object::Object;
 use std::sync::atomic::AtomicUsize;
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
 
 /// A class with one counted Box property at `prop_offset(0)`, which is what
 /// [`ring`] links its members through.
@@ -45,85 +44,6 @@ unsafe extern "C" fn token_reading_destructor(_object: *mut Object) {
 
 unsafe extern "C" fn counting_destructor(_object: *mut Object) {
     DESTRUCTORS.fetch_add(1, Ordering::Relaxed);
-}
-
-/// A token pointer handed to another thread. The pointee is the test
-/// thread's thread-local, and the guard that carries this joins the holder
-/// before the test thread returns, which is what keeps the pointer valid.
-struct Handed(*const TraceToken);
-
-unsafe impl Send for Handed {}
-
-impl Handed {
-    /// The pointer, through a method so that a closure captures the wrapper
-    /// rather than its field.
-    fn token(&self) -> *const TraceToken {
-        self.0
-    }
-}
-
-/// Spin until the token's count of waits passes `before`, or a bound
-/// passes — so a case whose owner never waits fails on an assertion rather
-/// than hanging.
-fn wait_for_a_waiter(token: *const TraceToken, before: usize) {
-    let bound = Instant::now() + Duration::from_secs(10);
-    while unsafe { (*token).waits() } == before && Instant::now() < bound {
-        std::thread::yield_now();
-    }
-}
-
-/// The calling thread's token, held from another thread — the stand-in for a
-/// collector tracing this mutator's graph — until [`release`](Self::release)
-/// or the guard's drop. The drop releases the holder and joins it, on the
-/// unwind as well as on the return, so a failed assertion never leaves a
-/// thread writing into a freed thread-local.
-///
-/// With `until_waited` the holder lets go on its own once the owner has gone
-/// to wait on the token; without it, at `release`.
-struct HeldByACollector {
-    release: Option<mpsc::Sender<()>>,
-    collector: Option<std::thread::JoinHandle<()>>,
-}
-
-impl HeldByACollector {
-    /// Returns once the collector holds the token.
-    fn take(token: *const TraceToken, until_waited: bool) -> Self {
-        let handed = Handed(token);
-        let (held_sender, held) = mpsc::channel();
-        let (release, release_receiver) = mpsc::channel::<()>();
-        let collector = std::thread::spawn(move || {
-            let token = handed.token();
-            let waits_before = unsafe { (*token).waits() };
-            assert!(unsafe { (*token).try_take() }, "the owner was not tracing");
-            held_sender.send(()).expect("the owner waits for this");
-            if until_waited {
-                wait_for_a_waiter(token, waits_before);
-            } else {
-                let _ = release_receiver.recv_timeout(Duration::from_secs(10));
-            }
-
-            unsafe { (*token).release() };
-        });
-        held.recv().expect("the collector took the token");
-        Self {
-            release: Some(release),
-            collector: Some(collector),
-        }
-    }
-
-    /// Let the holder go, and wait for it.
-    fn release(&mut self) {
-        drop(self.release.take());
-        if let Some(collector) = self.collector.take() {
-            collector.join().expect("the collector returned");
-        }
-    }
-}
-
-impl Drop for HeldByACollector {
-    fn drop(&mut self) {
-        self.release();
-    }
 }
 
 #[test]

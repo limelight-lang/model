@@ -1236,6 +1236,15 @@ impl Heap {
         let class_size = SIZE_CLASSES[ci];
         let block = BlockPool::global().get() as *mut HeapBlockHeader;
         if block.is_null() {
+            #[cfg(test)]
+            if self.block_kind == BLOCK_KIND_ENTITY {
+                REFUSED_ENTITY_REFILLS.with(|refused| {
+                    let mut counts = refused.get();
+                    counts[ci] += 1;
+                    refused.set(counts);
+                });
+            }
+
             return block;
         }
 
@@ -2087,6 +2096,28 @@ pub(crate) fn exit_guard_armed() -> bool {
 #[cfg(test)]
 pub(crate) static FORCE_GUARD_UNARMED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    /// Entity-block refills the pool refused on this thread since
+    /// [`take_refused_entity_refills`] last answered, by size class.
+    ///
+    /// The count is taken where the refusal is answered rather than where the
+    /// pool refuses, and per class, because a case that forces a refusal owes
+    /// proof of which allocation was refused (`dev/POSTMORTEM.md`, "an
+    /// allocation moved earlier re-aimed four refusal tests, and their
+    /// counters could not see it"): the pool's request count is blind to its
+    /// requester, and one class's refill is blind to another's.
+    static REFUSED_ENTITY_REFILLS: std::cell::Cell<[usize; NUM_CLASSES]> =
+        const { std::cell::Cell::new([0; NUM_CLASSES]) };
+}
+
+/// Refused entity-block refills on this thread, by size class, since this
+/// last answered; the counts are left at zero.
+#[cfg(test)]
+pub(crate) fn take_refused_entity_refills() -> [usize; NUM_CLASSES] {
+    REFUSED_ENTITY_REFILLS.with(|refused| refused.replace([0; NUM_CLASSES]))
+}
 
 /// This thread's raw heap, or null if it has never allocated.
 ///

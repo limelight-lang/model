@@ -22,9 +22,8 @@
 //! takes no user lock, so the wait is bounded by one trace (Edmond,
 //! 2026-08-29, `rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of
 //! the thread it claimed"). Eligibility is checked before the wait: a thread
-//! today's gate refuses — one already collecting, or inside a reset — never
-//! reaches the token; the teardown-depth clause of that gate is `PLAN.md`
-//! S38.4's (`crate::cycle::collect`).
+//! the gate refuses — one already collecting, inside a teardown, or inside a
+//! reset — never reaches the token (`crate::cycle::collect::may_collect`).
 //!
 //! **Why per thread.** No thread names an entity in another thread's blocks —
 //! `thread_move` and `thread_clone` require the graph arriving in a thread to
@@ -218,6 +217,9 @@ impl Drop for HeldToken {
         TOKEN.with(TraceToken::release);
     }
 }
+
+#[cfg(test)]
+pub(crate) mod testing;
 
 #[cfg(test)]
 mod tests;

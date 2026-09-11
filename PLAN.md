@@ -11,9 +11,11 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-11 · Active: S38, from S38.4; S38.1 closed on 2026-09-11 —
-the per-thread trace token, taken around the trace and waited on through a
-mutex. S37.3 closed the same day — the ownership mark is moved by the
+Updated: 2026-09-11 · Active: S38, from S38.2; S38.4 closed on 2026-09-11 —
+the entry gate with the teardown depth as its second input, a refused poll
+keeping its arming, and the slow path's refusal named by size class. S38.1
+closed the same day — the per-thread trace token, taken around the trace and
+waited on through a mutex. S37.3 closed the same day — the ownership mark is moved by the
 barrier's owned store and honoured by the holder's `dispose`. S37.0, S37.6
 and S37.1 closed on 2026-09-10 — the
 live-component stamp producer, the per-root disposition and the edge-side
@@ -3326,7 +3328,7 @@ window there is.
         not revive them: a thread meets its own flag held only by a collector,
         never by itself, because mark and scan run no user code and the
         teardown that does runs with the flag released and the entry gate shut.
-- [ ] S38.4 The entry gate and the slow-path fire   *(before S38.2)*
+- [x] S38.4 The entry gate and the slow-path fire   *(before S38.2)*
       done: the GC-heap slot allocation slow path, on a forced refusal that
         names which allocation refused, waits on this thread's own claim while
         it is held, takes it, runs the in-line collection, retries once and
@@ -3334,6 +3336,65 @@ window there is.
         nothing and reports; a heap of one size class full of cyclic garbage
         serves the allocation with no explicit collect call
       tier: T2 · role: Critic
+      Critic 2026-09-11: six findings, four repaired, one recorded, one
+        refuted. A refusal at depth refused the retirement with the trace,
+        so a cascade of K deaths whose destructors allocate was refused K
+        times over K−1 returnable slots: the depth-only refusal now retires
+        and arms, and a case reads the retry served off a withheld slot.
+        The in-collection case's doc claimed the depth while the refusal is
+        the collecting flag's — the collection's destructor pass calls
+        `run_user_destructor` at depth zero — rewritten, and the decision
+        says which death the depth covers that no other input does. The
+        rfc's gate named two inputs and the crate reads three: the reset
+        window was carried into `rfc` (`5fcc272`) rather than argued away.
+        The ordinary-teardown case fired by name and claimed the clean
+        point; it polls now, which the arming makes true. A stale
+        "the arming stays spent" comment on the poll path's refused arm
+        rewritten. Recorded: the class-full and held-token cases assert the
+        refill count without the request count, so a refused draw by the
+        collection's own arena would be invisible there — no claim of theirs
+        depends on it. Refuted: a poll inside a collected member's destructor
+        arming off an epoch the commit itself moved — the commit counts at
+        its close, after the destructors. The code reviewer added eleven,
+        ten applied: the retirement outside the collecting flag was a
+        crossed invariant with no case for the dying candidate — the branch
+        says why the flag is not needed there, and a cascade case at depth
+        two reads that the holder's slot is kept (the mutation that returns
+        every zero-count entry segfaults the group); the gate's three inputs
+        were written twice — `CollectingThread::take` answers `GateClosed`
+        and the pressure path matches `Teardown`; `object` had gained an
+        edge into `cycle::collect` — the counter lives in `object` and the
+        gate reads `object::teardown_depth`; the two teardown cases assert
+        the thread unarmed before the death; the follow-on collection a kept
+        arming causes after a collection whose destructors armed is priced
+        in the decision as accepted. Not applied: none.
+      handoff: the gate is `cycle::collect::may_collect` over `gate()` —
+        the collecting flag, the reset window and `object::teardown_depth`
+        (a thread-local `Cell<u32>`, bracketed by `InsideTeardown` in
+        `ll_object_die` alone) — read by `CollectingThread::take`, which
+        answers `Err(GateClosed)`, and by `ll_gc_maybe_collect` before
+        `take_due`, so a refused poll keeps its arming. `collect_under_pressure`
+        refused by `Teardown` alone retires the completed deaths and arms. The
+        refused allocation is named by `heap::take_refused_entity_refills`,
+        per size class, at `Heap::refill`. `cycle::token::testing` holds
+        `HeldByACollector` for both test trees. Nine cases in
+        `heap/tests/the_collection_a_refusal_starts.rs`, one more in
+        `cycle/collect/tests.rs`; eleven mutations seen red. The death bench
+        moved by less than its own spread (`dev/BENCHMARKS.md`). Verified on
+        the final tree: 875 passed, 0 failed, 10 ignored, plain and three
+        times at eight threads; `hash-folding` once (875); `debug-journal`
+        three times (879/12); release; `cargo bench --no-run`; `cargo +1.94
+        fmt --check`; `cargo doc` 45 warnings, the same per file;
+        `citations.py` 530 with the same seven residues; `--list` diffed
+        against the `d960b68` tree in all three configurations, seven
+        additions and no removal. Miri two threads over the group with the
+        token tests: 15 passed, 97 s Miri's clock, 61 s wall. Decisions:
+        `dev/DECISIONS.md`, "the entry gate reads the teardown depth, and a
+        poll it refuses keeps its arming"; `rfc/dev/DECISIONS.md`, "the entry
+        gate's third input is the reset window". Not built: the critical
+        reserve's third customer (Fog). S38.2's test — the wait reached
+        through this path with a counter past it — is
+        `a_refusal_under_a_held_token_waits_for_the_release_and_is_then_served`.
       handoff: Y14's clause "a thread that finds the token taken does not wait"
         was argued from the handshake deadlock, and the amendment of 2026-08-26
         deleted the handshake, so the Sage retired the clause with its reason
@@ -4113,9 +4174,13 @@ own checkbox.
   (code 9) is not carried here: `string::publish_uninit` stamps it whenever the
   placement is out of line, so the kind has a producer.
 - [ ] **The threshold arming policy and the collector-thread accelerator.**
-  What is left of the old escalation ladder after S38.4 builds the entry gate
+  What is left of the old escalation ladder after S38.4 built the entry gate
   and the slow-path fire. The arming policy is the compiler's
-  (`rfc/model/gc/strategies.md`, arm/fire); the accelerator carries the third
+  (`rfc/model/gc/strategies.md`, arm/fire); the critical reserve's third
+  customer, the mutator whose gate is closed, is answered null today and
+  draws nothing, because which runtime progress operations a reserve would
+  fund is what the ABI does not yet name (`rfc/model/memory/critical-reserve.md`,
+  "Mutator progress while collection is unavailable"); the accelerator carries the third
   claim state's production entrant, the proposal machinery that turns a dirty
   trace into a shortlist, and the owner-checkpoint judgement that reads it
   (`rfc/model/gc/rc-cycle.md`). Gated on a measured in-line pause that a

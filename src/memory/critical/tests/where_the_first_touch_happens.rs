@@ -150,6 +150,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("EXIT_GUARD", true),
         ("EXIT_PHASE", false),
         ("FAIL_AT", false), // test-only const Cell, no destructor registration
+        ("FILLER", false),  // test-only const Cell of a raw pointer, no drop glue
         ("FREED", false),
         ("HEAP", false),
         ("HELD_AT_LAST_ROW_READ", false), // test-only const Cell, no drop glue
@@ -167,12 +168,14 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PRESSURE_COLLECTIONS", false),
         ("PRESSURE_ROOTS_TRACED", false), // test-only const Cell, no drop glue
         ("QUEUE_WORK", false),            // test-only const Cell, no destructor registration
+        ("REFUSED_ENTITY_REFILLS", false), // test-only const Cell of an array, no drop glue
         ("REFUSE_AT_VERTEX", false),      // test-only const Cell, no drop glue
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
         ("RESERVE", true),
         ("RING", false),
         ("ROWS_READ", false),
         ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
+        ("TEARDOWN_DEPTH", false),          // const Cell<u32>, no drop glue
         ("THREAD_BUFFER_ARENA", false),
         ("THREAD_CACHE", true),
         ("THREAD_FIGURES", false),

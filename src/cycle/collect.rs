@@ -41,8 +41,10 @@
 //! already running. The second collection is refused rather than served: its
 //! window would be a second trace on one thread, which
 //! [`ActiveTrace::open`] ends the process over, and the rows it would read are
-//! the outer collection's. The refusal is the flag below, and it is the
-//! runtime's half of the rfc's "Check collection eligibility before waiting".
+//! the outer collection's. The refusal is the flag below, one input of the
+//! gate [`may_collect`] reads beside a teardown in flight and an open reset;
+//! that gate is the runtime's half of the rfc's "Check collection eligibility
+//! before waiting".
 
 use std::cell::Cell;
 
@@ -68,6 +70,48 @@ thread_local! {
     /// `Cell<bool>` has no drop glue, which is the rule for anything a thread
     /// exit can reach (`memory::heap::ll_thread_exit`).
     static COLLECTING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Why this thread may not run a collection now, in the order the gate reads
+/// its inputs: `Teardown` is answered only when neither other input is
+/// closed, which is what lets the pressure path act on it alone.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GateClosed {
+    /// A collection is running on this thread.
+    Collecting,
+    /// An arena reset is in flight on this thread.
+    Reset,
+    /// A teardown is in flight on this thread (`crate::object::teardown_depth`).
+    Teardown,
+}
+
+/// The entry gate, read from this thread's own state and nothing else — a
+/// collection already running, a reset open, a teardown in flight — which is
+/// what lets the poll read it before it spends its arming and the slow path
+/// read it before any wait on the trace token (`rfc/model/gc/rc-cycle.md`,
+/// "Concurrency", "Check collection eligibility before waiting"). `None` is
+/// an open gate.
+#[inline]
+fn gate() -> Option<GateClosed> {
+    if COLLECTING.with(Cell::get) {
+        return Some(GateClosed::Collecting);
+    }
+
+    if crate::memory::reset_window::is_open() {
+        return Some(GateClosed::Reset);
+    }
+
+    if crate::object::teardown_depth() != 0 {
+        return Some(GateClosed::Teardown);
+    }
+
+    None
+}
+
+/// Whether this thread may run a collection now ([`gate`]).
+#[inline]
+pub(crate) fn may_collect() -> bool {
+    gate().is_none()
 }
 
 /// The right to run one collection on this thread, taken for as long as one
@@ -107,11 +151,14 @@ struct CollectingThread {
 }
 
 impl CollectingThread {
-    /// Take the right, or answer `None` where this thread may not collect.
+    /// Take the right, or answer why this thread may not collect.
     ///
-    /// Two states refuse it. **A collection already running**, whose rows and
-    /// window a second one would take. And **a reset in flight**, which is the
-    /// other place this crate runs user destructors: between
+    /// Three states refuse it. **A collection already running**, whose rows
+    /// and window a second one would take. **A teardown in flight**, which is
+    /// not a clean point: the dying object stands at count zero with its cells
+    /// still populated, and user code runs inside it
+    /// (`crate::object::teardown_depth`). And **a reset in flight**, which is
+    /// the third place this crate runs user destructors: between
     /// `promote::retain_block` and `promote::place_survivor_lists` a promoted
     /// survivor stands in a block stamped `BLOCK_KIND_RETAINED` with no
     /// occupant list published, and `memory::retained::register` states the
@@ -119,13 +166,13 @@ impl CollectingThread {
     /// there reads every such survivor as untracked and frees a member into
     /// the reset window's absorb arm, which reports a teardown that returned
     /// no memory (`memory::reset_window::absorbs_retained_free`).
-    fn take() -> Option<Self> {
-        if COLLECTING.with(Cell::get) || crate::memory::reset_window::is_open() {
-            return None;
+    fn take() -> Result<Self, GateClosed> {
+        if let Some(closed) = gate() {
+            return Err(closed);
         }
 
         COLLECTING.with(|collecting| collecting.set(true));
-        Some(Self {
+        Ok(Self {
             retire_on_drop: Cell::new(true),
         })
     }
@@ -201,7 +248,7 @@ impl Drop for CollectingThread {
 /// the teardown reads the rows themselves ([`crate::cycle::membership`]).
 ///
 /// **Zero is every answer short of a teardown**, and they are not
-/// distinguished here: a thread already collecting, a workspace the memory
+/// distinguished here: a thread whose gate is closed ([`may_collect`]), a workspace the memory
 /// manager refused, an empty candidate lane, a trace that met a refused
 /// allocation path, a set the exact validation read as live, and a teardown
 /// whose children the arena refused. Before final owner retirement, each
@@ -218,13 +265,12 @@ impl Drop for CollectingThread {
 /// no other thread reading this thread's entities
 /// (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 pub(crate) unsafe fn collect_off_the_poll() -> usize {
-    let Some(_collecting) = CollectingThread::take() else {
-        // The arming a poll spent to reach this stays spent, which is the
-        // ruling and its cost together: the flag is an event, and a thread
-        // that stayed armed inside its own collection would fire at every poll
-        // of the teardown. What the thread loses is one collection — the
-        // registrations step 4 made stand in the lane until something arms it
-        // again, which the next draw does.
+    let Ok(_collecting) = CollectingThread::take() else {
+        // Reached only by the explicit fire: the poll reads the gate before it
+        // spends its arming (`crate::gc::ll_gc_maybe_collect`), so a thread
+        // whose gate is closed keeps the arming for the next poll at a clean
+        // point, and the explicit fire spent none. The lane keeps every
+        // registration either way.
         return 0;
     };
 
@@ -321,8 +367,29 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
 /// As [`collect_off_the_poll`], and the caller holds no allocation in flight
 /// that the destructors below could reach.
 pub(crate) unsafe fn collect_under_pressure() -> usize {
-    let Some(_collecting) = CollectingThread::take() else {
-        return 0;
+    let _collecting = match CollectingThread::take() {
+        Ok(collecting) => collecting,
+        // A refusal inside a teardown alone still returns what a completed
+        // death of the same cascade withheld: a slot that dies while a queue
+        // entry names it comes back only at a retirement, and every other
+        // retirement runs inside a collection — so without this one a
+        // destructor's allocation would be refused K times over up to K−1
+        // returnable slots. The retirement runs outside the collecting flag
+        // because it runs no user code, takes no window and reads no rows, so
+        // nothing inside it can reach a second collection; it passes over
+        // the dying object, whose slot reads no `DEAD_IN_PLACE` until the
+        // free at the end of its frame (`crate::cycle::queue::
+        // retire_candidates`). The other two refusals own their retirement:
+        // a running collection retires at its close, and a reset forbids
+        // one. And the thread is armed, because a refusal at depth says
+        // nothing about the garbage standing behind it; the next poll at a
+        // clean point is what reads that.
+        Err(GateClosed::Teardown) => {
+            unsafe { crate::cycle::queue::retire_candidates() };
+            crate::gc::arm();
+            return 0;
+        }
+        Err(_) => return 0,
     };
 
     #[cfg(test)]

@@ -8,6 +8,81 @@ never edited or deleted.
 
 ---
 
+## 2026-09-11 — the entry gate reads the teardown depth, and a poll it refuses keeps its arming
+
+**Decided (S38.4), under Edmond's ruling of 2026-08-07** ("a fire point
+inside a teardown collects nothing, and the runtime enforces it") and the
+`rfc` ruling of 2026-08-27 that the gate reads this thread's own state and
+never the token. The gate is `cycle::collect::may_collect`: this thread's
+collecting flag, its teardown depth and its reset window — the third input
+being this crate's decision of 2026-09-07, carried into `rfc` on this date
+(`rfc/dev/DECISIONS.md`, "the entry gate's third input is the reset
+window"). `TEARDOWN_DEPTH` is a thread-local `Cell<u32>` of the `object`
+layer, read by the gate through `object::teardown_depth` so that `object`
+gains no edge into the collector, and bracketed by `ll_object_die` alone,
+from the entry to the end of the frame, because that
+is the one death user code runs behind that no other input covers: every
+other kind's death runs no destructor and reaches an object's only through
+that entry, while the collection's own destructor pass and the reset's call
+`run_user_destructor` directly, at depth zero, under the collecting flag and
+the reset window respectively. The poll reads the gate **before** it takes
+the arming, so a poll inside a teardown, a reset or a collection spends
+nothing and the next poll at a clean point fires; the allocation slow path
+reads it inside `CollectingThread::take`, before any wait on the trace
+token, and a refused collection there answers the caller null after the
+ordinary single retry.
+
+**A refusal at depth alone retires and arms.** A slot that dies while a
+queue entry names it comes back only at a retirement, and every retirement
+ran inside a collection — so a cascade of K deaths whose destructors each
+allocate would be refused K times over up to K−1 returnable slots. The
+depth-only refusal in `collect_under_pressure` runs
+`queue::retire_candidates` before the retry (no user code, no rows, the
+dying object passed over as an unfinished death) and arms the thread,
+because a refusal at depth says nothing about the garbage behind it. The
+other two refusals own their retirement: a running collection retires at
+its close, and a reset forbids one.
+
+**Why the counter, when the slot is already withheld.** The withholding
+covers the double free the old bracket also covered; what it does not cover
+is the rule: a fire point inside a destructor is not a clean point, the
+dying object standing at count zero with populated cells while user code
+runs, and the design puts every fire on a clean point
+(`rfc/model/gc/strategies.md`, arm/fire). Under `rc-cycle` a collection
+there meets the dying object, if a root reaches it at all, as a zero-count
+member and refuses its component (`cycle::validation`); the gate refuses
+earlier, before any trace, and the rule holds by construction rather than
+by a downstream check.
+
+**Why the arming survives.** The old poll spent the arming whether or not it
+could fire, so garbage present at a refusal waited for the next registration
+to arm again. The gate before the arming is the 2026-08-07 sentence
+"`COLLECT_PENDING` is untouched by the refusal", carried into the flag the
+crate has today.
+
+**Rejected:** bracketing `ll_entity_die` as well, as the deleted code did —
+a second increment on every non-object death for no fire point it guards;
+arming inside `CollectingThread::take`, which the explicit
+`ll_gc_collect_cycles` reaches too and would arm a thread that asked for
+nothing — the arm sits in the pressure path's refused branch, whose only
+caller is the thread that asked for memory.
+
+**Cost:** one thread-local increment and one decrement per object death.
+Measured on `lifecycle/create_release_die`, three runs each side: 15.0,
+15.5 and 15.7 ns before, 14.7, 14.8 and 14.7 ns after — no cost the bench
+resolves (`dev/BENCHMARKS.md`, same date). The gate read the poll gained is
+off that bench and unmeasured. A collection whose destructors armed the
+thread — the queue drawing on the reserve or overflowing while they release
+children — is now followed by a collection at the next clean point, over
+the roots those releases registered; a compiler poll inside the destructor
+spent that arming before, and those roots waited for a later one. Accepted:
+the follow-on traces new roots, not the set just collected. What stays
+unbuilt is the critical reserve's third customer, the mutator whose gate is
+closed: it is answered null and draws nothing, and which runtime progress
+operations a reserve would fund is what the ABI does not yet name
+(`PLAN.md`, Fog, "The threshold arming policy and the collector-thread
+accelerator").
+
 ## 2026-09-11 — the ownership mark is the owned store's to move and the holder's `dispose` to honour
 
 **Decided by Edmond, recorded in `rfc` (`dev/DECISIONS.md`, "the ownership

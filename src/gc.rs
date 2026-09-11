@@ -150,13 +150,24 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         arm();
     }
 
+    // The gate before the arming: a poll inside a teardown, a reset or a
+    // collection cannot fire, and it leaves the arming standing for the next
+    // poll at a clean point rather than spending it on a refusal
+    // (`dev/DECISIONS.md`, "a fire point inside a teardown collects nothing,
+    // and the runtime enforces it").
+    if !crate::cycle::collect::may_collect() {
+        return 0;
+    }
+
     if !take_due() {
         return 0;
     }
 
-    // Armed, so fire. The disarm above happens whether or not the fire
-    // collects anything: an arming is an event and not a state, and a thread
-    // that stayed armed would fire at every poll for the rest of its life.
+    // Armed, so fire. The disarm happens whether or not the fire collects
+    // anything, because an arming is an event and not a state: a thread that
+    // stayed armed past a fire would fire at every poll for the rest of its
+    // life. The gate above is the one refusal that keeps the arming, and it
+    // is the one where no fire happened.
     unsafe { ll_gc_collect_cycles() }
 }
 

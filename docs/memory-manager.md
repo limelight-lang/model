@@ -733,8 +733,12 @@ overflow buffer, and then collects or raises from a frame that has one
 base block's own draw can be refused, and then the thread does not start:
 `ll_thread_init` answers `false` and the task runs elsewhere.
 
-The third customer the design names, the mutator that cannot collect,
-arrives with `PLAN.md` S38.4, and no partition among the three is built
+The third customer the design names, the mutator that cannot collect, is
+not built: a mutator whose entry gate is closed is answered null, and which
+runtime progress operations a reserve would fund instead is what the ABI does
+not yet name (`rfc/model/memory/critical-reserve.md`, "Mutator progress while
+collection is unavailable"; `PLAN.md`, Fog, "The threshold arming policy and
+the collector-thread accelerator"). No partition among the three is built
 until one of their shares can be derived.
 
 Eight blocks is 512 KiB, which is the design's 500 KB figure read at

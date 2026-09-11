@@ -681,6 +681,67 @@ pub unsafe extern "C" fn ll_owned_child_die(child: *mut RcHeader) {
     }
 }
 
+thread_local! {
+    /// Teardowns in flight on this thread: [`ll_object_die`] frames, counted
+    /// because a teardown cascades — a child release inside a `dispose` is
+    /// another teardown. While it is non-zero every fire point collects
+    /// nothing, the poll and the allocation slow path alike, which is what
+    /// makes the arm/fire split hold for user code as well as for the
+    /// runtime: a destructor body may carry the compiler's poll, and it may
+    /// allocate, and neither is a clean point (`rfc/model/gc/strategies.md`,
+    /// "Collection requests and triggers"; `dev/DECISIONS.md`, "a fire point
+    /// inside a teardown collects nothing, and the runtime enforces it").
+    /// The arming is untouched by the refusal, so the next poll at a clean
+    /// point collects.
+    ///
+    /// Per thread because a teardown is, and read by the collector's gate
+    /// before any wait on the trace token, which it can be because it depends
+    /// on no other thread (`crate::cycle::collect::may_collect`). `Cell<u32>`
+    /// has no drop glue, which is the rule for anything a thread exit can
+    /// reach (`memory::heap::ll_thread_exit`).
+    static TEARDOWN_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Teardowns in flight on this thread; zero is a clean point as far as
+/// teardowns go.
+#[inline]
+pub(crate) fn teardown_depth() -> u32 {
+    TEARDOWN_DEPTH.with(std::cell::Cell::get)
+}
+
+/// One teardown in flight on this thread, from the death's entry to this
+/// guard's drop. Taken by [`ll_object_die`], the one teardown entry user code
+/// runs behind — every other kind's death runs none, and reaches an object's
+/// only through that entry.
+///
+/// The count falls with the guard on the unwind as well as on the return: a
+/// user destructor never unwinds into this frame (`DestructorFn`), and a
+/// crate panic that does ends the process at the ABI boundary after every
+/// drop below it. Not `Send`: the drop lowers the count of the thread it runs
+/// on.
+#[must_use = "the teardown is counted only while this guard lives"]
+struct InsideTeardown {
+    thread_bound: std::marker::PhantomData<*const ()>,
+}
+
+impl InsideTeardown {
+    /// Count one more teardown on this thread.
+    #[inline]
+    fn enter() -> Self {
+        TEARDOWN_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        Self {
+            thread_bound: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for InsideTeardown {
+    #[inline]
+    fn drop(&mut self) {
+        TEARDOWN_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
 /// Teardown entry: dispatch to the class's `dispose` (phases 1–2), then
 /// free the object's own memory if it completed (phase 3). Called when the
 /// refcount reaches zero or a collector proves the object garbage.
@@ -706,14 +767,15 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
             >> crate::refcount::ENTITY_KIND_SHIFT) as u64,
         0
     );
-    // The teardown bracket that guarded this window died with the two
-    // collectors it belonged to, and `rc-cycle` guards it by another
-    // mechanism: a slot that dies while a queue entry names it is
-    // withheld from the allocator by the free below, and only the
-    // retirement of that entry returns it (`rfc/model/gc/rc-cycle.md`,
-    // "Zero-count entities pending slot reuse"; `memory::stdapi::ll_free`). So the body a
-    // reader may still reach through the entry stays where the death
-    // left it.
+    // The teardown is counted from here to the end of the frame, and every
+    // fire point inside it collects nothing ([`InsideTeardown`]). What the
+    // count does not guard is the slot: a slot that dies while a
+    // queue entry names it is withheld from the allocator by the free below,
+    // and only the retirement of that entry returns it
+    // (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse";
+    // `memory::stdapi::ll_free`). So the body a reader may still reach
+    // through the entry stays where the death left it.
+    let _teardown = InsideTeardown::enter();
 
     let dispose: DisposeFn = unsafe { std::mem::transmute((*(*obj).class).dispose) };
     if unsafe { dispose(obj) } {

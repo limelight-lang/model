@@ -10,14 +10,23 @@
 //! The injection is `block_pool::budget_blocks` rather than `FORCE_OOM`: a
 //! budget refuses this thread only, and refuses after counting the request, so
 //! a case can read both that the pool was asked and what a teardown gave back.
+//! Which allocation the pool refused is read off `take_refused_entity_refills`,
+//! by size class: the pool's count is blind to its requester, and a case that
+//! names the refusal it forces proves it there (`dev/POSTMORTEM.md`, "an
+//! allocation moved earlier re-aimed four refusal tests, and their counters
+//! could not see it").
 
 use super::*;
 
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::collect::take_pressure_collections;
+use crate::cycle::token::testing::HeldByACollector;
+use crate::cycle::token::this_thread_token;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader, budget_blocks, take_pool_requests};
+use crate::object::Object;
 use crate::refcount::{RcHeader, SlotState, slot_state};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A class whose instance fills one size class exactly, with `fillers`
 /// properties behind the first deciding which class that is.
@@ -32,10 +41,24 @@ use crate::refcount::{RcHeader, SlotState, slot_state};
 /// widest class, which `the_allocation_itself` drains and reads the identity
 /// of the slot that comes back from.
 fn a_class_of_its_own(name: &str, fillers: usize) -> *const Class {
+    a_class_of_its_own_destroyed_by(name, fillers, None)
+}
+
+/// [`a_class_of_its_own`] with a destructor, for the case whose dying object
+/// stands in the class it fills.
+fn a_class_of_its_own_destroyed_by(
+    name: &str,
+    fillers: usize,
+    destructor: Option<*const ()>,
+) -> *const Class {
     let mut builder = ClassBuilder::new(name).prop("child", true);
     let names: Vec<String> = (0..fillers).map(|i| format!("f{i}")).collect();
     for filler in &names {
         builder = builder.prop(filler, true);
+    }
+
+    if let Some(destructor) = destructor {
+        builder = builder.destructor(destructor);
     }
 
     let class = builder.build();
@@ -54,9 +77,22 @@ fn a_class_of_its_own(name: &str, fillers: usize) -> *const Class {
 
 /// How many slots of `class`'s size one block holds.
 fn slots_per_block(class: *const Class) -> usize {
+    BLOCK_PAYLOAD / SIZE_CLASSES[class_index(class)]
+}
+
+/// The size class `class`'s instances are served from.
+fn class_index(class: *const Class) -> usize {
     let size = unsafe { (*class).object_size } as usize;
-    let ci = size_class_index(size).expect("a size class serves this instance");
-    BLOCK_PAYLOAD / SIZE_CLASSES[ci]
+    size_class_index(size).expect("a size class serves this instance")
+}
+
+/// Refused entity refills since the last reading, as the count at `class`'s
+/// size class and the count at every other, so that a case asserts both that
+/// its allocation was refused and that no other was.
+fn refused_refills_at(class: *const Class) -> (usize, usize) {
+    let refused = take_refused_entity_refills();
+    let at_class = refused[class_index(class)];
+    (at_class, refused.iter().sum::<usize>() - at_class)
 }
 
 /// The block `slot` stands in, as an address.
@@ -128,7 +164,7 @@ unsafe fn give_back(slots: &[*mut u8]) {
 fn a_refusal_starts_one_collection_and_asks_once_more() {
     let _g = crate::memory::block_pool::test_guard();
 
-    let (collections, requests, armed) = std::thread::spawn(|| {
+    let (collections, requests, refused, armed) = std::thread::spawn(|| {
         assert!(ll_thread_init(), "the pool served this thread");
         // The collection workspace is a block, drawn at a thread's first
         // collection: taken here rather than inside the budgeted window, where
@@ -146,10 +182,12 @@ fn a_refusal_starts_one_collection_and_asks_once_more() {
         let _budgeted = budget_blocks(0);
         let _ = take_pool_requests();
         let _ = take_pressure_collections();
+        let _ = take_refused_entity_refills();
         let taken = unsafe { take_slots_until_refused(size, bound) };
         let answer = (
             take_pressure_collections(),
             take_pool_requests(),
+            refused_refills_at(class),
             crate::gc::is_armed(),
         );
 
@@ -168,6 +206,12 @@ fn a_refusal_starts_one_collection_and_asks_once_more() {
     assert_eq!(
         requests, 3,
         "one refused pool request before the served retry, then two at final exhaustion"
+    );
+    assert_eq!(
+        refused,
+        (3, 0),
+        "and every one of the three was this class's entity refill: the collection's own \
+         allocations were served"
     );
     assert!(
         !armed,
@@ -283,5 +327,568 @@ fn a_freed_members_slot_serves_the_retry_under_the_pool_cap() {
     assert_eq!(
         reused, 3,
         "the cap forces all three member slots to serve later requests"
+    );
+}
+
+/// The slow path waits on this thread's own token while a collector holds it,
+/// and the collection it then runs serves the retry. Whether it waited is read
+/// off the token's count of waits, and the holder lets go only once that count
+/// has moved: a case that only terminates terminates most easily when the
+/// wait is never taken.
+#[test]
+fn a_refusal_under_a_held_token_waits_for_the_release_and_is_then_served() {
+    let _g = crate::memory::block_pool::test_guard();
+
+    let (waited, collections, reused) = std::thread::spawn(|| {
+        assert!(ll_thread_init(), "the pool served this thread");
+        crate::cycle::queue::warm_workspace_base();
+
+        let class = a_class_of_its_own("RefusalHeldToken", 30);
+        let size = unsafe { (*class).object_size } as usize;
+        let bound = 4 * slots_per_block(class);
+        let mut arena = Arena::new();
+        let ring = unsafe { crate::cycle::testing::ring(&mut arena, [class, class, class]) };
+        crate::gc::disarm();
+
+        let waits_before = unsafe { (*this_thread_token()).waits() };
+        let _budgeted = budget_blocks(0);
+        let _ = take_pressure_collections();
+        // Released by the holder itself, once the count says this thread is
+        // waiting; the guard joins it on the way out either way.
+        let _held = HeldByACollector::take(this_thread_token(), true);
+        let taken = unsafe { take_slots_until_refused(size, bound) };
+
+        let members: Vec<usize> = ring.iter().map(|&member| member as usize).collect();
+        let reused = taken
+            .iter()
+            .filter(|&&slot| members.contains(&(slot as usize)))
+            .count();
+        let answer = (
+            unsafe { (*this_thread_token()).waits() } - waits_before,
+            take_pressure_collections(),
+            reused,
+        );
+
+        drop(_budgeted);
+        unsafe { give_back(&taken) };
+        answer
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(
+        waited, 1,
+        "the collection the refusal started went to wait on the held token once"
+    );
+    assert_eq!(
+        collections, 2,
+        "and ran once released, the final exhaustion collecting a second time"
+    );
+    assert_eq!(reused, 3, "the ring it freed is what served the retry");
+}
+
+/// What `allocating_destructor` was answered, summed over its runs since
+/// `clear_destructor_readings`: runs, runs answered null, pressure
+/// collections opened inside a run, refills refused at the filler's class
+/// and at every other, and the address the last run was answered. Sums in
+/// atomics rather than a `Mutex`-held list, because the destructor runs
+/// inside a collection.
+static DESTRUCTOR_READINGS: AtomicUsize = AtomicUsize::new(0);
+static DESTRUCTOR_NULLS: AtomicUsize = AtomicUsize::new(0);
+static DESTRUCTOR_COLLECTIONS: AtomicUsize = AtomicUsize::new(0);
+static DESTRUCTOR_REFUSED_HERE: AtomicUsize = AtomicUsize::new(0);
+static DESTRUCTOR_REFUSED_ELSEWHERE: AtomicUsize = AtomicUsize::new(0);
+static DESTRUCTOR_SLOT: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    /// The filler class the destructor below allocates in, set by the case
+    /// on its own thread before the collection runs.
+    static FILLER: std::cell::Cell<*const Class> = const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// A destructor that asks for a slot of the filler's class, which the case
+/// has filled under a budget of zero, and records what it was answered.
+unsafe extern "C" fn allocating_destructor(_object: *mut Object) {
+    let filler = FILLER.with(std::cell::Cell::get);
+    let size = unsafe { (*filler).object_size } as usize;
+    let _ = take_pressure_collections();
+    let _ = take_refused_entity_refills();
+    let slot = unsafe { entity_alloc(size) };
+    let (here, elsewhere) = refused_refills_at(filler);
+    DESTRUCTOR_SLOT.store(slot as usize, Ordering::Relaxed);
+    DESTRUCTOR_READINGS.fetch_add(1, Ordering::Relaxed);
+    DESTRUCTOR_NULLS.fetch_add(slot.is_null() as usize, Ordering::Relaxed);
+    DESTRUCTOR_COLLECTIONS.fetch_add(take_pressure_collections(), Ordering::Relaxed);
+    DESTRUCTOR_REFUSED_HERE.fetch_add(here, Ordering::Relaxed);
+    DESTRUCTOR_REFUSED_ELSEWHERE.fetch_add(elsewhere, Ordering::Relaxed);
+    if !slot.is_null() {
+        unsafe { give_back(&[slot]) };
+    }
+}
+
+/// Zero the destructor's readings, under the guard that serialises the
+/// cases that take them.
+fn clear_destructor_readings() {
+    for reading in [
+        &DESTRUCTOR_READINGS,
+        &DESTRUCTOR_NULLS,
+        &DESTRUCTOR_COLLECTIONS,
+        &DESTRUCTOR_REFUSED_HERE,
+        &DESTRUCTOR_REFUSED_ELSEWHERE,
+        &DESTRUCTOR_SLOT,
+    ] {
+        reading.store(0, Ordering::Relaxed);
+    }
+}
+
+/// A shortage inside a destructor of a collection already running collects
+/// nothing and reports: the gate refuses the collection — on the collecting
+/// flag, the collection's destructor pass running no teardown of its own —
+/// the retry is asked all the same, and the destructor is answered null.
+///
+/// The filler's class is filled under the budget before the ring is built and
+/// the budget is lifted for the build, because filling it is itself a refusal
+/// and the collection that refusal starts would take the ring.
+#[test]
+fn a_shortage_inside_a_destructor_collects_nothing_and_reports() {
+    let _g = crate::memory::block_pool::test_guard();
+    clear_destructor_readings();
+
+    let freed = std::thread::spawn(|| {
+        assert!(ll_thread_init(), "the pool served this thread");
+        crate::cycle::queue::warm_workspace_base();
+        crate::gc::disarm();
+
+        let filler = a_class_of_its_own("RefusalDepthFiller", 446);
+        FILLER.with(|cell| cell.set(filler));
+        let size = unsafe { (*filler).object_size } as usize;
+        let bound = 4 * slots_per_block(filler);
+        let budgeted = budget_blocks(0);
+        let taken = unsafe { take_slots_until_refused(size, bound) };
+        drop(budgeted);
+
+        let dying = ClassBuilder::new("RefusalDepthNode")
+            .prop("next", true)
+            .destructor(allocating_destructor as *const ())
+            .build();
+        let mut arena = Arena::new();
+        let _ring = unsafe { crate::cycle::testing::ring(&mut arena, [dying, dying]) };
+
+        let _budgeted = budget_blocks(0);
+        let freed = unsafe { crate::gc::ll_gc_collect_cycles() };
+
+        drop(_budgeted);
+        unsafe { give_back(&taken) };
+        freed
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(freed, 2, "the outer collection frees its ring");
+    assert_eq!(
+        DESTRUCTOR_READINGS.load(Ordering::Relaxed),
+        2,
+        "both destructors ran"
+    );
+    assert_eq!(
+        DESTRUCTOR_NULLS.load(Ordering::Relaxed),
+        2,
+        "and each was answered null"
+    );
+    assert_eq!(
+        DESTRUCTOR_COLLECTIONS.load(Ordering::Relaxed),
+        0,
+        "with no collection opened inside the one running"
+    );
+    assert_eq!(
+        (
+            DESTRUCTOR_REFUSED_HERE.load(Ordering::Relaxed),
+            DESTRUCTOR_REFUSED_ELSEWHERE.load(Ordering::Relaxed)
+        ),
+        (4, 0),
+        "each refusal being the filler's refill, asked twice: the attempt and the retry"
+    );
+}
+
+/// A size class whose block holds nothing but cyclic garbage serves a request
+/// for every one of its slots, with no collection asked for by name: the
+/// first refusal collects the rings, and the retry and every request after it
+/// are served off their slots.
+///
+/// The block is filled by taking every free slot under the budget, giving
+/// them back, and building rings out of that room; what the rings leave over
+/// is taken again as unpublished fillers, so the rings are the only garbage
+/// in the class and the count of slots served is the count of their members.
+#[test]
+fn a_class_full_of_cyclic_garbage_serves_a_request_for_each_member() {
+    let _g = crate::memory::block_pool::test_guard();
+
+    let (members, served, collections, refused, armed) = std::thread::spawn(|| {
+        assert!(ll_thread_init(), "the pool served this thread");
+        crate::cycle::queue::warm_workspace_base();
+        crate::gc::disarm();
+
+        let class = a_class_of_its_own("RefusalFullOfRings", 222);
+        let size = unsafe { (*class).object_size } as usize;
+        let bound = 4 * slots_per_block(class);
+        // One slot before the budget, so that the class has a block at all:
+        // a class this thread never allocated in holds nothing to fill.
+        let first = unsafe { entity_alloc(size) };
+        assert!(!first.is_null(), "the pool served the class's first block");
+        let _budgeted = budget_blocks(0);
+        let mut room = unsafe { take_slots_until_refused(size, bound) };
+        room.push(first);
+        let free_slots = room.len();
+        unsafe { give_back(&room) };
+
+        let rings = free_slots / 3;
+        let mut arena = Arena::new();
+        for _ in 0..rings {
+            let _ = unsafe { crate::cycle::testing::ring(&mut arena, [class, class, class]) };
+        }
+
+        let leftover: Vec<*mut u8> = (0..free_slots % 3)
+            .map(|_| {
+                let slot = unsafe { entity_alloc(size) };
+                assert!(!slot.is_null(), "the room the rings left over is served");
+                slot
+            })
+            .collect();
+
+        let _ = take_pressure_collections();
+        let _ = take_refused_entity_refills();
+        let served = unsafe { take_slots_until_refused(size, bound) };
+        let answer = (
+            3 * rings,
+            served.len(),
+            take_pressure_collections(),
+            refused_refills_at(class),
+            crate::gc::is_armed(),
+        );
+
+        drop(_budgeted);
+        unsafe { give_back(&served) };
+        unsafe { give_back(&leftover) };
+        answer
+    })
+    .join()
+    .unwrap();
+
+    assert!(members > 0, "the class held at least one ring");
+    assert_eq!(
+        served, members,
+        "one slot per ring member was served before the class was exhausted"
+    );
+    assert_eq!(
+        collections, 2,
+        "the first refusal collected the rings and the exhaustion collected once more"
+    );
+    assert_eq!(
+        refused,
+        (3, 0),
+        "three refusals of this class's refill: one served by the rings, two at exhaustion"
+    );
+    assert!(
+        !armed,
+        "every round traced every root, so nothing is handed to the poll"
+    );
+}
+
+/// The same shortage at teardown depth one with no collection running: an
+/// ordinary release's destructor. The teardown alone closes the gate, so the
+/// destructor is answered null with no collection opened; the refusal arms the
+/// thread, and the ring that is garbage meanwhile is collected by the poll at
+/// the next clean point.
+#[test]
+fn a_shortage_inside_an_ordinary_teardown_collects_nothing_and_reports() {
+    let _g = crate::memory::block_pool::test_guard();
+    clear_destructor_readings();
+
+    let collected_after = std::thread::spawn(|| {
+        assert!(ll_thread_init(), "the pool served this thread");
+        crate::cycle::queue::warm_workspace_base();
+        crate::gc::disarm();
+
+        let filler = a_class_of_its_own("RefusalTeardownFiller", 382);
+        FILLER.with(|cell| cell.set(filler));
+        let size = unsafe { (*filler).object_size } as usize;
+        let bound = 4 * slots_per_block(filler);
+        let budgeted = budget_blocks(0);
+        let taken = unsafe { take_slots_until_refused(size, bound) };
+        drop(budgeted);
+
+        let dying = ClassBuilder::new("RefusalTeardownNode")
+            .prop("next", true)
+            .destructor(allocating_destructor as *const ())
+            .build();
+        let garbage = ClassBuilder::new("RefusalTeardownGarbage")
+            .prop("next", true)
+            .build();
+        let mut arena = Arena::new();
+        let _ring = unsafe { crate::cycle::testing::ring(&mut arena, [garbage, garbage]) };
+        let mut context = crate::memory::context::LLContext { arena: &mut arena };
+        let object = unsafe {
+            crate::object::new_constructed(
+                &mut context,
+                dying,
+                crate::refcount::MemoryCategory::GcHeap,
+            )
+        };
+
+        let _budgeted = budget_blocks(0);
+        assert!(
+            !crate::gc::is_armed(),
+            "nothing before the death armed the thread"
+        );
+        // The verdict and the death, as the compiler emits them: the release
+        // answers and the caller runs the teardown.
+        let died = unsafe { crate::refcount::ll_release(object as *mut RcHeader) };
+        assert!(died, "the release was the last reference");
+        unsafe { crate::object::ll_object_die(object) };
+        // The poll and not the explicit fire: what it reads is that the
+        // refusal armed the thread, since nothing else in this case does.
+        let collected_after = unsafe { crate::gc::ll_gc_maybe_collect() };
+
+        drop(_budgeted);
+        unsafe { give_back(&taken) };
+        collected_after
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(
+        DESTRUCTOR_READINGS.load(Ordering::Relaxed),
+        1,
+        "the destructor ran"
+    );
+    assert_eq!(
+        DESTRUCTOR_NULLS.load(Ordering::Relaxed),
+        1,
+        "and was answered null"
+    );
+    assert_eq!(
+        DESTRUCTOR_COLLECTIONS.load(Ordering::Relaxed),
+        0,
+        "with no collection opened inside the teardown"
+    );
+    assert_eq!(
+        (
+            DESTRUCTOR_REFUSED_HERE.load(Ordering::Relaxed),
+            DESTRUCTOR_REFUSED_ELSEWHERE.load(Ordering::Relaxed)
+        ),
+        (2, 0),
+        "the refusal being the filler's refill, asked twice"
+    );
+    assert_eq!(
+        collected_after, 2,
+        "and the poll at the clean point after it collects the ring the refusal armed it for"
+    );
+}
+
+/// A refusal at teardown depth one still returns what a completed death
+/// withheld: the slot of a candidate that died before this teardown stands
+/// withheld until a retirement, every retirement runs inside a collection, and
+/// the gate refuses the collection — so the refused branch retires on its own,
+/// and the retry is served off that slot with no collection opened.
+///
+/// The withheld slot is made after the fill and before the budget, because
+/// the fill's own refusal collects, and that collection would retire it.
+#[test]
+fn a_refusal_inside_a_teardown_retires_the_completed_deaths_and_is_served() {
+    let _g = crate::memory::block_pool::test_guard();
+    clear_destructor_readings();
+
+    let (withheld, armed) = std::thread::spawn(|| {
+        assert!(ll_thread_init(), "the pool served this thread");
+        crate::cycle::queue::warm_workspace_base();
+        crate::gc::disarm();
+
+        let filler = a_class_of_its_own("RefusalRetiringFiller", 158);
+        FILLER.with(|cell| cell.set(filler));
+        let size = unsafe { (*filler).object_size } as usize;
+        let bound = 4 * slots_per_block(filler);
+        let mut arena = Arena::new();
+        let mut context = crate::memory::context::LLContext { arena: &mut arena };
+        // A registered candidate of the filler's class, alive through the
+        // fill: a retain and a release are the non-zero decrement that
+        // registers it.
+        let candidate = unsafe {
+            crate::object::new_constructed(
+                &mut context,
+                filler,
+                crate::refcount::MemoryCategory::GcHeap,
+            )
+        };
+        unsafe {
+            crate::refcount::ll_retain(candidate as *mut RcHeader);
+            assert!(!crate::refcount::ll_release(candidate as *mut RcHeader));
+        }
+        let dying = ClassBuilder::new("RefusalRetiringNode")
+            .prop("next", true)
+            .destructor(allocating_destructor as *const ())
+            .build();
+        let object = unsafe {
+            crate::object::new_constructed(
+                &mut context,
+                dying,
+                crate::refcount::MemoryCategory::GcHeap,
+            )
+        };
+
+        let budgeted = budget_blocks(0);
+        let taken = unsafe { take_slots_until_refused(size, bound) };
+        drop(budgeted);
+
+        // The candidate dies now, with the class full: its slot is withheld,
+        // the queue entry naming it.
+        assert!(unsafe { crate::refcount::ll_release(candidate as *mut RcHeader) });
+        unsafe { crate::object::ll_object_die(candidate as *mut Object) };
+        assert_eq!(
+            unsafe { slot_state(candidate as *mut RcHeader) },
+            SlotState::DeadInPlace,
+            "the candidate's slot is withheld, not on the free list"
+        );
+
+        let _budgeted = budget_blocks(0);
+        assert!(
+            !crate::gc::is_armed(),
+            "nothing before the death armed the thread"
+        );
+        assert!(unsafe { crate::refcount::ll_release(object as *mut RcHeader) });
+        unsafe { crate::object::ll_object_die(object) };
+        let armed = crate::gc::is_armed();
+
+        drop(_budgeted);
+        unsafe { give_back(&taken) };
+        (candidate as usize, armed)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(
+        DESTRUCTOR_READINGS.load(Ordering::Relaxed),
+        1,
+        "the destructor ran"
+    );
+    assert_eq!(
+        DESTRUCTOR_NULLS.load(Ordering::Relaxed),
+        0,
+        "and was served"
+    );
+    assert_eq!(
+        DESTRUCTOR_SLOT.load(Ordering::Relaxed),
+        withheld,
+        "off the slot the completed death had withheld"
+    );
+    assert_eq!(
+        DESTRUCTOR_COLLECTIONS.load(Ordering::Relaxed),
+        0,
+        "with no collection opened inside the teardown"
+    );
+    assert_eq!(
+        (
+            DESTRUCTOR_REFUSED_HERE.load(Ordering::Relaxed),
+            DESTRUCTOR_REFUSED_ELSEWHERE.load(Ordering::Relaxed)
+        ),
+        (1, 0),
+        "one refusal of the filler's refill, the retry served without one"
+    );
+    assert!(armed, "and the refusal armed the thread");
+}
+
+/// The retirement a depth refusal runs passes over a dying object a queue
+/// entry names: at teardown depth two — a child's destructor inside its
+/// holder's `dispose` — the holder stands at count zero with no
+/// `DEAD_IN_PLACE` until the free at the end of its own frame, so it is kept
+/// as an unfinished death and that free is the first. A retirement that
+/// returned it would make the free a second one, which `ll_free` refuses and
+/// the crate aborts on.
+///
+/// The holder is of the filler's class, so that its own slot is the one a
+/// wrong retirement would hand the child's destructor.
+#[test]
+fn a_refusal_inside_a_teardown_keeps_the_dying_candidate_registered() {
+    let _g = crate::memory::block_pool::test_guard();
+    clear_destructor_readings();
+
+    let (holder_address, state_after) = std::thread::spawn(|| {
+        assert!(ll_thread_init(), "the pool served this thread");
+        crate::cycle::queue::warm_workspace_base();
+        crate::gc::disarm();
+
+        let filler = a_class_of_its_own("RefusalDyingCandidateFiller", 94);
+        FILLER.with(|cell| cell.set(filler));
+        let size = unsafe { (*filler).object_size } as usize;
+        let bound = 4 * slots_per_block(filler);
+        let child_class = ClassBuilder::new("RefusalDyingCandidateChild")
+            .prop("next", true)
+            .destructor(allocating_destructor as *const ())
+            .build();
+        let mut arena = Arena::new();
+        let mut context = crate::memory::context::LLContext { arena: &mut arena };
+        let holder = unsafe {
+            crate::object::new_constructed(
+                &mut context,
+                filler,
+                crate::refcount::MemoryCategory::GcHeap,
+            )
+        };
+        let child = unsafe {
+            crate::object::new_constructed(
+                &mut context,
+                child_class,
+                crate::refcount::MemoryCategory::GcHeap,
+            )
+        };
+        // The holder's slot is the child's only reference once the creation
+        // reference is spent, and the holder is registered by a retain and a
+        // release — the non-zero decrement.
+        unsafe {
+            crate::test_support::store_prop(
+                &mut arena,
+                holder,
+                crate::test_support::prop_offset(0),
+                child,
+            );
+            assert!(!crate::refcount::ll_release(child as *mut RcHeader));
+            crate::refcount::ll_retain(holder as *mut RcHeader);
+            assert!(!crate::refcount::ll_release(holder as *mut RcHeader));
+        }
+
+        let budgeted = budget_blocks(0);
+        let taken = unsafe { take_slots_until_refused(size, bound) };
+        drop(budgeted);
+
+        let _budgeted = budget_blocks(0);
+        assert!(unsafe { crate::refcount::ll_release(holder as *mut RcHeader) });
+        unsafe { crate::object::ll_object_die(holder) };
+        let state_after = unsafe { slot_state(holder as *mut RcHeader) };
+
+        drop(_budgeted);
+        unsafe { give_back(&taken) };
+        (holder as usize, state_after)
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(
+        DESTRUCTOR_READINGS.load(Ordering::Relaxed),
+        1,
+        "the child's destructor ran"
+    );
+    assert_eq!(
+        DESTRUCTOR_NULLS.load(Ordering::Relaxed),
+        1,
+        "and was answered null: the one zero-count slot of the class is its holder's, unfinished"
+    );
+    assert_ne!(
+        DESTRUCTOR_SLOT.load(Ordering::Relaxed),
+        holder_address,
+        "so the retirement did not hand the destructor its holder's slot"
+    );
+    assert_eq!(
+        state_after,
+        SlotState::DeadInPlace,
+        "and the holder's own free took the slot once"
     );
 }

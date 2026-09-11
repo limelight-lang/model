@@ -8,6 +8,23 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-11 — S38.4 the teardown-depth bracket costs nothing the death bench resolves
+
+`lifecycle/create_release_die`, `cargo bench --bench lifecycle`, three runs
+each side on the development box with the suite idle, Criterion's point
+estimate quoted:
+
+| tree | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| before, `d960b68` | 15.00 ns | 15.52 ns | 15.67 ns |
+| after, `TEARDOWN_DEPTH` bracketed in `ll_object_die` | 14.75 ns | 14.81 ns | 14.75 ns |
+
+The spread between the three "before" runs (0.7 ns) is wider than the
+difference between the sides, so the two thread-local `Cell<u32>` stores
+the bracket adds to every object death are below what this bench can see.
+The gate read the poll gained (`cycle::collect::may_collect`) is not on this
+bench's path and is unmeasured.
+
 ## 2026-09-09 — WITHDRAWN: the 56.25 %, 37.5 % and 25 % pruning ladder aged scan-live rows the built collector never stamps
 
 **Withdrawn the same day.** This was a calibration of threshold arithmetic,

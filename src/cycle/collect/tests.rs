@@ -630,7 +630,61 @@ fn a_collection_reached_from_a_destructor_is_refused() {
 
     // The refusal is the flag falling with the collection rather than with the
     // process: the next collection of this thread runs.
-    assert!(CollectingThread::take().is_some());
+    assert!(CollectingThread::take().is_ok());
+}
+
+/// A collection asked for from inside a destructor of an ordinary release —
+/// no collection running, no reset open — answers zero as well: the teardown
+/// is counted, and a fire point inside one collects nothing. The arming
+/// survives the refusal, so the next poll at a clean point collects the ring
+/// that stood there all along.
+#[test]
+fn a_collection_reached_from_an_ordinary_teardown_is_refused() {
+    let _g = test_guard();
+    let garbage = ClassBuilder::new("CollectDuringTeardownGarbage")
+        .prop("next", true)
+        .build();
+    let dying = node_class(
+        "CollectDuringTeardownNode",
+        collecting_destructor as *const (),
+    );
+
+    let mut arena = Arena::new();
+    let ring = unsafe { ring(&mut arena, [garbage, garbage]) };
+    let mut context = LLContext { arena: &mut arena };
+    let object = unsafe { new_constructed(&mut context, dying, MemoryCategory::GcHeap) };
+    NESTED_CALLS.store(0, Ordering::Relaxed);
+    NESTED_ANSWERS.store(0, Ordering::Relaxed);
+    crate::gc::disarm();
+
+    // The verdict and the death, as the compiler emits them: the release
+    // answers and the caller runs the teardown.
+    assert!(
+        unsafe { ll_release(object as *mut RcHeader) },
+        "the last reference goes, and the object dies on this release"
+    );
+    unsafe { ll_object_die(object) };
+    assert_eq!(
+        NESTED_CALLS.load(Ordering::Relaxed),
+        1,
+        "the destructor asked for a collection"
+    );
+    assert_eq!(
+        NESTED_ANSWERS.load(Ordering::Relaxed),
+        0,
+        "and the teardown refused it, with a ring standing that an unguarded one would free"
+    );
+    assert!(
+        crate::gc::is_armed(),
+        "the refusal leaves the arming in place"
+    );
+
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "and the poll at the clean point after the teardown collects the ring"
+    );
+    let _ = ring;
 }
 
 mod how_a_close_disposes_of_its_roots;

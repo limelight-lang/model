@@ -45,6 +45,8 @@ C1–C6, P1, V1–V3 (2026-09-09). Runtime не менялся.
 6. `CollectingThread::take` проверяет только `COLLECTING` и
    `reset_window::is_open` (`src/cycle/collect.rs:109`). Общего
    `TEARDOWN_DEPTH` в `model/src` нет. S38.4/RFC требуют его в будущем.
+   *(Дополнение 2026-09-11: построен в S38.4 — `TEARDOWN_DEPTH` в
+   `cycle::collect`, скобка в `ll_object_die`, читается `may_collect`.)*
 7. Ordinary commit использует `Membership::Rows` до закрытия ActiveTrace
    (`collect.rs:178–199`). Pressure harvest закрывает trace до commit
    (`collect.rs:356–387`), список ограничен 1024
