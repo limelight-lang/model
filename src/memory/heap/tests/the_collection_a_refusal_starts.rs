@@ -892,3 +892,58 @@ fn a_refusal_inside_a_teardown_keeps_the_dying_candidate_registered() {
         "and the holder's own free took the slot once"
     );
 }
+
+/// A destructor that asks for the thread's exit, from inside the collection
+/// an allocation refusal started.
+unsafe extern "C" fn exit_requesting_destructor(_object: *mut Object) {
+    crate::memory::heap::ll_thread_exit();
+}
+
+/// A destructor of the collection the refusal started asks for the thread's
+/// exit: the request waits for the thread's top, the retry is served off the
+/// ring the collection freed, and the loop goes on to a second refusal on a
+/// live heap (`dev/DECISIONS.md`, "an exit requested inside a collection runs
+/// at the thread's top").
+#[test]
+fn a_refusal_whose_destructor_asks_for_the_exit_is_still_served() {
+    let _g = crate::memory::block_pool::test_guard();
+
+    let (collections, heap_alive, pending) = std::thread::spawn(|| {
+        assert!(ll_thread_init(), "the pool served this thread");
+        crate::cycle::queue::warm_workspace_base();
+
+        let class = a_class_of_its_own_destroyed_by(
+            "RefusalExitRequesting",
+            94,
+            Some(exit_requesting_destructor as *const ()),
+        );
+        let size = unsafe { (*class).object_size } as usize;
+        let bound = 4 * slots_per_block(class);
+        let mut arena = Arena::new();
+        let _ring = unsafe { crate::cycle::testing::ring(&mut arena, [class, class, class]) };
+        drop(arena);
+        crate::gc::disarm();
+
+        let _budgeted = budget_blocks(0);
+        let _ = take_pressure_collections();
+        let taken = unsafe { take_slots_until_refused(size, bound) };
+        let answer = (
+            take_pressure_collections(),
+            !crate::memory::heap::thread_entity_heap().is_null(),
+            crate::memory::heap::thread_exit_pending(),
+        );
+
+        drop(_budgeted);
+        unsafe { give_back(&taken) };
+        answer
+    })
+    .join()
+    .unwrap();
+
+    assert_eq!(
+        collections, 2,
+        "the first refusal collected the ring and its retry was served; the second found nothing"
+    );
+    assert!(heap_alive, "the thread kept its heap");
+    assert!(pending, "with the exit waiting for the top");
+}

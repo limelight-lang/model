@@ -409,6 +409,14 @@ pub(crate) fn take_edge_dispatches() -> usize {
     EDGE_DISPATCHES.with(|count| count.replace(0))
 }
 
+/// Dispatches since the last [`take_edge_dispatches`], left standing: the
+/// reading a seam inside a collection takes, where a take would zero what
+/// the boundaries after it are measured from.
+#[cfg(test)]
+pub(crate) fn edge_dispatches_so_far() -> usize {
+    EDGE_DISPATCHES.with(std::cell::Cell::get)
+}
+
 // What `EDGE_DISPATCHES` stood at when the mark of the current trace
 // ended (tests only). Both phases dispatch over the same edges, so the
 // total alone cannot say how many one phase made.

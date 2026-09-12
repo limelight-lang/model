@@ -802,9 +802,19 @@ decided from counts carried in the objects themselves.
 
 **Thread exit is now a sequence, not a single act.** Before A6 it only
 gave blocks back; since 2026-08-03 it first releases what the thread's
-*static blocks* held (`static_block.rs`), which is the only step that
-runs user code and therefore goes first, while every structure a
-`__destruct` may touch is still alive. Then the weak table, whose rows are a
+*static blocks* held (`static_block.rs`), which runs user code and
+therefore goes first, while every structure a `__destruct` may touch is
+still alive. Then the exit waits for any trace over the thread's blocks and
+collects what the thread left registered — the roots the static teardown
+just released among them — in rounds until one makes no progress, the
+second and last step that runs user code; what it could not take keeps its
+candidate bit into the abandoned blocks and is reported as the exit's
+residue (`cycle::collect::collect_before_exit`; `dev/DECISIONS.md`, "a
+thread waits for the trace, collects, and then exits"). An exit a
+destructor asks for — inside a collection, a teardown or a reset — is
+recorded and runs at the thread's top, the frames above the destructor
+keeping their heap (`dev/DECISIONS.md`, "an exit requested inside a
+collection runs at the thread's top"). Then the weak table, whose rows are a
 long-lived buffer payload and, while they fit a chunk, have to go back before
 the arena that granted them, then the
 buffer arena, and only then the heaps — two steps shorter since

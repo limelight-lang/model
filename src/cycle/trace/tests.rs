@@ -85,10 +85,10 @@ fn two_rings() -> TwoRings {
 /// drops the records without touching the bits, and `ll_free`'s candidate arm
 /// withholds the slot of anything whose bit still stands, so a teardown that
 /// skipped this would leave both slots and their block out for the life of the
-/// process. Nothing in production clears the bit — a collection's commit frees
-/// a member into that arm rather than around it — and `PLAN.md` S39.2 is the
-/// step that chooses the fate of the record behind it
-/// (`crate::refcount::clear_candidate_bit`).
+/// process. A collection's commit frees a member into that arm rather than
+/// around it, and the retirement that clears the bit runs at a collection's
+/// close and at thread exit, neither of which this case runs
+/// (`cycle::queue::retire_candidates`; `crate::refcount::clear_candidate_bit`).
 fn tear_down(rings: TwoRings) {
     let TwoRings {
         mut arena,

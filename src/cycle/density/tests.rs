@@ -18,6 +18,7 @@ use crate::cycle::arena::RowLookup;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
 use crate::cycle::row::{EdgeTarget, RowKey, resolve_edge_target};
 use crate::cycle::shadow;
+use crate::cycle::testing::on_a_fresh_thread;
 use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::BLOCK_MASK;
@@ -213,19 +214,6 @@ fn collect() -> Reading {
         mark_resolutions: crate::cycle::row::take_dispatches_in_mark_phase(),
         trace_resolutions: crate::cycle::row::take_edge_dispatches(),
     }
-}
-
-/// Run `case` on a thread whose heap no other case has touched.
-fn on_a_fresh_thread<T: Send + 'static>(case: impl FnOnce() -> T + Send + 'static) -> T {
-    std::thread::spawn(move || {
-        assert!(
-            crate::memory::heap::ll_thread_init(),
-            "the pool served this thread"
-        );
-        case()
-    })
-    .join()
-    .expect("the case finished")
 }
 
 // The loads the step records, which are ignored in the ordinary suite:

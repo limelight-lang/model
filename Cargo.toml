@@ -25,6 +25,12 @@ default = []
 # for a timing run.
 probe-counters = []
 
+# The loads `PLAN.md` S40.3 reads and the one fixture hook its driver in
+# `benches/` needs, compiled into the ordinary library for that driver
+# alone. Off by default and on no gate: the driver's file compiles to an
+# empty `main` without it, so `cargo bench --no-run` still builds it.
+bench-loads = []
+
 # Saturate the reference count instead of letting it wrap. Off by
 # default: `refcount` is a `u32`, so wrapping needs four billion live
 # references — at least 32 GB of pointers just to hold them — which no
@@ -114,6 +120,14 @@ harness = false
 
 [[bench]]
 name = "strings"
+harness = false
+
+# The hardware arm of `PLAN.md` S40.3: a driver over the loads, run under
+# `perf stat` by hand. Built with `--features bench-loads`; without it the
+# binary compiles to a line of output, so the gate's `--no-run` still checks
+# every API it names outside the two gated calls.
+[[bench]]
+name = "census_driver"
 harness = false
 
 [profile.release]

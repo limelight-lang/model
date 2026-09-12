@@ -136,6 +136,80 @@ const _: () = assert!(
     "a threshold above the age field's bound prunes no edge at all"
 );
 
+/// What one mark reads a stamp against: the collection's epoch, and the age
+/// at which a target of that epoch is an opaque live external.
+///
+/// Both are read once per [`mark`] call (module doc, "The epoch is one reading
+/// per call"), the threshold being [`TRAVERSAL_AGE_THRESHOLD`] or the value a
+/// test pinned through [`pin_threshold`].
+#[derive(Clone, Copy)]
+struct Prune {
+    epoch: u32,
+    threshold: u32,
+}
+
+impl Prune {
+    fn of_this_collection() -> Self {
+        Self {
+            epoch: epoch::current(),
+            threshold: traversal_age_threshold(),
+        }
+    }
+}
+
+/// The threshold this thread's marks stop at: [`TRAVERSAL_AGE_THRESHOLD`] in
+/// every build, or the value a test pinned.
+#[inline]
+fn traversal_age_threshold() -> u32 {
+    #[cfg(test)]
+    if let Some(threshold) = PINNED_THRESHOLD.with(std::cell::Cell::get) {
+        return threshold;
+    }
+
+    TRAVERSAL_AGE_THRESHOLD
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Set by [`pin_threshold`] and read once per mark; no drop glue, for the
+    /// reason `crate::cycle::epoch`'s pin has none.
+    static PINNED_THRESHOLD: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// Hold this thread's threshold at `threshold` until the guard is dropped, so
+/// that a measurement can read the pruned-edge count at a `k` the constant
+/// does not carry (`PLAN.md` S40.1).
+///
+/// The pin is this thread's alone and moves no constant: a mark on another
+/// thread reads [`TRAVERSAL_AGE_THRESHOLD`] as before.
+///
+/// # Panics
+/// Outside `1..=MATURATION_AGE_MAX`: zero would prune every stamped target of
+/// the epoch, and a value past the field's bound prunes nothing.
+#[cfg(test)]
+pub(crate) fn pin_threshold(threshold: u32) -> ThresholdPin {
+    assert!(
+        (1..=MATURATION_AGE_MAX).contains(&threshold),
+        "a threshold of {threshold} is outside the age field's range"
+    );
+    let restored = PINNED_THRESHOLD.with(|cell| cell.replace(Some(threshold)));
+    ThresholdPin { restored }
+}
+
+/// The pin [`pin_threshold`] opened, which puts back what this thread read
+/// before it.
+#[cfg(test)]
+pub(crate) struct ThresholdPin {
+    restored: Option<u32>,
+}
+
+#[cfg(test)]
+impl Drop for ThresholdPin {
+    fn drop(&mut self) {
+        PINNED_THRESHOLD.with(|cell| cell.set(self.restored));
+    }
+}
+
 /// What a mark from one root answered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MarkResult {
@@ -186,7 +260,7 @@ pub(crate) unsafe fn mark(arena: &mut TraceScratchArena, root: *mut RcHeader) ->
     // rule, so a second caller of `mark` inherits it with no argument to
     // forget, and the cost of the reading is one per root instead of one per
     // edge (module doc).
-    let epoch = epoch::current();
+    let prune = Prune::of_this_collection();
     if !unsafe { schedule_root_if_unvisited(arena, root) } {
         return MarkResult::AllocationFailed;
     }
@@ -212,7 +286,7 @@ pub(crate) unsafe fn mark(arena: &mut TraceScratchArena, root: *mut RcHeader) ->
                     return;
                 }
 
-                refused = !visit_child(arena, cell.child, epoch);
+                refused = !visit_child(arena, cell.child, prune);
             })
         };
 
@@ -283,16 +357,16 @@ unsafe fn schedule_root_if_unvisited(arena: &mut TraceScratchArena, root: *mut R
 /// alive rather than reading it as unreachable on a row the trace guessed.
 ///
 /// **A mature target takes the same answer**, and the test for it stands above
-/// the block dispatch: `epoch` is the collection's reading of the epoch, and a
-/// child that reads mature against it is left to the entity's own count
-/// without a dispatch of any kind (module doc, "The mature live core is not
-/// descended into").
+/// the block dispatch: `prune` is the collection's reading of the epoch and
+/// the threshold, and a child that reads mature against it is left to the
+/// entity's own count without a dispatch of any kind (module doc, "The mature
+/// live core is not descended into").
 ///
 /// # Safety
 /// As [`mark`], and `child` is a counted child `cells::trace_cells`
 /// yielded, hence a live entity header.
-unsafe fn visit_child(arena: &mut TraceScratchArena, child: *mut RcHeader, epoch: u32) -> bool {
-    if unsafe { stands_as_an_opaque_live_external(child, epoch) } {
+unsafe fn visit_child(arena: &mut TraceScratchArena, child: *mut RcHeader, prune: Prune) -> bool {
+    if unsafe { stands_as_an_opaque_live_external(child, prune) } {
         note_edge_pruned();
         return true;
     }
@@ -325,26 +399,25 @@ unsafe fn visit_child(arena: &mut TraceScratchArena, child: *mut RcHeader, epoch
     }
 }
 
-/// Whether the collections of `epoch` have read this edge target's component
-/// as held from outside often enough for the descent to stop at it.
+/// Whether the collections of `prune.epoch` have read this edge target's
+/// component as held from outside often enough for the descent to stop at it.
 ///
 /// Two fields of one byte decide the first half — an age that has reached
-/// [`TRAVERSAL_AGE_THRESHOLD`] under this collection's own epoch, a stamp of
-/// any other epoch reading as no age at all — and the mutator's flags decide
-/// the second: a target a queue entry names, in whichever lane that entry
-/// stands, is never pruned (module doc). The flags are read only where the stamp already
-/// says mature, which is why the two loads are in this order and not the
-/// reverse.
+/// `prune.threshold` under this collection's own epoch, a stamp of any other
+/// epoch reading as no age at all — and the mutator's flags decide the second:
+/// a target a queue entry names, in whichever lane that entry stands, is never
+/// pruned (module doc). The flags are read only where the stamp already says
+/// mature, which is why the two loads are in this order and not the reverse.
 ///
 /// # Safety
 /// As [`visit_child`]: `child` is a live published entity header. The byte is
 /// the owning thread's to write and this is that thread, so the stamp read
 /// here is whole (`crate::refcount::read_maturation_stamp`).
 #[inline]
-unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, epoch: u32) -> bool {
+unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, prune: Prune) -> bool {
     let stamp = unsafe { read_maturation_stamp(child) };
-    stamp.age >= TRAVERSAL_AGE_THRESHOLD
-        && stamp.epoch == epoch
+    stamp.age >= prune.threshold
+        && stamp.epoch == prune.epoch
         && !is_registered_candidate(unsafe { mutator_flags(child) })
 }
 

@@ -8,6 +8,311 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-12 — S40.3 the census of a collection, and the hardware arm over the same loads
+
+Two readings of the same loads, taken the same day on the tree after the
+Sage's plan commit (inside the day's squashed commit over `ea51cbe`) plus the
+instrument. The census is exact: on every load the roots, the rows met, the
+internal edges, the dispatches, the validations and the repeat across eight
+collections are asserted against the construction, and the bump's identity
+holds on every arena lifetime; `G`, `T`, the lines, the segments, the draws
+and the tails are asserted on the two calibration cases of the ordinary suite
+and on the full block, and read on the rest. The hardware arm is `perf stat`
+over a driver linked to the ordinary library, and its instruction counts
+repeat to the instruction on all but four cells while its cycle counts do not.
+
+**What the two arms are.** The census (`cycle::census`, test builds only) is
+one report per collection, assembled at the scan's end and at the close and
+from counters at the events no final state records; the loads are
+`cycle::loads`, built once and read by both arms. The driver is
+`benches/census_driver.rs`, built with `--features bench-loads`, which compiles
+the loads into the ordinary library and exports one hook, `ll_gc_reoffer_deferred`,
+because a root read live is deferred at the close and the explicit fire re-offers
+nothing. Why the driver and not a `--release` test binary: `cargo test --release`
+keeps `cfg(test)`, under which `row::resolve_edge_target` asserts
+`stands_where_a_block_can` on every dispatch — a walk over the pool's region
+registry — beside the dispatch counter's store, so that binary adds a lookup
+of its own to every lookup the decision weighs (the Sage, `PLAN.md` S40.3).
+
+**Machine:** dev box, 11th-gen Intel i7-11700K under WSL2, shared with
+interactive work; the driver pinned to CPU 2 with `taskset`. **Build:**
+`rustc 1.96.0`; the census in the debug test build, the driver in the bench
+profile. **Commands:**
+
+```
+cargo test --lib census::tests::the_loads -- --ignored --nocapture --test-threads=1
+cargo bench --no-run --features bench-loads --bench census_driver
+PERF=/usr/lib/linux-tools-6.8.0-134/perf dev/tools/census_perf.sh out.csv 2
+```
+
+The script runs every cell twice, A then A, plus the empty interval three
+times. `perf` is the 6.8 build the distribution ships; the kernel's own is not
+installed and the 6.8 one reads this PMU. Events: `instructions:u`, `cycles:u`,
+`L1-dcache-load-misses:u`, `dTLB-load-misses:u`, `branch-misses:u`,
+`cache-misses:u`. `LLC-load-misses` is not supported by this PMU under WSL2, so
+`cache-misses` stands in; on this core it counts `LONGEST_LAT_CACHE.MISS`, which
+is misses in the last-level cache for loads and stores together, and it is not
+the load-only event the plan named. The encodings `perf stat -vv` programmed,
+all with `exclude_kernel` and `exclude_hv` set, on CPU model 167 stepping 1:
+`PERF_TYPE_HARDWARE` config 0x1 (instructions), 0x0 (cycles), 0x5 (branch
+misses), 0x3 (cache misses); `PERF_TYPE_HW_CACHE` config 0x10000 (L1D read
+misses) and 0x10003 (dTLB read misses). No event was multiplexed: six
+programmable counters serve six events.
+
+**The loads.** A registered ring of `n` under a keeper of another size class,
+every member a candidate, dense (no filler) or one member per block (`slots − 1`
+fillers of the members' class between two members); the retained ring, built in
+the request arena and reset into retained blocks, the keeper its one
+registration; and the Sage's four contrasts: 32 members at class 256 consecutive
+against one per group, the full block at classes 256 and 32, 381 members with
+two edges each in both placements, and the ring without its keeper. Eight
+collections per live load through `ll_gc_collect_cycles` under a pinned epoch,
+the spare cells refilled and the deferred lane re-offered by hand before each,
+which is the lane state a collection off the poll is offered.
+
+### The census, in the test build
+
+The first collection of each load; the other seven read the same figures, which
+the case asserts, and the teardown collection is a line of its own in the run's
+output. `V` is rows met, `E` internal edges the mark subtracted, `G`/`T` groups
+reserved and initialised over the touched blocks, lines the distinct 64-byte
+lines the arrays' headers, bitmaps and initialised groups cover. Row bytes are
+requested/granted; segments are worklist/component stack/deferred drops, each
+4,160 bytes; drawn is blocks the bump grew into, pool/reserve; tails is
+count/bytes abandoned; remainder is what the bump could still grant at the
+close. Every line balances: 56,960 + 65,280 × drawn = granted + tails +
+remainder.
+
+| load | roots | V | E | blocks | G | T | lines | rows req/gr | segments | drawn | tails | remainder |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|---:|
+| dense, class 32, 2 | 2 | 2 | 2 | 1 | 255 | 1 | 3 | 8,216/8,216 | 1/1/0 | 0/0 | 0/0 | 40,424 |
+| dense, class 32, 381 | 381 | 381 | 381 | 1 | 255 | 48 | 27 | 8,216/8,216 | 3/2/0 | 0/0 | 0/0 | 27,944 |
+| dense, class 64, 381 | 381 | 381 | 381 | 1 | 128 | 48 | 26 | 4,136/4,136 | 3/2/0 | 0/0 | 0/0 | 32,024 |
+| dense, class 128, 381 | 381 | 381 | 381 | 1 | 64 | 48 | 26 | 2,080/2,080 | 3/2/0 | 0/0 | 0/0 | 34,080 |
+| dense, class 256, 2 | 2 | 2 | 2 | 1 | 32 | 1 | 2 | 1,052/1,056 | 1/1/0 | 0/0 | 0/0 | 47,584 |
+| dense, class 256, 16 | 16 | 16 | 16 | 1 | 32 | 2 | 3 | 1,052/1,056 | 1/1/0 | 0/0 | 0/0 | 47,584 |
+| dense, class 256, 256 | 256 | 256 | 256 | 2 | 64 | 33 | 20 | 2,104/2,112 | 2/1/0 | 0/0 | 0/0 | 42,368 |
+| dense, class 256, 381 | 381 | 381 | 381 | 2 | 64 | 48 | 27 | 2,104/2,112 | 3/2/0 | 0/0 | 0/0 | 34,048 |
+| one per block, class 256, 2 | 2 | 2 | 2 | 2 | 64 | 2 | 5 | 2,104/2,112 | 1/1/0 | 0/0 | 0/0 | 46,528 |
+| one per block, class 256, 16 | 16 | 16 | 16 | 16 | 512 | 16 | 33 | 16,832/16,896 | 1/1/0 | 0/0 | 0/0 | 31,744 |
+| one per block, class 256, 256 | 256 | 256 | 256 | 256 | 8,192 | 256 | 513 | 269,312/270,336 | 2/1/0 | 4/0 | 4/2,592 | 32,672 |
+| one per block, class 256, 381 | 381 | 381 | 381 | 381 | 12,192 | 381 | 763 | 400,812/402,336 | 3/2/0 | 6/0 | 6/4,320 | 21,184 |
+| retained, class 256, 2 | 1 | 1 + 2 | 3 | 2 | 171 | 2 | 4 | 5,543/5,552 | 1/1/0 | 0/0 | 0/0 | 43,088 |
+| retained, class 256, 381 | 1 | 1 + 381 | 382 | 3 | 218 | 49 | 28 | 7,076/7,088 | 3/2/0 | 0/0 | 0/0 | 29,072 |
+| 32 at class 256, consecutive | 32 | 32 | 32 | 1 | 32 | 4 | 4 | 1,052/1,056 | 1/1/0 | 0/0 | 0/0 | 47,584 |
+| 32 at class 256, one per group | 32 | 32 | 32 | 1 | 32 | 32 | 17 | 1,052/1,056 | 1/1/0 | 0/0 | 0/0 | 47,584 |
+| full block, class 256 (255) | 255 | 255 | 255 | 1 | 32 | 32 | 17 | 1,052/1,056 | 2/1/0 | 0/0 | 0/0 | 43,424 |
+| full block, class 32 (2,040) | 2,040 | 2,040 | 2,040 | 1 | 255 | 255 | 129 | 8,216/8,216 | 16/8/0 | 1/0 | 1/2,984 | 11,200 |
+| two edges, dense, class 256, 381 | 381 | 381 | 762 | 2 | 64 | 48 | 27 | 2,104/2,112 | 5/2/0 | 0/0 | 0/0 | 25,728 |
+| two edges, one per block, 381 | 381 | 381 | 762 | 381 | 12,192 | 381 | 763 | 400,812/402,336 | 5/2/0 | 6/0 | 6/4,320 | 12,864 |
+
+The retained lines moved by one or two between two runs of the same tree
+(29 and 28 at 381) while every other column held: the keeper's row is in a
+class-48 block the pool recycles between loads, so the keeper's slot, and
+with it which line its group's 32 bytes straddle, is the pool's choice. A line
+count is a placement reading down to that.
+
+The garbage rings (no keeper, one collection) read the same rows and edges as
+their live twins, one exact validation over all `n` members and no second, no
+component segment (no live row, so no descent) and no drop segment (a ring
+displaces no child that is not a member); the one-per-block 381 draws the same
+six blocks. The retained ring reads its first three collections as above and is
+pruned at the entry from the fourth on: one root, one row, one pruned edge, the
+mark's dispatch count 1, the entry's stamp standing at age 3.
+
+What the table settles: the workspace drawn is the flat form's rows and
+nothing else on every load but one — the only loads that grow past the bump
+are the one-per-block rings of 256 and 381 (4 and 6 blocks, 402,336 bytes of
+row grants for 381 members) and the full block at class 32, where an 8,216-byte
+array beside 16 worklist and 8 component segments is one block over. A dense
+ring of 381 at any class holds inside the bump with 27,944 to 34,048 bytes to
+spare. Group occupancy at fixed density: the two placements of 32 in 256 read
+`T` of 4 against 32 and lines of 4 against 17 at the same `V/R`. The full
+commit's stacks are what the document computed: 3 worklist and 2 component
+segments at 381, 20,800 bytes, and 5 worklist segments with the second edge.
+
+### The hardware arm, per collection
+
+Each cell's interval holds eight iterations of poll, re-offer and collection
+after one warm-up collection; the figures are the interval divided by eight.
+Instructions are quoted once, A1 and A2 agreeing to the instruction on every
+cell but four, which differ by 1 to 52 instructions per collection; cycles and L1D misses are quoted as A1 / A2, and they
+disagree by up to 40 % on the small cells, whose intervals are tens of
+microseconds. dTLB, branch and cache misses are small numbers that do not
+repeat and are in the CSV only. The empty interval — enable, disable, nothing
+between — costs 628 instructions and 5,300 to 8,400 cycles, which is the
+bracket's own share of every cell.
+
+| load | instructions | cycles A1 / A2 | L1D misses A1 / A2 |
+|---|---:|---:|---:|
+| dense, class 32, 2 | 23,081 | 12,092 / 7,039 | 20 / 17 |
+| dense, class 32, 16 | 37,290 | 18,714 / 10,824 | 28 / 20 |
+| dense, class 32, 256 | 282,991 | 94,232 / 102,763 | 463 / 566 |
+| dense, class 32, 381 | 411,125 | 167,264 / 106,482 | 1,439 / 398 |
+| dense, class 64, 2 | 13,516 | 8,017 / 7,500 | 14 / 18 |
+| dense, class 64, 381 | 417,478 | 166,751 / 157,603 | 1,666 / 2,365 |
+| dense, class 128, 2 | 8,820 | 4,093 / 6,559 | 15 / 30 |
+| dense, class 128, 381 | 444,618 | 180,568 / 152,943 | 3,920 / 4,455 |
+| dense, class 256, 2 | 6,724 | 5,524 / 6,307 | 21 / 30 |
+| dense, class 256, 16 | 25,049 | 17,552 / 14,220 | 28 / 27 |
+| dense, class 256, 256 | 344,074 | 138,381 / 138,040 | 4,551 / 4,309 |
+| dense, class 256, 381 | 508,797 | 138,304 / 133,986 | 6,684 / 6,608 |
+| one per block, class 256, 2 | 9,502 | 6,976 / 8,339 | 30 / 23 |
+| one per block, class 256, 16 | 66,556 | 26,078 / 32,981 | 548 / 552 |
+| one per block, class 256, 256 | 1,045,289 | 528,838 / 458,163 | 14,245 / 14,241 |
+| one per block, class 256, 381 | 1,555,120 | 784,772 / 572,975 | 22,556 / 20,193 |
+| 32 at class 256, consecutive | 46,129 | 24,727 / 23,844 | 79 / 51 |
+| 32 at class 256, one per group | 50,614 | 26,398 / 25,127 | 746 / 704 |
+| full block, class 256 (255) | 339,999 | 123,262 / 124,769 | 4,492 / 4,524 |
+| full block, class 32 (2,040) | 2,110,449 | 743,128 / 700,454 | 13,139 / 13,241 |
+| two edges, dense, 381 | 618,746 | 208,071 / 223,444 | 8,773 / 8,811 |
+| two edges, one per block, 381 | 1,665,068 | 816,316 / 790,930 | 26,215 / 26,020 |
+| retained, 381, full trace (two-collection cell) | 482,152 | 228,590 / 197,811 | 6,049 / 6,344 |
+| retained, 381, eight-collection cell (2 full, 6 pruned) | 132,206 | 62,810 / 76,843 | 1,582 / 1,665 |
+
+The retained ring's pruned collection follows from the two cells: `(8 × 132,206
+− 2 × 482,152) / 6 = 15,557` instructions, the root's own trace and the commit
+over one row.
+
+The table is the run over the tree as first built; the run repeated on the
+final tree, after the Critic's repairs moved the re-offer's count out of the
+re-offer, read instructions within 60 per collection of every figure above on
+every cell but one (retained 256, the two-collection cell, 212 more), and the
+CSV's running share reads 100 on every counter of every cell, so no event was
+multiplexed.
+
+What the arm reads, in instructions, which are the figures that repeat:
+
+- **The class fixes a cost the ring does not pay for.** A ring of two costs
+  23,081 instructions at class 32 and 6,724 at class 256, the same rows and
+  edges; the 16,357 between them go with the 223 more groups the class-32
+  array reserves, about 73 per group. The walks that touch every group
+  position of a touched array — `for_each_of_color` at the membership and the
+  sweep — are where a per-group cost stands whatever `T` is, which is the
+  enumeration cost the analysis document names in its §1; no probe here
+  separates them from the bitmap's clearing, 251 bytes more at class 32,
+  which is not 16,000 instructions.
+- **One member per block costs three times the dense ring.** 1,555,120 against
+  508,797 instructions at 381, and 21,000 against 6,600 L1D misses: 381 arrays
+  reserved, 381 groups initialised, six blocks drawn, and 381 × 32 groups
+  enumerated at the commit.
+- **The marginal edge is about 290 instructions in either placement.** 618,746
+  − 508,797 = 109,949 for 381 more edges dense, 1,665,068 − 1,555,120 = 109,948
+  one per block: 289 per edge, and that figure is what the chunked form's
+  extra dependent load per lookup is priced against. In L1D misses the marginal
+  edge costs 5.5 dense and 10 to 15 one per block.
+- **Group occupancy at fixed density shows in misses, not in instructions.**
+  32 consecutive against 32 one per group: 46,129 against 50,614 instructions
+  (28 more group initialisations, about 160 each) and 51–79 against 704–746
+  L1D misses — the dispersed members' own lines, since the 32 entities then
+  stand 2 KiB apart, and their 32 groups' lines.
+- **The full block at class 32 costs 1,035 instructions per member** against
+  1,335 at class 256 dense and 1,079 at class 32 dense (381 of 2,040 slots);
+  the per-member cost falls as the fixed per-array cost is spread, and the
+  2,040-member commit is the one dense load that grows past the bump.
+
+**Manager draws from the driver.** `gc_metadata::stats` reads five blocks
+standing (the queue's base, the workspace and the spares) on every cell and
+peaks of 9 on the one-per-block 256 ring, 11 on the one-per-block 381 and its
+two-edge twin, 6 on the full block at class 32 — the census's 4, 6 and 1 drawn
+over the five — and no block on any other load. Bytes in use peak at 22,976 on the
+dense 381 (rows 2,112, worklist 12,480, components 8,320, and the 64-byte
+control line), 423,200 on the one-per-block 381, 431,520 with the second edge.
+
+**What this does not say.** Nothing about the chunked form: every figure is
+the flat form's, and S40.5 replays the chunked form's requests over this
+table. Nothing about time in a workload: the loads are rings under a keeper,
+re-offered by hand, and the cycles do not repeat on this box at this scale.
+Nothing about the collector thread. And the retained ring's teardown is a
+finding rather than a measurement: after eight collections its members are
+mature and none is a candidate, so the collection after the keeper lets go
+prunes the ring at its second member — the census arm reads one pruned edge,
+two roots (the dead keeper's record and the first member), one retained row
+and a `NothingProposed` ending, the first member reading as held from outside
+on the edge that was never subtracted — and the ring waits for a turnover one
+process never reaches, which is the recall the prune costs (`cycle::mark`,
+"The mature live core is not descended into"). The driver reads the count
+alone, zero freed, which a miscount would also give.
+
+## 2026-09-12 — S40.1 the prune read against the built producer: one edge refused, `n + 1` rows spared, at every `k` the age field holds
+
+**Not a corpus reading and not a choice of `k`.** The liveness schedule is the
+fixture's, so a pruned *share* here is the fixture's own input read back; what
+the run establishes is that the counter S37.1 built and the stamps S37.0 writes
+agree with the arithmetic `rc-cycle.md` states, at each `k` the two-bit age can
+hold. The corpus arm stays blocked on a driver over this crate's heap (`PLAN.md`
+S40.1).
+
+**Machine:** dev box, shared with interactive work. **Base:** the tree after
+S46 closed on 2026-09-12 (inside the day's squashed commit over `ea51cbe`) plus the
+instrument, `rustc 1.96.0`, debug build (every figure is a count). **Command:**
+
+```
+cargo test --lib mark::tests::what_the_prune_saves -- --ignored --nocapture
+```
+
+**The instrument.** `cycle::mark::pin_threshold` holds this thread's traversal
+age threshold at a chosen `k` for the life of a guard, in test builds only;
+`TRAVERSAL_AGE_THRESHOLD` itself does not move and a release build reads the
+constant. The threshold is read once per `mark` call beside the epoch, so no
+edge pays a read in any build. The counters are `take_edges_pruned` and the row
+dispatch counters of `cycle::row`, cleared before every collection.
+
+**The load.** A registered ring of two under a keeper, and a held ring of `n`
+members hanging off the first member's second property: every held member keeps
+its creation reference, so no queue entry names one and the trace reaches the
+whole ring through one edge. `n` is S40.3's 2, 16, 256 and 381. Each load runs
+on a fresh thread under a pinned epoch, eight collections through
+`ll_gc_collect_cycles`, the deferred lane re-offered by hand before each
+because a root read live is deferred at the close and the explicit fire
+re-offers nothing.
+
+**Read, at every `k` in 1..=3 and every `n`.** No edge is pruned through
+collection `k`; exactly one is pruned at every collection after it. The mark
+resolves `n + 5` rows until then (two roots, the ring's two edges, the entry
+edge, the held ring's `n`) and 4 after, so the rows spared are `n + 1` of
+`n + 5`: 3 of 7, 17 of 21, 257 of 261, 382 of 386. The held ring's stamp climbs
+one age per commit to `k` and stops there, since a target the descent does not
+reach is not restamped. The far member reads the same stamp as the entry at
+every collection, which is a fixture check rather than evidence of the
+component-wide `min(age) + 1`: every held member is met by exactly the
+collections that meet the entry, so a per-entity age would read the same, and
+the minimum stays `cycle::maturation`'s case over a member joined late. What
+the stamp does show is that a `Live` component is stamped at all, which the
+withdrawn instrument below assumed and the producer of its day did not do. The
+twelve loads agree with the construction at every one of their 96 readings, and
+the case asserts all five columns of each.
+
+| `k` | first collection that prunes | edges pruned per collection after it | mark rows before → after | trace rows (mark + scan) before → after |
+| ---: | ---: | ---: | --- | --- |
+| 1 | 2 | 1 | `n + 5` → 4 | `2n + 10` → 9 |
+| 2 | 3 | 1 | `n + 5` → 4 | `2n + 10` → 9 |
+| 3 | 4 | 1 | `n + 5` → 4 | `2n + 10` → 9 |
+
+**What the scan pays for a pruned edge.** The trace's rows after the prune are
+9 against the mark's 4: the scan dispatches the pruned edge too, finds no row
+and stops (`cycle::scan::find_initialized_row_for_entity`). Per pruned edge per
+collection, in the scan alone: one block dispatch, one read of the block's
+collector line for its row array, one group-bit read and, where the target's
+group is initialised — on this load it is, the entry sharing a block with the
+roots — one read of the row word, which reads untouched. The mark's stamp read
+is what spares the rest. Moving the stamp test into the scan would put a stamp
+load and a flags load on every edge the scan expands to save that one dispatch,
+which is not a trade this load prices.
+
+**Mutations seen red:** the pin ignored (`traversal_age_threshold` answering
+the constant), the pin not restored on drop, and the comparison read strictly
+(`age > k`). The first and third fail the loads and the ordinary case
+`a_pinned_threshold_of_one_stops_the_second_collection_at_the_child`; the second
+fails that case at its last collection.
+
+**What this does not say.** Nothing about recall: the load never loses its
+external reference, so the recall the prune costs — a component that dies
+mature waits for the turnover — is neither exercised nor priced. Nothing about
+a workload's share: the figures follow from the fixture's one edge into one
+component. And nothing about time; every figure is a count, taken in a debug
+build.
+
 ## 2026-09-11 — S38.4 the teardown-depth bracket costs nothing the death bench resolves
 
 `lifecycle/create_release_die`, `cargo bench --bench lifecycle`, three runs

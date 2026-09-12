@@ -698,6 +698,27 @@ pub(crate) fn release_queue_base() {
     gc_metadata::release_to_critical(queue_base_of(state));
 }
 
+/// Refill the spare cells where they are short, then drain the overflow
+/// buffer into the room the refill made.
+///
+/// The sequence the safepoint poll and the exit's collection share, in the
+/// one order that works: a drain with no room writes the entries straight
+/// back (`rfc/model/gc/cycle/questions.md`, Y12 clause 3). The refill runs
+/// only when the cells are short, which is what asks for it — a count rather
+/// than a flag, so a thread whose fill at init was refused is still asked
+/// ([`needs_spares`]). The poll replenishes the critical reserve before this,
+/// so that a growth with both cells empty has its path open again; the exit
+/// does not, because its own end drains that reserve a few calls later and a
+/// growth it cannot fund goes to the overflow buffer, which the next round
+/// drains.
+pub(crate) fn refill_and_drain() {
+    if needs_spares() {
+        let _ = refill_spares();
+    }
+
+    drain_overflow();
+}
+
 /// Move overflow entries back into the queue, as far as the room a poll
 /// has just made allows.
 ///
@@ -1095,11 +1116,14 @@ impl Drop for LiftedActiveLane {
     }
 }
 
-/// Re-offer every deferred record at an owner poll whose epoch moved.
+/// Re-offer every deferred record: at an owner poll whose epoch moved, and
+/// before each round of the exit's collection, which is the thread's last
+/// turnover (`crate::cycle::collect::collect_before_exit`).
 ///
 /// The caller owns the epoch comparison. This transition itself is the same
 /// allocation-free bounded merge as a trace restore and leaves no record in
-/// the deferred lane.
+/// the deferred lane. A reader that wants the count moved takes
+/// [`deferred_count`] before the call: nothing is counted here.
 pub(crate) fn reoffer_deferred_candidates() {
     let state = owner_state();
     if state.is_null() {
@@ -1274,18 +1298,20 @@ pub(crate) fn refill_spares() -> bool {
 /// from a known queue: the queue holds pool blocks, and a dying thread
 /// must not take them with it.
 ///
-/// **The entries go with the segments — the overflow buffer's too — and
-/// their entities keep the candidate bit, which is a permanent miss and not
-/// a deferral.** A block
+/// **The entries go with the segments — the overflow buffer's and the
+/// deferred lane's too — and their entities keep the candidate bit, which is
+/// a permanent miss and not a deferral.** A block
 /// with live occupants is handed to the abandoned list and adopted by
 /// another thread (`memory::heap::ll_thread_exit`), so the entity
 /// outlives its queue carrying a bit that names an entry nobody holds —
 /// and [`crate::refcount::CANDIDATE_GATE_MASK`] refuses every later
 /// decrement of it, for the life of the process. Clearing the bits here
-/// is not available to this step: an entry may name a slot already freed,
-/// and reading it to clear a bit would touch returned memory. S39.1 is
-/// the step that chooses the fate, and this is the cost it is choosing
-/// against.
+/// is not available: an entry may name a slot already freed, and reading
+/// it to clear a bit would touch returned memory. What keeps the miss
+/// bounded is the collection the exit runs before this call, which takes
+/// every ring the thread's own trace can and reports what it could not
+/// (`crate::cycle::collect::collect_before_exit`); the entries this finds
+/// are that residue, or a test's leavings.
 ///
 /// Through [`crate::memory::critical::give_back`] rather than straight
 /// to the pool, so a reserve below capacity is refilled before the pool
@@ -1323,9 +1349,9 @@ pub(crate) fn release_queue_segments() {
     }
 
     // The deferred lane has the same physical shape as the active one, but its
-    // head has an independent fill bound. Thread exit's eventual disposition
-    // remains S39.1's: it must retire or re-offer a deferred token before this
-    // mechanical segment release.
+    // head has an independent fill bound. The exit's collection re-offers the
+    // lane before it gets here; what stands in it now was read live by that
+    // collection's last round.
     let mut deferred = owner_state.deferred_segment.replace(std::ptr::null_mut());
     let deferred_len = owner_state.deferred_len.replace(0);
     gc_metadata::mark_peak(usize::from(deferred_len) * size_of::<*mut RcHeader>());
@@ -1358,7 +1384,6 @@ pub(crate) fn release_queue_segments() {
 }
 
 /// Entries this thread's overflow buffer holds.
-#[cfg(test)]
 pub(crate) fn overflow_len() -> usize {
     let state = owner_state();
     if state.is_null() {
@@ -1366,6 +1391,49 @@ pub(crate) fn overflow_len() -> usize {
     } else {
         usize::from(unsafe { owner_state_ref(state) }.overflow_len.get())
     }
+}
+
+/// Registrations this thread holds across its three lanes — the active
+/// chain, the deferred lane and the overflow buffer — by the fills and the
+/// chain lengths, with no entry read.
+///
+/// What the exit reports as its residue
+/// (`crate::cycle::collect::collect_before_exit`), and what a round of that
+/// collection is measured against: a retirement lowers it, a deferral does
+/// not.
+pub(crate) fn registered_count() -> usize {
+    let state = owner_state();
+    if state.is_null() {
+        return 0;
+    }
+    let owner_state = unsafe { owner_state_ref(state) };
+    chain_entries(owner_state.write_segment.get(), owner_state.write_len.get())
+        + chain_entries(
+            owner_state.deferred_segment.get(),
+            owner_state.deferred_len.get(),
+        )
+        + usize::from(owner_state.overflow_len.get())
+}
+
+/// Entries a chain holds, from its head's fill and the full segments behind
+/// it, with no entry read.
+///
+/// Its own arithmetic rather than a count of what [`walk_chain`] yields: this
+/// is the instrument `collect_lane_tokens` is calibrated against, and two
+/// readings that share a computation cross-check nothing.
+fn chain_entries(head: *mut BlockHeader, head_fill: u16) -> usize {
+    if head.is_null() {
+        return 0;
+    }
+
+    let mut count = usize::from(head_fill);
+    let mut segment = unsafe { (*head).next };
+    while !segment.is_null() {
+        count += SEGMENT_CAPACITY;
+        segment = unsafe { (*segment).next };
+    }
+
+    count
 }
 
 /// Entries this thread's queue holds, walking the chain.
@@ -1376,22 +1444,7 @@ pub(crate) fn candidate_count() -> usize {
         return 0;
     }
     let owner_state = unsafe { owner_state_ref(state) };
-    let write_segment = owner_state.write_segment.get();
-    if write_segment.is_null() {
-        return 0;
-    }
-
-    // Its own arithmetic rather than a count of what [`walk_chain`] yields:
-    // this is the instrument `collect_lane_tokens` is calibrated against, and
-    // two readings that share a computation cross-check nothing.
-    let mut count = usize::from(owner_state.write_len.get());
-    let mut segment = unsafe { (*write_segment).next };
-    while !segment.is_null() {
-        count += SEGMENT_CAPACITY;
-        segment = unsafe { (*segment).next };
-    }
-
-    count
+    chain_entries(owner_state.write_segment.get(), owner_state.write_len.get())
 }
 
 /// Every candidate token this thread's queue holds, appended to `out`: the
@@ -1491,7 +1544,11 @@ pub(crate) fn deferred_turnover_mirror() -> u64 {
     unsafe { owner_state_ref(state) }.turnover_mirror.get()
 }
 
-#[cfg(test)]
+/// Records standing in this thread's deferred lane, by the chain's rule: the
+/// head holds `deferred_len` and every segment behind it is full. Read by the
+/// census and by the `bench-loads` hook before a re-offer, which is what
+/// keeps the count out of the re-offer itself.
+#[cfg(any(test, feature = "bench-loads"))]
 pub(crate) fn deferred_count() -> usize {
     let state = owner_state();
     if state.is_null() {

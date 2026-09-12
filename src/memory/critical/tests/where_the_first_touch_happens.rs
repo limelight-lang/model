@@ -130,6 +130,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
     const DECLARED: &[(&str, bool)] = &[
         ("ADMITTED", false),
         ("ALLOCATING", false),
+        ("ARMED", false), // test-only const Cell, no drop glue
         ("BLOCKS", false),
         ("BLOCK_BUDGET", false),
         ("COLLECTING", false),
@@ -148,9 +149,12 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("EDGES_PRUNED", false),     // test-only const Cell, no drop glue
         ("EDGE_DISPATCHES", false),
         ("EXIT_GUARD", true),
+        ("EXIT_PENDING", false),
         ("EXIT_PHASE", false),
-        ("FAIL_AT", false), // test-only const Cell, no destructor registration
-        ("FILLER", false),  // test-only const Cell of a raw pointer, no drop glue
+        ("EXIT_RESIDUE", false),   // test-only const Cell, no drop glue
+        ("EXIT_SEQUENCES", false), // test-only const Cell, no drop glue
+        ("FAIL_AT", false),        // test-only const Cell, no destructor registration
+        ("FILLER", false),         // test-only const Cell of a raw pointer, no drop glue
         ("FREED", false),
         ("HEAP", false),
         ("HELD_AT_LAST_ROW_READ", false), // test-only const Cell, no drop glue
@@ -163,6 +167,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PANIC_IN_HARVEST", false),
         ("PANIC_IN_RESET", false),
         ("PINNED", false),
+        ("PINNED_THRESHOLD", false), // test-only const Cell, no drop glue
         ("POOL_REQUESTS", false),
         ("PREMISE_CELL_WALKS", false),
         ("PRESSURE_COLLECTIONS", false),
@@ -171,6 +176,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("REFUSED_ENTITY_REFILLS", false), // test-only const Cell of an array, no drop glue
         ("REFUSE_AT_VERTEX", false),      // test-only const Cell, no drop glue
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
+        ("REPORT", false), // test-only const RefCell over a Copy report, no drop glue
         ("RESERVE", true),
         ("RING", false),
         ("ROWS_READ", false),

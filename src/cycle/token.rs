@@ -23,7 +23,9 @@
 //! 2026-08-29, `rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of
 //! the thread it claimed"). Eligibility is checked before the wait: a thread
 //! the gate refuses — one already collecting, inside a teardown, or inside a
-//! reset — never reaches the token (`crate::cycle::collect::may_collect`).
+//! reset — never reaches the token (`crate::cycle::collect::may_collect`);
+//! the exit's own collection runs with the gate open and waits through the
+//! same take (`crate::cycle::collect::collect_before_exit`).
 //!
 //! **Why per thread.** No thread names an entity in another thread's blocks —
 //! `thread_move` and `thread_clone` require the graph arriving in a thread to
@@ -148,12 +150,13 @@ thread_local! {
 /// The token of the calling thread, as a pointer a collector can hold from
 /// another thread.
 ///
-/// The pointee lives until this thread exits, and nothing yet keeps a holder
-/// from outliving it: the exit that waits for a trace over this thread's
-/// blocks is `PLAN.md` S39.1's, the collector that would trace another
-/// thread's graph is S38.0's, and how it finds an owner's token no step names
-/// yet. Today the pointer is taken by the case that stands in for a
-/// collector, and every such case joins the holder before it returns.
+/// The pointee lives until this thread exits. The exit waits for a holder
+/// before it hands its blocks over (`crate::cycle::collect::collect_before_exit`),
+/// and nothing yet keeps a holder from taking the token after that wait: the
+/// collector that would trace another thread's graph is `PLAN.md` S38.0's,
+/// and reading the exit phase before its take is that step's, as is how it
+/// finds an owner's token. Today the pointer is taken by the case that stands
+/// in for a collector, and every such case joins the holder before it returns.
 #[cfg_attr(
     not(test),
     expect(

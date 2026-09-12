@@ -64,9 +64,13 @@
 //! buffer's own bound, which aborts when it fills. The window over withheld
 //! returns draws nothing at all: a death it withholds is held in the dying
 //! entity's own memory, and one no row of the collection names is returned at
-//! once ([`deferred_slot_reuse`], `classify`). Thread
-//! exit inside an open window aborts, `ll_thread_exit` being
-//! `extern "C"` and having no caller to refuse to.
+//! once ([`deferred_slot_reuse`], `classify`). Thread exit waits for a
+//! foreign holder of the token and then collects what the thread left
+//! registered ([`collect::collect_before_exit`]); an exit a destructor asks
+//! for during a collection, a teardown or a reset waits for the thread's top
+//! (`memory::heap::thread_exit_pending`). An exit with a window open on the
+//! calling frame's own stack aborts, `ll_thread_exit` being `extern "C"` and
+//! having no caller to refuse to, and no path from user code reaches that.
 //!
 //! The ordering the whole module rests on is one sentence: **the right to
 //! trace ends at the token's release, and the rows die at the window's
@@ -112,6 +116,14 @@ pub(crate) mod deferred_slot_reuse;
 // touched list after a trace. Test builds only.
 #[cfg(test)]
 pub(crate) mod density;
+// What one collection cost, read at the scan's end and at the close and
+// counted across it. Test builds only.
+#[cfg(test)]
+pub(crate) mod census;
+// The loads S40.3 reads, built once for the census and for the driver in
+// `benches/` that links the ordinary library under `bench-loads`.
+#[cfg(any(test, feature = "bench-loads"))]
+pub mod loads;
 pub(crate) mod queue;
 // The queue a teardown holds the children its sever displaced in, held by the
 // arena whose bump its segments come from.

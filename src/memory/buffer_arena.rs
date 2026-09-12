@@ -830,9 +830,10 @@ pub fn with_buffer_arena<R>(f: impl FnOnce(&mut BufferArena) -> R) -> R {
 /// Called from `heap::ll_thread_exit` rather than from a TLS destructor,
 /// which is the whole point (see [`THREAD_BUFFER_ARENA`]). Its position
 /// there is **after** every step that can still free a buffer — the
-/// static blocks whose teardown runs user code, and the withheld backlog
-/// whose flush routes payload frees back here — and the blocks it
-/// returns go to the process-global pool, which outlives every thread.
+/// static blocks whose teardown runs user code, the exit's collection
+/// whose teardowns do the same, and the withheld backlog whose flush
+/// routes payload frees back here — and the blocks it returns go to the
+/// process-global pool, which outlives every thread.
 ///
 /// Null-tolerant and idempotent: a thread that never allocated a buffer,
 /// and a second call, both find nothing. Disposing too early is not

@@ -27,6 +27,9 @@ fn entity_boxes_count_scalars_do_not() {
     assert_eq!(unsafe { crate::refcount::entity_refcount(&raw mut e) }, 2);
     assert!(!unsafe { value_release(&v) });
     assert_eq!(unsafe { crate::refcount::entity_refcount(&raw mut e) }, 1);
+    // The release registered a header on this stack; the lane goes back
+    // unread, because this thread's exit collects it.
+    crate::cycle::queue::release_queue_segments();
 
     let i = Value::int(7);
     assert!(!i.is_refcounted());

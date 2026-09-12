@@ -197,6 +197,18 @@ pub(crate) unsafe fn totals(arena: &TraceScratchArena) -> TraceDensity {
     density
 }
 
+/// Every touched block's reading, in the touched list's order, newest
+/// first. The census keeps it beside [`totals`] so that a load over two
+/// populations can be read block by block.
+///
+/// # Safety
+/// As [`for_each_touched_block`].
+pub(crate) unsafe fn per_block(arena: &TraceScratchArena) -> Vec<BlockDensity> {
+    let mut blocks = Vec::new();
+    unsafe { for_each_touched_block(arena, |block| blocks.push(block)) };
+    blocks
+}
+
 /// Count the internal in-edges a completed mark found.
 ///
 /// For a non-saturated row, mark copied the entity's refcount and subtracted

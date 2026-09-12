@@ -103,7 +103,7 @@ fn run_shape(
                 records_read: entities.len(),
                 records_moved: expected.len(),
             },
-            "retirement exposes S39.4's final-only baseline"
+            "one retirement pass reads every record and moves the survivors"
         );
     }
     let mut actual = Vec::new();

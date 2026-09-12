@@ -4,8 +4,12 @@ fn retain(header: &mut RcHeader) {
     unsafe { ll_retain(header) }
 }
 
+/// A release, with the registration it may have made given back unread: the
+/// header is a local of the case, and this thread's exit collects its lane.
 fn release(header: &mut RcHeader) -> bool {
-    unsafe { ll_release(header) }
+    let died = unsafe { ll_release(header) };
+    crate::cycle::queue::release_queue_segments();
+    died
 }
 
 mod the_candidate_gate;

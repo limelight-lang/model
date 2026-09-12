@@ -161,12 +161,16 @@ fn an_unregistered_thread_draws_its_base_block_at_its_first_registration() {
         assert!(unsafe { !release(entity) });
 
         let drawn = queue_base();
-        (
+        let readings = (
             !drawn.is_null(),
             kind_of(drawn),
             overflow_len(),
             candidate_count(),
-        )
+        );
+        // The entry names a header on this stack, and the exit the draw
+        // armed collects the lane: the entry goes back unread first.
+        crate::cycle::queue::release_queue_segments();
+        readings
     })
     .join()
     .unwrap();

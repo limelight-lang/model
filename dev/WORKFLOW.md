@@ -472,7 +472,10 @@ on 2026-09-06, given as passed/ignored, Miri's clock, wall:
 `cycle::deferred_slot_reuse` 42/1, 31 s, 2 m 15 s; `memory::stdapi` 16/0, 17 s,
 30 s; `string::` 37/0, 30 s, 48 s;
 `refcount::` 26/4, 10 s, 19 s; `template::` 11/0, 10 s, 20 s;
-`memory::retained` 12/0, 9 s, 25 s; `memory::reset_window` 2/0, 5 s, 12 s.
+`memory::retained` 12/0, 9 s, 25 s; `memory::reset_window` 2/0, 5 s, 12 s;
+on 2026-09-12 `cycle::census::` is taken by test, its sparse-ring case alone
+being 1/0, 151 s, 21 m 47 s (16,000 objects) while the other three finish
+inside a minute.
 `promote::` whole does not finish inside 15 minutes of wall, which is why it is
 taken as those two submodules. An earlier reading of `cycle::` whole — 86
 passed, 387 s, 10 m 33 s on 2026-09-01 — describes a tree several stages back
@@ -640,6 +643,15 @@ that is the half of the run that proves something.
 See `BENCHMARKS.md`. The short version: this crate is
 measurement-driven, so no hot-path change lands on reasoning alone, and
 both arms are measured back to back in one session.
+
+Since 2026-09-12 there is a third build-time axis, `bench-loads`, and it is on
+no gate: it compiles `cycle::loads` and one `extern "C"` hook into the
+ordinary library for `benches/census_driver.rs`, which `perf stat` counts by
+hand (`dev/tools/census_perf.sh`). Without the feature that bench compiles to
+a line of output, so `cargo bench --no-run` on the gate still builds every
+API the driver names outside the two gated calls. A change to the loads or
+the hook is checked by building with the feature once:
+`cargo bench --no-run --features bench-loads --bench census_driver`.
 
 ## Files that must stay untracked
 

@@ -873,8 +873,14 @@ unsafe fn withhold(control: &WindowControl, ptr: *mut u8, kind: u32) -> bool {
 /// A live window at exit would leave a trace using blocks whose owner is being
 /// abandoned; that is outside the protocol, and this ends the process rather
 /// than letting it happen — `ll_thread_exit` is `extern "C"` and has no caller
-/// that could act on a refusal. The window itself needs no disposal here: it
-/// belongs to the [`ActiveTrace`], whose drop is what closes it.
+/// that could act on a refusal. No path from user code reaches it: an exit a
+/// destructor asks for during a collection waits for the thread's top
+/// (`crate::memory::heap::thread_exit_pending`), and a foreign holder of the
+/// token is waited for before this runs
+/// (`crate::cycle::collect::collect_before_exit`). What remains is the crate's
+/// own misuse, an exit called with a window open on the calling frame's stack.
+/// The window itself needs no disposal here: it belongs to the
+/// [`ActiveTrace`], whose drop is what closes it.
 pub(crate) fn dispose_thread_state() {
     assert!(
         DEFERRED_RETURNS.with(Cell::get).is_null(),

@@ -58,6 +58,7 @@ use crate::cycle::reclamation::{DeferredReclamation, reclaim_before_drops};
 use crate::cycle::token::HeldToken;
 use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch};
 use crate::cycle::validation::ValidationResult;
+use crate::journal::kinds::journal_event;
 
 thread_local! {
     /// Whether a collection is running on this thread, from the window's
@@ -247,11 +248,9 @@ impl Drop for CollectingThread {
 /// safepoint poll both run: neither is short of memory, so the arena stays and
 /// the teardown reads the rows themselves ([`crate::cycle::membership`]).
 ///
-/// **Zero is every answer short of a teardown**, and they are not
-/// distinguished here: a thread whose gate is closed ([`may_collect`]), a workspace the memory
-/// manager refused, an empty candidate lane, a trace that met a refused
-/// allocation path, a set the exact validation read as live, and a teardown
-/// whose children the arena refused. Before final owner retirement, each
+/// **Zero is every answer short of a teardown**, and this entry does not
+/// distinguish them; [`collection_off_the_poll`] does, for the one caller that
+/// reports the difference. Before final owner retirement, each
 /// refusal leaves the graph it was reading byte-identical and no live root
 /// loses its registration. The `CollectingThread` guard then removes completed
 /// deaths left by this or an earlier collection, so a zero answer does not
@@ -265,13 +264,74 @@ impl Drop for CollectingThread {
 /// no other thread reading this thread's entities
 /// (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 pub(crate) unsafe fn collect_off_the_poll() -> usize {
+    unsafe { collection_off_the_poll() }.freed
+}
+
+/// Where a collection off the poll ended. Every arm but the last is a zero
+/// answer, and the exit names the one its residue stands behind.
+///
+/// The journal writes an arm as its position in this list
+/// ([`ExitEnding::code`]), so an arm added or moved here changes what a
+/// [`crate::journal::kinds::KIND_EXIT_RESIDUE`] record means.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Ending {
+    /// The gate refused ([`may_collect`]): a collection, a reset or a teardown
+    /// is in flight on this thread.
+    GateClosed,
+    /// The memory manager refused the workspace the window stands on.
+    NoWorkspace,
+    /// The lane held no root.
+    EmptyLane,
+    /// The trace met a refused allocation path.
+    TraceRefused,
+    /// The rows could not be read as a membership: a row array's placement
+    /// failed under the scan.
+    NoMembership,
+    /// The scan read every root as reachable, so no set was proposed and the
+    /// exact validation had nothing to read.
+    NothingProposed,
+    /// The exact validation read the proposed set as live.
+    Live,
+    /// A member had died ordinarily since the trace proposed it; the set was
+    /// dropped whole.
+    ZeroCountMember,
+    /// The set was unreachable and nothing was freed: a destructor resurrected
+    /// a member, or the arena refused the teardown's children.
+    TeardownRefused,
+    /// The set was torn down.
+    TornDown,
+}
+
+impl Ending {
+    /// Whether the collection ran user destructors before it ended, which is
+    /// the one way a collection makes new garbage: a teardown's releases
+    /// register the children they orphan, and a resurrecting destructor can
+    /// drop the last holder of another ring.
+    fn ran_destructors(self) -> bool {
+        matches!(self, Self::TornDown | Self::TeardownRefused)
+    }
+}
+
+/// What one collection off the poll answered: the entities it freed, and where
+/// it ended.
+pub(crate) struct Collection {
+    pub(crate) freed: usize,
+    pub(crate) ending: Ending,
+}
+
+/// [`collect_off_the_poll`] with its ending named.
+///
+/// # Safety
+/// As [`collect_off_the_poll`].
+pub(crate) unsafe fn collection_off_the_poll() -> Collection {
+    let zero = |ending| Collection { freed: 0, ending };
     let Ok(_collecting) = CollectingThread::take() else {
         // Reached only by the explicit fire: the poll reads the gate before it
         // spends its arming (`crate::gc::ll_gc_maybe_collect`), so a thread
         // whose gate is closed keeps the arming for the next poll at a clean
         // point, and the explicit fire spent none. The lane keeps every
         // registration either way.
-        return 0;
+        return zero(Ending::GateClosed);
     };
 
     // Eligibility above, the token below: a thread that may not collect never
@@ -279,17 +339,18 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
     // "Check collection eligibility before waiting").
     let token = HeldToken::take();
     let Some(mut window) = ActiveTrace::open() else {
-        return 0;
+        return zero(Ending::NoWorkspace);
     };
 
     window.detach_candidates();
     let (arena, batch) = window.rows_and_roots();
     if batch.is_empty() {
-        return 0;
+        return zero(Ending::EmptyLane);
     }
 
-    if unsafe { trace_batch(arena, batch, ALL_ROOTS) }.0 != TraceOutcome::Complete {
-        return 0;
+    let (outcome, roots) = unsafe { trace_batch(arena, batch, ALL_ROOTS) };
+    if outcome != TraceOutcome::Complete {
+        return zero(Ending::TraceRefused);
     }
 
     // The scan has answered, and the right to trace ends here — before the
@@ -297,14 +358,16 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
     // what the release ends is the tracing, not the window
     // (`crate::cycle::token`).
     drop(token);
+    unsafe { note_scan_end(arena, roots) };
 
     // The rows this trace wrote, read as the commit's membership. They stand
     // until the window's close sweeps them, which is after everything below.
     let touched = window.arena().touched_head();
     let Some(members) = (unsafe { Membership::rows(touched) }) else {
-        return 0;
+        return zero(Ending::NoMembership);
     };
 
+    let proposed = members.len() > 0;
     let outcome = unsafe { commit(&members, window.arena()) };
     // Per root and not per batch: one trace answers about as many components
     // as its lane holds roots, and the three answers go three ways
@@ -318,7 +381,194 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
     window.dispose_batch_on_close(outcome.at_commits);
     _collecting.retirement_runs_at_the_close();
     window.mark_roots_for_deferral(outcome.initial == ValidationResult::ExternallyReferenced);
-    outcome.freed
+    let ending = match outcome.initial {
+        _ if !proposed => Ending::NothingProposed,
+        ValidationResult::ExternallyReferenced => Ending::Live,
+        ValidationResult::ZeroCountMember => Ending::ZeroCountMember,
+        ValidationResult::Unreachable if outcome.freed == 0 => Ending::TeardownRefused,
+        ValidationResult::Unreachable => Ending::TornDown,
+    };
+    note_close(window.arena(), ending);
+    Collection {
+        freed: outcome.freed,
+        ending,
+    }
+}
+
+/// Hand the rows to the census at the scan's end, and do nothing at all
+/// without `cfg(test)`. `roots` is what the trace answered as records
+/// attempted.
+///
+/// # Safety
+/// The trace completed and the window is open (`crate::cycle::census`).
+#[inline]
+unsafe fn note_scan_end(_arena: &TraceScratchArena, _roots: usize) {
+    #[cfg(test)]
+    unsafe {
+        crate::cycle::census::note_scan_end(_arena, _roots)
+    };
+}
+
+/// Hand the chains, the bump and the ending to the census before the window
+/// closes, and do nothing at all without `cfg(test)`.
+#[inline]
+fn note_close(_arena: &TraceScratchArena, _ending: Ending) {
+    #[cfg(test)]
+    crate::cycle::census::note_close(_arena, _ending);
+}
+
+/// What a thread's exit collection left behind: the entities its rounds freed,
+/// the registrations still standing when it stopped, and why it stopped.
+///
+/// A registration standing here is a bounded leak. The entity keeps its
+/// candidate bit into a block another thread adopts, and no later decrement of
+/// it registers again (`crate::refcount::CANDIDATE_GATE_MASK`), so a ring it
+/// closes after the adoption is proposed by no trace. The bound is this
+/// thread's live set at exit. The journal carries the three figures as
+/// [`crate::journal::kinds::KIND_EXIT_RESIDUE`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct ExitResidue {
+    pub(crate) freed: usize,
+    pub(crate) registered: usize,
+    pub(crate) ending: ExitEnding,
+}
+
+/// Why the exit's rounds stopped, which is what the residue is read against.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ExitEnding {
+    /// The last round ended here and made no progress: it ran no destructor
+    /// and moved no registration.
+    Round(Ending),
+    /// The last round was still making progress when the round cap ended the
+    /// loop ([`EXIT_ROUNDS`]): a destructor that manufactures garbage.
+    RoundCap,
+    /// Entries stand in the overflow buffer that the last round's drain could
+    /// not move into the lane, so no trace read them: the spare cells were
+    /// empty and no allocation path funded a segment. Named over a round's
+    /// ending; after a cap the cap keeps its name, the entries then being
+    /// what the last round's destructors registered past a full segment.
+    OverflowUnread,
+}
+
+impl ExitEnding {
+    /// The ending as the journal's word: a round's ending is its own number,
+    /// and the two endings that are not a round's take the two numbers after
+    /// the last of those.
+    #[cfg_attr(
+        not(feature = "debug-journal"),
+        expect(
+            dead_code,
+            reason = "the journal's word; without the feature no site is compiled"
+        )
+    )]
+    fn code(self) -> u64 {
+        match self {
+            Self::Round(ending) => ending as u64,
+            Self::RoundCap => Ending::TornDown as u64 + 1,
+            Self::OverflowUnread => Ending::TornDown as u64 + 2,
+        }
+    }
+}
+
+/// Rounds an exit's collection runs at most.
+///
+/// A bound on the work rather than a tuned figure: a round past the first
+/// exists for the garbage the round before it orphaned, and a destructor that
+/// allocates a ring in every round would otherwise keep the exit running for
+/// as long as it has memory. Eight is enough for a cascade eight deaths deep
+/// and is not measured against a corpus.
+pub(crate) const EXIT_ROUNDS: usize = 8;
+
+/// Wait for any trace over this thread's blocks, collect until a round makes
+/// no progress or the round cap is reached, and answer what is left
+/// registered.
+///
+/// The exit's own step (`crate::memory::heap::ll_thread_exit`), between the
+/// static blocks' teardown and the disposal of the trace window: the roots
+/// that teardown released are what this collects, and the destructors it runs
+/// reach heaps, arena and weak table that are still alive
+/// (`dev/DECISIONS.md`, "a thread waits for the trace, collects, and then
+/// exits").
+///
+/// **The wait is the first round's take of the token**: a trace holding rows
+/// over this thread's blocks holds the token, the round's collection takes it
+/// before it reads the lane, and the exit does not abandon a block under one.
+/// The gate is open here by construction — `ll_thread_exit` runs only outside
+/// a collection, a teardown and a reset, recording a request made inside one
+/// for the thread's top (`memory::heap::thread_exit_pending`) — so every
+/// round reaches that take. Nothing here stops a collector from taking the
+/// token over a thread whose exit has begun; the collector that traces
+/// another thread's graph is `PLAN.md` S38.0's, and reading the exit phase
+/// before its take is that step's.
+///
+/// **Every chain is offered before every round.** The overflow buffer drains
+/// into the lane behind the poll's own refill of the spare cells
+/// ([`crate::cycle::queue::refill_and_drain`], which says why the exit leaves
+/// the critical reserve alone), and the deferred lane is re-offered whatever
+/// the epoch says: the exit is this thread's last
+/// turnover, and a root deferred as live by one round can be garbage in the
+/// next, its holder torn down by that round's destructors. A round is followed
+/// by another while it ran destructors or moved the registration count either
+/// way — a teardown's releases register the children they orphan, a
+/// resurrecting destructor can drop the last holder of another ring without
+/// moving the count, and a dead member retired at the close uncovers the rest
+/// of its set — up to [`EXIT_ROUNDS`].
+///
+/// # Safety
+/// As [`collect_off_the_poll`], with the heaps, the buffer arena and the weak
+/// table still alive for the destructors the rounds run.
+pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
+    let mut freed = 0;
+    let mut registered = crate::cycle::queue::registered_count();
+    let mut ending = ExitEnding::RoundCap;
+    for _ in 0..EXIT_ROUNDS {
+        crate::cycle::queue::refill_and_drain();
+        crate::cycle::queue::reoffer_deferred_candidates();
+
+        let round = unsafe { collection_off_the_poll() };
+        freed += round.freed;
+        let standing = crate::cycle::queue::registered_count();
+        let progressed = round.ending.ran_destructors() || standing != registered;
+        registered = standing;
+        if !progressed {
+            ending = ExitEnding::Round(round.ending);
+            break;
+        }
+    }
+
+    // The cap keeps its name: entries standing in the buffer after a cap are
+    // the last round's destructors' registrations, which no drain followed.
+    if ending != ExitEnding::RoundCap && crate::cycle::queue::overflow_len() > 0 {
+        ending = ExitEnding::OverflowUnread;
+    }
+
+    let residue = ExitResidue {
+        freed,
+        registered,
+        ending,
+    };
+    journal_event!(
+        crate::journal::kinds::KIND_EXIT_RESIDUE,
+        residue.registered as u64,
+        residue.ending.code(),
+        residue.freed as u64
+    );
+    #[cfg(test)]
+    EXIT_RESIDUE.with(|last| last.set(Some(residue)));
+    residue
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What the last exit collection on this thread answered, for a case that
+    /// joins the thread and cannot read the journal without the feature.
+    static EXIT_RESIDUE: Cell<Option<ExitResidue>> = const { Cell::new(None) };
+}
+
+/// The last exit collection's answer on this thread, and clear it.
+#[cfg(test)]
+pub(crate) fn take_exit_residue() -> Option<ExitResidue> {
+    EXIT_RESIDUE.with(Cell::take)
 }
 
 /// Collect this thread's candidates for a caller that has run out of memory,
@@ -875,8 +1125,8 @@ fn early_retirement_enabled() -> bool {
 
 #[cfg(test)]
 thread_local! {
-    /// S39.4's in-binary A/B arm. Production has no branch: it always takes
-    /// the early retirement. A measurement can restore S39.2's final-only
+    /// The in-binary A/B arm of the early-retirement measurement (`dev/BENCHMARKS.md`, "early pressure retirement returns matching slots at one extra queue pass"). Production has no branch: it always takes
+    /// the early retirement. A measurement can restore the final-only
     /// placement without maintaining a second source tree.
     static EARLY_RETIREMENT: Cell<bool> = const { Cell::new(true) };
     static EARLY_RETURNED_SLOTS: Cell<usize> = const { Cell::new(0) };

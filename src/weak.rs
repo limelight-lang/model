@@ -59,11 +59,11 @@ fn may_be_a_weak_referent(flags: u32) -> bool {
 ///
 /// No notification: the rows that remain name targets that are dying with this
 /// thread's heap, and nothing outlives them to read a cell (cross-thread
-/// movement is reserved). The call comes after the static-block teardown — the
-/// one step of `ll_thread_exit` that runs user code, so the only one that can
-/// still deliver a notification — and before the buffer arena, which a table
-/// small enough to be a chunk of it has to reach while it is still mounted
-/// (`heap::ll_thread_exit` fixes the order).
+/// movement is reserved). The call comes after the static-block teardown and
+/// the exit's collection — the two steps of `ll_thread_exit` that run user
+/// code, so the only ones that can still deliver a notification — and before
+/// the buffer arena, which a table small enough to be a chunk of it has to
+/// reach while it is still mounted (`heap::ll_thread_exit` fixes the order).
 ///
 /// Null-tolerant and idempotent.
 pub(crate) fn dispose() {

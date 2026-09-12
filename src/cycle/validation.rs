@@ -122,6 +122,7 @@ pub(crate) unsafe fn validate_component(
     guard_refs_per_member: u32,
 ) -> ValidationResult {
     debug_assert!(members.len() > 0, "a component has a member");
+    note_validation(members.len());
     debug_assert!(
         unsafe { every_member_is_a_gc_heap_entity_once(members) },
         "a member stands in its component once and inside the GC heap: twice counts \
@@ -294,6 +295,14 @@ pub(crate) fn premise_cell_walks() -> usize {
 #[cfg(test)]
 pub(crate) const EXEMPT_ALLOCATIONS_PER_VALIDATION: usize =
     if cfg!(debug_assertions) { 3 } else { 0 };
+
+/// Count one exact validation over `members` for the census, and nothing at
+/// all without `cfg(test)`.
+#[inline]
+fn note_validation(_members: usize) {
+    #[cfg(test)]
+    crate::cycle::census::note_validation(_members);
+}
 
 #[cfg(test)]
 mod tests;

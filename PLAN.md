@@ -11,9 +11,21 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-12 · Active: S38, from S38.3; S38.2 closed on 2026-09-12 on
-code S38.1 and S38.4 had built — the wait on a held token, reached through the
-allocation refusal and counted at the wait. S38.4 closed on 2026-09-11 —
+Updated: 2026-09-12 · Active: S40, from S40.5, S40.1 standing open on its
+Phase-D-blocked corpus arm alone; S38 waits on `rfc` A1 for
+S38.0 and S38.3. S40.3 closed on 2026-09-12 with the census and the
+hardware arm; the Sage's rulings of the same day on
+`dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md` reshaped S40.3, added S40.5 and
+rewrote S40.2, and are recorded under those steps. **S46 closed and was deleted on 2026-09-12**, one step on
+Edmond's ruling of the same day: an exit a destructor asks for is recorded
+and runs at the thread's top (`dev/DECISIONS.md`, "an exit requested inside a
+collection runs at the thread's top"). **S39 closed and was deleted on 2026-09-12**, its last step
+being S39.1 — the exit's wait on the thread's token and its bounded rounds of
+collection over every chain, the residue reported as a journal record; what
+outlived it is `dev/DECISIONS.md` under 2026-09-09 and 2026-09-12 and
+`dev/BENCHMARKS.md` for the early-return measurement. S38.2 closed the same
+day on code S38.1 and S38.4 had built — the wait on a held token, reached
+through the allocation refusal and counted at the wait. S38.4 closed on 2026-09-11 —
 the entry gate with the teardown depth as its second input, a refused poll
 keeping its arming, and the slow path's refusal named by size class. S38.1
 closed the same day — the per-thread trace token, taken around the trace and
@@ -30,10 +42,6 @@ and it waits on Edmond's word. **S34 closed and was deleted on 2026-09-10**,
 its last step being the law that only the owner reduces state; what outlived
 it is in the journals, and the two debts it carried without an owner are in
 `## Fog` and in the backlog below.
-The single-thread retirement sequence is S39.3 (candidate lifetime through
-reset), then S39.2 (complete retirement and compaction), then S39.4 (measure
-an earlier pressure-path return). S39.3 protects the existing mark as well as
-the new retirement and is a correctness prerequisite, not a performance task.
 S44.1 put every withheld return on one stack through the dead entities, S44.6
 moved the row sweep ahead of the candidate restore, S44.2 deleted the chain,
 its region and the block walks, S44.3 turned the mark into the bit a second
@@ -57,8 +65,8 @@ and S36.16 carried the merge and the two paths back into `rfc` on 2026-09-07,
 ahead of S36.15 because S36.15 needs `cargo` and a Miri run held the lock.
 S36.15 lost half its criterion the same day and then closed: a collection
 returns no slot of a **member**, every one being a registered candidate whose
-slot `ll_free` withholds, so "served rather than refused" moved to the new
-**S39.2**, which retires the entry at the owner's read (the Sage's ruling,
+slot `ll_free` withholds, so "served rather than refused" moved to S39.2
+(closed 2026-09-09), which retires the entry at the owner's read (the Sage's ruling,
 `dev/DECISIONS.md`, "the collection's yield and the retirement that unlocks it
 are two steps"). Its Critic round left one open number, **S40.4**: what the
 trace a refused allocation repeats costs at the memory ceiling.
@@ -76,7 +84,7 @@ of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
 `dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S35,
-S41, S42 and S43. A number is never reissued, so a
+S39, S41, S42, S43 and S46. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -95,19 +103,23 @@ teardown; pressure collections harvest a bounded member list. The worker is
 still S38's. S30 deleted `rc-walk`, `rc-trace` and `rc-satb` on 2026-08-26;
 that code is on `archive/pre-rc-cycle` and its removal is recorded in
 `dev/DECISIONS.md`. S28 was abandoned by that ruling, and S29's second half
-is carried as S39.
+was carried as S39, closed on 2026-09-12.
 
 **The stages below went through a Critic round and four Sage rulings on
 2026-08-26**, on Edmond's instruction, and are the amended form. The rulings and their reasons are in `dev/DECISIONS.md`.
 
-**Every cycle-GC improvement has two review gates.** Before the first code
-edit, the Sage reviews its operation count, manager-allocation budget,
-cache-working set, lifetime and refusal model, and records the pre-change
-counter/benchmark baseline the step would otherwise erase. A red test is then seen failing;
+**Every cycle-GC improvement has one review gate, and the Sage is the
+escalation** (Edmond, 2026-09-10 and again 2026-09-12: the Critic first, the
+Sage only for what the model cannot answer itself). The pre-change baseline the
+step would otherwise erase — its operation count, manager-allocation budget,
+cache working set, lifetime and refusal model — is taken by the model before
+the first code edit and recorded in the step; a red test is then seen failing;
 after the implementation, the Critic reviews the repair and its mutations
-before the step can be checked. Both findings are recorded in the step's
-handoff. This applies to S36.9 onward and to the performance steps in S37/S40;
-one broad review does not waive a later step's gate.
+before the step can be checked, and a finding the model can neither accept
+with a repair nor refuse with a reason goes to the Sage. The findings are
+recorded in the step's handoff. This applies to S36.9 onward and to the
+performance steps in S37/S40; one broad review does not waive a later step's
+gate. Until 2026-09-12 this paragraph put the Sage before the first edit.
 
 **Every byte owned for cycle collection comes from the memory manager and is
 identifiable there as GC memory.** Production collection paths use no
@@ -177,6 +189,12 @@ guard lowers it on the unwind as well as on the return.
   list* (`rfc` `9ca669c`, `dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Glossary check").
   No step owns the rename, and the four exemption reasons that said the
   glossary was silent now say this instead.
+- A destructor's `ll_thread_exit` waits for the thread's top
+  (`memory::heap::thread_exit_pending`), and nothing tells the code above
+  the destructor that a request stands: whether the emitted safepoint reads
+  that word and unwinds on it, and under what name the ABI carries it, is the
+  rfc's to say (`dev/DECISIONS.md`, "an exit requested inside a collection
+  runs at the thread's top").
 
 ---
 
@@ -1678,7 +1696,7 @@ stage claiming the frees while building none of them.
         the only one that can be told there is no workspace. The withheld
         returns' region enters neither byte figure, being memory the thread
         holds between collections. Two clauses above lost the retired word
-        `parking`; S38.3, S39 and the backlog still carry it.
+        `parking`; S38.3 and the backlog still carry it.
       progress 2026-09-03 — the Critic's two rounds, `d8d7c2c` and the commit
         after it. Round one: the sweep's guard fell from `assert!` to
         `debug_assert!`, so an S36.7 abort path that swept before it reset no
@@ -3256,6 +3274,17 @@ window there is.
         or first pressure — with its floor refusal following it; a mandatory
         floor drawn at first pressure is the worst moment
         (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued").
+      handoff 2026-09-12, from S39.1: the exit waits on the thread's token
+        once and then collects with takes of its own, so between and after
+        those takes a collector could take the token of a thread whose exit
+        has begun and trace blocks the exit is about to abandon — this step's
+        collector reads the owner's exit phase before its take, through a
+        word it adds: `memory::heap::thread_exit_running` reads the calling
+        thread's own thread-local and cannot answer for another. And the
+        inbox the rfc's handoff names is the fourth chain the exit would
+        drain; today it has three (`cycle::collect::collect_before_exit`),
+        and a fourth joins `queue::registered_count`, the offer before each
+        round and `release_queue_segments` alike.
 - [x] S38.1 The claim
       handoff: `cycle::token` — `TraceToken` (a CAS flag, a futex `Mutex<()>`
         and a `Condvar`), `HeldToken` taken around the trace on both paths,
@@ -3314,7 +3343,7 @@ window there is.
         moved. Seen red with the count's increment deleted, after the holder's
         10 s bound. The exactness clause is `cycle::validation`'s, in-degree
         from the members' current cells on the owner after the release.
-- [ ] S38.3 Deferring the mutator's frees during a trace
+- [ ] S38.3 Deferring the mutator's frees during a trace   *(blocked: S38.0 — the tracer whose held addresses a free would pull out is the collector thread; the in-line trace runs no user code and frees nothing)*
       note: S36.2 built the owner-side substrate for one thread, where nothing
         frees inside the window: mark and scan only read, and the trace window
         ends before the user-code teardown by the decision of 2026-08-31. The
@@ -3332,348 +3361,11 @@ window there is.
         measured as the churn held across one collection
       tier: T2 · role: —
 
-## S39 — Candidate retirement and thread exit  (exit carried from S29.2)
-
-The retirement work below is single-threaded. The working order is S39.3 →
-S39.2 → S39.4; S39.1 uses the retirement S39.2 builds. The discussion in
-`dev/COLLECTOR-MUTATOR-MEMORY-PROTOCOL.md`, S1/S3 and R1/R2, and its
-claim-by-claim review are supporting analysis, not normative design. Their
-C1–C6/P1 worker contracts add no task here: concurrency remains in S38 with
-its existing blockers.
-
-- [ ] S39.1 Exit waits, collects, and drains its four chains   *(after S36.4 and S39.2)*
-      done: `ll_thread_exit` **waits** while any trace holds rows over this
-        thread's blocks, **collects**, and then retires its chains before
-        handing the heap over — the queue, the overflow buffer, the
-        deferred-candidate buffer and the inbox, all four, which for a
-        zero-count entry means reading the refcount, clearing `CANDIDATE_BIT`
-        and returning the deferred slot; what the collection could not take
-        keeps its bit and is reported as a bounded leak with its cause; a
-        red-first test kills a thread between registration and collection, and
-        a second shows a thread that would have aborted inside an open window
-        waiting instead
-      tier: T2 · role: —
-      ruling 2026-09-04 (Edmond): the wait, and collection before exit as the
-        fate of a live registered entity. Recorded with its refused
-        alternatives in `dev/DECISIONS.md`, "a thread waits for the trace,
-        collects, and then exits". The wait replaces the process abort
-        `dispose_thread_state` performs today, and closes the first clause of
-        `rfc`'s A4. **The step moves after S36.4**: its destructors run on a
-        winding-down thread, and an unwind across `ll_thread_exit`'s `extern
-        "C"` boundary ends the process, so the policy for a throwing destructor
-        has to exist first.
-      correction 2026-09-04: the criterion named one chain where
-        `rfc/dev/PLAN.md` names four — "`ll_thread_exit` drains the suspects
-        buffer beside the inbox, the queue and the overflow buffer" — and the
-        leak this step exists to close is not closed by the queue alone.
-      note 2026-09-06 — the retirement clears `DEAD_IN_PLACE` before it hands
-        the slot back. S44.3 sets that bit at the head of `ll_free`, on the
-        flags load the candidate arm already makes, so a withheld slot still
-        carries it while its record stands; a retirement that offers the same
-        pointer to `ll_free` again is refused there and the slot is lost.
-        `refcount::clear_dead_in_place` is the hand-back, and
-        `block_pool::test_guard` counts the refusals such a path leaves.
-      handoff 2026-09-07: half of the fixture obstacle below is gone. Three
-        cases of `cycle/queue/tests.rs` build their candidates as live GC-heap
-        objects through `allocated_candidate`, because after S36.7 the poll
-        fires a collection over the lane and the trace read a block header
-        under a header in a local — Miri's finding, `dev/POSTMORTEM.md`,
-        "a fixture that was sound became undefined behaviour when the poll grew
-        a collection". The other forty-eight uses of the bare header stand, so
-        a drain that dereferenced every entry still meets them.
-      handoff: the corpse half arrived from S34.3 on 2026-08-29, which built
-        the deferral and the two accessors it needs
-        (`refcount::clear_enrolled`, whose `expect(dead_code)` names this step)
-        and could not wire them. Two obstacles, both this step's: a deferred slot
-        that is never retired leaks for the life of the process, and the
-        queue's test fixture writes bare `RcHeader`s on the stack, so a drain
-        that dereferenced entries would read freed stack memory — the fixture
-        has to allocate real entities first, and `cycle/queue/tests.rs` says in
-        its own words why it does not today.
-      handoff: the criterion previously read "named rather than left to the
-        reader", which a doc comment saying "these leak" satisfies with S29.2's
-        defect intact.
-
-- [x] S39.3 Establish candidate lifetime through the arena reset   *(before S39.2)*
-      done: a queue entry retains its own allocation identity through reset,
-        not merely a readable zero-count header; follow a real promoted
-        survivor from its category rewrite through registration, the reset's
-        deferred releases, any absorbed free and publication of the retained
-        index, and establish that its slot and block cannot be reused while
-        the entry stands; a regression exercises the reachable path and the
-        subsequent ordinary mark after reset, and any repair is seen red
-        before the fix; if a proposed transition is impossible, the invariant
-        excluding it is encoded and tested rather than replaced by a fixture
-        that constructs an unsupported state
-      done: cover reset entered by a GC destructor as well as a reset outside
-        collection, and a second reset before retirement; allocation/reuse
-        checks establish the held slot's identity, and Miri covers the later
-        header read; a zero count plus `DEAD_IN_PLACE` is never used as proof
-        of that identity, because a slot already on the free list can carry
-        the same pair; no path solves the test by dropping a live registration
-      tier: T2 · role: Sage → Critic
-      note: moved from Fog, "A candidate freed inside a reset", raised on
-        S36.5 on 2026-09-07. `ll_free`'s reset arms precede its candidate arm;
-        promotion rewrites the category before the deferred-release drain,
-        and `retained::register` does not count a dead-in-place survivor as a
-        live occupant. The combination needs a reachable case and a lifetime
-        argument; an exploitable failure is not claimed without reproducing it.
-      note: this blocks more than the new retirement. Today's
-        `mark::schedule_root_if_unvisited` already dereferences a queued
-        address before applying the zero-count rule. It therefore relies on
-        the same invariant now, which makes this a correctness prerequisite
-        before further retirement work rather than a later cleanup question.
-      handoff: the invariant must hold after the reset has closed. Refusing
-        retirement only while `reset_window::is_open()` is true does not prove
-        that an entry left by an earlier reset still names its own allocation.
-      handoff: closed 2026-09-09. A retained block's low count now includes a
-        dead-in-place occupant exactly when `CANDIDATE_BIT` says the owner queue
-        still names it. The reset may absorb that occupant's first free, but
-        `retained::register` establishes the count before it can return the
-        block; S39.2's owner retirement will clear both slot bits and spend the
-        count through the ordinary retained `ll_free` arm. An unregistered
-        dead-in-place occupant remains uncounted because no later free exists
-        to spend a count taken for it.
-      handoff: the Sage gate kept the live-survivor path unchanged. The Critic
-        then folded the flags into `slot_state_with_flags`: a live slot remains
-        one count-half load, and a zero-count slot takes that load plus one
-        flags-half load, with no duplicate read. There is no manager or global
-        allocation, no new refusal, and no second cache line. The pre-change reset
-        slice was 9/9; the regression was then seen red with the candidate's
-        retained block already stamped `BLOCK_KIND_FREE` while its queue entry
-        remained. A second mutation that counted every dead-in-place survivor
-        was rejected by the existing dead-at-registration case after that case
-        was made to carry the real free mark.
-      handoff: two real allocator-backed regressions cover the outer reset, a
-        second reset before retirement, the later ordinary mark, and a reset
-        entered by a cycle member's destructor. Miri first caught the latter
-        fixture taking a fresh `&mut Arena` after saving its raw pointer; the
-        builder now uses that same pointer. The two cases then passed under
-        Miri, 2 tests in 8.39 s on Miri's clock. Critic review replaced the
-        correlated `(state, Option<flags>)` result with flags carried by the
-        two zero-count variants, so reset contains no `expect` for that
-        invariant. The free-list assertion stands at both physical doors —
-        the local return and `free_remote`, including direct `free_foreign` —
-        and its two-door case passed under Miri in 23.04 s on Miri's clock.
-      handoff: verified at 822 tests — one run and three at four threads,
-        `hash-folding` 822, `debug-journal` 828 three times, release without
-        warnings, every bench target built, and `+1.94 fmt --check`. The
-        citation pass remains at its known 500 citations and 7 misses; none is
-        in a changed source. The abstract R2 checker beside the supporting
-        protocol document remains green at 5,260 exhaustive cases.
-
-- [x] S39.2 The owner's read retires completed deaths across the whole queue   *(after S36.15 and S39.3)*
-      done: at an exact owner reading, every entry whose own allocation is
-        still held, whose entity reads zero and whose teardown has completed
-        is retired, including
-        entries in the detached batch, the active chain and overflow; live and
-        unprocessed registrations survive exactly once; its `CANDIDATE_BIT`
-        and `DEAD_IN_PLACE` are cleared at hand-back and its slot is returned
-        through `ll_free` only after the last membership read and the relevant
-        shadow sweep; a zero-count entity whose teardown has not finished is
-        not returned
-      done: live records are compacted without holes, every segment behind
-        the published head remains full, and surplus segments go back to the
-        spare cells/reserve with exact payload accounting: one payload
-        discharge for each charged full segment eliminated, no duplicate
-        discharge, and the originally uncharged heads and the final head
-        accounted for separately; the complete retirement and combination
-        ask for no new block and no global allocation
-      done: the detached batch and active chain may BOTH have partial heads;
-        save both head/fill bounds before joining the chains for a
-        reverse/compact/reverse pass, or implement an equivalent bounded
-        traversal, so the old interior partial head is never read to capacity;
-        cover dead entries in spliced full segments as well as either head,
-        empty/all-dead/all-live chains, exact-capacity output and nonempty
-        overflow; tests verify record identity, every published read bound,
-        segment ownership and ledger balance under a pool that refuses
-      done: the close keeps an owner for the batch and every pending return
-        throughout the interval after `sweep_rows` and before publication of
-        the compacted queue; injected unwind at the transition boundaries
-        retains every unretired registration and every not-yet-returned slot
-        obligation, with no duplicate free; it does not depend on
-        `InFlightBatch::drop` to restore a batch, because that drop is silent
-        while panicking; temporary reversed links and partial-head bounds
-        remain recoverable by the cleanup owner
-      done: under S36.15's pool cap a heap holding one garbage ring allocates
-        past the pool's last block and is served rather than refused;
-        S36.15's withheld-slot case is flipped in the same commit; mutation
-        checks reject a retirement that filters only the copied partial head,
-        omits a full segment or overflow, loses the second partial bound,
-        asks for a block, or strands the batch on unwind
-      tier: T2 · role: Critic
-      note: this is Y12 clause 7 — "the owner drops the entry, clears the bit
-        and returns the slot at its exact reading" — resting on
-        `rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse",
-        whose "unless a synchronous collection removes zero-count entries
-        earlier" is what admits it. S39.1's exit drain becomes one caller of
-        what this builds rather than its owner, and the `expect(dead_code)` on
-        `refcount::clear_candidate_bit` names S39.1 today and moves here.
-      note: "a prefix of freed slots ends the pressure path with an arming" is
-        this debt read from the pressure loop's side — the freed entries stand
-        in the lane where the next bound re-selects them — so what this step
-        makes pay is that loop's second round.
-      note: `merge_candidates` currently splices full segments without reading
-        their entries and copies only a partial head. Filtering that copy
-        alone leaves dead entries in every spliced segment. The single-chain
-        R2 model covers one partial head; it is not evidence for combining two
-        chains until both original fill bounds are carried through the pass.
-        Y12 clause 2's stale disposal wording is not this step's authority;
-        the existing merge and the allocation-identity invariant are its inputs.
-      handoff: the real-entity fixture prerequisite carried by S39.1 belongs
-        here before cleanup starts dereferencing entries; a bare stack header
-        or duplicated filler pointer is not a candidate allocation the owner
-        may retire. S39.1 then consumes the tested retirement operation.
-      handoff: closed 2026-09-09. `queue::compaction` saves both
-        original head/fill bounds, compacts forward through the existing
-        segments and reverses the occupied prefix before publication. Overflow
-        compacts within its own array. Original interior charges minus final
-        interior charges are discharged exactly once; surplus segments go to
-        spare cells and then the critical reserve. Combining into an empty
-        active lane without retirement retains the original two-word restore.
-      handoff: retirement runs from `CollectingThread::drop`, after every
-        window, membership and arena has ended, with the collecting gate still
-        held. Pressure also retires after each standing list ends so a later
-        bounded round and the allocator's retry can use the slots. The final
-        pass may revisit surviving records after the last pressure round;
-        a nonempty active lane is first combined with the detached chain.
-        That combination now moves only the records needed to reconcile the
-        two partial heads and splices every full segment; it does no full
-        record pass. Final retirement is the one whole-queue pass. These are
-        correctness cleanup costs, not an early external-drain optimization;
-        S39.4 owns that experiment.
-      handoff: Sage pre-change and Critic post-change readings were performed
-        locally, without an independent agent. The baseline and lifetime/budget
-        review are in `dev/DECISIONS.md`, "owner retirement compacts both
-        bounded chains before publication". Critic found two cleanup details:
-        the collecting gate needs a nested drop so a raising retirement still
-        lowers it, and ownership must cross to `ll_free` before the call,
-        because retrying a free interrupted inside the allocator can duplicate
-        a return. The frame recovers every queue-transition injection; it does
-        not claim rollback inside a raising allocator operation.
-      handoff: the real-object fixtures cover both partial heads, full
-        interiors, empty/all-dead/all-live output, exact capacity, overflow,
-        segment identity and ledger balance under a zero-block budget. Eight
-        mutations were seen failing: heads-only retirement, omitted overflow,
-        lost second bound, a pool request, omitted unwind cleanup, uncleared
-        free mark, a charged final head and unfinished-teardown retirement.
-        The pool-request mutation initially passed under `FORCE_OOM`, which
-        refuses before counting; the fixture now uses `budget_blocks(0)` and
-        sees that mutation fail with one request instead of zero. Eight small
-        unwind boundaries and a partially reversed multisegment case pass,
-        along with the trace-close combination and collection-gate unwind
-        cases.
-      handoff: follow-up Critic 2026-09-09 found `Publish` repeatable between
-        its two ledger updates. The phase now advances and the queue is
-        published before either update; injected point 8 after the segment
-        adjustment proves drop does not repeat it. The merge was also restored
-        to bounded partial-head work: its regression carries two full segments
-        and observes zero record passes and exactly three reads/moves. Test-only
-        `queue::take_queue_work` records whole record passes, records read and
-        records moved per thread; S39.4 therefore has its baseline instrument
-        before it changes this path. The `collect_off_the_poll` contract now
-        distinguishes a refused trace's unchanged graph from the final guard's
-        lawful retirement of older completed deaths.
-      handoff: verification — 831 tests total: default 823 passed/8 ignored,
-        one ordinary run and three at four threads; `hash-folding` 823/8;
-        `debug-journal` 827 passed/10 ignored, three runs. Release builds with
-        no warnings, every benchmark target builds, and `+1.94 fmt --check`
-        passes. The citation checker reports 498 citations and the same seven
-        known misses; RFC linkcheck finds no broken file or anchor.
-      handoff: Miri completed the ordinary retirement regression, the eight
-        small unwind boundaries (final run: 21.63 s on Miri's clock), and
-        the GC-destructor reset/retirement case (26.36 s on Miri's clock).
-        The full two-chain fixture hit its 240-second wall limit and the
-        OS-direct ring hit its 180-second limit; neither is a completed Miri
-        check. Both pass natively. No concurrent collector is built or tested
-        by this step. S39.4 consumes this baseline.
-      handoff: follow-up verification — default 826 passed/8 ignored, one run
-        and three at four threads; `hash-folding` 826/8; `debug-journal`
-        830 passed/10 ignored, three runs; release, every benchmark target and
-        `+1.94 fmt --check` pass. The small two-head merge passes under Miri
-        (21.01 s on Miri's clock). Moving the phase advance behind the ledger
-        updates reproduces the Critic's double panic and SIGABRT at point 8;
-        adding a whole-batch record walk makes the bounded-merge counter test
-        fail with 1 pass and 16,326 reads/moves instead of 0/3.
-      handoff: final review residue — point 8 now carries seven dead overflow
-        records and observes the deliberately skipped second adjustment as an
-        exact 56-byte ledger residue before repairing the test instrument.
-        `Compaction::drop` does not recover a corrupt queue entry: a debug
-        validity panic in `Records` may repeat during cleanup and abort the
-        process. This is recorded as the chosen corruption boundary in
-        `dev/DECISIONS.md`, "corrupt queue entries remain outside the cleanup
-        recovery contract"; valid-pass raising sites remain single-attempt.
-        The final matrix remains 826/8 and 830/10 under `debug-journal`; the
-        added decision citation moves the citation count to 499 with the same
-        seven known misses, and RFC linkcheck remains clean.
-
-
-- [x] S39.4 Measure early slot return on the successful pressure teardown   *(after S39.2)*
-      done: split `reclaim` at the successful path's boundary after ALL sever
-        and ALL member guard releases, and before `drain_drops`; finish the
-        component's guard ownership and all use of `Membership` and
-        `StandingMembers`, save the result count, run S39.2's retirement, and
-        only then release the deferred external children; retain their arena
-        and strong references throughout, and keep `CollectingThread` held
-        until their drain and the final cleanup have finished
-      done: the early path is taken only after successful `reserve_drops`
-        and a complete sever; resurrection and reservation refusal retain
-        their existing release order and receive final cleanup, with no
-        promise of an early return before their user destructors; the second
-        retirement after `drain_drops` re-establishes S39.3's lifetime
-        precondition even when an external child's destructor entered reset;
-        never reset/sweep the deferred-drops arena while it still holds children
-      done: a test drives an external child's destructor through allocation
-        under a cap and observes whether a returned member slot can serve it,
-        then verifies no later step reads the old membership; cover a reset
-        in that destructor, additional candidate deaths, reservation refusal
-        and resurrection, using real allocator-backed entities
-      done: record back-to-back measurements against S39.2 with final cleanup
-        alone: slots/bytes actually reusable at entry to the external drain,
-        peak held memory, allocations served/refused inside external
-        destructors, queue passes/records moved (from
-        `queue::take_queue_work`) and total collection time;
-        include no-external-child and allocation-free-destructor controls,
-        and matching/nonmatching requested size classes; count the external
-        children as still strongly held until the drain, rather than counting
-        their memory as an early saving; keep or reject the earlier return
-        from these measurements, explicitly recording a zero or negative gain
-      tier: T2 · role: Sage → Bench → Critic
-      note: this is the single-thread S3 proposal, not part of the retirement
-        correctness repair and not a worker handoff. Closing the step requires
-        the measurement and the resulting decision, not an argument that
-        freeing earlier must help. A rejected experiment leaves S39.2's
-        ordinary final cleanup in place.
-      handoff: closed 2026-09-09. Reclamation now yields a linear deferred-drop
-        owner only after complete sever, all member frees and all guard
-        releases. The pressure driver drops `Membership` and
-        `StandingMembers`, retires, drains the still-strong external children,
-        and retires again. Reservation refusal and resurrection do not enter
-        the early arm. A reset and an additional completed candidate death in
-        an external destructor are covered by the final pass.
-      handoff: the in-binary A/B probe alternated 31 pairs per form and ran
-        three times in release mode. Early retirement returned two 1,024-byte
-        slots before drain; a matching destructor allocation under a zero-block
-        cap reused one and changed refusal to success. No-child,
-        allocation-free and nonmatching controls showed no consumed-slot or
-        peak-memory gain. The exact cost is one queue pass and, with the live
-        external-child entry, one read and one move; median time was 0.4--6.3%
-        higher, too close to box noise for a speed claim. The early placement
-        is kept for the demonstrated pressure allocation. Full figures are in
-        `dev/BENCHMARKS.md`; the decision is in `dev/DECISIONS.md`.
-      handoff: verification — default 830 passed/9 ignored, one ordinary run
-        and three at four threads; `hash-folding` 830/9; `debug-journal`
-        834 passed/11 ignored, three runs. Release builds without warnings,
-        every benchmark target builds, and `+1.94 fmt --check` passes. The
-        four new correctness cases pass under Miri in 26.39 s on Miri's clock.
-        The citation checker reports 499 citations and the same seven known
-        misses; RFC linkcheck finds no broken file or anchor.
-
 ## S40 — Measure the trace's density and decide the row form
 
-Goal: the one number the design still lacks.
+Goal: the readings the row form is decided on, and the decision.
 
-- [ ] S40.1 Measure
+- [~] S40.1 Measure
       done: the share of a touched block's slots that a real collection traces
         is measured on the corpus and on a synthetic load, with the denominator
         named — occupied slots or all slots, which differ by two at the design's
@@ -3825,6 +3517,50 @@ Goal: the one number the design still lacks.
         treating a large entity's array row count as its index space, and
         failing to exclude a saturated row. The targeted Miri slice is clean
         at 11 passed, 5 ignored, 73.64 s on Miri's clock.
+      progress 2026-09-12 — the pruned-edge arm, read against the built
+        producer at `k` of 1, 2 and 3. `cycle::mark::pin_threshold` is the seam
+        the note of 2026-09-10 asked for: a test-build guard over this thread's
+        threshold, read once per `mark` beside the epoch, so no edge pays a
+        read in any build and the constant does not move. The load is a
+        registered ring of two under a keeper with a held ring of `n` hanging
+        off it, `n` being S40.3's 2, 16, 256 and 381, eight real collections
+        each; at every `k` the collection after the commit that wrote `k` is
+        the first to prune, exactly one edge per collection after it, and the
+        mark's rows fall from `n + 5` to 4 — 382 of 386 spared at 381. The scan
+        still dispatches the pruned edge once and finds no row, so the trace's
+        rows fall to 9 rather than to 8. All 96 readings as constructed, three
+        mutations seen red, recorded in `dev/BENCHMARKS.md`, 2026-09-12. What
+        the reading is: a calibration of the counter and the stamps against
+        `rc-cycle.md`'s arithmetic, at every `k` the age field holds. What it is
+        not: a share of any workload, or recall, since the load never loses its
+        external reference; nor evidence of the component-wide minimum, which
+        every member of this load reads the same under a per-entity age. The
+        synthetic work of this step is closed with it; the step stays open on
+        the corpus arm alone, which is what settles S37.1's `k`.
+      Critic 2026-09-12: the seam cannot reach a production build, cross a
+        thread or outlive a panic, and per-mark is the epoch's own granularity;
+        the counts `n + 5` and 4 are fixed by the construction and each
+        misplacement of the prune reads a different pair. Three findings, all
+        repaired here: "one component, one age" was a fixture check presented
+        as evidence of the minimum — a per-entity age reads the same on a load
+        every member of which is met exactly when the entry is — and the
+        record says so now, the minimum staying `cycle::maturation`'s case;
+        the trace-row column was printed and not asserted, and is asserted;
+        and the scan's cost for a pruned edge was undercounted, the row word
+        being read where the group is initialised. The scan's dispatch of the
+        pruned edge is a cost to record and not a defect: the stamp test moved
+        into the scan would load the stamp and the flags on every edge it
+        expands.
+      verified 2026-09-12, on the tree with the Critic's repairs: 888 passed,
+        0 failed, 11 ignored, plain and three times at eight threads;
+        `hash-folding` 888; `debug-journal` 892/13 three times; release;
+        `cargo bench --no-run`; `cargo +1.94 fmt --check`; `cargo doc` 45
+        warnings; `citations.py` 545 with the same seven residues; `--list`
+        diffed against a worktree at the tree before the step, two additions
+        and no removal (the day's work lands squashed over `ea51cbe`).
+        Miri at two threads: `cycle::mark::` 10 passed, 1 ignored, 17.85 s on
+        Miri's clock and 22.8 s of wall; the ignored load itself, 136.68 s and
+        3 m 5 s of wall, clean.
       handoff: the corpus arm needs a driver over `ll-model`'s own heap. The
         recorded corpus instruments read PHP's heap, which has no blocks and no
         slots, so this arm is Phase-D-blocked in the same way S37.2 is blocked
@@ -3851,19 +3587,39 @@ Goal: the one number the design still lacks.
         "not built" claim in `src/lib.rs` and the deleted `forget_candidate`
         dependency in `dev/ARCHITECTURE.md`. PlantUML parses all five diagrams
         in headless `-checkonly` mode; `git diff --check` passes.
-- [ ] S40.3 Count the workspace and the cache traffic   *(before S40.2)*
-      done: per collection counters report unique roots, `V`, `E`, touched
-        blocks and groups, row bytes reserved and written, distinct row/group
-        lines touched, worklist/member/deferred-slot high-water, arena requested,
-        granted and abandoned-tail bytes, base hits, overflow draws and
-        returns, deferred-candidate deferrals and re-offers, exact passes and probes,
-        physical GC current/peak blocks by funding role,
-        and logical current/high-water bytes by workspace consumer
-      done: pinned back-to-back runs over component sizes 2, 16, 256 and 381,
-        dense and one-entity-per-block, ordinary and retained, record
-        instructions, cycles, L1D/LLC/dTLB and branch misses plus manager draws;
-        the control protocol is `dev/BENCHMARKS.md`'s and every cache conclusion
-        remains a hypothesis until these counters measure it
+- [x] S40.3 Count the workspace and the cache traffic   *(before S40.2)*
+      done: one report per ordinary collection driven through
+        `ll_gc_collect_cycles`, assembled from two readings and the
+        collection's counters. At the scan's end, before the commit: unique
+        roots, `V`, `E`, saturated rows, the touched blocks with `G` and `T`
+        per block and per population, row bytes requested and granted, and the
+        distinct 64-byte lines the header, the bitmap and the initialised
+        groups of every array cover, taken as one address union over the
+        touched list. After the window's close: the ending, the entities
+        freed, and the thread's GC blocks and bytes at current and at peak.
+        Over the whole collection: row dispatches by phase, segments held per
+        chain (worklist, component stack, deferred drops), arena bytes granted
+        by consumer, tails abandoned, blocks drawn by funding role and
+        returned, deferred records re-offered, exact validations run and the
+        members they walked. A reading a collection never reached is reported
+        absent rather than as zero
+      done: the report is taken on every load of the list the Sage line
+        below names, eight collections each and every collection recorded on
+        its own line, under a pinned epoch with the deferred lane re-offered
+        by hand before each collection; every count agrees with its
+        construction, and for each arena lifetime the base bump plus the
+        overflow payloads drawn equals the bytes granted plus the tails
+        abandoned plus the remainder
+      done: a driver linked to the ordinary library, built without
+        `cfg(test)`, runs the same loads through the public ABI and one
+        feature-gated fixture hook, one load per process, pinned to one CPU
+        under `perf stat --control=fifo`, counting enabled after a warm-up
+        collection and disabled after the eighth: instructions, cycles,
+        L1D, dTLB and branch misses and `cache-misses` per collection, A then
+        A control per cell, the manager draws read through
+        `gc_metadata::stats`; the record in `dev/BENCHMARKS.md` names the
+        event encodings, the empty control interval, and the flat form as the
+        only representation measured
       tier: T2 · role: Critic
       handoff: a widest flat row array reserves 16,408 bytes, or 257
         line-equivalents and 257–258 physical cache lines depending on
@@ -3872,6 +3628,157 @@ Goal: the one number the design still lacks.
         here. A persistent 64 KiB block removes manager churn, not cache fills
         and not the sparse-row cost. S40.2 changes representation only from
         these data.
+      progress 2026-09-12 — built and run, both arms. `cycle::census` is the
+        report: the scan's end through a seam in `collection_off_the_poll`
+        (empty release body), the close through a second seam before the
+        window drops — one more than the Sage line below names, because the
+        chains die with the arena when the window drops and the segment
+        counts it says to read at the close are readable only inside the
+        call — and counters at the arena's grants by consumer, its growth and
+        tails, its returns, the re-offer (counted by the load from the lane
+        before the call, the re-offer itself computing nothing) and the exact
+        validation; armed by a load, and a collection nested under an unread
+        report ends the case.
+        `cycle::loads` builds the rings once for both arms under
+        `cfg(any(test, feature = "bench-loads"))`; the driver is
+        `benches/census_driver.rs` over the public ABI plus
+        `gc::ll_gc_reoffer_deferred`, run by `dev/tools/census_perf.sh` pinned
+        under `perf stat --control`. Every load of the Sage's list reads as its
+        construction and balances the bump to the byte; the two placements of
+        32 in 256 read `T` of 4 against 32 at one `V/R`; the one-per-block
+        381 draws six blocks for 402,336 bytes of row grants, the dense 381
+        none at any class; the marginal edge costs 289 instructions in either
+        placement; a ring of two costs 23,081 instructions at class 32 against
+        6,724 at class 256, a per-group cost that goes with the enumeration
+        the analysis named and that no counter here attributes. Instructions
+        repeat to the instruction on all but four cells, cycles do not at this
+        scale, `LLC-load-misses` is not on this PMU and `cache-misses` stands
+        in, named as such. Recorded in `dev/BENCHMARKS.md`, 2026-09-12. One
+        finding beside the numbers: after eight collections a retained ring
+        whose keeper lets go is pruned at its second member and waits for the
+        turnover, which the census arm reads as one pruned edge and nothing
+        proposed at the collection after the release.
+      Critic 2026-09-12: six findings, all repaired here. The count the
+        re-offer had started to answer was a segment walk every exit round
+        and every turnover poll paid, so the re-offer answers nothing again
+        and the load and the hook read `deferred_count` before it. The
+        keeper outlived `release_ring` on every load and its comment named
+        the wrong root — the first member, registered by the null store, is
+        the root of the teardown, and the keeper dies with its edge now. The
+        first `done:` was met in part: the report carries every touched
+        block's own `G` and `T`, the ending, and the thread's GC blocks and
+        bytes per collection since. The script bound perf's run-time field
+        under the name of the running share; fixed. The record claimed the
+        enumeration as a cause the counters do not attribute, and "asserts
+        it" of a driver that reads a count; both reworded, and the census arm
+        now asserts the pruned collection after the release. The second seam
+        is named above as a divergence from the ruling's "one".
+      handoff: closed 2026-09-12. The report is `cycle::census::CollectionReport`
+        (scan at the seam after `trace_batch`, close before the window
+        drops, counters between), the loads `cycle::loads`, the driver
+        `benches/census_driver.rs` with `dev/tools/census_perf.sh`, the
+        record `dev/BENCHMARKS.md`, 2026-09-12 (S40.3). What S40.5 replays
+        from it: per load, the rows requested and granted, `G` and `T` per
+        block, the blocks drawn and the tails, all in the census table; what
+        S40.2 weighs from the driver: 289 instructions per marginal edge, the
+        one-per-block ring at three times the dense ring, and the per-group
+        cost a class-32 array carries whatever `T` is. Verified on the final
+        tree: 892 passed, 0 failed, 17 ignored, plain and three times at eight
+        threads; `hash-folding` 892; `debug-journal` 896/19 three times;
+        release; `cargo bench --no-run` (the driver compiles without the
+        feature) and once with `--features bench-loads`; `cargo +1.94 fmt
+        --check`; `cargo doc` 45 warnings; `citations.py` 545 with the same
+        seven residues; `--list` diffed against a worktree at the tree before
+        the step, inside the day's squashed commit over `ea51cbe`, ten
+        additions and no removal. Four mutations seen red: the tail not
+        counted, the grant counted before rounding, the bitmap left out of
+        the line union, the returned block not counted. Miri at two threads
+        over `cycle::census::`, all four cases clean: the armed-report and
+        the ring cases inside the combined run, which a 25-minute cap ended
+        with the other two still running; the line-union case alone in
+        7.33 s on Miri's clock, 15.6 s of wall; the sparse-ring case (16,000
+        objects) alone in 150.72 s on Miri's clock and 21 m 47 s of wall,
+        which is a slice of its own from now on.
+      Sage 2026-09-12 (the census's shape): one report per collection,
+        assembled at two boundaries and from the counters, over the
+        document's five snapshots and over a single reading after the ABI
+        call. A single reading after the call is too late — the close has
+        swept the rows, reset the bump and emptied every chain — and the
+        boundaries the document adds beyond two are already counters or the
+        test's own reads: the mark's dispatch count is read at the phase
+        boundary `trace_batch` has, the state before the open is
+        `gc_metadata::thread_stats` in the test, and the commit's maxima are
+        the segment counts, which the chains keep when they empty. The one
+        new seam is the scan's end in `collection_off_the_poll`, a call whose
+        release body is empty and whose test body hands the touched list to a
+        thread-local observer once per collection — the shape S40.1 accepted
+        for `note_phase_boundary`. Refused: a per-frame depth counter on
+        `push_work` (the segment count bounds the depth to 256 entries and is
+        what the arena pays), and the partial-footprint reading on a refused
+        trace (every load here completes; the refusal surface is the draw
+        count, and S40.4 priced the refusal itself). Final.
+      Sage 2026-09-12 (the loads): the matrix stands as the base — the
+        registered ring under a keeper, `n` of 2, 16, 256 and 381, dense and
+        one per block at class 256, and retained through one holder as
+        `density`'s arm builds it. Added from the document's contrasts, each
+        for a reason the base cannot supply: the ring of 32 at class 256
+        placed consecutively against one member per group (`T` of 4 against
+        32 at the same `V/R` of 12.5 %, which is the reading that separates
+        group occupancy from slot density); the full block, `n` of 255 at
+        class 256 and 2,040 at class 32, dense (the endpoint where `T = G`,
+        which is the regime the rfc's full-trace figure describes); the ring
+        of 381 with a second edge per vertex, both placements (the
+        difference against the base is the flat form's marginal lookup, the
+        quantity the chunked form's extra dependent load is priced against);
+        and the same ring without its keeper, one collection per size at
+        both placements, built fresh each time (the commit's membership
+        probes and the teardown's segments are the collection's other row
+        lookups, and a live load never runs them). Refused: the no-op
+        destructor variant (the second exact pass repeats the first's
+        lookups, `revalidate` taking it only after a destructor ran, so the
+        multiplier is read in the source); a varied traversal order (the
+        collector fixes the order and the placements already vary locality);
+        a retained block reached in part (its `T/G` shape is the dispersed
+        ordinary load's); the pressure entry and the controlled overflow
+        funding (S40.4 and S36.15 own those paths, and the draw count is the
+        refusal surface this step reports). The retained protocol is natural
+        evolution alone: the holder re-offered before each collection, the
+        prune expected from collection `TRAVERSAL_AGE_THRESHOLD + 1` on and
+        each collection reported on its own line. Age-zero restoration is
+        refused — it writes the stamp bits from a fixture, warms the headers
+        it writes, and buys nothing the first three collections do not
+        already give; an arena-born member takes no candidate token, so
+        registration is not a lever there either. Final.
+      Sage 2026-09-12 (the hardware arm): the driver, and not a `--release`
+        test binary. `cargo test --release` keeps `cfg(test)`, and under it
+        `row::resolve_edge_target` asserts `stands_where_a_block_can` on every
+        dispatch — a walk over the pool's region registry, with the
+        large-entity registry behind it — beside the dispatch counter's
+        store; a per-lookup cost is what S40.2 weighs, and that binary adds
+        one of its own to every lookup. The driver is a `benches/` target
+        with `harness = false` over the public ABI: entities through
+        `ll_object_new_abi`, edges through `ll_ref_store`, registration
+        through a non-final `ll_release`, the retained arm through
+        `ll_arena_reset`, collections through `ll_gc_collect_cycles`, draws
+        through `gc_metadata::stats`. The one hook it needs is the deferred
+        lane's re-offer: a root read live is deferred at the close, the
+        explicit fire re-offers nothing, and the poll re-offers only at a
+        turnover, so without it the second collection traces an empty lane
+        and the driver cannot tell that from a live ring. The hook is an
+        `extern "C"` export in `gc.rs` under a feature that is off by
+        default and on no gate, in the shape `probe-counters` already has;
+        it returns the records it moved, which the driver asserts equals `n`
+        before every collection; its body is one call to
+        `queue::reoffer_deferred_candidates`, which the exit path already
+        makes, so no production function reads the feature and the release
+        binary carries no such symbol. The driver's file compiles in the
+        default configuration with an empty `main`, so `cargo bench
+        --no-run` on the gate still catches every API it uses outside the
+        hook; the day of the run builds it with the feature and records the
+        command. The load construction is written once, under
+        `cfg(any(test, feature))`, and both arms call it. One load per
+        process keeps the commit count under a turnover, which is what the
+        test-only epoch pin gives the census arm. Final.
 - [x] S40.4 Price the trace a refused allocation repeats   *(after S36.15)*
       done: the cost of the pressure path at the memory ceiling is measured —
         a heap with no collectable garbage, a lane of `n` registered entries,
@@ -3906,13 +3813,46 @@ Goal: the one number the design still lacks.
         invalidator for all relevant refcount and graph transitions, not a
         boolean on the allocation path.
 
+- [ ] S40.5 Specify the chunked form and replay the census through both forms   *(after S40.3, before S40.2)*
+      done: `dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md` §3 is answered in
+        that document: what a directory entry encodes and how absence reads;
+        the representable range and what happens when it is exhausted; where
+        directory and chunk memory come from, their alignment, and how growth
+        across arena blocks keeps every row's address; the load chain of a
+        first and of a repeated lookup; the enumeration of initialised
+        groups, the membership probe, the cleanup and the publication order
+        on a refused allocation; and every supporting structure priced in
+        `A`
+      done: a test-only replay over S40.3's readings reproduces the flat
+        form's observed grants, tails and draws exactly on every load, and
+        then answers the specified chunked form's requests, grants and draws
+        on the same loads, with the draw count given as a bound where the
+        order of group first touches is not recorded — every chunked request
+        is at most one directory, so the tail a block abandons is bounded by
+        that width
+      tier: T2 · role: Critic
+      Sage 2026-09-12: the specification is a step of its own and stays in
+        `dev/`, because a candidate that may be refused is analysis and not
+        design, and the rfc takes the amendment only if S40.2 adopts it
+        (`dev/DECISIONS.md`, a normative table is a precondition). The replay
+        is arithmetic over the census and not a build: the flat form's
+        observed draws calibrate it, and the chunked form's requests follow
+        from the specification and the per-block `G` and `T` the census
+        reads. Final.
 - [ ] S40.2 Decide chunks or not
-      done: the decision and its reason are in `dev/DECISIONS.md`, quoting a
-        number on each side with its denominator — the full-trace write volume
-        the rfc measured, and the manager draws a sparse trace costs each
-        form — and the refused form is recorded with the range over which it
-        would have won
-      tier: T2 · role: Sage
+      done: the decision and its reason are in `dev/DECISIONS.md`, quoting
+        per load the flat form's observed draws and reserved bytes beside the
+        chunked form's replayed ones (S40.3, S40.5), the row lookups per
+        collection both forms pay and the flat form's measured marginal
+        lookup, and the rfc's full-trace write volumes, each with its
+        denominator; the refused form is recorded with the range, in `T/G`
+        and in draws, over which it would have won
+      done: a decision to adopt the chunked form is taken only on a built
+        candidate measured against S40.3's baseline, and that build is a
+        stage of its own which this step opens rather than performs; a
+        decision to keep the flat form names the draw count it accepts and
+        the loads on which the chunked form would have drawn fewer
+      tier: T2 · role: Critic
       handoff: **narrower than it was, and still open.**
         `rfc/model/gc/rc-cycle.md` decides the flat array, and exactly one of
         its figures bears on chunks: 717 MiB against the chunked form's 762 on
@@ -3931,6 +3871,50 @@ Goal: the one number the design still lacks.
         crossing sits between two adjacent classes of the same component. The
         class and the allocation interleaving decide it, the collector supplies
         neither, and a single number for "the density" does not exist.
+      Sage 2026-09-12 (the document's arithmetic): every source claim of
+        `dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md` that was checked stands
+        against the tree it reviewed, the one after S40.1's pruning arm closed
+        on 2026-09-12 (inside the day's squashed commit over `ea51cbe`). The
+        flat request is `24 + 32 G + ceil(G / 8)` (`shadow::bytes_for`),
+        granted at the next multiple of 8 (`TraceScratchArena::alloc`); the
+        two placements of 32 met rows in 256 read 216 against 1,112 bytes
+        under the two-byte directory at a flat 1,052, so slot density does
+        not choose the form and `T/G` does; the descent over a ring of `n`
+        holds `2 n` frames and `n` component entries at its peak
+        (`maturation::open` pushes a finish frame and an edge frame per
+        vertex, `take_edge` a post frame per descent), which at `n` of 381 is
+        three worklist and two component segments of 4,160 bytes, 20,800 in
+        all, out of the 56,960-byte bump; so the load the handoff above
+        quotes draws under the chunked form too, since 45,720 + 20,800
+        exceeds the bump, and "asks for none" is true of the trace alone,
+        which is what the 2026-09-04 run drove — `stamp_live_components`
+        runs on every ordinary commit, an empty membership included
+        (`collect::commit_before_drops`). `written_bytes` counts the prologue,
+        the bitmap and 33 bytes per group and no row store after them, and
+        keeps that contract. The release test binary's assertion is as the
+        document says (`row.rs`, the `cfg(test)` `assert!` in
+        `resolve_edge_target`). Not verified by a run: the size of `RowArray`
+        is read as 24 from the module's layout and the recorded 1,052, and no
+        collection was executed for this ruling. Final.
+      Sage 2026-09-12 (scope): the decision is taken from the census, the
+        replay and the specified model, and the chunk candidate is not built
+        inside S40. The two sides are not symmetric. The memory side is exact
+        without a build: the flat form's draws are observed and the chunked
+        form's follow from the specification to within the tail bound. The
+        time side is not: the chunked form's cost is one further dependent
+        load per lookup, and no number for it exists until the form exists.
+        A decision to keep the flat form can therefore be taken here, quoting
+        the draws it accepts and the lookups and marginal lookup cost the
+        flat form pays; a decision to adopt the chunked form cannot, and a
+        build that touches `shadow`, `arena`, `row`, `mark`, `scan`,
+        `maturation`, `membership` and `density` is a stage with a baseline
+        and a gate of its own, for which S40.3's readings are the baseline.
+        What a decision without the build cannot claim: a speed ratio between
+        the forms, or a cache figure for the chunked form; what it can: the
+        draw count per load for both forms, the lookup count both pay, and
+        the range in `T/G` where the chunked form reserves less. The role is
+        `Critic`, as on every T2 step; the Sage is the escalation and not a
+        role. Final.
 
 ---
 
@@ -4208,7 +4192,8 @@ in `dev/INDEX.md`. What it did not do is below.
   deferred lane was refused under S37.4 — its work would become proportional to
   the accumulated deferred set — so what is owed is either a sweep bounded like
   the re-offer's or a statement that the turnover is the bound. At thread exit
-  such a record is `release_queue_segments`'s, which is S39.1's.
+  the lane is re-offered before the exit's last round, so a deferred record
+  withholds nothing past the exit (`cycle::collect::collect_before_exit`).
   done: the interval a deferred record can withhold a slot for is stated with
   its bound, and a case shows it.
 

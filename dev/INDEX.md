@@ -6,6 +6,11 @@ located.
 
 ## Modules
 
+Representation analysis: [Shadow rows: flat or chunks](SHADOW-ROW-REPRESENTATION-ANALYSIS.md)
+— S40.3 measurement design and S40.2 decision prerequisites: group occupancy,
+chunk addressing, full-collection workspace, and structural versus hardware
+measurement. Source-derived analysis; no new performance results.
+
 Critical analysis: [Cycle improvement candidates](CYCLE-IMPROVEMENTS-CRITICAL-REVIEW.md)
 — dated source review, corrections to the Cangjie comparison, candidate
 optimizations, counterexamples and measurement requirements; not approved
@@ -59,7 +64,7 @@ versions live in `docs/history/`, marked at the top.
   | `row` | `resolve_edge_target`, which row a traced edge resolves to, and the test-build assertion that the target stands in memory this process carved for blocks | none |
   | `epoch` | the process's count of closed commits, and the two-bit epoch a maturation stamp carries: `(commits / 64) % 4` | `cycle::finalization`, which reads it at a commit's start and advances it at its close, and `cycle::mark`, which reads it once per root |
   | `token` | the per-thread trace token: taken by compare-and-swap around the trace, released by one store after its last row read — the scan's end, or the harvest sweep under pressure — and waited on through a mutex by an owner whose graph a collector is tracing | `cycle::collect`, both paths |
-  | `mark` | the trace: trial deletion over the rows, and the prune that keeps it out of the mature live core — an edge target at the traversal age threshold under this collection's epoch that no candidate queue names is not descended into | none |
+  | `mark` | the trace: trial deletion over the rows, and the prune that keeps it out of the mature live core — an edge target at the traversal age threshold under this collection's epoch that no candidate queue names is not descended into; `pin_threshold` holds a test thread's threshold at another `k`, which is how `mark/tests/what_the_prune_saves.rs` reads the pruned-edge counter at 1, 2 and 3 (`dev/BENCHMARKS.md`, 2026-09-12) | none |
   | `maturation` | the descent that stamps the live components a commit read: strongly connected components over the rows the scan left live, Pearce's single index held in the row's own count, and the age one more than the component's youngest member | `cycle::collect`, inside the commit and before the first guard |
   | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | `cycle::collect`'s path under pressure |
   | `membership` | the two forms a commit's membership takes — the harvested list and the rows a collection off the poll keeps — behind the three questions every reader asks of one | `cycle::collect`, and the three modules a commit reads through |
@@ -71,6 +76,8 @@ versions live in `docs/history/`, marked at the top.
   | `finalization` | the guard reference on every member of a confirmed component, the weak cells naming them nulled before any destructor, the destructor pass over the whole commit, the second reading each component takes with the guard subtracted, and the maturation stamp every component read as externally referenced takes at either reading | `cycle::collect` |
   | `reclamation` | the teardown of a component the second reading kept: the room taken before the first cell is emptied, the sever, the frees through the ordinary death path, and the queue the displaced external children wait in | `cycle::collect` |
   | `density` | test builds only: what share of a touched block's slots one trace met, the stateless census of recoverable internal in-edges (`refcount - shadow count`) with saturated rows apart, and, in `tests::the_death_loads`, what the window's close costs in time and in cache lines | none |
+  | `census` | test builds only: one report per ordinary collection — the rows at the scan's end through `density`'s readers plus the distinct lines the arrays cover, the chains and the bump at the close, and counters at the events no final state records (grants by consumer, tails, blocks drawn by funding, re-offers, exact validations); armed by a load, nested collections refused. Its loads are `tests/the_loads.rs`, the record `dev/BENCHMARKS.md`, 2026-09-12 | none |
+  | `loads` | the rings S40.3 reads, built once for the census and for `benches/census_driver.rs`, which links the ordinary library under the `bench-loads` feature (`Cargo.toml`) and is run by hand under `perf stat` through `dev/tools/census_perf.sh`; the feature's one hook is `gc::ll_gc_reoffer_deferred` | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a
   count at the field's bound is a floor and absorbs every subtraction, so
@@ -92,8 +99,8 @@ versions live in `docs/history/`, marked at the top.
   checks identity, segment ownership, payload charges and unwind boundaries.
 - Queue-work measurement: test-only `cycle::queue::take_queue_work` reports
   whole record passes, records read and records moved for the current thread;
-  `collect/tests/when_pressure_retires_members.rs` uses it for S39.4's
-  final-only/early A/B probe and covers the matching allocation, reset,
+  `collect/tests/when_pressure_retires_members.rs` uses it for the
+  final-only/early A/B probe of `dev/BENCHMARKS.md`, "early pressure retirement returns matching slots at one extra queue pass" and covers the matching allocation, reset,
   additional death, resurrection and reservation-refusal boundaries.
 - What a slot's first eight bytes read: `refcount::slot_state`, three
   states over the count and one flag — live, dead in place, free. A slot is
@@ -154,7 +161,12 @@ versions live in `docs/history/`, marked at the top.
   and the reason it must be fixed there — TLS destructor order is
   unspecified — is `dev/DECISIONS.md`, 2026-08-03. **Rule for anything
   new on that path:** no `thread_local!` it can reach may have drop
-  glue.
+  glue. The exit's own collection — the wait on the token, the rounds
+  over every chain and the residue it reports — is
+  `cycle::collect::collect_before_exit`, its cases
+  `cycle/collect/tests/what_an_exit_collects.rs`, and the reason
+  `dev/DECISIONS.md`, "the exit collects in bounded rounds, and reports its
+  residue as a record".
 - Strings: `src/string.rs` — the two layouts of the string entity, told
   apart by their kind codes, 8 inline and 9 out of line
   (`string::bytes_are_out_of_line`), rather than by `COW`, which means
@@ -836,6 +848,11 @@ arena's own memory rather than a per-thread chain of manager blocks
 arena's own memory, and the process registry goes"). Kept as the record
 of what was considered; the code is S36.9 (e).
 
+
+`dev/tools/census_perf.sh` — the hardware arm of S40.3: every load of
+`cycle::loads` through `benches/census_driver.rs`, pinned to one CPU under
+`perf stat --control`, twice per cell and the empty interval, into one CSV.
+Build the driver with `--features bench-loads` first.
 
 `dev/tools/citations.py` — the heading-level citation check, pass 1 of
 `dev/WORKFLOW.md`'s "Checks a grep cannot make": prints every cited

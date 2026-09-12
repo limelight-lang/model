@@ -8,6 +8,105 @@ never edited or deleted.
 
 ---
 
+## 2026-09-12 — an exit requested inside a collection runs at the thread's top
+
+**Ruled by Edmond**, in the words "очевидно что надо запретить прямой выход..
+с критиком согласен", on the Critic's finding of the same day against S39.1:
+`ll_thread_exit` called from a destructor a collection is running on the same
+thread does not run the exit sequence there. The Critic's proposal ran it at
+the collection's close; its second round found that unsafe, and what is built
+is the deferral it asked for instead.
+
+**Decided.** `ll_thread_exit` reads the collection's gate: inside a
+collection, an ordinary teardown or an arena reset it records the request
+(`memory::heap::thread_exit_pending`) and returns; the sequence runs at the
+next call made outside those three states, or at the exit guard when the
+thread ends. The refusal in `deferred_slot_reuse::dispose_thread_state` stays,
+for the crate's own misuse; no destructor reaches it.
+
+**Why the top and not the close.** The collection's caller — the safepoint
+poll, `ll_gc_collect_cycles`, the allocation slow path — returns a count and
+nothing else, so the code above it cannot learn that the thread died inside;
+its next allocation would take the self-initialising path and start a second
+life on a thread whose static roots the exit severed, and its next release
+would register into a queue base the exit gave back. An exit under a teardown
+has the same shape: the dying object's frame goes on to free its slot. Every
+frame above a destructor goes on using the heap, so the only place the
+sequence can run is where no frame does.
+
+**What it changes at the ABI.** A destructor's `ll_thread_exit` ends the
+thread's runtime state at the thread's top rather than at the call, and the
+exit guard runs the sequence whether or not a request stands; nothing outside
+the crate reads the request today. Whether the emitted safepoint should read
+that word and unwind on it, and under what name the ABI carries it, is the
+rfc's question (`PLAN.md`, Fog). `rfc/model/gc/rc-cycle.md`, "Concurrency",
+carries the rule.
+
+**What it retires from the entry below.** The exit's own take of the token
+and the retirement its rounds made under a teardown-closed gate existed for
+an exit reached with the gate closed; no exit reaches its collection that way
+now, and both went with the two cases that drove them.
+
+**Refused: the abort.** It was the answer while nothing could wait for the
+thread's own window; recording the request keeps the thread inside the
+protocol without a process end, and costs one flag read per exit.
+
+## 2026-09-12 — the exit collects in bounded rounds, and reports its residue as a record
+
+**Decided**, building the ruling of 2026-09-04 ("a thread waits for the trace,
+collects, and then exits"). `ll_thread_exit` runs `cycle::collect::collect_before_exit`
+between the static blocks' teardown and the disposal of the trace window: it
+takes and releases the thread's token, then repeats a collection off the poll
+while a round ran destructors or moved the registration count either way, up
+to `EXIT_ROUNDS` (eight), offering every chain before each round — the spare
+cells refilled, the overflow buffer drained, the deferred lane re-offered
+whatever the epoch says. What stands
+registered after the last round is the residue, written to the journal as
+`KIND_EXIT_RESIDUE` with why the rounds stopped and the entities freed; entries
+left in the overflow buffer because no round could draw a segment are named as
+such rather than as an empty lane.
+
+**Why rounds, and why "ran destructors" rather than "freed".** A teardown's
+releases register the children they orphan, and a resurrecting destructor can
+drop the last holder of another ring without freeing anything or moving the
+count (the Critic's scenario of 2026-09-12): the one way a collection makes
+garbage is user code, so a round that ran any is followed by another.
+
+**Why a cap.** A destructor that builds a ring of its own class in every round
+would otherwise keep the exit running for as long as it has memory; the poll
+path runs one collection per poll and the pressure path repeats only under a
+root bound, and the exit is the only loop over user code. Eight is a bound on
+the work, not a measured figure, and the residue says when it ended the loop.
+
+**Why the deferred lane is re-offered unconditionally.** The exit is the
+thread's last turnover: a root deferred as live by one round can be garbage in
+the next, its holder torn down by that round's destructors, and a deferral
+nobody re-offers is the permanent miss the ruling exists to close.
+
+**Why the wait was the exit's own and not only the collection's** — retired
+the same day by the entry above, "an exit requested inside a collection runs
+at the thread's top": the case it answered, an exit reached with the gate
+closed, no longer reaches the collection. The first round's take is the wait.
+
+**What the wait is for, narrower than the ruling's sentence.** The ruling
+read "the wait replaces the abort". The wait is for a holder of the thread's
+token, which is a collector; an exit inside the thread's *own* window — called
+from a destructor of a collection running on this thread — cannot wait,
+because a thread cannot wait for itself. What it does instead is the entry
+above, "an exit requested inside a collection runs at the thread's top".
+
+**Refused: distinguishing the endings at the ABI.** `ll_gc_collect_cycles`
+still answers a count; the endings are read by the exit alone.
+
+**Cost.** Up to eight collections per exiting thread that registered anything;
+one refill per round, which draws up to two pool blocks for spare cells a
+growth had spent and gives them back a few lines later in
+`release_queue_segments` — a thread that never grew its queue draws none, and
+the critical reserve is left alone because the exit's end drains it; and
+the test fixtures that leave a lane naming stack headers or dismantled slots
+now give it back unread before their thread exits (`block_pool::test_guard`'s
+drop, and the fixtures of cases on threads of their own).
+
 ## 2026-09-11 — the entry gate reads the teardown depth, and a poll it refuses keeps its arming
 
 **Decided (S38.4), under Edmond's ruling of 2026-08-07** ("a fire point

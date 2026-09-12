@@ -16,31 +16,10 @@
 use std::ptr;
 
 use super::*;
-use crate::class::Class;
 use crate::cycle::epoch;
 use crate::cycle::queue::release_queue_segments;
 use crate::cycle::testing::{ages, stamp_of};
 use crate::gc::ll_gc_collect_cycles;
-
-/// A ring member: one counted Box property for the ring's own edge, and a
-/// second for the edge that leaves it.
-fn node_class(name: &str) -> *const Class {
-    ClassBuilder::new(name)
-        .prop("next", true)
-        .prop("side", true)
-        .build()
-}
-
-/// A GC-heap object whose creation reference stays with the caller, so that no
-/// decrement of it is ever the mutator's last and no queue entry ever names
-/// it.
-///
-/// # Safety
-/// As `new_constructed`: `arena` is this thread's and `class` is built.
-unsafe fn a_held_object(arena: &mut Arena, class: *const Class) -> *mut Object {
-    let mut context = LLContext { arena };
-    unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) }
-}
 
 /// A ring of two under a keeper, with one more live entity hanging off the
 /// ring at the second property: the members, the keeper, the child.
@@ -215,5 +194,62 @@ fn a_stamp_of_another_epoch_prunes_no_edge() {
         unsafe { stamp_of(child) },
         (1, 1),
         "and the commit writes over the stale stamp rather than clearing it"
+    );
+}
+
+/// A pinned threshold moves the collection the descent stops at, and nothing
+/// else: at `k = 1` the first commit puts the child at the threshold and the
+/// second collection is the one that stops at it.
+///
+/// The same reading as [`the_fourth_collection_stops_at_the_child_the_third_matured`]
+/// two commits earlier, which is what the pin exists for: the pruned-edge
+/// count at a `k` the constant does not carry (`PLAN.md` S40.1). The pin is
+/// dropped before the last collection, which reads the constant again and
+/// descends into a child at age 1.
+#[test]
+fn a_pinned_threshold_of_one_stops_the_second_collection_at_the_child() {
+    let _g = test_guard();
+    release_queue_segments();
+    let _epoch = epoch::pin(0);
+    let class = node_class("PrunePinned");
+    let mut arena = Arena::new();
+
+    let (_members, _keeper, child) = unsafe { a_ring_with_a_child(&mut arena, class) };
+    let grandchild = unsafe { a_held_object(&mut arena, class) };
+    unsafe { store_prop(&mut arena, child, prop_offset(1), grandchild) };
+
+    let pin = pin_threshold(1);
+    take_edges_pruned();
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 0);
+    assert_eq!(unsafe { stamp_of(child) }, (0, 1));
+    assert_eq!(
+        take_edges_pruned(),
+        0,
+        "the first collection reads the child unstamped"
+    );
+
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 0);
+    assert_eq!(
+        take_edges_pruned(),
+        1,
+        "the second stops at the child, which the first commit put at the threshold"
+    );
+    assert_eq!(
+        unsafe { stamp_of(grandchild) },
+        (0, 1),
+        "the grandchild keeps the first commit's stamp: nothing behind the child was met"
+    );
+
+    drop(pin);
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 0);
+    assert_eq!(
+        take_edges_pruned(),
+        0,
+        "the constant is 3 again, and a child at age 1 is descended into"
+    );
+    assert_eq!(
+        unsafe { stamp_of(grandchild) },
+        (0, 2),
+        "the third commit met the grandchild and aged it"
     );
 }

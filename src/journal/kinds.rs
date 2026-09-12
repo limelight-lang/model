@@ -82,11 +82,19 @@ pub const KIND_THREAD_START: u32 = 7;
 /// last act.
 pub const KIND_THREAD_EXIT: u32 = 8;
 
+/// What a thread's exit collection left registered: `subject` is the
+/// number of candidate registrations still standing, which is the bounded
+/// leak the exit reports, `a` is why the rounds stopped
+/// (`crate::cycle::collect::ExitEnding`, as its code) and `b` the entities
+/// the rounds freed. Written once per exit, after the collection and before
+/// the queue's segments go back (`crate::cycle::collect::collect_before_exit`).
+pub const KIND_EXIT_RESIDUE: u32 = 9;
+
 /// The highest kind that has a site. The mask is a `u64`, so a kind past
 /// 63 would shift out of it and enable the wrong one — a limit worth
 /// failing the build over rather than discovering as a silent
 /// misreading.
-const HIGHEST_KIND: u32 = KIND_THREAD_EXIT;
+const HIGHEST_KIND: u32 = KIND_EXIT_RESIDUE;
 
 const _: () = assert!(
     HIGHEST_KIND < 64,
@@ -112,7 +120,8 @@ pub const DEFAULT_KINDS: u64 = bit(KIND_ENTITY_BIRTH)
     | bit(KIND_BLOCK_COMMISSIONED)
     | bit(KIND_BLOCK_DECOMMISSIONED)
     | bit(KIND_THREAD_START)
-    | bit(KIND_THREAD_EXIT);
+    | bit(KIND_THREAD_EXIT)
+    | bit(KIND_EXIT_RESIDUE);
 
 /// Which kinds are written, process-wide.
 ///

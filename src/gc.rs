@@ -83,12 +83,34 @@ pub(crate) fn disarm() {
 /// (`crate::cycle::collect::collect_off_the_poll`). Zero is every answer short
 /// of a teardown, the refusals included.
 ///
+/// **A destructor this runs can ask for the thread's exit**, and the request
+/// waits for the thread's top rather than running here: the caller gets its
+/// heap back, and `memory::heap::thread_exit_pending` says a request stands.
+///
 /// # Safety
 /// Callable at a safepoint of the calling mutator — refcounts and edges
 /// consistent (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
     unsafe { crate::cycle::collect::collect_off_the_poll() }
+}
+
+/// Fixture hook for the `benches/` driver, compiled under `bench-loads`
+/// alone: re-offer this thread's deferred lane and answer how many records
+/// moved. A root read live is deferred at a collection's close and the poll
+/// re-offers it at the next turnover only, so a driver that collects the
+/// same live ring eight times inside one epoch calls this before each
+/// collection, as the exit's rounds do (`PLAN.md` S40.3).
+///
+/// The body is the count the census reads and the call the exit already
+/// makes, so no production function computes anything for the hook and the
+/// ordinary library carries no such symbol.
+#[cfg(feature = "bench-loads")]
+#[unsafe(no_mangle)]
+pub extern "C" fn ll_gc_reoffer_deferred() -> usize {
+    let records = crate::cycle::queue::deferred_count();
+    crate::cycle::queue::reoffer_deferred_candidates();
+    records
 }
 
 /// ABI: fire a collection only if one was *armed*, else do nothing. This is
@@ -101,6 +123,9 @@ pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
 /// The reserve refills and queue maintenance below happen whether or not the
 /// fire does, an unarmed poll being the ordinary case and the maintenance
 /// being what every poll owes.
+///
+/// **A destructor the fire runs can ask for the thread's exit**, as under
+/// [`ll_gc_collect_cycles`]: the request waits for the thread's top.
 ///
 /// # Safety
 /// Callable at a safepoint of the calling mutator.
@@ -130,16 +155,10 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // And the candidate queue's spare cells, which is the same protocol
     // one layer up: the growth path may not allocate, so somebody else
     // takes the segment it swaps in, and this is where that somebody
-    // stands (`rfc/model/gc/cycle/questions.md`, Y12 clause 3).
-    if crate::cycle::queue::needs_spares() {
-        let _ = crate::cycle::queue::refill_spares();
-    }
-
-    // And then what the refill made room for: entries written to the
-    // queue's overflow buffer because every allocation path had refused
-    // them. The order is load-bearing — draining before the refill would
-    // put them straight back (`rfc/model/gc/cycle/questions.md`, Y12 clause 3).
-    crate::cycle::queue::drain_overflow();
+    // stands; then the overflow buffer drains into the room the refill
+    // made. The exit's collection runs the same two before each of its
+    // rounds (`crate::cycle::queue::refill_and_drain`).
+    crate::cycle::queue::refill_and_drain();
 
     // A ring whose root sits in the deferred lane can be this thread's only
     // garbage, so it cannot wait for a collection that an empty active queue

@@ -59,7 +59,7 @@ point:
 | `context → promote` | `ll_arena_reset` | the reset ABI drives the full discipline — `promote::arena_reset_full` consumes the arena's logs through arena's own drain primitives, not the reverse |
 | `barrier → object` | `drop_ref` | the release cascade ends in `ll_entity_die`; `header_category` reads |
 | `class → object` | descriptor construction | carries `ll_default_dispose` as the default dispose pointer (data, not a call) |
-| `heap → static_block`, `weak`, `cycle::queue`, `cycle::deferred_slot_reuse` | `ll_thread_exit`, `ll_thread_init` | thread exit owns the order its per-thread state dies in, because TLS destructor order is unspecified and puts the exit guard last (decision 2026-08-03). These are disposal calls only: `heap` learns nothing about cells or verdicts, it names `dispose`-shaped functions in a fixed sequence. The deferred-reuse module is asked before the heaps, and answers by refusing an exit inside an open trace window rather than by freeing anything, holding no block of its own to free; the queue joins at both ends — its cells are filled beside the two memory reserves at init, and at exit its segments go back before theirs, then the collection workspace, then the base block |
+| `heap → static_block`, `weak`, `cycle::queue`, `cycle::deferred_slot_reuse`, `cycle::members`, `cycle::collect` | `ll_thread_exit`, `ll_thread_init`, `entity_alloc` | thread exit owns the order its per-thread state dies in, because TLS destructor order is unspecified and puts the exit guard last (decision 2026-08-03). Most are disposal calls: `heap` names `dispose`-shaped functions in a fixed sequence and learns nothing about cells or verdicts from them. Two of the three calls into `cycle::collect` start collections — the pressure path at `entity_alloc`'s refusal, and the exit's rounds between the static blocks' teardown and the window's disposal — and answer a count and the exit's residue, never a verdict; the third reads the entry gate at the top of `ll_thread_exit`, which records the request under a closed gate instead of running the sequence. The deferred-reuse module is asked before the heaps, and answers by refusing an exit inside the thread's own open trace window rather than by freeing anything, holding no block of its own to free; `cycle::members` gives back a harvested list the same way; the queue joins at both ends — its cells are filled beside the two memory reserves at init, and at exit its segments go back before theirs, then the collection workspace, then the base block |
 | `refcount → cycle::queue` | `release_word`, the non-final decrement the candidate gate admits | the candidate set is fed from the release path and nowhere else, registration being edge-triggered (`rfc/model/gc/cycle/questions.md`, Y6). `refcount` learns one thing about the queue and it is a boolean: whether the entry landed, which decides whether the candidate bit stays down |
 
 **Where the collector's duty sits.** A dying slot a queue entry names owes the
@@ -320,12 +320,15 @@ block, the reserve-drawn ones included, returns to the pool.
 **4a. Thread exit.** `ll_thread_exit` (`heap`), reached explicitly or
 from the TLS guard → the static-block pass (`static_block`) releases
 each registered block's roots in reverse registration order through the
-barrier's `drop`, which is the only step here that runs user code →
-`weak::dispose` returns the weak table, after every death that could
-still need a row → `buffer_arena::dispose` returns the thread's buffer
-arena, whose blocks go to the process-global pool, after every step above
-that can still free a buffer into it → the thread's heaps are dropped and
-their blocks are abandoned or returned.
+barrier's `drop` → the exit's collection (`cycle::collect::collect_before_exit`)
+waits for a holder of the thread's trace token, then collects what the
+thread left registered in rounds until one makes no progress, and reports
+what is still registered as the exit's residue; these two are the steps
+here that run user code → `weak::dispose` returns the weak table, after
+every death that could still need a row → `buffer_arena::dispose` returns
+the thread's buffer arena, whose blocks go to the process-global pool,
+after every step above that can still free a buffer into it → the thread's
+heaps are dropped and their blocks are abandoned or returned.
 
 **5. In-line cycle collection.** A non-final decrement registers the entity
 (`refcount` → `queue`);

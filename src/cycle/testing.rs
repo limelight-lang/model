@@ -26,6 +26,11 @@
 //! trees, the commit that writes it and the descent that stops at it, and a
 //! second copy of the read would be a second opinion about where the stamp
 //! lives.
+//!
+//! [`on_a_fresh_thread`] is where a load runs: the measurement groups —
+//! `density`'s, `mark`'s and `census`'s — each build a population eight
+//! collections deep, and a heap no other case has touched is what makes the
+//! first collection's reading the same on every run.
 
 use crate::class::Class;
 use crate::cycle::arena::TraceScratchArena;
@@ -247,8 +252,9 @@ pub(crate) unsafe fn read_as_unreachable(root: *mut Object, members: &[*mut Obje
 ///
 /// **The slots do not come back to the allocator.** The null store decrements
 /// each member through the candidate gate, so a queue entry names it at its
-/// free and `ll_free` withholds the slot until the entry is retired
-/// (`PLAN.md` S39.2). A case that counts free slots is counting something else.
+/// free and `ll_free` withholds the slot until the entry is retired at a
+/// collection's close or at thread exit (`cycle::queue::retire_candidates`).
+/// A case that counts free slots is counting something else.
 ///
 /// # Safety
 /// Every member is a live object of this thread's GC heap, unguarded, linked
@@ -271,4 +277,23 @@ pub(crate) unsafe fn dismantle_ring<const MEMBERS: usize>(
             ll_object_die(member);
         }
     }
+}
+
+/// Run `case` on a thread whose heap no other case has touched, and answer
+/// what it returned.
+///
+/// The lane goes back unread at the end: the exit collects what it holds, and
+/// a load's teardown leaves it naming slots it freed by hand.
+pub(crate) fn on_a_fresh_thread<T: Send + 'static>(case: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::spawn(move || {
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the pool served this thread"
+        );
+        let reading = case();
+        crate::cycle::queue::release_queue_segments();
+        reading
+    })
+    .join()
+    .expect("the case finished")
 }

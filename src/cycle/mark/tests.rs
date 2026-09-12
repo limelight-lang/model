@@ -1,5 +1,5 @@
 use super::*;
-use crate::class::ClassBuilder;
+use crate::class::{Class, ClassBuilder};
 use crate::cycle::shadow::Color;
 use crate::cycle::testing::{dismantle_ring, ring, row_word};
 use crate::memory::arena::Arena;
@@ -78,7 +78,33 @@ fn fold(state: u64, word: u64) -> u64 {
     folded
 }
 
+/// A ring member: one counted Box property for the ring's own edge, and a
+/// second for the edge that leaves it.
+fn node_class(name: &str) -> *const Class {
+    ClassBuilder::new(name)
+        .prop("next", true)
+        .prop("side", true)
+        .build()
+}
+
+/// A GC-heap object whose creation reference stays with the caller, so that no
+/// decrement of it is ever the mutator's last and no queue entry ever names
+/// it.
+///
+/// # Safety
+/// As `new_constructed`: `arena` is this thread's and `class` is built.
+unsafe fn a_held_object(arena: &mut Arena, class: *const Class) -> *mut Object {
+    let mut context = LLContext { arena };
+    unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) }
+}
+
 mod an_aborted_mark_writes_nothing;
 mod what_a_dead_root_is_worth;
 mod what_the_trace_subtracts;
 mod where_the_descent_stops;
+
+// The loads S40.1 records at `k` of 1, 2 and 3, which are ignored in the
+// ordinary suite: the widest builds a 381-member component per threshold and
+// traces it eight times, and the gate runs this suite about a dozen times per
+// commit.
+mod what_the_prune_saves;

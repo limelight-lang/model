@@ -1670,13 +1670,46 @@ mod tls {
 /// export exists for callers who manage their own thread lifetimes, and
 /// for FFI callers whose threads Rust knows nothing about.
 ///
+/// **Called from a destructor — inside a collection, an ordinary teardown or
+/// an arena reset — it records the request and returns with the heap still
+/// there.** The frames above such a call go on using the heap, so the exit
+/// runs at the thread's top instead: at the next call made outside those
+/// three states, or at the exit guard when the thread ends. Whether a
+/// request is pending is `thread_exit_pending` (`dev/DECISIONS.md`, "an
+/// exit requested inside a collection runs at the thread's top"). Called
+/// from a destructor of the exit's own sequence, it returns and the exit in
+/// progress ends the thread.
+///
 /// Idempotent, and safe to call on a thread that never allocated.
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_exit() {
+    // Re-entered from a destructor the sequence below is running — step 1's
+    // or step 2's: the sequence in progress ends the thread, and a second one
+    // under it would take the heap out from under the first. Before the gate
+    // below, which is closed inside those steps too: a request recorded there
+    // would outlive the sequence.
+    if thread_exit_running() {
+        return;
+    }
+
+    // The collection's gate, because its three closed states — collecting,
+    // teardown, reset — are exactly the states in which user code runs over
+    // structures the sequence below disposes of, and the frames above such a
+    // call go on using the heap when it returns (`dev/DECISIONS.md`, "an exit
+    // requested inside a collection runs at the thread's top").
+    if !crate::cycle::collect::may_collect() {
+        EXIT_PENDING.with(|pending| pending.set(true));
+        return;
+    }
+
+    EXIT_PENDING.with(|pending| pending.set(false));
+
     // From here this thread may not free anything whose release can be
     // withheld (`thread_may_free`), and a structure built between here and
     // the end is disposed by this sequence rather than by the guard.
     EXIT_PHASE.with(|phase| phase.set(ExitPhase::Exiting));
+    #[cfg(test)]
+    EXIT_SEQUENCES.with(|count| count.set(count.get() + 1));
     journal_event!(crate::journal::kinds::KIND_THREAD_EXIT, 0, 0, 0);
 
     // Thread exit owns the order in which this thread's runtime state
@@ -1702,16 +1735,26 @@ pub extern "C" fn ll_thread_exit() {
     // on. A panic here cannot unwind out of a destructor, and under
     // `panic = "abort"` it ends the process.
 
-    // 1. Static blocks let go of their roots (A6). The only step that
-    //    runs user code, so it goes first, while every structure the
-    //    `__destruct` bodies below it may touch is still alive — heaps,
-    //    context, weak table.
+    // 1. Static blocks let go of their roots (A6). Runs user code, so it
+    //    goes first, while every structure the `__destruct` bodies may touch
+    //    is still alive — heaps, context, weak table.
     crate::static_block::run_thread_exit_teardown();
 
-    // 2. The trace window, before anything it could still be addressing goes
+    // 2. Wait for any trace over this thread's blocks, then collect what the
+    //    releases above and the thread's life left registered, until a round
+    //    makes no progress. The second and last step that runs user code, and
+    //    it runs it over the same live structures. What it could not take
+    //    keeps its candidate bit into the abandoned blocks below, and is
+    //    reported as the exit's residue (`dev/DECISIONS.md`, "a thread waits
+    //    for the trace, collects, and then exits").
+    unsafe { crate::cycle::collect::collect_before_exit() };
+
+    // 3. The trace window, before anything it could still be addressing goes
     //    away. It owns its chain of blocks and gives them back at its own
     //    close, so this call frees nothing: it refuses an exit that would
-    //    abandon a trace still holding rows in the heaps below.
+    //    abandon a trace still holding rows in the heaps below. No destructor
+    //    reaches that refusal — a request from one waited for the top above —
+    //    and a foreign holder was waited for in step 2.
     crate::cycle::deferred_slot_reuse::dispose_thread_state();
     // Beside it, and for the same reason one step down: a harvested member
     // list names records inside the workspace block this exit is about to hand
@@ -1719,14 +1762,14 @@ pub extern "C" fn ll_thread_exit() {
     // again (`crate::cycle::members`).
     crate::cycle::members::dispose_thread_state();
 
-    // 3. The weak table, after every death that could still need a row.
+    // 4. The weak table, after every death that could still need a row.
     //    `weak.rs` pinned this position against the day static-block
-    //    teardown existed; this is that day. It also cannot follow step 4: a
+    //    teardown existed; this is that day. It also cannot follow step 5: a
     //    pooled table's rows are a chunk of that arena, and the free would
     //    reach an arena already disposed of.
     crate::weak::dispose();
 
-    // 4. The buffer arena last of the disposals, because every step above can
+    // 5. The buffer arena last of the disposals, because every step above can
     //    still free a buffer into it: a static block's teardown reaches
     //    `string_die`, which returns a dynamic string's payload here, and
     //    the withheld backlog's flush routes payload frees the same way.
@@ -1736,7 +1779,7 @@ pub extern "C" fn ll_thread_exit() {
     //    thread, so nothing below needs it.
     crate::memory::buffer_arena::dispose();
 
-    // 4 is the last act of this function rather than the fourth of four,
+    // 5 is the last act of this function rather than the fifth of five,
     //    and `retire_the_journal` says why.
     let p = tls::get_raw();
     if p.is_null() {
@@ -1763,7 +1806,7 @@ pub extern "C" fn ll_thread_exit() {
 /// is handed to the registry, which keeps it readable after this thread
 /// is gone (`journal.rs`).
 ///
-/// **Last, not fourth of four.** Everything above it is worth journaling,
+/// **Last, not fifth of five.** Everything above it is worth journaling,
 /// the block frees of the heap teardown included — those are a default
 /// event kind — and a ring retired before them would be closed while its
 /// owner still had events to raise. The position costs nothing: the ring
@@ -2029,6 +2072,26 @@ thread_local! {
     static EXIT_PHASE: std::cell::Cell<ExitPhase> = const { std::cell::Cell::new(ExitPhase::Live) };
 }
 
+thread_local! {
+    /// Whether an exit asked for from inside a collection, a teardown or a
+    /// reset waits for the thread's top. A `Cell` with no drop glue, like
+    /// every per-thread structure the exit can reach.
+    static EXIT_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread's exit sequence has started, for a case
+    /// that asks whether a request from inside the sequence started a second.
+    static EXIT_SEQUENCES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Exit sequences this thread has started so far.
+#[cfg(test)]
+pub(crate) fn exit_sequences() -> usize {
+    EXIT_SEQUENCES.with(std::cell::Cell::get)
+}
+
 /// Whether this thread may still hand memory back.
 ///
 /// `false` from the moment [`ll_thread_exit`] begins, and afterwards: the
@@ -2044,6 +2107,26 @@ thread_local! {
 /// real backlog during thread exit.
 pub(crate) fn thread_may_free() -> bool {
     EXIT_PHASE.with(|phase| phase.get()) == ExitPhase::Live
+}
+
+/// Whether a call to [`ll_thread_exit`] from inside a collection, a teardown
+/// or a reset is waiting for the thread's top.
+///
+/// Cleared by the call that runs the sequence. No production path reads it:
+/// the exit guard runs the sequence at the thread's end whether or not a
+/// request stands, and the reading an embedder's thread end or the emitted
+/// safepoint would make has no export yet — under what name the ABI carries
+/// it is the rfc's question (`PLAN.md`, "Fog").
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the reading an embedder's thread end and the emitted safepoint would make; \
+                  the ABI that carries it is the rfc's to name"
+    )
+)]
+pub(crate) fn thread_exit_pending() -> bool {
+    EXIT_PENDING.with(std::cell::Cell::get)
 }
 
 /// Whether this thread is inside its own [`ll_thread_exit`].

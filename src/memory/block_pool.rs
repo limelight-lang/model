@@ -954,6 +954,12 @@ impl Drop for TestGuard {
         // here too, rather than sitting on two blocks per test thread.
         crate::memory::reserve::drain_for_test();
         crate::memory::critical::drain_for_test();
+        // The lane goes back unread before the exit, because the exit
+        // collects what the lane holds and a case is free to leave it naming
+        // bare headers on its own stack or slots it dismantled by hand
+        // (`cycle::queue::tests`). A case about the exit's own collection
+        // runs it on a thread of its own, whose lane is real.
+        crate::cycle::queue::release_queue_segments();
         crate::memory::heap::ll_thread_exit();
 
         // A refused free is a slot out of circulation, and the paths that owe a

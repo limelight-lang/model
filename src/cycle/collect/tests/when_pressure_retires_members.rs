@@ -1,5 +1,6 @@
 //! The successful pressure teardown's split between member retirement and
-//! external-child drops, including S39.4's reproducible final-only comparison.
+//! external-child drops, including the reproducible final-only comparison of
+//! `dev/BENCHMARKS.md`, "early pressure retirement returns matching slots at one extra queue pass".
 
 use super::*;
 use crate::cycle::testing::dismantle_ring;
@@ -358,7 +359,7 @@ fn a_refused_drop_reservation_takes_no_early_retirement() {
 }
 
 #[test]
-#[ignore = "S39.4 measurement; recorded in dev/BENCHMARKS.md"]
+#[ignore = "a measurement, recorded in dev/BENCHMARKS.md under early pressure retirement"]
 fn measure_early_pressure_retirement() {
     let _guard = test_guard();
     let allocating = exact_class(

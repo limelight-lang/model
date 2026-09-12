@@ -491,6 +491,17 @@ impl TraceScratchArena {
         armed
     }
 
+    /// [`alloc`](Self::alloc) on behalf of `consumer`, which is what the
+    /// census counts the grant under; the grant itself is the same.
+    fn alloc_for(&mut self, bytes: usize, consumer: Consumer) -> *mut u8 {
+        let granted = self.alloc(bytes);
+        if !granted.is_null() {
+            note_grant(consumer, bytes.next_multiple_of(8));
+        }
+
+        granted
+    }
+
     /// Charge `bytes` of this arena's bump as memory in use, and remember
     /// them for the discharge.
     fn publish(&mut self, bytes: usize) {
@@ -649,10 +660,13 @@ impl TraceScratchArena {
         row_count: u32,
         population: Population,
     ) -> *mut RowArray {
-        let array = self.alloc(shadow::bytes_for(row_count)) as *mut RowArray;
+        let requested = shadow::bytes_for(row_count);
+        let array = self.alloc_for(requested, Consumer::Rows) as *mut RowArray;
         if array.is_null() {
             return array;
         }
+
+        note_row_array(requested);
 
         unsafe { shadow::init(array, block, row_count, population, self.touched) };
         self.touched = array;
@@ -690,8 +704,7 @@ impl TraceScratchArena {
         // finalization chain is: an unwind out of a sever strands the children
         // it had queued along with every guard it had written, and a second
         // panic here would end the process without the message that says what
-        // went wrong (`crate::cycle::finalization`; the throwing destructor is
-        // `PLAN.md` S39.1's).
+        // went wrong (`crate::cycle::finalization`).
         debug_assert!(
             self.drops.is_empty() || std::thread::panicking(),
             "a teardown left children queued: every component drains its own"
@@ -773,6 +786,8 @@ impl TraceScratchArena {
             } else {
                 gc_metadata::release(block);
             }
+
+            note_block_returned();
         }
 
         self.from_reserve = 0;
@@ -949,7 +964,7 @@ impl TraceScratchArena {
         }
 
         if !self.worklist.advance_to_kept() {
-            let region = self.alloc(SEGMENT_BYTES);
+            let region = self.alloc_for(SEGMENT_BYTES, Consumer::Worklist);
             if region.is_null() {
                 return false;
             }
@@ -979,7 +994,7 @@ impl TraceScratchArena {
         }
 
         if !self.components.advance_to_kept() {
-            let region = self.alloc(SEGMENT_BYTES);
+            let region = self.alloc_for(SEGMENT_BYTES, Consumer::Components);
             if region.is_null() {
                 return false;
             }
@@ -1027,7 +1042,7 @@ impl TraceScratchArena {
         // work is k allocations.
         let mut room = self.drops.room();
         while room < children {
-            let region = self.alloc(DROP_SEGMENT_BYTES);
+            let region = self.alloc_for(DROP_SEGMENT_BYTES, Consumer::Drops);
             if region.is_null() {
                 return false;
             }
@@ -1080,6 +1095,7 @@ impl TraceScratchArena {
     /// arena's whole life is one collection.
     fn grow(&mut self) -> bool {
         let mut block = gc_metadata::acquire();
+        let mut funding = Funding::Pool;
         if block.is_null() {
             block = gc_metadata::adopt(crate::memory::critical::draw());
             if block.is_null() {
@@ -1087,7 +1103,10 @@ impl TraceScratchArena {
             }
 
             self.from_reserve += 1;
+            funding = Funding::Reserve;
         }
+
+        note_block_drawn(funding, self.left);
 
         // The block the bump is leaving takes no further grant, so this is the
         // instant its consumption becomes exact — the workspace on the first
@@ -1147,6 +1166,20 @@ impl TraceScratchArena {
     #[cfg(test)]
     pub(crate) fn worklist_segment_count(&self) -> usize {
         self.worklist.segment_count()
+    }
+
+    /// Segments the component stack holds, emptied ones included. Tests
+    /// only, and the same reading as the worklist's.
+    #[cfg(test)]
+    pub(crate) fn component_segment_count(&self) -> usize {
+        self.components.segment_count()
+    }
+
+    /// How many of the blocks this arena holds came through the reserve.
+    /// Tests only.
+    #[cfg(test)]
+    pub(crate) fn blocks_from_reserve(&self) -> usize {
+        self.from_reserve
     }
 
     /// Blocks this arena holds. Tests only: the number is what a leak
@@ -1258,6 +1291,65 @@ impl Drop for TraceScratchArena {
     fn drop(&mut self) {
         self.reset();
     }
+}
+
+/// What a bump grant is for, which is the name the census counts it under
+/// (`crate::cycle::census`); the arena grants the same bytes whichever it is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Consumer {
+    /// A block's row array, at its first touch.
+    Rows,
+    /// A segment of the trace's worklist.
+    Worklist,
+    /// A segment of the maturation descent's component stack.
+    Components,
+    /// A segment of the teardown's deferred-drop queue.
+    Drops,
+}
+
+/// Which path a block the bump grew into came through.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Funding {
+    /// The ordinary pool, through `gc_metadata::acquire`.
+    Pool,
+    /// The critical reserve, taken when the pool refused.
+    Reserve,
+}
+
+/// Count a grant of `bytes` to `consumer` for the census, and nothing at all
+/// without `cfg(test)`.
+#[inline]
+fn note_grant(_consumer: Consumer, _bytes: usize) {
+    #[cfg(test)]
+    crate::cycle::census::note_grant(_consumer, _bytes);
+}
+
+/// Count a row array reserved for `requested` bytes, and nothing at all
+/// without `cfg(test)`.
+#[inline]
+fn note_row_array(_requested: usize) {
+    #[cfg(test)]
+    crate::cycle::census::note_row_array(_requested);
+}
+
+/// Count a block drawn through `funding` and the `tail` bytes the bump left
+/// ungranted in the block it grew past, and nothing at all without
+/// `cfg(test)`.
+#[inline]
+fn note_block_drawn(_funding: Funding, _tail: usize) {
+    #[cfg(test)]
+    {
+        crate::cycle::census::note_block_drawn(_funding);
+        crate::cycle::census::note_tail_abandoned(_tail);
+    }
+}
+
+/// Count a block the reset handed back, and nothing at all without
+/// `cfg(test)`.
+#[inline]
+fn note_block_returned() {
+    #[cfg(test)]
+    crate::cycle::census::note_block_returned();
 }
 
 #[cfg(test)]

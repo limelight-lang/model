@@ -690,6 +690,8 @@ fn a_collection_reached_from_an_ordinary_teardown_is_refused() {
 mod how_a_close_disposes_of_its_roots;
 mod what_a_collection_asks_the_allocator;
 mod what_a_live_reading_leaves_registered;
+mod what_an_exit_collects;
+mod when_a_destructor_requests_the_exit;
 mod when_a_member_is_owned;
 mod when_pressure_retires_members;
 mod when_the_turnover_reoffers;

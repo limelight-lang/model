@@ -30,6 +30,10 @@ pub mod array;
 pub(crate) mod cells;
 pub mod class;
 pub(crate) mod cycle;
+// The loads the `benches/` driver builds over the ordinary library, reached
+// here because `cycle` is the crate's own.
+#[cfg(feature = "bench-loads")]
+pub use cycle::loads;
 pub mod gc;
 pub mod hash;
 pub mod intern;
