@@ -49,7 +49,10 @@ pub(crate) struct TraceToken {
     released: Condvar,
     /// How many times a taker has gone to wait on this token. A case reads
     /// it because a take that never waited is indistinguishable, from
-    /// outside, from one whose wait is a no-op.
+    /// outside, from one whose wait is a no-op. Counted per wait on the
+    /// condition variable rather than per take: a spurious wakeup re-tests
+    /// the flag and waits again, so a case asserts that the count moved and
+    /// never what it reached.
     #[cfg(test)]
     waits: std::sync::atomic::AtomicUsize,
 }

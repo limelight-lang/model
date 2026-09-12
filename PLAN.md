@@ -11,7 +11,9 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-11 · Active: S38, from S38.2; S38.4 closed on 2026-09-11 —
+Updated: 2026-09-12 · Active: S38, from S38.3; S38.2 closed on 2026-09-12 on
+code S38.1 and S38.4 had built — the wait on a held token, reached through the
+allocation refusal and counted at the wait. S38.4 closed on 2026-09-11 —
 the entry gate with the teardown depth as its second input, a refused poll
 keeping its arming, and the slow path's refusal named by size class. S38.1
 closed the same day — the per-thread trace token, taken around the trace and
@@ -3255,161 +3257,24 @@ window there is.
         floor drawn at first pressure is the worst moment
         (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued").
 - [x] S38.1 The claim
-      done: one flag **per mutator thread**, free or held, taken by CAS and
-        released by one store; a waiter blocks on a mutex rather than spinning;
-        it covers the **trace** over that thread's graph — the arena, the block
-        triples and the touched list — while each owner's exact judgement runs
-        at its own checkpoint; a test proves a held flag blocks collection
-        entry on the claimed thread alone while enrolment, release, allocation
-        **and a second collector's trace of another thread** proceed
-      tier: T2 · role: Critic
-      Critic 2026-09-11: ten findings, six repaired, three recorded as the
-        step's edge, one refuted. The release's upper bound was pinned by no
-        test — a `drop` right after the take stayed green — so a `cfg(test)`
-        probe reads the token at the trace's last row read, the scan's end off
-        the poll and the harvest sweep under pressure, and two mutations of the
-        release point are red now. `HeldToken` was `Send`: a `PhantomData`
-        binds it to its thread. The module doc named the pressure path's
-        release point as the scan; it is the harvest. The first case ran the
-        other thread's collection before this thread was blocked; it runs
-        while this one waits now, though two traces still never overlap in
-        time — the rfc's "may run concurrently" over disjoint blocks has no
-        case, and the plan's sentence does not ask for one. The first case
-        could hang on a pool refusal inside its fixture; the holder is
-        bounded. Recorded rather than built: on the poll path the token is
-        free while the rows stand, and whether a foreign holder may take it
-        over rows the teardown reads is the rfc's own open question, named in
-        the module doc; thread exit neither reads nor waits for the token,
-        which is S39.1's; a foreign holder's detach against the owner's lane
-        writes is A2's. Refuted: a lost wakeup — the waiter re-tests under the
-        mutex the releaser notifies under. The code reviewer added eleven,
-        nine repaired: four stale "the rows die at the token's release"
-        sentences in `arena`, `scan` and a test doc rewritten to the window's
-        close; whether a collection waited is read off the token's own count
-        of waits instead of sleeps and timings; the holder is a guard that
-        releases and joins on the unwind, and the pointer crosses threads in
-        a named `Send` wrapper; the probe moved to the harvest's end.
-      handoff: `cycle::token` — `TraceToken` (an `AtomicBool`, a futex
-        `Mutex<()>` and a `Condvar`, no drop glue, pinned by a const
-        assertion), `HeldToken` for the owner's take around its trace,
-        `this_thread_token` for a holder on another thread (only the cases
-        take it until S38.0's collector exists). `collect_off_the_poll` takes
-        it after the eligibility gate and drops it after `trace_batch`;
-        `trace_and_harvest` holds it to its frame's end, past the harvest. The
-        token is in the thread-local inventory of
-        `memory::critical::tests::where_the_first_touch_happens`. Five cases
-        in `token/tests/who_may_trace_this_thread.rs`; six mutations seen
-        red: the take removed on either path, the token taken before the
-        gate, the release moved after the commit, right after the take, and
-        before the harvest. Verified on the final tree: 868 passed, 0
-        failed, 10 ignored, plain and three times at eight threads;
-        `hash-folding` once (868); `debug-journal` three times (872/12);
-        release; `cargo bench --no-run`; `cargo +1.94 fmt --check`; `cargo
-        doc` 45 warnings, the same per file; `citations.py` 519 with the
-        same seven residues; `--list` diffed against the S37.3 tree in all
-        three configurations, five additions and no removal. Miri two
-        threads over the group: 5 passed, 13.10 s Miri's clock, 13.2 s
-        wall.
-      handoff: the word was per process until 2026-08-29, when Edmond ruled the
-        exclusion per thread (`rfc/dev/DECISIONS.md`, "a trace stays inside the
-        blocks of the thread it claimed"). What licenses the narrowing is the
-        transfer rule: `thread_move` and `thread_clone` require the graph
-        arriving in a thread to hold no reference to an object that stays in
-        the source, so no thread names an entity in another thread's blocks,
-        and a block belongs to one thread's heap. Two collectors therefore
-        never meet in a block, a triple or a row.
-      handoff: the mechanism is Edmond's, 2026-08-29: the flag is the mutator
-        thread's own, a collector going to judge that mutator takes it, and CAS
-        with a mutex to wait on is the whole of it. That settles a
-        contradiction this step had carried since it was written — it asked for
-        three states and a thread-local held flag, which the ruling of
-        2026-08-27 (`rfc/dev/DECISIONS.md`, "the trace token covers the trace
-        alone") had already rejected by name. The narrowing to one thread does
-        not revive them: a thread meets its own flag held only by a collector,
-        never by itself, because mark and scan run no user code and the
-        teardown that does runs with the flag released and the entry gate shut.
+      handoff: `cycle::token` — `TraceToken` (a CAS flag, a futex `Mutex<()>`
+        and a `Condvar`), `HeldToken` taken around the trace on both paths,
+        `this_thread_token` for a holder on another thread; five cases in
+        `token/tests/who_may_trace_this_thread.rs`, six mutations seen red;
+        why the exclusion is per thread is `rfc/dev/DECISIONS.md`, "a trace
+        stays inside the blocks of the thread it claimed".
 - [x] S38.4 The entry gate and the slow-path fire   *(before S38.2)*
-      done: the GC-heap slot allocation slow path, on a forced refusal that
-        names which allocation refused, waits on this thread's own claim while
-        it is held, takes it, runs the in-line collection, retries once and
-        reports null only after; a shortage at teardown depth ≥ 1 collects
-        nothing and reports; a heap of one size class full of cyclic garbage
-        serves the allocation with no explicit collect call
-      tier: T2 · role: Critic
-      Critic 2026-09-11: six findings, four repaired, one recorded, one
-        refuted. A refusal at depth refused the retirement with the trace,
-        so a cascade of K deaths whose destructors allocate was refused K
-        times over K−1 returnable slots: the depth-only refusal now retires
-        and arms, and a case reads the retry served off a withheld slot.
-        The in-collection case's doc claimed the depth while the refusal is
-        the collecting flag's — the collection's destructor pass calls
-        `run_user_destructor` at depth zero — rewritten, and the decision
-        says which death the depth covers that no other input does. The
-        rfc's gate named two inputs and the crate reads three: the reset
-        window was carried into `rfc` (`5fcc272`) rather than argued away.
-        The ordinary-teardown case fired by name and claimed the clean
-        point; it polls now, which the arming makes true. A stale
-        "the arming stays spent" comment on the poll path's refused arm
-        rewritten. Recorded: the class-full and held-token cases assert the
-        refill count without the request count, so a refused draw by the
-        collection's own arena would be invisible there — no claim of theirs
-        depends on it. Refuted: a poll inside a collected member's destructor
-        arming off an epoch the commit itself moved — the commit counts at
-        its close, after the destructors. The code reviewer added eleven,
-        ten applied: the retirement outside the collecting flag was a
-        crossed invariant with no case for the dying candidate — the branch
-        says why the flag is not needed there, and a cascade case at depth
-        two reads that the holder's slot is kept (the mutation that returns
-        every zero-count entry segfaults the group); the gate's three inputs
-        were written twice — `CollectingThread::take` answers `GateClosed`
-        and the pressure path matches `Teardown`; `object` had gained an
-        edge into `cycle::collect` — the counter lives in `object` and the
-        gate reads `object::teardown_depth`; the two teardown cases assert
-        the thread unarmed before the death; the follow-on collection a kept
-        arming causes after a collection whose destructors armed is priced
-        in the decision as accepted. Not applied: none.
-      handoff: the gate is `cycle::collect::may_collect` over `gate()` —
-        the collecting flag, the reset window and `object::teardown_depth`
-        (a thread-local `Cell<u32>`, bracketed by `InsideTeardown` in
-        `ll_object_die` alone) — read by `CollectingThread::take`, which
-        answers `Err(GateClosed)`, and by `ll_gc_maybe_collect` before
-        `take_due`, so a refused poll keeps its arming. `collect_under_pressure`
-        refused by `Teardown` alone retires the completed deaths and arms. The
-        refused allocation is named by `heap::take_refused_entity_refills`,
-        per size class, at `Heap::refill`. `cycle::token::testing` holds
-        `HeldByACollector` for both test trees. Nine cases in
-        `heap/tests/the_collection_a_refusal_starts.rs`, one more in
-        `cycle/collect/tests.rs`; eleven mutations seen red. The death bench
-        moved by less than its own spread (`dev/BENCHMARKS.md`). Verified on
-        the final tree: 875 passed, 0 failed, 10 ignored, plain and three
-        times at eight threads; `hash-folding` once (875); `debug-journal`
-        three times (879/12); release; `cargo bench --no-run`; `cargo +1.94
-        fmt --check`; `cargo doc` 45 warnings, the same per file;
-        `citations.py` 530 with the same seven residues; `--list` diffed
-        against the `d960b68` tree in all three configurations, seven
-        additions and no removal. Miri two threads over the group with the
-        token tests: 15 passed, 97 s Miri's clock, 61 s wall. Decisions:
+      handoff: the gate is `cycle::collect::may_collect` over `gate()` — the
+        collecting flag, the reset window and `object::teardown_depth` — read
+        by `CollectingThread::take` and by `ll_gc_maybe_collect` before
+        `take_due`; the refused allocation is named per size class by
+        `heap::take_refused_entity_refills`; nine cases in
+        `heap/tests/the_collection_a_refusal_starts.rs`, one in
+        `cycle/collect/tests.rs`, eleven mutations seen red. Decisions:
         `dev/DECISIONS.md`, "the entry gate reads the teardown depth, and a
         poll it refuses keeps its arming"; `rfc/dev/DECISIONS.md`, "the entry
-        gate's third input is the reset window". Not built: the critical
-        reserve's third customer (Fog). S38.2's test — the wait reached
-        through this path with a counter past it — is
-        `a_refusal_under_a_held_token_waits_for_the_release_and_is_then_served`.
-      handoff: Y14's clause "a thread that finds the token taken does not wait"
-        was argued from the handshake deadlock, and the amendment of 2026-08-26
-        deleted the handshake, so the Sage retired the clause with its reason
-        and generalised the wait to any non-self holder. That generalisation is
-        recorded in `rfc` (Y14 and `rc-cycle.md`, Concurrency) as well as in
-        `dev/DECISIONS.md`; it is a decision of the round, not of the design of
-        record as it stood.
-      handoff: "any holder but itself" and "a claim this thread already holds"
-        were the process-wide word's phrasing, where a holder could be another
-        thread's collection. With the flag per thread (S38.1, Edmond
-        2026-08-29) the only holder of this thread's flag is a collector
-        judging it, so the wait needs no holder identity and the self-held arm
-        has no entrant; what stops a collection at teardown depth is the gate,
-        which is unchanged.
-- [ ] S38.2 The working wait
+        gate's third input is the reset window".
+- [x] S38.2 The working wait
       done: an in-line collection needs no verdict list, no handshake and no
         second phase — it is exact with respect to the counts because the owner
         re-reads its own current fields — and a mutator that cannot allocate
@@ -3420,6 +3285,35 @@ window there is.
         that merely terminates terminates most easily when the wait is never
         taken
       tier: T2 · role: Critic
+      Critic 2026-09-12, over the claim that S38.1 and S38.4 already meet
+        this criterion: no clause is unevidenced, and two wanted narrowing.
+        The case asserted `waited == 1` where `Condvar::wait` may return
+        spuriously and the loop counts each wait, a contractual flake; both
+        cases that read the count assert it moved now, which is the
+        criterion's own wording. "Past the wait" has two readings and the
+        code holds the sound one — the count moves on the wait path before
+        the block on the condition variable, and the holder's `release`
+        takes the mutex the waiter holds until it blocks, so a moved count
+        followed by the collection proves the wait was entered and ended by
+        the release; a counter after the block would give the holder no
+        signal. Recorded: the case's
+        holder is a stand-in that does no trace's work, which the criterion
+        accepts by naming the harness seizure; the design's own worker
+        empties the lane it traces, so "and is then served" in the case's
+        name holds against the stand-in alone, and the collector's case is
+        S38.0's. Refuted as a hole: the rfc's "Worker-to-owner handoff"
+        inbox is the worker path's, and the in-line form has no second
+        tracer. Drift repaired in `rfc`: "Concurrency" placed the release
+        at the end of scan on both paths while the pressure path holds the
+        token through the harvesting sweep; the sentence names both
+        instants now.
+      handoff: no new code; the wait is `HeldToken::take` in
+        `trace_and_harvest`, reached from `entity_alloc`'s refusal, and the
+        case is `a_refusal_under_a_held_token_waits_for_the_release_and_is_then_served`
+        with `HeldByACollector::take(.., true)` releasing only once the count
+        moved. Seen red with the count's increment deleted, after the holder's
+        10 s bound. The exactness clause is `cycle::validation`'s, in-degree
+        from the members' current cells on the owner after the release.
 - [ ] S38.3 Deferring the mutator's frees during a trace
       note: S36.2 built the owner-side substrate for one thread, where nothing
         frees inside the window: mark and scan only read, and the trace window
