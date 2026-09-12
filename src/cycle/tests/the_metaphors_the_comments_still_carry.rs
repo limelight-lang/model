@@ -24,16 +24,7 @@ use super::the_metaphors_the_names_still_carry::{METAPHORS, sources};
 /// The reason is the point: an exemption without one is indistinguishable
 /// from an oversight. `path` is matched as a prefix of the path relative to
 /// `src/`, so a module and its tests take one entry.
-const EXEMPT: [(&str, &str, &str); 12] = [
-    (
-        "memory/reset_window",
-        "escrow",
-        "`ResetWindow::escrow` names deferred count corrections, which the \
-         glossary calls the *deferred increment* list since `rfc` `9ca669c`; \
-         *overflow buffer*, the candidate queue's replacement, is false for \
-         that sense and no step owns the rename \
-         (`dev/CYCLE-TERMINOLOGY-AUDIT.md`, \"Glossary check\")",
-    ),
+const EXEMPT: [(&str, &str, &str); 9] = [
     (
         "cycle",
         "trigger",
@@ -52,19 +43,6 @@ const EXEMPT: [(&str, &str, &str); 12] = [
         "promote",
         "escrow",
         "the same window's, read from the reset's side",
-    ),
-    (
-        "memory/reset_window",
-        "park",
-        "the reset's own window over its own frees, a different mechanism from \
-         the trace window; the glossary calls this one a *deferred free* and \
-         no step owns the rename (`PLAN.md`, Fog)",
-    ),
-    (
-        "memory/reset_window",
-        "corpse",
-        "the same window: `CORPSE_WALKS` is its own state, and the glossary's \
-         word for it is a *torn-down entity*",
     ),
     (
         "promote",

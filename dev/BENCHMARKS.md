@@ -8,6 +8,142 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-12 — S40.5 the census replayed through both row forms: the chunked form draws one block where the flat form draws six, reserves 12 % of the bytes and writes 2.1 times as many
+
+Arithmetic over the census of the entry below, and no new collection cost:
+`cycle::census::replay` runs the arena's bump — 56,960 bytes of workspace, then
+65,280-byte blocks one at a time, every request rounded to eight, a tail left
+where a request does not fit — over the requests each row form makes for one
+collection's shape: the touched blocks in touch order with their `G` and `T`,
+and the segments the chains held at the close. The flat form's requests are
+the arrays the collector reserved, so its replay is checked against the
+census's own counters; the chunked form's are those of
+`dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md`, "The specified chunked form": a
+directory of `align_up(32 + 2 G, 8)` bytes with its first 32-byte chunk in one
+request, then one 32-byte chunk per further group met, and a continuation
+directory wherever the bump has left the block the chain's last directory
+stands in.
+
+**Calibration.** On every one of the 36 loads below the flat replay reads the
+census to the byte — requests, bytes requested and granted, blocks drawn,
+tails and their bytes, and the remainder — which is what the run asserts
+before it prints a line. The order that reproduces the tails is a ring's: the
+first root's array, the worklist's first segment at the first push, the other
+arrays at their blocks' first touches, then the descent's and the teardown's
+segments. It is the order of every load here because a ring keeps the mark's
+worklist at depth one; a mark that queues more than 256 entities at once
+draws a segment between two arrays, the census reads each chain's deepest
+standing at the close and not the mark's depth, and such a load would fail
+the calibration on its tails rather than be replayed. The four loads that
+draw, and one dense one, read the record of S40.3 from their shapes alone in
+the module's own tests. No load touches a large entity, so the replay's arm
+for that population — a 24-byte prologue against a 32-byte directory — meets
+no counter.
+
+**The chunked form's order is the loads' by construction** — each block's
+groups met consecutively, a ring traced from its first member — and the
+draw count is bracketed for every order: at least what the bytes need with
+no tail, at most what they need with every growth charged the largest tail
+one request can leave and every directory the continuations that many growths
+can force. On every load the bracket is one number wide and equals the replay.
+
+**Command:**
+
+```
+cargo test --lib census::tests::the_replay -- --ignored --nocapture --test-threads=1
+```
+
+Bytes are requested/granted on the rows' account; `written` is what the form
+writes at the blocks' and the groups' first touches — the flat form's
+prologue and bitmap and the chunked form's directory cleared whole, plus 32
+bytes per group met for either — and no later row store; `drawn` is blocks
+past the workspace; `tails` is count/bytes; `rem` the remainder at the close;
+`cont` the continuations placed; the last column the chunked form's bracket
+over every order. The first collection of each load.
+
+| load | flat req | flat bytes | flat written | drawn | tails | rem | chunked req | chunked bytes | chunked written | cont | drawn | tails | rem | bracket |
+|---|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---|
+| dense, class 32, 2 | 1 | 8,216/8,216 | 88 | 0 | 0/0 | 40,424 | 1 | 576/576 | 574 | 0 | 0 | 0/0 | 48,064 | 0..=0 |
+| dense, class 32, 16 | 1 | 8,216/8,216 | 120 | 0 | 0/0 | 40,424 | 2 | 608/608 | 606 | 0 | 0 | 0/0 | 48,032 | 0..=0 |
+| dense, class 32, 256 | 1 | 8,216/8,216 | 1,080 | 0 | 0/0 | 36,264 | 32 | 1,568/1,568 | 1,566 | 0 | 0 | 0/0 | 42,912 | 0..=0 |
+| dense, class 32, 381 | 1 | 8,216/8,216 | 1,592 | 0 | 0/0 | 27,944 | 48 | 2,080/2,080 | 2,078 | 0 | 0 | 0/0 | 34,080 | 0..=0 |
+| dense, class 64, 2 | 1 | 4,136/4,136 | 72 | 0 | 0/0 | 44,504 | 1 | 320/320 | 320 | 0 | 0 | 0/0 | 48,320 | 0..=0 |
+| dense, class 64, 16 | 1 | 4,136/4,136 | 104 | 0 | 0/0 | 44,504 | 2 | 352/352 | 352 | 0 | 0 | 0/0 | 48,288 | 0..=0 |
+| dense, class 64, 256 | 1 | 4,136/4,136 | 1,064 | 0 | 0/0 | 40,344 | 32 | 1,312/1,312 | 1,312 | 0 | 0 | 0/0 | 43,168 | 0..=0 |
+| dense, class 64, 381 | 1 | 4,136/4,136 | 1,576 | 0 | 0/0 | 32,024 | 48 | 1,824/1,824 | 1,824 | 0 | 0 | 0/0 | 34,336 | 0..=0 |
+| dense, class 128, 2 | 1 | 2,080/2,080 | 64 | 0 | 0/0 | 46,560 | 1 | 192/192 | 192 | 0 | 0 | 0/0 | 48,448 | 0..=0 |
+| dense, class 128, 16 | 1 | 2,080/2,080 | 96 | 0 | 0/0 | 46,560 | 2 | 224/224 | 224 | 0 | 0 | 0/0 | 48,416 | 0..=0 |
+| dense, class 128, 256 | 1 | 2,080/2,080 | 1,056 | 0 | 0/0 | 42,400 | 32 | 1,184/1,184 | 1,184 | 0 | 0 | 0/0 | 43,296 | 0..=0 |
+| dense, class 128, 381 | 1 | 2,080/2,080 | 1,568 | 0 | 0/0 | 34,080 | 48 | 1,696/1,696 | 1,696 | 0 | 0 | 0/0 | 34,464 | 0..=0 |
+| dense, class 256, 2 | 1 | 1,052/1,056 | 60 | 0 | 0/0 | 47,584 | 1 | 128/128 | 128 | 0 | 0 | 0/0 | 48,512 | 0..=0 |
+| dense, class 256, 16 | 1 | 1,052/1,056 | 92 | 0 | 0/0 | 47,584 | 2 | 160/160 | 160 | 0 | 0 | 0/0 | 48,480 | 0..=0 |
+| dense, class 256, 256 | 2 | 2,104/2,112 | 1,112 | 0 | 0/0 | 42,368 | 33 | 1,248/1,248 | 1,248 | 0 | 0 | 0/0 | 43,232 | 0..=0 |
+| dense, class 256, 381 | 2 | 2,104/2,112 | 1,592 | 0 | 0/0 | 34,048 | 48 | 1,728/1,728 | 1,728 | 0 | 0 | 0/0 | 34,432 | 0..=0 |
+| one per block, class 256, 2 | 2 | 2,104/2,112 | 120 | 0 | 0/0 | 46,528 | 2 | 256/256 | 256 | 0 | 0 | 0/0 | 48,384 | 0..=0 |
+| one per block, class 256, 16 | 16 | 16,832/16,896 | 960 | 0 | 0/0 | 31,744 | 16 | 2,048/2,048 | 2,048 | 0 | 0 | 0/0 | 46,592 | 0..=0 |
+| one per block, class 256, 256 | 256 | 269,312/270,336 | 15,360 | 4 | 4/2,592 | 32,672 | 256 | 32,768/32,768 | 32,768 | 0 | 0 | 0/0 | 11,712 | 0..=0 |
+| one per block, class 256, 381 | 381 | 400,812/402,336 | 22,860 | 6 | 6/4,320 | 21,184 | 381 | 48,768/48,768 | 48,768 | 0 | 1 | 1/4,032 | 48,640 | 1..=1 |
+| retained, class 256, 2 | 2 | 5,543/5,552 | 135 | 0 | 0/0 | 43,088 | 2 | 480/480 | 470 | 0 | 0 | 0/0 | 48,160 | 0..=0 |
+| retained, class 256, 381 | 3 | 7,076/7,088 | 1,668 | 0 | 0/0 | 29,072 | 49 | 2,104/2,104 | 2,100 | 0 | 0 | 0/0 | 34,056 | 0..=0 |
+| 32 at class 256, consecutive | 1 | 1,052/1,056 | 156 | 0 | 0/0 | 47,584 | 4 | 224/224 | 224 | 0 | 0 | 0/0 | 48,416 | 0..=0 |
+| 32 at class 256, one per group | 1 | 1,052/1,056 | 1,052 | 0 | 0/0 | 47,584 | 32 | 1,120/1,120 | 1,120 | 0 | 0 | 0/0 | 47,520 | 0..=0 |
+| full block, class 256 (255) | 1 | 1,052/1,056 | 1,052 | 0 | 0/0 | 43,424 | 32 | 1,120/1,120 | 1,120 | 0 | 0 | 0/0 | 43,360 | 0..=0 |
+| full block, class 32 (2040) | 1 | 8,216/8,216 | 8,216 | 1 | 1/2,984 | 11,200 | 255 | 8,704/8,704 | 8,702 | 0 | 1 | 1/2,496 | 11,200 | 1..=1, cont ≤ 1 |
+| two edges, dense, class 256, 381 | 2 | 2,104/2,112 | 1,592 | 0 | 0/0 | 25,728 | 48 | 1,728/1,728 | 1,728 | 0 | 0 | 0/0 | 26,112 | 0..=0 |
+| two edges, one per block, 381 | 381 | 400,812/402,336 | 22,860 | 6 | 6/4,320 | 12,864 | 381 | 48,768/48,768 | 48,768 | 0 | 1 | 1/4,032 | 40,320 | 1..=1 |
+| garbage, dense, class 256, 2 | 1 | 1,052/1,056 | 60 | 0 | 0/0 | 51,744 | 1 | 128/128 | 128 | 0 | 0 | 0/0 | 52,672 | 0..=0 |
+| garbage, dense, class 256, 16 | 1 | 1,052/1,056 | 92 | 0 | 0/0 | 51,744 | 2 | 160/160 | 160 | 0 | 0 | 0/0 | 52,640 | 0..=0 |
+| garbage, dense, class 256, 256 | 2 | 2,104/2,112 | 1,112 | 0 | 0/0 | 50,688 | 33 | 1,248/1,248 | 1,248 | 0 | 0 | 0/0 | 51,552 | 0..=0 |
+| garbage, dense, class 256, 381 | 2 | 2,104/2,112 | 1,592 | 0 | 0/0 | 50,688 | 48 | 1,728/1,728 | 1,728 | 0 | 0 | 0/0 | 51,072 | 0..=0 |
+| garbage, one per block, class 256, 2 | 2 | 2,104/2,112 | 120 | 0 | 0/0 | 50,688 | 2 | 256/256 | 256 | 0 | 0 | 0/0 | 52,544 | 0..=0 |
+| garbage, one per block, class 256, 16 | 16 | 16,832/16,896 | 960 | 0 | 0/0 | 35,904 | 16 | 2,048/2,048 | 2,048 | 0 | 0 | 0/0 | 50,752 | 0..=0 |
+| garbage, one per block, class 256, 256 | 256 | 269,312/270,336 | 15,360 | 4 | 4/2,592 | 40,992 | 256 | 32,768/32,768 | 32,768 | 0 | 0 | 0/0 | 20,032 | 0..=0 |
+| garbage, one per block, class 256, 381 | 381 | 400,812/402,336 | 22,860 | 6 | 6/4,320 | 37,824 | 381 | 48,768/48,768 | 48,768 | 0 | 0 | 0/0 | 4,032 | 0..=0 |
+
+What the table says, in bytes and draws, which is all a replay can say:
+
+- **The sparse loads are where the forms part.** One member per block at
+  class 256 asks the flat form for 1,056 bytes a block and the chunked form for
+  128, so the ring of 381 draws six blocks against one — the one being the
+  descent's segments, 20,800 bytes over the 48,768 the directories take — and
+  the garbage ring of 381, which runs no descent, draws six against none. At
+  256 members the flat form draws four and the chunked none.
+- **Dense loads fit either way, and the chunked form saves a few hundred to a
+  few thousand bytes per block.** 8,216 against 2,080 at class 32 for 381
+  members in one block; 2,112 against 1,728 at class 256 over two blocks.
+  Nothing draws, so the saving is remainder, which a collection off the poll
+  does not spend.
+- **The full block is the one load the chunked form asks more for**, 8,704
+  against 8,216 at class 32: the 544-byte directory against the 24-byte
+  prologue and 32-byte bitmap, 488 more, over the 32 × 255 rows both forms
+  reserve; both draw one block, for the segments. The direction is the rfc's
+  full-trace figure's, which is in written bytes and is not reproduced here.
+- **The chunked form writes more at first touch on every block**, by
+  `2 G − ceil(G / 8) + 8` bytes: 68 at class 256 and 486 at class 32, the
+  directory's entries against the bitmap's bits. On the sparse ring of 381
+  that is 48,768 bytes written against the flat form's 22,860, 2.1 times, in
+  the same collection that reserves 12 % of the bytes; on the dense ring of
+  381 at class 32, 2,078 against 1,592. The saving is in bytes reserved, and
+  the cost is in bytes written, and the two do not move together.
+- **Group occupancy decides, not slot density**: the two placements of 32 in
+  256 ask the chunked form for 224 and 1,120 bytes at one `V/R`, the flat
+  form for 1,056 for either.
+- **No continuation is placed on any load**, the loads meeting a block's
+  groups consecutively; the bracket admits at most one, on the full block at
+  class 32, whose 255 chunks straddle the workspace's end in some orders.
+
+**What this does not say.** Nothing about time: a chunked lookup's row
+address depends on the entry it loads, where the flat form's is known from
+the shadow word, and that dependency is priced by nothing here; the 289
+instructions per marginal edge of S40.3 are the flat form's. Nothing about
+the row stores after first touch, which are the same in both forms, nor about
+which lines the writes land in. Nothing about a workload: the shapes are
+rings under a keeper. The tail bound in the bracket is the largest request
+of the collection, which is a 4,160-byte segment on every load that draws,
+so the directory's width bounds the tail on the rows' account alone and not
+the collection's. And the chunked form is a specification, unbuilt; the
+replay prices its requests, not its code.
+
 ## 2026-09-12 — S40.3 the census of a collection, and the hardware arm over the same loads
 
 Two readings of the same loads, taken the same day on the tree after the

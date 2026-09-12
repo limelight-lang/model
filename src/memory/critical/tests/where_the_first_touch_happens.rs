@@ -138,8 +138,8 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("COUNT_PRESSURE_ROOTS", false), // test-only const Cell, no drop glue
         ("CRITICAL", true),
         ("CURRENT_CONTEXT", false),
+        ("DEFERRED_FREES", false),
         ("DEFERRED_RETURNS", false),
-        ("DIED", false),
         ("DISPATCHES_AT_DESCENT_BOUNDARY", false), // test-only const Cell, no drop glue
         ("DISPATCHES_AT_PHASE_BOUNDARY", false),
         ("DISPATCHES_IN_DESCENT", false), // test-only const Cell, no drop glue
@@ -159,7 +159,6 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("HEAP", false),
         ("HELD_AT_LAST_ROW_READ", false), // test-only const Cell, no drop glue
         ("LATE_CELL", false),
-        ("MARKED_SLOTS_VISITED", false),
         ("MEMBER_LIST", false),
         ("MEMBER_LIST_HELD", false),
         ("OWNER_STATE", false),
@@ -176,12 +175,14 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("REFUSED_ENTITY_REFILLS", false), // test-only const Cell of an array, no drop glue
         ("REFUSE_AT_VERTEX", false),      // test-only const Cell, no drop glue
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
+        ("REFUSE_SEGMENTS", false),       // test-only const Cell, no drop glue
         ("REPORT", false), // test-only const RefCell over a Copy report, no drop glue
         ("RESERVE", true),
         ("RING", false),
         ("ROWS_READ", false),
+        ("SLOTS_POPPED", false), // test-only const Cell, no drop glue
         ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
-        ("TEARDOWN_DEPTH", false),          // const Cell<u32>, no drop glue
+        ("TEARDOWN_DEPTH", false), // const Cell<u32>, no drop glue
         ("THREAD_BUFFER_ARENA", false),
         ("THREAD_CACHE", true),
         ("THREAD_FIGURES", false),

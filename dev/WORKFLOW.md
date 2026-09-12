@@ -472,7 +472,7 @@ on 2026-09-06, given as passed/ignored, Miri's clock, wall:
 `cycle::deferred_slot_reuse` 42/1, 31 s, 2 m 15 s; `memory::stdapi` 16/0, 17 s,
 30 s; `string::` 37/0, 30 s, 48 s;
 `refcount::` 26/4, 10 s, 19 s; `template::` 11/0, 10 s, 20 s;
-`memory::retained` 12/0, 9 s, 25 s; `memory::reset_window` 2/0, 5 s, 12 s;
+`memory::retained` 12/0, 9 s, 25 s; `memory::reset_window` 5/1, 8 s, 14 s on 2026-09-12;
 on 2026-09-12 `cycle::census::` is taken by test, its sparse-ring case alone
 being 1/0, 151 s, 21 m 47 s (16,000 objects) while the other three finish
 inside a minute.

@@ -779,10 +779,10 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
 
     let dispose: DisposeFn = unsafe { std::mem::transmute((*(*obj).class).dispose) };
     if unsafe { dispose(obj) } {
-        // Teardown completed — the arm a resurrection never reaches — so
-        // this is where a reset in flight learns of the death and takes
-        // over what the entity held (`memory::reset_window`).
-        crate::memory::reset_window::record_death(obj as *mut RcHeader);
+        // Teardown completed — the arm a resurrection never reaches. A reset
+        // in flight reads the death off the free below, which takes the
+        // slot before anything else (`memory::reset_window::is_torn_down`).
+        //
         // Under `rc-trace` the object left the candidate buffer here, after
         // `dispose` rather than before it, because `__destruct` can make the
         // object a candidate afresh — a transient `$this` inside it is a retain

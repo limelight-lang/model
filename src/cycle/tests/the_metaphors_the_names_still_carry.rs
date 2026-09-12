@@ -47,23 +47,11 @@ pub(super) const METAPHORS: [&str; 14] = [
 /// The reason is the point: an exemption without one is indistinguishable
 /// from an oversight, and this list is read by whoever finds the next
 /// offence. An empty subtree means the whole crate.
-const EXEMPT: [(&str, &str, &str); 8] = [
+const EXEMPT: [(&str, &str, &str); 5] = [
     (
         "",
         "the_arena_keeps_a_ratified_name_of_its_own_for_enrol",
         "names the token it is about, in the sibling guard's own test",
-    ),
-    (
-        "memory/reset_window",
-        "CORPSE_WALKS",
-        "`memory::reset_window`'s own vocabulary. The glossary names the \
-         window's words since `rfc` `9ca669c` — a corpse of this window is a \
-         *torn-down entity* — and no step owns the rename yet",
-    ),
-    (
-        "memory/reset_window",
-        "park_large",
-        "`memory::reset_window`'s, as `CORPSE_WALKS` above",
     ),
     (
         "promote",
@@ -84,12 +72,6 @@ const EXEMPT: [(&str, &str, &str); 8] = [
          are a test's own furniture rather than the hash table's threshold",
     ),
     ("promote", "trigger_cls", "the same fixture"),
-    (
-        "promote",
-        "corpse_walks",
-        "the binding that reads `memory::reset_window`'s `CORPSE_WALKS`, and \
-         it takes that constant's name",
-    ),
 ];
 
 /// This file, which writes every metaphor on purpose.

@@ -151,13 +151,14 @@ fn a_thread_that_may_not_collect_does_not_wait_for_its_held_token() {
     let waits_before = TOKEN.with(TraceToken::waits);
     let mut held = HeldByACollector::take(this_thread_token(), false);
 
-    let window = crate::memory::reset_window::opened();
+    let mut window = crate::memory::reset_window::ResetWindow::closed();
+    let guard = crate::memory::reset_window::open(&mut window);
     assert_eq!(
         unsafe { ll_gc_collect_cycles() },
         0,
         "refused, inside a reset"
     );
-    drop(window);
+    drop(guard);
     assert_eq!(
         TOKEN.with(TraceToken::waits),
         waits_before,

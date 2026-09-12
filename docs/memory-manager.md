@@ -778,20 +778,30 @@ Each pass:
 The drain of step 4 can kill a survivor of step 3, so the reset holds a
 **window** over its own frees for as long as it runs
 (`memory/reset_window.rs`). Three things ride on it. A large-entity
-body parks until the window closes, because its free returns memory to
-the system and the passes after the fixpoint still read one header word
-of every address they hold; an inner window hands what it parked to the
-window outside it, so only the outermost close frees anything. The free
-of a corpse in a block whose occupant count is not established yet is
-absorbed. The list published at the end of the reset declines to count an
-unregistered occupant whose header reads zero, because no later event could
-spend that count. A corpse whose candidate registration still names it is
-counted instead: its owner-side retirement is the later free that spends the
-count, and the block keeps the entry tied to its allocation until then.
-And every completed teardown is recorded, which is how the passes after
-the fixpoint tell a corpse from a live survivor — and how the COW
-reconciliation of step 2 gets the two correction terms that replace a
-dead holder's edges (`dev/DECISIONS.md`, "the reset reads no corpse").
+body's free is deferred until the window closes, because it returns memory
+to the system and the passes after the fixpoint still read one header word
+of every address they hold; the deferred bodies stand on one stack per
+thread, threaded through byte 8 of each, and only the outermost close makes
+the frees. The free of a torn-down entity in a block whose occupant count is
+not established yet is absorbed. The list published at the end of the reset
+declines to count an unregistered occupant whose header reads zero, because
+no later event could spend that count. A torn-down entity whose candidate
+registration still names it is counted instead: its owner-side retirement is
+the later free that spends the count, and the block keeps the entry tied to
+its allocation until then. And a completed teardown is read off the bit
+`ll_free`'s head leaves in the entity's header, which is how the re-trace
+and the weak walk tell a torn-down entity from a live survivor. The COW
+reconciliation of step 2 reads no holder and follows no slot: it settles
+each COW survivor's own header from the window's log of promotion-time
+edges plus the count's movement since promotion, so an edge a destructor
+took away or added after the holder was counted is counted once, in the
+delta. The window keeps that
+log in segments drawn from the thread's heap, and a segment the manager
+refuses is answered by one retain of each COW child of the round, after
+their counts are captured, instead of settling a count low
+(`dev/DECISIONS.md`, "the reset reads no corpse", "the record of a
+torn-down entity is its own header bit", and "the COW count is the log's
+edges plus the delta").
 
 Repeat until a pass releases nothing. A recursion bound is the only
 backstop; hitting it is an error rather than a silent drop, since

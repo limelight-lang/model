@@ -9,7 +9,11 @@ located.
 Representation analysis: [Shadow rows: flat or chunks](SHADOW-ROW-REPRESENTATION-ANALYSIS.md)
 — S40.3 measurement design and S40.2 decision prerequisites: group occupancy,
 chunk addressing, full-collection workspace, and structural versus hardware
-measurement. Source-derived analysis; no new performance results.
+measurement. Source-derived analysis; no new performance results. Its §3.1 is
+the chunked form S40.2 decides on — a directory of `u16` entries in eight-byte
+units from its own address, a continuation directory where the bump has left
+its block — and `cycle::census::replay` prices it against the flat form over
+the census (`dev/BENCHMARKS.md`, 2026-09-12, S40.5).
 
 Critical analysis: [Cycle improvement candidates](CYCLE-IMPROVEMENTS-CRITICAL-REVIEW.md)
 — dated source review, corrections to the Cangjie comparison, candidate
@@ -76,7 +80,7 @@ versions live in `docs/history/`, marked at the top.
   | `finalization` | the guard reference on every member of a confirmed component, the weak cells naming them nulled before any destructor, the destructor pass over the whole commit, the second reading each component takes with the guard subtracted, and the maturation stamp every component read as externally referenced takes at either reading | `cycle::collect` |
   | `reclamation` | the teardown of a component the second reading kept: the room taken before the first cell is emptied, the sever, the frees through the ordinary death path, and the queue the displaced external children wait in | `cycle::collect` |
   | `density` | test builds only: what share of a touched block's slots one trace met, the stateless census of recoverable internal in-edges (`refcount - shadow count`) with saturated rows apart, and, in `tests::the_death_loads`, what the window's close costs in time and in cache lines | none |
-  | `census` | test builds only: one report per ordinary collection — the rows at the scan's end through `density`'s readers plus the distinct lines the arrays cover, the chains and the bump at the close, and counters at the events no final state records (grants by consumer, tails, blocks drawn by funding, re-offers, exact validations); armed by a load, nested collections refused. Its loads are `tests/the_loads.rs`, the record `dev/BENCHMARKS.md`, 2026-09-12 | none |
+  | `census` | test builds only: one report per ordinary collection — the rows at the scan's end through `density`'s readers plus the distinct lines the arrays cover, the chains and the bump at the close, and counters at the events no final state records (grants by consumer, tails, blocks drawn by funding, re-offers, exact validations); armed by a load, nested collections refused. Its loads are `tests/the_loads.rs`, the record `dev/BENCHMARKS.md`, 2026-09-12. `census::replay` runs the arena's bump over a report's shape for the flat form, checked against the report's counters, and for the specified chunked form (`tests/the_replay.rs`, the record `dev/BENCHMARKS.md`, 2026-09-12, S40.5) | none |
   | `loads` | the rings S40.3 reads, built once for the census and for `benches/census_driver.rs`, which links the ordinary library under the `bench-loads` feature (`Cargo.toml`) and is run by hand under `perf stat` through `dev/tools/census_perf.sh`; the feature's one hook is `gc::ll_gc_reoffer_deferred` | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a
@@ -113,10 +117,11 @@ versions live in `docs/history/`, marked at the top.
   old pointer is undefined, as a free of any reissued memory is. A pooled large
   entity's second free is absorbed by the pool's re-stamp of the block kind,
   and an OS-direct run's memory is unmapped by its first free. What hands a
-  slot back is `refcount::publish_header`,
-  the window's close ahead of its return, the reset window's flush and
-  `memory::stdapi::free_unpublished`
-  (`dev/DECISIONS.md`, "a second `ll_free` of an entity is refused, and the
+  slot back is `refcount::publish_header`, owner candidate retirement and
+  `memory::stdapi::hand_back_and_free`, the one pairing of the hand-back with
+  the free; its three callers — the window's close ahead of its return, the
+  reset window's flush and `memory::stdapi::free_unpublished` — are listed at
+  it (`dev/DECISIONS.md`, "a second `ll_free` of an entity is refused, and the
   mark is the bit it is refused on"). The count still reads zero under the
   bit, and a guard test bans the two-way occupancy test outside `refcount`.
 - Giving back memory that was never published as an entity:
@@ -487,14 +492,19 @@ versions live in `docs/history/`, marked at the top.
   entity's death, and the omission is silent, which is why that rule
   carries a test of its own.
 - The window a reset holds over its own frees: `src/memory/reset_window.rs`
-  — per-thread, both builds, opened by `promote::arena_reset_full` and
-  closed by a stack guard. It parks both large-entity kinds until the
-  outermost close, absorbs the free of a corpse in a block whose
-  occupant count is not established yet, records every completed teardown so the passes
-  after the fixpoint skip what died, and holds the COW
-  reconciliation's two correction terms. Windows nest, because a
-  destructor of one reset can resolve a second arena and reset it
-  (`dev/DECISIONS.md`, "the reset reads no corpse").
+  — per-thread, both builds, opened by `promote::arena_reset_full` over
+  storage in the reset's own frame and closed by a stack guard. It defers
+  the free of both large-entity kinds until the outermost close, on one
+  stack threaded through byte 8 of the dead bodies; absorbs the free of a
+  torn-down entity in a block whose occupant count is not established yet;
+  reads whether a survivor is torn down off the bit `ll_free`'s head left
+  in its header (`is_torn_down`); and keeps the COW reconciliation's log of
+  promotion edges and compensating retains in segments drawn through
+  `stdapi::ll_alloc`, a refused segment answered to the reset, which retains
+  the round's COW children rather than settle a count low. No `Vec`, `Box` or
+  map anywhere in it. Windows nest, because a destructor of one reset can
+  resolve a second arena and reset it (`dev/DECISIONS.md`, "the reset reads
+  no corpse", and "the record of a torn-down entity is its own header bit").
 - Retained-block survivor lists: `src/memory/retained.rs` — the sorted
   survivor list of each retained former-arena block, written by `promote`
   at reset into memory the arena already holds (the block's own tail, else
@@ -720,7 +730,9 @@ Arena reset and promotion: `src/promote.rs` — the fixpoint, the counting
 pass and block retention. Children come from `cells::trace_entity`, so a
 reference box's referent is promoted with it; a COW survivor's count is
 left alone during the fixpoint (destructors read it) and settled once
-afterwards by `reconcile_cow_counts` (`dev/DECISIONS.md`, 2026-08-04).
+afterwards by `reconcile_cow_counts`, off the window's log of promotion-time
+edges and the count's movement since, walking nothing (`dev/DECISIONS.md`,
+2026-08-04, and "the COW count is the log's edges plus the delta").
 
 ## Hot paths
 

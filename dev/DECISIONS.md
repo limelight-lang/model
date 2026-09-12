@@ -8,6 +8,465 @@ never edited or deleted.
 
 ---
 
+## 2026-09-12 — the re-trace runs after every destructor round, and the bump cursor is no reading of purity
+
+**Decided (S36.19)**, on a defect the Critic of S36.18 named beside its
+path and a case reproduced the same day. `promote::arena_reset_full`
+re-reads every survivor's children after each round of the settle loop in
+which a destructor body ran — `run_user_destructor`'s answer, so an entry
+with nothing left to run counts for nothing. The bump-cursor comparison
+around the round is gone, and `Arena::bump_cursor` with it, having no
+other reader.
+
+**What the cursor missed.** The reset re-traced survivors only when the
+arena's bump had moved across the round, reading "allocated" as the
+runtime's stand-in for the rfc's *dirty* class. A destructor that stores an
+**existing** arena object into a marked survivor — `$survivor->keep =
+$this->y`, the object reachable from the dying holder alone — allocates
+nothing and moves no cursor, so the child was never marked; the survivor
+came out of the reset promoted, its slot naming an entity the reset never
+promoted — in the reproduction, one standing in the block retained for
+the survivor itself, and in a returned block or an unmapped run wherever
+the child stands elsewhere. `rfc/model/memory/arena-reset.md`, "What keeps
+the fixpoint going — destructor purity", defines pure as "creates nothing
+**and stores no managed reference**" and orders a re-trace after any round
+with a non-pure destructor; its *dirty* bullet, though, named allocation
+alone, so the three classes did not cover a store-only destructor, and the
+cursor implemented that bullet. The bullet is amended in place to name the
+store, citing this entry.
+
+**Why not read the store instead.** The barrier could mark a child stored
+into a holder carrying `ARENA_RESET_MARK`, but `store_ptr` and `store_box`
+take the holder's category as a parameter and never load its header, so
+the test would add a holder load to every compiled store, and the reset
+is where the cost belongs. A re-trace over survivors whose children are
+all marked already writes nothing: per survivor one `is_torn_down` read
+and one kind dispatch, per slot one header load of the child and a second
+for an arena child, once per round that ran a destructor. What the cursor
+saved was that pass on rounds whose destructors allocated nothing, and the
+compile-time purity class is the instrument that will save it soundly
+(`rfc/model/gc/pure-destructors.md`).
+
+**Instrument first.** `promote::take_retrace_count` is a `cfg(test)`
+counter of re-trace passes, because a child the re-trace missed and a
+child it never looked for read the same in the heap; the case reads it
+beside the child's category. On the cursor trigger the case's round
+re-traced 0 times and the child stayed at `RequestArena`; the fix
+re-traces it once and the child is promoted, held by the survivor's slot
+alone.
+
+---
+
+## 2026-09-12 — the COW count is the log's edges plus the delta, and the reconciliation walks nothing
+
+**Decided (S36.18)**, on a defect the Critic named out of scope at S36.17
+and two cases then reproduced. `reconcile_cow_counts` settles each COW
+survivor as `edges_at_promotion + (now − at) − K`: every record the window's
+log holds for the child is one `+1`, whatever became of the holder since;
+the delta is the count's movement since its capture; `K` is unchanged. The
+walk over the survivors is gone, and with it the `D` term of "the reset
+reads no corpse" below, the `edges_live` it corrected, and the skip of a
+torn-down survivor in the reconciliation. `is_torn_down` keeps its two
+readers, the re-trace and `retained::is_occupied`.
+
+**Why the walk was wrong.** `edges_live + (now − at) + D − K` counted an
+event twice whenever a destructor changed a promoted holder's slot after
+the holder was counted. `$keeper->s = null` on a survivor of an earlier
+round put one release into the delta and took the edge out of the walk,
+and the string settled one below its remaining holders — zero under a
+living holder, the under-count the arithmetic exists to forbid.
+`$keeper->s = $s` put one retain into the delta and one edge into the walk,
+and the string settled one above them, a hold nothing would release. `D`
+paid the first case back for a holder whose teardown completed and for no
+other; the second case was paid by nothing. Both are
+`promote::tests::what_a_destructor_does_during_the_fixpoint`, seen red on
+the walk.
+
+**Why the log suffices.** The count captured at promotion is discarded
+whole, so what stands in for it must be the survivor edges of that instant,
+and the log is exactly that list — `count_children` writes one record per
+COW edge of every survivor it counts, in every round. Every later event on
+such an edge is a movement of the count, so it is in the delta once: a
+teardown's sever, a destructor's store, a retain into a heap object. A
+walk added a second, uncounted reading of the same edges, which is where
+the double came from; it was the way to count survivor edges before the
+log existed, and the log was added beside it for `D` rather than in its
+place. The reconciliation now follows no slot and reads no holder; the one
+header it reads and writes is each COW row's own, which the 2026-08-14
+entry's argument keeps live — a COW survivor cannot be a corpse of the
+reset that promoted it, `count_children`'s one retain per surviving edge
+holding its count above zero until the end.
+
+**A refused record retains the round's COW children, after their counts
+are captured.** The pin of "the record of a torn-down entity is its own
+header bit" kept a holder alive so that its unrecorded edge would be
+walked; with no walk the pin buys nothing. Instead, when any record of the
+round was refused, each COW child of each survivor of the round takes one
+`ll_retain` after the round's `at` captures and category rewrites, so the
+retain is in the child's delta. A refused edge is then counted once, by
+the retain; a recorded edge of the same round twice, by the record and the
+retain — one bounded leak per recorded edge of the round, and never an
+under-count. A refused decrement record still leaves its retain standing,
+one too high, so a round whose every record is refused is exact only for
+the children promoted in that round; a child of an earlier round counted
+again in it is one high per holder, from the uncredited retain.
+
+**Refused: paying the dropped edge back per record by re-walking each
+holder.** It closes the under-count and leaves the over-count: a walked
+edge with no record is either a store after promotion, whose retain is in
+the delta, or a refused record, whose retain is nowhere, and the two are
+not told apart without a per-edge refusal record — which is the storage
+the refusal is short of.
+
+**Not changed, and named:** `count_children` still adds one to a
+request-arena COW child's count. The addition is inside `at` and inside
+`now` alike, so the formula is indifferent to it; what it does is raise the
+count a destructor reads through the fixpoint, and a COW write into a
+string held once separates where it need not. That is the mutator's price
+of the fixpoint as it was, and a step of its own if it is ever measured.
+
+---
+
+## 2026-09-12 — the record of a torn-down entity is its own header bit, and the reset window's lists are manager memory
+
+**Decided (S36.17)**, under the ruling below that the window's memory comes
+from the manager and a refused allocation is never an abort. The window
+keeps no `Box`, `Vec`, `HashMap` or `HashSet`; each of its five structures
+takes a form that draws nothing or draws through the manager, and the one
+that can be refused is answered by a bounded leak rather than an under-count.
+The Critic's round over the design is recorded at the step; two of its
+findings changed the design and are the two refusals below.
+
+**The window struct stands in the reset's own frame.** `arena_reset_full`
+declares the storage and `reset_window::open` borrows it for the guard's
+lifetime; the thread-local points into the frame, and nested windows chain
+through `prev` into outer frames as before. Nothing is boxed.
+
+**A deferred free is one intrusive stack per thread**, threaded through
+byte 8 of each large body — `heap::FREE_LIST_LINK_OFFSET`, the word a free
+slot links by and the word the trace window's withheld-return stack already
+threads through the same dead kinds ("one stack through the dead entity
+holds every withheld return"). The head is one thread-local pointer shared
+by the whole window chain, because only the outermost close ever freed
+anything: the inner close's hand-over of its list to the outer window is
+gone. What made byte 8 free was read, not assumed: between the deferral and
+the outermost close the re-trace reads a child's header and skips the body
+itself, the reconciliation keys on the address, the weak walk reads a
+target's flags and touches request-arena targets only, `ll_free_large`
+reads the block header, and no trace window can open inside a reset.
+
+**Torn-down membership is `DEAD_IN_PLACE` in the entity's own header.** The
+2026-08-14 entry below rejected the header as the test — the count alone,
+because `mark_one` zeroes a live survivor's count, and the count with the
+category, because an escapee whose last hold a destructor drops is promoted
+reading zero in GcHeap with live edges. Bit 15 is neither: it is written by
+the death and by nothing else. `ll_free`'s head takes it before any arm for
+every kind `points_to_gc_entity` covers, which is every kind a survivor can
+be, and every completed teardown reaches that head: each of the four
+teardown bodies frees a GcHeap entity through `ll_free`, a survivor is
+GcHeap from its promotion on, and a request-arena entity is never torn down
+at all — `release_word` answers false for one at zero, so a COW arena entity
+a destructor releases before its promotion round is the zero-count survivor
+"a survivor promoted at refcount zero" already covers, live to every pass.
+`record_death` and its four call sites go; the test counter it carried is
+taken at the head of `ll_free` instead. Nothing hands a survivor's slot back
+while a window is open — an absorbed
+free hands nothing back, a deferred free is handed back at the outermost
+close after the last pass, and queue retirement runs only inside a
+collection, which cannot open inside a window and, when a window opens
+inside it, retires after that window has closed — and no survivor's slot is
+reissued while a window is open, a retained block having no free list. The
+bit survives promotion's category rewrite, and `retained::is_occupied` reads
+it as it read an absorbed corpse: dead in place without the candidate bit is
+not an occupant. The died set goes; `is_torn_down` is one header reading.
+
+**Snapshots, deferred increments and deferred decrements are one log per
+window** of sixteen-byte records `(holder, child)`, a decrement carrying a
+null holder, in 4 KiB segments drawn through `stdapi::ll_alloc` and given
+back at the window's close. The deferred increment is derived at the
+reconciliation rather than moved at the death: a snapshot record whose
+holder is torn down is one +1 for its child — the same two terms the
+arithmetic below applies, read off the same `is_torn_down` the walk already
+asks per survivor. `record_completed_teardown` moves nothing. **Refused:
+drawing the segments from the arena being reset** (the Critic, 2026-09-12):
+the survivor lists are placed from the same bump after the fixpoint, and a
+segment drawn during it would take the last bytes ahead of a list, turning
+a block whose list was refused into root sources — an unbounded cycle leak
+in the ordinary shape, where the log's own refusal costs one bounded leak.
+
+**A refused record pins the round's survivors, and settles no count low.**
+The first answer — one extra `ll_retain` of the child at the refusal — was
+refused by the Critic with a failing case: for a child promoted in the same
+round as its holder the retain lands before the child's count at promotion
+is captured, the arithmetic `edges_live + (now − at) + D − K` replaces
+everything inside `at` by the edges the walk finds, and the holder's death
+then settles the child at −1 — one too low, the direction the ruling
+forbids. So a refused snapshot sets one flag for the round, and after the
+round's survivors have their counts captured and their categories rewritten
+each of them takes one `ll_retain`: the holder outlives the reset, every
+edge it holds is walked instead of escrowed, and the price is the round's
+survivors leaked, bounded and needing no storage. A refused decrement record
+leaves the compensating retain standing uncredited, which settles the child
+one too high — the same bounded leak. Refusals are counted in a test build.
+
+**Names follow `rfc/dev/GLOSSARY.md`** where the code is rewritten: a
+*deferred free* for a parked body, a *torn-down entity* and `is_torn_down`
+for the record, a *deferred increment* and *deferred decrement* for the two
+correction terms. The two
+exemptions the metaphor guards carried for this module's `park_large` and
+`CORPSE_WALKS` go with the names.
+
+## 2026-09-12 — the reset window's memory comes from the manager, and an allocation it cannot get is a refusal
+
+**Ruled by Edmond**, on the five allocator touches `memory::reset_window`
+keeps under the reset's disclosed exemption — `park_large`'s push,
+`record_death`'s insert into the boxed died set and the `escrow.extend` below
+it, the nested close's `parked_large.extend`, `snapshots.remove` — when asked
+whether the exemption reaches the frames a destructor's `ll_arena_reset`
+enters from inside a collection: «желательно, чтобы и эта память работала с
+нашим аллокатором. и желательно без паники. да это очень важно. я думаю у
+нас нет выбора! нахуй RUST панику!!!!!!!!!!!»
+
+**Decided.** The exemption does not cover those frames. The window's lists
+and its died set are backed by the memory manager, and an allocation the
+manager refuses is answered as a refusal the reset can act on, never as an
+abort out of `Vec` or `Box`. This closes the question S36.9 held open since
+2026-09-02 and opens the step that does the work (`PLAN.md` S36.17).
+
+**The ruling is global, and `promote` is a debt with an owner.** Asked
+whether it reaches `promote`'s own twelve container sites — the survivor
+list, the snapshot pairs, the retained and pinned sets, the per-block index,
+the rounds and the settle map, under the same disclosed decision
+(`dev/design/retained-index-ownership.md`) and in the same frames when a
+destructor inside a collection resets an arena — Edmond: «моё решение
+глобально. я не хочу кода Rust который делает панику. однако. давай так.
+можно оставить это техническим долгом.» So no runtime path of this crate
+may end the process on an allocation the manager could have refused, and
+the reset's own bookkeeping is the one place that still does, carried as
+`PLAN.md` S47, a stage named and not broken down, rather than as an
+exemption the next audit re-reads.
+
+## 2026-09-12 — the rfc is updated lightly where it is stale, and the algorithm stays in the crate
+
+**Ruled by Edmond**, on S44.5 (carrying the withheld-return stack into the
+rfc, which still describes the record chain): «если RFC имеет что-то старое,
+то лучше его слегка обновить. но я бы не писал весь алгоритм в RFC».
+
+**Decided.** A stale sentence of the rfc is corrected to what the crate has,
+in the rfc's own register — the contract, the invariant and the reason — and
+the mechanism's detail stays in the crate's module docs and in `dev/`. S44.5
+proceeds on that reading: `classes.md`'s flags row and `rc-cycle.md`'s
+paragraphs on the mark, its list and the record-and-grow path say "one stack
+through the dead entities, linked by the free-list word" and where the rest
+is, and do not carry the pop loop.
+
+## 2026-09-12 — the flat row array stays, and the case for building the chunked form is recorded for Edmond
+
+**Decided (S40.2):** the shadow rows keep the flat form, one array per touched
+block, reserved whole and initialised by group. The chunked form specified in
+`dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md` §3.1 is not adopted: adoption
+takes a built candidate measured against S40.3's baseline in a stage of its
+own (the Sage, 2026-09-12, under S40.2), and a stage is a change to the plan
+that the model does not make alone. What the census and its replay say for
+and against that stage is below, so that the decision to open it is taken on
+the figures rather than re-derived.
+
+**The draws the flat form accepts, per load** (`dev/BENCHMARKS.md`,
+2026-09-12, S40.5, the same 36 loads as S40.3). It draws past the
+56,960-byte workspace on six loads: 4 blocks on 256 members one per block at
+class 256, 6 on 381 one per block, 6 on the same ring with a second edge per
+member, 4 and 6 on the garbage rings of 256 and 381 one per block, and 1 on
+the full block at class 32. The chunked form would have drawn fewer on five
+of them: none against 4 on both 256 rings, 1 against 6 on the live 381 ring
+and its two-edge twin (the one draw being the descent's segments over the
+48,768 bytes the directories take: 20,800 with one edge, 29,120 with two),
+and none against 6 on the garbage 381 ring, where no descent runs. On the
+full block at class 32 both draw 1, for the segments; on the other 30 loads —
+every dense ring of up to 381 members at any design class, the one-per-block
+rings of 2 and 16 live and garbage, both retained rings, both placements of
+32 in 256, the full block at class 256 and every dense garbage ring — neither
+draws. Every draw on these loads was served, which says nothing beyond a test
+pool with nothing else in it; what a draw is remains what the entries of
+2026-09-04 said, a point at which the collection can be refused, and on the
+sparse regime the flat form exposes six such points per collection where the
+chunked form exposes none or one.
+
+**Reserved bytes, per load, flat against chunked**, in bytes the bump grants
+on the rows' account:
+
+| load | flat | chunked |
+|---|---:|---:|
+| dense, class 32, 2 / 16 / 256 / 381 | 8,216 each | 576 / 608 / 1,568 / 2,080 |
+| dense, class 64, 2 / 16 / 256 / 381 | 4,136 each | 320 / 352 / 1,312 / 1,824 |
+| dense, class 128, 2 / 16 / 256 / 381 | 2,080 each | 192 / 224 / 1,184 / 1,696 |
+| dense, class 256, 2 / 16 | 1,056 each | 128 / 160 |
+| dense, class 256, 256 / 381 (two blocks) | 2,112 each | 1,248 / 1,728 |
+| one per block, class 256, 2 / 16 / 256 / 381 | 2,112 / 16,896 / 270,336 / 402,336 | 256 / 2,048 / 32,768 / 48,768 |
+| retained, class 256, 2 / 381 | 5,552 / 7,088 | 480 / 2,104 |
+| 32 at class 256, consecutive / one per group | 1,056 / 1,056 | 224 / 1,120 |
+| full block, class 256 (255) / class 32 (2,040) | 1,056 / 8,216 | 1,120 / 8,704 |
+| two edges, dense / one per block, 381 | 2,112 / 402,336 | 1,728 / 48,768 |
+| garbage, dense, class 256, 2 / 16 / 256 / 381 | 1,056 / 1,056 / 2,112 / 2,112 | 128 / 160 / 1,248 / 1,728 |
+| garbage, one per block, class 256, 2 / 16 / 256 / 381 | 2,112 / 16,896 / 270,336 / 402,336 | 256 / 2,048 / 32,768 / 48,768 |
+
+The range: the chunked form reserves less wherever
+`align_up(32 + 2 G, 8) + 32 T < align_up(24 + 32 G + ceil(G / 8), 8)`, which
+is `T ≤ 29` of 32 groups at class 256 (`T / G ≤ 0.91`, `T = 30` a tie) and
+`T ≤ 239` of 255 at class 32 (`T / G ≤ 0.94`); it reserves more on the three
+loads at `T = G` — the full block at either class and 32 one per group at
+class 256 — by 64 bytes at class 256 and 488 at class 32. In draws it wins
+only where the flat arrays overflow the workspace and the directories do not:
+under the order a live ring's collection makes its requests in, the flat
+form draws from the 47th touched class-256 block (47 × 1,056 + 8,320 of
+segments is 57,952) and from the 6th class-32 block (6 × 8,216 + 8,320 is
+57,616), a garbage ring from the 51st and the 7th. The chunked form at one
+group per block draws later, and where depends on the descent's segments,
+which grow with the ring: `ceil(2 n / 256)` worklist and `ceil(n / 256)`
+component segments of 4,160 bytes over a live ring of `n`
+(`dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md` §4), so 8,320 up to 128
+members, 12,480 up to 256 and 20,800 up to 384; `128 n` plus that first
+exceeds 56,960 at `n = 283` (36,224 + 20,800 is 57,024), and on a garbage
+ring, which runs no descent, at the 413th block (412 × 128 + 4,160 is
+56,896). So the window in which a live collection over one member per
+class-256 block draws under the flat form and not under the chunked one is
+47 to 282 touched blocks, and a deeper mark or a deferred-drop segment
+narrows it from both ends. The table pins its ends only by arithmetic: no
+load stands between 256 and 381 members.
+
+**Written bytes, per load, which cut the other way.** The chunked form
+writes more at every block's first touch, by `2 G − ceil(G / 8) + 8` bytes —
+68 at class 256, 486 at class 32 — because its directory is cleared whole
+where the flat form clears one bit per group. On the sparse ring of 381 it
+writes 48,768 bytes against 22,860, 2.1 times; on the dense 381 at class 32,
+2,078 against 1,592. These are counts of bytes stored and nothing more: which
+lines or pages they land in the replay does not say (S40.5, "What this does
+not say"), and the flat form's 381 group writes on that load stand one per
+1,056 bytes across 402,336 bytes of bump while the chunked form's 48,768 are
+contiguous, so a line or page reading could come out either way. The rfc's
+full-trace figure — 762 MiB for the chunked form against 717 for the flat on
+a 12 GiB heap of classes 32/64/128/256 at half occupancy, the rows' cost at
+first touch (`rfc/model/gc/rc-cycle.md`, "The chunked form is the recorded
+alternative, not the choice") — is the same first-touch arithmetic at
+`T / G` near one and corroborates nothing the replay does not already say.
+
+**The lookups, which neither replay prices.** Both forms resolve the same
+rows: the mark's and the scan's `2 n (1 + e)` resolutions per collection over
+a live ring of `n` with `e` edges per member, which the census counts and
+asserts on every load (1,524 at 381 and one edge, 2,286 with two), and the
+descent's one per out-edge of every live vertex after them
+(`maturation::take_edge`). The flat form's **marginal edge** — not the
+lookup alone: three resolutions, a worklist frame and the subtraction — costs
+289 instructions in either placement (S40.3's driver: 618,746 − 508,797 over
+381 edges dense, 1,665,068 − 1,555,120 one per block), and 5.5 L1D misses
+dense against 10 to 15 one per block. The chunked form's row address is
+data-dependent on its entry where the flat form's is known from the shadow
+word (§3.1, item 4); what that costs on this path is the number no
+arithmetic supplies and the build would.
+
+**Why the flat form stays without that build being opened here.** The
+chunked form's case is the sparse regime — many blocks touched, few groups
+met in each — where it saves four to six refusable draws per collection and
+88 % of the reserved bytes, at the price of 68 to 486 more bytes written per
+block and a load dependency on the path the marginal edge runs. Neither
+placement of the matrix is a reading of a program: the dense ring is 381
+members allocated back to back with nothing between, the sparse one a member
+per block with 254 fillers, and the entry of 2026-09-04 names the allocation
+between two members of a component as the input the collector does not
+supply. How often a real collection stands in the window above is S40.1's
+corpus arm, blocked on the Phase-D driver, and a build across `shadow`,
+`arena`, `row`, `mark`, `scan`, `maturation`, `membership` and `density`
+with a baseline and a gate of its own is a stage Edmond opens or does not on
+that question. Until then the flat form stands as the rfc chose it, with the
+draws above named as what it accepts.
+
+**What would reopen it, and what can be read.** In a release build,
+`gc_metadata::stats` reports the thread's GC blocks at current and at peak,
+which is how the S40.3 driver read the draws (9 and 11 blocks standing on the
+sparse rings against 5 elsewhere); a program whose collections show peaks past
+the five standing blocks is in the window. In a test build the census gives
+the shape itself, and a Phase-D corpus run through it (S40.1) is the reading
+this entry lacks. A refused draw has no release-build counter today; the
+collection's `Ending` is not journaled, which S36's journal kinds are to name.
+
+**Ruled by Edmond, 2026-09-12**, in the words «выбери то что быстрее»: the
+stage is not opened. On time the record points one way — the flat form's row
+address is known from the shadow word where the chunked form's waits on its
+entry, and the chunked form writes more on every block — and no measured
+ratio between the forms exists; on effort the flat form is the one already
+built. Both readings of the word choose it. What reopens the question is the
+paragraph above, unchanged.
+
+**What the rfc says and what this entry does not change.** The rfc's
+sentence that the chunked form "wins only where the density of traced slots
+in touched blocks stays below 29 %" is superseded on the record by the
+2026-09-04 entry and §2 of the analysis document — the crossing is in `T / G`
+and in touched blocks, not in `V / R` — and the rfc still carries it. That
+amendment is a normative change and Edmond's to rule on; it is raised in
+`PLAN.md`'s fog rather than made here.
+
+## 2026-09-12 — the census is one report at two boundaries, its loads are the ring under a keeper with four contrasts, and its hardware arm is a driver
+
+Three Sage rulings over `PLAN.md` S40.3, recorded here when the step was
+compressed at S40.5's close (rule 23.1.2); each was `Final` in the plan.
+
+**The census's shape.** One report per collection, assembled at two boundaries
+and from counters, over the five snapshots
+`dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md` §6 proposed and over a single
+reading after the ABI call. A single reading after the call is too late: the
+close has swept the rows, reset the bump and emptied every chain. The
+boundaries the document adds beyond two are counters or the test's own reads —
+the mark's dispatch count at `trace_batch`'s phase boundary, the state before
+the open in `gc_metadata::thread_stats`, the commit's maxima in the segment
+counts the chains keep when they empty. The one new seam is the scan's end in
+`collection_off_the_poll`, a call whose release body is empty; the built form
+takes a second seam at the close, before the window drops, because the chains
+die with the arena and their segment counts are readable only inside the call.
+Refused: a per-frame depth counter on `push_work` (the segment count bounds the
+depth to 256 entries and is what the arena pays), and a partial-footprint
+reading on a refused trace (every load completes; the refusal surface is the
+draw count, and S40.4 priced the refusal itself).
+
+**The loads.** The base matrix: the registered ring under a keeper, `n` of 2,
+16, 256 and 381, dense and one per block at class 256, and retained through one
+holder. Added, each for a reading the base cannot give: 32 members at class 256
+consecutive against one per group (`T` of 4 against 32 at one `V/R`, the
+reading that separates group occupancy from slot density); the full block at
+classes 256 and 32 (the endpoint `T = G`, the regime of the rfc's full-trace
+figure); 381 members with a second edge in both placements (the flat form's
+marginal lookup, which the chunked form's extra dependent load is priced
+against); and the ring without its keeper, one collection per size and
+placement (the commit's membership probes and the teardown's segments, which a
+live load never runs). Refused: a no-op destructor variant (the second exact
+pass repeats the first's lookups, and `revalidate` takes it only after a
+destructor ran); a varied traversal order (the collector fixes the order, and
+the placements vary locality); a retained block reached in part (its `T/G`
+shape is the dispersed ordinary load's); the pressure entry and controlled
+overflow funding (S40.4 and S36.15 own those paths). The retained protocol is
+natural evolution alone: the holder re-offered before each collection, the
+prune expected from collection `TRAVERSAL_AGE_THRESHOLD + 1` on, each
+collection on its own line. Age-zero restoration is refused: it writes the
+stamp bits from a fixture, warms the headers it writes, and buys nothing the
+first three collections do not give.
+
+**The hardware arm.** A `benches/` driver with `harness = false` over the
+public ABI, linked to the ordinary library under the `bench-loads` feature,
+and not a `--release` test binary: `cargo test --release` keeps `cfg(test)`,
+under which `row::resolve_edge_target` asserts `stands_where_a_block_can` on
+every dispatch, a walk over the pool's region registry beside the dispatch
+counter's store, so that binary adds a lookup of its own to every lookup the
+decision weighs. The one hook the driver needs is the deferred lane's re-offer,
+`ll_gc_reoffer_deferred`, an `extern "C"` export in `gc.rs` under the feature,
+its body one call to `queue::reoffer_deferred_candidates`, which the exit path
+already makes; the release binary carries no such symbol. The driver's file
+compiles in the default configuration with an empty `main`, so `cargo bench
+--no-run` on the gate still checks every API it uses outside the hook. The
+load construction is written once under `cfg(any(test, feature))`, and both
+arms call it; one load per process keeps the commit count under a turnover.
+
+**What the record is.** `dev/BENCHMARKS.md`, 2026-09-12 (S40.3); the code is
+`cycle::census`, `cycle::loads`, `benches/census_driver.rs` and
+`dev/tools/census_perf.sh`.
+
 ## 2026-09-12 — an exit requested inside a collection runs at the thread's top
 
 **Ruled by Edmond**, in the words "очевидно что надо запретить прямой выход..

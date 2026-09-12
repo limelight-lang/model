@@ -41,6 +41,10 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
+// The arena's grants replayed over a report, for the flat form and for the
+// specified chunked one.
+pub(crate) mod replay;
+
 use crate::cycle::arena::{Consumer, Funding, TraceScratchArena};
 use crate::cycle::collect::Ending;
 use crate::cycle::density::{self, BlockDensity, InternalEdgeCensus, TraceDensity};

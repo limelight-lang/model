@@ -160,6 +160,15 @@ pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 /// not the header. Nothing enumerates a withheld slot by this bit — the
 /// window's own stack does that (`crate::cycle::deferred_slot_reuse`).
 ///
+/// **A reset reads it as the record of a completed teardown.** Every
+/// teardown body frees its GcHeap entity through `ll_free`, whose head
+/// takes the bit before any arm withholds, defers or absorbs the return, and
+/// nothing hands a survivor's slot back while a reset's window is open — so
+/// the passes after the fixpoint tell a torn-down survivor from a live one
+/// by this bit alone (`crate::memory::reset_window::is_torn_down`;
+/// `dev/DECISIONS.md`, "the record of a torn-down entity is its own header
+/// bit").
+///
 /// **Three headers carry it**: a size-class slot, a retained survivor, and the
 /// one entity of a large block, pooled or OS-direct.
 ///
@@ -169,15 +178,15 @@ pub const DESTRUCTOR_RAN: u32 = 1 << 14;
 ///
 /// **Who hands a slot back**, which is the whole of what clears it:
 /// [`publish_header`], whose one eight-byte store takes the bit down with the
-/// rest of the previous occupant's header; the trace window's close, ahead of
-/// the return it makes (`crate::cycle::deferred_slot_reuse`, `dispose_of`);
-/// the reset window's flush, ahead of the free it deferred
-/// (`crate::memory::reset_window`); and every path that frees a slot it never
-/// published, which goes through `crate::memory::stdapi::free_unpublished`. A
-/// path that frees such a slot without clearing first leaks it, its free being
-/// read as a repeat. Owner retirement clears both slot bits before hand-back.
-/// A collection's commit frees a
-/// member the queue still names into exactly that state: the free takes the
+/// rest of the previous occupant's header; owner retirement, which clears this
+/// bit and the candidate bit in one write of the halfword
+/// (`crate::cycle::queue::compaction`, [`update_header_flags`]); and
+/// `crate::memory::stdapi::hand_back_and_free`, the one pairing of the clear
+/// with the free, whose three callers — the trace window's close, the reset
+/// window's flush and a free of a slot never published — are listed at it. A
+/// path that frees such a slot without clearing first leaks it, its free
+/// being read as a repeat. A collection's commit frees a member the queue
+/// still names into exactly that state: the free takes the
 /// mark, the candidate arm withholds the slot, and the entry stays the record
 /// of it (`crate::cycle::reclamation`).
 pub const DEAD_IN_PLACE: u32 = 1 << 15;
@@ -1002,8 +1011,8 @@ pub(crate) enum SlotState {
     /// An entity is in the slot and its count is above zero.
     Live,
     /// `ll_free` has taken the slot and has not handed it back: it is on its
-    /// block's free list, or a trace window is withholding its return
-    /// ([`DEAD_IN_PLACE`]).
+    /// block's free list, a trace window is withholding its return, or a
+    /// reset window is deferring it or has absorbed it ([`DEAD_IN_PLACE`]).
     DeadInPlace,
     /// No free holds the slot: it stands above its block's bump cursor and has
     /// never been occupied, or its occupant's count has reached zero and its
@@ -1026,10 +1035,11 @@ pub(crate) enum SlotStateReading {
 ///
 /// **The one definition of the occupancy test**, and every walker that
 /// reads a slot's first word goes through it: `heap::for_each_entity_slot`
-/// and the census over it, `heap::describe_slot`, and `retained::is_occupied`,
+/// and the census over it, `heap::describe_slot`, `retained::is_occupied`,
 /// which extends the live answer with the registered-dead allocation identity
-/// a retained block must hold. A count above zero answers without the second
-/// load, so a live slot is settled by one load.
+/// a retained block must hold, and `reset_window::is_torn_down`, which reads
+/// the dead-in-place answer as a completed teardown. A count above zero
+/// answers without the second load, so a live slot is settled by one load.
 ///
 /// # Safety
 /// `header` addresses a slot of a commissioned entity block, readable at
@@ -1077,8 +1087,8 @@ pub(crate) unsafe fn slot_state_with_flags(header: *const RcHeader) -> SlotState
 /// than reading the halfword a second time
 /// (`crate::memory::stdapi::ll_free`).
 ///
-/// A load and a store rather than a read-modify-write, for the reason
-/// [`update_header_flags`] gives. What keeps a second writer off the halfword
+/// A load and a store rather than a read-modify-write, which this crate has
+/// nowhere (module doc). What keeps a second writer off the halfword
 /// between them is the count: it reads zero, so the entity is torn down and no
 /// mutator holds a reference to it.
 ///
@@ -1102,11 +1112,8 @@ pub(crate) unsafe fn take_slot_for_free(header: *mut RcHeader) -> Option<u32> {
 }
 
 /// Hand the slot back, which whoever is about to offer it to `ll_free` again
-/// does first: the trace window's close ahead of its return, the reset
-/// window's flush ahead of the free it deferred, and the two paths that free a
-/// slot they never published. [`publish_header`] does the same thing for a new
-/// occupant, in the one store that writes the whole header
-/// ([`DEAD_IN_PLACE`] names all four).
+/// does first: the hand-backs [`DEAD_IN_PLACE`] lists, save the two that write
+/// the whole word themselves, [`publish_header`] and owner retirement.
 ///
 /// **One thread writes this half of the flags word of one dead slot.** The
 /// word is written by load and store rather than by a read-modify-write, so a

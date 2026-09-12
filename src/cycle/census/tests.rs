@@ -459,3 +459,6 @@ fn a_sparse_ring_past_the_bump_draws_blocks_and_returns_them() {
 // The loads S40.3 records, ignored in the ordinary suite: the widest builds a
 // ring of 2,040 and the sparse arm a block per member.
 mod the_loads;
+// The census replayed through the flat form and the specified chunked one:
+// two loads on the gate, the matrix ignored.
+mod the_replay;

@@ -116,7 +116,7 @@ commit (`WORKFLOW.md`).
 | `object` | `ll_object_new` factory; `ll_object_constructed` (destructor registration); three-phase `ll_object_die`; the kind-switched `ll_entity_die`; `for_each_counted_child` | class runs; every category's allocator; the weak gate bit; the destructor-debt protocol | collector internals; block internals; per-site barrier composition | `class`, `refcount`, `value`, `context`, `heap`, `immortal`, `stdapi`, `barrier`, `reference`, `array/entity` (the Array arms of the kind switch and of both COW doors), `gc` (the release-vector checkpoint bracket), `weak` (notify) |
 | `reference` | the `&` reference box, entity kind 3: `RcHeader \| Value` — the model's only extra indirection, self-describing at teardown via the kind field | its own kind | classes; typed slot references (future) | `refcount`, `value`, `context`, `heap`, `immortal`, `stdapi`, `barrier`, `object` |
 | `static_block` | the per-thread registry of static blocks and the teardown pass that releases their roots at thread exit (A6): registration in first-touch order, drained in reverse | that a static block is headerless and laid out by a descriptor; that a `__destruct` may register another block mid-pass | how a static block is allocated; what its slots mean — the release policy is the barrier's, the teardown `object`'s | `class`, `refcount`, `object`, `barrier` |
-| `weak` | the kind-11 weak cell (the canonical `WeakReference` *is* the cell); the per-thread weak table; every notification rule (`notify_death` / `notify_members` / `drain_arena_weak_log`); `ll_weakref_create` / `ll_weakref_get` | the `HAS_WEAK_REFERENCES` gate; that cells always live in the GC heap; that only the owning thread touches the table; where the table's rows come from and what a refused one answers | *when* to call in — that duty belongs to the death sites (dispose phase 2 first act, both collectors, arena reset) | `refcount`, `arena`, `context`, `heap`, `stdapi`, `object`, `buffer_arena` (the table's payload), `journal` (the cell's death event), `memory::reset_window` (a cell dying inside a reset) |
+| `weak` | the kind-11 weak cell (the canonical `WeakReference` *is* the cell); the per-thread weak table; every notification rule (`notify_death` / `notify_members` / `drain_arena_weak_log`); `ll_weakref_create` / `ll_weakref_get` | the `HAS_WEAK_REFERENCES` gate; that cells always live in the GC heap; that only the owning thread touches the table; where the table's rows come from and what a refused one answers | *when* to call in — that duty belongs to the death sites (dispose phase 2 first act, both collectors, arena reset) | `refcount`, `arena`, `context`, `heap`, `stdapi`, `object`, `buffer_arena` (the table's payload), `journal` (the cell's death event) |
 
 The array is four modules under `mod.rs`, with a loom model beside them
 under `cfg(loom)`, and the cut between them is what the rows record:
@@ -236,9 +236,11 @@ field is lent to):
   whose return a trace window is withholding; what separates those two is the
   physical return, not the header, and the withheld ones are found through the
   window's own stack rather than through any bit. What hands a slot back is
-  `refcount::publish_header`, the trace window's close ahead of its return,
-  the reset window's flush, owner candidate retirement, and every path that
-  frees a slot it never published (`memory::stdapi::free_unpublished`). The
+  `refcount::publish_header`, owner candidate retirement, and
+  `memory::stdapi::hand_back_and_free`, the one pairing of the hand-back with
+  the free, reached by the trace window's close ahead of its return, the
+  reset window's flush and every path that frees a slot it never published
+  (`memory::stdapi::free_unpublished`). The
   count stays zero under it, so `refcount::slot_state` is the
   one occupancy test and a guard test bans the two-way one. The bit carried
   `STRING_OUT_OF_LINE` until the string's two layouts became the kind codes 8

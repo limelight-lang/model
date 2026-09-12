@@ -39,10 +39,11 @@
 //! 4. **Release-at-reset log**: one release per record, with real teardown
 //!    dispatch for entities that die of it.
 //!
-//! Every traversal here — the mark, the re-trace, the count and the COW
-//! reconciliation — goes through `cells::trace_entity`, the crate's one
-//! kind-dispatched tracer, and never through a kind test of promotion's
-//! own (`dev/DECISIONS.md`, "the reset traces through one tracer").
+//! Every traversal here — the mark, the re-trace and the count — goes
+//! through `cells::trace_entity`, the crate's one kind-dispatched tracer,
+//! and never through a kind test of promotion's own (`dev/DECISIONS.md`,
+//! "the reset traces through one tracer"). The COW reconciliation walks
+//! nothing: it reads the count pass's log.
 
 use std::collections::{HashMap, HashSet};
 
@@ -88,10 +89,12 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         0,
         0
     );
-    // Everything below reads survivor memory after the drain that can
-    // kill a survivor, so the window opens first and closes with this
-    // frame — including an unwind out of it (`memory::reset_window`).
-    let _window = crate::memory::reset_window::opened();
+    // The re-trace and the weak walk read survivor memory after the drain
+    // that can kill a survivor, so the window opens first and closes with
+    // this frame — including an unwind out of it (`memory::reset_window`).
+    // Its storage is this frame's: the window boxes nothing.
+    let mut window = crate::memory::reset_window::ResetWindow::closed();
+    let _window = crate::memory::reset_window::open(&mut window);
     let mut survivors: Vec<*mut RcHeader> = Vec::new();
     // Each COW survivor's count at the instant it was promoted, which is
     // the last instant the reset can attribute it to arena holders. What
@@ -143,24 +146,30 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
                 unsafe { mark_subgraph(a, &mut survivors) };
             }
 
-            // Bump cursor moved ⇒ a destructor allocated ("dirty"): it may
-            // have stored a fresh arena object into an already-traced
-            // survivor (arena→arena, not an escape), so re-read survivors'
-            // children (audit H2). A "pure" destructor needs no re-trace —
-            // the runtime stand-in for the compile-time purity class.
-            let before = unsafe { (*arena).bump_cursor() };
+            // A destructor may store an arena object into an already-traced
+            // survivor — arena→arena, not an escape — so after a round that
+            // ran one the survivors' children are re-read (audit H2). Only
+            // a pure destructor needs no re-trace, and the runtime has no
+            // compile-time class to read, so every destructor body that
+            // ran is taken as dirty; an entry with nothing left to run
+            // counts for nothing. The bump cursor is no stand-in: the
+            // object stored may already exist, reachable from the dying
+            // object alone (`dev/DECISIONS.md`, "the re-trace runs after
+            // every destructor round").
             let mut round_dtors = Vec::new();
             unsafe { (*arena).drain_destructors(|o| round_dtors.push(o)) };
+            let mut ran_a_destructor = false;
             for obj in round_dtors {
                 progress = true;
                 if unsafe { mutator_flags(obj) } & ARENA_RESET_MARK != 0 {
                     continue; // escaped objects survive; they do not destruct
                 }
 
-                unsafe { crate::object::run_user_destructor(obj as *mut Object) };
+                ran_a_destructor |=
+                    unsafe { crate::object::run_user_destructor(obj as *mut Object) };
             }
 
-            if unsafe { (*arena).bump_cursor() } != before {
+            if ran_a_destructor {
                 unsafe { retrace_survivors(&mut survivors) };
             }
 
@@ -183,6 +192,16 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         for &surv in &survivors[counted..] {
             unsafe { count_children(surv) };
         }
+
+        // A promotion-edge record the manager refused is an edge the
+        // reconciliation will not count. The round's COW children each take
+        // one `ll_retain` below, after their counts are captured, so the
+        // retain stays in the child's delta: the refused edge is then
+        // counted once, by the retain, and every recorded edge of the round
+        // twice, which is a bounded leak and never an under-count
+        // (`dev/DECISIONS.md`, "the COW count is the log's edges plus the
+        // delta").
+        let retain_the_rounds_children = crate::memory::reset_window::take_refused_promotion_edge();
 
         for &surv in &survivors[counted..] {
             // Out-of-line memory comes with the survivor, before the
@@ -280,6 +299,18 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             }
         }
 
+        if retain_the_rounds_children {
+            for &surv in &survivors[counted..] {
+                unsafe {
+                    crate::cells::trace_entity(surv, |child| {
+                        if mutator_flags(child) & COW != 0 {
+                            ll_retain(child);
+                        }
+                    });
+                }
+            }
+        }
+
         counted = survivors.len();
 
         // --- Deferred releases. Teardown here (destructor first, then free)
@@ -316,7 +347,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // now: the fixpoint is where mutator code runs, and on a COW entity
     // the count is what that code reads to decide whether a write may go
     // in place.
-    unsafe { reconcile_cow_counts(&survivors, &cow_at_promotion) };
+    unsafe { reconcile_cow_counts(&cow_at_promotion) };
 
     // The weak walk — after every destructor has settled and the
     // survivors' categories are rewritten, before the pages go back:
@@ -647,15 +678,31 @@ unsafe fn mark_subgraph(root: *mut RcHeader, survivors: &mut Vec<*mut RcHeader>)
     }
 }
 
+/// Re-trace passes since a test last read them, so a test can say whether
+/// its destructor round was re-traced at all: a child the re-trace missed
+/// and a child it never looked for read the same in the heap. A plain
+/// static, as `reset_window`'s counters are: every test that runs a reset
+/// holds `block_pool::test_guard`.
+#[cfg(test)]
+static RETRACES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The re-trace passes since the last read, cleared by the read.
+#[cfg(test)]
+pub(crate) fn take_retrace_count() -> usize {
+    RETRACES.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Re-read every survivor's current children and mark any newly-appeared
-/// arena child. A destructor may have stored a fresh arena object into an
-/// already-traced survivor — an arena→arena store the barrier does not
-/// escape — so that child would otherwise be missed and dangle once the
-/// survivor is promoted (audit H2). Cheap when nothing changed: an
-/// already-marked child is skipped by the arena-reset-mark test. The index
-/// walk (not an iterator) re-scans survivors appended by `mark_subgraph`
-/// mid-loop.
+/// arena child. A destructor may have stored an arena object, fresh or
+/// existing, into an already-traced survivor — an arena→arena store the
+/// barrier does not escape — so that child would otherwise be missed and
+/// dangle once the survivor is promoted (audit H2). Cheap when nothing
+/// changed: an already-marked child is skipped by the arena-reset-mark
+/// test. The index walk (not an iterator) re-scans survivors appended by
+/// `mark_subgraph` mid-loop.
 unsafe fn retrace_survivors(survivors: &mut Vec<*mut RcHeader>) {
+    #[cfg(test)]
+    RETRACES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut i = 0;
     while i < survivors.len() {
         let s = survivors[i];
@@ -663,12 +710,14 @@ unsafe fn retrace_survivors(survivors: &mut Vec<*mut RcHeader>) {
         // A survivor whose teardown completed inside this reset holds
         // nothing any more, and nothing may follow what its slots still
         // name (`memory::reset_window`).
-        if crate::memory::reset_window::has_died(s) {
+        if unsafe { crate::memory::reset_window::is_torn_down(s) } {
             continue;
         }
 
         #[cfg(test)]
-        crate::memory::reset_window::note_walk(s);
+        unsafe {
+            crate::memory::reset_window::note_walk(s)
+        };
         unsafe {
             crate::cells::trace_entity(s, |child| {
                 if is_arena_entity(child) && mutator_flags(child) & ARENA_RESET_MARK == 0 {
@@ -712,22 +761,22 @@ unsafe fn mark_one(
 /// Settle every COW survivor's count now that the fixpoint is over and
 /// no user code can run again.
 ///
-/// Four terms, and the split of the first two is the whole design.
-/// **Edges** — the
-/// references surviving entities hold — replace what the count said at
-/// promotion time, because the holders that died with the arena never
-/// released and there is no list of them to subtract. **The delta** —
-/// whatever changed the count after promotion — is carried across
-/// untouched, because promotion happens inside the settling loop and the
-/// release-log drain runs `__destruct` bodies after it: a destructor may
-/// hand an already-promoted string to a heap object that outlives the
-/// request, and that reference belongs to nobody the edge walk can see
-/// (`dev/DECISIONS.md`, "the COW reconciliation carries a delta, because
-/// promotion is not the end of the reset").
-///
-/// The remaining two are corrections the window kept, `D` and `K`, and
-/// the whole expression is `edges_live + (now - at) + D - K`
-/// (`dev/DECISIONS.md`, "the reset reads no corpse").
+/// Three terms: `edges_at_promotion + (now - at) - K`. **The edges** are
+/// the window's log of every edge a survivor held to this child when the
+/// survivor was counted, and they replace what the count said at that
+/// instant, because the holders that died with the arena never released
+/// and there is no list of them to subtract. **The delta** is whatever
+/// changed the count after promotion, carried across untouched: a
+/// destructor may hand an already-promoted string to a heap object that
+/// outlives the request, or drop the edge a promoted holder had, and both
+/// are events on the count and on nothing the log can see. A release of a
+/// logged edge — by the holder's teardown or by a store into its slot —
+/// is one `-1` in the delta against the edge's one `+1`, so it is
+/// subtracted exactly once; a retain of a new edge into a promoted holder
+/// is one `+1` in the delta and nothing else. **`K`** takes back the
+/// compensating retain `count_children` gives an already-promoted child,
+/// whose edge the log carries as well (`dev/DECISIONS.md`, "the COW count
+/// is the log's edges plus the delta").
 ///
 /// `at_promotion` is each COW survivor's count at the instant its
 /// category was rewritten — the last instant the reset can attribute it
@@ -735,65 +784,35 @@ unsafe fn mark_one(
 ///
 /// # Safety
 /// The fixpoint has settled and no user code can run again before the
-/// blocks are disposed of. A survivor may already be a corpse of this
-/// reset: the walk skips one rather than requiring it live
-/// (`memory::reset_window::has_died`).
-unsafe fn reconcile_cow_counts(survivors: &[*mut RcHeader], at_promotion: &[(*mut RcHeader, u32)]) {
+/// blocks are disposed of.
+unsafe fn reconcile_cow_counts(at_promotion: &[(*mut RcHeader, u32)]) {
     if at_promotion.is_empty() {
         return;
     }
 
-    // Address → (edges seen so far, delta since promotion).
-    let mut settled: HashMap<usize, (u32, i64)> = HashMap::with_capacity(at_promotion.len());
+    // Address → count settled so far: the delta first, the log's terms on top.
+    let mut settled: HashMap<usize, i64> = HashMap::with_capacity(at_promotion.len());
     for &(s, at) in at_promotion {
         let now = unsafe { header_refcount(s) } as i64;
-        settled.insert(s as usize, (0, now - at as i64));
+        settled.insert(s as usize, now - at as i64);
     }
 
     // A correction naming no row of its own is dropped here, which is
-    // what narrows the window's two lists — recorded for every COW child
-    // the counting pass met — to this reset's own COW survivors
-    // (`memory::reset_window::Corrections`).
-    let corrections = crate::memory::reset_window::corrections();
-    for child in corrections.escrowed {
+    // what narrows the window's log — recorded for every COW child the
+    // counting pass met — to this reset's own COW survivors
+    // (`memory::reset_window::Correction`).
+    crate::memory::reset_window::for_each_correction(|child, correction| {
+        use crate::memory::reset_window::Correction;
         if let Some(entry) = settled.get_mut(&(child as usize)) {
-            entry.1 += 1;
+            *entry += match correction {
+                Correction::DeferredIncrement => 1,
+                Correction::DeferredDecrement => -1,
+            };
         }
-    }
+    });
 
-    for child in corrections.credited {
-        if let Some(entry) = settled.get_mut(&(child as usize)) {
-            entry.1 -= 1;
-        }
-    }
-
-    for &s in survivors {
-        if crate::memory::reset_window::has_died(s) {
-            continue;
-        }
-
-        #[cfg(test)]
-        crate::memory::reset_window::note_walk(s);
-        debug_assert!(
-            traceable_in_full(unsafe { mutator_flags(s) }),
-            "a survivor of a kind `trace_entity` skips would have its              references erased here, not conservatively ignored"
-        );
-        unsafe {
-            crate::cells::trace_entity(s, |child| {
-                if let Some(entry) = settled.get_mut(&(child as usize)) {
-                    entry.0 += 1;
-                }
-            });
-        }
-    }
-
-    // The rows are not filtered by death, unlike the walk above: a COW
-    // survivor cannot become a corpse of the reset that promoted it, and
-    // a row skipped here would leave a live entity's count unsettled
-    // (`dev/DECISIONS.md`, "the reset reads no corpse").
     for &(s, _) in at_promotion {
-        let (edges, delta) = settled[&(s as usize)];
-        let settled_count = edges as i64 + delta;
+        let settled_count = settled[&(s as usize)];
         debug_assert!(
             settled_count >= 0,
             "a COW survivor lost more references than it had"
@@ -832,17 +851,30 @@ fn traceable_in_full(flags: u32) -> bool {
 /// children (internal edges), a compensating retain to heap entities
 /// (their release-at-reset record no longer matches a dying holder), and
 /// both of the reconciliation's correction terms recorded on the way
-/// (`memory::reset_window::snapshot_edge`, `credit`).
+/// (`memory::reset_window::record_promotion_edge`,
+/// `record_deferred_decrement`).
+///
+/// A record the manager refuses is answered by the round rather than here:
+/// a refused edge retains the round's COW children once their counts are
+/// captured, and a refused decrement leaves its retain standing, which
+/// settles the child one too high and never too low
+/// (`memory::reset_window`).
 unsafe fn count_children(surv: *mut RcHeader) {
+    debug_assert!(
+        traceable_in_full(unsafe { mutator_flags(surv) }),
+        "a survivor of a kind `trace_entity` skips would have its children's counts left \
+         unbuilt and its COW edges unrecorded, not conservatively ignored"
+    );
     unsafe {
         crate::cells::trace_entity(surv, |child| {
-            // This pass is the instant the snapshot has to be taken at:
+            // This pass is the instant the edge has to be recorded at:
             // after this round's destructors, before the category
-            // rewrite. Why not the holder's death instead —
-            // `dev/DECISIONS.md`, "the reset reads no corpse".
+            // rewrite, which is the instant the count it stands for is
+            // captured and discarded (`dev/DECISIONS.md`, "the COW count
+            // is the log's edges plus the delta").
             let cow = mutator_flags(child) & COW != 0;
             if cow {
-                crate::memory::reset_window::snapshot_edge(surv, child);
+                crate::memory::reset_window::record_promotion_edge(surv, child);
             }
 
             match crate::object::header_category(child) {
@@ -854,7 +886,7 @@ unsafe fn count_children(surv: *mut RcHeader) {
                     // A retain of this pass's own, taken back by the
                     // reconciliation's K term.
                     if cow {
-                        crate::memory::reset_window::credit(child);
+                        crate::memory::reset_window::record_deferred_decrement(child);
                     }
                 }
                 _ => {}

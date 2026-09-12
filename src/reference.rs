@@ -96,11 +96,9 @@ pub(crate) unsafe fn reference_die(boxed: *mut LLReference) {
         MemoryCategory::GcHeap,
         "a reference box is a heap entity in every case"
     );
-    // No `reset_window::record_death` here, unlike the four other
-    // teardown bodies: the assertion above is why. A heap entity is never
-    // an arena survivor, so no reset's pass ever walks a box and none has
-    // a snapshot of one to pay out. A box that could be arena-allocated
-    // would owe that call (`memory::reset_window::record_death`).
+    // A heap entity is never an arena survivor, so no reset's pass ever
+    // walks a box and none has a promotion edge of one to restore; the
+    // assertion above is what says so.
     let v = unsafe { (*boxed).value };
     if v.is_refcounted() {
         unsafe {

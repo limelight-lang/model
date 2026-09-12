@@ -1,12 +1,12 @@
 //! Destructors run inside the settling loop, so the graph moves
 //! under it: a store into an already-traced survivor is arena to
-//! arena and escapes nothing, which is why the reset watches the
-//! bump cursor and re-reads the survivors' children; an escapee
+//! arena and escapes nothing, which is why the reset re-reads the
+//! survivors' children after every round that ran a destructor; an escapee
 //! created there survives although it has already run its own
 //! `__destruct`; and a release log grown during its own drain is
 //! drained again. A COW survivor's count stays readable throughout
-//! and is settled once at the end, from the edges that remain plus
-//! the holders acquired after promotion.
+//! and is settled once at the end, from the edges recorded when its
+//! holders were counted plus whatever moved the count after that.
 
 use super::*;
 
@@ -77,8 +77,8 @@ fn destructor_created_escape_survives_already_destructed() {
 /// into an already-traced survivor. That store is arena→arena, so the
 /// barrier does not escape it; without re-tracing the survivor after a
 /// dirty destructor, the new child is never marked and dangles once the
-/// survivor is promoted. The reset watches the arena bump cursor to know
-/// a destructor allocated, then re-reads the survivors' children.
+/// survivor is promoted. The reset re-reads the survivors' children after
+/// every round that ran a destructor.
 #[test]
 fn dirty_destructor_storing_into_a_survivor_traces_the_new_child() {
     let _g = crate::memory::block_pool::test_guard();
@@ -411,4 +411,290 @@ fn release_log_grown_during_the_drain_is_still_drained() {
     }
 
     set_current_context(std::ptr::null_mut());
+}
+
+/// A destructor can also take an edge **away** from an already-promoted
+/// holder — `$keeper->s = null` on a survivor of an earlier round — and
+/// that release is one `-1` in the count's delta since promotion, and
+/// the edge it took away is one `+1` in the window's log, whether the
+/// holder was torn down or stayed alive. A reconciliation that counted
+/// the edges a walk finds instead subtracted the event twice, and the
+/// child settled one low under its remaining holders.
+#[test]
+fn a_destructor_dropping_a_promoted_holder_s_edge_leaves_the_other_holder_s_count() {
+    let _g = crate::memory::block_pool::test_guard();
+    static KEEPER: AtomicUsize = AtomicUsize::new(0);
+    static STRING: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn null_the_keeper_s_slot_dtor(_o: *mut Object) {
+        // A dying heap entity, torn down by the release drain after the
+        // keepers were promoted, writes `$keeper->s = null`.
+        let keeper = KEEPER.load(Ordering::Relaxed) as *mut Object;
+        let s = STRING.load(Ordering::Relaxed) as *mut RcHeader;
+        unsafe {
+            let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
+            let slot = Object::prop_at(keeper, 16);
+            assert!(ref_store(
+                arena,
+                keeper as *mut RcHeader,
+                slot,
+                s,
+                Value::null()
+            ));
+        }
+    }
+
+    let keeper_cls = ClassBuilder::new("Keeper").prop("s", true).build();
+    let holder_cls = ClassBuilder::new("Holder").prop("keep", true).build();
+    let dying_cls = ClassBuilder::new("Dying")
+        .destructor(null_the_keeper_s_slot_dtor as *const ())
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut ctx = LLContext { arena: arena_ptr };
+    let ctx_ptr: *mut LLContext = &mut ctx;
+    set_current_context(ctx_ptr);
+
+    let holder_a = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let holder_b = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let keeper_a = unsafe { new_constructed(ctx_ptr, keeper_cls, MemoryCategory::RequestArena) };
+    let keeper_b = unsafe { new_constructed(ctx_ptr, keeper_cls, MemoryCategory::RequestArena) };
+    let keeper_c = unsafe { new_constructed(ctx_ptr, keeper_cls, MemoryCategory::RequestArena) };
+    let container = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::RequestArena) };
+    let dying = unsafe { new_constructed(ctx_ptr, dying_cls, MemoryCategory::GcHeap) };
+    KEEPER.store(keeper_a as usize, Ordering::Relaxed);
+
+    let s =
+        unsafe { crate::string::ll_string_new(ctx_ptr, MemoryCategory::RequestArena, b"shared") }
+            as *mut RcHeader;
+    STRING.store(s as usize, Ordering::Relaxed);
+
+    unsafe {
+        // Three keepers hold the string. Two escape, so they and the string
+        // survive; the third dies with the arena, its demand never released
+        // — the hold only the count at promotion knew of, and the reason
+        // that count is replaced rather than corrected.
+        for keeper in [keeper_a, keeper_b, keeper_c] {
+            let slot = Object::prop_at(keeper, 16);
+            assert!(ref_store(
+                arena_ptr,
+                keeper as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::String, s),
+            ));
+        }
+        assert!(!crate::refcount::ll_release(s), "the creation reference");
+        assert_eq!(crate::refcount::entity_refcount(s), 3);
+        store_prop(arena_ptr, holder_a, 16, keeper_a);
+        store_prop(arena_ptr, holder_b, 16, keeper_b);
+
+        // The dying heap entity sits in an arena container, so the
+        // release log tears it down — after the promotion pass.
+        store_prop(arena_ptr, container, 16, dying);
+        assert!(!crate::refcount::ll_release(dying as *mut RcHeader));
+
+        arena_reset_full(arena_ptr);
+    }
+
+    set_current_context(std::ptr::null_mut());
+
+    unsafe {
+        assert_eq!(crate::refcount::entity_category(s), MemoryCategory::GcHeap);
+        assert!(
+            entity_checked(&*Object::prop_at(keeper_a, 16)).is_null(),
+            "the destructor's store landed"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(s),
+            1,
+            "the keeper that still holds the string"
+        );
+    }
+}
+
+/// The other direction: a destructor stores an already-promoted string
+/// **into** a promoted holder, `$keeper_b->s = $s`. The retain is in the
+/// delta and the log has no record of the edge, so the string settles to
+/// its two holders; a reconciliation that also walked the edge settled it
+/// one high — a hold nobody would ever release.
+#[test]
+fn a_destructor_storing_into_a_promoted_holder_counts_the_edge_once() {
+    let _g = crate::memory::block_pool::test_guard();
+    static KEEPER: AtomicUsize = AtomicUsize::new(0);
+    static STRING: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn store_into_the_keeper_dtor(_o: *mut Object) {
+        let keeper = KEEPER.load(Ordering::Relaxed) as *mut Object;
+        let s = STRING.load(Ordering::Relaxed) as *mut RcHeader;
+        unsafe {
+            let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
+            let slot = Object::prop_at(keeper, 16);
+            assert!(ref_store(
+                arena,
+                keeper as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::String, s),
+            ));
+        }
+    }
+
+    let keeper_cls = ClassBuilder::new("Keeper").prop("s", true).build();
+    let holder_cls = ClassBuilder::new("Holder").prop("keep", true).build();
+    let dying_cls = ClassBuilder::new("Dying")
+        .destructor(store_into_the_keeper_dtor as *const ())
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut ctx = LLContext { arena: arena_ptr };
+    let ctx_ptr: *mut LLContext = &mut ctx;
+    set_current_context(ctx_ptr);
+
+    let holder_a = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let holder_b = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let keeper_a = unsafe { new_constructed(ctx_ptr, keeper_cls, MemoryCategory::RequestArena) };
+    let keeper_b = unsafe { new_constructed(ctx_ptr, keeper_cls, MemoryCategory::RequestArena) };
+    let container = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::RequestArena) };
+    let dying = unsafe { new_constructed(ctx_ptr, dying_cls, MemoryCategory::GcHeap) };
+    KEEPER.store(keeper_b as usize, Ordering::Relaxed);
+
+    let s =
+        unsafe { crate::string::ll_string_new(ctx_ptr, MemoryCategory::RequestArena, b"shared") }
+            as *mut RcHeader;
+    STRING.store(s as usize, Ordering::Relaxed);
+
+    unsafe {
+        let slot = Object::prop_at(keeper_a, 16);
+        assert!(ref_store(
+            arena_ptr,
+            keeper_a as *mut RcHeader,
+            slot,
+            std::ptr::null_mut(),
+            Value::entity(Tag::String, s),
+        ));
+        assert!(!crate::refcount::ll_release(s), "the creation reference");
+        store_prop(arena_ptr, holder_a, 16, keeper_a);
+        store_prop(arena_ptr, holder_b, 16, keeper_b);
+        store_prop(arena_ptr, container, 16, dying);
+        assert!(!crate::refcount::ll_release(dying as *mut RcHeader));
+
+        arena_reset_full(arena_ptr);
+    }
+
+    set_current_context(std::ptr::null_mut());
+
+    unsafe {
+        assert_eq!(crate::refcount::entity_category(s), MemoryCategory::GcHeap);
+        assert_eq!(
+            entity_checked(&*Object::prop_at(keeper_b, 16)),
+            s,
+            "the destructor's store landed"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(s),
+            2,
+            "the two keepers, and nothing for the edge twice"
+        );
+    }
+}
+
+/// A destructor that stores an **existing** arena object into a marked
+/// survivor, `$survivor->keep = $this->y`, allocates nothing. The child
+/// is reachable from the dying object alone, so nothing has marked it;
+/// only a re-trace of the survivor can, and a re-trace keyed on the bump
+/// cursor never ran for this round. What the reset then produced was a
+/// promoted holder naming an entity it never promoted — here in the block
+/// it retained for the survivor, and in a returned block or an unmapped
+/// run where the child stands elsewhere.
+///
+/// Such a destructor is not pure — it stores a managed reference — and
+/// the runtime has no compile-time class to read, so a round that ran
+/// any destructor is re-traced (`rfc/model/memory/arena-reset.md`, "What
+/// keeps the fixpoint going — destructor purity").
+#[test]
+fn a_destructor_handing_an_existing_arena_object_to_a_survivor_gets_it_promoted() {
+    let _g = crate::memory::block_pool::test_guard();
+    static SURVIVOR: AtomicUsize = AtomicUsize::new(0);
+    static HANDED: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C" fn hand_over_dtor(obj: *mut Object) {
+        let survivor = SURVIVOR.load(Ordering::Relaxed) as *mut Object;
+        unsafe {
+            let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
+            let y = entity_checked(&*Object::prop_at(obj, 16)) as *mut Object;
+            HANDED.store(y as usize, Ordering::Relaxed);
+            store_prop(arena, survivor, 16, y);
+        }
+    }
+
+    let holder_cls = ClassBuilder::new("HandOverHolder")
+        .prop("keep", true)
+        .build();
+    let dying_cls = ClassBuilder::new("HandOverDying")
+        .prop("y", true)
+        .destructor(hand_over_dtor as *const ())
+        .build();
+    let leaf_cls = ClassBuilder::new("HandOverLeaf").build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut ctx = LLContext { arena: arena_ptr };
+    let ctx_ptr: *mut LLContext = &mut ctx;
+    set_current_context(ctx_ptr);
+
+    let root = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let survivor = unsafe { new_constructed(ctx_ptr, holder_cls, MemoryCategory::RequestArena) };
+    let dying = unsafe { new_constructed(ctx_ptr, dying_cls, MemoryCategory::RequestArena) };
+    let leaf = unsafe { new_constructed(ctx_ptr, leaf_cls, MemoryCategory::RequestArena) };
+    SURVIVOR.store(survivor as usize, Ordering::Relaxed);
+
+    unsafe {
+        store_prop(arena_ptr, dying, 16, leaf);
+        assert!(
+            !crate::refcount::ll_release(leaf as *mut RcHeader),
+            "the creation reference"
+        );
+        // The survivor escapes and is marked before the destructor drain
+        // of the same round; the dying object is unheld and destructs there.
+        store_prop(arena_ptr, root, 16, survivor);
+        let _ = crate::promote::take_retrace_count();
+        arena_reset_full(arena_ptr);
+    }
+    set_current_context(std::ptr::null_mut());
+
+    assert_eq!(
+        HANDED.load(Ordering::Relaxed),
+        leaf as usize,
+        "the destructor did not run over the leaf"
+    );
+    assert_eq!(
+        crate::promote::take_retrace_count(),
+        1,
+        "one re-trace, for the one round that ran a destructor: the round \
+         after it drained nothing"
+    );
+    unsafe {
+        assert_eq!(
+            entity_checked(&*Object::prop_at(survivor, 16)) as usize,
+            leaf as usize,
+            "the survivor names the leaf"
+        );
+        assert_eq!(
+            crate::refcount::entity_category(leaf as *mut RcHeader),
+            MemoryCategory::GcHeap,
+            "the leaf handed to a survivor was promoted with it"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(leaf as *mut RcHeader),
+            1,
+            "held by the survivor's slot alone: the dying holder's demand died with the arena"
+        );
+
+        // The root's release takes the survivor and the leaf down with it.
+        assert!(crate::refcount::ll_release(root as *mut RcHeader));
+        ll_object_die(root);
+    }
 }

@@ -40,8 +40,9 @@
 //! region at the head of the thread's workspace, ahead of the collection's own
 //! bump ([`crate::cycle::arena`]), and thread-local storage holds one non-owning
 //! pointer to that line: **null is the closed window**, so no second flag can
-//! disagree with the window's existence (`PLAN.md`, S36.9, "TLS holds only the
-//! non-owning pointer that finds the owner state"). That line is the whole of
+//! disagree with the window's existence (`dev/DECISIONS.md`, "the trace's
+//! withheld returns are manager memory, drawn where a refusal can still be
+//! answered"). That line is the whole of
 //! the region and the whole of what the module holds: one head, one flag, and
 //! every withheld return in the dying entity it belongs to.
 //!
@@ -81,15 +82,11 @@
 //! cursor that would bound such a walk is the owner's to move, and reading a
 //! slot the owner is publishing races that store. What the window itself reads
 //! of a block is the one word the stamp stands in; what the return then reads
-//! is `ll_free`'s own, which both designs pay alike. What the stack
-//! costs the close moves with the deaths withheld rather than with the blocks
-//! the collection touched, which is what the refused walk was priced against
-//! (`dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld chain").
-//! What that costs in time is 3.7 ns a death where the deaths share one block
-//! and 20.5 where each has a block of its own, against the deleted chain's 2.9
-//! and 12.6: the pop learns the next address from the slot it is freeing, so
-//! the returns cannot overlap where the chain's records let them
-//! (`dev/BENCHMARKS.md`, "S44.4 the close against the chain").
+//! is `ll_free`'s own. What the stack costs the close moves with the deaths
+//! withheld rather than with the blocks the collection touched, and the pop
+//! learns the next address from the slot it is freeing, so the returns cannot
+//! overlap (`dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld
+//! chain" and "S44.4 the close against the chain").
 //! A thread exiting with its window still open ends the process, which is the
 //! one process end this module holds and has a reason of its own
 //! ([`dispose_thread_state`]).
@@ -108,7 +105,7 @@ use crate::cycle::shadow::{self, Color};
 use crate::memory::block_pool::{BLOCK_KIND_ENTITY, BLOCK_KIND_RETAINED, BlockHeader};
 
 /// The head of the withheld returns and the words the close reads beside it,
-/// resident in the region of the workspace it stands in.
+/// resident in the workspace's fixed prefix.
 ///
 /// `Cell` rather than a lock or a `RefCell`: the head has one writer by
 /// construction, the thread whose trace window is open, and the push sits on
@@ -156,7 +153,7 @@ thread_local! {
 ///
 /// A holder of its own rather than a field the enclosing drop unwinds by hand:
 /// an unwind out of the close would otherwise skip the clearing below, and a
-/// mark or a stacked slot that outlives its window is one no window returns.
+/// stacked slot that outlives its window is one no window returns.
 /// [`crate::cycle::arena::TraceScratchArena`] is re-entrant for the same
 /// reason.
 struct WithheldReturns {
@@ -231,8 +228,9 @@ impl WithheldReturns {
             return None;
         }
 
-        // Safety: a withheld slot is one this window marked and nothing has
-        // returned, and what keeps its memory readable differs by population.
+        // Safety: a withheld slot is one `ll_free` took and this window
+        // stacked, and nothing has returned; what keeps its memory readable
+        // differs by population.
         // A size-class slot reached no free list and stands below its block's
         // bump cursor, still counted in the block's `used`
         // (`crate::memory::heap::Heap::free`); a retained survivor is still a
@@ -247,12 +245,12 @@ impl WithheldReturns {
         Some(slot)
     }
 
-    /// Dispose of every slot this window withheld, newest first: `Return`
-    /// makes the return through `ll_free`, `Abandon` gives no memory back and
-    /// leaves the mark where the free put it.
+    /// Dispose of every slot this window withheld, newest first, by
+    /// `disposition` ([`Disposition`]).
     ///
     /// Called with the window closed, so a return that reaches
-    /// [`defer_reuse_if_tracing`] again is refused there. The pop itself reads
+    /// [`defer_reuse_if_tracing`] again is not withheld a second time and
+    /// proceeds physically. The pop itself reads
     /// no word of any block, only the dead slot's own link; what reads the
     /// block is the return behind it, `ll_free` posting onto the block's stack
     /// of cross-thread frees while the block is another thread's and taking
@@ -261,15 +259,9 @@ impl WithheldReturns {
     /// **The link is read before the return overwrites it**, the free list
     /// linking through the same word ([`withheld_link`]); the pop takes the
     /// next address off the slot and only then hands the slot over.
-    ///
-    /// What `Abandon` leaves is the slot exactly where the withholding found
-    /// it: out of circulation, holding its block or mapping with it, and still
-    /// carrying the bit `ll_free` took — which is true of it, nobody having
-    /// handed it back. That is the price of a window that lost its
-    /// collection's rows before it could give anything back.
     fn dispose_withheld(&self, disposition: Disposition) {
         while let Some(slot) = self.pop_withheld() {
-            note_slot_visited();
+            note_slot_popped();
             unsafe { dispose_of(slot, disposition) };
         }
     }
@@ -278,11 +270,15 @@ impl WithheldReturns {
 /// What the close does with a slot it pops.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Disposition {
-    /// Clear the mark and make the return it deferred, which is the close.
+    /// Hand the slot back and make the return it deferred, which is the close.
     Return,
-    /// Leave the mark standing and return nothing, which is the unwind that
-    /// reached the window's drop before the rows were swept
-    /// ([`WithheldReturns::drop`]).
+    /// Return nothing, which is the unwind that reached the window's drop
+    /// before the rows were swept ([`WithheldReturns::drop`]). The slot stays
+    /// exactly where the withholding found it: out of circulation, holding its
+    /// block or mapping with it, and still carrying the bit `ll_free` took —
+    /// which is true of it, nobody having handed it back. That is the price of
+    /// a window that lost its collection's rows before it could give anything
+    /// back.
     Abandon,
 }
 
@@ -292,21 +288,21 @@ enum Disposition {
 // read alike.
 #[cfg(test)]
 thread_local! {
-    static MARKED_SLOTS_VISITED: Cell<usize> = const { Cell::new(0) };
+    static SLOTS_POPPED: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Count one slot the close popped, and nothing at all without `cfg(test)`:
 /// the pop calls it either way.
 #[inline]
-fn note_slot_visited() {
+fn note_slot_popped() {
     #[cfg(test)]
-    MARKED_SLOTS_VISITED.with(|visited| visited.set(visited.get() + 1));
+    SLOTS_POPPED.with(|popped| popped.set(popped.get() + 1));
 }
 
 /// What the probe holds for this thread, zeroed by the read.
 #[cfg(test)]
-pub(crate) fn take_marked_slots_visited() -> usize {
-    MARKED_SLOTS_VISITED.with(|visited| visited.replace(0))
+pub(crate) fn take_slots_popped() -> usize {
+    SLOTS_POPPED.with(|popped| popped.replace(0))
 }
 
 /// The word a stacked slot names the next one through: the eight bytes a free
@@ -336,19 +332,16 @@ unsafe fn push_withheld(control: &WindowControl, slot: *mut u8) {
 /// Make the return this window deferred, where the disposition is
 /// [`Disposition::Return`].
 ///
-/// **The clear comes first, and only here.** The return re-enters `ll_free`,
-/// which refuses a free of a slot it already holds, so the slot is handed back
-/// before it is offered again (`crate::refcount::DEAD_IN_PLACE`).
-/// [`Disposition::Abandon`] hands nothing back and clears nothing: a slot this
-/// window drops without returning is one `ll_free` took and no one gave back,
-/// which is what the bit says.
+/// **The slot is handed back first, and only here.** The return re-enters
+/// `ll_free`, which refuses a free of a slot it already holds
+/// (`crate::memory::stdapi::hand_back_and_free`; `crate::refcount::DEAD_IN_PLACE`).
+/// [`Disposition::Abandon`] hands nothing back and frees nothing.
 ///
 /// # Safety
 /// `slot` is a dead entity this close has taken off the window's stack.
 unsafe fn dispose_of(slot: *mut u8, disposition: Disposition) {
     if disposition == Disposition::Return {
-        unsafe { crate::refcount::clear_dead_in_place(slot as *mut crate::refcount::RcHeader) };
-        unsafe { crate::memory::stdapi::ll_free(slot) };
+        unsafe { crate::memory::stdapi::hand_back_and_free(slot) };
     }
 }
 
@@ -424,7 +417,7 @@ pub(crate) struct ActiveTrace {
     /// control line stands in a region of the workspace, which the arena's drop
     /// hands back to the thread.
     ///
-    /// Defensive rather than load-bearing today, and worth the line for what
+    /// Defensive rather than load-bearing, and worth the line for what
     /// it costs: the drop below pops before either field dies, and
     /// `queue::return_workspace_base` leaves the block in the thread's own cell
     /// rather than handing it to the pool, so a reversed order would read
@@ -432,7 +425,10 @@ pub(crate) struct ActiveTrace {
     /// call gives the block back.
     returns: WithheldReturns,
     arena: crate::cycle::arena::TraceScratchArena,
+    /// Whether [`close`](Self::close) has run, so that [`Drop`] runs it once.
     closed: bool,
+    /// The commit count the marked pass saw; `Some` selects the deferred
+    /// disposition at the close ([`Self::dispose_batch_on_close`]).
     defer_at_commits: Option<u64>,
     // A window belongs to the TLS state of the thread that opened it. Moving
     // the guard would close another thread's window and strand this one's.
@@ -602,6 +598,29 @@ impl ActiveTrace {
         self.defer_at_commits = Some(at_commits);
     }
 
+    /// The ordered close: sweep the rows, dispose of the batch, make the
+    /// withheld returns, give the arena's blocks back. `restore_batch` is false
+    /// for a pressure close that hands its batch on to the driver.
+    ///
+    /// The sweep comes first, taken whether or not anything was withheld:
+    /// after the window falls, a physical return may recommission the block
+    /// whose shadow pointer the sweep must null. It stands ahead of the
+    /// disposition so that an unwind raised past it — out of the pool the
+    /// merge's own growth can reach — leaves a drop whose rows are gone and
+    /// whose withheld returns can therefore be made rather than abandoned
+    /// (`dev/DECISIONS.md`, "the row sweep runs ahead of the candidate
+    /// restore"). Every root of the batch keeps its registration, so its
+    /// record goes back to the lane it came out of, joined to whatever the
+    /// teardown wrote there; the disposition reads no row and no withheld
+    /// slot, and `ll_free`'s candidate arm reads the entity's own bit rather
+    /// than the lane its record stands in, so nothing above or below turns on
+    /// where it stands between them. The arena's own blocks name no slot, so
+    /// they go back after the returns rather than before them, which is what
+    /// leaves every return made when a panic in the hand-back sends this frame
+    /// into [`WithheldReturns::drop`]. The reset enters its own residue in the
+    /// high-water figure as it rewinds
+    /// (`crate::cycle::arena::TraceScratchArena`), and this window has no
+    /// residue to stand beside it.
     fn close(&mut self, restore_batch: bool) {
         self.arena.sweep_rows();
         self.returns.rows_are_gone();
@@ -613,6 +632,7 @@ impl ActiveTrace {
                 }
             }
         }
+
         fire_injected_close_unwind();
         self.returns.close_window();
         self.returns.dispose_withheld(Disposition::Return);
@@ -673,28 +693,7 @@ impl Drop for ActiveTrace {
         if self.closed {
             return;
         }
-        // First of all, and taken whether or not anything was withheld: after
-        // the window falls, a physical return may recommission the block whose
-        // shadow pointer this sweep must null. Ahead of the disposition below,
-        // so that an unwind raised past this line — out of the pool the merge's
-        // own growth can reach — leaves a drop whose rows are gone and whose
-        // withheld returns can therefore be made rather than abandoned
-        // (`dev/DECISIONS.md`, "the row sweep runs ahead of the candidate
-        // restore").
-        // Every root of the batch keeps its registration, so its record goes
-        // back to the lane it came out of — joined to whatever the teardown
-        // wrote there, which on the ordinary path is the severing's own
-        // candidates. It reads no row and no withheld slot, and `ll_free`'s
-        // candidate arm reads the entity's own bit rather than the lane its
-        // record stands in, so nothing above or below turns on where this
-        // stands between them.
-        // The arena's own blocks name no slot, so they go back after the
-        // returns rather than before them — which is what leaves every return
-        // made when a panic in the hand-back sends this frame into the drops
-        // below (`WithheldReturns::drop`). The reset enters its own residue in
-        // the high-water figure as it rewinds
-        // (`crate::cycle::arena::TraceScratchArena`), and this window has no
-        // residue to stand beside it.
+
         self.close(true);
     }
 }
@@ -714,16 +713,16 @@ impl Drop for ActiveTrace {
 /// With no window open the whole cost is one thread-local load and one branch.
 /// With one open, the block's own state is read — one load for a slotted or a
 /// retained death, one for a large entity's row — and a withheld death then
-/// costs the mark, one write into the dying entity's own byte 8 and one store
-/// of the head, with no atomic, no allocator call and no pool call.
+/// costs one write into the dying entity's own byte 8 and one store of the
+/// head, with no atomic, no allocator call and no pool call.
 ///
 /// # Safety
 /// `ptr` is a dead entity slot whose teardown has completed and which this call
 /// owns until either the function returns `false` or the window closes.
 /// `kind` is the kind `ptr`'s own block reads, and outside the retained
-/// sentinel `ptr` addresses an entity rather than the block itself — the mark
-/// is a write into the header at `ptr`, and a block base passed under any
-/// other kind would land it in the block's own header.
+/// sentinel `ptr` addresses an entity rather than the block itself — the push
+/// writes the stack link into `ptr`'s byte 8, and a block base passed under
+/// any other kind would land it in the block's own header.
 #[inline]
 pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
     let control = DEFERRED_RETURNS.with(Cell::get);
@@ -741,8 +740,8 @@ enum Withholding {
     /// No row of this collection addresses the slot, so the caller returns it
     /// physically and this window owes nothing.
     ReturnNow,
-    /// The slot takes the mark and goes on the window's stack, threaded
-    /// through the dead entity itself.
+    /// The slot goes on the window's stack, threaded through the dead entity
+    /// itself.
     Stack,
 }
 
@@ -842,13 +841,10 @@ unsafe fn classify(ptr: *mut u8, kind: u32) -> Withholding {
 /// ([`push_withheld`]), which the close pops. Nothing is drawn and nothing can
 /// refuse, which is what leaves this path with no process end on it at all.
 ///
-/// **The stack is the whole of the withholding.** A withheld slot stays out of
-/// the allocator's hands because the physical return was never made: it is on
-/// no free list and below its block's bump cursor, and a withheld survivor
-/// keeps its block's occupant count above zero, so the block is not the pool's
-/// either. The header bit `ll_free` took at its head is no part of that — it
-/// stands on a returned slot exactly as it stands on this one
-/// (`crate::refcount::DEAD_IN_PLACE`).
+/// A withheld slot stays out of the allocator's hands because the physical
+/// return was never made: it is on no free list and below its block's bump
+/// cursor, and a withheld survivor keeps its block's occupant count above
+/// zero, so the block is not the pool's either (module doc).
 ///
 /// **What keeps a withheld slot off its free list is this function's single
 /// exit**: a death is either returned here or stacked here, never both. No

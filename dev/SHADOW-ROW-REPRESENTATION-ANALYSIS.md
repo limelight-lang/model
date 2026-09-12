@@ -8,11 +8,20 @@ Reviewed model source: the tree after S40.1's pruning arm closed on 2026-09-12
 
 Status: source analysis and proposed experiment. This document changes no
 collector behavior, closes neither step, and reports no new hardware timing.
+Amended 2026-09-12 by S40.5: §3.1 specifies the chunked form, and the replay
+of the census through both forms is `cycle::census::replay`, its figures in
+[BENCHMARKS.md](BENCHMARKS.md), 2026-09-12 (S40.5).
 Arithmetic below is derived from the current implementation or from an
 explicitly stated hypothetical chunk layout. Existing benchmark observations
 remain in [BENCHMARKS.md](BENCHMARKS.md); their scope must be preserved.
 
 ## Recommendation
+
+Decided 2026-09-12 (S40.2): the flat representation stays, and the chunked
+form of §3.1 is not adopted without a built candidate, whose stage is
+Edmond's to open; the figures for and against it and what would reopen the
+question are `DECISIONS.md`, "the flat row array stays". The recommendation
+as written before that decision follows.
 
 Keep the current flat representation pending a comparison with a concretely
 specified chunk representation. Build a phase-aware structural census, then
@@ -158,6 +167,152 @@ when most of its groups remain unused.
 The known invariants remain: no global allocation in collection scratch paths,
 stable row pointers, absorbing saturation, and no published pointer into memory
 that an abort returns. This work evaluates representation, not new GC semantics.
+
+### 3.1 The specified chunked form
+
+Answered on 2026-09-12 (S40.5), against the tree of `6151b2c`. What follows is
+a candidate for S40.2 to refuse or to open a stage for; nothing of it is built,
+and the replay in `cycle::census::replay` prices it from the census alone.
+
+**The directory.** One allocation per touched block, out of the collection's
+arena at the block's first touch, in the place the flat form's `RowArray`
+takes and threaded into the touched list the same way:
+
+```text
++0   block         the block header this directory belongs to
++8   next          the touched list, newest first
++16  row_count     the index space, the bound a row index is checked against
++20  population    which word the sweep owes a null
++24  continuation  the next directory of this block's chain, null until the
+                   bump has left this directory's arena block
++32  entries       one u16 per group of eight rows, G of them
+```
+
+Its size is `dir_bytes(G) = align_up(32 + 2 G, 8)`: 32 bytes for a large
+entity (`G = 0`, the prologue the sweep needs and nothing behind it), 96 at
+class 256 (`G = 32`), 160 at class 128 (`G = 64`), 288 at class 64
+(`G = 128`), 544 at class 32 (`G = 255`) and 1,056 at the smallest class of
+16 bytes (`G = 510`, 4,080 slots), which is outside the design's four classes
+and the matrix. The 24-byte prologue of the flat form gains the `continuation`
+word, so `A` holds 8 bytes per directory before anything else.
+
+**The directory is written whole when it is placed.** The arena hands memory
+over dirty, so the header, the `continuation` word and all `2 G` entry bytes
+are zeroed at placement, as the flat form zeroes its bitmap in `shadow::init`;
+an entry read before that clearing would be a stale chunk's rows and would
+place a row up to 524,280 bytes past the directory. The clearing is the
+directory's first-touch write: `32 + 2 G` bytes, 542 at class 32, against the
+flat form's 24-byte prologue and `ceil(G / 8)`-byte bitmap, 56 at class 32.
+A continuation is cleared the same way when it is placed. So on every block
+the chunked form writes more at the block's first touch than the flat form,
+by `2 G − ceil(G / 8) + 8` bytes, and its saving is in the bytes reserved and
+not in the bytes written; the replay counts both.
+
+**1. What an entry encodes.** Zero is absence: the group has not been met in
+this collection, which is the reading the flat form's clear bitmap bit gives.
+A non-zero entry `e` places the group's chunk at `directory + 8 e`. The unit
+is eight bytes because the arena grants on eight-byte boundaries and the chunk
+is granted by the same bump as the directory, so the distance is a multiple of
+eight; a 32-byte unit would need an alignment the arena does not give. The row
+of index `i` is then `chunk(i / 8) + 4 (i mod 8)`, and the bases that
+reconstruct it are the directory's own address and the entry: no table.
+
+**The chunk.** 32 bytes, eight rows, zeroed when it is placed, which is the
+group init the flat form performs on the group's first touch, done on memory
+the group owns rather than on a span of a reserved array. A row keeps its
+address until the arena resets: a chunk is never moved, and a continuation
+adds a directory rather than relocating anything, so `WorklistEntry`'s
+`*mut u32` stays valid as it does today.
+
+**2. The representable range and its exhaustion.** An entry addresses the
+directory's own arena block: the payload is 65,280 bytes, so a chunk placed in
+the same block as its directory is at most 65,248 bytes away and `e` is at most
+8,156, inside `u16` with the rest of the range unused. The placement rule
+below makes that the only case, so the entry width is never exhausted. What is
+exhausted is the arena block, and the answer to that is the **continuation**:
+when a chunk is to be placed and the bump has left the block of the chain's
+last directory, the arena places a continuation directory in the block under
+the bump, as one request with the chunk (`dir_bytes(G) + 32`), links it from
+the last directory, and records the entry there. A full trace therefore has no
+handle to run out of; it pays one continuation per directory per arena growth
+that falls between two of its group first touches, bounded by
+`min(T − 1, growths)` per block.
+
+**3. Where the memory comes from, alignment, growth.** Directory, chunk and
+continuation are all grants of `TraceScratchArena::alloc`, eight-aligned, out
+of the workspace and then out of the blocks the bump draws, so the funding
+order, the refusal on both paths and the reset's hand-back are exactly the flat
+form's. The first touch of a block requests the directory and its first chunk
+together, `dir_bytes(G) + 32`, since a first touch always meets one group; so
+does a continuation. A directory thus always holds at least one chunk in its
+own block, and a chunk is placed alone only when the block under the bump is
+the chain's last directory's and at least 32 bytes remain in it. Growth across
+arena blocks moves nothing: the chain grows at its tail, in the new block, and
+every row placed before it keeps its address. The largest row-side request is
+`dir_bytes(G) + 32`: 576 bytes at class 32 and 1,088 at the smallest class,
+against the flat form's 8,216 and 16,408, which is what bounds the tail an
+arena growth abandons on the rows' account; the chains' 4,160-byte segments
+are the same in both forms and are the larger request wherever a chain draws,
+so the tail bound of a whole collection is the segment's and not the
+directory's.
+
+**4. The load chain.** Both forms begin at the block's collector line, one
+acquire load of the shadow word (`memory::heap::block_shadow`), and both load
+`row_count` from the array's or the directory's header for the bound check.
+The flat form's bitmap byte is behind `row_count` as well — its offset is
+`24 + 4 × padded(row_count) + group / 8` (`shadow::groups`) — so the chain
+to the initialised test is shadow, `row_count`, byte, three deep; the row's
+address is `array + 24 + 4 i`, known at depth two, and the row load depends on
+the byte's test only by control, which a predictor covers. The chunked form's
+row address is `directory + 8 e + 4 (i mod 8)`, a data dependency on the
+entry, three deep and predicted by nothing: that is the further dependent
+load the rfc records, restated as the depth at which the row's address is
+known, two against three. On a group's first lookup the flat form finds the
+bit clear, sets it and zeroes eight rows in place; the chunked form finds the
+entry zero and then does what the flat form's first touch does not — the
+bump's grant (the cursor and the remaining count moved), the test whether
+the block under the bump is the chain's tail directory's, the walk to that
+tail, the zeroing of the 32 bytes granted and the entry store; on a
+continuation, a whole directory cleared and linked first. A row whose group
+was placed in a continuation costs two loads more per hop (`continuation`,
+then the entry there), and only the groups met after a growth stand there.
+`find_initialized_row`, the scan's read-only twin, walks the chain on a zero
+entry and answers absent at its end, so an absent group costs one entry load
+per directory of the chain instead of one bitmap byte.
+
+**5. Enumeration, probe, cleanup, refusal.** `for_each_of_color` reads every
+entry of every directory of the chain and, for each non-zero one, the eight
+rows of its chunk up to `row_count`: `G × chain` entry loads and `8 T` row
+reads, against the flat form's `G` bit reads and `8 T` row reads, so the
+per-group term the hardware arm measured at class 32 stands in both forms. The
+membership probe is `find_initialized_row` as in 4. The cleanup is the flat
+form's to the instruction: the sweep nulls the shadow word of every touched
+block through the touched list, which threads through the directories, and
+chunks and continuations die with the arena's reset; no chunk is referenced
+from the heap. The publication order on a refused allocation keeps the flat
+form's rule that nothing outside the arena points at memory an abort returns:
+the directory is enrolled before the shadow word is stored, a refused first
+touch stamps nothing; a refused chunk leaves its entry zero, since the entry is
+written after the grant; a refused continuation leaves the tail's
+`continuation` null for the same reason. Every non-null pointer written by
+this form names arena memory, and the arena returns it after the sweep has
+nulled the only heap-side pointer into it.
+
+**`A`, in full.** Per directory, 8 bytes over the flat prologue plus the
+rounding of `32 + 2 G` to eight; per continuation, `dir_bytes(G)`; per chunk,
+nothing, 32 bytes being a multiple of eight; no table, no per-arena state. So
+`M_chunks = dir_bytes(G) + 32 T + C × dir_bytes(G)`, with `C` the
+continuations, and the two placements of §2 read 224 and 1,120 bytes against
+the flat form's 1,056-byte grant, at `C = 0`. The bytes written at first
+touch are `dir_bytes(G)` per directory and continuation and 32 per group met,
+against the flat form's `24 + ceil(G / 8)` and 32 per group met.
+
+**What the form does not change.** The saturation rule, the colour codes and
+the row word; the retained population, whose index space is the survivor
+list and whose groups are eight consecutive positions of it; the large
+entity, whose row stays in its own block header behind a prologue-only
+directory; and the collector line, whose shadow word points at the first
+directory as it points at the array today.
 
 ## 4. Why the old six-versus-zero calculation is insufficient
 
@@ -441,12 +596,18 @@ one universal percentage; exact structural invariants have no statistical noise.
 ## 9. Execution order and decision record
 
 1. Specify chunk layout/addressing, failure behavior, and all storage overhead.
+   Done in §3.1 (S40.5).
 2. Implement the phase-aware census and calibrate it against small fixtures,
    saturation, refusals, and segment boundaries. Keep runtime behavior unchanged.
+   Done: `cycle::census` (S40.3).
 3. Replay the observed allocation sequence in an arena-placement model. First
    reproduce flat grants, alignment, tails and draws; only then estimate chunks
    using their actual allocation events and order. A byte-total division is not
-   a packing proof.
+   a packing proof. Done: `cycle::census::replay` reproduces the flat grants,
+   tails and draws of every load to the byte and replays the chunked form in the
+   loads' own order with a bracket over every order (S40.5); the order of group
+   first touches across blocks is the one event the census does not record, and
+   the bracket is what stands in for it.
 4. Implement a comparable chunk candidate and verify row semantics, stable
    pointers, enumeration and cleanup. Run scoped correctness checks before timing.
 5. Execute structural and hardware arms on identical workload definitions;

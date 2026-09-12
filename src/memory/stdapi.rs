@@ -79,9 +79,10 @@ fn can_lose_trace_identity(kind: u32) -> bool {
 /// sentinel `promote::arena_reset_full` passes to `ll_free` when a newly
 /// indexed block is already empty.
 ///
-/// The sentinel still has to wait for the trace window, because returning the
-/// whole block loses every row address in it. It must not pass the refcount or
-/// candidate tests: offset zero is a `BlockHeader`, not an `RcHeader`.
+/// The sentinel takes no mark and is never withheld: `cycle::deferred_slot_reuse`'s
+/// `classify` returns it at once, no row of a collection addressing a block
+/// `retain_block` has just cleared. It must not pass the refcount or candidate
+/// tests: offset zero is a `BlockHeader`, not an `RcHeader`.
 #[inline]
 fn points_to_gc_entity(kind: u32, ptr: *mut u8, block: *mut u8) -> bool {
     kind == BLOCK_KIND_ENTITY
@@ -283,29 +284,51 @@ pub(crate) fn take_refused_frees() -> usize {
 /// left them, and [`crate::refcount::publish_header`] is what takes the bit
 /// down. A caller that skips the publication skips the hand-back with it, so
 /// its free reads as a repeat and the slot is out of circulation for good
-/// (`crate::refcount::DEAD_IN_PLACE`). This is that hand-back and the free
-/// together.
+/// (`crate::refcount::DEAD_IN_PLACE`). This is [`hand_back_and_free`] for
+/// that slot.
 ///
 /// A slot handed out by the bump cursor carries nothing, commissioning having
 /// zeroed it; whether a given call got one of those is allocation history, so
 /// every unpublished free goes through here rather than deciding.
 ///
 /// Every category of entity memory goes through here, not only the ones whose
-/// block kind makes [`ll_free`] read the mark: the clear is a two-byte store
-/// into a header the caller owns and has not published, which is sound
-/// wherever the memory came from.
-///
-/// **What must not go through here is a block base.** The retained sentinel
-/// `promote::arena_reset_full` passes to [`ll_free`] addresses a `BlockHeader`,
-/// and the store below would land on that header's second word rather than on
-/// an entity's flags; [`ll_free`] separates the sentinel by
-/// [`points_to_gc_entity`], which is a test this function does not make.
+/// block kind makes [`ll_free`] read the mark.
 ///
 /// # Safety
 /// `slot` addresses an entity header — never a block base — in a live
 /// allocation of this thread that was never published as an entity, is
 /// readable at its first eight bytes, and is not freed yet.
 pub(crate) unsafe fn free_unpublished(slot: *mut u8) {
+    unsafe { hand_back_and_free(slot) };
+}
+
+/// Hand a slot back and free it: [`ll_free`] refuses a slot it already holds,
+/// so a slot it has taken is offered again only through here.
+///
+/// Three paths free a slot in that state:
+///
+/// - [`free_unpublished`] — a slot the allocator handed out with the bit of
+///   its last occupant's free still up, which the publication that would have
+///   taken it down never happened to;
+/// - the trace window's close (`crate::cycle::deferred_slot_reuse`,
+///   `dispose_of`) — a death the window withheld at `ll_free`'s own arm, after
+///   the entry point had taken the slot, and makes once its rows are gone;
+/// - the reset window's flush (`crate::memory::reset_window`) — a large body
+///   the window held back at the same point of the same call, and frees at
+///   the outermost close.
+///
+/// The hand-back is a two-byte store into a header the caller owns, which is
+/// sound wherever the memory came from; the block kind is [`ll_free`]'s to
+/// read. **A block base must not come through here**: the store would land on
+/// a `BlockHeader`'s second word rather than on an entity's flags, and the
+/// retained sentinel `promote::arena_reset_full` frees is separated by
+/// [`ll_free`] alone, through [`points_to_gc_entity`].
+///
+/// # Safety
+/// `slot` addresses an entity header — never a block base — in a live
+/// allocation this thread may free, readable at its first eight bytes, and
+/// not on any free list.
+pub(crate) unsafe fn hand_back_and_free(slot: *mut u8) {
     unsafe { crate::refcount::clear_dead_in_place(slot as *mut crate::refcount::RcHeader) };
     unsafe { ll_free(slot) };
 }
@@ -359,15 +382,8 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // **A second free of one entity does nothing.** The flags bit taken here
     // says this slot is `ll_free`'s and has not been handed back, so the
     // repeat reads it up and returns, touching no free list, no pool and no
-    // mapping (`crate::refcount::DEAD_IN_PLACE`).
-    //
-    // **How far the refusal reaches differs by population**, and the
-    // populations are three: a size-class slot and a retained survivor carry
-    // the bit until the slot is published again; a pooled large entity's
-    // second free reads `BLOCK_KIND_FREE` instead, the pool having re-stamped
-    // the kind; an OS-direct run is covered for no time at all, its memory
-    // being the operating system's from the first free
-    // (`crate::refcount::DEAD_IN_PLACE`).
+    // mapping; how far the refusal reaches in each population is the bit's
+    // own doc (`crate::refcount::DEAD_IN_PLACE`).
     //
     // Entities only: a raw heap block carries no header to take, and the
     // retained sentinel addresses a `BlockHeader` rather than an `RcHeader`
@@ -376,7 +392,11 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     let flags = if points_to_gc_entity(kind, ptr, block) {
         match unsafe { crate::refcount::take_slot_for_free(ptr as *mut crate::refcount::RcHeader) }
         {
-            Some(flags) => flags,
+            Some(flags) => {
+                #[cfg(test)]
+                crate::memory::reset_window::note_slot_taken();
+                flags
+            }
             None => {
                 note_refused_free();
                 return;
@@ -395,7 +415,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // collection's own flush while the reset still runs
     // (`memory::reset_window`).
     if crate::memory::large_entity::is_large_entity(kind)
-        && unsafe { crate::memory::reset_window::park_large(ptr) }
+        && unsafe { crate::memory::reset_window::defer_free(ptr) }
     {
         return;
     }
@@ -413,11 +433,9 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         return;
     }
 
-    // An epoch-wide withholding of every free that can put memory back in
-    // circulation stood here while `rc-walk` ran, and went with it.
-    // `rc-cycle` withholds per slot rather than per epoch, on two windows
-    // that are not the same width — a queue entry naming the slot, and a
-    // trace in flight. The first is below; the second is S36.2's.
+    // `rc-cycle` withholds per slot, on two windows of different width: a
+    // queue entry naming the slot (below) and a trace in flight
+    // (`crate::cycle::deferred_slot_reuse`).
     //
     // **A slot a queue entry names is withheld from the allocator**
     // (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse"). The entry is a raw
@@ -512,9 +530,7 @@ unsafe fn ll_free_large(ptr: *mut u8, block: *mut u8, kind: u32) {
             if ptr as usize == block {
                 // A block nothing holds any more, returned by the reset
                 // when every survivor died inside it or the payload it was
-                // pinned for did (`promote::arena_reset_full`), or by the
-                // close that made the last withheld return it was holding
-                // (`crate::cycle::deferred_slot_reuse`). Nothing is
+                // pinned for did (`promote::arena_reset_full`). Nothing is
                 // counted down — the count word already reads zero, and
                 // a decrement from zero would underflow into the
                 // payload half — so the block goes home as it stands.

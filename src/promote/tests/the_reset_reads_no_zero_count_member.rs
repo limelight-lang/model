@@ -1,9 +1,9 @@
 //! A survivor the reset's own drain kills is read no further by the
 //! passes that follow, and the count of what it held comes out right
-//! anyway. The two halves are one subject: skipping a corpse without
-//! carrying its edges across settles a live entity at zero, and carrying
-//! them without skipping leans on a corpse's slots staying readable
-//! (`dev/DECISIONS.md`, "the reset reads no corpse").
+//! anyway: the re-trace and the weak walk skip it, and the reconciliation
+//! settles off the log of its promotion-time edges, reading no holder
+//! (`dev/DECISIONS.md`, "the reset reads no corpse", and "the COW count is
+//! the log's edges plus the delta").
 
 use super::*;
 
@@ -161,11 +161,11 @@ unsafe extern "C" fn reset_the_second_arena(_o: *mut Object) {
 /// them. The array must come out of the reset held by exactly the one
 /// that lived.
 ///
-/// **The escrow is what makes this 1 rather than 0.** The walk does not
-/// reach the corpse's slot — the skip takes it out — and the release its
-/// teardown performed is inside the delta, so the promotion-time snapshot
-/// is the only thing that puts the edge back
-/// (`dev/DECISIONS.md`, "the reset reads no corpse").
+/// **The log is what makes this 1 rather than 0.** The count at promotion
+/// is discarded whole, the release the teardown performed is inside the
+/// delta, and the log's two edges are the only thing that puts the
+/// holders back (`dev/DECISIONS.md`, "the COW count is the log's edges
+/// plus the delta").
 #[test]
 fn a_cow_child_of_a_holder_the_drain_killed_settles_to_its_live_holders() {
     use crate::array::entity::ll_array_new;
@@ -242,7 +242,9 @@ fn a_cow_child_of_a_holder_the_drain_killed_settles_to_its_live_holders() {
 /// survivor beside it so the reconciliation actually runs. Its run went
 /// back to the system at its death, so every later reader of that address
 /// reads memory the process no longer owns — which is what the reset
-/// window holds it against.
+/// window holds it against. The reconciliation follows no slot and reads
+/// no holder, only the COW rows it settles; what this pins is that it
+/// reads nothing of the run.
 ///
 /// Miri is the regression: the read passes `cargo test` by construction
 /// (`dev/WORKFLOW.md`, Tests).
@@ -324,9 +326,13 @@ fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_reconcile() {
 /// A survivor whose external hold is dropped **after** it was marked: the
 /// heap slot that held it is overwritten by a destructor of the same
 /// fixpoint, so its hold-count falls to zero and it is promoted reading
-/// refcount 0 in the GcHeap category — the two words a corpse reads. Its
-/// edges are live all the same, and a pass that decides death from those
-/// two words settles its COW child one too low.
+/// refcount 0 in the GcHeap category — the two words a torn-down entity
+/// reads. Its edges are live all the same, and the pass that reads a
+/// survivor's fate is the re-trace: the same destructor stores a fresh
+/// arena object into the survivor, and a re-trace that skipped the
+/// survivor on those two words would leave that child in the dying arena.
+/// The COW child's count witnesses nothing of the fate since the
+/// reconciliation settles off the log.
 #[test]
 fn a_survivor_promoted_at_refcount_zero_is_not_read_as_a_zero_count_member() {
     use crate::array::entity::ll_array_new;
@@ -334,17 +340,36 @@ fn a_survivor_promoted_at_refcount_zero_is_not_read_as_a_zero_count_member() {
 
     static CACHE: AtomicUsize = AtomicUsize::new(0);
 
-    /// `$cache->kept = null;` — the escape's **lose** event, run while the
-    /// entity it releases is already in the reset's survivor list.
+    static HOLDER: AtomicUsize = AtomicUsize::new(0);
+    static LATE_CHILD: AtomicUsize = AtomicUsize::new(0);
+
+    /// `$cache->kept = null; $holder->late = new ZeroLate();` — the
+    /// escape's **lose** event, run while the entity it releases is
+    /// already in the reset's survivor list, and an arena-to-arena store
+    /// into that survivor, which only the re-trace can find.
     unsafe extern "C" fn drop_the_only_hold(_o: *mut Object) {
         let cache = CACHE.load(Ordering::Relaxed) as *mut Object;
+        let holder = HOLDER.load(Ordering::Relaxed) as *mut Object;
         unsafe {
             let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
             store_prop(arena, cache, 16, std::ptr::null_mut());
+            let late_class = LATE_CHILD.load(Ordering::Relaxed) as *const crate::class::Class;
+            let late = new_constructed(
+                std::ptr::null_mut(),
+                late_class,
+                MemoryCategory::RequestArena,
+            );
+            store_prop(arena, holder, 32, late);
+            assert!(!crate::refcount::ll_release(late as *mut RcHeader));
+            LATE_CHILD.store(late as usize, Ordering::Relaxed);
         }
     }
 
-    let holder_cls = ClassBuilder::new("ZeroHolder").prop("items", true).build();
+    let holder_cls = ClassBuilder::new("ZeroHolder")
+        .prop("items", true)
+        .prop("late", true)
+        .build();
+    let late_cls = ClassBuilder::new("ZeroLate").build();
     let cache_cls = ClassBuilder::new("ZeroCache").prop("kept", true).build();
     let trigger_cls = ClassBuilder::new("ZeroTrigger")
         .destructor(drop_the_only_hold as *const ())
@@ -363,6 +388,8 @@ fn a_survivor_promoted_at_refcount_zero_is_not_read_as_a_zero_count_member() {
     let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
 
     CACHE.store(cache as usize, Ordering::Relaxed);
+    HOLDER.store(holder as usize, Ordering::Relaxed);
+    LATE_CHILD.store(late_cls as usize, Ordering::Relaxed);
 
     unsafe {
         assert!(crate::array::testing::push(array, Value::int(13)));
@@ -399,6 +426,18 @@ fn a_survivor_promoted_at_refcount_zero_is_not_read_as_a_zero_count_member() {
             crate::refcount::entity_refcount(array),
             1,
             "the array is held by the survivor's slot"
+        );
+        let late = LATE_CHILD.load(Ordering::Relaxed) as *mut RcHeader;
+        assert_ne!(late as usize, late_cls as usize, "the destructor never ran");
+        assert_eq!(
+            crate::refcount::entity_category(late),
+            MemoryCategory::GcHeap,
+            "the child stored into the zero-count survivor was re-traced and promoted"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(late),
+            1,
+            "held by the survivor's slot alone"
         );
 
         // No slot names the survivor after the reset, so its teardown —
@@ -591,7 +630,7 @@ fn a_candidate_killed_by_a_gc_destructors_reset_is_retired_after_the_collection(
 /// Two holders of a COW child, both reached in a **later** round than the
 /// child itself. The counting pass hands an already-promoted child one
 /// compensating retain per holder, and the edge behind each of those
-/// retains is walked by the reconciliation as well — so without the credit
+/// retains is in the reconciliation's log as well — so without the credit
 /// the child leaves the reset owing two references nobody holds.
 #[test]
 fn a_cow_child_counted_again_in_a_later_round_credits_each_retain() {
@@ -691,16 +730,15 @@ fn a_cow_child_counted_again_in_a_later_round_credits_each_retain() {
 
 /// The other reader of the survivor list, and the round that reaches it:
 /// a survivor in a block of its own is killed by the drain, and a
-/// destructor of the **next** round allocates, which is what puts
+/// destructor runs in the **next** round, which is what puts
 /// `retrace_survivors` over the whole list again.
 ///
-/// **What the skip does is invisible in a count**, and this is the pass
-/// where that matters most: a corpse's stale edge is +1 in the walk and
-/// its teardown's release is -1 in the delta, so an ordinary run comes
-/// out the same either way. So the test reads the counter the passes keep
-/// of the corpses they walked (`reset_window::take_counters`), and reads
-/// the recorded deaths beside it, since a reset that killed nothing would
-/// satisfy the first count trivially.
+/// **What the skip does is invisible in a count**: the re-trace marks
+/// arena children, and a corpse's stale slots name none, so an ordinary
+/// run comes out the same either way. So the test reads the counter the
+/// pass keeps of the corpses it walked (`reset_window::take_counters`),
+/// and reads the recorded deaths beside it, since a reset that killed
+/// nothing would satisfy the first count trivially.
 ///
 /// Miri is the second half of it, and it takes both halves of the repair
 /// to see: with the corpse skipped nothing reads the address at all, and
@@ -734,9 +772,9 @@ fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_retrace() {
 
     /// Run by the next round's settle loop, after that round marked
     /// `late`: `$late->child = new Node();`, an arena→arena store into a
-    /// survivor that is not promoted yet. The allocation moves the bump
-    /// cursor, which is what the re-trace is conditioned on, and the
-    /// child it leaves behind is what the re-trace has to find.
+    /// survivor that is not promoted yet. The destructor's round is what
+    /// the re-trace is conditioned on, and the child the store leaves
+    /// behind is what the re-trace has to find.
     unsafe extern "C" fn store_into_the_late_survivor(_o: *mut Object) {
         let node_cls = NODE_CLASS.load(Ordering::Relaxed) as *const crate::class::Class;
         let late = LATE.load(Ordering::Relaxed) as *mut Object;
@@ -790,14 +828,14 @@ fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_retrace() {
     unsafe { arena_reset_full(arena_ptr) };
     set_current_context(std::ptr::null_mut());
 
-    let (deaths, corpse_walks) = crate::memory::reset_window::take_counters();
+    let (teardowns, torn_down_walks) = crate::memory::reset_window::take_counters();
     assert!(
-        deaths > 0,
-        "no teardown completed inside the reset, so no pass had a corpse \
-         to skip"
+        teardowns > 0,
+        "no teardown completed inside the reset, so no pass had a torn-down \
+         entity to skip"
     );
     assert_eq!(
-        corpse_walks, 0,
+        torn_down_walks, 0,
         "a pass after the fixpoint walked an entity whose teardown had \
          completed"
     );
@@ -831,11 +869,11 @@ fn a_large_survivor_killed_by_the_drain_is_not_read_by_the_retrace() {
 /// by the inner one.
 ///
 /// Two things have to reach across the nesting for the count to come out
-/// right: the death, which the outer reset's passes read to skip the
-/// corpse, and the corpse's promotion-time edges, which were snapshotted
-/// by the **outer** window and must be paid into that same window's
-/// escrow. Paid into the innermost one instead they are dropped with it,
-/// and the live COW child settles one too low.
+/// right: the death, which the outer reset's re-trace reads to skip the
+/// corpse, and the corpse's promotion-time edges, which the **outer**
+/// window's log recorded and that reset's reconciliation reads after the
+/// inner window has closed. The inner reset's own reconciliation drops
+/// them, having no row of its own for the child.
 #[test]
 fn a_survivor_dying_inside_a_nested_reset_pays_its_edges_to_the_outer_one() {
     use crate::array::entity::ll_array_new;
@@ -845,13 +883,10 @@ fn a_survivor_dying_inside_a_nested_reset_pays_its_edges_to_the_outer_one() {
     /// death happens. Zero means it never ran.
     static DEPTH_AT_DEATH: AtomicUsize = AtomicUsize::new(0);
 
-    /// `$this->items = null;` before the death completes, and the reason
-    /// it is here rather than left to the default teardown: a teardown
-    /// that releases a child without nulling its slot leaves an edge the
-    /// walk still finds, and that stale edge covers for the escrow. With
-    /// the slot nulled, the corpse's edges reach the count only through
-    /// the escrow, so the escrow's absence is a failure rather than a
-    /// figure that happens to agree.
+    /// `$this->items = null;` before the death completes — the store a
+    /// destructor writes. The count comes out the same with the slot
+    /// nulled or left stale, since the reconciliation reads the log and
+    /// never the slot.
     unsafe extern "C" fn drop_the_edge_and_record_the_depth(obj: *mut Object) {
         DEPTH_AT_DEATH.store(crate::memory::reset_window::depth(), Ordering::Relaxed);
         unsafe {
@@ -942,12 +977,10 @@ fn a_survivor_dying_inside_a_nested_reset_pays_its_edges_to_the_outer_one() {
 /// take over.
 ///
 /// **The count agrees either way here**, which is why the test reads the
-/// record instead: the entity holds at its would-be death exactly the
-/// edges of its promotion snapshot, so an escrowed edge replaces exactly
-/// the edge a wrongly-recorded death removes from the walk. What differs
-/// is everything else the record decides — the passes stop reading a live
-/// entity, and its snapshot is spent, so the death it really dies later
-/// pays nothing.
+/// record instead: the reconciliation reads no holder's fate, and the
+/// edge was never released, so a wrongly-recorded death moves no count.
+/// What differs is what the record decides — the re-trace stops reading a
+/// live entity, and the weak walk with it.
 #[test]
 fn a_survivor_that_resurrects_itself_records_no_death() {
     use crate::array::entity::ll_array_new;
@@ -993,8 +1026,8 @@ fn a_survivor_that_resurrects_itself_records_no_death() {
             );
         }
 
-        let died = crate::memory::reset_window::has_died(resurrected);
-        RECORD.store(1 + died as usize, Ordering::Relaxed);
+        let torn_down = unsafe { crate::memory::reset_window::is_torn_down(resurrected) };
+        RECORD.store(1 + torn_down as usize, Ordering::Relaxed);
     }
 
     let holder_cls = ClassBuilder::new("ResurrectedHolder")
@@ -1152,10 +1185,10 @@ fn a_run_withheld_by_a_nested_reset_outlives_the_reset_that_withheld_it() {
 
 /// A COW child whose edge is **unset** before its holder dies. The
 /// release the unset performed is inside the child's delta, and the
-/// holder that owed the compensation is gone by the time the count is
-/// settled — so without the promotion-time snapshot the same event is
-/// subtracted twice and the child settles at zero, which
-/// `retained::register` reads as an empty slot under a living holder.
+/// holder is gone by the time the count is settled — so without the
+/// promotion-time record of the edge the same event is subtracted twice
+/// and the child settles at zero, which `retained::register` reads as an
+/// empty slot under a living holder.
 #[test]
 fn an_edge_unset_before_its_holder_dies_still_settles_its_child() {
     use crate::array::entity::ll_array_new;
@@ -1226,6 +1259,107 @@ fn an_edge_unset_before_its_holder_dies_still_settles_its_child() {
             1,
             "the array is held by the survivor that lived, and by nothing else"
         );
+        assert!(crate::refcount::ll_release(cache as *mut RcHeader));
+        ll_object_die(cache);
+    }
+}
+
+/// A promotion-edge record the manager refuses is answered by one
+/// `ll_retain` of each COW child of the round's survivors, taken after
+/// their counts are captured: the reset completes, no count settles low,
+/// and the price is one reference per **recorded** edge of the round, and
+/// one per compensating retain whose decrement record was refused. Here
+/// every record is refused and the array is promoted in the same round as
+/// its holders, so the retains stand in for exactly the edges the log lost
+/// and the array settles to its live holder as it would have with the log
+/// intact; the dying holder is killed by the drain rather than kept.
+///
+/// The shape is `a_cow_child_of_a_holder_the_drain_killed_settles_to_its_live_holders`
+/// with every segment draw refused.
+#[test]
+fn a_refused_promotion_edge_retains_the_rounds_children_and_settles_no_count_low() {
+    use crate::array::entity::ll_array_new;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let holder_cls = ClassBuilder::new("RefusedEdgeHolder")
+        .prop("items", true)
+        .build();
+    let cache_cls = ClassBuilder::new("RefusedEdgeCache")
+        .prop("kept", true)
+        .build();
+    let corpse_cls = ClassBuilder::new("RefusedEdgeSlot")
+        .prop("box", true)
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+    set_current_context(context_ptr);
+
+    let cache = unsafe { new_constructed(&mut *context_ptr, cache_cls, MemoryCategory::GcHeap) };
+    let dying =
+        unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::RequestArena) };
+    let living =
+        unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::RequestArena) };
+    let corpse =
+        unsafe { new_constructed(&mut *context_ptr, corpse_cls, MemoryCategory::RequestArena) };
+    let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+
+    unsafe {
+        assert!(crate::array::testing::push(array, Value::int(7)));
+        for holder in [dying, living] {
+            let slot = Object::prop_at(holder, 16);
+            assert!(ref_store(
+                arena_ptr,
+                holder as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::Array, array as *mut RcHeader),
+            ));
+        }
+
+        store_prop(arena_ptr, cache, 16, living);
+        killed_by_the_drain(arena_ptr, corpse, dying as *mut RcHeader, Tag::Object);
+    }
+
+    let _ = crate::memory::reset_window::take_refused_records();
+    let refused = crate::memory::reset_window::RefusedSegments::arm();
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    drop(refused);
+    set_current_context(std::ptr::null_mut());
+
+    assert_eq!(
+        crate::memory::reset_window::take_refused_records(),
+        2,
+        "both edges' records were refused, and nothing else was recorded"
+    );
+    unsafe {
+        // Readable: the dying holder shares its retained block with the
+        // living one, so its header stays where the drain left it.
+        assert!(
+            crate::memory::reset_window::is_torn_down(dying as *mut RcHeader),
+            "the drain killed the dying holder: nothing pinned it"
+        );
+        assert_eq!(
+            crate::refcount::entity_category(array),
+            MemoryCategory::GcHeap,
+            "the array stayed behind in the dying arena"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(living as *mut RcHeader),
+            1,
+            "the living holder is held by the cache alone: nothing pinned it"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(array),
+            1,
+            "the two retains stand for the two lost records, and the dying \
+             holder's release spent one of them"
+        );
+
+        // The count is the truth: the last holder's death takes the
+        // array with it.
         assert!(crate::refcount::ll_release(cache as *mut RcHeader));
         ll_object_die(cache);
     }

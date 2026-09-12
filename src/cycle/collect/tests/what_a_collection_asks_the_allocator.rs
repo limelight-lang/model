@@ -23,7 +23,7 @@
 //! destructor count, the slot states, and the marked slots the close popped.
 
 use super::*;
-use crate::cycle::deferred_slot_reuse::take_marked_slots_visited;
+use crate::cycle::deferred_slot_reuse::take_slots_popped;
 use crate::cycle::validation::{EXEMPT_ALLOCATIONS_PER_VALIDATION, premise_cell_walks};
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
 use crate::test_support::allocation_probe;
@@ -137,12 +137,10 @@ fn registered_large_candidates_return_their_mappings_at_owner_retirement() {
 /// where `memory::large_entity::free` unlinks the run and returns the mapping
 /// through `memory::os::unmap`. **Neither counter sees that return** — an unmap
 /// is not a global free — so what says it happened is the registry, asked
-/// before and after. On the way the free passes the large-body arm
-/// `memory::stdapi::ll_free`
-/// tests ahead of the withholding, and every member's death passes
-/// `memory::reset_window::record_death`; with no reset in flight each takes its
-/// null-window return, and a counting allocator is what says the return was
-/// taken.
+/// before and after. On the way every member's free passes the reset window's
+/// deferral arm, which `memory::stdapi::ll_free` tests ahead of the
+/// withholding; with no reset in flight each takes its null-window return,
+/// and a counting allocator is what says the return was taken.
 #[test]
 fn an_ordinary_collection_asks_only_what_its_debug_checks_ask() {
     let _g = test_guard();
@@ -170,7 +168,7 @@ fn an_ordinary_collection_asks_only_what_its_debug_checks_ask() {
         crate::memory::large_entity::holds_run(run),
         "the child stands in an OS-direct run, which is the registry the close reaches"
     );
-    let _ = take_marked_slots_visited();
+    let _ = take_slots_popped();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
 
     let walks_before = premise_cell_walks();
@@ -180,7 +178,7 @@ fn an_ordinary_collection_asks_only_what_its_debug_checks_ask() {
     let drawn = allocation_probe::take_allocations();
     let given_back = allocation_probe::take_heap_deallocations();
     let walks = premise_cell_walks() - walks_before;
-    let marked = take_marked_slots_visited();
+    let marked = take_slots_popped();
 
     // The membership is the ring and the child: the trace reaches it over its
     // holder's edge and trial deletion leaves it at zero.
