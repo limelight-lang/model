@@ -1,6 +1,7 @@
 //! Measurement probe, not a correctness test: what the reset's grouping of
 //! survivors by block costs on the clock, against the `HashMap<usize,
-//! Vec<usize>>` S47.6 replaces with the blocks' own header words.
+//! Vec<usize>>` it replaced (`dev/BENCHMARKS.md`, "S47.6 the reset's
+//! grouping leaves the global allocator").
 //!
 //! No benchmark drives `arena_reset_full` — `benches/lifecycle.rs` reaches
 //! the ABI and builds no arena of survivors — so the arm that leaves has to
@@ -94,16 +95,15 @@ unsafe fn time_reset(
     per_block: usize,
     rounds: usize,
 ) -> (u128, u128, usize) {
-    let mut taken: Vec<u128> = Vec::new();
     let mut blocks = 0;
-    for round in 0..rounds {
+    let (minimum, median) = min_and_median_nanos(rounds, |round| {
         let mut shape =
             unsafe { chain(&format!("{name}{round}"), survivors, black_box(per_block)) };
         blocks = shape.blocks;
         let arena_ptr: *mut Arena = &mut *shape.arena;
         let started = Instant::now();
         unsafe { arena_reset_full(black_box(arena_ptr)) };
-        taken.push(started.elapsed().as_nanos());
+        let taken = started.elapsed().as_nanos();
 
         // The promoted survivors are the holder's, and the holder's death
         // is what returns every block the reset retained: a round that kept
@@ -112,10 +112,10 @@ unsafe fn time_reset(
             assert!(crate::refcount::ll_release(shape.holder as *mut RcHeader));
             ll_object_die(shape.holder);
         }
-    }
 
-    taken.sort_unstable();
-    (taken[0], taken[taken.len() / 2], blocks)
+        taken
+    });
+    (minimum, median, blocks)
 }
 
 #[test]

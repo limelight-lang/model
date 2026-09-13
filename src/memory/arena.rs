@@ -39,78 +39,6 @@ struct LogSegment {
     records: [usize; LOG_SEG_RECORDS],
 }
 
-#[cfg(test)]
-thread_local! {
-    /// How many survivors the arena still records before it refuses every
-    /// one after them; `None` while no guard is armed. A count rather than
-    /// a flag, because the holder whose layout a sever is measured over is
-    /// itself a survivor the chain has to admit first.
-    static REFUSE_SURVIVOR_SEGMENTS: std::cell::Cell<Option<usize>> =
-        const { std::cell::Cell::new(None) };
-}
-
-#[cfg(test)]
-thread_local! {
-    /// While set, the arena places no survivor list, which is how a test
-    /// reaches the refused-placement arm without exhausting the pool.
-    static REFUSE_LIST_PLACEMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Refuse every survivor list a reset tries to place on this thread, for
-/// the guard's life. The arm it reaches publishes a block's occupant count
-/// with no list, which leaves the block retained and reachable only by its
-/// deaths (`memory::retained::register`) — and it is otherwise reached
-/// only by a pool with nothing left in it.
-#[cfg(test)]
-pub(crate) struct RefusedListPlacement(());
-
-#[cfg(test)]
-impl RefusedListPlacement {
-    pub(crate) fn arm() -> Self {
-        REFUSE_LIST_PLACEMENT.with(|cell| cell.set(true));
-        RefusedListPlacement(())
-    }
-}
-
-#[cfg(test)]
-impl Drop for RefusedListPlacement {
-    fn drop(&mut self) {
-        REFUSE_LIST_PLACEMENT.with(|cell| cell.set(false));
-    }
-}
-
-/// Refuse every survivor a reset tries to record on this thread, for the
-/// guard's life. The other five logs are untouched, so a case built with
-/// this armed still records its escapees, its destructors and its releases
-/// — and its roots still become survivors, admission being a compaction of
-/// records the escapee log already holds.
-#[cfg(test)]
-pub(crate) struct RefusedSurvivorSegments(());
-
-#[cfg(test)]
-impl RefusedSurvivorSegments {
-    pub(crate) fn arm() -> Self {
-        Self::after(0)
-    }
-
-    /// Record `admitted` survivors and refuse every one after them, so
-    /// that a case can put the refusal on a child of a holder rather than
-    /// on the holder itself. The holder a layout-specific sever is
-    /// measured over — an array, an object with a block — is reached as a
-    /// child of the escapee and is admitted by the chain like any other.
-    pub(crate) fn after(admitted: usize) -> Self {
-        REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.set(Some(admitted)));
-        RefusedSurvivorSegments(())
-    }
-}
-
-#[cfg(test)]
-impl Drop for RefusedSurvivorSegments {
-    fn drop(&mut self) {
-        REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.set(None));
-    }
-}
-
 /// A walk of the survivor chain from one index, which sees records
 /// appended behind it: [`Arena::push_survivor`] lands at the tail, and this
 /// re-reads the tail's count and follows a fresh segment's link.
@@ -122,7 +50,7 @@ impl Drop for RefusedSurvivorSegments {
 ///
 /// A walk made when the chain was empty stays empty: it has no segment to
 /// resume from. Its caller re-asks [`Arena::walk_survivors`] at its own
-/// index instead ([`walk_survivors`](Arena::walk_survivors)).
+/// index instead.
 pub(crate) struct SurvivorWalk {
     seg: *mut LogSegment,
     at: usize,
@@ -750,8 +678,7 @@ impl Arena {
     /// callback would alias it (`crate::weak::drain_arena_weak_log` is the one
     /// caller and says so).
     pub fn drain_weak_log(&mut self, mut f: impl FnMut(*mut RcHeader)) {
-        let head = self.weak;
-        self.weak = std::ptr::null_mut();
+        let head = self.take_chain(Log::Weak);
         Self::drain_log(head, |rec| f(rec as *mut RcHeader));
     }
 
@@ -827,7 +754,7 @@ impl Arena {
         &mut self,
         mut keep: impl FnMut(*mut RcHeader) -> bool,
     ) -> usize {
-        let mut seg = std::mem::replace(&mut self.escapees, std::ptr::null_mut());
+        let mut seg = self.take_chain(Log::Escapees);
         let mut admitted = 0;
         while !seg.is_null() {
             let next = unsafe { (*seg).next };
@@ -882,12 +809,12 @@ impl Arena {
         // pool would take an arena full of survivors and would still leave
         // open which of the reset's draws was the one refused.
         #[cfg(test)]
-        if let Some(left) = REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.get()) {
+        if let Some(left) = SURVIVORS_ADMITTED_BEFORE_REFUSAL.with(|cell| cell.get()) {
             if left == 0 {
                 return false;
             }
 
-            REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.set(Some(left - 1)));
+            SURVIVORS_ADMITTED_BEFORE_REFUSAL.with(|cell| cell.set(Some(left - 1)));
         }
 
         self.log_push(Log::Survivors, survivor as usize)
@@ -919,6 +846,10 @@ impl Arena {
             seg = unsafe { (*seg).next };
         }
 
+        debug_assert!(
+            index <= base,
+            "a walk from past the chain's end would yield the next append as record {index}"
+        );
         // Past the last record: the walk answers nothing until an append
         // gives the tail one more. **On an empty chain it answers nothing
         // ever**, having no segment to resume from — a caller that walks
@@ -958,28 +889,48 @@ impl Arena {
         self.blocks
     }
 
+    /// The field a log's chain hangs from and a push lands in: the front
+    /// segment of a front-linked log, and the tail segment of the survivor
+    /// chain, which is linked behind ([`grow_log`](Self::grow_log)).
+    fn chain_field(&mut self, which: Log) -> &mut *mut LogSegment {
+        match which {
+            Log::Destructors => &mut self.destructors,
+            Log::Larges => &mut self.larges,
+            Log::Escapees => &mut self.escapees,
+            Log::ReleaseAtReset => &mut self.release_at_reset,
+            Log::Weak => &mut self.weak,
+            Log::Survivors => &mut self.survivors_tail,
+        }
+    }
+
+    /// Take a front-linked log's whole chain and leave the log empty, so
+    /// that records written during the caller's walk start a fresh chain
+    /// for its next round. The survivor chain is walked in place by index
+    /// and is never taken.
+    fn take_chain(&mut self, which: Log) -> *mut LogSegment {
+        debug_assert!(
+            !matches!(which, Log::Survivors),
+            "the survivor chain is walked in place, never taken"
+        );
+        std::mem::replace(self.chain_field(which), std::ptr::null_mut())
+    }
+
     /// Take the destructor log's chain: entries tracked *during* the
     /// caller's walk start a fresh chain for its next round.
     pub(crate) fn take_destructors(&mut self) -> DetachedLog {
-        DetachedLog(std::mem::replace(
-            &mut self.destructors,
-            std::ptr::null_mut(),
-        ))
+        DetachedLog(self.take_chain(Log::Destructors))
     }
 
     /// Take the escapee list's chain, same take semantics.
     pub(crate) fn take_escapees(&mut self) -> DetachedLog {
-        DetachedLog(std::mem::replace(&mut self.escapees, std::ptr::null_mut()))
+        DetachedLog(self.take_chain(Log::Escapees))
     }
 
     /// Take the release-at-reset log's chain. Exactly one release is owed
     /// per record, the barrier having skipped overwrite releases; the
     /// caller performs it and owns teardown dispatch.
     pub(crate) fn take_release_log(&mut self) -> DetachedLog {
-        DetachedLog(std::mem::replace(
-            &mut self.release_at_reset,
-            std::ptr::null_mut(),
-        ))
+        DetachedLog(self.take_chain(Log::ReleaseAtReset))
     }
 
     /// One-shot drain of the destructor log.
@@ -1072,7 +1023,7 @@ impl Arena {
     ///
     /// ## Why the growth branch is a `#[cold]` call
     ///
-    /// Two of the four callers are the store barrier's arena-log hooks
+    /// Two of the callers are the store barrier's arena-log hooks
     /// (`log_escapee`, `log_release_at_reset`), which sit inside
     /// `ref_store`. With the growth branch inline, each of them dragged
     /// `Arena::alloc` -> `BlockPool::get` and, as the code stood then,
@@ -1084,15 +1035,7 @@ impl Arena {
     #[inline]
     #[must_use]
     fn log_push(&mut self, which: Log, value: usize) -> bool {
-        let head = match which {
-            Log::Destructors => self.destructors,
-            Log::Larges => self.larges,
-            Log::Escapees => self.escapees,
-            Log::ReleaseAtReset => self.release_at_reset,
-            Log::Weak => self.weak,
-            Log::Survivors => self.survivors_tail,
-        };
-
+        let head = *self.chain_field(which);
         let head = if head.is_null() || unsafe { (*head).count } == LOG_SEG_RECORDS {
             let grown = self.grow_log(which, head);
             if grown.is_null() {
@@ -1110,27 +1053,21 @@ impl Arena {
             (*head).count = c + 1;
         }
 
-        match which {
-            Log::Destructors => self.destructors = head,
-            Log::Larges => self.larges = head,
-            Log::Escapees => self.escapees = head,
-            Log::ReleaseAtReset => self.release_at_reset = head,
-            Log::Weak => self.weak = head,
-            Log::Survivors => {
-                if self.survivors.is_null() {
-                    self.survivors = head;
-                }
-
-                self.survivors_tail = head;
-                self.survivor_count += 1;
+        *self.chain_field(which) = head;
+        if matches!(which, Log::Survivors) {
+            if self.survivors.is_null() {
+                self.survivors = head;
             }
+
+            self.survivor_count += 1;
         }
 
         true
     }
 
     /// The full segment: carve a fresh one from the arena's own bump
-    /// memory and link it in front of `head`. Runs once per
+    /// memory and link it in front of `head`, or behind it for the
+    /// survivor chain. Runs once per
     /// `LOG_SEG_RECORDS` pushes — see [`log_push`](Self::log_push) for
     /// why it is out of line.
     #[cold]
@@ -1286,6 +1223,78 @@ static KEPT_OUT_OF_THE_GROUPING: std::sync::atomic::AtomicUsize =
 #[cfg(test)]
 pub(crate) fn take_survivors_kept_out_of_the_grouping() -> usize {
     KEPT_OUT_OF_THE_GROUPING.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many survivors the arena still records before it refuses every
+    /// one after them; `None` while no guard is armed. A count rather than
+    /// a flag, because the holder whose layout a sever is measured over is
+    /// itself a survivor the chain has to admit first.
+    static SURVIVORS_ADMITTED_BEFORE_REFUSAL: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// While set, the arena places no survivor list, which is how a test
+    /// reaches the refused-placement arm without exhausting the pool.
+    static REFUSE_LIST_PLACEMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Refuse every survivor list a reset tries to place on this thread, for
+/// the guard's life. The arm it reaches publishes a block's occupant count
+/// with no list, which leaves the block retained and reachable only by its
+/// deaths (`memory::retained::register`) — and it is otherwise reached
+/// only by a pool with nothing left in it.
+#[cfg(test)]
+pub(crate) struct RefusedListPlacement(());
+
+#[cfg(test)]
+impl RefusedListPlacement {
+    pub(crate) fn arm() -> Self {
+        REFUSE_LIST_PLACEMENT.with(|cell| cell.set(true));
+        RefusedListPlacement(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for RefusedListPlacement {
+    fn drop(&mut self) {
+        REFUSE_LIST_PLACEMENT.with(|cell| cell.set(false));
+    }
+}
+
+/// Refuse every survivor a reset tries to record on this thread, for the
+/// guard's life. The other five logs are untouched, so a case built with
+/// this armed still records its escapees, its destructors and its releases
+/// — and its roots still become survivors, admission being a compaction of
+/// records the escapee log already holds.
+#[cfg(test)]
+pub(crate) struct RefusedSurvivors(());
+
+#[cfg(test)]
+impl RefusedSurvivors {
+    pub(crate) fn arm() -> Self {
+        Self::after(0)
+    }
+
+    /// Record `admitted` survivors and refuse every one after them, so
+    /// that a case can put the refusal on a child of a holder rather than
+    /// on the holder itself. The holder a layout-specific sever is
+    /// measured over — an array, an object with a block — is reached as a
+    /// child of the escapee and is admitted by the chain like any other.
+    pub(crate) fn after(admitted: usize) -> Self {
+        SURVIVORS_ADMITTED_BEFORE_REFUSAL.with(|cell| cell.set(Some(admitted)));
+        RefusedSurvivors(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for RefusedSurvivors {
+    fn drop(&mut self) {
+        SURVIVORS_ADMITTED_BEFORE_REFUSAL.with(|cell| cell.set(None));
+    }
 }
 
 #[cfg(test)]

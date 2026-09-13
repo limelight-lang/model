@@ -1177,7 +1177,7 @@ impl Table {
     /// The entry the address `at` belongs to, which is what a walker
     /// holding a cell address rather than an index has to ask: a cell
     /// carries where it is, and the entry is that address rounded down to
-    /// the stride (`array::entity::sever_entry_holding`).
+    /// the stride (`array::entity::sever_entry_at_key`).
     ///
     /// # Safety
     /// `at` addresses a word inside an entry of this table's storage.
@@ -1224,6 +1224,7 @@ impl Table {
         let value = entry.value();
         let key = entry.string_key();
         let at = Self::entry_ptr(head, index);
+        // Element first and marker second, for the reason `remove` gives.
         unsafe {
             Entry::store_element(at, Value::null());
             Entry::make_hole(at);

@@ -489,10 +489,10 @@ fn a_survivor_with_a_block_of_its_own_is_out_of_the_grouping() {
 /// reading something the process no longer owns.
 ///
 /// The reset's reader over its survivor list is `reconcile_cow_counts`, on
-/// the entity, and it runs after the release drain. The grouping reads such
-/// a survivor's block header no longer: the promotion pass takes a survivor
-/// with a block of its own out of the walk that groups them, which is what
-/// keeps this run's header out of `place_survivor_lists` altogether.
+/// the entity, and it runs after the release drain. The grouping never
+/// reads such a survivor's block header: the promotion pass takes a
+/// survivor with a block of its own out of the walk that groups them, which
+/// is what keeps this run's header out of `place_survivor_lists` altogether.
 #[test]
 fn a_large_survivor_that_dies_inside_the_reset_is_read_no_further() {
     use crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN;

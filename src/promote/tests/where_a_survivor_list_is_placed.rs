@@ -351,52 +351,50 @@ fn lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains() {
 fn a_holder_emptied_inside_the_reset_is_read_after_the_list_placed_in_it() {
     use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED};
     let _g = crate::memory::block_pool::test_guard();
-    {
-        let mut shape = unsafe {
-            two_blocks(
-                "EmptiedHolder",
-                0,
-                SecondSurvivor::KilledByTheDrain,
-                EscapesFirst::TheSecondBlocksSurvivor,
-            )
-        };
-        let arena_ptr: *mut Arena = &mut *shape.arena;
-        let _ = crate::promote::take_first_placed_block();
-        unsafe { arena_reset_full(arena_ptr) };
-        assert_eq!(
-            crate::promote::take_first_placed_block(),
-            shape.second_block,
-            "the placement pass reached the full block first, so a publication \
-             that ran too early would have nothing to catch it"
-        );
+    let mut shape = unsafe {
+        two_blocks(
+            "EmptiedHolder",
+            0,
+            SecondSurvivor::KilledByTheDrain,
+            EscapesFirst::TheSecondBlocksSurvivor,
+        )
+    };
+    let arena_ptr: *mut Arena = &mut *shape.arena;
+    let _ = crate::promote::take_first_placed_block();
+    unsafe { arena_reset_full(arena_ptr) };
+    assert_eq!(
+        crate::promote::take_first_placed_block(),
+        shape.second_block,
+        "the placement pass reached the full block first, so a publication \
+         that ran too early would have nothing to catch it"
+    );
 
-        assert_eq!(
-            unsafe { crate::memory::retained::survivor_list_holder(shape.first_block) },
-            shape.second_block,
-            "the full block's list was not placed in the current block"
-        );
-        assert!(
-            !unsafe { crate::memory::retained::has_held_occupants(shape.second_block) },
-            "the current block's survivor outlived the reset, so this test proves nothing"
-        );
-        assert_eq!(
-            kind_of(shape.second_block),
-            BLOCK_KIND_RETAINED,
-            "the holder went home under the list standing in it"
-        );
-        assert_eq!(
-            unsafe { crate::memory::retained::pin_count(shape.second_block) },
-            1
-        );
+    assert_eq!(
+        unsafe { crate::memory::retained::survivor_list_holder(shape.first_block) },
+        shape.second_block,
+        "the full block's list was not placed in the current block"
+    );
+    assert!(
+        !unsafe { crate::memory::retained::has_held_occupants(shape.second_block) },
+        "the current block's survivor outlived the reset, so this test proves nothing"
+    );
+    assert_eq!(
+        kind_of(shape.second_block),
+        BLOCK_KIND_RETAINED,
+        "the holder went home under the list standing in it"
+    );
+    assert_eq!(
+        unsafe { crate::memory::retained::pin_count(shape.second_block) },
+        1
+    );
 
-        unsafe { let_go(shape.first_holder) };
-        assert_eq!(kind_of(shape.first_block), BLOCK_KIND_FREE);
-        assert_eq!(
-            kind_of(shape.second_block),
-            BLOCK_KIND_FREE,
-            "the holder outlived the last list standing in it"
-        );
-    }
+    unsafe { let_go(shape.first_holder) };
+    assert_eq!(kind_of(shape.first_block), BLOCK_KIND_FREE);
+    assert_eq!(
+        kind_of(shape.second_block),
+        BLOCK_KIND_FREE,
+        "the holder outlived the last list standing in it"
+    );
 }
 
 /// A placement the arena refuses publishes the count without a list. The

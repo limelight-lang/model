@@ -724,15 +724,16 @@ unsafe fn flags_load(header: *const RcHeader) -> u32 {
     }
 }
 
-/// The store twin of [`flags_load`], and the only way a published
-/// header's flags are written after publication.
+/// The store twin of [`flags_load`]: the mutator's only store of a
+/// published header's flags. Byte 6 and byte 7 have writers of their own,
+/// [`write_maturation_stamp`] and [`set_reconciling`], each one byte wide.
 #[inline]
 unsafe fn flags_store(header: *mut RcHeader, flags: u32) {
     debug_assert_eq!(
         flags & 0xFFFF_0000,
         0,
-        "the mutator writes flags bits 0-15; bit 16 and above are the \
-         collector's and it writes them a byte at a time"
+        "the mutator writes flags bits 0-15; byte 6 is the collector's and \
+         byte 7 the reset's, and each is written a byte at a time"
     );
     unsafe {
         (*((header as *mut u8).add(4) as *const core::sync::atomic::AtomicU16))
@@ -915,7 +916,7 @@ pub(crate) struct MaturationStamp {
 /// either sees a whole stamp rather than a torn one.
 #[inline]
 pub(crate) unsafe fn read_maturation_stamp(header: *const RcHeader) -> MaturationStamp {
-    let byte = unsafe { maturation_byte_load(header) };
+    let byte = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) };
     MaturationStamp {
         epoch: (byte & MATURATION_EPOCH_IN_BYTE) as u32,
         age: ((byte & MATURATION_AGE_IN_BYTE) >> MATURATION_AGE_SHIFT_IN_BYTE) as u32,
@@ -942,9 +943,9 @@ pub(crate) unsafe fn write_maturation_stamp(header: *mut RcHeader, stamp: Matura
     debug_assert!(stamp.epoch <= MATURATION_EPOCH_IN_BYTE as u32);
     debug_assert!(stamp.age <= MATURATION_AGE_MAX);
     let fields = stamp.epoch as u8 | ((stamp.age as u8) << MATURATION_AGE_SHIFT_IN_BYTE);
-    let reserve = unsafe { maturation_byte_load(header) }
+    let reserve = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) }
         & !(MATURATION_EPOCH_IN_BYTE | MATURATION_AGE_IN_BYTE);
-    unsafe { maturation_byte_store(header, reserve | fields) };
+    unsafe { header_byte_store(header, MATURATION_STAMP_BYTE, reserve | fields) };
 }
 
 /// Byte 7 of the header, whose bit 0 is the flags word's bit 24
@@ -969,7 +970,7 @@ const RECONCILING_IN_BYTE: u8 = 1;
 /// `header` points at a published entity whose first eight bytes are readable.
 #[inline]
 pub(crate) unsafe fn is_reconciling(header: *const RcHeader) -> bool {
-    unsafe { reconciling_byte_load(header) & RECONCILING_IN_BYTE != 0 }
+    unsafe { header_byte_load(header, RECONCILING_BYTE) & RECONCILING_IN_BYTE != 0 }
 }
 
 /// Take the entity in hand, or give it back. Byte-wide, as byte 6's writer is
@@ -983,50 +984,33 @@ pub(crate) unsafe fn is_reconciling(header: *const RcHeader) -> bool {
 /// is byte 7's only writer.
 #[inline]
 pub(crate) unsafe fn set_reconciling(header: *mut RcHeader, taken: bool) {
-    let rest = unsafe { reconciling_byte_load(header) } & !RECONCILING_IN_BYTE;
+    let rest = unsafe { header_byte_load(header, RECONCILING_BYTE) } & !RECONCILING_IN_BYTE;
     let byte = if taken {
         rest | RECONCILING_IN_BYTE
     } else {
         rest
     };
-    unsafe { reconciling_byte_store(header, byte) };
+    unsafe { header_byte_store(header, RECONCILING_BYTE, byte) };
 }
 
-/// The relaxed byte load at [`RECONCILING_BYTE`], and the store's twin.
+/// The relaxed load of one byte of a header, at `at` bytes from its start:
+/// the collector's [`MATURATION_STAMP_BYTE`] and the reset's
+/// [`RECONCILING_BYTE`] are read this way and no wider.
 #[inline]
-unsafe fn reconciling_byte_load(header: *const RcHeader) -> u8 {
+unsafe fn header_byte_load(header: *const RcHeader, at: usize) -> u8 {
     unsafe {
-        (*((header as *const u8).add(RECONCILING_BYTE) as *const core::sync::atomic::AtomicU8))
+        (*((header as *const u8).add(at) as *const core::sync::atomic::AtomicU8))
             .load(core::sync::atomic::Ordering::Relaxed)
     }
 }
 
-/// The relaxed byte store at [`RECONCILING_BYTE`], narrow for the reason
-/// [`maturation_byte_store`] is.
+/// The relaxed store of one byte of a header, the twin of
+/// [`header_byte_load`]. Narrow for the reason [`flags_store`] is: a wider
+/// store would overlap the mutator's two bytes without covering them.
 #[inline]
-unsafe fn reconciling_byte_store(header: *mut RcHeader, byte: u8) {
+unsafe fn header_byte_store(header: *mut RcHeader, at: usize, byte: u8) {
     unsafe {
-        (*((header as *mut u8).add(RECONCILING_BYTE) as *const core::sync::atomic::AtomicU8))
-            .store(byte, core::sync::atomic::Ordering::Relaxed)
-    };
-}
-
-/// The relaxed byte load at [`MATURATION_STAMP_BYTE`], and the store's twin.
-#[inline]
-unsafe fn maturation_byte_load(header: *const RcHeader) -> u8 {
-    unsafe {
-        (*((header as *const u8).add(MATURATION_STAMP_BYTE) as *const core::sync::atomic::AtomicU8))
-            .load(core::sync::atomic::Ordering::Relaxed)
-    }
-}
-
-/// The relaxed byte store at [`MATURATION_STAMP_BYTE`]. Narrow for the reason
-/// [`flags_store`] is: a wider store would overlap the mutator's two bytes
-/// without covering them.
-#[inline]
-unsafe fn maturation_byte_store(header: *mut RcHeader, byte: u8) {
-    unsafe {
-        (*((header as *mut u8).add(MATURATION_STAMP_BYTE) as *const core::sync::atomic::AtomicU8))
+        (*((header as *mut u8).add(at) as *const core::sync::atomic::AtomicU8))
             .store(byte, core::sync::atomic::Ordering::Relaxed)
     };
 }

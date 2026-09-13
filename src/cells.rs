@@ -88,23 +88,15 @@ pub(crate) enum CellShape {
     Key,
     /// A cell a class keeps outside its body, which only that class's
     /// [`OutsideCells`] group can empty.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "only a class hook yields one, and no class does yet"
-        )
-    )]
     Outside,
 }
 
 /// The five behaviours a class owes when its counted cells lie outside
 /// its own body — a coroutine's waker block, a map's table chunk. It was
 /// six until 2026-08-26: a walk per reader and a re-check went with
-/// `rc-walk`, which is what asked for them, and the arena reset's
-/// per-cell sever brought the fifth back
-/// (`dev/DECISIONS.md`, "a sever takes the smallest unit its holder's
-/// layout leaves consistent"). One group rather than five
+/// `rc-walk`, which is what asked for them; the sever of one cell is the
+/// arena reset's (`dev/DECISIONS.md`, "a sever takes the smallest unit its
+/// holder's layout leaves consistent"). One group rather than five
 /// nullable fields, because a class carrying some
 /// of them and not others fails silently in both directions: a walk
 /// without a sever lets the drain empty a table entry cell-wise, and a
@@ -183,7 +175,7 @@ pub(crate) struct OutsideCells {
     /// A unit wider than the cell may displace occupants the caller did
     /// not ask about, and each of them goes to the closure — the ordered
     /// hash does exactly that for a string key
-    /// (`array::entity::sever_entry_holding`).
+    /// (`array::entity::sever_entry_at_key`).
     pub sever_one: unsafe fn(*mut RcHeader, Cell, &mut dyn FnMut(*mut RcHeader)),
     /// Release the storage itself, as the last act of the ordinary
     /// dispose (`object.rs`, the field teardown). Dispose is the only
@@ -538,7 +530,8 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
 /// the torn value a trace is built to tolerate.
 ///
 /// # Safety
-/// `cell` addresses a live, writable cell of the shape it names.
+/// `cell` addresses a live, writable `Pointer` or `Box` cell; the three
+/// layout-owned shapes abort here and are emptied by [`sever_cell`].
 #[inline]
 pub(crate) unsafe fn empty_cell(cell: Cell) {
     match cell.shape {
@@ -605,14 +598,16 @@ pub(crate) unsafe fn sever_cell(
             unsafe { empty_cell(cell) };
             displaced(cell.child);
         }
-        CellShape::Element => {
-            let entry = (cell.addr - crate::array::entry::ELEMENT_OFFSET)
-                as *mut crate::array::entry::Entry;
-            unsafe { crate::array::entry::Entry::store_element(entry, Value::null()) };
-            displaced(cell.child);
-        }
+        CellShape::Element => unsafe {
+            crate::array::entity::sever_element_at(
+                entity as *mut crate::array::entity::LLArray,
+                cell.addr,
+                cell.child,
+                displaced,
+            )
+        },
         CellShape::Key => unsafe {
-            crate::array::entity::sever_entry_holding(
+            crate::array::entity::sever_entry_at_key(
                 entity as *mut crate::array::entity::LLArray,
                 cell.addr,
                 displaced,

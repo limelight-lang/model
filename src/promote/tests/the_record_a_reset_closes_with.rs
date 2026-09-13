@@ -4,9 +4,9 @@
 //! number.
 //!
 //! The sites exist only in the `debug-journal` build, which is why the
-//! group carries that `cfg`. What it pins is the counter S47.3 put in
-//! place of a set's length: a counter incremented at the wrong arm reads
-//! the same as one incremented at none until somebody asks the ring.
+//! group carries that `cfg`. What it pins is the counter behind the third
+//! operand: incremented at the wrong arm it reads the same as incremented
+//! at none until somebody asks the ring.
 
 use super::*;
 use crate::journal::kinds;
@@ -147,5 +147,93 @@ fn a_refused_capture_records_the_survivor_and_the_count_it_carried() {
 
         assert!(crate::refcount::ll_release(cache as *mut RcHeader));
         ll_object_die(cache);
+    }
+}
+
+/// A refused hash key holes its whole entry, so the element beside it loses
+/// its edge too, and each emptied edge gets a record of its own while the
+/// reset's return counts the one refusal. The journal is the only reader
+/// of the element's severance: its count is rebuilt from the edge that
+/// remains, so the heap reads the same whether or not the element branch
+/// of `Table::sever_entry` ran.
+#[test]
+fn a_refused_key_records_two_severed_edges() {
+    use crate::array::table::Key;
+    use crate::memory::arena::RefusedSurvivors;
+    let _sites = kinds::set_sites_for_test(kinds::DEFAULT_KINDS);
+    let _g = crate::memory::block_pool::test_guard();
+    let holder_cls = ClassBuilder::new("RecordedPairCache")
+        .prop("last", true)
+        .build();
+    let owner_cls = ClassBuilder::new("RecordedPairOwner")
+        .prop("items", true)
+        .prop("also", true)
+        .build();
+    let child_cls = ClassBuilder::new("RecordedPairChild").build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+    set_current_context(context_ptr);
+
+    let holder = unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let owner =
+        unsafe { new_constructed(&mut *context_ptr, owner_cls, MemoryCategory::RequestArena) };
+    let child =
+        unsafe { new_constructed(&mut *context_ptr, child_cls, MemoryCategory::RequestArena) };
+    let array = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
+    let key =
+        unsafe { crate::string::ll_string_new(context_ptr, MemoryCategory::RequestArena, b"gone") };
+
+    unsafe {
+        crate::refcount::ll_retain(child as *mut RcHeader);
+        crate::array::testing::insert(
+            array,
+            Key::Str(key),
+            Value::entity(Tag::Object, child as *mut RcHeader),
+        )
+        .expect("the table refused the entry");
+
+        let slot = Object::prop_at(owner, 16);
+        assert!(crate::memory::barrier::ref_store(
+            arena_ptr,
+            owner as *mut RcHeader,
+            slot,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Array, array as *mut RcHeader),
+        ));
+        store_prop(arena_ptr, owner, crate::test_support::prop_offset(1), child);
+        store_prop(arena_ptr, holder, 16, owner);
+    }
+
+    let start = mark();
+    let severed = {
+        let _refused = RefusedSurvivors::after(2);
+        unsafe { arena_reset_full(&mut *arena_ptr) }
+    };
+    let end = mark();
+    set_current_context(std::ptr::null_mut());
+    assert_eq!(severed, 1, "the one edge the arena could not record");
+
+    let mut emptied: Vec<u64> = events(between(&start, &end))
+        .into_iter()
+        .filter(|event| {
+            event.kind == kinds::KIND_ARENA_RESET_SEVERED_EDGE && event.subject == arena_ptr as u64
+        })
+        .inspect(|event| assert_eq!(event.a, array as u64, "the holder is the array"))
+        .map(|event| event.b)
+        .collect();
+    emptied.sort_unstable();
+    let mut expected = vec![key as u64, child as u64];
+    expected.sort_unstable();
+    assert_eq!(
+        emptied, expected,
+        "one record for the refused key and one for the element its entry took with it"
+    );
+
+    unsafe {
+        assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+        ll_object_die(holder);
     }
 }

@@ -340,9 +340,8 @@ struct BlockCollector {
     /// publication (`crate::memory::retained::record_occupant`).
     ///
     /// Four bytes wide because that is what the line has spare between
-    /// `survivor_count` and the words below, and nothing wider would fit:
-    /// those three words and the header's own six fill the rest of the
-    /// sixty-four the const assert allows.
+    /// `survivor_count` and the words below (`docs/memory-manager.md`,
+    /// "The reset's own words fill the rest of the line").
     occupants_recorded: AtomicU32,
     /// The next block on the chain of blocks this arena reset has pinned
     /// for a payload it could not carry out, or [`RESET_CHAIN_END`] at the
@@ -367,8 +366,9 @@ struct BlockCollector {
     /// second meaning in one word would make that argument load-bearing —
     /// the two predicates "the reset pinned this block" and "the reset
     /// owes this block to the pool" would be one non-zero, and neither
-    /// could be asserted on its own. The line has the room: three words
-    /// and the header's own six fill it exactly.
+    /// could be asserted on its own. The line has the room
+    /// (`docs/memory-manager.md`, "The reset's own words fill the rest of
+    /// the line").
     emptied_chain: AtomicUsize,
     /// This block's survivor list between the pass that places it and the
     /// pass that publishes it, or zero. A null list — the placement the
@@ -392,7 +392,45 @@ pub(crate) const RESET_CHAIN_END: usize = 1;
 /// Zero is "not in the pass", and a refused placement is a state the
 /// second pass has to see rather than skip: it publishes the count without
 /// a list (`memory::retained::register`).
-pub(crate) const PLACED_LIST_NONE: usize = 1;
+const PLACED_LIST_NONE: usize = 1;
+
+/// Where a block stands in a reset's placement, which is what
+/// [`BlockCollector::placed_list`] encodes: the pass has not reached it,
+/// the arena had no memory for its list and it publishes a count without
+/// one, or its list stands at an address.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Placement {
+    NotReached,
+    Listless,
+    List(*mut usize),
+}
+
+impl Placement {
+    fn from_word(word: usize) -> Self {
+        match word {
+            0 => Placement::NotReached,
+            PLACED_LIST_NONE => Placement::Listless,
+            list => Placement::List(list as *mut usize),
+        }
+    }
+
+    fn to_word(self) -> usize {
+        match self {
+            Placement::NotReached => 0,
+            Placement::Listless => PLACED_LIST_NONE,
+            Placement::List(list) => list as usize,
+        }
+    }
+
+    /// The list a publish reads: null where there is none, which is what
+    /// `memory::retained::register` takes for a count without a list.
+    pub(crate) fn list(self) -> *mut usize {
+        match self {
+            Placement::List(list) => list,
+            Placement::NotReached | Placement::Listless => std::ptr::null_mut(),
+        }
+    }
+}
 
 /// Where a block's collector line begins: immediately past the header,
 /// which is 192 bytes today because [`BlockRemote`] aligns the header to
@@ -2580,59 +2618,59 @@ pub(crate) unsafe fn set_block_emptied_chain(block: *mut u8, next: usize) {
     unsafe { (*line).emptied_chain.store(next, Ordering::Relaxed) };
 }
 
-/// Write `block`'s survivor list where the second pass of the placement
-/// will read it: its address, or [`PLACED_LIST_NONE`] for a placement the
-/// arena refused ([`BlockCollector::placed_list`]).
-///
-/// # Safety
-/// As [`block_reset_chain`].
-#[inline]
-pub(crate) unsafe fn set_block_placed_list(block: *mut u8, list: usize) {
-    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
-    debug_assert!(list != 0, "a placed list is an address or PLACED_LIST_NONE");
-    unsafe { (*line).placed_list.store(list, Ordering::Relaxed) };
-}
-
-/// Take the list back, clearing the word: the address, or null for a
-/// refused placement. Zero would mean the block was never in the pass,
-/// which is a caller's error.
-///
-/// # Safety
-/// As [`block_reset_chain`].
-#[inline]
-pub(crate) unsafe fn take_block_placed_list(block: *mut u8) -> *mut usize {
-    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
-    let placed = unsafe { (*line).placed_list.swap(0, Ordering::Relaxed) };
-    debug_assert!(placed != 0, "the block was not in the placement pass");
-    // Zero and the sentinel take the same arm on purpose: a block the
-    // first pass somehow missed then publishes its count without a list,
-    // which is what a refused placement does, rather than reading
-    // `occupants.len()` words out of address zero. The assert above is
-    // where that mistake is reported; this is what it costs when it is
-    // not.
-    if placed == 0 || placed == PLACED_LIST_NONE {
-        std::ptr::null_mut()
-    } else {
-        placed as *mut usize
-    }
-}
-
-/// Where `block` stands in the reset's placement: zero while the
-/// placement pass has not reached it, [`PLACED_LIST_NONE`] for a
-/// placement the arena refused, and otherwise the address of its list
+/// Write where `block`'s survivor list stands, for the second pass of the
+/// placement to read: its address, or the refusal
 /// ([`BlockCollector::placed_list`]).
 ///
-/// The zero is what the fill pass reads to know a block it meets for the
-/// first time, and the publishing pass to know a retained block this
+/// # Safety
+/// As [`block_reset_pin`].
+#[inline]
+pub(crate) unsafe fn set_block_placed_list(block: *mut u8, placed: Placement) {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    debug_assert!(
+        placed != Placement::NotReached,
+        "a placed list is an address or the listless state"
+    );
+    unsafe {
+        (*line)
+            .placed_list
+            .store(placed.to_word(), Ordering::Relaxed)
+    };
+}
+
+/// Take the placement back, clearing the word. `NotReached` means the
+/// block was never in the pass, which is a caller's error; what it costs
+/// when the assertion is not there to report it is a count published
+/// without a list, the refused arm, rather than a list read out of
+/// address zero.
+///
+/// # Safety
+/// As [`block_reset_pin`].
+#[inline]
+pub(crate) unsafe fn take_block_placed_list(block: *mut u8) -> Placement {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    let placed = Placement::from_word(unsafe { (*line).placed_list.swap(0, Ordering::Relaxed) });
+    debug_assert!(
+        placed != Placement::NotReached,
+        "the block was not in the placement pass"
+    );
+    placed
+}
+
+/// Where `block` stands in the reset's placement
+/// ([`BlockCollector::placed_list`]).
+///
+/// `NotReached` is what the fill pass reads to know a block it meets for
+/// the first time, and the publishing pass to know a retained block this
 /// reset placed nothing for — one retained for a payload alone, or for
 /// another block's list.
 ///
 /// # Safety
 /// As [`block_reset_pin`].
 #[inline]
-pub(crate) unsafe fn block_placed_list(block: *mut u8) -> usize {
+pub(crate) unsafe fn block_placed_list(block: *mut u8) -> Placement {
     let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
-    unsafe { (*line).placed_list.load(Ordering::Relaxed) }
+    Placement::from_word(unsafe { (*line).placed_list.load(Ordering::Relaxed) })
 }
 
 /// A retained block's survivor list and its length: `(null, 0)` while

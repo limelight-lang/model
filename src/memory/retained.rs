@@ -233,7 +233,10 @@ pub(crate) unsafe fn register(block: usize, list: *mut usize) -> bool {
 /// survivor chain ([`count_occupant`], [`record_occupant`], [`register`]).
 /// A test holds its occupants in a slice already, and which pass reaches
 /// which survivor is `promote::place_survivor_lists`'s contract rather than
-/// this module's.
+/// this module's. So is the hold a listless block takes before its
+/// occupants are recorded, which this repeats from `promote::place_one_list`
+/// rather than reaches: a change of that rule there leaves this shorthand,
+/// and the seven tests on it, on the old one.
 ///
 /// # Safety
 /// As [`register`], for every address in `occupants`.

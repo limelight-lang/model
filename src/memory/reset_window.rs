@@ -574,7 +574,8 @@ pub(crate) fn record_deferred_decrement(child: *mut RcHeader) {
 /// A survivor the reconciliation never reaches keeps the references its
 /// arena holders held, `now` being `reconciled + pre`, which is a bounded
 /// leak of the class the deferred decrement's own refusal already carries
-/// (`dev/plans/S47.md`, the Critic round over S47.7's design). The refusal
+/// (`dev/DECISIONS.md`, "a refused capture leaves its survivor the arena
+/// holders' references, and nothing compensates it"). The refusal
 /// is kept off [`take_refused_promotion_edge`]'s channel deliberately: that
 /// flag is read before the promoting loop and compensated after it, so a
 /// refusal raised inside the loop would retain the next round's population.

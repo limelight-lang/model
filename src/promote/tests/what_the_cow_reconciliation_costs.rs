@@ -1,14 +1,12 @@
 //! Measurement probe, not a correctness test: what settling the COW
 //! survivors' counts costs on the clock, against the `Vec` of captures and
-//! the `HashMap<usize, i64>` S47.7 replaces with records of the window's
-//! own log.
+//! the `HashMap<usize, i64>` it replaced (`dev/BENCHMARKS.md`, "S47.9 the
+//! COW reconciliation is three linear passes").
 //!
 //! The shape is the one the reconciliation is sensitive to: how many COW
-//! survivors a reset promotes. Each is one capture, one search per segment
-//! of the log, and the log holds one capture and one edge per survivor — so
-//! the segment count, which is what the searches multiply by, grows with
-//! the same number. The old form paid one hash per capture and one per
-//! record instead, and the table's own allocation with them.
+//! survivors a reset promotes. Each is one capture, one edge and one
+//! correction of the window's log, and the three passes walk the log once
+//! each.
 //!
 //! The figure is the whole reset, because the reconciliation has no entry
 //! point of its own, and the arm that leaves has no benchmark: none drives
@@ -34,8 +32,10 @@ use std::time::Instant;
 /// does (`dev/WORKFLOW.md`, Miri).
 struct CowChain {
     arena: Box<Arena>,
-    /// Boxed and kept beside the arena because the reset resolves it: a
-    /// context in the builder's own frame would be gone by then.
+    /// Boxed and kept beside the arena because the reset resolves it
+    /// through the current context the builder mounted: a context in the
+    /// builder's own frame would be gone by then. Read by nothing else.
+    #[allow(dead_code)]
     context: Box<LLContext>,
     holder: *mut Object,
 }
@@ -96,14 +96,14 @@ unsafe fn cow_chain(name: &str, strings: usize) -> CowChain {
 /// Nanoseconds one reset of a shape with `strings` COW survivors takes, as
 /// (minimum, median) over `rounds` fresh arenas.
 unsafe fn time_reset(name: &str, strings: usize, rounds: usize) -> (u128, u128) {
-    let mut taken: Vec<u128> = Vec::new();
-    for round in 0..rounds {
+    min_and_median_nanos(rounds, |round| {
+        // `cow_chain` mounts its context, which the reset resolves the
+        // strings' payload carry through.
         let mut shape = unsafe { cow_chain(&format!("{name}{round}"), black_box(strings)) };
         let arena_ptr: *mut Arena = &mut *shape.arena;
-        set_current_context(&mut *shape.context);
         let started = Instant::now();
         unsafe { arena_reset_full(black_box(arena_ptr)) };
-        taken.push(started.elapsed().as_nanos());
+        let taken = started.elapsed().as_nanos();
 
         // The promoted survivors are the holder's, and the holder's death
         // is what returns every block the reset retained.
@@ -111,10 +111,9 @@ unsafe fn time_reset(name: &str, strings: usize, rounds: usize) -> (u128, u128) 
             assert!(crate::refcount::ll_release(shape.holder as *mut RcHeader));
             ll_object_die(shape.holder);
         }
-    }
 
-    taken.sort_unstable();
-    (taken[0], taken[taken.len() / 2])
+        taken
+    })
 }
 
 #[test]

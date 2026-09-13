@@ -1562,8 +1562,9 @@ fn no_survivor_leaves_the_reconciliation_in_hand() {
 /// before the reset and the rest of the terms as the reconciliation sums
 /// them, `now = reconciled + pre` — so the survivor keeps exactly the
 /// arena holders' references the reconciliation exists to discard, which is
-/// a bounded leak rather than an early free (`dev/plans/S47.md`, the Critic
-/// round over S47.7's design). Here `pre` is 2 — the array's own reference
+/// a bounded leak rather than an early free (`dev/DECISIONS.md`, "a refused
+/// capture leaves its survivor the arena holders' references, and nothing
+/// compensates it"). Here `pre` is 2 — the array's own reference
 /// and the holder's store — and the reconciliation would have settled it to
 /// 1, its one promoted holder.
 ///

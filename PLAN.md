@@ -3864,6 +3864,40 @@ unsound rather than dear.
         run — caught the write-provenance rule broken in six fixture reads
         (`dev/POSTMORTEM.md`, 2026-09-13).
 
+Code Reviewer 2026-09-13, over `b08ada6..75d82ab` in two halves — promote,
+retained, heap and the window; arena, cells, the table, refcount and the
+journal. One contract no test held: `Table::sever_entry`'s element branch,
+whose only observer is the journal, and whose deletion left the suite green
+(seen on the mutation) — a `debug-journal` case reads the two
+`SEVERED_EDGE` records a refused key writes and is red on it. Three
+comments named things that do not exist (`RESET_PIN_END`,
+`block_reset_chain`, the one-word `reset_chain`), one claimed a recovery
+the code has not got (`ll_arena_reset`'s dropped count "not lost"), and
+`flags_store`'s doc said it was the only writer past publication when
+byte 6 and byte 7 have writers of their own. Taken: the two reset chains
+walk through one `spend_chain`, the pin link stands beside `link_emptied`
+as `link_pinned`, `retain_block` moves the count itself, the placed-list
+word is a `Placement` with three states across both files, the byte
+helpers of `refcount` are one pair, the arena's five chain-takes are one
+`take_chain`, the element sever stands beside the key sever in
+`array::entity`, the two measurement probes share one statistic, a walk
+that runs dry is pinned to resume across a segment boundary, and the
+collector line's budget argument is in `docs/memory-manager.md` with the
+code citing it. The six citations of `dev/plans/S47.md` now name the
+`dev/DECISIONS.md` entries that carry their arguments, and the three
+closed steps cited as history name the journal titles instead. Refused:
+nothing. Priced and left standing: `arena.rs` at 1,290 lines and
+`promote.rs` at 1,420, the reset's state spread over `heap`, `retained` and
+`promote` with a source-reading test as its fence. Named and left:
+seventeen intra-doc links `cargo doc` cannot resolve, all in `cycle` and
+older than this stage. Miri over the repairs, two threads, passed/ignored
+and wall: `the_memory_a_survivor_takes_with_it` 15/0 in 550 s,
+`where_a_survivor_list_is_placed` 6/0 in 26 s,
+`what_a_sever_leaves_consistent` 6/0 in 28 s, `memory::arena::tests` 14/0
+in 45 s, `refcount::tests` 32/5 in 17 s, `memory::heap::tests` 32/1 in
+272 s. The repairs are committed; the section and `dev/plans/S47.md` go in
+the next commit, after the sweep.
+
 ---
 
 ## Cross-cutting (every stage)

@@ -54,6 +54,7 @@
 use crate::journal::kinds::journal_event;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{BLOCK_KIND_RETAINED, BlockHeader};
+use crate::memory::heap::Placement;
 use crate::object::Object;
 use crate::refcount::{
     ARENA_RESET_MARK, COW, IS_ESCAPEE, MEMORY_CATEGORY_MASK, MemoryCategory, RcHeader,
@@ -91,9 +92,10 @@ const ARENA_RESET_MAX_ROUNDS: usize = 10_000;
 /// and a child severed from every holder can still be escaped afresh by a
 /// later destructor round and promoted after all (`dev/DECISIONS.md`, "a survivor cell the pool
 /// cannot supply severs the edge, and the reset finishes"). Zero is the
-/// ordinary answer. The host learns it through `ll_arena_reset` once that
-/// entry point has the pending channel `rfc/runtime/exceptions.md` puts it
-/// on; until then the number is this return.
+/// ordinary answer. `ll_arena_reset` drops it: the channel that would carry
+/// it to the host is `rfc/runtime/exceptions.md`, "The pending channel",
+/// which this crate does not have, so today the return is read by tests
+/// alone.
 ///
 /// **A refused capture is not a severance and is not in this number.** It
 /// is the other refusal a reset can meet: the manager declines the log the
@@ -133,15 +135,14 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     // supply severs the edge, and the reset finishes").
     let mut severed = 0usize;
     // How many blocks this reset has taken out of circulation, for the
-    // journal's third operand. The set that used to answer it also
-    // answered "have I retained this one already", which the block's own
-    // kind word answers now ([`retain_block`]).
+    // journal's third operand; [`retain_block`] answers whether a call is
+    // the one that counts.
     let mut retained_blocks = 0usize;
     // Blocks pinned for bytes this reset could not carry out, each held by
     // one count of the reset's own until it has finished establishing
     // occupant counts. Released after `finish_reset`, below, by walking the
-    // chain they link into: the head, or `RESET_PIN_END` while no block has
-    // been pinned. A block's own link word is also what says it is already
+    // chain they link into: the head, or `RESET_CHAIN_END` while no block
+    // has been pinned. A block's own link word is also what says it is already
     // on the chain, so a second payload in the same block takes no second
     // pin.
     let mut pin_chain = crate::memory::heap::RESET_CHAIN_END;
@@ -259,9 +260,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
                 // fallback here at all.
                 if payload_block != 0 {
                     let header = payload_block as *mut BlockHeader;
-                    if unsafe { retain_block(header) } {
-                        retained_blocks += 1;
-                    }
+                    unsafe { retain_block(header, &mut retained_blocks) };
 
                     // Pinned, and not merely retained: this block is held
                     // for bytes rather than for occupants, and an
@@ -281,19 +280,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
                     // to hold the block until `place_survivor_lists`
                     // (`dev/DECISIONS.md`, "the reset holds a pin of its
                     // own, and releases it after the index is real").
-                    if unsafe { crate::memory::heap::block_reset_pin(payload_block as *mut u8) }
-                        == 0
-                    {
-                        unsafe {
-                            crate::memory::heap::set_block_reset_pin(
-                                payload_block as *mut u8,
-                                pin_chain,
-                            );
-                            crate::memory::retained::pin(payload_block);
-                        }
-
-                        pin_chain = payload_block;
-                    }
+                    unsafe { link_pinned(payload_block, &mut pin_chain) };
                 }
             }
 
@@ -309,8 +296,9 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
                         // No compensation follows, and none is owed: the
                         // survivor keeps the references its arena holders
                         // held, which is a bounded leak rather than an
-                        // early free (`dev/plans/S47.md`, the Critic round
-                        // over S47.7's design).
+                        // early free (`dev/DECISIONS.md`, "a refused capture
+                        // leaves its survivor the arena holders' references,
+                        // and nothing compensates it").
                         #[cfg(test)]
                         REFUSED_CAPTURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         journal_event!(
@@ -369,9 +357,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
                 unsafe { promoting.keep_the_last_out_of_the_grouping() };
             } else {
                 let block = BlockHeader::of_ptr(surv as *const u8) as usize;
-                if unsafe { retain_block(block as *mut BlockHeader) } {
-                    retained_blocks += 1;
-                }
+                unsafe { retain_block(block as *mut BlockHeader, &mut retained_blocks) };
             }
         }
 
@@ -449,10 +435,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     let mut emptied = crate::memory::heap::RESET_CHAIN_END;
     unsafe { place_survivor_lists(arena, &mut retained_blocks, &mut emptied) };
 
-    // The kind word is the membership test: `Arena::fresh_block` stamps
-    // `BLOCK_KIND_ARENA` on every block it draws from the pool, so a block
-    // of this arena reads `BLOCK_KIND_RETAINED` exactly when this reset
-    // stamped it (`dev/plans/S47.md`, the Critic round of 2026-09-13).
+    // The kind word is the membership test ([`retain_block`]).
     unsafe {
         (*arena).finish_reset(|block| {
             crate::memory::block_pool::load_block_kind(&raw const (*block).kind)
@@ -465,30 +448,20 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     // held for. A block that empties on the release had its payload
     // freed inside the reset, so it joins the chain below: no later
     // death is left to report it.
-    //
-    // The link is read and cleared before the pin is spent, because a
-    // block the release empties goes to the pool in the walk below and
-    // its header is the pool's from then on.
-    let mut block = pin_chain;
-    while block != crate::memory::heap::RESET_CHAIN_END {
-        let next = unsafe { crate::memory::heap::block_reset_pin(block as *mut u8) };
-        // Zero is "on no chain", so reading it here means a block left the
-        // chain while the chain still named it. Named rather than followed:
-        // the walk would otherwise read a collector line at address zero,
-        // and in a release build read one wildly.
-        debug_assert!(
-            next != 0,
-            "a pinned block left the reset's chain while it was still on it"
-        );
-        unsafe { crate::memory::heap::set_block_reset_pin(block as *mut u8, 0) };
-        #[cfg(test)]
-        PINS_SPENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if unsafe { crate::memory::retained::hold_released(block) } {
-            unsafe { link_emptied(block, &mut emptied) };
-        }
-
-        block = next;
-    }
+    unsafe {
+        spend_chain(
+            pin_chain,
+            crate::memory::heap::block_reset_pin,
+            crate::memory::heap::set_block_reset_pin,
+            |block| {
+                #[cfg(test)]
+                PINS_SPENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if crate::memory::retained::hold_released(block) {
+                    link_emptied(block, &mut emptied);
+                }
+            },
+        )
+    };
 
     // Blocks nothing holds at the end of this reset — every survivor died
     // inside it, the shape a heap reference box produces, where the
@@ -501,24 +474,18 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     // under it. The route is `ll_free` of the block address rather than
     // the pool directly, because the block still reads
     // `BLOCK_KIND_RETAINED` and that arm is the one path which spends
-    // the hold its list has on the block the list stands in, and which
-    // S36.2's withholding will hold back while a collection reads the
-    // block.
+    // the hold its list has on the block the list stands in, and which a
+    // collection reading the block withholds until its close
+    // (`cycle::deferred_slot_reuse`).
     //
-    // The link goes before the free: past it the header is the pool's,
-    // and a block handed out again would carry this reset's word into its
-    // next life.
-    let mut block = emptied;
-    while block != crate::memory::heap::RESET_CHAIN_END {
-        let next = unsafe { crate::memory::heap::block_emptied_chain(block as *mut u8) };
-        debug_assert!(
-            next != 0,
-            "a block left the emptied chain while it was still on it"
-        );
-        unsafe { crate::memory::heap::set_block_emptied_chain(block as *mut u8, 0) };
-        unsafe { crate::memory::stdapi::ll_free(block as *mut u8) };
-        block = next;
-    }
+    unsafe {
+        spend_chain(
+            emptied,
+            crate::memory::heap::block_emptied_chain,
+            crate::memory::heap::set_block_emptied_chain,
+            |block| crate::memory::stdapi::ll_free(block as *mut u8),
+        )
+    };
 
     // After the frees, so that every death this reset caused falls
     // between the pair (`journal::kinds::KIND_ARENA_RESET_BEGIN`). The
@@ -536,8 +503,8 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
 
 /// Take `block` out of circulation as a retained former-arena block: the
 /// one place the reset stamps `BLOCK_KIND_RETAINED`. **True when this call
-/// is the one that stamped it**, so a caller counting retentions counts
-/// each block once.
+/// is the one that stamped it**, and `retained_blocks` — the journal's
+/// count of retentions — moves only then, so each block is counted once.
 ///
 /// **The stamp is also the test**, which is what makes a second call safe:
 /// the clearing below would otherwise zero the pins the reset has placed
@@ -572,7 +539,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
 /// `block` is the header of a live 64 KiB block whose arena is being
 /// reset, and which holds a survivor, a survivor's payload or a survivor
 /// list.
-unsafe fn retain_block(block: *mut BlockHeader) -> bool {
+unsafe fn retain_block(block: *mut BlockHeader, retained_blocks: &mut usize) -> bool {
     let kind = unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) };
     if kind == BLOCK_KIND_RETAINED {
         return false;
@@ -583,6 +550,7 @@ unsafe fn retain_block(block: *mut BlockHeader) -> bool {
         crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_RETAINED);
     }
 
+    *retained_blocks += 1;
     true
 }
 
@@ -782,19 +750,14 @@ unsafe fn place_survivor_lists(
     for surv in unsafe { (*arena).walk_survivors_in_shared_blocks() } {
         let block = BlockHeader::of_ptr(surv as *const u8) as usize;
         let mut placed = unsafe { crate::memory::heap::block_placed_list(block as *mut u8) };
-        if placed == 0 {
+        if placed == Placement::NotReached {
             placed = unsafe { place_one_list(arena, block, retained_blocks) };
         }
 
-        let list = if placed == crate::memory::heap::PLACED_LIST_NONE {
-            std::ptr::null_mut()
-        } else {
-            placed as *mut usize
-        };
         // A shared retained block keeps every byte it had, so a dead
         // occupant's address is still readable, which is the whole of what
         // the record asks of this caller.
-        unsafe { crate::memory::retained::record_occupant(block, list, surv as usize) };
+        unsafe { crate::memory::retained::record_occupant(block, placed.list(), surv as usize) };
     }
 
     let mut block = unsafe { (*arena).blocks() };
@@ -806,9 +769,12 @@ unsafe fn place_survivor_lists(
         // Zero is a retained block the placement pass never reached: one
         // retained for a payload alone, or as the holder of another block's
         // list. It has no occupants of this reset to publish.
-        if retained && unsafe { crate::memory::heap::block_placed_list(block as *mut u8) } != 0 {
-            let list = unsafe { crate::memory::heap::take_block_placed_list(block as *mut u8) };
-            if unsafe { crate::memory::retained::register(block as usize, list) } {
+        if retained
+            && unsafe { crate::memory::heap::block_placed_list(block as *mut u8) }
+                != Placement::NotReached
+        {
+            let placed = unsafe { crate::memory::heap::take_block_placed_list(block as *mut u8) };
+            if unsafe { crate::memory::retained::register(block as usize, placed.list()) } {
                 unsafe { link_emptied(block as usize, emptied) };
             }
         }
@@ -818,15 +784,18 @@ unsafe fn place_survivor_lists(
 }
 
 /// Place the survivor list of retained `block`, whose occupants are counted,
-/// and answer the word the fill pass reads: the list's address, or
-/// [`crate::memory::heap::PLACED_LIST_NONE`] where the arena refused the
-/// memory. The answer is left on the block as well, for the passes that
-/// come after this one.
+/// and answer what the fill pass reads: the list's address, or the refusal
+/// where the arena had no memory for it. The answer is left on the block as
+/// well, for the passes that come after this one.
 ///
 /// # Safety
 /// As [`place_survivor_lists`], and `block` must have been counted and not
 /// yet placed.
-unsafe fn place_one_list(arena: *mut Arena, block: usize, retained_blocks: &mut usize) -> usize {
+unsafe fn place_one_list(
+    arena: *mut Arena,
+    block: usize,
+    retained_blocks: &mut usize,
+) -> Placement {
     #[cfg(test)]
     let _ = FIRST_PLACED_BLOCK.compare_exchange(
         0,
@@ -844,9 +813,7 @@ unsafe fn place_one_list(arena: *mut Arena, block: usize, retained_blocks: &mut 
     if !list.is_null() {
         let holder = BlockHeader::of_ptr(list as *const u8) as usize;
         if holder != block {
-            if unsafe { retain_block(holder as *mut BlockHeader) } {
-                *retained_blocks += 1;
-            }
+            unsafe { retain_block(holder as *mut BlockHeader, retained_blocks) };
 
             // Not on the reset's own chain, which carries the pins the
             // reset spends itself: this one is the list's, and
@@ -865,12 +832,67 @@ unsafe fn place_one_list(arena: *mut Arena, block: usize, retained_blocks: &mut 
         // `dev/DECISIONS.md`, "the reset holds a pin of its own, and
         // releases it after the index is real"). `register` spends it.
         unsafe { crate::memory::retained::pin(block) };
-        crate::memory::heap::PLACED_LIST_NONE
+        Placement::Listless
     } else {
-        list as usize
+        Placement::List(list)
     };
     unsafe { crate::memory::heap::set_block_placed_list(block as *mut u8, placed) };
     placed
+}
+
+/// Walk one of the reset's chains through the blocks' collector lines, from
+/// `head` to `RESET_CHAIN_END`, running `act` on each block after its link
+/// word is read and cleared: past `act` the block may be the pool's, and
+/// its header with it, so nothing of this reset's may stand in the word
+/// and nothing may be read from it. `link` and `unlink` are the word's
+/// accessors ([`crate::memory::heap::block_reset_pin`],
+/// [`crate::memory::heap::block_emptied_chain`] and their setters).
+///
+/// Zero in the word is "on no chain", so reading it mid-walk means a block
+/// left the chain while the chain still named it. Asserted rather than
+/// followed: the walk would otherwise read a collector line at address
+/// zero, and in a release build read one wildly.
+///
+/// # Safety
+/// Every block on the chain is a retained block of the arena being reset,
+/// still the arena's until `act` hands it over.
+unsafe fn spend_chain(
+    head: usize,
+    link: unsafe fn(*mut u8) -> usize,
+    unlink: unsafe fn(*mut u8, usize),
+    mut act: impl FnMut(usize),
+) {
+    let mut block = head;
+    while block != crate::memory::heap::RESET_CHAIN_END {
+        let next = unsafe { link(block as *mut u8) };
+        debug_assert!(
+            next != 0,
+            "a block left the reset's chain while the chain still named it"
+        );
+        unsafe { unlink(block as *mut u8, 0) };
+        act(block);
+        block = next;
+    }
+}
+
+/// Put `block` on the chain of blocks pinned for bytes this reset could not
+/// carry out, whose head is `pin_chain`, and take the reset's own hold on
+/// it — once per block, the link word saying whether it is on the chain
+/// already, so a second payload in one block takes no second pin.
+///
+/// # Safety
+/// `block` is a retained block of the arena being reset.
+unsafe fn link_pinned(block: usize, pin_chain: &mut usize) {
+    if unsafe { crate::memory::heap::block_reset_pin(block as *mut u8) } != 0 {
+        return;
+    }
+
+    unsafe {
+        crate::memory::heap::set_block_reset_pin(block as *mut u8, *pin_chain);
+        crate::memory::retained::pin(block);
+    }
+
+    *pin_chain = block;
 }
 
 /// Put `block` on the chain of blocks this reset owes the pool, whose head
@@ -1084,7 +1106,7 @@ unsafe fn descend_from(arena: *mut Arena, from: usize) -> usize {
 /// that remain, a heap child's logged release fires once against the retain
 /// its store took, and a COW child's word is replaced by the window's log.
 /// The child's own `IS_ESCAPEE` is a consequence of that rule rather than
-/// the rule (Sage, 2026-09-13, `dev/plans/S47.md`).
+/// the rule.
 ///
 /// **More children may be displaced than the one refused.** A string key's
 /// unit is its whole entry, so the element beside it loses its edge too;
@@ -1273,7 +1295,10 @@ unsafe fn reconcile_cow_counts() {
 
     // 1. Seed each survivor with its delta and take it in hand. A survivor
     //    this reset tore down keeps the zero its teardown left, for the queue
-    //    that requires it, so it is neither seeded nor taken.
+    //    that requires it, so it is neither seeded nor taken. A branch rather
+    //    than an assertion, because no test reaches it and the release
+    //    build would then store a positive sum into a dead slot's count
+    //    (`SKIPPED_TEARDOWNS`, on why no test does).
     crate::memory::reset_window::for_each_capture(|survivor, at| {
         if unsafe { crate::memory::reset_window::is_torn_down(survivor) } {
             #[cfg(test)]

@@ -7,6 +7,33 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-13 — a branch whose only observer is the journal was green when deleted
+
+**What happened.** S47's stage-close review read `Table::sever_entry`'s
+element branch — the one that hands the element beside a refused key to
+`displaced` — and asked what held it. Nothing did: with the branch deleted
+the whole suite stayed green, and the test written for that branch
+(`what_a_sever_leaves_consistent::a_refused_key_takes_the_element_beside_it`)
+said in its own doc that the deletion would be "green in the heap and red
+in the journal", then read the heap.
+
+**Why it was possible.** The branch's one effect is a journal record: the
+element's count is rebuilt from the edge that remains whether or not the
+sever reported it, so every heap-side reading is the same on both arms.
+The test's author saw that and wrote it down, and the sentence was taken as
+the coverage rather than as its absence — no journal case was written,
+because the group that reads the journal is `cfg(feature = "debug-journal")`
+and the sever's tests are not.
+
+**Why it was not caught earlier.** The step's mutation list named the
+sever's other arms, and a green mutation that was expected to be green
+reads as a pass. The plain-build gate cannot see a record site, and the
+`debug-journal` runs only say that the sites compile and abort nowhere.
+
+**The rule.** A branch whose only effect is a record has its test in the
+journal group, red on the branch's deletion, before the step closes; a
+sentence saying "red in the journal" is a test that has not been written.
+
 ## 2026-09-13 — the write-provenance rule was broken again, in a file no Miri slice covered
 
 **What happened.** S47.9 ran `refcount::tests` under Miri, which no earlier

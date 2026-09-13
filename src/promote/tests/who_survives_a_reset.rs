@@ -284,7 +284,7 @@ fn a_child_the_arena_cannot_record_loses_its_edge() {
     unsafe { store_prop(&mut arena, root, 16, child) };
 
     let severed = {
-        let _refused = crate::memory::arena::RefusedSurvivorSegments::arm();
+        let _refused = crate::memory::arena::RefusedSurvivors::arm();
         unsafe { arena_reset_full(&mut arena) }
     };
 
@@ -298,4 +298,11 @@ fn a_child_the_arena_cannot_record_loses_its_edge() {
         unsafe { *(crate::object::Object::prop_at(root as *mut Object, 16) as *mut usize) } == 0,
         "the slot that named the unrecorded child was emptied"
     );
+
+    // The holder's death gives the retained block back; kept, the block
+    // would stay out of the pool for the life of the process.
+    unsafe {
+        assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+        ll_object_die(holder);
+    }
 }

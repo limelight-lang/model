@@ -9,6 +9,15 @@ use crate::test_support::{RUN_FILLERS, entity_checked, store_prop};
 use crate::value::{Tag, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Nanoseconds of `rounds` runs of `one`, as (minimum, median) — the two
+/// statistics the reset's measurement probes quote
+/// (`dev/BENCHMARKS.md`, "the statistic that decides the answer").
+fn min_and_median_nanos(rounds: usize, mut one: impl FnMut(usize) -> u128) -> (u128, u128) {
+    let mut taken: Vec<u128> = (0..rounds).map(|round| one(round)).collect();
+    taken.sort_unstable();
+    (taken[0], taken[taken.len() / 2])
+}
+
 /// The kind stamped on the block holding `memory`, read the way every
 /// concurrent reader of that word reads it.
 unsafe fn block_kind(memory: *const u8) -> u32 {

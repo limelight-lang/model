@@ -109,19 +109,14 @@ search steps over it, which
 `reset_window::tests::a_capture_is_answered_by_its_own_enumerator_and_never_as_a_correction`
 is what holds.
 
-**The corrections of one child are searched for in every segment.** A segment
-holds 254 records and the chain is newest first, so a child's records are
-spread over as many segments as the reset filled; a membership read from one
-segment drops the rest, and dropping an increment frees a live entity. Each
-segment is sorted by child after the last append, and each carries the lowest
-and highest child it holds, so the search skips a segment whose range excludes
-the address.
-
-**What it costs is `O(C²)` in the COW survivors of one reset**, measured at
-three times the `HashMap` it replaces for 2400 of them and shorter than it for
-120 (`dev/BENCHMARKS.md`, 2026-09-13). The alternative that is linear — the
-count word as the accumulator between the reconciliation's passes — is
-measured in the same entry and is not in the tree.
+**How the corrections of one child were found was decided again the same
+day.** The first form searched every segment of the log for the child, each
+segment sorted by child after the last append and carrying its lowest and
+highest address; that is `O(C²)` in the COW survivors of one reset, measured
+at three times the `HashMap` it replaced for 2400 of them, and the entry
+above, "the COW reconciliation accumulates in the count word", is the form in
+the tree: the child's own count word is the accumulator between the passes,
+and no record is searched for (`dev/BENCHMARKS.md`, 2026-09-13).
 
 ## 2026-09-13 — a sever takes the smallest unit its holder's layout leaves consistent, and never lands on a counted edge
 
@@ -163,7 +158,7 @@ bytes. A new `Element` shape is a hash entry's value and takes
 `Entry::store_element(.., Value::null())`, which keeps the collision link and
 the atomic width; the entry stays live with a null value. A new `Key` shape
 is a hash entry's string key, which has no cell-wise null, so its unit is the
-entry: a new `array::entity::sever_entry_holding` reaches a new
+entry: a new `array::entity::sever_entry_at_key` reaches a new
 `Table::sever_entry(head, index, displaced)`, which holes the key, nulls the
 element with the link kept, adjusts the live count as `Table::remove` does,
 hands the key string and the counted element to `displaced` without

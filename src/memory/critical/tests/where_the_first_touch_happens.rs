@@ -176,7 +176,6 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("REFUSE_AT_VERTEX", false),      // test-only const Cell, no drop glue
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
         ("REFUSE_LIST_PLACEMENT", false), // test-only const Cell, no drop glue
-        ("REFUSE_SURVIVOR_SEGMENTS", false), // test-only const Cell, no drop glue
         ("REFUSING", false),              // test-only const Cell, no drop glue
         ("REPORT", false), // test-only const RefCell over a Copy report, no drop glue
         ("RESERVE", true),
@@ -184,6 +183,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("ROWS_READ", false),
         ("SLOTS_POPPED", false), // test-only const Cell, no drop glue
         ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
+        ("SURVIVORS_ADMITTED_BEFORE_REFUSAL", false), // test-only const Cell, no drop glue
         ("TEARDOWN_DEPTH", false), // const Cell<u32>, no drop glue
         ("THREAD_BUFFER_ARENA", false),
         ("THREAD_CACHE", true),

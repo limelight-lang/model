@@ -146,6 +146,24 @@ Rows for such a block are sized by the list's
 length (`memory/retained.rs`, `occupant_count`). A raw heap block's line
 3 is left as the pool handed it over, no trace entering one.
 
+**The reset's own words fill the rest of the line.** Between the
+retention that clears the line and the walk past `finish_reset`, the
+reset keeps its bookkeeping in the retained block itself rather than in a
+container of its own: `survivor_count`, the block's occupant total from
+the counting pass, and `occupants_recorded`, what the fill pass has
+accounted for, in the line's last four bytes; then `reset_pins`, the
+chain of blocks pinned for a payload the reset could not carry out;
+`emptied_chain`, the chain of blocks the reset owes the pool; and
+`placed_list`, a survivor list's address between the pass that places it
+and the pass that publishes it. The two chains are two words rather than
+one because "the reset pinned this block" and "the reset owes this block
+to the pool" are asserted on their own. Those three words, the four-byte
+count and the header's own six words fill the sixty-four bytes exactly,
+so the next word a collector or a reset wants reuses one or shrinks the
+header; `promote::tests::who_may_touch_the_resets_words` reads the
+sources to keep the callers of these words to `promote`, `retained` and
+`heap`.
+
 ## BlockPool
 
 A chain of free blocks threaded through the header, behind a `Mutex`,

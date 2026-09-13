@@ -3,8 +3,10 @@
 //! per log, because a chain is drained by a loop each log enters on its
 //! own. The barrier's log grows from the thread reserve when the
 //! pool refuses, because the barrier has no way to report a failure.
-//! The reset drains three more logs beside these two: the
-//! release-at-reset log, the weak log, and the large runs.
+//! The reset drains three more logs beside these two — the
+//! release-at-reset log, the weak log, and the large runs — and walks a
+//! sixth in place, the survivor chain, which is linked behind rather than
+//! in front.
 
 use super::*;
 
@@ -229,11 +231,12 @@ fn the_survivor_chain_grows_at_its_tail() {
 }
 
 /// A walk resumes on an append behind it, which is what lets the descent
-/// walk the chain and grow it at once — but only where it has a segment to
-/// resume from. A walk made over an empty chain stays empty, and its caller
-/// re-asks at its own index; holding the arena's head field instead was
-/// undefined behaviour, the next append's `&mut Arena` retagging the
-/// pointer (Miri, 2026-09-13).
+/// walk the chain and grow it at once — before it has run dry, after it
+/// has, and across the segment boundary the append links — but only where
+/// it has a segment to resume from. A walk made over an empty chain stays
+/// empty, and its caller re-asks at its own index: a walk holds no pointer
+/// into the arena's struct, because the next append's `&mut Arena` retags
+/// it.
 #[test]
 fn a_walk_resumes_on_an_append_behind_it() {
     let _g = crate::memory::block_pool::test_guard();
@@ -264,5 +267,34 @@ fn a_walk_resumes_on_an_append_behind_it() {
     let second = entity(&mut arena);
     assert!(arena.push_survivor(second));
     assert_eq!(walk.next(), Some(second), "the append reached the walk");
+    assert!(walk.next().is_none());
+
+    // Dry, and then an append lands in the segment the walk stands at.
+    let third = entity(&mut arena);
+    assert!(arena.push_survivor(third));
+    assert_eq!(
+        walk.next(),
+        Some(third),
+        "a walk that ran dry resumes on the next append"
+    );
+    assert!(walk.next().is_none());
+
+    // Dry at a full tail, so the next append links a fresh segment behind
+    // it: the walk follows the link.
+    let mut count = 3;
+    while count < LOG_SEG_RECORDS {
+        let filler = entity(&mut arena);
+        assert!(arena.push_survivor(filler));
+        count += 1;
+    }
+
+    assert_eq!(walk.by_ref().count(), LOG_SEG_RECORDS - 3);
+    let over = entity(&mut arena);
+    assert!(arena.push_survivor(over));
+    assert_eq!(
+        walk.next(),
+        Some(over),
+        "a walk dry at a full tail follows the segment the append linked"
+    );
     assert!(walk.next().is_none());
 }

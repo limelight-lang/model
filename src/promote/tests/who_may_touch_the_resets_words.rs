@@ -7,9 +7,9 @@
 //! error would report one: the words are private to `memory::heap` and
 //! reached through `pub(crate)` accessors, which any module of the
 //! crate may call with the suite staying green. The cost of a second
-//! caller is not a race but a meaning: `reset_chain` says different things
-//! in the two halves of one reset, and `placed_list` holds an address
-//! nothing may publish yet.
+//! caller is not a race but a meaning: a link on `reset_pins` or
+//! `emptied_chain` is the reset's promise to spend or hand over the block,
+//! and `placed_list` holds an address nothing may publish yet.
 //!
 //! **Two more words are the grouping's**, and their fence is `retained`
 //! rather than the reset: `survivor_count` carries a block's occupant total
@@ -18,11 +18,13 @@
 //! — which occupant owes the block a hold — so it is the file the
 //! accessors answer to, and `promote` reaches them through it.
 //!
-//! The same reading also guards the budget, which is now spent: three
-//! words, `occupants_recorded` in what was the line's padding, and the
-//! header's own six fill the sixty-four bytes the const assert allows. The
-//! next step that wants a word reuses one or shrinks the header, and reuse
-//! is sound only while the set of callers is this small.
+//! The same reading also guards the budget: three words,
+//! `occupants_recorded` in the line's last four bytes, and the header's own
+//! six fill the sixty-four bytes the const assert allows
+//! (`docs/memory-manager.md`, "The reset's own words fill the rest of the
+//! line"). The next step that
+//! wants a word reuses one or shrinks the header, and reuse is sound only
+//! while the set of callers is this small.
 
 use std::fs;
 use std::path::{Path, PathBuf};

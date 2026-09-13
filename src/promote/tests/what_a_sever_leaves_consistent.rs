@@ -7,7 +7,7 @@
 //! (`dev/DECISIONS.md`, "a sever takes the smallest unit its holder's
 //! layout leaves consistent, and never lands on a counted edge").
 //!
-//! Every case here arms `RefusedSurvivorSegments`, which refuses the
+//! Every case here arms `RefusedSurvivors`, which refuses the
 //! draws the survivor chain makes after the count it is given. The root is
 //! admitted by compacting its escapee record and needs no cell, so only a
 //! child is ever refused; an array is reached as a child of an escaping
@@ -18,7 +18,7 @@
 
 use super::*;
 use crate::array::table::Key;
-use crate::memory::arena::RefusedSurvivorSegments;
+use crate::memory::arena::RefusedSurvivors;
 
 /// Bytes whose slot under `mask` `accept` takes, found by search because a
 /// string's slot is its own hash under a per-process seed and cannot be
@@ -112,7 +112,7 @@ fn a_refused_element_keeps_the_entry_and_its_link() {
     };
 
     let severed = {
-        let _refused = RefusedSurvivorSegments::after(1);
+        let _refused = RefusedSurvivors::after(1);
         unsafe { arena_reset_full(&mut *arena_ptr) }
     };
 
@@ -220,7 +220,7 @@ fn a_refused_string_key_holes_the_whole_entry() {
     }
 
     let severed = {
-        let _refused = RefusedSurvivorSegments::after(1);
+        let _refused = RefusedSurvivors::after(1);
         unsafe { arena_reset_full(&mut *arena_ptr) }
     };
 
@@ -298,7 +298,7 @@ fn a_refused_vector_element_is_nulled_in_place() {
     }
 
     let severed = {
-        let _refused = RefusedSurvivorSegments::after(1);
+        let _refused = RefusedSurvivors::after(1);
         unsafe { arena_reset_full(&mut *arena_ptr) }
     };
 
@@ -370,7 +370,7 @@ fn a_refused_outside_cell_goes_through_the_group() {
     }
 
     let severed = {
-        let _refused = RefusedSurvivorSegments::arm();
+        let _refused = RefusedSurvivors::arm();
         unsafe { arena_reset_full(&mut *arena_ptr) }
     };
 
@@ -398,8 +398,9 @@ fn a_refused_outside_cell_goes_through_the_group() {
 /// earlier, through a second property of the same owner, so its count is
 /// rebuilt from the edges that remain — one — and the lost edge costs
 /// nothing. A key sever with the element branch deleted leaves this test
-/// green in the heap and red in the journal, which is why the count is
-/// read rather than the memory.
+/// green, the count being rebuilt from the remaining edge either way; what
+/// sees that branch is the journal, in
+/// `the_record_a_reset_closes_with::a_refused_key_records_two_severed_edges`.
 #[test]
 fn a_refused_key_takes_the_element_beside_it() {
     let _g = crate::memory::block_pool::test_guard();
@@ -449,7 +450,7 @@ fn a_refused_key_takes_the_element_beside_it() {
     }
 
     let severed = {
-        let _refused = RefusedSurvivorSegments::after(2);
+        let _refused = RefusedSurvivors::after(2);
         unsafe { arena_reset_full(&mut *arena_ptr) }
     };
 
@@ -479,7 +480,9 @@ fn a_refused_key_takes_the_element_beside_it() {
 /// A store into a holder still `RequestArena` counts nothing into an arena
 /// child, so the escapee's count is the one `escape_gain` wrote for its
 /// heap holder, `mark_root` keeps it, and the child dies of that holder's
-/// release and of nothing else (Sage, 2026-09-13, `dev/plans/S47.md`).
+/// release and of nothing else (`dev/DECISIONS.md`, "a sever takes the
+/// smallest unit its holder's layout leaves consistent, and never lands on
+/// a counted edge").
 ///
 /// A weak cell is the observer, because the count cannot be read from a
 /// freed header: it resolves to the element until the keeper dies and to
@@ -534,7 +537,7 @@ fn a_refused_key_severs_an_entry_whose_element_escaped() {
     };
 
     let severed = {
-        let _refused = RefusedSurvivorSegments::after(1);
+        let _refused = RefusedSurvivors::after(1);
         unsafe { arena_reset_full(&mut *arena_ptr) }
     };
 

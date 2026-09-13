@@ -1233,19 +1233,41 @@ pub unsafe fn release_children(a: *mut LLArray) {
 /// # Safety
 /// `a` is a live array in the ordered hash, and `key_at` is the address of
 /// a key word the tracer yielded for it.
-pub(crate) unsafe fn sever_entry_holding(
+pub(crate) unsafe fn sever_entry_at_key(
     a: *mut LLArray,
     key_at: usize,
+    displaced: &mut dyn FnMut(*mut RcHeader),
+) {
+    let (table, head) = unsafe { as_table_mut(a) };
+    let index = unsafe { crate::array::table::Table::entry_index_of(head, key_at) };
+    unsafe { table.sever_entry(head, index, displaced) };
+}
+
+/// Null the one ordered-hash element at `element_at`, keeping the entry,
+/// its key and its collision link, and hand the child to `displaced`
+/// without releasing it. The element is the unit here because a null
+/// element is a state the entry has ([`crate::array::entry::Entry`]), where
+/// a key word has none — which is what makes [`sever_entry_at_key`] take
+/// the whole entry.
+///
+/// # Safety
+/// `a` is a live array in the ordered hash, and `element_at` is the address
+/// of an element the tracer yielded for it, holding `child`.
+pub(crate) unsafe fn sever_element_at(
+    a: *mut LLArray,
+    element_at: usize,
+    child: *mut RcHeader,
     displaced: &mut dyn FnMut(*mut RcHeader),
 ) {
     debug_assert_eq!(
         unsafe { (*a).head.tag() },
         StorageTag::Hash,
-        "a key word belongs to the ordered hash alone"
+        "an element with reserved bytes belongs to the ordered hash alone"
     );
-    let (table, head) = unsafe { as_table_mut(a) };
-    let index = unsafe { crate::array::table::Table::entry_index_of(head, key_at) };
-    unsafe { table.sever_entry(head, index, displaced) };
+    let entry =
+        (element_at - crate::array::entry::ELEMENT_OFFSET) as *mut crate::array::entry::Entry;
+    unsafe { crate::array::entry::Entry::store_element(entry, Value::null()) };
+    displaced(child);
 }
 
 /// Sever this array's counted children — every element, and under the
