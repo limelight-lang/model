@@ -3720,12 +3720,22 @@ unsound rather than dear.
         through a `SharedReadOnly` raw pointer in the tag's first form.
 - [ ] S47.7 The COW rows without a `HashMap`
       done: `settled` and `cow_at_promotion` are gone — `at` is one more
-        record kind in the window's log, the capture is draw-free or a refused
-        one holds its survivor alive for good — never left to settle the count
-        low — and the sum per child is taken over the segments sorted by
-        child; `reconcile_cow_counts` makes no global allocation, and S36.9's
-        composite deny run reads `promote` as clean
+        record kind in the window's log, read by an enumerator of its own; a
+        refused capture is counted and reported, the survivor it belonged to
+        keeping the arena holders' references the reconciliation would have
+        discarded; the reconciliation iterates by capture, searching the
+        segments sorted by child for that child's runs and summing them in an
+        `i64` with today's clamp and assert on the sum;
+        `reconcile_cow_counts` makes no global allocation, the step measures it
+        against the `HashMap` it replaces, and S36.9's composite deny run reads
+        `promote` as clean
       tier: T2 · role: Critic
+      amended 2026-09-13, before the code: the criterion said a refused capture
+        "holds its survivor alive for good — never left to settle the count
+        low". The direction is the other one — `now = reconciled + pre`, so an
+        unreconciled survivor is high by the arena holders' references — and
+        "alive for good" has no spelling in this crate's count model
+        (`dev/plans/S47.md`, the Critic round over this design).
 
 ---
 
