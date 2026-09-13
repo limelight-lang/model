@@ -13,8 +13,8 @@ in the specification rather than in this crate.
 
 Updated: 2026-09-13 · Active: S47, whose Critic round of 2026-09-13 took the
 breakdown of 2026-09-12 from five steps to eight, Edmond agreeing the new
-structure the same day (`dev/plans/S47.md`); S47.0 through S47.2 and S47.8 closed on
-2026-09-13, three of them on Sage rulings, and the work continues at S47.3.
+structure the same day (`dev/plans/S47.md`); S47.0 through S47.3 and S47.8 closed on
+2026-09-13, three of them on Sage rulings, and the work continues at S47.4.
 S36's one open step is S36.9, which
 closes on a deny run over a reset inside a collection that `promote`'s own
 containers (S47) still fail; S36.17 closed on 2026-09-12 with the window's
@@ -3629,33 +3629,26 @@ unsound rather than dear.
         self-referencing entry, a refused vector element, and a group's
         `sever_one` through the test group
       tier: T2 · role: Critic → Sage
-      handoff: `cells::sever_cell` is the dispatch and the tracer stamps the
-        shape: a hash element takes `Entry::store_element`, which keeps the
-        collision link; a string key takes its whole entry through
-        `Table::sever_entry`, the element beside it arriving at `displaced`;
-        an outside cell takes the group's `sever_one`, and
-        `PlainCells::walk_outside` stamps `Outside` so a class cannot forget
-        to. The precondition is the holder's category, not the child's flag
-        (Sage, `dev/plans/S47.md`), and `sever_one_edge` asserts it.
-        `RefusedSurvivorSegments::after(n)` is what puts a refusal on a
-        child of an array rather than on the array. The criterion says a
-        sixth member: the group held four, so `sever_one` is its fifth, and
-        the ruling's count was the historical one.
-        Verified on the working tree: 919 plain three times, `hash-folding`
-        919, `debug-journal` 923 three times, `--list` diffed byte for byte
-        in both arms, `fmt --check` under +1.94, `cargo bench --no-run`,
-        `citations.py` 559 with the same six residues. Miri at two threads:
-        the six cases 6/0 in 43 s wall,
-        `object::tests::cells_outside_the_object_body` 3/0 in 26 s. The
-        release run is red on `a_detached_log_nobody_walks_is_reported`,
-        which is S47.1's and pre-existing at `3f8a6e6`: its guard is a
-        `debug_assert!` and release compiles it out.
-- [ ] S47.3 `retained` is the kind stamp, and the journal keeps a counter
+      handoff: `484c320` — `cells::sever_cell` dispatches on the shape the
+        tracer stamps, and the precondition of a sever is the holder's
+        category (`dev/plans/S47.md`, the Sage of 2026-09-13).
+- [x] S47.3 `retained` is the kind stamp, and the journal keeps a counter
       done: `retained` is gone and draws nothing — "retained in this reset" is
         `BLOCK_KIND_RETAINED`, which no block carries into a reset, and
         `KIND_ARENA_RESET_END`'s third operand comes from a counter rather
         than from a set's length
       tier: T2 · role: —
+      handoff: `retain_block` answers whether this call is the one that
+        stamped, so the kind word is both the membership test and the
+        idempotence the set used to give; `finish_reset` keeps a block on
+        the same reading. The counter is the journal's alone, and
+        `the_record_a_reset_closes_with` is its only reader — seen red with
+        the increment removed. Verified: 919 plain three times,
+        `debug-journal` 924 three times, `hash-folding` 919, release 914,
+        `fmt --check` under +1.94, `cargo bench --no-run`, `citations.py`
+        559 with the same six residues. Miri at two threads:
+        `who_survives_a_reset` 7/0 in 18 s wall,
+        `the_memory_a_survivor_takes_with_it` 13/0 in 5 m 19 s.
 - [ ] S47.4 The reset's pins chain through the block
       done: `pinned` is gone — a block links into a per-reset chain through a
         header word at the moment the reset pins it, and the loop past

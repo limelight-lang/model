@@ -128,7 +128,11 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     // happens to the count after that belongs to whoever changed it, and
     // the reconciliation keeps it as a delta.
     let mut cow_at_promotion: Vec<(*mut RcHeader, u32)> = Vec::new();
-    let mut retained: HashSet<usize> = HashSet::new();
+    // How many blocks this reset has taken out of circulation, for the
+    // journal's third operand. The set that used to answer it also
+    // answered "have I retained this one already", which the block's own
+    // kind word answers now ([`retain_block`]).
+    let mut retained_blocks = 0usize;
     // Blocks pinned for bytes this reset could not carry out, each held by
     // one count of the reset's own until it has finished establishing
     // occupant counts. Released after `finish_reset`, below.
@@ -249,10 +253,8 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
                 // fallback here at all.
                 if payload_block != 0 {
                     let header = payload_block as *mut BlockHeader;
-                    if retained.insert(payload_block) {
-                        unsafe {
-                            retain_block(header);
-                        }
+                    if unsafe { retain_block(header) } {
+                        retained_blocks += 1;
                     }
 
                     // Pinned, and not merely retained: this block is held
@@ -324,8 +326,8 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
                 // classifies, so the two answers cannot disagree and
                 // neither is asked of a dead entity.
                 by_block.entry(block).or_default().push(surv as usize);
-                if retained.insert(block) {
-                    unsafe { retain_block(block as *mut BlockHeader) };
+                if unsafe { retain_block(block as *mut BlockHeader) } {
+                    retained_blocks += 1;
                 }
             }
         }
@@ -399,9 +401,18 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     // blocks, which is where the lists go.
     #[cfg_attr(not(feature = "debug-journal"), allow(unused_variables))]
     let survivor_total = unsafe { (*arena).survivor_count() };
-    let mut emptied = unsafe { place_survivor_lists(arena, by_block, &mut retained) };
+    let mut emptied = unsafe { place_survivor_lists(arena, by_block, &mut retained_blocks) };
 
-    unsafe { (*arena).finish_reset(|block| retained.contains(&(block as usize))) };
+    // The kind word is the membership test: `Arena::fresh_block` stamps
+    // `BLOCK_KIND_ARENA` on every block it draws from the pool, so a block
+    // of this arena reads `BLOCK_KIND_RETAINED` exactly when this reset
+    // stamped it (`dev/plans/S47.md`, the Critic round of 2026-09-13).
+    unsafe {
+        (*arena).finish_reset(|block| {
+            crate::memory::block_pool::load_block_kind(&raw const (*block).kind)
+                == BLOCK_KIND_RETAINED
+        })
+    };
 
     // The reset's own pins go now, past the last point at which an
     // occupant count could still be established, which is what each was
@@ -440,16 +451,23 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
         crate::journal::kinds::KIND_ARENA_RESET_END,
         arena as u64,
         survivor_total as u64,
-        retained.len() as u64
+        retained_blocks as u64
     );
 
     severed
 }
 
 /// Take `block` out of circulation as a retained former-arena block: the
-/// one place the reset stamps `BLOCK_KIND_RETAINED`, and it runs **once
-/// per block per reset** — a second call in one reset would zero the
-/// pins the reset has placed on the block since the first.
+/// one place the reset stamps `BLOCK_KIND_RETAINED`. **True when this call
+/// is the one that stamped it**, so a caller counting retentions counts
+/// each block once.
+///
+/// **The stamp is also the test**, which is what makes a second call safe:
+/// the clearing below would otherwise zero the pins the reset has placed
+/// on the block since the first call. A block of an arena being reset
+/// reads `BLOCK_KIND_RETAINED` exactly when this reset stamped it, because
+/// `Arena::fresh_block` stamps `BLOCK_KIND_ARENA` on every block it draws
+/// from the pool and a retained block leaves the arena's chain.
 ///
 /// **The whole collector line is cleared before the kind is published**,
 /// and that is the whole reason this is a function. A retained block is
@@ -468,12 +486,19 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
 /// # Safety
 /// `block` is the header of a live 64 KiB block whose arena is being
 /// reset, and which holds a survivor, a survivor's payload or a survivor
-/// list; and this reset has not called this for it before.
-unsafe fn retain_block(block: *mut BlockHeader) {
+/// list.
+unsafe fn retain_block(block: *mut BlockHeader) -> bool {
+    let kind = unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) };
+    if kind == BLOCK_KIND_RETAINED {
+        return false;
+    }
+
     unsafe {
         crate::memory::heap::clear_collector_line(block as *mut u8);
         crate::memory::block_pool::store_block_kind(&raw const (*block).kind, BLOCK_KIND_RETAINED);
     }
+
+    true
 }
 
 /// Bring a survivor's out-of-line memory with it, if it has any.
@@ -626,7 +651,7 @@ unsafe fn external_memory(surv: *mut RcHeader) -> External {
 unsafe fn place_survivor_lists(
     arena: *mut Arena,
     by_block: HashMap<usize, Vec<usize>>,
-    retained: &mut HashSet<usize>,
+    retained_blocks: &mut usize,
 ) -> Vec<usize> {
     let mut placed: Vec<(usize, Vec<usize>, *mut usize)> = Vec::with_capacity(by_block.len());
     for (block, occupants) in by_block {
@@ -636,8 +661,8 @@ unsafe fn place_survivor_lists(
         if !list.is_null() {
             let holder = BlockHeader::of_ptr(list as *const u8) as usize;
             if holder != block {
-                if retained.insert(holder) {
-                    unsafe { retain_block(holder as *mut BlockHeader) };
+                if unsafe { retain_block(holder as *mut BlockHeader) } {
+                    *retained_blocks += 1;
                 }
 
                 unsafe { crate::memory::retained::pin(holder) };

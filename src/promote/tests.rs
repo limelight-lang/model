@@ -17,6 +17,8 @@ unsafe fn block_kind(memory: *const u8) -> u32 {
 }
 
 mod the_memory_a_survivor_takes_with_it;
+#[cfg(feature = "debug-journal")]
+mod the_record_a_reset_closes_with;
 mod the_release_log;
 mod the_reset_reads_no_zero_count_member;
 mod what_a_destructor_does_during_the_fixpoint;
