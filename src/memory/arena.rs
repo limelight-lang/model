@@ -37,6 +37,52 @@ struct LogSegment {
     records: [usize; LOG_SEG_RECORDS],
 }
 
+/// A log's segment chain, taken out of the arena and walked by its new
+/// owner ([`Arena::take_destructors`] and its two neighbours). Nothing of
+/// the arena is borrowed while the chain is read, so the walk may run
+/// `__destruct` bodies that reenter the runtime and resolve this same
+/// arena (audit H5); records those bodies write begin a fresh chain the
+/// arena keeps.
+///
+/// None of the three logs handed over this way holds a zero record: only
+/// [`Arena::forget_large`] writes one, and only into `larges`, which
+/// `finish_reset` walks itself.
+///
+/// The segments are the arena's own blocks and `Arena::finish_reset`
+/// returns them, so the chain is neither freed nor handed back. That also
+/// bounds how long it stays readable: until the walker's own frame
+/// finishes the reset. **A reentrant reset of the same arena ends it
+/// sooner**, its `finish_reset` returning the block a segment stands in
+/// while the outer walk is inside it. Nothing refuses that reset —
+/// `ll_arena_reset`'s safety contract leaves the case unsaid and no
+/// generated code makes the call — and whether the runtime owes it a
+/// survival or an explicit refusal is `PLAN.md`'s Fog.
+#[must_use = "a detached log's records are lost unless it is walked"]
+pub(crate) struct DetachedLog(*mut LogSegment);
+
+impl DetachedLog {
+    /// Visit every record, newest segment first, and within a segment the
+    /// order the records were written.
+    pub(crate) fn for_each(mut self, mut f: impl FnMut(*mut RcHeader)) {
+        let head = std::mem::replace(&mut self.0, std::ptr::null_mut());
+        Arena::drain_log(head, |rec| f(rec as *mut RcHeader));
+    }
+}
+
+impl Drop for DetachedLog {
+    /// A chain dropped with its head still set was taken and never
+    /// walked, which `finish_reset`'s "logs must be drained" assert cannot
+    /// see: that one reads the arena's fields, and the take already nulled
+    /// them. Each lost record of the release log is one `ll_release` never
+    /// made, so the arena's heap children leak one count each.
+    fn drop(&mut self) {
+        debug_assert!(
+            self.0.is_null(),
+            "a detached log was dropped before it was walked"
+        );
+    }
+}
+
 /// The arena's view of a block header: the pool's three words and one of
 /// its own behind them. Nothing else of the header line is the arena's
 /// — the collector line at its end belongs to the trace once the block
@@ -525,30 +571,51 @@ impl Arena {
 
     // --- Reset primitives (composed by `crate::promote`) -----------------
 
-    /// One-shot drain of the destructor log: takes the current chain;
-    /// entries tracked *during* the drain start a fresh chain for the
-    /// caller's next round.
-    pub fn drain_destructors(&mut self, mut f: impl FnMut(*mut RcHeader)) {
-        let head = self.destructors;
-        self.destructors = std::ptr::null_mut();
-        Self::drain_log(head, |rec| f(rec as *mut RcHeader));
+    /// Take the destructor log's chain: entries tracked *during* the
+    /// caller's walk start a fresh chain for its next round.
+    pub(crate) fn take_destructors(&mut self) -> DetachedLog {
+        DetachedLog(std::mem::replace(
+            &mut self.destructors,
+            std::ptr::null_mut(),
+        ))
     }
 
-    /// One-shot drain of the escapee list (same take semantics): yields
-    /// each recorded escapee entity.
-    pub fn drain_escapees(&mut self, mut f: impl FnMut(*mut RcHeader)) {
-        let head = self.escapees;
-        self.escapees = std::ptr::null_mut();
-        Self::drain_log(head, |rec| f(rec as *mut RcHeader));
+    /// Take the escapee list's chain, same take semantics.
+    pub(crate) fn take_escapees(&mut self) -> DetachedLog {
+        DetachedLog(std::mem::replace(&mut self.escapees, std::ptr::null_mut()))
     }
 
-    /// One-shot drain of the release-at-reset log: exactly one release
-    /// is owed per record (the barrier skipped overwrite releases).
-    /// The caller performs the release and owns teardown dispatch.
-    pub fn drain_release_log(&mut self, mut f: impl FnMut(*mut RcHeader)) {
-        let head = self.release_at_reset;
-        self.release_at_reset = std::ptr::null_mut();
-        Self::drain_log(head, |rec| f(rec as *mut RcHeader));
+    /// Take the release-at-reset log's chain. Exactly one release is owed
+    /// per record, the barrier having skipped overwrite releases; the
+    /// caller performs it and owns teardown dispatch.
+    pub(crate) fn take_release_log(&mut self) -> DetachedLog {
+        DetachedLog(std::mem::replace(
+            &mut self.release_at_reset,
+            std::ptr::null_mut(),
+        ))
+    }
+
+    /// One-shot drain of the destructor log.
+    ///
+    /// **`f` may not reach this arena at all**: the walk holds `&mut self`
+    /// throughout, as [`drain_weak_log`](Self::drain_weak_log) does. A
+    /// caller whose `f` runs a `__destruct` body — which reenters and
+    /// resolves this same arena — takes the chain instead and walks it
+    /// with no borrow alive ([`take_destructors`](Self::take_destructors)).
+    pub fn drain_destructors(&mut self, f: impl FnMut(*mut RcHeader)) {
+        self.take_destructors().for_each(f);
+    }
+
+    /// One-shot drain of the escapee list, under
+    /// [`drain_destructors`](Self::drain_destructors)' restriction on `f`.
+    pub fn drain_escapees(&mut self, f: impl FnMut(*mut RcHeader)) {
+        self.take_escapees().for_each(f);
+    }
+
+    /// One-shot drain of the release-at-reset log, under
+    /// [`drain_destructors`](Self::drain_destructors)' restriction on `f`.
+    pub fn drain_release_log(&mut self, f: impl FnMut(*mut RcHeader)) {
+        self.take_release_log().for_each(f);
     }
 
     /// Final step: free OS-direct payloads, return blocks to the pool

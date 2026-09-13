@@ -76,8 +76,9 @@ const ARENA_RESET_MAX_ROUNDS: usize = 10_000;
 /// alias every one of those reentrant uses (audit H5). So each arena
 /// operation below takes its own short-lived borrow, and **no borrow is
 /// ever live across a call that can run user code** — which is also why
-/// the drains collect first and act afterwards, rather than doing the
-/// work inside the drain closure.
+/// a round takes its log's segment chain out of the arena and walks it
+/// afterwards, rather than acting inside a drain that still holds the
+/// borrow (`Arena::take_destructors`).
 ///
 /// # Safety
 /// The arena must not be reachable by running PHP code anymore (no
@@ -133,18 +134,14 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         loop {
             let mut progress = false;
 
-            let mut round = Vec::new();
-            unsafe { (*arena).drain_escapees(|e| round.push(e)) };
-            for a in round {
+            unsafe { (*arena).take_escapees() }.for_each(|a| {
                 progress = true;
                 // Count back to zero (every holder let go): survives only if
                 // an internal edge reaches it — the subgraph trace covers it.
-                if unsafe { mutator_flags(a) } & IS_ESCAPEE == 0 {
-                    continue;
+                if unsafe { mutator_flags(a) } & IS_ESCAPEE != 0 {
+                    unsafe { mark_subgraph(a, &mut survivors) };
                 }
-
-                unsafe { mark_subgraph(a, &mut survivors) };
-            }
+            });
 
             // A destructor may store an arena object into an already-traced
             // survivor — arena→arena, not an escape — so after a round that
@@ -156,18 +153,15 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             // object stored may already exist, reachable from the dying
             // object alone (`dev/DECISIONS.md`, "the re-trace runs after
             // every destructor round").
-            let mut round_dtors = Vec::new();
-            unsafe { (*arena).drain_destructors(|o| round_dtors.push(o)) };
             let mut ran_a_destructor = false;
-            for obj in round_dtors {
+            unsafe { (*arena).take_destructors() }.for_each(|obj| {
                 progress = true;
-                if unsafe { mutator_flags(obj) } & ARENA_RESET_MARK != 0 {
-                    continue; // escaped objects survive; they do not destruct
+                // Escaped objects survive; they do not destruct.
+                if unsafe { mutator_flags(obj) } & ARENA_RESET_MARK == 0 {
+                    ran_a_destructor |=
+                        unsafe { crate::object::run_user_destructor(obj as *mut Object) };
                 }
-
-                ran_a_destructor |=
-                    unsafe { crate::object::run_user_destructor(obj as *mut Object) };
-            }
+            });
 
             if ran_a_destructor {
                 unsafe { retrace_survivors(&mut survivors) };
@@ -317,23 +311,22 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         // may create new work; a new escape settles as an ordinary escape
         // next pass (the survivor it stored into is GcHeap by now). Loop
         // while the log yields anything.
-        // Collect the round, then release it: `die` runs `__destruct`,
-        // which reenters and resolves this same arena, so the drain's
-        // borrow must already be gone by then (audit H5). Entries those
-        // destructors append stay in the log and the next pass takes
+        // Take the chain, then release off it: `die` runs `__destruct`,
+        // which reenters and resolves this same arena, so no borrow of the
+        // arena may be live here (audit H5). Entries those destructors
+        // append begin the arena's fresh chain and the next pass takes
         // them — the same settling the loop already relies on (H7).
-        let mut round_releases = Vec::new();
-        unsafe { (*arena).drain_release_log(|entity| round_releases.push(entity)) };
-        if round_releases.is_empty() {
-            break;
-        }
-
-        for entity in round_releases {
+        let mut released = 0usize;
+        unsafe { (*arena).take_release_log() }.for_each(|entity| {
+            released += 1;
             unsafe {
                 if ll_release(entity) {
                     die(entity);
                 }
             }
+        });
+        if released == 0 {
+            break;
         }
 
         rounds += 1;

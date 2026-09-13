@@ -161,3 +161,19 @@ fn reset_hands_destructors_and_recycles_blocks() {
     );
     assert_eq!(pool.regions_carved(), regions_before);
 }
+
+/// The chain a `take_*` hands over carries the log's only copy of its
+/// records, and `finish_reset`'s "logs must be drained" assert cannot
+/// report a chain nobody walked: it reads the arena's fields, which the
+/// take has already nulled. The guard that does report it is
+/// `DetachedLog`'s own drop.
+#[test]
+#[should_panic(expected = "a detached log was dropped before it was walked")]
+fn a_detached_log_nobody_walks_is_reported() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = Arena::new();
+    // Never dereferenced: the log stores the word and only a walk reads
+    // it, which is the thing this test declines to do.
+    arena.track_destructor(std::ptr::dangling_mut());
+    drop(arena.take_destructors());
+}

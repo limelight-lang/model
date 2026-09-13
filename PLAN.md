@@ -155,6 +155,13 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 
 ## Fog
 
+- A destructor that resets the arena it is dying in aborts, in
+  `memory::gc_metadata`'s "adopting a block across the wrong ownership
+  boundary" — probed on 2026-09-13 and the probe removed, a non-unwinding
+  panic taking every test after it. `ll_arena_reset`'s safety comment leaves
+  the same arena's re-entry unsaid, and no generated code calls it, so whether
+  the runtime owes this case a survival or an explicit refusal is unsettled.
+
 A line here is an unresolved question rather than a step: it carries no
 criterion, and it leaves when it gets one or when it is ruled on.
 
@@ -3592,12 +3599,20 @@ unsound rather than dear.
         in-arena log and a root's cell is its escapee record, so only a child
         can be severed. Two `rfc` sentences are owed an amendment, carried in
         that repository's Fog.
-- [ ] S47.1 The drains hand over their chain
+- [x] S47.1 The drains hand over their chain
       done: `round`, `round_dtors` and `round_releases` are gone — `Arena`
         hands each log's chain head over and nulls its own field, and the
         caller walks the chain with no borrow live across user code; the Miri
         slice over the fixpoint cases is green and those cases stay green
       tier: T2 · role: Critic
+      handoff: `Arena::take_destructors`, `take_escapees` and
+        `take_release_log` answer a `DetachedLog`, and `drain_*` is that take
+        plus its walk, so every other caller is unchanged. A chain taken and
+        not walked is reported by the type's own drop, `finish_reset`'s assert
+        reading fields the take has already nulled. Miri on 2026-09-13:
+        `what_a_destructor_does_during_the_fixpoint` 8/0 in 21 s wall,
+        `the_release_log` 3/0 in 12 s, `arena::tests::the_logs_the_reset_reads`
+        5/0 in 50 s.
 - [ ] S47.2 The survivor chain in `ll_alloc` segments, and no mark worklist
       done: `survivors` stands in 4 KiB segments drawn through
         `stdapi::ll_alloc`, the window's log's shape, and `mark_subgraph`'s
