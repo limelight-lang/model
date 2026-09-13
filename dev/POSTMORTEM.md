@@ -7,6 +7,34 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-13 — the write-provenance rule was broken again, in a file no Miri slice covered
+
+**What happened.** S47.9 ran `refcount::tests` under Miri, which no earlier
+stage had, and Miri stopped at
+`a_published_entity_carries_no_stamp_of_its_own_slot`: the case reads a
+stack-built header's stamp through `&raw const slot`, and the byte-wide atomic
+load retags for shared read-write. Four sites in
+`the_maturation_stamp_the_commit_writes` carried it, and the two this step
+added carried it too, written from the file they stood in.
+
+**Why it was possible.** The rule is already on record — 2026-08-26, "an
+atomic read needs write provenance" — and it says a pointer handed to any
+accessor in `refcount` is `&raw mut` in a fixture. Nothing holds it: the
+accessors state it at the declaration, a `cargo test` run cannot separate the
+two provenances, and the file that broke it was written after the entry.
+
+**Why it was not caught earlier.** The slices named in each stage's closing
+record are the modules that stage touched. `refcount::tests` is touched by
+almost every stage and named by none, so a case added there is covered by the
+suite and by nothing else.
+
+**The rule, unchanged and now with a habit beside it.** One `*mut` per case,
+made once and used for the reads as well; the module doc of that file says so
+where the next case will be written. A slice over `refcount::tests` belongs in
+any stage that adds an accessor to the header.
+
+---
+
 ## 2026-09-09 — the pruning simulation aged rows the production stamp cannot reach
 
 **What happened.** S40.1 reported that maturation thresholds 1, 2 and 3 would

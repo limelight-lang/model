@@ -1237,14 +1237,19 @@ unsafe fn retrace_survivors(arena: *mut Arena) -> usize {
 ///
 /// The population is the log's captures, one per COW survivor the reset
 /// promoted: a correction naming a child with no capture belongs to a COW
-/// entity this reset never promoted and is never asked for
-/// (`memory::reset_window::Record`).
+/// entity this reset never promoted, and what tells the two apart is the bit
+/// the first pass below sets (`refcount::is_reconciling`).
 ///
-/// **One store per survivor, of the whole sum.** The terms are summed in an
-/// `i64` and clamped once, because a count is unsigned and the terms are
+/// **The sum is built in the survivor's own count word**, which holds a
+/// signed accumulator from the first pass to the third. That is sound
+/// because nothing reads it in between: this function runs no user code, so
+/// no destructor, no collection and no nested reset stands between the
+/// passes, and the bit that marks the state has no other reader.
+///
+/// **One clamp, on the whole sum.** The terms are signed where a count is
 /// not: `at = 3` with one edge and two post-capture releases sums to `-2`,
-/// and a header walked through the terms would pass through `4.29e9` on its
-/// way there.
+/// and a count walked through the terms rather than through the accumulator
+/// would pass through `4.29e9` on the way.
 ///
 /// A survivor torn down inside the reset is skipped, its count having to
 /// stay zero for the queue that holds it (`memory::reset_window`).
@@ -1254,28 +1259,87 @@ unsafe fn retrace_survivors(arena: *mut Arena) -> usize {
 /// blocks are disposed of.
 unsafe fn reconcile_cow_counts() {
     use crate::memory::reset_window::Correction;
+    use crate::refcount::{is_reconciling, set_reconciling};
 
-    let log = crate::memory::reset_window::order_log_by_child();
-    log.for_each_capture(|survivor, at| {
+    // **Three passes, and none of them may unwind.** Between the first store
+    // and the last, a promoted survivor's count word holds the sum being
+    // built rather than a count, and the bit that says so has one reader
+    // (`rfc/model/classes.md`, "Flags layout"). A survivor left in that state
+    // is freed by the next release that reads its word, so every check below
+    // records its subject and fires after the last store rather than in the
+    // middle of the walk.
+    let mut captured_twice: *mut RcHeader = std::ptr::null_mut();
+    let mut lost_more_than_it_had: *mut RcHeader = std::ptr::null_mut();
+
+    // 1. Seed each survivor with its delta and take it in hand. A survivor
+    //    this reset tore down keeps the zero its teardown left, for the queue
+    //    that requires it, so it is neither seeded nor taken.
+    crate::memory::reset_window::for_each_capture(|survivor, at| {
         if unsafe { crate::memory::reset_window::is_torn_down(survivor) } {
             #[cfg(test)]
             SKIPPED_TEARDOWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
 
-        let mut settled = unsafe { header_refcount(survivor) } as i64 - at as i64;
-        log.corrections_for(survivor, |correction| {
-            settled += match correction {
-                Correction::DeferredIncrement => 1,
-                Correction::DeferredDecrement => -1,
-            };
-        });
-        debug_assert!(
-            settled >= 0,
-            "a COW survivor lost more references than it had"
-        );
-        unsafe { set_header_refcount(survivor, settled.max(0) as u32) };
+        // A second capture of one address would seed over a sum already
+        // built, which the third pass would then store as the count.
+        if unsafe { is_reconciling(survivor) } {
+            captured_twice = survivor;
+            return;
+        }
+
+        let now = unsafe { header_refcount(survivor) };
+        unsafe {
+            set_header_refcount(survivor, now.wrapping_sub(at));
+            set_reconciling(survivor, true);
+        }
     });
+
+    // 2. Apply every correction to the survivor it names, and to nothing
+    //    else: the log records an edge and a compensating retain for every
+    //    COW child the counting pass met, including entities this reset never
+    //    promoted, whose counts are live. The sum wraps rather than
+    //    saturating — the corrections of one child arrive in no order, so a
+    //    decrement can land on a delta of zero.
+    crate::memory::reset_window::for_each_correction(|child, correction| {
+        if !unsafe { is_reconciling(child) } {
+            return;
+        }
+
+        let sum = unsafe { header_refcount(child) };
+        let sum = match correction {
+            Correction::DeferredIncrement => sum.wrapping_add(1),
+            Correction::DeferredDecrement => sum.wrapping_sub(1),
+        };
+        unsafe { set_header_refcount(child, sum) };
+    });
+
+    // 3. Read the sum as the signed number it is, clamp it once and store the
+    //    count, then give the survivor back.
+    crate::memory::reset_window::for_each_capture(|survivor, _| {
+        if !unsafe { is_reconciling(survivor) } {
+            return;
+        }
+
+        let settled = unsafe { header_refcount(survivor) } as i32;
+        unsafe {
+            set_header_refcount(survivor, settled.max(0) as u32);
+            set_reconciling(survivor, false);
+        }
+
+        if settled < 0 {
+            lost_more_than_it_had = survivor;
+        }
+    });
+
+    debug_assert!(
+        captured_twice.is_null(),
+        "a COW survivor was captured twice, so the second seed overwrote a sum"
+    );
+    debug_assert!(
+        lost_more_than_it_had.is_null(),
+        "a COW survivor lost more references than it had"
+    );
 }
 
 /// True when `cells::trace_entity` enumerates **all** of this entity's

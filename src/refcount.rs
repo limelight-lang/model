@@ -947,6 +947,70 @@ pub(crate) unsafe fn write_maturation_stamp(header: *mut RcHeader, stamp: Matura
     unsafe { maturation_byte_store(header, reserve | fields) };
 }
 
+/// Byte 7 of the header, whose bit 0 is the flags word's bit 24
+/// (`rfc/model/classes.md`, "Flags layout").
+const RECONCILING_BYTE: usize = 7;
+
+/// Byte 7's bit 0: the arena reset's COW count reconciliation has this entity
+/// in hand, and **its `refcount` is a signed accumulator rather than a count
+/// while the bit stands**. A reader that took the word for a count would free
+/// a live entity, which is why the bit has exactly one reader —
+/// `promote::reconcile_cow_counts`, deciding whether a correction belongs to
+/// its own population.
+///
+/// The bit stands on no entity outside that function: it runs no user code,
+/// opens no nested reset and does not unwind, so nothing observes the window
+/// in which it is up.
+const RECONCILING_IN_BYTE: u8 = 1;
+
+/// Whether the reconciliation has this entity in hand ([`RECONCILING_IN_BYTE`]).
+///
+/// # Safety
+/// `header` points at a published entity whose first eight bytes are readable.
+#[inline]
+pub(crate) unsafe fn is_reconciling(header: *const RcHeader) -> bool {
+    unsafe { reconciling_byte_load(header) & RECONCILING_IN_BYTE != 0 }
+}
+
+/// Take the entity in hand, or give it back. Byte-wide, as byte 6's writer is
+/// and for the same reason: a wider access would overlap the mutator's two
+/// bytes or the collector's one without covering them, and byte 7's second
+/// field, when it arrives, would be lost by a store of the whole byte
+/// (`rfc/model/classes.md`, "Flags layout").
+///
+/// # Safety
+/// As [`is_reconciling`], and the caller is the reset's reconciliation, which
+/// is byte 7's only writer.
+#[inline]
+pub(crate) unsafe fn set_reconciling(header: *mut RcHeader, taken: bool) {
+    let rest = unsafe { reconciling_byte_load(header) } & !RECONCILING_IN_BYTE;
+    let byte = if taken {
+        rest | RECONCILING_IN_BYTE
+    } else {
+        rest
+    };
+    unsafe { reconciling_byte_store(header, byte) };
+}
+
+/// The relaxed byte load at [`RECONCILING_BYTE`], and the store's twin.
+#[inline]
+unsafe fn reconciling_byte_load(header: *const RcHeader) -> u8 {
+    unsafe {
+        (*((header as *const u8).add(RECONCILING_BYTE) as *const core::sync::atomic::AtomicU8))
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// The relaxed byte store at [`RECONCILING_BYTE`], narrow for the reason
+/// [`maturation_byte_store`] is.
+#[inline]
+unsafe fn reconciling_byte_store(header: *mut RcHeader, byte: u8) {
+    unsafe {
+        (*((header as *mut u8).add(RECONCILING_BYTE) as *const core::sync::atomic::AtomicU8))
+            .store(byte, core::sync::atomic::Ordering::Relaxed)
+    };
+}
+
 /// The relaxed byte load at [`MATURATION_STAMP_BYTE`], and the store's twin.
 #[inline]
 unsafe fn maturation_byte_load(header: *const RcHeader) -> u8 {

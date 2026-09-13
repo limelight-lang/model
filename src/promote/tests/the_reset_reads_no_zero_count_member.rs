@@ -1492,6 +1492,67 @@ fn a_cow_survivor_whose_slots_empty_inside_the_fixpoint_settles_at_zero() {
     }
 }
 
+/// No survivor leaves the reconciliation in hand.
+///
+/// While the bit stands, the entity's count word holds the sum being built
+/// rather than a count, and the next release that reads it frees a live
+/// entity or wraps to 4.29e9. The bit is therefore taken and given back
+/// inside one function that cannot unwind, and this is what says the giving
+/// back happened: the array below is promoted, settled to its one holder,
+/// and reads clear afterwards.
+#[test]
+fn no_survivor_leaves_the_reconciliation_in_hand() {
+    use crate::array::entity::ll_array_new;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let holder_cls = ClassBuilder::new("InHandHolder")
+        .prop("items", true)
+        .build();
+    let cache_cls = ClassBuilder::new("InHandCache").prop("kept", true).build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+    set_current_context(context_ptr);
+
+    let cache = unsafe { new_constructed(&mut *context_ptr, cache_cls, MemoryCategory::GcHeap) };
+    let holder =
+        unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::RequestArena) };
+    let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+
+    unsafe {
+        assert!(crate::array::testing::push(array, Value::int(7)));
+        let slot = Object::prop_at(holder, 16);
+        assert!(ref_store(
+            arena_ptr,
+            holder as *mut RcHeader,
+            slot,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Array, array as *mut RcHeader),
+        ));
+        store_prop(arena_ptr, cache, 16, holder);
+    }
+
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    set_current_context(std::ptr::null_mut());
+
+    unsafe {
+        assert!(
+            !crate::refcount::is_reconciling(array as *const RcHeader),
+            "the reconciliation left the survivor in hand, so its count word is a sum"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(array),
+            1,
+            "the array is held by its one promoted holder and by nothing else"
+        );
+
+        assert!(crate::refcount::ll_release(cache as *mut RcHeader));
+        ll_object_die(cache);
+    }
+}
+
 /// A capture the manager refuses leaves its survivor the references its
 /// arena holders held, and the reset says so.
 ///

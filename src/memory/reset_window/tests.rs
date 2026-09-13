@@ -163,20 +163,21 @@ fn holder(shape: Holder) -> RcHeader {
     header
 }
 
-/// A child's corrections are found in **every** segment that holds one, and
-/// the answer is a deferred increment per record with a holder, whatever
-/// became of that holder since — standing, torn down, or torn down with a
-/// queue entry still naming it; a decrement is a record with no holder.
+/// Every record of every segment is answered, and a record with a holder is
+/// a deferred increment whatever became of that holder since — standing,
+/// torn down, or torn down with a queue entry still naming it; a decrement
+/// is a record with no holder.
 ///
 /// The records of one child are spread over as many segments as the reset
-/// filled, so a search that read the newest segment alone would answer a
-/// fraction of the edges and free a live entity. Here each child's records
-/// cross the boundary, which is what a fraction would be visible against.
+/// filled, so a walk that stopped at the newest segment would answer a
+/// fraction of the edges, and a dropped increment frees a live entity. Here
+/// each child's records cross the boundary, which is what a fraction would
+/// be visible against.
 ///
 /// The segments come from the thread's heap and go back at the close,
 /// which the block's occupancy is what shows.
 #[test]
-fn a_childs_corrections_are_found_in_every_segment_that_holds_one() {
+fn the_log_answers_an_increment_per_edge_whatever_the_holders_fate() {
     let _g = test_guard();
     let mut live = holder(Holder::Live);
     let mut torn_down = holder(Holder::TornDown);
@@ -205,30 +206,28 @@ fn a_childs_corrections_are_found_in_every_segment_that_holds_one() {
     }
     assert_eq!(take_refused_records(), 0, "the manager refused a segment");
 
-    let log = order_log_by_child();
-    let corrections = |child| {
-        let (mut increments, mut decrements) = (0, 0);
-        log.corrections_for(child, |correction| match correction {
-            Correction::DeferredIncrement => increments += 1,
-            Correction::DeferredDecrement => decrements += 1,
-        });
-        (increments, decrements)
-    };
+    let (mut live_increments, mut increments, mut candidate_increments, mut decrements, mut others) =
+        (0, 0, 0, 0, 0);
+    for_each_correction(|child, correction| match (child, correction) {
+        (child, Correction::DeferredIncrement) if child == child_of_live => live_increments += 1,
+        (child, Correction::DeferredIncrement) if child == child_of_torn_down => increments += 1,
+        (child, Correction::DeferredIncrement) if child == child_of_candidate => {
+            candidate_increments += 1
+        }
+        (child, Correction::DeferredDecrement) if child == decremented => decrements += 1,
+        _ => others += 1,
+    });
     assert_eq!(
         (
-            corrections(child_of_live),
-            corrections(child_of_torn_down),
-            corrections(child_of_candidate),
-            corrections(decremented),
+            live_increments,
+            increments,
+            candidate_increments,
+            decrements,
+            others
         ),
-        ((per_kind, 0), (per_kind, 0), (per_kind, 0), (0, per_kind)),
+        (per_kind, per_kind, per_kind, per_kind, 0),
         "every edge is owed once, whatever became of its holder; a \
          decrement is a record with no holder"
-    );
-    assert_eq!(
-        corrections(0x4000 as *mut RcHeader),
-        (0, 0),
-        "a child the log never met was answered a correction"
     );
 
     let newest = unsafe { (*WINDOW.with(|cell| cell.get())).log };
@@ -296,70 +295,24 @@ fn a_refused_segment_is_answered_to_the_recorder() {
     );
 
     let mut kept = 0;
-    order_log_by_child().corrections_for(child, |_| kept += 1);
+    for_each_correction(|_, _| kept += 1);
     assert_eq!(kept, 0, "a refused record was kept");
 
-    // The log grows again once the manager answers, and the order the
-    // search stands on is taken afresh over what the append left.
+    // The log grows again once the manager answers.
     record_promotion_edge(live, child);
     let mut kept = 0;
-    order_log_by_child().corrections_for(child, |_| kept += 1);
+    for_each_correction(|_, _| kept += 1);
     assert_eq!(kept, 1, "the record after the refusal was not kept");
     assert_eq!(take_refused_records(), 0);
     drop(guard);
 }
 
-/// A child whose records sit above another child's, in segments of their
-/// own, is still found: the search crosses the segments below the address
-/// and stops at the first one that begins above it.
-///
-/// The stop is what the chain's order buys, and it is sound only in that
-/// order. A chain ordered the other way answers nothing for the lower child
-/// — the walk meets a segment beginning above it and ends — which is a
-/// dropped increment, and a dropped increment frees a live entity.
-#[test]
-fn a_child_above_another_is_found_across_the_segments_below_it() {
-    let _g = test_guard();
-    let mut live = holder(Holder::Live);
-    let live: *mut RcHeader = &raw mut live;
-    let low = 0x1000 as *mut RcHeader;
-    let high = 0x9000 as *mut RcHeader;
-
-    let mut window = ResetWindow::closed();
-    let mut arena = Arena::new();
-    let guard = open(&mut window, &mut arena);
-    let _ = take_refused_records();
-    // One segment's worth of each, in address order, so the two children
-    // land in segments whose ranges do not meet.
-    for child in [low, high] {
-        for _ in 0..RECORDS_PER_SEGMENT {
-            record_promotion_edge(live, child);
-        }
-    }
-
-    assert_eq!(take_refused_records(), 0, "the manager refused a segment");
-
-    let log = order_log_by_child();
-    let corrections = |child| {
-        let mut increments = 0;
-        log.corrections_for(child, |correction| {
-            assert_eq!(correction, Correction::DeferredIncrement);
-            increments += 1;
-        });
-        increments
-    };
-    assert_eq!(
-        (corrections(low), corrections(high)),
-        (RECORDS_PER_SEGMENT, RECORDS_PER_SEGMENT),
-        "a child was answered fewer edges than the log holds for it"
-    );
-    drop(guard);
-}
-
 /// A capture is answered by the capture enumerator and stepped over by the
-/// correction search. A reader that decided the kind on a null holder would
+/// correction one. A reader that decided the kind on a null holder would
 /// answer every capture as a deferred increment, which adds one reference
-/// per COW survivor to the very count the capture is there to state.
+/// per COW survivor to the very count the capture is there to state — and
+/// the reconciliation's second pass, which walks every correction the log
+/// holds, is where that lands today.
 #[test]
 fn a_capture_is_answered_by_its_own_enumerator_and_never_as_a_correction() {
     let _g = test_guard();
@@ -381,9 +334,8 @@ fn a_capture_is_answered_by_its_own_enumerator_and_never_as_a_correction() {
     record_promotion_edge(live, uncaptured);
     assert_eq!(take_refused_records(), 0, "the manager refused a segment");
 
-    let log = order_log_by_child();
     let (mut captures, mut answered_for, mut answered_at) = (0, std::ptr::null_mut(), 0);
-    log.for_each_capture(|entity, at| {
+    for_each_capture(|entity, at| {
         captures += 1;
         answered_for = entity;
         answered_at = at;
@@ -394,11 +346,12 @@ fn a_capture_is_answered_by_its_own_enumerator_and_never_as_a_correction() {
         "the captures are the survivors the reset promoted, with the count each carried"
     );
 
-    let corrections = |child| {
+    let corrections = |wanted| {
         let (mut increments, mut decrements) = (0, 0);
-        log.corrections_for(child, |correction| match correction {
-            Correction::DeferredIncrement => increments += 1,
-            Correction::DeferredDecrement => decrements += 1,
+        for_each_correction(|child, correction| match correction {
+            Correction::DeferredIncrement if child == wanted => increments += 1,
+            Correction::DeferredDecrement if child == wanted => decrements += 1,
+            _ => {}
         });
         (increments, decrements)
     };
@@ -448,7 +401,7 @@ fn a_refused_capture_is_answered_to_its_caller_and_not_to_the_edges_channel() {
     );
 
     let mut captures = 0;
-    order_log_by_child().for_each_capture(|_, _| captures += 1);
+    for_each_capture(|_, _| captures += 1);
     assert_eq!(captures, 0, "a refused capture was kept");
     drop(guard);
 }

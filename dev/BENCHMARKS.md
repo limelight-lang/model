@@ -8,6 +8,51 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-13 — S47.9 the COW reconciliation is three linear passes: 2400 survivors 248 → 41.7 µs, and 102.3 against the `HashMap` it started from
+
+**Machine:** dev box, shared with interactive work, 16 cores. **Base:** the
+three arms measured in one session, `rustc 1.96.0`, release profile.
+
+**What changed:** the reconciliation settled each COW survivor by searching
+every segment of the window's log for that child's records. It now walks the
+log three times instead: the first pass seeds each survivor's own count word
+with `now - at` and takes it in hand through flags bit 24, the second applies
+every correction to the child whose word carries that bit, the third reads the
+sum as an `i32`, clamps it once and gives the entity back. The sort, the
+per-segment child ranges, the relinked chain and the binary search are gone
+with it, and the log's segment header is 16 bytes again rather than 32.
+
+### The clock: one reset, an array of COW strings
+
+`promote::tests::what_the_cow_reconciliation_costs::measure_the_reconciliation`,
+the same probe and the same shapes as the S47.7 entry below. Minima of 15
+rounds, four runs per arm.
+
+| shape | `Vec` + `HashMap` | the search | three passes |
+| --- | --- | --- | --- |
+| 120 COW survivors | 5.4, 5.7, 5.7, 5.7 µs | 4.4, 4.5, 4.7, 5.3 µs | 2.2, 2.2, 2.2, 3.3 µs |
+| 2400 COW survivors | 102.3, 104.1, 105.7, 107.3 µs | 248.1, 255.1, 267.1, 282.6 µs | 41.7, 41.9, 43.7, 44.8 µs |
+
+Taking the minimum of each arm: 5.4 → 2.2 µs at 120 and 102.3 → 41.7 at 2400,
+against the table the stage started from, and 4.4 → 2.2 and 248.1 → 41.7
+against the search it replaces. The quadratic term is what leaves: the work is
+now one pass per record rather than one chain walk per capture.
+
+**What the membership bit costs.** The arm measured for S47.7's entry kept the
+tag in bit 31 of the count and read 2.1 µs at 120 and 38.9 at 2400. Bit 24
+costs a byte-wide read-modify-write per capture in the first and third passes
+and a byte load per correction in the second, which is the difference between
+those figures and the ones above — about 7 % at 2400 and 5 % at 120. What it
+buys is the count's full `u32`: with the tag in the count, a live COW entity
+holding more than 2^31 references and named by a correction would have been
+taken for one of the reset's own.
+
+**Not measured:** what the three passes cost in cache lines against the
+search. Each pass touches every record once and every captured survivor's
+header three times, where the search touched the log's segment headers `C · S`
+times and the entity headers twice; no counter in this crate reads cache
+lines, and the clock above is the whole answer available.
+
 ## 2026-09-13 — S47.7 the COW reconciliation leaves the global allocator: 2 allocations to 0, and the reset of 2400 COW survivors is three times longer
 
 **Machine:** dev box, shared with interactive work, 16 cores. **Base:**

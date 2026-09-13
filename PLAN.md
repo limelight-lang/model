@@ -14,11 +14,11 @@ in the specification rather than in this crate.
 Updated: 2026-09-13 · Active: S47, whose Critic round of 2026-09-13 took the
 breakdown of 2026-09-12 from five steps to eight, Edmond agreeing the new
 structure the same day (`dev/plans/S47.md`); every step of it closed on
-2026-09-13, three of them on Sage rulings, and **what the stage waits on is
-one answer rather than one step**: S47.7's measurement makes the COW
-reconciliation three times longer at 2400 COW survivors, and whether the
-linear arm priced beside it replaces the agreed search is Edmond's
-(`dev/BENCHMARKS.md`, 2026-09-13).
+2026-09-13, four of them on Sage rulings. The last is S47.9: S47.7's own
+measurement refuted the mechanism S47.7 built — the by-capture search is
+`O(C²)` in one reset's COW survivors — and Edmond ruled the same day to take
+the linear arm, which settles 2400 of them in 41.7 µs against the search's
+248.1 and the `HashMap`'s 102.3 (`dev/BENCHMARKS.md`, 2026-09-13).
 S36's one open step is S36.9, which
 closes on a deny run over a reset inside a collection; the containers of
 `promote`'s own that used to fail such a run are gone with S47, and building
@@ -3782,6 +3782,32 @@ unsound rather than dear.
         today. `block_pool::test_guard` warms the thread's buffer arena,
         whose `Box` was charged to whichever test first carried a payload out
         of an arena.
+
+- [x] S47.9 The COW reconciliation is three linear passes
+      done: the by-capture search is gone — the reconciliation walks the log
+        three times, builds each survivor's sum in its own count word and
+        marks the entity as its own with flags bit 24 while it does; the
+        `rfc` amendment lands before the code, the three passes cannot
+        unwind, and the step measures the form it ships rather than the one
+        it prototyped
+      tier: T2 · role: Sage → Critic
+      handoff: the Sage of 2026-09-13 ruled the accumulator on S47.7's own
+        measurement, and the Critic's round over that ruling is what shaped
+        it (`dev/plans/S47.md`). `refcount::is_reconciling` and
+        `set_reconciling` are byte-wide accesses to byte 7, as byte 6's
+        writer is; `reset_window` keeps two readers, `for_each_capture` and
+        `for_each_correction`, and lost `LogByChild`, `order_log_by_child`,
+        the per-segment child ranges and `log_ordered`, so a segment header
+        is 16 bytes again. Both checks of `reconcile_cow_counts` record their
+        subject and fire after the last store: between the first store and
+        the last, a survivor's count word is an accumulator, and a reader
+        that took it for a count would free a live entity.
+        2400 COW survivors settle in 41.7 µs against the search's 248.1 and
+        the `HashMap`'s 102.3, 120 in 2.2 against 4.4 and 5.4
+        (`dev/BENCHMARKS.md`, 2026-09-13). `rfc` `08b28d7` assigns bit 24.
+        The step's Miri slice over `refcount::tests` — a module no stage had
+        run — caught the write-provenance rule broken in six fixture reads
+        (`dev/POSTMORTEM.md`, 2026-09-13).
 
 ---
 

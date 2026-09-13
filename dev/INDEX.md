@@ -505,9 +505,9 @@ versions live in `docs/history/`, marked at the top.
   refused edge is answered to the reset, which retains the round's COW
   children rather than settle a count low; a refused capture is answered to
   its caller, which counts and journals it and leaves the survivor the
-  references its arena holders held. `order_log_by_child` sorts each segment
-  and records the child range it holds, which is what the corrections'
-  search reads. No `Vec`, `Box` or
+  references its arena holders held. `for_each_capture` and
+  `for_each_correction` are the log's two readers, each one walk of every
+  record. No `Vec`, `Box` or
   map anywhere in it. Windows nest, because a destructor of one reset can
   resolve a second arena and reset it (`dev/DECISIONS.md`, "the reset reads
   no corpse", and "the record of a torn-down entity is its own header bit").
@@ -750,10 +750,13 @@ pass and block retention. Children come from `cells::trace_entity`, so a
 reference box's referent is promoted with it; a COW survivor's count is
 left alone during the fixpoint (destructors read it) and settled once
 afterwards by `reconcile_cow_counts`, off the window's log of promotion-time
-edges and the count's movement since, reaching no entity's cells
-(`dev/DECISIONS.md`, 2026-08-04, "the COW count is the log's edges plus the
-delta", and "the capture is a third record kind"). What that costs against
-the `HashMap` it replaced, and the linear arm measured and not taken, are in
+edges and the count's movement since, reaching no entity's cells. It is three
+linear passes, and the sum is built in each survivor's own count word while
+flags bit 24 marks the entity as the reconciliation's — the one window in
+which that word is not a count (`dev/DECISIONS.md`, 2026-08-04, "the COW
+count is the log's edges plus the delta", "the capture is a third record
+kind", and "the COW reconciliation accumulates in the count word";
+`rfc/model/classes.md`, "Flags layout"). What the three arms cost is
 `dev/BENCHMARKS.md`, 2026-09-13.
 
 ## Hot paths

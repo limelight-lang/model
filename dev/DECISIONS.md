@@ -8,6 +8,60 @@ never edited or deleted.
 
 ---
 
+## 2026-09-13 — the COW reconciliation accumulates in the count word, and flags bit 24 says so
+
+**Ruled by the Sage, final**, on the measurement S47.7's own criterion
+demanded: the search that replaced the `HashMap` is `O(C²)` in the COW
+survivors of one reset, 248 µs against 102 for 2400 of them, and the crossover
+is near 400 (`dev/BENCHMARKS.md`, 2026-09-13). The reconciliation is three
+linear passes instead, and the count word of each captured survivor is where
+the sum is built.
+
+**The membership test is what the bit is for.** The log records an edge and a
+compensating retain for every COW child the counting pass met, including
+entities this reset never promoted, whose counts are live; applying a
+correction to one of those moves a count that belongs to the program. The
+`HashMap` answered membership by a key, the search by a binary search, and the
+three passes answer it by a bit the first pass sets on the survivors it seeds.
+
+**Bit 24 of the flags rather than bit 31 of the count.** The count's top bit
+was measured first and costs 5–7 % less, but it narrows every COW entity a
+correction names to 2^31 references: one above that would be taken for the
+reset's own and have its count moved. Byte 7 was free by
+`rfc/model/classes.md`, "Flags layout", and is written byte-wide as byte 6 is,
+so a second field there survives.
+
+**`ARENA_RESET_MARK` was refused, and the reason is the nested reset.** A
+destructor of one reset can resolve a second arena and reset it, and a
+correction of the inner log can name a COW entity of the outer arena, which
+carries bit 7 legitimately from the outer reset's trace. The inner
+reconciliation would take it for its own. Bit 24 is free of that because one
+function sets and clears it and that function opens no reset.
+
+**Three passes and no unwind between them.** Between the first store and the
+last, a survivor's count word holds a signed accumulator, and a reader that
+took it for a count would free a live entity or wrap it to 4.29e9. So the
+checks — a child captured twice, a sum below zero — record their subject and
+fire after the last store rather than in the middle of a walk, and nothing
+else in the three passes can panic. What holds the exit state is
+`promote::tests::the_reset_reads_no_zero_count_member::`
+`no_survivor_leaves_the_reconciliation_in_hand`.
+
+**The right to read a child the reset never promoted comes from the pool, not
+from the window.** The second pass reads the flags byte of every correction's
+child, including entities freed inside the reset whose slots were handed out
+again. The window defers the free of a large body and absorbs the free of an
+occupant of an uncounted retained block; neither covers an ordinary small
+slot. What covers it is that the pool does not unmap its regions and that a
+re-issued slot is published by one eight-byte store that writes byte 7 — both
+recorded in `rfc/model/classes.md` beside the bit.
+
+**Cost, named:** the reconciliation writes a survivor's header three times
+where it wrote once, and reads headers it does not own; the header is
+inconsistent in the middle of the function and only prose says so; and the
+search's own machinery — the per-segment sort, the child ranges, the relinked
+chain, the binary search — is deleted one commit after it landed.
+
 ## 2026-09-13 — a refused capture leaves its survivor the arena holders' references, and nothing compensates it
 
 The reset settles a COW survivor's count from three terms, and the third of
