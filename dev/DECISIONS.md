@@ -8,6 +8,91 @@ never edited or deleted.
 
 ---
 
+## 2026-09-13 — a survivor cell the pool cannot supply severs the edge, and the reset finishes
+
+**Ruled by the Sage (S47.0), final.** When the pool cannot supply a cell of the
+survivor chain, `promote::arena_reset_full` writes the slot's null form into the
+survivor slot that named the unrecorded child and carries on as an ordinary
+reset. No block, run or destructor is abandoned. The reset returns how many
+edges it severed, and each severance is journalled with the arena, the holder
+and the child.
+
+**Abandonment is unsound, which two Critic rounds priced without seeing.** An
+abandoned arena leaves entities of category `RequestArena` reachable from the
+heap through a promoted or escaped holder, and the program keeps mutating them
+in later requests. A store of a current-arena value into such a holder is an
+arena-to-arena store, which the barrier does not record as an escape
+(`promote.rs`, the re-trace comment). The next reset never marks the stored
+object, returns its block, and the holder's slot names freed memory — a
+use-after-free two requests later. A block kind cannot close it, because the
+barrier reads the entity's category rather than the block's kind, and a third
+category value would have to be stamped on entities the refusal made
+impossible to enumerate.
+
+**A root is never severed, because its cell is its escapee record.** A round
+takes the escapee log's detached chain, compacts each segment in place over the
+records that mark — dropping a stale record, a duplicate and a non-arena value
+exactly as `mark_subgraph` drops them today — and links the compacted segments
+into the survivor chain. Every root of the round is admitted before any child is
+traced, and admitting a root allocates nothing. The free tail of a compacted
+segment takes the first children; further cells come from the arena's bump.
+
+**The chain is an in-arena log**, the shape `Arena`'s five logs already have:
+segments in the arena's own blocks, drawn through `Arena::alloc` and never
+through the reserve, so the chain cannot starve the barrier's pushes inside a
+destructor round. Its segments die with the blocks at `finish_reset`, so it has
+no release loop and no refusal of its own beyond the pool's.
+
+**A child is admitted before it is marked.** `mark_one` returns if the child is
+already marked, severs if the chain cannot take one more cell, and otherwise
+sets `ARENA_RESET_MARK`, zeroes the count as today and appends. The mark bit and
+chain membership stay equal, which every later pass relies on, and a refusal
+leaves no half-marked entity. The sever is a raw write with no release and no
+barrier call: the child dies with the arena as any unmarked entity does, so its
+children, its heap children in the release log, its weak cells and its tracked
+destructor are all handled by passes that already exist. The counting pass and
+the re-trace read the null and skip it. `retrace_survivors` reaches children
+through survivor slots too and takes the same arm.
+
+**The tracer hands the slot, and it already can.** `cells::Cell` carries the
+cell's address and its shape beside the child, and `cells::empty_cell` is the
+writer that nulls one — both built for the collector's sever. What S47.2 owes is
+a promotion-facing form of `trace_cells` rather than new machinery, so promotion
+still contains no kind test of its own.
+
+**The policy the other draws follow.** A refusal of the reset's own bookkeeping
+is answered at the edge being recorded, in the direction that keeps memory sound
+and loses at most that edge's information. The per-block grouping draws nothing:
+the chain is sorted in place with two scratch words per retained block on the
+cleared collector line. A refused list placement keeps the arm it has, a count
+without a list (`memory::retained::register`). A refused COW edge record keeps
+the arm it has, the round's retain. The COW `at` capture must be draw-free or,
+when refused, hold that survivor alive for good — the Critic's accepted finding
+that a lost pair can settle the count low forbids leaving it.
+
+**Three specification sentences.** `rfc/runtime/exceptions.md` states the gap
+this closes — the fixpoint's working memory "is funded by none of the three
+reserves", and "finishes the reset" currently assumes that working memory is
+available — and that paragraph is amended to say the working memory is the
+arena's own, that the roots' cells are the escapee records, and that a cell the
+pool cannot supply severs the edge and is counted in the report. "No record is
+ever dropped" stays true: an edge is not a record. The promise that the reset
+promotes the whole reachable subgraph of a survivor gains the exception clause.
+`rfc/runtime/object-lifecycle.md`, "Arena reset and destructors", is unchanged —
+destructors keep running, severing removing no log capacity — and the rfc's
+existing degraded exit for a failed reserve refill stays a separate arm S47 does
+not build.
+
+**What will be proposed again.** Abandonment, as "keep the blocks, the leak is
+bounded": the leak was never the defect, the arena-to-arena store into an
+abandoned holder is. A reserve for the chain: it cannot be sized, the closure
+from one root reaching the whole heap, so the reserve is the arena itself. A
+collection before severing: `cycle::collect` refuses to open while a reset
+window is open, the promoted survivors being stamped and not yet listed.
+Hollowing the child in place rather than nulling the slot, as gentler: it leaves
+a live object of the right class with every field null, which a program cannot
+detect, where a null it can.
+
 ## 2026-09-12 — the re-trace runs after every destructor round, and the bump cursor is no reading of purity
 
 **Decided (S36.19)**, on a defect the Critic of S36.18 named beside its

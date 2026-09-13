@@ -13,7 +13,8 @@ in the specification rather than in this crate.
 
 Updated: 2026-09-13 · Active: S47, whose Critic round of 2026-09-13 took the
 breakdown of 2026-09-12 from five steps to eight, Edmond agreeing the new
-structure the same day (`dev/plans/S47.md`); the work starts at S47.0.
+structure the same day (`dev/plans/S47.md`); S47.0 closed on 2026-09-13 on a
+Sage ruling and the work continues at S47.1.
 S36's one open step is S36.9, which
 closes on a deny run over a reset inside a collection that `promote`'s own
 containers (S47) still fail; S36.17 closed on 2026-09-12 with the window's
@@ -3574,23 +3575,23 @@ may end the process on an allocation the manager could have refused
 S36.17 took the window's five sites first. Broken down on 2026-09-12 from a
 reading of `promote.rs`'s twelve sites; the Critic round of 2026-09-13 took
 that breakdown from five steps to eight, and Edmond agreed the new structure
-the same day.
+the same day. S47.0 closed on 2026-09-13 on a Sage ruling: a survivor cell the
+pool cannot supply severs the edge and the reset finishes, abandonment being
+unsound rather than dear.
 
-- [ ] S47.0 Decide what a reset answers when the manager refuses it memory
+- [x] S47.0 Decide what a reset answers when the manager refuses it memory
       inside the fixpoint
       done: the answer and its reason are in `dev/DECISIONS.md`, with each
-        refused alternative priced — the window's per-record degradation, the
-        count `register` publishes without a list, a worst-case draw taken
-        before the fixpoint, whole-arena retention — and the refused `at`
-        capture priced on its own, it being the one refusal here whose loss is
-        a term of the reconciliation rather than a bounded leak; every later
-        step's refusal arm is this answer
-      tier: T2 · role: Critic
-      Critic 2026-09-13: the first answer — abandon and retain every block —
-        has no mechanism, the arena outliving the call and its own `Drop`
-        returning every block; and an abandoned block underflows its count
-        word on a promoted survivor's later death. Accepted; the answer is
-        open and the branch is Edmond's (`dev/plans/S47.md`).
+        refused alternative priced; every later step's refusal arm is this
+        answer
+      tier: T2 · role: Critic → Sage
+      handoff: `dev/DECISIONS.md`, "a survivor cell the pool cannot supply
+        severs the edge, and the reset finishes" — the reset nulls the slot
+        that named the child it could not record, counts the severance and
+        finishes; abandonment is unsound, not merely dear. The chain is an
+        in-arena log and a root's cell is its escapee record, so only a child
+        can be severed. Two `rfc` sentences are owed an amendment, carried in
+        that repository's Fog.
 - [ ] S47.1 The drains hand over their chain
       done: `round`, `round_dtors` and `round_releases` are gone — `Arena`
         hands each log's chain head over and nulls its own field, and the
@@ -3601,8 +3602,13 @@ the same day.
       done: `survivors` stands in 4 KiB segments drawn through
         `stdapi::ll_alloc`, the window's log's shape, and `mark_subgraph`'s
         `stack` is gone — the closure is reached by walking the chain from the
-        index the call started at, as `retrace_survivors` already walks it; a
-        refused segment is answered as S47.0 says, seen on a forced refusal
+        index the call started at, as `retrace_survivors` already walks it; the
+        chain's segments come from the arena's own blocks through
+        `Arena::alloc` and never from the reserve, a round admits its roots by
+        compacting the escapee log's segments in place, and a child the chain
+        cannot take severs its edge as S47.0 says, through a promotion-facing
+        form of `cells::trace_cells` and `cells::empty_cell`, seen on a forced
+        refusal and counted in the reset's return
       tier: T2 · role: Critic
 - [ ] S47.3 `retained` is the kind stamp, and the journal keeps a counter
       done: `retained` is gone and draws nothing — "retained in this reset" is
@@ -3627,13 +3633,15 @@ the same day.
         partitions a survivor that had a block of its own out of the chain at
         the instant it classifies it, so nothing is classified twice, and the
         grouping is the 64 KiB mask over the rest of the chain sorted in place
-        by address; the step names the sort's algorithm and its scratch, and
-        measures it against the `HashMap` it replaces on the fixpoint cases
+        by address, its scratch two words per retained block on the cleared
+        collector line; the step names the sort's algorithm and measures it
+        against the `HashMap` it replaces on the fixpoint cases
       tier: T2 · role: Critic
 - [ ] S47.7 The COW rows without a `HashMap`
       done: `settled` and `cow_at_promotion` are gone — `at` is one more
-        record kind in the window's log, a refused `at` is answered as S47.0
-        says, and the sum per child is taken over the segments sorted by
+        record kind in the window's log, the capture is draw-free or a refused
+        one holds its survivor alive for good — never left to settle the count
+        low — and the sum per child is taken over the segments sorted by
         child; `reconcile_cow_counts` makes no global allocation, and S36.9's
         composite deny run reads `promote` as clean
       tier: T2 · role: Critic
