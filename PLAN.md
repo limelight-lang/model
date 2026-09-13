@@ -155,13 +155,6 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 
 ## Fog
 
-- A destructor that resets the arena it is dying in aborts, in
-  `memory::gc_metadata`'s "adopting a block across the wrong ownership
-  boundary" — probed on 2026-09-13 and the probe removed, a non-unwinding
-  panic taking every test after it. `ll_arena_reset`'s safety comment leaves
-  the same arena's re-entry unsaid, and no generated code calls it, so whether
-  the runtime owes this case a survival or an explicit refusal is unsettled.
-
 A line here is an unresolved question rather than a step: it carries no
 criterion, and it leaves when it gets one or when it is ruled on.
 

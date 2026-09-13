@@ -51,12 +51,13 @@ struct LogSegment {
 /// The segments are the arena's own blocks and `Arena::finish_reset`
 /// returns them, so the chain is neither freed nor handed back. That also
 /// bounds how long it stays readable: until the walker's own frame
-/// finishes the reset. **A reentrant reset of the same arena ends it
-/// sooner**, its `finish_reset` returning the block a segment stands in
-/// while the outer walk is inside it. Nothing refuses that reset —
-/// `ll_arena_reset`'s safety contract leaves the case unsaid and no
-/// generated code makes the call — and whether the runtime owes it a
-/// survival or an explicit refusal is `PLAN.md`'s Fog.
+/// finishes the reset. What a `__destruct` body may do on the way back
+/// into the runtime is allocate, log an escape and track a destructor
+/// (`memory::context::resolve_arena`); resetting an arena is not among
+/// them, `ll_arena_reset` being the host's call at the end of a request
+/// and out of reach of the program. A second reset of this arena from
+/// inside this one would return the block a segment stands in while the
+/// walk is inside it.
 #[must_use = "a detached log's records are lost unless it is walked"]
 pub(crate) struct DetachedLog(*mut LogSegment);
 
