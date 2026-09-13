@@ -3791,7 +3791,7 @@ unsound rather than dear.
         unwind, and the step measures the form it ships rather than the one
         it prototyped
       tier: T2 · role: Sage → Critic
-      handoff: the Sage of 2026-09-13 ruled the accumulator on S47.7's own
+      handoff: `75d82ab` — the Sage of 2026-09-13 ruled the accumulator on S47.7's own
         measurement, and the Critic's round over that ruling is what shaped
         it (`dev/plans/S47.md`). `refcount::is_reconciling` and
         `set_reconciling` are byte-wide accesses to byte 7, as byte 6's
