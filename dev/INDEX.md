@@ -913,6 +913,11 @@ against it that lose where it moves. A term the glossary does not cover
 is raised there rather than settled here: `dev/DECISIONS.md`, "an
 uncovered term is a gap rather than a local ruling".
 
+A stage whose section in `PLAN.md` would run past forty lines keeps its role
+lines and its reasoning in `dev/plans/S<n>.md` and its steps in the plan, and
+the file is deleted with the stage (rule 23.1.3). `dev/plans/S47.md` is the
+first, holding the Critic round that reshaped S47.
+
 A comment that says a capability is absent names the `PLAN.md` step that
 builds it, and the commit deleting that stage sweeps the number out of
 `src/` and `benches/`: `dev/WORKFLOW.md`, "How a debt is written". The

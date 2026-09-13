@@ -11,8 +11,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-12 · Active: S47, broken down on 2026-09-12 and owed a
-Critic round before S47.0; S36's one open step is S36.9, which
+Updated: 2026-09-13 · Active: S47, whose Critic round of 2026-09-13 took the
+breakdown of 2026-09-12 from five steps to eight, Edmond agreeing the new
+structure the same day (`dev/plans/S47.md`); the work starts at S47.0.
+S36's one open step is S36.9, which
 closes on a deny run over a reset inside a collection that `promote`'s own
 containers (S47) still fail; S36.17 closed on 2026-09-12 with the window's
 memory under the manager, S36.18 the same day with the COW
@@ -3560,52 +3562,74 @@ Goal: `promote::arena_reset_full` and the passes under it hold their survivor
 list, snapshot pairs, retained and pinned sets, per-block index, rounds and
 settle map in memory drawn from the manager, and answer a refused draw as a
 refusal.
-Done when: no `Vec`, `HashMap`, `HashSet` or `Box` stands on a reset's path,
-and S36.9's composite deny run reads `promote` as clean.
+Done when: no `Vec`, `HashMap`, `HashSet` or `Box` stands on `promote`'s reset
+path, and S36.9's composite deny run reads `promote` as clean. The arena's own
+escapee, destructor and release logs are outside that criterion: their segments
+are the arena's own blocks, which the global allocator never sees.
+Notes: dev/plans/S47.md
 
 A debt Edmond named as such on 2026-09-12 when he ruled that no runtime path
 may end the process on an allocation the manager could have refused
 (`dev/DECISIONS.md`, "the reset window's memory comes from the manager");
 S36.17 took the window's five sites first. Broken down on 2026-09-12 from a
-reading of `promote.rs`'s twelve sites, the structure agreed with Edmond the
-same day; the breakdown has not been through a Critic round (23.3), and that
-round is the first act before S47.0.
+reading of `promote.rs`'s twelve sites; the Critic round of 2026-09-13 took
+that breakdown from five steps to eight, and Edmond agreed the new structure
+the same day.
 
 - [ ] S47.0 Decide what a reset answers when the manager refuses it memory
       inside the fixpoint
-      done: the answer and its reason are in `dev/DECISIONS.md`, with the
-        refused alternative — the reset has no caller to report to, so the
-        candidates are retaining the whole arena (every block retained, no
-        block freed, counts intact: a bounded leak) and nothing else that
-        the no-panic ruling admits; every later step's refusal arm is this
-        answer
+      done: the answer and its reason are in `dev/DECISIONS.md`, with each
+        refused alternative priced — the window's per-record degradation, the
+        count `register` publishes without a list, a worst-case draw taken
+        before the fixpoint, whole-arena retention — and the refused `at`
+        capture priced on its own, it being the one refusal here whose loss is
+        a term of the reconciliation rather than a bounded leak; every later
+        step's refusal arm is this answer
       tier: T2 · role: Critic
-- [ ] S47.1 The drains hand over their log instead of filling a `Vec`
-      done: `round`, `round_dtors` and `round_releases` are gone; each
-        `drain_*` yields the log's own segments, walked after the arena's
-        borrow has ended, so the settle loop takes no memory for a round and
-        has no refusal to answer; the H5 reentrancy rule holds by reading
-        and the fixpoint cases stay green
+- [ ] S47.1 The drains hand over their chain
+      done: `round`, `round_dtors` and `round_releases` are gone — `Arena`
+        hands each log's chain head over and nulls its own field, and the
+        caller walks the chain with no borrow live across user code; the Miri
+        slice over the fixpoint cases is green and those cases stay green
       tier: T2 · role: Critic
-- [ ] S47.2 The survivor list and the mark worklist in `ll_alloc` segments
-      done: `survivors`, `mark_subgraph`'s `stack` and `cow_at_promotion`
-        stand in 4 KiB segments drawn through `stdapi::ll_alloc`, the
-        window's log's shape; a refused segment is answered as S47.0 says,
-        seen on a forced refusal; the reset's global allocations on the
-        fixpoint cases go from their counted baseline to 0
+- [ ] S47.2 The survivor chain and the mark worklist in `ll_alloc` segments
+      done: `survivors` and `mark_subgraph`'s `stack` stand in 4 KiB segments
+        drawn through `stdapi::ll_alloc`, the window's log's shape; a refused
+        segment is answered as S47.0 says, seen on a forced refusal; neither
+        site draws from the global allocator on the fixpoint cases
       tier: T2 · role: Critic
-- [ ] S47.3 A block's reset state stands in the block
-      done: `retained`, `pinned`, `by_block`, `placed` and `emptied` are
-        gone — "retained in this reset" is the kind stamp, the reset's own
-        pin is a bit in the block header, survivors are grouped by block by
-        sorting the chain by address, and the emptied blocks chain through
-        their collector lines; the reset draws no memory for any of them
+- [ ] S47.3 `retained` is the kind stamp, and the journal keeps a counter
+      done: `retained` is gone — "retained in this reset" is
+        `BLOCK_KIND_RETAINED`, which no block carries into a reset, and
+        `KIND_ARENA_RESET_END`'s third operand comes from a counter rather
+        than from a set's length
+      tier: T2 · role: —
+- [ ] S47.4 The reset's pins chain through the block
+      done: `pinned` is gone — a block links into a per-reset chain through a
+        header word at the moment the reset pins it, and the loop past
+        `finish_reset` spends each of those pins by walking that chain
       tier: T2 · role: Critic
-- [ ] S47.4 The COW rows without a `HashMap`
-      done: `settled` is gone — `at` is one more record kind in the window's
-        log and the sum per child is taken over the segments sorted by
-        child; `reconcile_cow_counts` makes no global allocation; S36.9's
-        composite deny run reads `promote` as clean and S36.9 closes
+- [ ] S47.5 The emptied blocks and the placed lists chain through the block
+      done: `emptied` and `place_survivor_lists`' `placed` are gone — an
+        emptied block links through a named word of the collector line, a
+        placed block's list address stands in a second such word between the
+        two passes and is published only by `register` as before, and the step
+        shows neither word has a reader while the links are live
+      tier: T2 · role: Critic
+- [ ] S47.6 The grouping without `by_block`
+      done: `by_block` is gone — promotion appends a shared-block survivor to
+        a second chain at the instant it classifies it, so nothing is
+        classified twice, and the grouping after the fixpoint is the 64 KiB
+        mask over that chain sorted by address; the step names the sort's
+        algorithm and its scratch, and measures it against the `HashMap` it
+        replaces on the fixpoint cases
+      tier: T2 · role: Critic
+- [ ] S47.7 The COW rows without a `HashMap`
+      done: `settled` and `cow_at_promotion` are gone — `at` is one more
+        record kind in the window's log, a refused `at` is answered as S47.0
+        says, and the sum per child is taken over the segments sorted by
+        child; `reconcile_cow_counts` makes no global allocation, and S36.9's
+        composite deny run reads `promote` as clean
       tier: T2 · role: Critic
 
 ---
