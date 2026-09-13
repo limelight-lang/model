@@ -11,7 +11,8 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-13 · Active: S47, whose Critic round of 2026-09-13 took the
+Updated: 2026-09-13 · Active: S36 and S47, both with every step closed and
+waiting on their Code Reviewer before deletion (rule 23.1.3). S47 is the stage whose Critic round of 2026-09-13 took the
 breakdown of 2026-09-12 from five steps to eight, Edmond agreeing the new
 structure the same day (`dev/plans/S47.md`); every step of it closed on
 2026-09-13, four of them on Sage rulings. The last is S47.9: S47.7's own
@@ -19,10 +20,9 @@ measurement refuted the mechanism S47.7 built — the by-capture search is
 `O(C²)` in one reset's COW survivors — and Edmond ruled the same day to take
 the linear arm, which settles 2400 of them in 41.7 µs against the search's
 248.1 and the `HashMap`'s 102.3 (`dev/BENCHMARKS.md`, 2026-09-13).
-S36's one open step is S36.9, which
-closes on a deny run over a reset inside a collection; the containers of
-`promote`'s own that used to fail such a run are gone with S47, and building
-the run is what is left to S36.9; S36.17 closed on 2026-09-12 with the window's
+S36.9 closed on 2026-09-13 on the deny run over a
+reset a destructor enters from inside a collection, two cases green under the
+counter once S47 had taken `promote`'s containers out; S36.17 closed on 2026-09-12 with the window's
 memory under the manager, S36.18 the same day with the COW
 reconciliation settling off the window's log, the walk that double-counted
 a destructor's store into a promoted holder gone, and S36.19 the same day
@@ -69,8 +69,7 @@ S36 has S36.9 left, waiting on S47. **S34 closed and was deleted on 2026-09-10**
 its last step being the law that only the owner reduces state; what outlived
 it is in the journals, and the two debts it carried without an owner are in
 `## Fog` and in the backlog below.
-S36 is the work in front:
-its S36.9 has the deny run a wired collection owed — five cases, green, three
+S36's S36.9 had the deny run a wired collection owed — five cases, green, three
 mutations seen red — and Edmond ruled on 2026-09-12 that the reset's
 exemption does not reach the frames a destructor's `ll_arena_reset` enters;
 S36.17 took the window's five sites out the same day, and what stands in
@@ -343,7 +342,7 @@ stage claiming the frees while building none of them.
         All were taken; the old objection to a `Vec` allocation was withdrawn
         against the later decision that explicitly accepts the cold,
         trace-only allocation.
-- [ ] S36.9 The GC-memory contract   *(waits on S47)*
+- [x] S36.9 The GC-memory contract
       progress 2026-09-01 — S36.9a physical contract: the single
         `memory::gc_metadata` door owns pool/reserve adoption and return,
         `BLOCK_KIND_GC_METADATA` makes the bytes collection holds identifiable,
@@ -1051,6 +1050,62 @@ stage claiming the frees while building none of them.
         an arena — S47's debt by Edmond's ruling of the same day — so the
         deny run over that shape is not green until S47, and this step waits
         on it rather than exempting it.
+      progress 2026-09-13 — S36.9h the reset a destructor enters: two cases
+        join `what_a_collection_asks_the_allocator`, each a two-member ring
+        whose first member's destructor calls `ll_arena_reset` through the
+        C ABI on an arena carrying a survivor a heap keeper holds, a COW
+        array that survivor holds, an unescaped object with a destructor and
+        an OS-direct heap entity it held. The first reads the fixpoint, the
+        count, the capture and reconciliation, the retention with its list,
+        the release log's death and the window's deferred stack, with every
+        arm named by a probe — no refused record, no refused capture, one
+        slot taken inside the window, nothing withheld by the trace. The
+        second refuses the array's carry through the buffer arena's
+        injection, proven by its count, so the pin, its chain and its release
+        past `finish_reset` run under the counter. Both read the exemption
+        and nothing else on the heap axis, the exemption back on the free
+        axis, and zero on the pool axis — the two first touches a reset makes
+        on a fresh thread, the window's segment class and the buffer arena,
+        are made by the fixture, so a pool request in the bracket is the
+        reset's rather than the thread's history. `exempt_allocations` now
+        holds the validation count against what the component's destructors
+        owe, in every case, so a skipped second reading cannot lower the
+        figure and the count together. Six mutations were seen red: a global
+        allocation at the head of `reconcile_cow_counts`,
+        `record_promotion_edge`, `retained::register`, `defer_free`,
+        `retained::pin` and `hold_released` — the last two red on the refused
+        arm alone, which is what says that case enters it. Miri over the
+        first case, before the Critic's repairs: 1 passed, 35.5 s of Miri's
+        clock, wall not timed. The audit over `promote`, `reset_window`,
+        `retained`, `arena`, `cells` and the sever's two table entries finds
+        no owning container outside `cfg(test)` items and the two exemptions.
+        **The clause is met.**
+      Critic 2026-09-13 (S36.9h): six findings, five taken. The first case
+        entered none of the arms S47 rewrote most — the pinned payload, the
+        deferred large free, the emptied chain, the multi-round delta — so a
+        mutation there stayed green: `kept` became an OS-direct run and a
+        second case refuses the carry. `pool == 2` asserted the thread's
+        history rather than the contract: both first touches are warmed and
+        the axis reads zero. The exempt figure was pinned to divisibility
+        alone, so a commit that skipped its second reading would pass: the
+        validation count is held against the protocol in every case. Which
+        arm each record took was not read: four probes read it. A stale
+        sentence in the retained case still called the reset's containers
+        an exemption: rewritten. Not taken as a case, named as a limit in the
+        module doc: the counter sees the crate's `#[global_allocator]` and
+        not libc's own, which a thread-local's drop-glue registration
+        reaches; the thread-local census is that rule's coverage. Still not
+        entered under the counter, and named here so a later case is written
+        rather than assumed: the emptied chain (`register` answering true for
+        a block whose listed survivors all died inside the reset) and a
+        destructor round that escapes something new.
+      handoff: closed 2026-09-13 on S36.9h. The GC-memory contract is
+        `memory::gc_metadata` for what collection holds and a deny run of
+        seven cases in `cycle::collect::tests::what_a_collection_asks_the_allocator`,
+        two of them the reset a destructor enters, each subtracting the debug
+        checks by reading `premise_cell_walks`. The two exemptions are
+        `cycle::validation`'s debug checks and `array::entity::separate`'s
+        debug `entered` set, the second on no case's path.
 - [x] S36.14 Decide the retained index's owning layer   *(before S36.9's slice e)*
       done: the choice is recorded in `dev/DECISIONS.md` with the rejected side
         and its reason — either the present registry keeps its shape and only
