@@ -8,6 +8,42 @@ never edited or deleted.
 
 ---
 
+## 2026-09-13 — one arena is reset once at a time on a thread, and a second entry is refused
+
+**Ruled by Edmond**, asked why a destructor should have the right to reset the
+arena it is dying in and told that a call made by accident must get an error:
+«если кто-то вдруг случайно внутри деструктора вызовит эту функцию - он должен
+получить ошибку». `memory::reset_window::open` takes the arena being reset,
+walks the thread's window chain and refuses a second entry for the same one, in
+every build.
+
+**Nesting itself stays ordinary.** A destructor run by one reset can resolve
+another arena and reset that, which is what the window chain was built for and
+what its `prev` field restores. The refusal is the same arena alone, and it
+reads the whole chain rather than its head: an arena reset two frames down is
+found through a window opened for a third arena between them.
+
+**What the second entry would do.** The inner `finish_reset` returns the blocks
+the outer reset's logs, survivor chain and header links stand in, and the outer
+walk then reads memory the pool has handed on. Until S47.1 the outer round held
+a `Vec` copy and the damage was smaller; from S47.1 on the reset's own state
+lives in those blocks, and every later step of S47 puts more of it there.
+
+**Why a check for a case with no producer.** A `__destruct` body reaches the
+runtime to allocate, to log an escape and to track a destructor
+(`memory::context::resolve_arena`), and `ll_arena_reset` is the host's call at
+the end of a request, out of the program's reach. What the check buys is the
+message: before it, such a call reached `memory::gc_metadata`'s "adopting a
+block across the wrong ownership boundary", which names a block and mentions
+neither arena nor reset, and which was read as a guard on this case when it is
+nothing of the kind.
+
+**Refused: a reported refusal through the pending channel.**
+`rfc/runtime/exceptions.md` puts `ll_arena_reset` on the pending list, so a
+status return is the specified shape, and the failure half of that protocol is
+not built. Edmond, on the three candidates: «вариант 1 ад». The check is a hard
+assert rather than a channel, and building the channel stays the rfc's work.
+
 ## 2026-09-13 — a survivor cell the pool cannot supply severs the edge, and the reset finishes
 
 **Ruled by the Sage (S47.0), final.** When the pool cannot supply a cell of the

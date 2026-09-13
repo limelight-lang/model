@@ -72,6 +72,9 @@ pub(crate) struct ResetWindow {
     /// resolve another arena and reset it, so the windows nest and each
     /// close restores its predecessor.
     prev: *mut ResetWindow,
+    /// The arena this window is open for, which [`open`] reads off the
+    /// chain to refuse a second reset of the same one.
+    arena: usize,
 }
 
 impl ResetWindow {
@@ -81,6 +84,7 @@ impl ResetWindow {
             log: std::ptr::null_mut(),
             refused_promotion_edge: false,
             prev: std::ptr::null_mut(),
+            arena: 0,
         }
     }
 }
@@ -116,11 +120,36 @@ impl Drop for Guard<'_> {
     }
 }
 
-/// Open a window for a reset about to run on this thread, over storage the
-/// reset declares in its own frame; closed when the guard leaves scope.
-pub(crate) fn open(window: &mut ResetWindow) -> Guard<'_> {
+/// Open a window for the reset of `arena`, about to run on this thread,
+/// over storage the reset declares in its own frame; closed when the guard
+/// leaves scope.
+///
+/// **Refuses a second reset of an arena already being reset on this
+/// thread**, in every build. Nesting itself is ordinary — a destructor can
+/// resolve another arena and reset that — but the same arena twice would
+/// have the inner `finish_reset` return the blocks the outer reset's logs,
+/// survivors and chains stand in, and the outer walk would then read memory
+/// the pool has handed on. No program can ask for it: a `__destruct` body
+/// reaches the runtime to allocate, to log an escape and to track a
+/// destructor (`memory::context::resolve_arena`), while `ll_arena_reset` is
+/// the host's call at the end of a request. The check is here so that a
+/// host or a test that makes the call anyway is told which rule it broke,
+/// rather than reaching an ownership assert in `memory::gc_metadata` that
+/// names a block and mentions neither arena nor reset.
+pub(crate) fn open(window: &mut ResetWindow, arena: *mut crate::memory::arena::Arena) -> Guard<'_> {
+    let mut open_window = WINDOW.with(|cell| cell.get());
+    while !open_window.is_null() {
+        assert_ne!(
+            unsafe { (*open_window).arena },
+            arena as usize,
+            "this arena is already being reset on this thread"
+        );
+        open_window = unsafe { (*open_window).prev };
+    }
+
     window.log = std::ptr::null_mut();
     window.refused_promotion_edge = false;
+    window.arena = arena as usize;
     window.prev = WINDOW.with(|cell| cell.get());
     let window: *mut ResetWindow = window;
     WINDOW.with(|cell| cell.set(window));

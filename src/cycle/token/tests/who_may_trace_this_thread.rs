@@ -152,7 +152,9 @@ fn a_thread_that_may_not_collect_does_not_wait_for_its_held_token() {
     let mut held = HeldByACollector::take(this_thread_token(), false);
 
     let mut window = crate::memory::reset_window::ResetWindow::closed();
-    let guard = crate::memory::reset_window::open(&mut window);
+    // Any address stands for the arena here: what this case needs is a
+    // window open, and nothing reads the identity behind it.
+    let guard = crate::memory::reset_window::open(&mut window, std::ptr::dangling_mut());
     assert_eq!(
         unsafe { ll_gc_collect_cycles() },
         0,

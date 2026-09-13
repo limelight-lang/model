@@ -5,6 +5,7 @@
 
 use super::*;
 
+use crate::memory::arena::Arena;
 use crate::memory::block_pool::{
     BLOCK_KIND_ENTITY_LARGE, BLOCK_KIND_FREE, BlockHeader, load_block_kind, test_guard,
 };
@@ -18,11 +19,13 @@ fn a_nested_window_restores_the_one_it_displaced() {
     assert!(!is_open(), "a window was left open by an earlier test");
 
     let mut outer = ResetWindow::closed();
-    let outer_guard = open(&mut outer);
+    let mut outer_arena = Arena::new();
+    let outer_guard = open(&mut outer, &mut outer_arena);
     let outer_address = WINDOW.with(|cell| cell.get());
     {
         let mut inner = ResetWindow::closed();
-        let _inner = open(&mut inner);
+        let mut inner_arena = Arena::new();
+        let _inner = open(&mut inner, &mut inner_arena);
         assert_ne!(
             WINDOW.with(|cell| cell.get()),
             outer_address,
@@ -76,11 +79,13 @@ fn a_deferred_free_is_made_by_the_outermost_close_alone() {
     let (second, second_block) = unsafe { dead_pooled_large_entity() };
 
     let mut outer = ResetWindow::closed();
-    let outer_guard = open(&mut outer);
+    let mut outer_arena = Arena::new();
+    let outer_guard = open(&mut outer, &mut outer_arena);
     unsafe { crate::memory::stdapi::ll_free(first) };
     {
         let mut inner = ResetWindow::closed();
-        let _inner = open(&mut inner);
+        let mut inner_arena = Arena::new();
+        let _inner = open(&mut inner, &mut inner_arena);
         unsafe { crate::memory::stdapi::ll_free(second) };
         assert_eq!(
             DEFERRED_FREES.with(|cell| cell.get()),
@@ -184,7 +189,8 @@ fn the_log_answers_an_increment_per_edge_whatever_the_holders_fate() {
     let per_kind = RECORDS_PER_SEGMENT / 3 + 1;
 
     let mut window = ResetWindow::closed();
-    let guard = open(&mut window);
+    let mut arena = Arena::new();
+    let guard = open(&mut window, &mut arena);
     let _ = take_refused_records();
     for _ in 0..per_kind {
         record_promotion_edge(live, child_of_live);
@@ -259,7 +265,8 @@ fn a_refused_segment_is_answered_to_the_recorder() {
     let child = 0x1000 as *mut RcHeader;
 
     let mut window = ResetWindow::closed();
-    let guard = open(&mut window);
+    let mut arena = Arena::new();
+    let guard = open(&mut window, &mut arena);
     let _ = take_refused_records();
     assert!(
         !take_refused_promotion_edge(),
@@ -313,7 +320,8 @@ fn only_an_uncounted_block_inside_a_reset_is_absorbed() {
     );
 
     let mut window = ResetWindow::closed();
-    let guard = open(&mut window);
+    let mut arena = Arena::new();
+    let guard = open(&mut window, &mut arena);
     assert!(
         unsafe { absorbs_retained_free(block) },
         "the reset did not absorb the free of a block whose count it has not established"
@@ -390,4 +398,43 @@ fn the_window_holds_no_container() {
             "`{container}` stands in the window's code"
         );
     }
+}
+
+/// The same arena twice on one thread is refused, in every build. The inner
+/// reset's `finish_reset` would return the blocks the outer one's logs,
+/// survivors and chains stand in, and the outer walk would read memory the
+/// pool has handed on. Nothing in the runtime asks for it — `ll_arena_reset`
+/// is the host's call at the end of a request — so the check exists to name
+/// the rule for a host or a test that makes the call anyway, rather than let
+/// it reach an ownership assert about a block.
+#[test]
+#[should_panic(expected = "this arena is already being reset on this thread")]
+fn the_same_arena_twice_on_one_thread_is_refused() {
+    let _g = test_guard();
+    let mut arena = Arena::new();
+    let arena: *mut Arena = &mut arena;
+
+    let mut outer = ResetWindow::closed();
+    let _outer = open(&mut outer, arena);
+    let mut inner = ResetWindow::closed();
+    let _inner = open(&mut inner, arena);
+}
+
+/// The refusal reads the whole chain, not its head: an arena reset two
+/// frames down is found through a window opened for another arena between
+/// them.
+#[test]
+#[should_panic(expected = "this arena is already being reset on this thread")]
+fn an_arena_reset_further_up_the_chain_is_found() {
+    let _g = test_guard();
+    let mut outer_arena = Arena::new();
+    let mut middle_arena = Arena::new();
+    let outer_arena: *mut Arena = &mut outer_arena;
+
+    let mut outer = ResetWindow::closed();
+    let _outer = open(&mut outer, outer_arena);
+    let mut middle = ResetWindow::closed();
+    let _middle = open(&mut middle, &mut middle_arena);
+    let mut inner = ResetWindow::closed();
+    let _inner = open(&mut inner, outer_arena);
 }
