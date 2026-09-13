@@ -258,3 +258,44 @@ fn holder_death_before_reset_neither_dangles_nor_miscounts() {
         ll_object_die(h2);
     }
 }
+
+/// A child the arena cannot record has its edge severed: the survivor's
+/// slot is emptied, the child dies with the arena as any unmarked entity
+/// does, and the reset finishes and answers how many edges that was
+/// (`dev/DECISIONS.md`, "a survivor cell the pool cannot supply severs the
+/// edge, and the reset finishes").
+///
+/// The root itself is never severed. Its place in the chain is the escapee
+/// record it already has, compacted where it stands, so the refusal armed
+/// here cannot reach it — which is what the promotion below shows.
+#[test]
+fn a_child_the_arena_cannot_record_loses_its_edge() {
+    let _g = crate::memory::block_pool::test_guard();
+    let cls = ClassBuilder::new("Node").prop("next", true).build();
+    let holder_cls = ClassBuilder::new("Cache").prop("last", true).build();
+
+    let mut arena = Arena::new();
+    let mut ctx = LLContext { arena: &mut arena };
+    let holder = unsafe { new_constructed(&mut ctx, holder_cls, MemoryCategory::GcHeap) };
+    let root = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
+    let child = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::RequestArena) };
+
+    unsafe { store_prop(&mut arena, holder, 16, root) };
+    unsafe { store_prop(&mut arena, root, 16, child) };
+
+    let severed = {
+        let _refused = crate::memory::arena::RefusedSurvivorSegments::arm();
+        unsafe { arena_reset_full(&mut arena) }
+    };
+
+    assert_eq!(severed, 1, "the one edge the arena could not record");
+    assert_eq!(
+        unsafe { crate::refcount::entity_category(root) },
+        MemoryCategory::GcHeap,
+        "the root is promoted: its place in the chain was its escapee record"
+    );
+    assert!(
+        unsafe { *(crate::object::Object::prop_at(root as *mut Object, 16) as *mut usize) } == 0,
+        "the slot that named the unrecorded child was emptied"
+    );
+}

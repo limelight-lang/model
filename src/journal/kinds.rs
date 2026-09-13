@@ -90,11 +90,20 @@ pub const KIND_THREAD_EXIT: u32 = 8;
 /// the queue's segments go back (`crate::cycle::collect::collect_before_exit`).
 pub const KIND_EXIT_RESIDUE: u32 = 9;
 
+/// An edge a reset severed because the arena had no memory to record the
+/// child it named: `subject` is the arena's address, `a` the survivor whose
+/// slot was emptied and `b` the child that slot held. One record per edge,
+/// inside the reset's own bracket, which is what lets a reading say which
+/// graph the process lost rather than only how much of it
+/// (`dev/DECISIONS.md`, "a survivor cell the pool cannot supply severs the
+/// edge, and the reset finishes").
+pub const KIND_ARENA_RESET_SEVERED_EDGE: u32 = 10;
+
 /// The highest kind that has a site. The mask is a `u64`, so a kind past
 /// 63 would shift out of it and enable the wrong one — a limit worth
 /// failing the build over rather than discovering as a silent
 /// misreading.
-const HIGHEST_KIND: u32 = KIND_EXIT_RESIDUE;
+const HIGHEST_KIND: u32 = KIND_ARENA_RESET_SEVERED_EDGE;
 
 const _: () = assert!(
     HIGHEST_KIND < 64,
@@ -121,7 +130,8 @@ pub const DEFAULT_KINDS: u64 = bit(KIND_ENTITY_BIRTH)
     | bit(KIND_BLOCK_DECOMMISSIONED)
     | bit(KIND_THREAD_START)
     | bit(KIND_THREAD_EXIT)
-    | bit(KIND_EXIT_RESIDUE);
+    | bit(KIND_EXIT_RESIDUE)
+    | bit(KIND_ARENA_RESET_SEVERED_EDGE);
 
 /// Which kinds are written, process-wide.
 ///

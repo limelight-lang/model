@@ -126,7 +126,11 @@ pub unsafe extern "C" fn ll_arena_track_destructor(
 pub unsafe extern "C" fn ll_arena_reset(ctx: *mut LLContext) {
     // The full discipline: destructor/escape fixpoint, promotion by
     // retention, deferred releases (rfc/model/memory/arena-reset.md).
-    unsafe { crate::promote::arena_reset_full(resolve(ctx)) }
+    // The severed-edge count is dropped here and not lost: the reset writes
+    // one journal record per severed edge, and the channel that would carry
+    // the number to the host is `rfc/runtime/exceptions.md`'s pending list,
+    // whose failure half is unbuilt.
+    let _severed = unsafe { crate::promote::arena_reset_full(resolve(ctx)) };
 }
 
 /// Allocate immortal memory (never freed: class metadata, interned

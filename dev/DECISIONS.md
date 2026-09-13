@@ -8,6 +8,78 @@ never edited or deleted.
 
 ---
 
+## 2026-09-13 — a sever takes the smallest unit its holder's layout leaves consistent, and never lands on a counted edge
+
+**Ruled by the Sage, final**, on a Critic finding that the ruling above it —
+"a survivor cell the pool cannot supply severs the edge" — generalised from
+the one arm where `cells::empty_cell` is the right writer. It is right for an
+object's body cell, a `Reference`'s `Value` and a vector element, and wrong
+for a hash entry and for a class's outside cells, which `cells::sever_cells`
+routes to the table and to the group for reasons the crate states in three
+places.
+
+**The debt a sever leaves is zero, and that is what decides the
+granularity.** Everything the reset derives from a holder's edges is derived
+at one instant, `count_children`, which runs after the settle loop that
+severs. For a holder still `RequestArena` an edge nulled before that instant
+is never counted: a marked arena child's count is rebuilt without it, a heap
+child's `release_at_reset` record fires once against the store-time retain
+with no compensation added, a child promoted in an earlier round gets no
+compensating retain and none was ever taken, and a COW child's log never
+carries it. So no displaced child owes a drop.
+
+**A counted edge must therefore never be severed, and one rule secures
+that.** An arena child named by a `GcHeap` holder got there through
+`escape_gain`, which sets `IS_ESCAPEE`, raises the hold-count and logs a
+record at the 0→1 transition; `escape_lose` clears the flag at zero, so an
+unmarked entity carrying the flag always has a record the next
+`admit_escapees_as_survivors` will consume. `promote::mark_child` therefore
+neither pushes nor severs such a child: the edge stands and the pending
+record admits it as a root at no cost, admission being a compaction. A
+refusal then falls only on a non-escapee arena child, which by the barrier
+can only sit in a `RequestArena` holder — an uncounted one.
+
+**The mechanism, per layout.** One new `cells::sever_cell(entity, kind, cell,
+displaced)` beside `sever_cells`, dispatched on the cell's shape, and
+`CellShape` gains the two facts the tracer knows and today misreports.
+`Pointer` and `Box` keep `empty_cell`: an object's body cell, a `Reference`'s
+`Value` and a vector element, the vector keeping nothing in the reserved
+bytes. A new `Element` shape is a hash entry's value and takes
+`Entry::store_element(.., Value::null())`, which keeps the collision link and
+the atomic width; the entry stays live with a null value. A new `Key` shape
+is a hash entry's string key, which has no cell-wise null, so its unit is the
+entry: a new `array::entity::sever_entry_holding` reaches a new
+`Table::sever_entry(head, index, displaced)`, which holes the key, nulls the
+element with the link kept, adjusts the live count as `Table::remove` does,
+hands the key string and the counted element to `displaced` without
+releasing, and neither compacts nor reallocates the storage, the walk that
+triggered it being inside. A new `Outside` shape is every cell a group's
+`walk_plain` yields, and it routes to a sixth `OutsideCells` member,
+`sever_one`, whose contract is the same: empty at the smallest consistent
+unit, hand every counted occupant to the closure without release, move
+nothing, and leave a following `walk_plain` yielding the previous cells minus
+those displaced.
+
+**What that costs.** Two shape variants and two lines in the tracer's hash
+arm, one `empty_cell` arm, `sever_cell`, `Table::sever_entry` with the
+bookkeeping `remove` already does, and one function pointer in a group no
+class implements yet — so its whole cost today is the test group and a line
+in the `OutsideCells` doc. The group has been six members, then four, then
+five; its size follows its duties.
+
+**Refused: severing the whole entity through `sever_cells`**, which a later
+reader will propose because it needs no new machinery. It loses every edge
+where the policy loses one, and its documented duty — one drop per displaced
+child — is the collector's contract for a confirmed-garbage component whose
+counts are real. The reset's holder is uncounted, so that drop would release
+a count never taken: a marked arena child's zeroed count underflows, and a
+heap child's logged release plus the drop is the double release the design
+exists to prevent. Also refused: `Entry::make_hole` alone for a key, which
+leaves the element a standing edge the tracer still yields and skips the
+count the table owns; and a nullable `sever_one`, which the group's own
+argument bars, a member some classes carry and others do not failing silently
+in both directions.
+
 ## 2026-09-13 — one arena is reset once at a time on a thread, and a second entry is refused
 
 **Ruled by Edmond**, asked why a destructor should have the right to reset the

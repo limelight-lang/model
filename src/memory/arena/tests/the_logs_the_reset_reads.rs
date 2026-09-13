@@ -177,3 +177,89 @@ fn a_detached_log_nobody_walks_is_reported() {
     arena.track_destructor(std::ptr::dangling_mut());
     drop(arena.take_destructors());
 }
+
+/// The survivor chain is the one log linked at the tail, because the reset
+/// walks it by index and appends to it while it walks. Reversing that link
+/// makes the walk read the newest segment first, which no count of
+/// delivered records can see — the same records arrive, in the order that
+/// breaks the index.
+#[test]
+fn the_survivor_chain_grows_at_its_tail() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = Arena::new();
+
+    let n = LOG_SEG_RECORDS * 2 + 137;
+    let survivors: Vec<*mut RcHeader> = (0..n)
+        .map(|_| {
+            let entity = arena.alloc(16) as *mut RcHeader;
+            unsafe { entity.write(RcHeader::new(MemoryCategory::RequestArena, 0)) };
+            assert!(arena.push_survivor(entity));
+            entity
+        })
+        .collect();
+
+    let mut counts = Vec::new();
+    let mut seg = arena.survivors;
+    while !seg.is_null() {
+        unsafe {
+            counts.push((*seg).count);
+            seg = (*seg).next;
+        }
+    }
+
+    assert_eq!(
+        counts,
+        vec![LOG_SEG_RECORDS, LOG_SEG_RECORDS, n % LOG_SEG_RECORDS],
+        "oldest segment first, and none holds more than it has room for"
+    );
+    assert_eq!(arena.survivor_count(), n);
+
+    let walked: Vec<*mut RcHeader> = arena.walk_survivors(0).collect();
+    assert_eq!(walked, survivors, "in the order they were admitted");
+
+    // A walk from inside the second segment starts at that record and not
+    // at its segment's first, which is the arithmetic the index space
+    // rests on.
+    let from = LOG_SEG_RECORDS + 7;
+    let tail: Vec<*mut RcHeader> = arena.walk_survivors(from).collect();
+    assert_eq!(tail, survivors[from..], "the index names one record");
+}
+
+/// A walk resumes on an append behind it, which is what lets the descent
+/// walk the chain and grow it at once — but only where it has a segment to
+/// resume from. A walk made over an empty chain stays empty, and its caller
+/// re-asks at its own index; holding the arena's head field instead was
+/// undefined behaviour, the next append's `&mut Arena` retagging the
+/// pointer (Miri, 2026-09-13).
+#[test]
+fn a_walk_resumes_on_an_append_behind_it() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut arena = Arena::new();
+
+    let entity = |arena: &mut Arena| {
+        let e = arena.alloc(16) as *mut RcHeader;
+        unsafe { e.write(RcHeader::new(MemoryCategory::RequestArena, 0)) };
+        e
+    };
+
+    let empty = arena.walk_survivors(0);
+    let first = entity(&mut arena);
+    assert!(arena.push_survivor(first));
+    assert_eq!(
+        empty.count(),
+        0,
+        "a walk made over an empty chain has no segment to resume from"
+    );
+    assert_eq!(
+        arena.walk_survivors(0).count(),
+        1,
+        "and the caller's re-ask finds the record"
+    );
+
+    let mut walk = arena.walk_survivors(0);
+    assert_eq!(walk.next(), Some(first));
+    let second = entity(&mut arena);
+    assert!(arena.push_survivor(second));
+    assert_eq!(walk.next(), Some(second), "the append reached the walk");
+    assert!(walk.next().is_none());
+}

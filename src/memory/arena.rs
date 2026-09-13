@@ -25,9 +25,11 @@ pub(crate) fn round_up_8(size: usize) -> usize {
 }
 
 /// Records per log segment: 16-byte header + 500 words = 4016 bytes,
-/// comfortably within a block payload. Segments chain newest-first;
-/// they are never copied (unlike a doubling buffer, a chain has no
-/// upper bound from the single-block alloc limit).
+/// comfortably within a block payload. Segments are never copied — unlike
+/// a doubling buffer, a chain has no upper bound from the single-block
+/// alloc limit — and five of the six logs chain newest-first. The
+/// exception is [`Log::Survivors`], appended at the tail because the reset
+/// walks it by index.
 const LOG_SEG_RECORDS: usize = 500;
 
 #[repr(C)]
@@ -35,6 +37,82 @@ struct LogSegment {
     next: *mut LogSegment,
     count: usize,
     records: [usize; LOG_SEG_RECORDS],
+}
+
+#[cfg(test)]
+thread_local! {
+    /// While set, the arena records no survivor, which is how a test
+    /// reaches the sever without filling an arena.
+    static REFUSE_SURVIVOR_SEGMENTS: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Refuse every survivor a reset tries to record on this thread, for the
+/// guard's life. The other five logs are untouched, so a case built with
+/// this armed still records its escapees, its destructors and its releases
+/// — and its roots still become survivors, admission being a compaction of
+/// records the escapee log already holds.
+#[cfg(test)]
+pub(crate) struct RefusedSurvivorSegments(());
+
+#[cfg(test)]
+impl RefusedSurvivorSegments {
+    pub(crate) fn arm() -> Self {
+        REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.set(true));
+        RefusedSurvivorSegments(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for RefusedSurvivorSegments {
+    fn drop(&mut self) {
+        REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.set(false));
+    }
+}
+
+/// A walk of the survivor chain from one index, which sees records
+/// appended behind it: [`Arena::push_survivor`] lands at the tail, and this
+/// re-reads the tail's count and follows a fresh segment's link.
+///
+/// It holds no borrow of the arena and no pointer into it — the segments
+/// are the arena's blocks and not its struct — because the pass that walks
+/// the survivors appends to them as it goes, and each append takes a
+/// `&mut Arena` that would retag a pointer into the struct.
+///
+/// A walk made when the chain was empty stays empty: it has no segment to
+/// resume from. Its caller re-asks [`Arena::walk_survivors`] at its own
+/// index instead ([`walk_survivors`](Arena::walk_survivors)).
+pub(crate) struct SurvivorWalk {
+    seg: *mut LogSegment,
+    at: usize,
+}
+
+impl Iterator for SurvivorWalk {
+    type Item = *mut RcHeader;
+
+    fn next(&mut self) -> Option<*mut RcHeader> {
+        loop {
+            if self.seg.is_null() {
+                return None;
+            }
+
+            if self.at < unsafe { (*self.seg).count } {
+                let record = unsafe { (*self.seg).records.as_ptr().add(self.at).read() };
+                self.at += 1;
+                return Some(record as *mut RcHeader);
+            }
+
+            let next = unsafe { (*self.seg).next };
+            if next.is_null() {
+                // Caught up with the tail. A later append extends this
+                // segment or links one behind it, and this walk resumes.
+                return None;
+            }
+
+            self.seg = next;
+            self.at = 0;
+        }
+    }
 }
 
 /// A log's segment chain, taken out of the arena and walked by its new
@@ -116,6 +194,24 @@ enum Log {
     Escapees,
     ReleaseAtReset,
     Weak,
+    /// The survivors of the reset in flight, appended in the order they
+    /// were marked ([`Arena::push_survivor`]).
+    Survivors,
+}
+
+impl Log {
+    /// Whether a log may take its next segment from the thread's reserve
+    /// when ordinary allocation is refused.
+    ///
+    /// The reserve is held back so the store barrier cannot fail
+    /// (`crate::memory::reserve`), and a destructor round pushes escapees
+    /// and releases through that barrier while the reset is building its
+    /// survivor chain. A chain that spent the reserve would take the
+    /// barrier's memory and turn a refusal it can survive into one it
+    /// cannot, so the survivors draw from ordinary arena memory alone.
+    fn may_draw_on_the_reserve(self) -> bool {
+        !matches!(self, Log::Survivors)
+    }
 }
 
 pub struct Arena {
@@ -151,6 +247,16 @@ pub struct Arena {
     /// Append-only; duplicates and promoted survivors are tolerated by
     /// the walk's own tests.
     weak: *mut LogSegment,
+    /// The survivors of the reset in flight: oldest segment first, the
+    /// reverse of every other log here, because the reset walks this one
+    /// by index and appends to it while it walks
+    /// ([`Arena::walk_survivors`]).
+    survivors: *mut LogSegment,
+    /// The newest survivor segment, which is where an append lands.
+    survivors_tail: *mut LogSegment,
+    /// Survivors appended since the reset began, which is the index space
+    /// [`Arena::walk_survivors`] walks.
+    survivor_count: usize,
     /// Carving cursor for log segments cut from a reserve block, kept
     /// apart from `bump` on purpose: a reserve block must never become
     /// the arena's allocation front, or the next ordinary `alloc` would
@@ -177,6 +283,9 @@ impl Arena {
             escapees: std::ptr::null_mut(),
             release_at_reset: std::ptr::null_mut(),
             weak: std::ptr::null_mut(),
+            survivors: std::ptr::null_mut(),
+            survivors_tail: std::ptr::null_mut(),
+            survivor_count: 0,
             log_bump: std::ptr::null_mut(),
             log_limit: std::ptr::null_mut(),
         }
@@ -572,6 +681,132 @@ impl Arena {
 
     // --- Reset primitives (composed by `crate::promote`) -----------------
 
+    /// Admit this round's escapees as survivors, `keep` deciding each and
+    /// marking what it keeps. **Allocates nothing**: the escapee log's own
+    /// segments are compacted in place over the records `keep` accepts and
+    /// become the tail of the survivor chain, which is why a root can never
+    /// be refused a place in it (`dev/DECISIONS.md`, "a survivor cell the
+    /// pool cannot supply severs the edge, and the reset finishes").
+    ///
+    /// `keep` answers whether the record is a survivor of this reset — a
+    /// stale record, a duplicate and a value that is no longer an arena
+    /// entity are what it declines — and does to the ones it keeps whatever
+    /// admission means, this call writing nothing but the records' places.
+    /// It may not run user code: the arena is borrowed across it.
+    ///
+    /// Returns how many records were admitted. The escapee log is left
+    /// empty, so records written after this call are the next round's.
+    pub(crate) fn admit_escapees_as_survivors(
+        &mut self,
+        mut keep: impl FnMut(*mut RcHeader) -> bool,
+    ) -> usize {
+        let mut seg = std::mem::replace(&mut self.escapees, std::ptr::null_mut());
+        let mut admitted = 0;
+        while !seg.is_null() {
+            let next = unsafe { (*seg).next };
+            let mut kept = 0;
+            for i in 0..unsafe { (*seg).count } {
+                let record = unsafe { (*seg).records.as_ptr().add(i).read() } as *mut RcHeader;
+                if record.is_null() || !keep(record) {
+                    continue;
+                }
+
+                // Compaction is a move down the same segment, so the write
+                // is never past the read.
+                unsafe { (*seg).records.as_mut_ptr().add(kept).write(record as usize) };
+                kept += 1;
+            }
+
+            if kept == 0 {
+                // An empty segment is dropped from the chain rather than
+                // linked into it: the walk would read its zero count and
+                // step over it, and the reset walks this chain once per
+                // round for the rest of the fixpoint.
+                seg = next;
+                continue;
+            }
+
+            unsafe {
+                (*seg).count = kept;
+                (*seg).next = std::ptr::null_mut();
+                if self.survivors_tail.is_null() {
+                    self.survivors = seg;
+                } else {
+                    (*self.survivors_tail).next = seg;
+                }
+            }
+
+            self.survivors_tail = seg;
+            admitted += kept;
+            seg = next;
+        }
+
+        self.survivor_count += admitted;
+        admitted
+    }
+
+    /// Append one survivor, **false when the arena has no memory for it**.
+    /// The caller answers that refusal by severing the edge it came
+    /// through; there is no second source, the survivors being barred from
+    /// the thread's reserve ([`Log::may_draw_on_the_reserve`]).
+    #[must_use = "a refused survivor is an edge the caller owes a sever"]
+    pub(crate) fn push_survivor(&mut self, survivor: *mut RcHeader) -> bool {
+        // Fault injection, tests only: reaching the sever by exhausting the
+        // pool would take an arena full of survivors and would still leave
+        // open which of the reset's draws was the one refused.
+        #[cfg(test)]
+        if REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.get()) {
+            return false;
+        }
+
+        self.log_push(Log::Survivors, survivor as usize)
+    }
+
+    /// Survivors admitted so far, which is the index space
+    /// [`walk_survivors`](Self::walk_survivors) walks.
+    pub(crate) fn survivor_count(&self) -> usize {
+        self.survivor_count
+    }
+
+    /// A walk of the survivors from `index`, in the order they were
+    /// admitted. The walk sees what is appended behind it, which is what
+    /// the marking pass needs: a child marked from a survivor is appended
+    /// and reached by the same walk.
+    pub(crate) fn walk_survivors(&self, index: usize) -> SurvivorWalk {
+        let mut seg = self.survivors;
+        let mut base = 0;
+        while !seg.is_null() {
+            let count = unsafe { (*seg).count };
+            if index < base + count {
+                return SurvivorWalk {
+                    seg,
+                    at: index - base,
+                };
+            }
+
+            base += count;
+            seg = unsafe { (*seg).next };
+        }
+
+        // Past the last record: the walk answers nothing until an append
+        // gives the tail one more. **On an empty chain it answers nothing
+        // ever**, having no segment to resume from — a caller that walks
+        // while it appends asks for a fresh walk at its own index when this
+        // one runs dry, which is one re-ask per drained walk rather than a
+        // back-pointer into the arena, and a back-pointer into the arena is
+        // what the next `&mut self` would retag out from under it.
+        SurvivorWalk {
+            seg: self.survivors_tail,
+            at: unsafe {
+                if self.survivors_tail.is_null() {
+                    0
+                } else {
+                    (*self.survivors_tail).count
+                }
+            },
+        }
+    }
+
     /// Take the destructor log's chain: entries tracked *during* the
     /// caller's walk start a fresh chain for its next round.
     pub(crate) fn take_destructors(&mut self) -> DetachedLog {
@@ -632,6 +867,12 @@ impl Arena {
                 && self.weak.is_null(),
             "logs must be drained before finish_reset"
         );
+
+        // The survivor chain's segments are these blocks, so it needs no
+        // drain and the reset must not be able to read it afterwards.
+        self.survivors = std::ptr::null_mut();
+        self.survivors_tail = std::ptr::null_mut();
+        self.survivor_count = 0;
 
         let larges = self.larges;
         self.larges = std::ptr::null_mut();
@@ -698,10 +939,11 @@ impl Arena {
             Log::Escapees => self.escapees,
             Log::ReleaseAtReset => self.release_at_reset,
             Log::Weak => self.weak,
+            Log::Survivors => self.survivors_tail,
         };
 
         let head = if head.is_null() || unsafe { (*head).count } == LOG_SEG_RECORDS {
-            let grown = self.grow_log(head);
+            let grown = self.grow_log(which, head);
             if grown.is_null() {
                 return false;
             }
@@ -723,6 +965,14 @@ impl Arena {
             Log::Escapees => self.escapees = head,
             Log::ReleaseAtReset => self.release_at_reset = head,
             Log::Weak => self.weak = head,
+            Log::Survivors => {
+                if self.survivors.is_null() {
+                    self.survivors = head;
+                }
+
+                self.survivors_tail = head;
+                self.survivor_count += 1;
+            }
         }
 
         true
@@ -734,9 +984,9 @@ impl Arena {
     /// why it is out of line.
     #[cold]
     #[inline(never)]
-    fn grow_log(&mut self, head: *mut LogSegment) -> *mut LogSegment {
+    fn grow_log(&mut self, which: Log, head: *mut LogSegment) -> *mut LogSegment {
         let mut seg = self.alloc(size_of::<LogSegment>()) as *mut LogSegment;
-        if seg.is_null() {
+        if seg.is_null() && which.may_draw_on_the_reserve() {
             // Ordinary memory is gone, which is exactly what the thread's
             // reserve is held back for (`crate::memory::reserve`).
             seg = self.carve_log_from_reserve() as *mut LogSegment;
@@ -753,8 +1003,19 @@ impl Arena {
         }
 
         unsafe {
-            (*seg).next = head;
             (*seg).count = 0;
+            match which {
+                // Appended at the tail: this log is walked by index from
+                // its oldest record, so a segment linked in front would
+                // reverse the order the walk depends on.
+                Log::Survivors => {
+                    (*seg).next = std::ptr::null_mut();
+                    if !head.is_null() {
+                        (*head).next = seg;
+                    }
+                }
+                _ => (*seg).next = head,
+            }
         }
 
         seg

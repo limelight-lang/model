@@ -264,7 +264,7 @@ pub(crate) fn note_slot_taken() {
 /// GcHeap entity through that entry point and a request-arena entity never
 /// being torn down at all, its count reaching zero without a teardown
 /// (`refcount::release_word`). A resurrection frees nothing and carries no
-/// bit. The count alone would not do — `promote::mark_one` zeroes a live
+/// bit. The count alone would not do — `promote::mark_child` zeroes a live
 /// survivor's count during the fixpoint — and the bit is written by the
 /// death and by nothing else: nothing hands a survivor's slot back while a
 /// window is open, and no survivor's slot is reissued while one is, a

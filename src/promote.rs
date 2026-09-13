@@ -40,9 +40,12 @@
 //!    dispatch for entities that die of it.
 //!
 //! Every traversal here — the mark, the re-trace and the count — goes
-//! through `cells::trace_entity`, the crate's one kind-dispatched tracer,
-//! and never through a kind test of promotion's own (`dev/DECISIONS.md`,
-//! "the reset traces through one tracer"). The COW reconciliation walks
+//! through the crate's one kind-dispatched tracer and never through a kind
+//! test of promotion's own (`dev/DECISIONS.md`, "the reset traces through
+//! one tracer"). The count pass takes `cells::trace_entity`, which hands it
+//! the child; the mark and the re-trace take `cells::trace_cells`
+//! underneath it, which hands them the cell as well, because a child the
+//! arena cannot record has its cell emptied. The COW reconciliation walks
 //! nothing: it reads the count pass's log.
 
 use std::collections::{HashMap, HashSet};
@@ -80,10 +83,22 @@ const ARENA_RESET_MAX_ROUNDS: usize = 10_000;
 /// afterwards, rather than acting inside a drain that still holds the
 /// borrow (`Arena::take_destructors`).
 ///
+/// **Answers how many edges it severed**: an edge whose child the arena had
+/// no memory to record, whose slot was emptied so that nothing promoted
+/// names an entity the reset never promoted. It counts edges rather than
+/// children — two survivors naming one unrecorded child are two severances,
+/// and a child severed from every holder can still be escaped afresh by a
+/// later destructor round and promoted after all (`dev/DECISIONS.md`, "a survivor cell the pool
+/// cannot supply severs the edge, and the reset finishes"). Zero is the
+/// ordinary answer. The host learns it through `ll_arena_reset` once that
+/// entry point has the pending channel `rfc/runtime/exceptions.md` puts it
+/// on; until then the number is this return and the journal's
+/// `KIND_ARENA_RESET_SEVERED_EDGE` records.
+///
 /// # Safety
 /// The arena must not be reachable by running PHP code anymore (no
 /// live stack); destructors invoked here may still allocate into it.
-pub unsafe fn arena_reset_full(arena: *mut Arena) {
+pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     journal_event!(
         crate::journal::kinds::KIND_ARENA_RESET_BEGIN,
         arena as u64,
@@ -96,7 +111,10 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // Its storage is this frame's: the window boxes nothing.
     let mut window = crate::memory::reset_window::ResetWindow::closed();
     let _window = crate::memory::reset_window::open(&mut window, arena);
-    let mut survivors: Vec<*mut RcHeader> = Vec::new();
+    // Edges severed because the arena had no memory to record the child
+    // they named (`dev/DECISIONS.md`, "a survivor cell the pool cannot
+    // supply severs the edge, and the reset finishes").
+    let mut severed = 0usize;
     // Each COW survivor's count at the instant it was promoted, which is
     // the last instant the reset can attribute it to arena holders. What
     // happens to the count after that belongs to whoever changed it, and
@@ -134,14 +152,25 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         loop {
             let mut progress = false;
 
-            unsafe { (*arena).take_escapees() }.for_each(|a| {
-                progress = true;
-                // Count back to zero (every holder let go): survives only if
-                // an internal edge reaches it — the subgraph trace covers it.
-                if unsafe { mutator_flags(a) } & IS_ESCAPEE != 0 {
-                    unsafe { mark_subgraph(a, &mut survivors) };
-                }
-            });
+            // The round's escapee records become the survivor chain's tail
+            // in place, so a root never needs memory the arena might refuse.
+            // A record whose count went back to zero — every holder let go —
+            // is declined here and survives only if an internal edge reaches
+            // it, which the descent below covers.
+            let first_root = unsafe { (*arena).survivor_count() };
+            let admitted = unsafe {
+                (*arena).admit_escapees_as_survivors(|a| {
+                    progress = true;
+                    if !is_arena_entity(a) || mutator_flags(a) & IS_ESCAPEE == 0 {
+                        return false;
+                    }
+
+                    mark_root(a)
+                })
+            };
+            if admitted != 0 {
+                severed += unsafe { descend_from(arena, first_root) };
+            }
 
             // A destructor may store an arena object into an already-traced
             // survivor — arena→arena, not an escape — so after a round that
@@ -164,7 +193,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             });
 
             if ran_a_destructor {
-                unsafe { retrace_survivors(&mut survivors) };
+                severed += unsafe { retrace_survivors(arena) };
             }
 
             if !progress {
@@ -183,7 +212,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         // matching release-log releases, or a heap child could hit zero and
         // free early. External refs are already the IS_ESCAPEE hold-count;
         // this adds internal arena→arena edges and those compensations.
-        for &surv in &survivors[counted..] {
+        for surv in unsafe { (*arena).walk_survivors(counted) } {
             unsafe { count_children(surv) };
         }
 
@@ -197,7 +226,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         // delta").
         let retain_the_rounds_children = crate::memory::reset_window::take_refused_promotion_edge();
 
-        for &surv in &survivors[counted..] {
+        for surv in unsafe { (*arena).walk_survivors(counted) } {
             // Out-of-line memory comes with the survivor, before the
             // category stops describing where it lives. Asked through one
             // call, dispatched on the entity, so promotion keeps knowing
@@ -294,7 +323,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
         }
 
         if retain_the_rounds_children {
-            for &surv in &survivors[counted..] {
+            for surv in unsafe { (*arena).walk_survivors(counted) } {
                 unsafe {
                     crate::cells::trace_entity(surv, |child| {
                         if mutator_flags(child) & COW != 0 {
@@ -305,7 +334,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
             }
         }
 
-        counted = survivors.len();
+        counted = unsafe { (*arena).survivor_count() };
 
         // --- Deferred releases. Teardown here (destructor first, then free)
         // may create new work; a new escape settles as an ordinary escape
@@ -360,6 +389,8 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     // before the blocks are disposed of, so no death can arrive behind
     // the counts it establishes, and while the arena still holds its
     // blocks, which is where the lists go.
+    #[cfg_attr(not(feature = "debug-journal"), allow(unused_variables))]
+    let survivor_total = unsafe { (*arena).survivor_count() };
     let mut emptied = unsafe { place_survivor_lists(arena, by_block, &mut retained) };
 
     unsafe { (*arena).finish_reset(|block| retained.contains(&(block as usize))) };
@@ -394,13 +425,17 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) {
     }
 
     // After the frees, so that every death this reset caused falls
-    // between the pair (`journal::kinds::KIND_ARENA_RESET_BEGIN`).
+    // between the pair (`journal::kinds::KIND_ARENA_RESET_BEGIN`). The
+    // survivor total is read before `finish_reset`, which clears the chain
+    // with the blocks it stood in.
     journal_event!(
         crate::journal::kinds::KIND_ARENA_RESET_END,
         arena as u64,
-        survivors.len() as u64,
+        survivor_total as u64,
         retained.len() as u64
     );
+
+    severed
 }
 
 /// Take `block` out of circulation as a retained former-arena block: the
@@ -647,28 +682,183 @@ unsafe fn is_arena_entity(p: *mut RcHeader) -> bool {
     !p.is_null() && unsafe { crate::object::header_category(p) } == MemoryCategory::RequestArena
 }
 
-/// Mark the surviving subgraph from one escapee root: the root and
-/// everything it references transitively inside the arena. A non-root
-/// survivor (reached only by an internal edge) has its count zeroed at
-/// first mark so the counting pass can rebuild it from edges; a root keeps
-/// its `refcount` — that is already its external hold-count.
-unsafe fn mark_subgraph(root: *mut RcHeader, survivors: &mut Vec<*mut RcHeader>) {
-    if !unsafe { is_arena_entity(root) } {
-        return; // stale entry: overwritten or never an arena value
+/// Admit one escapee record as a root of the survivor chain, **false for a
+/// record this reset has already admitted**, which is what makes a
+/// duplicate record cost one flags read.
+///
+/// A root keeps its `refcount`: that count is already its external
+/// hold-count, unlike a survivor reached only by an internal edge, whose
+/// count [`mark_child`] rebuilds from the edges that reach it.
+///
+/// # Safety
+/// `root` is a live arena entity still carrying `IS_ESCAPEE`.
+unsafe fn mark_root(root: *mut RcHeader) -> bool {
+    if unsafe { mutator_flags(root) } & ARENA_RESET_MARK != 0 {
+        return false;
     }
 
-    let mut stack = Vec::new();
-    unsafe { mark_one(root, survivors, &mut stack) };
+    unsafe { update_header_flags(root, |f| f | ARENA_RESET_MARK) };
+    true
+}
 
-    while let Some(e) = stack.pop() {
+/// Admit one arena child, **false when the arena had no memory to record
+/// it** and the caller owes its edge a sever.
+///
+/// Admission precedes the mark, so a refusal leaves no half-marked entity
+/// and the mark bit and chain membership stay equal — which every pass
+/// after this one reads as the same fact.
+///
+/// # Safety
+/// `child` is a live arena entity and `arena` is the one being reset.
+unsafe fn mark_child(arena: *mut Arena, child: *mut RcHeader) -> bool {
+    let flags = unsafe { mutator_flags(child) };
+    if flags & ARENA_RESET_MARK != 0 {
+        return true; // already admitted, and its edge stands
+    }
+
+    // An unmarked child still carrying `IS_ESCAPEE` has an escapee record
+    // waiting: the barrier logs one at the 0→1 transition of the hold-count
+    // and `escape_lose` clears the flag at zero, so the flag standing means
+    // a record stands too. The next round admits it as a root by compacting
+    // that record where it lies, which allocates nothing and so cannot be
+    // refused. Pushing it here would risk a sever on an edge the barrier
+    // counted, and severing a counted edge is what leaves a promoted entity
+    // holding a count nothing releases.
+    if flags & IS_ESCAPEE != 0 {
+        return true;
+    }
+
+    if !unsafe { (*arena).push_survivor(child) } {
+        return false;
+    }
+
+    unsafe {
+        update_header_flags(child, |f| f | ARENA_RESET_MARK);
+        // A survivor reached only by an internal edge has no external
+        // hold-count, so its count starts at zero and the counting pass
+        // rebuilds it from the edges. `IS_ESCAPEE` is tested again rather
+        // than read off `flags` above, because the arm that reaches here
+        // has already answered for a child carrying it.
+        //
+        // A COW entity is the exception, because its count is live all
+        // through the fixpoint: `values.md` maintains it in every memory
+        // category, so a destructor's `unset` reaches `ll_release` and
+        // decrements it. Zeroing here would make that decrement underflow
+        // inside the reset. Its count is settled once instead, by
+        // [`reconcile_cow_counts`], after the last destructor has run.
+        if mutator_flags(child) & (IS_ESCAPEE | COW) == 0 {
+            set_header_refcount(child, 0);
+        }
+    }
+
+    true
+}
+
+/// Walk the survivors from `from` and admit every arena entity they name,
+/// which is the whole of the descent: a child admitted here lands at the
+/// chain's tail and this same walk reaches it, so the closure is reached
+/// without a worklist of its own.
+///
+/// **An edge whose child the arena cannot record is severed**: the slot is
+/// emptied, so nothing promoted names an entity this reset never promoted
+/// (`dev/DECISIONS.md`, "a survivor cell the pool cannot supply severs the
+/// edge, and the reset finishes"). Returns how many edges that was, which
+/// is not how many children died: the refusal leaves the child unmarked, so
+/// another edge to it is refused and severed in its turn, and a destructor
+/// that escapes it afresh has it admitted as a root of the next round.
+///
+/// # Safety
+/// `arena` is the arena being reset, mid-fixpoint.
+unsafe fn descend_from(arena: *mut Arena, from: usize) -> usize {
+    let mut severed = 0;
+    let mut index = from;
+    let mut walk = unsafe { (*arena).walk_survivors(index) };
+    loop {
+        // A walk runs dry either because the descent is done or because it
+        // was made over a chain that was empty then and is not now. One
+        // re-ask at the current index tells the two apart, and costs one
+        // walk of the segment chain rather than a pointer into the arena
+        // that the next append would retag.
+        let s = match walk.next() {
+            Some(s) => s,
+            None => {
+                walk = unsafe { (*arena).walk_survivors(index) };
+                match walk.next() {
+                    Some(s) => s,
+                    None => break,
+                }
+            }
+        };
+
+        index += 1;
+        // A survivor whose teardown completed inside this reset holds
+        // nothing any more, and nothing may follow what its slots still
+        // name (`memory::reset_window`).
+        if unsafe { crate::memory::reset_window::is_torn_down(s) } {
+            continue;
+        }
+
+        #[cfg(test)]
         unsafe {
-            crate::cells::trace_entity(e, |child| {
-                if is_arena_entity(child) {
-                    mark_one(child, survivors, &mut stack);
+            crate::memory::reset_window::note_walk(s)
+        };
+
+        let kind = unsafe { crate::cells::entity_kind(s) };
+        unsafe {
+            crate::cells::trace_cells::<crate::cells::PlainCells>(s, kind, |cell| {
+                if !is_arena_entity(cell.child) {
+                    return;
+                }
+
+                if !mark_child(arena, cell.child) {
+                    sever_one_edge(s, kind, cell);
+                    severed += 1;
+                    journal_event!(
+                        crate::journal::kinds::KIND_ARENA_RESET_SEVERED_EDGE,
+                        arena as u64,
+                        s as u64,
+                        cell.child as u64
+                    );
                 }
             });
         }
     }
+
+    severed
+}
+
+/// Empty the one cell a refused child came through.
+///
+/// **Only the shapes `cells::empty_cell` is the writer for**, which are an
+/// object's own body cells and a `Reference`'s `Value`. A hash entry and a
+/// class's outside cells are severed by the table and by the group, for the
+/// reasons `cells::sever_cells` states at its two arms: a cleared entry is a
+/// hole rather than a null, an integer-keyed entry has no key cell at all,
+/// and a flat `Value` store over an entry's element publishes zeros over the
+/// collision link, where zero is a legal entry index rather than an end of
+/// chain. `PLAN.md` S47.8 builds the per-layout sever; until it lands this
+/// refuses rather than corrupts a survivor the reset is about to promote.
+///
+/// # Safety
+/// `cell` is one the tracer yielded for `entity` of `kind`, mid-reset.
+unsafe fn sever_one_edge(entity: *mut RcHeader, kind: u32, cell: crate::cells::Cell) {
+    use crate::refcount::EntityKind;
+    const OBJECT: u32 = EntityKind::Object as u32;
+    const LAZY: u32 = EntityKind::Lazy as u32;
+    const REFERENCE: u32 = EntityKind::Reference as u32;
+
+    let outside = matches!(kind, OBJECT | LAZY)
+        && unsafe {
+            crate::class::Class::outside_cells((*(entity as *mut crate::object::Object)).class)
+                .is_some()
+        };
+    assert!(
+        matches!(kind, OBJECT | LAZY | REFERENCE) && !outside,
+        "a refused child in a hash entry or in a class's outside cells needs \
+         the sever its layout owns, which PLAN.md S47.8 builds"
+    );
+
+    unsafe { crate::cells::empty_cell(cell) };
 }
 
 /// Re-trace passes since a test last read them, so a test can say whether
@@ -685,70 +875,19 @@ pub(crate) fn take_retrace_count() -> usize {
     RETRACES.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Re-read every survivor's current children and mark any newly-appeared
+/// Re-read every survivor's current children and admit any newly-appeared
 /// arena child. A destructor may have stored an arena object, fresh or
 /// existing, into an already-traced survivor — an arena→arena store the
 /// barrier does not escape — so that child would otherwise be missed and
 /// dangle once the survivor is promoted (audit H2). Cheap when nothing
-/// changed: an already-marked child is skipped by the arena-reset-mark
-/// test. The index walk (not an iterator) re-scans survivors appended by
-/// `mark_subgraph` mid-loop.
-unsafe fn retrace_survivors(survivors: &mut Vec<*mut RcHeader>) {
+/// changed: an already-admitted child is skipped by the mark test.
+///
+/// # Safety
+/// As [`descend_from`].
+unsafe fn retrace_survivors(arena: *mut Arena) -> usize {
     #[cfg(test)]
     RETRACES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut i = 0;
-    while i < survivors.len() {
-        let s = survivors[i];
-        i += 1;
-        // A survivor whose teardown completed inside this reset holds
-        // nothing any more, and nothing may follow what its slots still
-        // name (`memory::reset_window`).
-        if unsafe { crate::memory::reset_window::is_torn_down(s) } {
-            continue;
-        }
-
-        #[cfg(test)]
-        unsafe {
-            crate::memory::reset_window::note_walk(s)
-        };
-        unsafe {
-            crate::cells::trace_entity(s, |child| {
-                if is_arena_entity(child) && mutator_flags(child) & ARENA_RESET_MARK == 0 {
-                    mark_subgraph(child, survivors);
-                }
-            });
-        }
-    }
-}
-
-unsafe fn mark_one(
-    e: *mut RcHeader,
-    survivors: &mut Vec<*mut RcHeader>,
-    stack: &mut Vec<*mut RcHeader>,
-) {
-    if unsafe { mutator_flags(e) } & ARENA_RESET_MARK != 0 {
-        return;
-    }
-
-    unsafe {
-        update_header_flags(e, |f| f | ARENA_RESET_MARK);
-        // Roots (still IS_ESCAPEE) keep their external hold-count; a
-        // survivor reached only internally has none, so start it at zero
-        // and let the counting pass rebuild it from internal edges.
-        //
-        // A COW entity is the exception, because its count is live all
-        // through the fixpoint: `values.md` maintains it in every memory
-        // category, so a destructor's `unset` reaches `ll_release` and
-        // decrements it. Zeroing here would make that decrement underflow
-        // inside the reset. Its count is settled once instead, by
-        // [`reconcile_cow_counts`], after the last destructor has run.
-        if mutator_flags(e) & (IS_ESCAPEE | COW) == 0 {
-            set_header_refcount(e, 0);
-        }
-    }
-
-    survivors.push(e);
-    stack.push(e);
+    unsafe { descend_from(arena, 0) }
 }
 
 /// Settle every COW survivor's count now that the fixpoint is over and

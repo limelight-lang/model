@@ -3606,17 +3606,33 @@ unsound rather than dear.
         `what_a_destructor_does_during_the_fixpoint` 8/0 in 21 s wall,
         `the_release_log` 3/0 in 12 s, `arena::tests::the_logs_the_reset_reads`
         5/0 in 50 s.
-- [ ] S47.2 The survivor chain in `ll_alloc` segments, and no mark worklist
-      done: `survivors` stands in 4 KiB segments drawn through
-        `stdapi::ll_alloc`, the window's log's shape, and `mark_subgraph`'s
-        `stack` is gone — the closure is reached by walking the chain from the
-        index the call started at, as `retrace_survivors` already walks it; the
-        chain's segments come from the arena's own blocks through
-        `Arena::alloc` and never from the reserve, a round admits its roots by
-        compacting the escapee log's segments in place, and a child the chain
-        cannot take severs its edge as S47.0 says, through a promotion-facing
-        form of `cells::trace_cells` and `cells::empty_cell`, seen on a forced
-        refusal and counted in the reset's return
+- [x] S47.2 The survivor chain in the arena's own memory, and no mark worklist
+      done: `survivors` is a segment chain in the arena's own blocks, drawn
+        through `Arena::alloc` and never from the reserve, and
+        `mark_subgraph`'s `stack` is gone — the closure is reached by walking
+        the chain from the index the call started at, as `retrace_survivors`
+        already walks it; a refusal falls on no counted edge, an unmarked
+        child carrying `IS_ESCAPEE` being left to the record that admits it
+        as a root; the reset counts its severances and answers the total
+      tier: T2 · role: Critic → Sage
+      handoff: the chain is `Log::Survivors`, the one arena log linked at the
+        tail, barred from the reserve so it cannot take the barrier's memory;
+        roots are admitted by compacting the escapee segments in place, so a
+        root is never refused. `RefusedSurvivorSegments` is the injection.
+        Until S47.8 a refusal on a hash entry or on outside cells asserts
+        rather than corrupts. Miri 2026-09-13: `the_logs_the_reset_reads` 7/0
+        in 54 s, `who_survives_a_reset` 7/0 in 27 s,
+        `what_a_destructor_does_during_the_fixpoint` 8/0 in 36 s.
+- [ ] S47.8 The sever takes the unit its holder's layout leaves consistent
+      done: `cells::sever_cell` dispatches on the cell's shape, `CellShape`
+        carries `Element`, `Key` and `Outside` beside the two it has,
+        `Table::sever_entry` and `array::entity::sever_entry_holding` exist
+        with the count bookkeeping `Table::remove` does, and `OutsideCells`
+        has a sixth member `sever_one`; red first: a refused hash string key
+        leaves the other keys' chain, count and lookups intact, a refused
+        hash element leaves the collision link standing rather than a
+        self-referencing entry, a refused vector element, and a group's
+        `sever_one` through the test group
       tier: T2 · role: Critic
 - [ ] S47.3 `retained` is the kind stamp, and the journal keeps a counter
       done: `retained` is gone and draws nothing — "retained in this reset" is
