@@ -48,7 +48,7 @@
 //! arena cannot record has its cell emptied. The COW reconciliation walks
 //! nothing: it reads the count pass's log.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::journal::kinds::journal_event;
 use crate::memory::arena::Arena;
@@ -135,8 +135,12 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     let mut retained_blocks = 0usize;
     // Blocks pinned for bytes this reset could not carry out, each held by
     // one count of the reset's own until it has finished establishing
-    // occupant counts. Released after `finish_reset`, below.
-    let mut pinned: HashSet<usize> = HashSet::new();
+    // occupant counts. Released after `finish_reset`, below, by walking the
+    // chain they link into: the head, or `RESET_PIN_END` while no block has
+    // been pinned. A block's own link word is also what says it is already
+    // on the chain, so a second payload in the same block takes no second
+    // pin.
+    let mut pin_chain = crate::memory::heap::RESET_PIN_END;
     // Retained block → the survivors sharing it, built here rather than
     // read back off `survivors` at the end. A survivor can die inside
     // this reset, and the classification that decides whether it even
@@ -275,8 +279,18 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
                     // to hold the block until `place_survivor_lists`
                     // (`dev/DECISIONS.md`, "the reset holds a pin of its
                     // own, and releases it after the index is real").
-                    if pinned.insert(payload_block) {
-                        unsafe { crate::memory::retained::pin(payload_block) };
+                    if unsafe { crate::memory::heap::block_reset_pin(payload_block as *mut u8) }
+                        == 0
+                    {
+                        unsafe {
+                            crate::memory::heap::set_block_reset_pin(
+                                payload_block as *mut u8,
+                                pin_chain,
+                            );
+                            crate::memory::retained::pin(payload_block);
+                        }
+
+                        pin_chain = payload_block;
                     }
                 }
             }
@@ -419,10 +433,29 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     // held for. A block that empties on the release had its payload
     // freed inside the reset, so it joins the vector below: no later
     // death is left to report it.
-    for block in pinned {
+    //
+    // The link is read and cleared before the pin is spent, because a
+    // block the release empties goes back to the pool below and its
+    // header is the pool's from then on.
+    let mut block = pin_chain;
+    while block != crate::memory::heap::RESET_PIN_END {
+        let next = unsafe { crate::memory::heap::block_reset_pin(block as *mut u8) };
+        // Zero is "on no chain", so reading it here means a block left the
+        // chain while the chain still named it. Named rather than followed:
+        // the walk would otherwise read a collector line at address zero,
+        // and in a release build read one wildly.
+        debug_assert!(
+            next != 0,
+            "a pinned block left the reset's chain while it was still on it"
+        );
+        unsafe { crate::memory::heap::set_block_reset_pin(block as *mut u8, 0) };
+        #[cfg(test)]
+        PINS_SPENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if unsafe { crate::memory::retained::hold_released(block) } {
             emptied.push(block);
         }
+
+        block = next;
     }
 
     // Blocks nothing holds at the end of this reset — every survivor died
@@ -665,6 +698,10 @@ unsafe fn place_survivor_lists(
                     *retained_blocks += 1;
                 }
 
+                // Not on the reset's pin chain, which carries the pins the
+                // reset spends itself: this one is the list's, and
+                // `retained::release_emptied` spends it when the block the
+                // list belongs to returns.
                 unsafe { crate::memory::retained::pin(holder) };
             }
         }
@@ -904,6 +941,21 @@ unsafe fn sever_one_edge(
             );
         })
     };
+}
+
+/// Pins of its own the reset has spent by walking its chain, so a test can
+/// say that a second payload in one block took no second pin: the outcome
+/// is the same block going home either way, and only the count separates
+/// one pin from two. A plain static, as `RETRACES` is: every test that runs
+/// a reset holds `block_pool::test_guard`.
+#[cfg(test)]
+static PINS_SPENT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The pins the reset's own chain has spent since the last read, cleared by
+/// the read.
+#[cfg(test)]
+pub(crate) fn take_pins_spent() -> usize {
+    PINS_SPENT.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Re-trace passes since a test last read them, so a test can say whether

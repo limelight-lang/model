@@ -13,8 +13,8 @@ in the specification rather than in this crate.
 
 Updated: 2026-09-13 · Active: S47, whose Critic round of 2026-09-13 took the
 breakdown of 2026-09-12 from five steps to eight, Edmond agreeing the new
-structure the same day (`dev/plans/S47.md`); S47.0 through S47.3 and S47.8 closed on
-2026-09-13, three of them on Sage rulings, and the work continues at S47.4.
+structure the same day (`dev/plans/S47.md`); S47.0 through S47.4 and S47.8 closed on
+2026-09-13, three of them on Sage rulings, and the work continues at S47.5.
 S36's one open step is S36.9, which
 closes on a deny run over a reset inside a collection that `promote`'s own
 containers (S47) still fail; S36.17 closed on 2026-09-12 with the window's
@@ -165,6 +165,18 @@ S36.9. The `dev/` sweep of the same day raised one more — `FORCE_OOM` against
 the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
 than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
+
+- **Whether an occupant of a retained block can be freed from another
+  thread inside the reset that retained it.** `retained::occupant_freed`
+  subtracts 1 from the low half of a count word whose high half holds the
+  pins, so a free that arrives before the reset has established occupant
+  counts borrows out of the pins: a `debug_assert` in a debug build, and in
+  a release build one silently eaten pin and a block held for ever. The
+  guard that would refuse such a free reads `reset_window::is_open`, which
+  is a thread-local, so it answers for the freeing thread rather than for
+  the block's. Raised by the Critic of 2026-09-13 over S47.4 as a probe
+  rather than a claim: whether a promoted survivor is reachable from
+  another thread mid-reset is unestablished, and the probe is one red test.
 
 - **What a process-wide `pthread_key` would buy the reserve draw.** Four
   thread-locals of this crate carry drop glue, and the first touch of one
@@ -3638,22 +3650,30 @@ unsound rather than dear.
         `KIND_ARENA_RESET_END`'s third operand comes from a counter rather
         than from a set's length
       tier: T2 · role: —
-      handoff: `retain_block` answers whether this call is the one that
-        stamped, so the kind word is both the membership test and the
-        idempotence the set used to give; `finish_reset` keeps a block on
-        the same reading. The counter is the journal's alone, and
-        `the_record_a_reset_closes_with` is its only reader — seen red with
-        the increment removed. Verified: 919 plain three times,
-        `debug-journal` 924 three times, `hash-folding` 919, release 914,
-        `fmt --check` under +1.94, `cargo bench --no-run`, `citations.py`
-        559 with the same six residues. Miri at two threads:
-        `who_survives_a_reset` 7/0 in 18 s wall,
-        `the_memory_a_survivor_takes_with_it` 13/0 in 5 m 19 s.
-- [ ] S47.4 The reset's pins chain through the block
+      handoff: `2341144` — `retain_block` answers whether this call is the
+        one that stamped, so the kind word is both the membership test and
+        the idempotence; the counter is the journal's alone, and
+        `the_record_a_reset_closes_with` is its only reader.
+- [x] S47.4 The reset's pins chain through the block
       done: `pinned` is gone — a block links into a per-reset chain through a
         header word at the moment the reset pins it, and the loop past
         `finish_reset` spends each of those pins by walking that chain
       tier: T2 · role: Critic
+      handoff: the word is `BlockCollector::reset_pins`, cleared with the
+        rest of the line at retention; zero says "on no chain" and answers
+        "already pinned by this reset" as the set did, and the tail carries
+        a sentinel, an address never being 1. The pin the criterion means is
+        the one the reset holds for itself over a payload it could not carry
+        — a survivor list's pin is the list's, and `release_emptied` spends
+        it. The walk must stay below `place_survivor_lists`: `register`
+        answers false for a chain member only because the reset's hold is
+        still on it. `take_pins_spent` is the probe, one pin for two
+        payloads in one block. Verified: 920 plain three times,
+        `debug-journal` 925 three times, `hash-folding` 920, release 915,
+        `fmt --check` under +1.94, `cargo bench --no-run`, `citations.py`
+        559 with the same six residues, `--list` one test longer. Miri at
+        two threads: `the_memory_a_survivor_takes_with_it` 14/0 in
+        5 m 39 s.
 - [ ] S47.5 The emptied blocks and the placed lists chain through the block
       done: `emptied` and `place_survivor_lists`' `placed` are gone — an
         emptied block links through a named word of the collector line, a
@@ -3661,6 +3681,16 @@ unsound rather than dear.
         two passes and is published only by `register` as before, and the step
         shows neither word has a reader while the links are live
       tier: T2 · role: Critic
+      note: the collector line has **sixteen bytes left** — its fields sum
+        to 48 of the 64 the const assert at `memory::heap` allows, and a
+        49th byte makes the struct 128 and the line overflow the block's
+        header. So S47.5 and S47.6 together may add two words, not four.
+        The Critic of 2026-09-13 names the way out: a block is never on the
+        pin chain and the emptied chain at the same instant — the walk
+        reads its pin link out at the moment it would join the emptied one
+        — so one word carries both with the phase written on the field.
+        There is also a spare four-byte hole at +36 for anything that can
+        be an index rather than an address.
 - [ ] S47.6 The grouping without `by_block`
       done: `by_block` is gone and the grouping draws nothing — promotion
         partitions a survivor that had a block of its own out of the chain at
@@ -3670,6 +3700,9 @@ unsound rather than dear.
         collector line; the step names the sort's algorithm and measures it
         against the `HashMap` it replaces on the fixpoint cases
       tier: T2 · role: Critic
+      note: its "two words per retained block on the cleared collector
+        line" spends the budget S47.5's note names — read that one before
+        adding a field.
 - [ ] S47.7 The COW rows without a `HashMap`
       done: `settled` and `cow_at_promotion` are gone — `at` is one more
         record kind in the window's log, the capture is draw-free or a refused

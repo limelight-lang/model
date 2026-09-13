@@ -947,3 +947,106 @@ fn a_block_pinned_for_a_payload_alone_goes_home_when_the_payload_dies_inside_the
         "a block pinned for a payload alone stayed retained after the payload died inside the reset"
     );
 }
+
+/// Two refused payloads in one block take **one** pin of the reset's own,
+/// not two. The reset holds a block over the window in which it cannot yet
+/// establish occupant counts, and that window is per reset rather than per
+/// payload: a second pin would be spent by nobody, and the block would
+/// stay out of circulation for the life of the process.
+///
+/// What answers "already pinned by this reset" is the block's own link
+/// word, which is also how the reset finds its pins again past
+/// `finish_reset` (`memory::heap`, `BlockCollector::reset_pins`). Both
+/// wakers are refused their carry, so both leave their bytes where they
+/// are, and the two blocks are asserted equal before anything else: two
+/// blocks would make this test a second copy of the one above.
+///
+/// **The pin is counted rather than inferred.** Every outcome here — the
+/// kind, the payload pins, the block going home — reads the same whether
+/// the reset took one pin of its own, two, or none at all, so the walk
+/// that spends them counts what it spent and this asserts the number.
+#[test]
+fn two_refused_payloads_in_one_block_take_one_pin_of_the_resets_own() {
+    use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED};
+    use crate::memory::buffer_arena::FORCE_REFUSE_LONGLIVED;
+    use crate::test_support::outside_block;
+    use std::sync::atomic::Ordering;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let holder_cls = ClassBuilder::new("TwoPinnedHolder")
+        .prop("first", true)
+        .prop("second", true)
+        .build();
+    let waker_cls = outside_block::class("WakerPinnedTwice");
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let holder = unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let first =
+        unsafe { new_constructed(&mut *context_ptr, waker_cls, MemoryCategory::RequestArena) };
+    let second =
+        unsafe { new_constructed(&mut *context_ptr, waker_cls, MemoryCategory::RequestArena) };
+    let first_bytes = unsafe { outside_block::install_block(context_ptr, first) };
+    let second_bytes = unsafe { outside_block::install_block(context_ptr, second) };
+    let block_address = BlockHeader::of_ptr(first_bytes) as usize;
+    assert_eq!(
+        BlockHeader::of_ptr(second_bytes) as usize,
+        block_address,
+        "the two payloads fell into two blocks, so no second pin is under test"
+    );
+
+    unsafe {
+        store_prop(
+            arena_ptr,
+            holder,
+            crate::test_support::prop_offset(0),
+            first,
+        );
+        store_prop(
+            arena_ptr,
+            holder,
+            crate::test_support::prop_offset(1),
+            second,
+        );
+    }
+
+    let _ = crate::promote::take_pins_spent();
+    FORCE_REFUSE_LONGLIVED.store(true, Ordering::Relaxed);
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    FORCE_REFUSE_LONGLIVED.store(false, Ordering::Relaxed);
+
+    assert_eq!(
+        crate::promote::take_pins_spent(),
+        1,
+        "the second payload took a pin of its own, or the first took none"
+    );
+    unsafe {
+        assert_eq!(
+            outside_block::block_of(first),
+            first_bytes,
+            "the carry was not refused, so this test proves nothing"
+        );
+        assert_eq!(outside_block::block_of(second), second_bytes);
+        assert_eq!(
+            *(block_address as *const u32),
+            BLOCK_KIND_RETAINED,
+            "the pinned payloads did not retain the block their bytes lie in"
+        );
+        assert_eq!(
+            crate::memory::retained::pin_count(block_address),
+            2,
+            "the reset's own pin outlived the reset, or a payload took none"
+        );
+
+        assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+        ll_object_die(holder);
+        assert_eq!(
+            *(block_address as *const u32),
+            BLOCK_KIND_FREE,
+            "the block outlived the two payloads it was pinned for"
+        );
+    }
+}

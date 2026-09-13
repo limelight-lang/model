@@ -29,7 +29,7 @@
 //! declares this module implements.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::journal::kinds::journal_event;
 use crate::memory::block_pool::{
@@ -322,7 +322,26 @@ struct BlockCollector {
     /// The length of `survivors`, which is a retained block's index space.
     /// Published by the release store of `survivors`.
     survivor_count: AtomicU32,
+    /// The next block on the chain of blocks an arena reset has pinned for
+    /// a window of its own, or [`RESET_PIN_END`] at the tail; zero while
+    /// this block is on no such chain, which is also what says the reset
+    /// has not pinned it yet (`promote::arena_reset_full`).
+    ///
+    /// **Read and written by `promote::arena_reset_full` alone**, between
+    /// the retention that clears this line and the walk past
+    /// `finish_reset` that spends every pin on the chain. That is the
+    /// whole of what keeps it private: the reset window is a thread-local,
+    /// so another thread's collection may well be reading this block's
+    /// line at the same time — what it writes there is `shadow`, and the
+    /// frees that reach the block write `holds`. A block whose pin is
+    /// spent leaves the chain with this word nulled before it can go home.
+    reset_pins: AtomicUsize,
 }
+
+/// The tail of a reset's pin chain. Not zero, because zero is what says a
+/// block is on no chain, and not an address, because a block header is
+/// 64 KiB-aligned and one is never 1.
+pub(crate) const RESET_PIN_END: usize = 1;
 
 /// Where a block's collector line begins: immediately past the header,
 /// which is 192 bytes today because [`BlockRemote`] aligns the header to
@@ -2456,7 +2475,33 @@ pub(crate) unsafe fn clear_collector_line(block: *mut u8) {
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         (*line).holds.store(0, Ordering::Relaxed);
         (*line).survivor_count.store(0, Ordering::Relaxed);
+        (*line).reset_pins.store(0, Ordering::Relaxed);
     }
+}
+
+/// Where `block` stands on the reset's pin chain: zero while the reset has
+/// not pinned it, another block's address or [`RESET_PIN_END`] once it has
+/// ([`BlockCollector::reset_pins`]).
+///
+/// # Safety
+/// `block` is the header of a live block stamped `BLOCK_KIND_RETAINED`
+/// over a cleared collector line, and the caller is the thread resetting
+/// the arena it came from.
+#[inline]
+pub(crate) unsafe fn block_reset_pin(block: *mut u8) -> usize {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*line).reset_pins.load(Ordering::Relaxed) }
+}
+
+/// Put `block` on the reset's pin chain behind `next`, or take it off with
+/// zero.
+///
+/// # Safety
+/// As [`block_reset_pin`].
+#[inline]
+pub(crate) unsafe fn set_block_reset_pin(block: *mut u8, next: usize) {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*line).reset_pins.store(next, Ordering::Relaxed) };
 }
 
 /// A retained block's survivor list and its length: `(null, 0)` while
