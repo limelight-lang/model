@@ -11,7 +11,8 @@ use super::*;
 fn an_index_is_stored_sorted_whatever_order_it_arrives_in() {
     let _g = crate::memory::block_pool::test_guard();
     let (block, cells, _live) = walkable_index(3);
-    let _empty = unsafe { register(block, &[cells[2], cells[0], cells[1]], list_room(block, 3)) };
+    let _empty =
+        unsafe { count_and_register(block, &[cells[2], cells[0], cells[1]], list_room(block, 3)) };
     let mut ascending = cells.clone();
     ascending.sort_unstable();
     assert_eq!(unsafe { survivor_list_copy(block) }, ascending);
@@ -27,7 +28,7 @@ fn an_index_is_stored_sorted_whatever_order_it_arrives_in() {
 fn a_registered_index_is_safe_for_the_enumerator_to_read() {
     let _g = crate::memory::block_pool::test_guard();
     let (block, cells, _live) = walkable_index(4);
-    let _empty = unsafe { register(block, &cells, list_room(block, 4)) };
+    let _empty = unsafe { count_and_register(block, &cells, list_room(block, 4)) };
     let mut seen = 0usize;
     unsafe {
         crate::memory::heap::for_each_entity_slot(|slot| {
@@ -54,7 +55,7 @@ fn a_live_occupant_of_a_published_list_is_visited() {
         live[2].write(1);
     }
 
-    let _empty = unsafe { register(block, &cells, list_room(block, 3)) };
+    let _empty = unsafe { count_and_register(block, &cells, list_room(block, 3)) };
     let mut seen = Vec::new();
     unsafe {
         crate::memory::heap::for_each_entity_slot(|slot| {

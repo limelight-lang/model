@@ -13,8 +13,9 @@ in the specification rather than in this crate.
 
 Updated: 2026-09-13 · Active: S47, whose Critic round of 2026-09-13 took the
 breakdown of 2026-09-12 from five steps to eight, Edmond agreeing the new
-structure the same day (`dev/plans/S47.md`); S47.0 through S47.5 and S47.8 closed on
-2026-09-13, three of them on Sage rulings, and the work continues at S47.6.
+structure the same day (`dev/plans/S47.md`); S47.0 through S47.6 and S47.8 closed on
+2026-09-13, three of them on Sage rulings, and the work continues at S47.7,
+the last step of the stage.
 S36's one open step is S36.9, which
 closes on a deny run over a reset inside a collection that `promote`'s own
 containers (S47) still fail; S36.17 closed on 2026-09-12 with the window's
@@ -171,12 +172,27 @@ guard lowers it on the unwind as well as on the return.
   subtracts 1 from the low half of a count word whose high half holds the
   pins, so a free that arrives before the reset has established occupant
   counts borrows out of the pins: a `debug_assert` in a debug build, and in
-  a release build one silently eaten pin and a block held for ever. The
+  a release build one silently eaten pin and a block held for ever. With no
+  pin standing either — the ordinary shape, a block retained for its
+  occupants alone — the whole word wraps instead, and then
+  `has_held_occupants` answers true for the life of the process. The
   guard that would refuse such a free reads `reset_window::is_open`, which
   is a thread-local, so it answers for the freeing thread rather than for
   the block's. Raised by the Critic of 2026-09-13 over S47.4 as a probe
   rather than a claim: whether a promoted survivor is reachable from
   another thread mid-reset is unestablished, and the probe is one red test.
+
+- **Whether a survivor list should prefer a block this reset has already
+  retained.** `Arena::alloc_preferring` tries the described block's tail, the
+  reset's current block, then a fresh pool block. A bump arena's survivor
+  blocks are normally full, so the common answer is the second, and that
+  block — which may hold no survivor of its own — is then retained and held
+  until the last survivor of every block whose list it carries has died; the
+  third answer holds 64 KiB drawn at reset time for the same span. Preferring
+  the tail of a block the reset is keeping anyway would cost nothing extra in
+  bookkeeping and would build pairwise dependencies between retained blocks,
+  which `release_emptied` already recurses through. Raised by the Critic over
+  S47.6 and priced nowhere.
 
 - **What a process-wide `pthread_key` would buy the reserve draw.** Four
   thread-locals of this crate carry drop glue, and the first touch of one
@@ -3670,39 +3686,38 @@ unsound rather than dear.
         two passes and is published only by `register` as before, and the step
         shows neither word has a reader while the links are live
       tier: T2 · role: Critic
-      handoff: three words of the collector line are the reset's own —
-        `reset_pins`, `emptied_chain` and `placed_list` — and they fill the
-        line exactly, the header's six fields taking the other 40 bytes.
-        A block is on at most one chain: `register` reports a block empty
-        only when nothing holds it, and a pinned block still carries the
-        reset's own hold. `RefusedListPlacement` injects the refused
-        placement the pool would otherwise have to produce.
-        `who_may_touch_the_resets_words` reads the sources and names the
-        files allowed to reach the three words and the line's own clearing;
-        it was seen red on a planted caller. Verified: 922 plain six times,
-        `debug-journal` 927 three times, `hash-folding` 922, release 917,
-        `fmt --check` under +1.94, `cargo bench --no-run`, `citations.py`
-        559 with the same six residues. Miri at two threads:
-        `where_a_survivor_list_is_placed` 5/0 in 17 s wall,
-        `the_reset_reads_no_zero_count_member` 12/0 in 5 m 56 s.
-- [ ] S47.6 The grouping without `by_block`
+      handoff: `7b5c379` — `reset_pins`, `emptied_chain` and `placed_list` are
+        the reset's own words of the collector line, and
+        `who_may_touch_the_resets_words` names the files allowed to reach them.
+- [x] S47.6 The grouping without `by_block`
       done: `by_block` is gone and the grouping draws nothing — promotion
         partitions a survivor that had a block of its own out of the chain at
         the instant it classifies it, so nothing is classified twice, and the
-        grouping is the 64 KiB mask over the rest of the chain sorted in place
-        by address, its scratch two words per retained block on the cleared
-        collector line; the step names the sort's algorithm and measures it
-        against the `HashMap` it replaces on the fixpoint cases
+        grouping is the 64 KiB mask over the rest of the chain, distributed
+        into the blocks' own lists through three words of the cleared
+        collector line; the step names the algorithm and measures it against
+        the `HashMap` it replaces on the fixpoint cases
       tier: T2 · role: Critic
-      note: the collector line is **full** — three of its words are the
-        reset's own and the header's six fields take the rest of the 64 the
-        const assert at `memory::heap` allows, so its "two words per
-        retained block on the cleared collector line" has nowhere to go as
-        new fields. What is left is the four-byte hole at +36 for anything
-        that can be an index rather than an address, and reuse: the sort's
-        scratch is live during the grouping, which is before
-        `place_survivor_lists` writes `placed_list` and before any block
-        joins the emptied chain.
+      amended 2026-09-13: the criterion said the chain would be "sorted in
+        place by address". It is not: a comparison sort of a segment chain
+        needs random access by index, and the addresses have to end in the
+        per-block lists anyway, so a distribution keyed by the block writes
+        them where they belong in one pass (`dev/plans/S47.md`). The only
+        sort left is `register`'s `sort_unstable` per list.
+      handoff: `83d5bd5` — the grouping is three walks — count, place and fill, publish —
+        keyed by the address masked to 64 KiB, and the numbers live on the
+        block: `survivor_count` the occupant total, `occupants_recorded` what
+        the fill accounted for (the line's last four bytes), `placed_list` the
+        list. `retained::count_occupant`, `record_occupant` and `register`
+        own what they mean; `promote` reaches them and its own three words and
+        nothing else, which `who_may_touch_the_resets_words` now says in two
+        caller lists. A survivor with a block of its own carries a bit on its
+        chain record, set by the promotion walk and masked by
+        `Arena::walk_survivors`, so no pass but the grouping's can see it;
+        `take_survivors_kept_out_of_the_grouping` is the probe. 4 global
+        allocations per reset to 0 and the reset of 2400 survivors 28 %
+        shorter (`dev/BENCHMARKS.md`, 2026-09-13). Miri caught a write
+        through a `SharedReadOnly` raw pointer in the tag's first form.
 - [ ] S47.7 The COW rows without a `HashMap`
       done: `settled` and `cow_at_promotion` are gone — `at` is one more
         record kind in the window's log, the capture is draw-free or a refused

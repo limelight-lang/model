@@ -58,7 +58,8 @@
 //! A block may be retained for **bytes** rather than for occupants, when a
 //! survivor's out-of-line payload could not be carried out of the dying
 //! arena. It is then held by two populations and goes home when both are
-//! empty: occupants counted at [`register`], payloads counted by [`pin`]
+//! empty: occupants counted at [`count_occupant`] and published by
+//! [`register`], payloads counted by [`pin`]
 //! and spent by [`payload_freed`] (`dev/DECISIONS.md`, "a pinned block
 //! goes home when its last payload is freed").
 //!
@@ -72,7 +73,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::memory::block_pool::{BLOCK_KIND_FREE, BlockHeader, BlockPool, store_block_kind};
-use crate::memory::heap::{block_hold_count, block_survivor_list, publish_block_survivor_list};
+use crate::memory::heap::{
+    block_hold_count, block_occupant_total, block_survivor_list, count_block_occupant,
+    publish_block_survivor_list, record_block_occupant, take_block_occupants_recorded,
+};
 
 /// One held occupant slot, in the low half of the count word.
 const OCCUPANT: u64 = 1;
@@ -92,20 +96,82 @@ unsafe fn count_word(block: usize) -> *const AtomicU64 {
     unsafe { block_hold_count(block as *mut u8) }
 }
 
-/// Publish `occupants`, the survivors promoted in retained block `block`,
-/// as its survivor list at `destination`, and count how many of their slots
-/// the block must keep: every live occupant, and every dead occupant whose
-/// candidate registration still names its allocation.
+/// One more occupant of retained `block`: a survivor this reset has just
+/// promoted in it. Counted before any list is placed, because the count is
+/// what sizes the list ([`register`]).
 ///
-/// `destination` is `occupants.len()` words the arena placed for the list
-/// (`promote::place_survivor_lists`): inside `block`'s own tail, or
-/// inside another retained block that [`pin`] has already been called for
-/// on this list's behalf. The list is copied there and sorted in place,
-/// because the trace's lookup is a binary search over it and the reset
-/// builds it in discovery order. **Null when no memory could be placed**:
-/// the count is published without a list, so the block stays retained and
-/// returns by its deaths, and every edge into it answers untracked for
-/// its life ([`occupant_index`]).
+/// # Safety
+/// `block` must be stamped `BLOCK_KIND_RETAINED` by this reset over a
+/// cleared collector line, whose list is not published yet, and the caller
+/// is the reset that stamped it.
+pub(crate) unsafe fn count_occupant(block: usize) {
+    unsafe { count_block_occupant(block as *mut u8) };
+}
+
+/// How many occupants of retained `block` the counting pass found, which is
+/// how many words its survivor list takes and what its length is published
+/// as ([`register`]).
+///
+/// # Safety
+/// As [`count_occupant`].
+pub(crate) unsafe fn occupants_counted(block: usize) -> usize {
+    (unsafe { block_occupant_total(block as *mut u8) }) as usize
+}
+
+/// Account for one occupant of retained `block` in the pass that fills its
+/// list: `list` is the memory the arena placed for it, or null where the
+/// arena refused it, and `address` is the occupant.
+///
+/// With a list, the address is written into it at the place the block's own
+/// accounting gives, and [`register`] counts the block's holds off the list
+/// afterwards. **With none there is nothing for the publication to read**,
+/// so the hold this occupant owes the block is decided here instead, at the
+/// one moment the reset is looking at the slot, and goes onto the count word
+/// as it is decided. The block cannot return under those arriving counts:
+/// the refused placement took a hold of the reset's own, which [`register`]
+/// spends ([`hold_released`]).
+///
+/// Either way the block's accounting word counts this occupant, so the two
+/// passes can be held to the same population whatever the arena answered
+/// ([`register`]).
+///
+/// # Safety
+/// As [`count_occupant`], and `list` must be null or writable for as many
+/// words as the block has occupants. `address` must be readable at its
+/// first eight bytes, which is the count and the mutator's half of the
+/// flags. A null `list` requires the hold the refusal took to be standing.
+pub(crate) unsafe fn record_occupant(block: usize, list: *mut usize, address: usize) {
+    let at = unsafe { record_block_occupant(block as *mut u8) } as usize;
+    debug_assert!(
+        at < unsafe { occupants_counted(block) },
+        "the fill pass found more occupants than the counting pass did"
+    );
+    if list.is_null() {
+        if unsafe { is_occupied(address) } {
+            unsafe { (*count_word(block)).fetch_add(OCCUPANT, Ordering::AcqRel) };
+        }
+
+        return;
+    }
+
+    unsafe { list.add(at).write(address) };
+}
+
+/// Publish the survivor list of retained `block` — the addresses
+/// [`record_occupant`] wrote into `list`, sorted in place, because the
+/// trace's lookup is a binary search over them and the fill wrote them in
+/// discovery order — and count how many of those slots the block must
+/// keep: every live occupant, and every dead occupant whose candidate
+/// registration still names its allocation.
+///
+/// `list` is the memory the arena placed for the list
+/// (`promote::place_survivor_lists`): inside `block`'s own tail, or inside
+/// another retained block that [`pin`] has already been called for on this
+/// list's behalf. **Null when no memory could be placed**: the count is
+/// published without a list, so the block stays retained and returns by
+/// its deaths, and every edge into it answers untracked for its life
+/// ([`occupant_index`]). The count is then the one the fill pass put on the
+/// block's word, that pass having been the last reader of those slots.
 ///
 /// **An occupant already dead when the list is published is counted only when
 /// its candidate registration is still live.** An unregistered death has had
@@ -121,23 +187,33 @@ unsafe fn count_word(block: usize) -> *const AtomicU64 {
 /// answers off the count word. The list is published either way.
 ///
 /// # Safety
-/// Every address in `occupants` must be readable, as the module doc
-/// requires of anything published here. `destination` must be null or
-/// writable for `occupants.len()` words and inside a block that stays
-/// retained until this one returns. `block` must be stamped
-/// `BLOCK_KIND_RETAINED` by this reset over a cleared collector line, and
-/// no trace may address it yet.
+/// Every address in the list must be readable, as the module doc requires
+/// of anything published here. `list` must be null or hold the block's
+/// occupants and stand inside a block that stays retained until this one
+/// returns. `block` must be stamped `BLOCK_KIND_RETAINED` by this reset
+/// over a cleared collector line, every occupant of it counted and
+/// recorded, and no trace may address it yet.
 #[must_use = "true means the block is empty and the caller owes it to the pool"]
-pub(crate) unsafe fn register(block: usize, occupants: &[usize], destination: *mut usize) -> bool {
-    let held = occupants
+pub(crate) unsafe fn register(block: usize, list: *mut usize) -> bool {
+    let total = unsafe { occupants_counted(block) };
+    let recorded = unsafe { take_block_occupants_recorded(block as *mut u8) } as usize;
+    debug_assert_eq!(
+        recorded, total,
+        "the fill pass and the counting pass walked different occupants"
+    );
+    if list.is_null() {
+        // Every hold is on the word already, put there as the fill pass
+        // read each slot; what is left is the hold the refusal took, and
+        // spending it is what can report the block empty.
+        return unsafe { hold_released(block) };
+    }
+
+    let addresses = unsafe { std::slice::from_raw_parts_mut(list, total) };
+    addresses.sort_unstable();
+    let held = addresses
         .iter()
         .filter(|&&address| unsafe { is_occupied(address) })
         .count() as u64;
-    if !destination.is_null() {
-        let list = unsafe { std::slice::from_raw_parts_mut(destination, occupants.len()) };
-        list.copy_from_slice(occupants);
-        list.sort_unstable();
-    }
 
     // The list before the count. The decrement that reaches zero, on
     // whichever thread performs it, synchronises with this increment and
@@ -145,9 +221,42 @@ pub(crate) unsafe fn register(block: usize, occupants: &[usize], destination: *m
     // reads (`release_emptied`); published after the count, the address
     // could still read null to that decrement, and the holder's hold
     // would never be spent.
-    unsafe { publish_block_survivor_list(block as *mut u8, destination, occupants.len()) };
+    unsafe { publish_block_survivor_list(block as *mut u8, list, total) };
     let count = unsafe { (*count_word(block)).fetch_add(held, Ordering::AcqRel) } + held;
     count == 0
+}
+
+/// Count, record and publish `occupants` as `block`'s survivor list in one
+/// call, `list` being the memory placed for it or null.
+///
+/// A test's shorthand for what the reset does in three passes over its
+/// survivor chain ([`count_occupant`], [`record_occupant`], [`register`]).
+/// A test holds its occupants in a slice already, and which pass reaches
+/// which survivor is `promote::place_survivor_lists`'s contract rather than
+/// this module's.
+///
+/// # Safety
+/// As [`register`], for every address in `occupants`.
+#[cfg(test)]
+#[must_use = "true means the block is empty and the caller owes it to the pool"]
+pub(crate) unsafe fn count_and_register(
+    block: usize,
+    occupants: &[usize],
+    list: *mut usize,
+) -> bool {
+    for _ in occupants {
+        unsafe { count_occupant(block) };
+    }
+
+    if list.is_null() {
+        unsafe { pin(block) };
+    }
+
+    for address in occupants {
+        unsafe { record_occupant(block, list, *address) };
+    }
+
+    unsafe { register(block, list) }
 }
 
 /// One more thing the block is held for beyond its occupants: a payload

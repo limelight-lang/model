@@ -128,10 +128,17 @@ pub(crate) struct SurvivorWalk {
     at: usize,
 }
 
-impl Iterator for SurvivorWalk {
-    type Item = *mut RcHeader;
+/// The bit a survivor record carries once the reset has taken the survivor
+/// out of the grouping, which is what a survivor that had a block of its
+/// own is ([`SurvivorWalk::keep_the_last_out_of_the_grouping`]). An arena
+/// entity is eight-aligned, so the low bit is free, and every walk but the
+/// grouping's masks it off — a pass that reads survivors reads the
+/// addresses it always read.
+const OWN_BLOCK: usize = 1;
 
-    fn next(&mut self) -> Option<*mut RcHeader> {
+impl SurvivorWalk {
+    /// The next record as it stands, tag and all.
+    fn next_record(&mut self) -> Option<usize> {
         loop {
             if self.seg.is_null() {
                 return None;
@@ -140,7 +147,7 @@ impl Iterator for SurvivorWalk {
             if self.at < unsafe { (*self.seg).count } {
                 let record = unsafe { (*self.seg).records.as_ptr().add(self.at).read() };
                 self.at += 1;
-                return Some(record as *mut RcHeader);
+                return Some(record);
             }
 
             let next = unsafe { (*self.seg).next };
@@ -152,6 +159,71 @@ impl Iterator for SurvivorWalk {
 
             self.seg = next;
             self.at = 0;
+        }
+    }
+
+    /// Take the survivor this walk yielded last out of the grouping: it had
+    /// a block of its own, which is a large entity's run rather than one of
+    /// the arena's bump blocks, so there is nothing to group it with and the
+    /// header words a grouping counts in carry other things there
+    /// (`promote::place_survivor_lists`). The answer is the promotion pass's
+    /// and is given once (`dev/DECISIONS.md`, "Promotion classifies once").
+    ///
+    /// Written through the walk's own segment pointer rather than found by
+    /// index, which would cost a walk of the chain per call. The segments
+    /// are the arena's blocks and not its struct, so the `&mut Arena` the
+    /// caller takes between two records of one walk retags nothing this
+    /// writes through.
+    ///
+    /// # Safety
+    /// The walk must have yielded a record, and the caller is the reset
+    /// classifying that survivor.
+    pub(crate) unsafe fn keep_the_last_out_of_the_grouping(&self) {
+        debug_assert!(self.at > 0, "the walk has yielded no record to classify");
+        // `&raw mut` over the array rather than `as_ptr()` on it: a shared
+        // raw pointer is retagged `SharedReadOnly` and a write through it is
+        // undefined, which Miri reports here rather than anywhere near the
+        // record that was meant to change.
+        let slot = unsafe {
+            (&raw mut (*self.seg).records)
+                .cast::<usize>()
+                .add(self.at - 1)
+        };
+        let record = unsafe { slot.read() };
+        debug_assert_eq!(
+            record & OWN_BLOCK,
+            0,
+            "the survivor was taken out of the grouping twice"
+        );
+        unsafe { slot.write(record | OWN_BLOCK) };
+        #[cfg(test)]
+        KEPT_OUT_OF_THE_GROUPING.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl Iterator for SurvivorWalk {
+    type Item = *mut RcHeader;
+
+    fn next(&mut self) -> Option<*mut RcHeader> {
+        self.next_record()
+            .map(|record| (record & !OWN_BLOCK) as *mut RcHeader)
+    }
+}
+
+/// A walk of the survivors the reset's grouping reaches: the ones that
+/// share their block with something, which is every survivor the promotion
+/// pass did not take out ([`SurvivorWalk::keep_the_last_out_of_the_grouping`]).
+pub(crate) struct SharedBlockWalk(SurvivorWalk);
+
+impl Iterator for SharedBlockWalk {
+    type Item = *mut RcHeader;
+
+    fn next(&mut self) -> Option<*mut RcHeader> {
+        loop {
+            let record = self.0.next_record()?;
+            if record & OWN_BLOCK == 0 {
+                return Some(record as *mut RcHeader);
+            }
         }
     }
 }
@@ -866,6 +938,26 @@ impl Arena {
         }
     }
 
+    /// A walk of every survivor that shares its block, from the first, for
+    /// the reset's grouping. Nothing is appended while it runs — the
+    /// fixpoint has settled by then — so it needs none of
+    /// [`walk_survivors`](Self::walk_survivors)'s resumption.
+    pub(crate) fn walk_survivors_in_shared_blocks(&self) -> SharedBlockWalk {
+        SharedBlockWalk(self.walk_survivors(0))
+    }
+
+    /// The first of the blocks this arena holds, which the caller walks
+    /// through [`BlockHeader::next`]; null while it holds none.
+    ///
+    /// For the reset, which reaches every block it retained this way rather
+    /// than by keeping a list of them. A block drawn while the caller walks
+    /// is linked in front of this one, so the walk does not see it — which
+    /// is what the one caller wants: a block the placement pass draws holds
+    /// no survivor of its own.
+    pub(crate) fn blocks(&self) -> *mut BlockHeader {
+        self.blocks
+    }
+
     /// Take the destructor log's chain: entries tracked *during* the
     /// caller's walk start a fresh chain for its next round.
     pub(crate) fn take_destructors(&mut self) -> DetachedLog {
@@ -1178,6 +1270,22 @@ impl Drop for Arena {
         // host must have reset. Blocks still go back to the pool.
         self.reset(|_| {});
     }
+}
+
+/// Survivors taken out of the grouping, so that a test can say a large
+/// entity was one: every other outcome of the reset reads the same whether
+/// the grouping skipped it or never met it. A plain static, as the reset's
+/// own probes are: every test that runs a reset holds
+/// `block_pool::test_guard`.
+#[cfg(test)]
+static KEPT_OUT_OF_THE_GROUPING: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Survivors taken out of the grouping since the last read, cleared by the
+/// read.
+#[cfg(test)]
+pub(crate) fn take_survivors_kept_out_of_the_grouping() -> usize {
+    KEPT_OUT_OF_THE_GROUPING.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]

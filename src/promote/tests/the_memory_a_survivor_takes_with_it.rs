@@ -414,6 +414,73 @@ fn an_unpromoted_large_arena_entity_is_freed_by_the_reset() {
     );
 }
 
+/// A survivor with a block of its own is taken out of the grouping at the
+/// instant promotion classifies it, and nothing else the reset does says
+/// so: its run carries no survivor list either way, and the block sharing
+/// survivors next to it is grouped the same. The count of survivors the
+/// classification took out is therefore the witness, and the shared block's
+/// published list is the second one — the run's entity must not appear in
+/// it (`dev/DECISIONS.md`, "Promotion classifies once").
+#[test]
+fn a_survivor_with_a_block_of_its_own_is_out_of_the_grouping() {
+    let _g = crate::memory::block_pool::test_guard();
+    let wide = crate::test_support::wide_class("WideOutOfTheGrouping", RUN_FILLERS, None);
+    let shared_cls = ClassBuilder::new("SharesItsBlock").build();
+    let holder_cls = ClassBuilder::new("OutOfTheGroupingCache")
+        .prop("wide", true)
+        .prop("shared", true)
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let holder = unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let large = unsafe { new_constructed(&mut *context_ptr, wide, MemoryCategory::RequestArena) };
+    let shared =
+        unsafe { new_constructed(&mut *context_ptr, shared_cls, MemoryCategory::RequestArena) };
+    let run = BlockHeader::of_ptr(large as *const u8) as usize;
+    let block = BlockHeader::of_ptr(shared as *const u8) as usize;
+    assert_ne!(run, block, "the wide entity shares the ordinary block");
+
+    unsafe {
+        store_prop(arena_ptr, holder, 16, large);
+        store_prop(arena_ptr, holder, 32, shared);
+    }
+
+    let _ = crate::memory::arena::take_survivors_kept_out_of_the_grouping();
+    unsafe { arena_reset_full(arena_ptr) };
+
+    assert_eq!(
+        crate::memory::arena::take_survivors_kept_out_of_the_grouping(),
+        1,
+        "the grouping was left to classify a survivor with a block of its own"
+    );
+    let (list, count) = unsafe { crate::memory::heap::block_survivor_list(block as *mut u8) };
+    assert_eq!(count, 1, "the shared block's list is not its one survivor");
+    assert_eq!(
+        unsafe { *list },
+        shared as usize,
+        "the shared block's list names something else"
+    );
+
+    unsafe {
+        assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+        ll_object_die(holder);
+    }
+
+    assert!(
+        !crate::memory::large_entity::snapshot().contains(&run),
+        "the run outlived the entity the reset promoted in it"
+    );
+    assert_eq!(
+        unsafe { block_kind(block as *const u8) },
+        crate::memory::block_pool::BLOCK_KIND_FREE,
+        "the shared block outlived its one survivor"
+    );
+}
+
 /// A survivor in a block of its own that dies inside the reset is not
 /// read again by it. Its memory is not the ordinary retained kind, which
 /// stays mapped precisely so a dead occupant's refcount word can be read
@@ -421,9 +488,11 @@ fn an_unpromoted_large_arena_entity_is_freed_by_the_reset() {
 /// returns to the system, so every later reader of that address is
 /// reading something the process no longer owns.
 ///
-/// The reset has two such readers over its survivor list, and both run
-/// after the release drain — `reconcile_cow_counts` on the entity and
-/// `place_survivor_lists` on the entity's block header.
+/// The reset's reader over its survivor list is `reconcile_cow_counts`, on
+/// the entity, and it runs after the release drain. The grouping reads such
+/// a survivor's block header no longer: the promotion pass takes a survivor
+/// with a block of its own out of the walk that groups them, which is what
+/// keeps this run's header out of `place_survivor_lists` altogether.
 #[test]
 fn a_large_survivor_that_dies_inside_the_reset_is_read_no_further() {
     use crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN;

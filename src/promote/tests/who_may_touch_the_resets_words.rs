@@ -1,33 +1,55 @@
 //! Three words of a block's collector line are the reset's own, and this
 //! reads the sources to say so: `reset_pins` and `emptied_chain`, the two
 //! chains a reset walks, and `placed_list`, which carries a survivor list
-//! between the two passes that place and publish it.
+//! from the pass that places it to the pass that publishes it.
 //!
 //! **A reader elsewhere is what the design forbids**, and no compiler
 //! error would report one: the words are private to `memory::heap` and
-//! reached through four `pub(crate)` accessors, which any module of the
+//! reached through `pub(crate)` accessors, which any module of the
 //! crate may call with the suite staying green. The cost of a second
 //! caller is not a race but a meaning: `reset_chain` says different things
 //! in the two halves of one reset, and `placed_list` holds an address
 //! nothing may publish yet.
 //!
-//! The same reading also guards the budget. Three words and the header's
-//! own six fill the line's sixty-four bytes exactly, so the next step that
-//! wants one reuses a word of these — and reuse is sound only while the
-//! set of callers is this small.
+//! **Two more words are the grouping's**, and their fence is `retained`
+//! rather than the reset: `survivor_count` carries a block's occupant total
+//! from the counting pass, and `occupants_recorded` carries what the fill
+//! pass has accounted for. `memory::retained` owns what those numbers mean
+//! — which occupant owes the block a hold — so it is the file the
+//! accessors answer to, and `promote` reaches them through it.
+//!
+//! The same reading also guards the budget, which is now spent: three
+//! words, `occupants_recorded` in what was the line's padding, and the
+//! header's own six fill the sixty-four bytes the const assert allows. The
+//! next step that wants a word reuses one or shrinks the header, and reuse
+//! is sound only while the set of callers is this small.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The accessors, and the two files allowed to call them: `memory/heap.rs`
 /// declares them and `promote.rs` is the reset.
-const ACCESSORS: [&str; 6] = [
+///
+/// `block_placed_list` stands beside its `set_` and `take_` forms although
+/// it is their substring: without it, a stranger reading the word alone
+/// would go unreported, since the search is for these names in a line.
+const ACCESSORS: [&str; 7] = [
     "set_block_reset_pin",
     "block_reset_pin",
     "set_block_emptied_chain",
     "block_emptied_chain",
     "set_block_placed_list",
     "take_block_placed_list",
+    "block_placed_list",
+];
+
+/// The grouping's two counting words, reached through `memory/retained.rs`,
+/// which is where what they count is decided.
+const COUNTERS: [&str; 4] = [
+    "count_block_occupant",
+    "block_occupant_total",
+    "record_block_occupant",
+    "take_block_occupants_recorded",
 ];
 
 /// The line's own clearing writes all three words at once, so it belongs
@@ -44,6 +66,15 @@ const CLEARING: &str = "clear_collector_line";
 const CALLERS: [&str; 3] = [
     "memory/heap.rs",
     "promote.rs",
+    "promote/tests/who_may_touch_the_resets_words.rs",
+];
+
+/// The files allowed to reach the counting words: `memory/heap.rs` declares
+/// them and `memory/retained.rs` is the only caller, `promote` asking it
+/// rather than the line.
+const COUNTING_CALLERS: [&str; 3] = [
+    "memory/heap.rs",
+    "memory/retained.rs",
     "promote/tests/who_may_touch_the_resets_words.rs",
 ];
 
@@ -86,6 +117,7 @@ fn the_resets_own_words_are_named_where_the_reset_is() {
             .replace('\\', "/");
         let text = fs::read_to_string(path).expect("a source file is readable");
         let touches = !CALLERS.contains(&relative.as_str());
+        let counts = !COUNTING_CALLERS.contains(&relative.as_str());
         let clears = !CLEARERS.contains(&relative.as_str());
         for (number, line) in text.lines().enumerate() {
             // One report per line, whichever name it carries: the shorter
@@ -94,6 +126,11 @@ fn the_resets_own_words_are_named_where_the_reset_is() {
             let named = ACCESSORS
                 .iter()
                 .find(|accessor| touches && line.contains(*accessor))
+                .or_else(|| {
+                    COUNTERS
+                        .iter()
+                        .find(|counter| counts && line.contains(*counter))
+                })
                 .or(Some(&CLEARING).filter(|name| clears && line.contains(**name)));
             if let Some(name) = named {
                 strangers.push(format!("{relative}:{}: {name}", number + 1));

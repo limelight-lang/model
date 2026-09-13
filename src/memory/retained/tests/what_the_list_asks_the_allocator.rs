@@ -18,7 +18,7 @@ fn registering_a_survivor_list_reaches_no_global_allocator() {
 
     let room = list_room(block, 3);
     crate::test_support::allocation_probe::take_allocations();
-    let _empty = unsafe { register(block, &cells, room) };
+    let _empty = unsafe { count_and_register(block, &cells, room) };
     let (heap, pool) = crate::test_support::allocation_probe::take_allocations();
     assert_eq!(
         (heap, pool),

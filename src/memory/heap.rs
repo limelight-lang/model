@@ -321,7 +321,29 @@ struct BlockCollector {
     holds: AtomicU64,
     /// The length of `survivors`, which is a retained block's index space.
     /// Published by the release store of `survivors`.
+    ///
+    /// **The arena reset writes it before it publishes the address**, one
+    /// per survivor as it counts the block's occupants
+    /// (`crate::memory::retained::count_occupant`), so between the counting
+    /// pass and the publication this length stands over a null list. Every
+    /// reader in the crate asks [`block_survivor_list`], which
+    /// acquire-loads the address first and answers `(null, 0)` while it is
+    /// null; a reader that loaded this word on its own would read the right
+    /// length before the addresses are there.
     survivor_count: AtomicU32,
+    /// What the reset's fill pass has accounted for of this block's
+    /// occupants: how many addresses it has written into the block's list,
+    /// or — where the arena refused the list — how many of those occupants
+    /// still hold their slot, which is the only number the publication then
+    /// has to count with. Which of the two it is, the block's `placed_list`
+    /// says. Zero outside a reset, and taken back to zero at the
+    /// publication (`crate::memory::retained::record_occupant`).
+    ///
+    /// Four bytes wide because that is what the line has spare between
+    /// `survivor_count` and the words below, and nothing wider would fit:
+    /// those three words and the header's own six fill the rest of the
+    /// sixty-four the const assert allows.
+    occupants_recorded: AtomicU32,
     /// The next block on the chain of blocks this arena reset has pinned
     /// for a payload it could not carry out, or [`RESET_CHAIN_END`] at the
     /// tail; zero while the block is on no such chain, which is also what
@@ -2504,6 +2526,7 @@ pub(crate) unsafe fn clear_collector_line(block: *mut u8) {
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         (*line).holds.store(0, Ordering::Relaxed);
         (*line).survivor_count.store(0, Ordering::Relaxed);
+        (*line).occupants_recorded.store(0, Ordering::Relaxed);
         (*line).reset_pins.store(0, Ordering::Relaxed);
         (*line).emptied_chain.store(0, Ordering::Relaxed);
         (*line).placed_list.store(0, Ordering::Relaxed);
@@ -2594,6 +2617,24 @@ pub(crate) unsafe fn take_block_placed_list(block: *mut u8) -> *mut usize {
     }
 }
 
+/// Where `block` stands in the reset's placement: zero while the
+/// placement pass has not reached it, [`PLACED_LIST_NONE`] for a
+/// placement the arena refused, and otherwise the address of its list
+/// ([`BlockCollector::placed_list`]).
+///
+/// The zero is what the fill pass reads to know a block it meets for the
+/// first time, and the publishing pass to know a retained block this
+/// reset placed nothing for — one retained for a payload alone, or for
+/// another block's list.
+///
+/// # Safety
+/// As [`block_reset_pin`].
+#[inline]
+pub(crate) unsafe fn block_placed_list(block: *mut u8) -> usize {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*line).placed_list.load(Ordering::Relaxed) }
+}
+
 /// A retained block's survivor list and its length: `(null, 0)` while
 /// no list is published. The address is acquire-loaded, which is what
 /// makes the length and the addresses behind it readable
@@ -2635,6 +2676,62 @@ pub(crate) unsafe fn publish_block_survivor_list(block: *mut u8, list: *const us
             .survivors
             .store(list as *mut usize, Ordering::Release);
     }
+}
+
+/// Count one more occupant of retained `block`, which is one more word of
+/// the survivor list it will publish ([`BlockCollector::survivor_count`]).
+///
+/// # Safety
+/// `block` must be the header of a live block stamped
+/// `BLOCK_KIND_RETAINED` over a cleared collector line, whose list is not
+/// published yet, and the caller is the thread resetting the arena it came
+/// from.
+#[inline]
+pub(crate) unsafe fn count_block_occupant(block: *mut u8) {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    let counted = unsafe { (*line).survivor_count.load(Ordering::Relaxed) };
+    unsafe { (*line).survivor_count.store(counted + 1, Ordering::Relaxed) };
+}
+
+/// How many occupants of retained `block` the counting pass found, which
+/// is how many words its list takes.
+///
+/// # Safety
+/// As [`count_block_occupant`].
+#[inline]
+pub(crate) unsafe fn block_occupant_total(block: *mut u8) -> u32 {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*line).survivor_count.load(Ordering::Relaxed) }
+}
+
+/// Account for one more of `block`'s occupants in the fill pass, and
+/// answer how many were accounted for **before** this one — which for a
+/// block whose list was placed is the index the occupant's address goes at
+/// ([`BlockCollector::occupants_recorded`]).
+///
+/// # Safety
+/// As [`count_block_occupant`].
+#[inline]
+pub(crate) unsafe fn record_block_occupant(block: *mut u8) -> u32 {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    let recorded = unsafe { (*line).occupants_recorded.load(Ordering::Relaxed) };
+    unsafe {
+        (*line)
+            .occupants_recorded
+            .store(recorded + 1, Ordering::Relaxed)
+    };
+    recorded
+}
+
+/// Take what the fill pass accounted for, leaving zero, so that no block
+/// carries the number past the reset that produced it.
+///
+/// # Safety
+/// As [`count_block_occupant`].
+#[inline]
+pub(crate) unsafe fn take_block_occupants_recorded(block: *mut u8) -> u32 {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*line).occupants_recorded.swap(0, Ordering::Relaxed) }
 }
 
 /// The count word of a retained block, for the arithmetic that decides

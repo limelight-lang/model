@@ -16,7 +16,7 @@ fn the_last_live_occupant_empties_the_block() {
         live[1].write(1);
     }
 
-    let _empty = unsafe { register(block, &cells, list_room(block, 2)) };
+    let _empty = unsafe { count_and_register(block, &cells, list_room(block, 2)) };
     assert!(unsafe { has_survivor_list(block) });
     assert!(
         !unsafe { occupant_freed(block) },
@@ -51,7 +51,7 @@ fn an_occupant_dead_at_registration_holds_nothing() {
     let _empty = unsafe {
         live[0].write(1);
         live[1].write(u64::from(crate::refcount::DEAD_IN_PLACE) << 32);
-        register(block, &cells, list_room(block, 2))
+        count_and_register(block, &cells, list_room(block, 2))
     };
 
     assert!(
@@ -118,7 +118,7 @@ fn the_last_death_on_another_thread_finds_the_list() {
             // count, no list.
             unsafe { crate::memory::heap::clear_collector_line(block as *mut u8) };
             published.store(round, Ordering::Release);
-            let _empty = unsafe { register(block, &cells, room as *mut usize) };
+            let _empty = unsafe { count_and_register(block, &cells, room as *mut usize) };
             while spent.load(Ordering::Acquire) != round {
                 std::hint::spin_loop();
             }
@@ -150,7 +150,7 @@ fn a_block_commissioned_again_carries_nothing_of_its_previous_retention() {
         live[1].write(1);
     }
 
-    let _empty = unsafe { register(block, &cells, list_room(block, 2)) };
+    let _empty = unsafe { count_and_register(block, &cells, list_room(block, 2)) };
     assert!(!unsafe { occupant_freed(block) });
     assert!(unsafe { occupant_freed(block) });
     unsafe {

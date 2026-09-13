@@ -141,14 +141,6 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     // on the chain, so a second payload in the same block takes no second
     // pin.
     let mut pin_chain = crate::memory::heap::RESET_CHAIN_END;
-    // Retained block → the survivors sharing it, built here rather than
-    // read back off `survivors` at the end. A survivor can die inside
-    // this reset, and the classification that decides whether it even
-    // has a shared block is a load from its block header — sound while
-    // it is alive and a read of returned memory afterwards, a survivor
-    // in a block of its own having handed that block to the system at
-    // its death (`dev/DECISIONS.md`, "Promotion classifies once").
-    let mut by_block: HashMap<usize, Vec<usize>> = HashMap::new();
     // `survivors[..counted]` have already been counted and retained. New
     // survivors past it are the current round's delta.
     let mut counted = 0usize;
@@ -242,7 +234,13 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
         // delta").
         let retain_the_rounds_children = crate::memory::reset_window::take_refused_promotion_edge();
 
-        for surv in unsafe { (*arena).walk_survivors(counted) } {
+        // The walk is named, not consumed by a `for`: the arm below that
+        // meets a survivor with a block of its own takes that survivor out
+        // of the grouping through the walk, at the one instant the
+        // classification is sound (`dev/DECISIONS.md`, "Promotion
+        // classifies once").
+        let mut promoting = unsafe { (*arena).walk_survivors(counted) };
+        while let Some(surv) = promoting.next() {
             // Out-of-line memory comes with the survivor, before the
             // category stops describing where it lives. Asked through one
             // call, dispatched on the entity, so promotion keeps knowing
@@ -328,18 +326,25 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
             // the entity's death looks wrong, which is why it is the one
             // of `large-entities.md`'s four rules for a surviving run
             // that carries a test of its own.
-            let block = BlockHeader::of_ptr(surv as *const u8) as usize;
             if unsafe { is_in_a_block_of_its_own(surv) } {
                 let forgotten = unsafe { (*arena).forget_large(surv as *mut u8) };
                 debug_assert!(
                     forgotten,
                     "a promoted large entity was not one of this arena's runs"
                 );
+                // Out of the grouping with the same answer, so that the
+                // grouping asks nothing: a run is not a block it could
+                // describe — offset 16 of a `LargeEntityHeader` is the
+                // mapped length `free` unmaps, where an arena block keeps
+                // the bump fill `alloc_preferring` reads, and the words the
+                // grouping counts in carry nothing there. The run is still
+                // mapped and still stamped while the reset runs, the window
+                // deferring its free (`memory::reset_window::defer_free`),
+                // so the cost of asking twice is a corrupted run rather
+                // than a read of memory that is gone.
+                unsafe { promoting.keep_the_last_out_of_the_grouping() };
             } else {
-                // The survivor list is taken here, in the one place that
-                // classifies, so the two answers cannot disagree and
-                // neither is asked of a dead entity.
-                by_block.entry(block).or_default().push(surv as usize);
+                let block = BlockHeader::of_ptr(surv as *const u8) as usize;
                 if unsafe { retain_block(block as *mut BlockHeader) } {
                     retained_blocks += 1;
                 }
@@ -418,7 +423,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     // Blocks this reset owes the pool, chained through the same word the
     // pins walked ([`link_emptied`]).
     let mut emptied = crate::memory::heap::RESET_CHAIN_END;
-    unsafe { place_survivor_lists(arena, &by_block, &mut retained_blocks, &mut emptied) };
+    unsafe { place_survivor_lists(arena, &mut retained_blocks, &mut emptied) };
 
     // The kind word is the membership test: `Arena::fresh_block` stamps
     // `BLOCK_KIND_ARENA` on every block it draws from the pool, so a block
@@ -517,12 +522,13 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
 /// `Arena::fresh_block` stamps `BLOCK_KIND_ARENA` on every block it draws
 /// from the pool and a retained block leaves the arena's chain.
 ///
-/// **The block holding a refused payload is the other population**, and it
-/// never came from `fresh_block`: it is a buffer-arena chunk's block,
-/// stamped `BLOCK_KIND_BUFFER`. The test answers for it too, for a
-/// narrower reason — the only writer of `BLOCK_KIND_RETAINED` is this
-/// function, and the previous reset that stamped one left the block only
-/// through `ll_free`, which hands it to the pool and `BLOCK_KIND_FREE`.
+/// **The block holding a refused payload is one of those blocks too**: a
+/// refusal is the *destination* allocation failing, so the bytes keep the
+/// address they had, and for a `RequestArena` entity that address came from
+/// `Arena::alloc_body` — the same bump, the same `fresh_block` stamp
+/// (`memory::routing::body_alloc`, `string::carry_payload_out_of`). A
+/// payload past one block payload is never in this population at all: the
+/// carry transfers its run through `forget_large` and cannot refuse.
 ///
 /// **The whole collector line is cleared before the kind is published**,
 /// and that is the whole reason this is a function. A retained block is
@@ -669,15 +675,46 @@ unsafe fn external_memory(surv: *mut RcHeader) -> External {
     }
 }
 
-/// Write each block's survivor list into the arena's own memory and
-/// publish it in the block's header. The blocks that come back empty —
-/// every occupant already dead when the list was published, and nothing
-/// else holding them — are returned, and their disposal is the caller's.
+/// Group this reset's survivors by the block they share, write each block's
+/// survivor list into the arena's own memory and publish it in the block's
+/// header. The blocks that come back empty — every occupant already dead
+/// when the list was published, and nothing else holding them — are put on
+/// the `emptied` chain, and their disposal is the caller's.
 ///
-/// The grouping is the caller's because only the promotion loop holds a
-/// survivor at a moment it is certainly alive, and deciding which block a
-/// survivor belongs to is a read of the survivor's memory
-/// (`dev/DECISIONS.md`, "Promotion classifies once").
+/// **The grouping is the blocks' own header words**, because the key a map
+/// would hash is a block address and the block behind it has a cleared
+/// collector line with room for the three numbers a grouping needs: how
+/// many occupants it has, how many of them a pass has accounted for, and
+/// where their list stands. So a survivor's group is found by masking its
+/// address to 64 KiB, and no memory is drawn to hold the grouping at all.
+/// What no pass here asks is whether a survivor *has* a shared block: that
+/// answer is the promotion pass's and is given once, which keeps this walk
+/// off the runs of large entities, whose header keeps other things where an
+/// arena block keeps its own (`dev/DECISIONS.md`, "Promotion classifies
+/// once").
+///
+/// **Three passes, and each is a walk of the survivor chain or of the
+/// arena's blocks:**
+///
+/// 1. every survivor's block counts it, which sizes the list;
+/// 2. every survivor's block has its list placed at the first survivor that
+///    names it, and the survivor's address is then recorded in it;
+/// 3. every retained block a list was placed for publishes it.
+///
+/// The third is a pass of its own because **every list must be placed
+/// before any block's count is read**: a block's answer counts the lists
+/// standing in it, and a holder whose own survivors all died inside the
+/// reset would otherwise report itself empty before a later block's list
+/// landed in its tail. It walks the arena's blocks rather than the
+/// survivors, so each block is reached exactly once and the word carrying
+/// its list is taken exactly once.
+///
+/// No survivor is skipped by any of the three: a dead occupant keeps its
+/// place in the list, which is what `retained::register` counts the holds
+/// against, and the passes must agree on the population or the list they
+/// build is the wrong length. `register` asserts that they agreed, on the
+/// refused arm as well as the placed one, where a miscount would publish a
+/// count no death can spend rather than a short list.
 ///
 /// Where a list goes is the arena's answer, through `Arena::alloc_preferring`:
 /// the retained block's own tail, else the reset's current block, else a
@@ -685,11 +722,7 @@ unsafe fn external_memory(surv: *mut RcHeader) -> External {
 /// retained as its holder and pinned once per list, so it returns only
 /// after every block whose list it carries
 /// (`rfc/model/gc/rc-cycle.md`, "The survivor list of a retained block").
-/// Every list is placed before any block's count is read, because a
-/// block's answer counts the lists standing in it, and a holder whose
-/// own survivors all died inside the reset would otherwise report itself
-/// empty before a later block's list landed in its tail. A refused
-/// placement publishes the count without a list: the block stays
+/// A refused placement publishes the count without a list: the block stays
 /// retained, returns by its deaths, and every edge into it answers
 /// untracked for its life (`memory::retained::register`).
 ///
@@ -701,57 +734,119 @@ unsafe fn external_memory(surv: *mut RcHeader) -> External {
 ///
 /// # Safety
 /// `arena` is the arena being reset, past its fixpoint and before
-/// `finish_reset`, and every block in `by_block` is one of its bump
-/// blocks, stamped retained by this reset.
+/// `finish_reset`, and every survivor still sharing a block stands in one
+/// of its bump blocks, stamped retained by this reset.
 unsafe fn place_survivor_lists(
     arena: *mut Arena,
-    by_block: &HashMap<usize, Vec<usize>>,
     retained_blocks: &mut usize,
     emptied: &mut usize,
 ) {
-    for (block, occupants) in by_block {
-        let bytes = occupants.len() * size_of::<usize>();
-        let list = unsafe { (*arena).alloc_preferring(*block as *mut BlockHeader, bytes) };
-        let list = list as *mut usize;
-        if !list.is_null() {
-            let holder = BlockHeader::of_ptr(list as *const u8) as usize;
-            if holder != *block {
-                if unsafe { retain_block(holder as *mut BlockHeader) } {
-                    *retained_blocks += 1;
-                }
+    for surv in unsafe { (*arena).walk_survivors_in_shared_blocks() } {
+        let block = BlockHeader::of_ptr(surv as *const u8) as usize;
+        debug_assert_eq!(
+            unsafe {
+                crate::memory::block_pool::load_block_kind(
+                    &raw const (*(block as *mut BlockHeader)).kind,
+                )
+            },
+            BLOCK_KIND_RETAINED,
+            "a survivor sharing a block the promotion pass did not retain"
+        );
+        unsafe { crate::memory::retained::count_occupant(block) };
+    }
 
-                // Not on the reset's own chain, which carries the pins the
-                // reset spends itself: this one is the list's, and
-                // `retained::release_emptied` spends it when the block the
-                // list belongs to returns.
-                unsafe { crate::memory::retained::pin(holder) };
+    for surv in unsafe { (*arena).walk_survivors_in_shared_blocks() } {
+        let block = BlockHeader::of_ptr(surv as *const u8) as usize;
+        let mut placed = unsafe { crate::memory::heap::block_placed_list(block as *mut u8) };
+        if placed == 0 {
+            placed = unsafe { place_one_list(arena, block, retained_blocks) };
+        }
+
+        let list = if placed == crate::memory::heap::PLACED_LIST_NONE {
+            std::ptr::null_mut()
+        } else {
+            placed as *mut usize
+        };
+        // A shared retained block keeps every byte it had, so a dead
+        // occupant's address is still readable, which is the whole of what
+        // the record asks of this caller.
+        unsafe { crate::memory::retained::record_occupant(block, list, surv as usize) };
+    }
+
+    let mut block = unsafe { (*arena).blocks() };
+    while !block.is_null() {
+        let next = unsafe { (*block).next };
+        let retained =
+            unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) }
+                == BLOCK_KIND_RETAINED;
+        // Zero is a retained block the placement pass never reached: one
+        // retained for a payload alone, or as the holder of another block's
+        // list. It has no occupants of this reset to publish.
+        if retained && unsafe { crate::memory::heap::block_placed_list(block as *mut u8) } != 0 {
+            let list = unsafe { crate::memory::heap::take_block_placed_list(block as *mut u8) };
+            if unsafe { crate::memory::retained::register(block as usize, list) } {
+                unsafe { link_emptied(block as usize, emptied) };
             }
         }
 
-        // The address stands in the block it belongs to rather than in a
-        // vector of this frame's: it is read once, by the pass below, and
-        // published by `register` from there.
-        unsafe {
-            crate::memory::heap::set_block_placed_list(
-                *block as *mut u8,
-                if list.is_null() {
-                    crate::memory::heap::PLACED_LIST_NONE
-                } else {
-                    list as usize
-                },
-            )
-        };
+        block = next;
     }
+}
 
-    for (block, occupants) in by_block {
-        let list = unsafe { crate::memory::heap::take_block_placed_list(*block as *mut u8) };
-        // A shared retained block keeps every byte it had, so a dead
-        // occupant's address is still readable and `register` reads it —
-        // which is the whole of what it asks of this caller.
-        if unsafe { crate::memory::retained::register(*block, occupants, list) } {
-            unsafe { link_emptied(*block, emptied) };
+/// Place the survivor list of retained `block`, whose occupants are counted,
+/// and answer the word the fill pass reads: the list's address, or
+/// [`crate::memory::heap::PLACED_LIST_NONE`] where the arena refused the
+/// memory. The answer is left on the block as well, for the passes that
+/// come after this one.
+///
+/// # Safety
+/// As [`place_survivor_lists`], and `block` must have been counted and not
+/// yet placed.
+unsafe fn place_one_list(arena: *mut Arena, block: usize, retained_blocks: &mut usize) -> usize {
+    #[cfg(test)]
+    let _ = FIRST_PLACED_BLOCK.compare_exchange(
+        0,
+        block,
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let occupants = unsafe { crate::memory::retained::occupants_counted(block) };
+    debug_assert!(
+        occupants != 0,
+        "a block with no counted occupant was placed"
+    );
+    let bytes = occupants * size_of::<usize>();
+    let list = unsafe { (*arena).alloc_preferring(block as *mut BlockHeader, bytes) } as *mut usize;
+    if !list.is_null() {
+        let holder = BlockHeader::of_ptr(list as *const u8) as usize;
+        if holder != block {
+            if unsafe { retain_block(holder as *mut BlockHeader) } {
+                *retained_blocks += 1;
+            }
+
+            // Not on the reset's own chain, which carries the pins the
+            // reset spends itself: this one is the list's, and
+            // `retained::release_emptied` spends it when the block the
+            // list belongs to returns.
+            unsafe { crate::memory::retained::pin(holder) };
         }
     }
+
+    let placed = if list.is_null() {
+        // A hold of the reset's own, because a listless block counts its
+        // occupants one at a time as the fill pass reads them: without it a
+        // free arriving between the first of those counts and the last
+        // could take the block to zero and hand it to the pool while the
+        // reset still writes to it (`retained::record_occupant`, and
+        // `dev/DECISIONS.md`, "the reset holds a pin of its own, and
+        // releases it after the index is real"). `register` spends it.
+        unsafe { crate::memory::retained::pin(block) };
+        crate::memory::heap::PLACED_LIST_NONE
+    } else {
+        list as usize
+    };
+    unsafe { crate::memory::heap::set_block_placed_list(block as *mut u8, placed) };
+    placed
 }
 
 /// Put `block` on the chain of blocks this reset owes the pool, whose head
@@ -999,6 +1094,21 @@ unsafe fn sever_one_edge(
             );
         })
     };
+}
+
+/// The block the placement pass placed a list for first, so a test whose
+/// subject is the order can say which block that was: every other outcome
+/// of a reset is the same whichever of two blocks came first, and a test
+/// that cannot see the order cannot know it is exercising the one that
+/// breaks a collapsed pass. Zero until a pass places one. A plain static,
+/// as `PINS_SPENT` is.
+#[cfg(test)]
+static FIRST_PLACED_BLOCK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The first block of the last placement pass, cleared by the read.
+#[cfg(test)]
+pub(crate) fn take_first_placed_block() -> usize {
+    FIRST_PLACED_BLOCK.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Pins of its own the reset has spent by walking its chain, so a test can

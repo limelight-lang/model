@@ -15,7 +15,7 @@ fn a_pinned_block_outlives_its_occupants() {
     unsafe { pin(block) };
     let _empty = unsafe {
         live[0].write(1);
-        register(block, &cells, list_room(block, 1))
+        count_and_register(block, &cells, list_room(block, 1))
     };
 
     assert!(
@@ -48,7 +48,7 @@ fn a_freed_payload_empties_the_block_it_pinned() {
     unsafe { pin(block) };
     let _empty = unsafe {
         live[0].write(1);
-        register(block, &cells, list_room(block, 1))
+        count_and_register(block, &cells, list_room(block, 1))
     };
 
     assert!(
@@ -78,7 +78,7 @@ fn a_block_pinned_for_two_payloads_waits_for_both() {
     let (block, _cells, _live) = walkable_index(1);
     unsafe { pin(block) };
     unsafe { pin(block) };
-    let _empty = unsafe { register(block, &[], std::ptr::null_mut()) };
+    let _empty = unsafe { count_and_register(block, &[], std::ptr::null_mut()) };
 
     assert!(
         !unsafe { payload_freed(block) },

@@ -515,7 +515,18 @@ versions live in `docs/history/`, marked at the top.
   No process-global table and no lock (`rfc/model/gc/rc-cycle.md`, "The
   survivor list of a retained block"; `dev/DECISIONS.md`, "a retained
   block's survivor list lives in the arena's own memory, and the process
-  registry goes"). This is what makes a bump-filled former-arena block
+  registry goes"). **The grouping that decides which list an address
+  belongs to is the blocks' own header words** rather than a map: a
+  survivor's block is its address masked to 64 KiB, and that block's
+  cleared collector line carries how many occupants it has and where their
+  list stands, so the reset walks its survivor chain three times — count,
+  place and fill, publish — and draws nothing for the grouping itself
+  (`memory::retained::count_occupant`, `record_occupant`,
+  `promote::place_survivor_lists`). A survivor that had a block of its own
+  is out of that walk from the instant promotion classifies it, its chain
+  record carrying a bit for it, because the block is handed to the system
+  at such a survivor's death and the kind word that answers would then be
+  returned memory. This is what makes a bump-filled former-arena block
   walkable at all; without it its occupants are root sources and a ring
   among them never dies (`rfc/model/gc/rc-cycle.md`, "Where the shadow
   count lives", the retained-block arm). The count word is what returns

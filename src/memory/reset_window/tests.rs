@@ -329,7 +329,11 @@ fn only_an_uncounted_block_inside_a_reset_is_absorbed() {
 
     assert!(
         !unsafe {
-            crate::memory::retained::register(block, &[cell as usize], std::ptr::null_mut())
+            crate::memory::retained::count_and_register(
+                block,
+                &[cell as usize],
+                std::ptr::null_mut(),
+            )
         },
         "a block with a live occupant is not empty on arrival"
     );

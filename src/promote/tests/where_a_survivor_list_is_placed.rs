@@ -35,10 +35,20 @@ enum SecondSurvivor {
     KilledByTheDrain,
 }
 
+/// Which survivor escapes first, which decides the order the reset meets
+/// the two blocks in: an escape is logged where it happens, the escapee log
+/// becomes the survivor chain in that order, and the grouping walks that
+/// chain. A test whose subject is the order says which one it needs.
+enum EscapesFirst {
+    TheFirstBlocksSurvivor,
+    TheSecondBlocksSurvivor,
+}
+
 unsafe fn two_blocks(
     name: &str,
     leave_in_first: usize,
     second_survivor: SecondSurvivor,
+    escapes_first: EscapesFirst,
 ) -> TwoBlocks {
     let survivor_cls = ClassBuilder::new(&format!("{name}Survivor")).build();
     let holder_cls = ClassBuilder::new(&format!("{name}Holder"))
@@ -83,7 +93,11 @@ unsafe fn two_blocks(
     let second_block = BlockHeader::of_ptr(second as *const u8) as usize;
     assert_ne!(first_block, second_block, "one block took both survivors");
 
-    unsafe { store_prop(arena_ptr, first_holder, 16, first) };
+    let escape_the_first = || unsafe { store_prop(arena_ptr, first_holder, 16, first) };
+    if matches!(escapes_first, EscapesFirst::TheFirstBlocksSurvivor) {
+        escape_the_first();
+    }
+
     let second_holder = match second_survivor {
         SecondSurvivor::HeldOnTheHeap => {
             let holder =
@@ -123,6 +137,10 @@ unsafe fn two_blocks(
         }
     };
 
+    if matches!(escapes_first, EscapesFirst::TheSecondBlocksSurvivor) {
+        escape_the_first();
+    }
+
     TwoBlocks {
         arena,
         first_holder,
@@ -152,7 +170,14 @@ fn kind_of(block: usize) -> u32 {
 fn a_list_that_fits_goes_into_the_blocks_own_tail() {
     use crate::memory::block_pool::BLOCK_KIND_FREE;
     let _g = crate::memory::block_pool::test_guard();
-    let mut shape = unsafe { two_blocks("OwnTail", 64, SecondSurvivor::HeldOnTheHeap) };
+    let mut shape = unsafe {
+        two_blocks(
+            "OwnTail",
+            64,
+            SecondSurvivor::HeldOnTheHeap,
+            EscapesFirst::TheFirstBlocksSurvivor,
+        )
+    };
     let arena_ptr: *mut Arena = &mut *shape.arena;
 
     crate::test_support::allocation_probe::take_allocations();
@@ -186,7 +211,14 @@ fn a_list_that_fits_goes_into_the_blocks_own_tail() {
 fn a_list_with_no_room_in_its_tail_goes_into_the_current_block() {
     use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED};
     let _g = crate::memory::block_pool::test_guard();
-    let mut shape = unsafe { two_blocks("CurrentBlock", 0, SecondSurvivor::HeldOnTheHeap) };
+    let mut shape = unsafe {
+        two_blocks(
+            "CurrentBlock",
+            0,
+            SecondSurvivor::HeldOnTheHeap,
+            EscapesFirst::TheFirstBlocksSurvivor,
+        )
+    };
     let arena_ptr: *mut Arena = &mut *shape.arena;
 
     crate::test_support::allocation_probe::take_allocations();
@@ -234,7 +266,14 @@ fn a_list_with_no_room_in_its_tail_goes_into_the_current_block() {
 fn lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains() {
     use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED};
     let _g = crate::memory::block_pool::test_guard();
-    let mut shape = unsafe { two_blocks("FreshBlock", 0, SecondSurvivor::HeldOnTheHeap) };
+    let mut shape = unsafe {
+        two_blocks(
+            "FreshBlock",
+            0,
+            SecondSurvivor::HeldOnTheHeap,
+            EscapesFirst::TheFirstBlocksSurvivor,
+        )
+    };
     let arena_ptr: *mut Arena = &mut *shape.arena;
     let room = unsafe { (*arena_ptr).room_left() };
     assert!(!unsafe { (*arena_ptr).alloc(room) }.is_null());
@@ -300,24 +339,36 @@ fn lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains() {
 /// there next; read after every placement, it is held by that list and
 /// returns with the block the list describes.
 ///
-/// The reset groups survivors by block in a map with no order, so one
-/// run reaches the order that breaks a single pass half the time; the
-/// shape is repeated so that a run reaching it is the rule.
+/// **The order is the fixture's, and it is the point.** The grouping walks
+/// the survivor chain, so the block it reaches first is the block whose
+/// survivor escaped first, and only one of the two orders can catch a
+/// publication that ran too early: the current block has to be placed
+/// before the full block's list lands in it. So this shape escapes the
+/// current block's survivor first and asserts that the placement pass
+/// reached that block first, which is what makes a collapsed pass fail
+/// here rather than pass by luck.
 #[test]
 fn a_holder_emptied_inside_the_reset_is_read_after_the_list_placed_in_it() {
     use crate::memory::block_pool::{BLOCK_KIND_FREE, BLOCK_KIND_RETAINED};
     let _g = crate::memory::block_pool::test_guard();
-    let rounds = if cfg!(miri) { 2 } else { 16 };
-    for round in 0..rounds {
+    {
         let mut shape = unsafe {
             two_blocks(
-                &format!("EmptiedHolder{round}"),
+                "EmptiedHolder",
                 0,
                 SecondSurvivor::KilledByTheDrain,
+                EscapesFirst::TheSecondBlocksSurvivor,
             )
         };
         let arena_ptr: *mut Arena = &mut *shape.arena;
+        let _ = crate::promote::take_first_placed_block();
         unsafe { arena_reset_full(arena_ptr) };
+        assert_eq!(
+            crate::promote::take_first_placed_block(),
+            shape.second_block,
+            "the placement pass reached the full block first, so a publication \
+             that ran too early would have nothing to catch it"
+        );
 
         assert_eq!(
             unsafe { crate::memory::retained::survivor_list_holder(shape.first_block) },
@@ -414,6 +465,100 @@ fn a_refused_placement_publishes_the_count_without_a_list() {
             block_kind(block as *const u8),
             crate::memory::block_pool::BLOCK_KIND_FREE,
             "the block outlived the survivor it was retained for"
+        );
+    }
+}
+
+/// Several survivors in each of several blocks, all held by one heap
+/// object: every block gets a list of its own, holding its own survivors
+/// and no others, and the grouping that decides which block a survivor
+/// belongs to asks the global allocator for nothing.
+///
+/// The allocation count is the point: the reset path draws nothing from the
+/// process allocator for its grouping, which a table keyed by block address
+/// and a vector per block cannot say (`dev/DECISIONS.md`, "the reset
+/// window's memory comes from the manager").
+#[test]
+fn the_grouping_draws_nothing_from_the_global_allocator() {
+    let _g = crate::memory::block_pool::test_guard();
+    const BLOCKS: usize = 3;
+    const PER_BLOCK: usize = 3;
+
+    let mut holder_class = ClassBuilder::new("GroupingCache");
+    for i in 0..BLOCKS * PER_BLOCK {
+        holder_class = holder_class.prop(&format!("member{i}"), true);
+    }
+
+    let holder_cls = holder_class.build();
+    let survivor_cls = ClassBuilder::new("GroupingSurvivor").build();
+
+    let mut arena = Box::new(Arena::new());
+    let arena_ptr: *mut Arena = &mut *arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let holder = unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let mut blocks: Vec<usize> = Vec::new();
+    let mut survivors: Vec<Vec<usize>> = Vec::new();
+    for block_index in 0..BLOCKS {
+        let mut in_this_block = Vec::new();
+        for member in 0..PER_BLOCK {
+            let survivor = unsafe {
+                new_constructed(
+                    &mut *context_ptr,
+                    survivor_cls,
+                    MemoryCategory::RequestArena,
+                )
+            };
+            let slot = (16 + 16 * (block_index * PER_BLOCK + member)) as u32;
+            unsafe { store_prop(arena_ptr, holder, slot, survivor) };
+            in_this_block.push(survivor as usize);
+        }
+
+        let block = BlockHeader::of_ptr(in_this_block[0] as *const u8) as usize;
+        assert!(
+            in_this_block
+                .iter()
+                .all(|s| BlockHeader::of_ptr(*s as *const u8) as usize == block),
+            "the block took only some of its survivors"
+        );
+        assert!(!blocks.contains(&block), "a block was filled twice");
+        blocks.push(block);
+        survivors.push(in_this_block);
+
+        // Fill the rest of the block, so the next survivor takes a fresh
+        // one and the grouping has more than one block to tell apart.
+        if block_index + 1 < BLOCKS {
+            let room = unsafe { (*arena_ptr).room_left() };
+            assert!(!unsafe { (*arena_ptr).alloc(room) }.is_null());
+        }
+    }
+
+    crate::test_support::allocation_probe::take_allocations();
+    unsafe { arena_reset_full(arena_ptr) };
+    let (heap, _) = crate::test_support::allocation_probe::take_allocations();
+    assert_eq!(
+        heap, 0,
+        "the reset drew {heap} allocations from the process"
+    );
+
+    for (block, mut expected) in blocks.iter().zip(survivors) {
+        let (list, count) = unsafe { crate::memory::heap::block_survivor_list(*block as *mut u8) };
+        assert_eq!(count, PER_BLOCK, "the block's list lost a survivor");
+        expected.sort_unstable();
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(list, count) },
+            &expected[..],
+            "the block's list is not its own survivors, sorted"
+        );
+    }
+
+    unsafe { let_go(holder) };
+    for block in blocks {
+        assert_eq!(
+            kind_of(block),
+            crate::memory::block_pool::BLOCK_KIND_FREE,
+            "a block outlived every survivor it held"
         );
     }
 }

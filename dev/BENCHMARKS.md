@@ -8,6 +8,67 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-13 — S47.6 the reset's grouping leaves the global allocator: 4 allocations to 0, and the reset of 2400 survivors is 28 % shorter
+
+**Machine:** dev box, shared with interactive work, 16 cores. **Base:**
+`7b5c379` before, `83d5bd5` after, `rustc 1.96.0`, release profile, both arms
+in one session.
+
+**What changed:** the reset grouped its survivors by block in a
+`HashMap<usize, Vec<usize>>`. The grouping is now the blocks' own collector
+lines — the occupant total and the list's address in words the retention has
+just cleared — and the reset walks its survivor chain three times instead:
+count, place and fill, publish. A survivor that had a block of its own is
+taken out of that walk by a bit on its chain record, at the instant promotion
+classifies it.
+
+### Counters
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| global allocations, a reset promoting 9 survivors over 3 blocks | 4 | 0 | `test_support::allocation_probe` around `arena_reset_full` in `where_a_survivor_list_is_placed::the_grouping_draws_nothing_from_the_global_allocator`; the four were the table and one vector per block |
+| the same, 24 survivors over 8 blocks | 11 | 0 | the same test with its `BLOCKS` raised to 8, once on each arm; the budget grew with the block count and does not now |
+| pool requests, a list that fits its own tail and one that fits the current block | 0 | 0 | the placement tests' own probe, unchanged |
+| pool requests, two lists with no room in any block | 1 | 1 | the same, unchanged |
+| atomic read-modify-writes on the count word per block | 1 | 1 | by reading: the holds are still added once, at publication |
+| words of the collector line the reset uses | 3 | 4 | `occupants_recorded` lands in what was the line's four-byte padding; `BlockCollector` stays 64 bytes, which the layout test pins |
+
+### The clock: one reset, 2400 survivors in a chain
+
+`promote::tests::what_the_grouping_costs::measure_the_grouping`, an ignored
+probe run in release. Each round builds a fresh arena, times
+`arena_reset_full` alone and lets the heap holder go; the figure is the
+minimum of 15 rounds, and the four runs of each arm are given so the spread
+is visible. The block count is the shape the old form was sensitive to: it
+paid a table insert and a vector per block, and the vector's growth per
+survivor.
+
+| shape | before, minima of four runs | after, minima of four runs |
+| --- | --- | --- |
+| 2400 survivors over 20 blocks | 54.9, 55.6, 63.9, 87.1 µs | 39.6, 41.5, 44.1, 44.2 µs |
+| 2400 survivors over 2 blocks | 50.3, 50.8, 53.0, 53.0 µs | 36.5, 37.2, 38.1, 39.7 µs |
+
+Taking the minimum of each arm: 54.9 → 39.6 µs at 20 blocks and 50.3 → 36.5
+at 2, which is 22.9 → 16.5 and 20.9 → 15.2 ns per survivor. The ranges do not
+overlap on either shape. **Most of the win is the vector, not the table**: at
+two blocks the old form pushed 1200 addresses into each vector and grew it by
+doubling on the way, and the new form writes each address once into memory
+sized from the count.
+
+The 20-against-2-block difference — 4.6 µs before, 3.1 µs after, over 18 more
+blocks — is an upper bound on the per-block cost rather than a measurement of
+it, and a loose one: the twenty-block shape fills every block, so each of its
+lists misses the block's own tail and is placed elsewhere with a hold taken
+for it, and the reset also returns 18 more blocks to the pool inside the timed
+region. Each shape compares like with like across the change, which is what
+the figures are for; the difference between the shapes measures three things
+at once.
+
+**What no arm here measures:** the three passes dirty each block's collector
+line where the old form dirtied a table outside the arena, and no counter in
+this crate reads cache lines. The clock above is the whole answer available,
+and it is the same direction on both shapes.
+
 ## 2026-09-12 — S40.5 the census replayed through both row forms: the chunked form draws one block where the flat form draws six, reserves 12 % of the bytes and writes 2.1 times as many
 
 Arithmetic over the census of the entry below, and no new collection cost:
