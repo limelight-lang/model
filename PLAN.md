@@ -3756,7 +3756,7 @@ unsound rather than dear.
         unreconciled survivor is high by the arena holders' references — and
         "alive for good" has no spelling in this crate's count model
         (`dev/plans/S47.md`, the Critic round over this design).
-      handoff: `settled` and `cow_at_promotion` are gone.
+      handoff: `2ef1f10` — `settled` and `cow_at_promotion` are gone.
         `Record`'s first word carries three kinds — null a deferred decrement,
         an address a promotion edge, bit 0 set a capture with the count above
         it — and `record_cow_capture` answers its caller, `promote` counting
