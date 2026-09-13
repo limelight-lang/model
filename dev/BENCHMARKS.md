@@ -11,7 +11,7 @@ what was tried, measured, and accepted or rejected.
 ## 2026-09-13 — S47.6 the reset's grouping leaves the global allocator: 4 allocations to 0, and the reset of 2400 survivors is 28 % shorter
 
 **Machine:** dev box, shared with interactive work, 16 cores. **Base:**
-`7b5c379` before, `83d5bd5` after, `rustc 1.96.0`, release profile, both arms
+`7b5c379` before, `093abfe` after, `rustc 1.96.0`, release profile, both arms
 in one session.
 
 **What changed:** the reset grouped its survivors by block in a

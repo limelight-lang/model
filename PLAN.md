@@ -3704,7 +3704,7 @@ unsound rather than dear.
         per-block lists anyway, so a distribution keyed by the block writes
         them where they belong in one pass (`dev/plans/S47.md`). The only
         sort left is `register`'s `sort_unstable` per list.
-      handoff: `83d5bd5` — the grouping is three walks — count, place and fill, publish —
+      handoff: `093abfe` — the grouping is three walks — count, place and fill, publish —
         keyed by the address masked to 64 KiB, and the numbers live on the
         block: `survivor_count` the occupant total, `occupants_recorded` what
         the fill accounted for (the line's last four bytes), `placed_list` the
