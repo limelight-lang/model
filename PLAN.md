@@ -3586,20 +3586,26 @@ the same day.
         a term of the reconciliation rather than a bounded leak; every later
         step's refusal arm is this answer
       tier: T2 · role: Critic
+      Critic 2026-09-13: the first answer — abandon and retain every block —
+        has no mechanism, the arena outliving the call and its own `Drop`
+        returning every block; and an abandoned block underflows its count
+        word on a promoted survivor's later death. Accepted; the answer is
+        open and the branch is Edmond's (`dev/plans/S47.md`).
 - [ ] S47.1 The drains hand over their chain
       done: `round`, `round_dtors` and `round_releases` are gone — `Arena`
         hands each log's chain head over and nulls its own field, and the
         caller walks the chain with no borrow live across user code; the Miri
         slice over the fixpoint cases is green and those cases stay green
       tier: T2 · role: Critic
-- [ ] S47.2 The survivor chain and the mark worklist in `ll_alloc` segments
-      done: `survivors` and `mark_subgraph`'s `stack` stand in 4 KiB segments
-        drawn through `stdapi::ll_alloc`, the window's log's shape; a refused
-        segment is answered as S47.0 says, seen on a forced refusal; neither
-        site draws from the global allocator on the fixpoint cases
+- [ ] S47.2 The survivor chain in `ll_alloc` segments, and no mark worklist
+      done: `survivors` stands in 4 KiB segments drawn through
+        `stdapi::ll_alloc`, the window's log's shape, and `mark_subgraph`'s
+        `stack` is gone — the closure is reached by walking the chain from the
+        index the call started at, as `retrace_survivors` already walks it; a
+        refused segment is answered as S47.0 says, seen on a forced refusal
       tier: T2 · role: Critic
 - [ ] S47.3 `retained` is the kind stamp, and the journal keeps a counter
-      done: `retained` is gone — "retained in this reset" is
+      done: `retained` is gone and draws nothing — "retained in this reset" is
         `BLOCK_KIND_RETAINED`, which no block carries into a reset, and
         `KIND_ARENA_RESET_END`'s third operand comes from a counter rather
         than from a set's length
@@ -3617,12 +3623,12 @@ the same day.
         shows neither word has a reader while the links are live
       tier: T2 · role: Critic
 - [ ] S47.6 The grouping without `by_block`
-      done: `by_block` is gone — promotion appends a shared-block survivor to
-        a second chain at the instant it classifies it, so nothing is
-        classified twice, and the grouping after the fixpoint is the 64 KiB
-        mask over that chain sorted by address; the step names the sort's
-        algorithm and its scratch, and measures it against the `HashMap` it
-        replaces on the fixpoint cases
+      done: `by_block` is gone and the grouping draws nothing — promotion
+        partitions a survivor that had a block of its own out of the chain at
+        the instant it classifies it, so nothing is classified twice, and the
+        grouping is the 64 KiB mask over the rest of the chain sorted in place
+        by address; the step names the sort's algorithm and its scratch, and
+        measures it against the `HashMap` it replaces on the fixpoint cases
       tier: T2 · role: Critic
 - [ ] S47.7 The COW rows without a `HashMap`
       done: `settled` and `cow_at_promotion` are gone — `at` is one more
