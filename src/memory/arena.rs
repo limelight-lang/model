@@ -165,8 +165,14 @@ impl Drop for DetachedLog {
     /// see: that one reads the arena's fields, and the take already nulled
     /// them. Each lost record of the release log is one `ll_release` never
     /// made, so the arena's heap children leak one count each.
+    ///
+    /// **In every build**, because the damage is invisible in the one where
+    /// a `debug_assert` is not: a leak reports nothing short of RSS, and the
+    /// release build is where the arena resets a request at a time. The
+    /// price is one null test per detached log, three per reset, against a
+    /// walk of every record in it.
     fn drop(&mut self) {
-        debug_assert!(
+        assert!(
             self.0.is_null(),
             "a detached log was dropped before it was walked"
         );
