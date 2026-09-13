@@ -13,12 +13,16 @@ in the specification rather than in this crate.
 
 Updated: 2026-09-13 · Active: S47, whose Critic round of 2026-09-13 took the
 breakdown of 2026-09-12 from five steps to eight, Edmond agreeing the new
-structure the same day (`dev/plans/S47.md`); S47.0 through S47.6 and S47.8 closed on
-2026-09-13, three of them on Sage rulings, and the work continues at S47.7,
-the last step of the stage.
+structure the same day (`dev/plans/S47.md`); every step of it closed on
+2026-09-13, three of them on Sage rulings, and **what the stage waits on is
+one answer rather than one step**: S47.7's measurement makes the COW
+reconciliation three times longer at 2400 COW survivors, and whether the
+linear arm priced beside it replaces the agreed search is Edmond's
+(`dev/BENCHMARKS.md`, 2026-09-13).
 S36's one open step is S36.9, which
-closes on a deny run over a reset inside a collection that `promote`'s own
-containers (S47) still fail; S36.17 closed on 2026-09-12 with the window's
+closes on a deny run over a reset inside a collection; the containers of
+`promote`'s own that used to fail such a run are gone with S47, and building
+the run is what is left to S36.9; S36.17 closed on 2026-09-12 with the window's
 memory under the manager, S36.18 the same day with the COW
 reconciliation settling off the window's log, the walk that double-counted
 a destructor's store into a promoted holder gone, and S36.19 the same day
@@ -181,6 +185,22 @@ guard lowers it on the unwind as well as on the return.
   the block's. Raised by the Critic of 2026-09-13 over S47.4 as a probe
   rather than a claim: whether a promoted survivor is reachable from
   another thread mid-reset is unestablished, and the probe is one red test.
+
+- **What a reset owes an arena entity that belongs to another arena.**
+  `store_category_barrier` keys on the memory category alone, so a store of
+  one request arena's entity into another's object takes neither the escape
+  arm nor the COW copy: the slot holds the pointer raw. A destructor run
+  inside arena A's reset can resolve and reset arena B, and B's
+  `count_children` then meets A's entity as an ordinary `RequestArena`
+  child — `is_arena_entity` reads the category too. A non-COW child is
+  admitted to B's survivor chain and promoted out of A early, which is
+  conservative; a COW child has its count raised by B's counting pass while
+  the edge behind that `+1` is recorded in **B's** log and freed with it, so
+  A's reconciliation subtracts a reference a promoted holder still holds.
+  Raised by the Critic of 2026-09-13 over S47.7, which neither creates the
+  shape nor widens it: the premise verified is the barrier's, and whether
+  two request arenas can name each other's entities at all is the question
+  under it.
 
 - **Whether a survivor list should prefer a block this reset has already
   retained.** `Arena::alloc_preferring` tries the described block's tail, the
@@ -3718,7 +3738,7 @@ unsound rather than dear.
         allocations per reset to 0 and the reset of 2400 survivors 28 %
         shorter (`dev/BENCHMARKS.md`, 2026-09-13). Miri caught a write
         through a `SharedReadOnly` raw pointer in the tag's first form.
-- [ ] S47.7 The COW rows without a `HashMap`
+- [x] S47.7 The COW rows without a `HashMap`
       done: `settled` and `cow_at_promotion` are gone — `at` is one more
         record kind in the window's log, read by an enumerator of its own; a
         refused capture is counted and reported, the survivor it belonged to
@@ -3736,6 +3756,32 @@ unsound rather than dear.
         unreconciled survivor is high by the arena holders' references — and
         "alive for good" has no spelling in this crate's count model
         (`dev/plans/S47.md`, the Critic round over this design).
+      handoff: `settled` and `cow_at_promotion` are gone.
+        `Record`'s first word carries three kinds — null a deferred decrement,
+        an address a promotion edge, bit 0 set a capture with the count above
+        it — and `record_cow_capture` answers its caller, `promote` counting
+        the refusal and journalling it as
+        `KIND_ARENA_RESET_REFUSED_CAPTURE`. `order_log_by_child` sorts each
+        segment by child, records the range it holds and relinks the chain in
+        ascending order of those ranges; `LogByChild`'s two readers are
+        `for_each_capture` and `corrections_for`, the second searching the
+        segments whose range admits the address and stopping at the first
+        that begins past it.
+        `RefusedRecords::arm(Refusing::{Everything, Corrections, Captures})`
+        replaces `RefusedSegments`, without which the edge arm's own test
+        lost its capture and measured a different reset.
+        **The measurement is the step's finding**: the two allocations are
+        gone and 120 COW survivors settle in 4.4 µs against 5.4, but 2400
+        take 248 µs against 102 — the search is `O(C²)` where the table was
+        `O(C)`, the crossover near 400. The linear arm is measured and not
+        taken (`dev/BENCHMARKS.md`, 2026-09-13; `dev/plans/S47.md`), and
+        whether it replaces the search is Edmond's.
+        The reconciliation's skip for a torn-down survivor is reached by
+        nothing — a whole-suite run with the skip replaced by a panic tripped
+        nothing — and `dev/plans/S47.md` says why the state cannot arise
+        today. `block_pool::test_guard` warms the thread's buffer arena,
+        whose `Box` was charged to whichever test first carried a payload out
+        of an arena.
 
 ---
 

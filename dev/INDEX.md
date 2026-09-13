@@ -498,10 +498,16 @@ versions live in `docs/history/`, marked at the top.
   stack threaded through byte 8 of the dead bodies; absorbs the free of a
   torn-down entity in a block whose occupant count is not established yet;
   reads whether a survivor is torn down off the bit `ll_free`'s head left
-  in its header (`is_torn_down`); and keeps the COW reconciliation's log of
-  promotion edges and compensating retains in segments drawn through
-  `stdapi::ll_alloc`, a refused segment answered to the reset, which retains
-  the round's COW children rather than settle a count low. No `Vec`, `Box` or
+  in its header (`is_torn_down`); and keeps the COW reconciliation's log in
+  segments drawn through `stdapi::ll_alloc`, holding three record kinds in
+  one word — a promotion edge, a compensating retain, and each COW
+  survivor's captured count, which is the reconciliation's population. A
+  refused edge is answered to the reset, which retains the round's COW
+  children rather than settle a count low; a refused capture is answered to
+  its caller, which counts and journals it and leaves the survivor the
+  references its arena holders held. `order_log_by_child` sorts each segment
+  and records the child range it holds, which is what the corrections'
+  search reads. No `Vec`, `Box` or
   map anywhere in it. Windows nest, because a destructor of one reset can
   resolve a second arena and reset it (`dev/DECISIONS.md`, "the reset reads
   no corpse", and "the record of a torn-down entity is its own header bit").
@@ -744,8 +750,11 @@ pass and block retention. Children come from `cells::trace_entity`, so a
 reference box's referent is promoted with it; a COW survivor's count is
 left alone during the fixpoint (destructors read it) and settled once
 afterwards by `reconcile_cow_counts`, off the window's log of promotion-time
-edges and the count's movement since, walking nothing (`dev/DECISIONS.md`,
-2026-08-04, and "the COW count is the log's edges plus the delta").
+edges and the count's movement since, reaching no entity's cells
+(`dev/DECISIONS.md`, 2026-08-04, "the COW count is the log's edges plus the
+delta", and "the capture is a third record kind"). What that costs against
+the `HashMap` it replaced, and the linear arm measured and not taken, are in
+`dev/BENCHMARKS.md`, 2026-09-13.
 
 ## Hot paths
 

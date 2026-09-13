@@ -99,11 +99,21 @@ pub const KIND_EXIT_RESIDUE: u32 = 9;
 /// edge, and the reset finishes").
 pub const KIND_ARENA_RESET_SEVERED_EDGE: u32 = 10;
 
+/// A COW survivor whose count the reset could not capture, the manager
+/// having refused the log the capture goes in: `subject` is the arena's
+/// address, `a` the survivor and `b` the count it carried at its promotion,
+/// which is the count the reconciliation would have replaced. The survivor
+/// keeps the references its arena holders held, so this record is how a
+/// reading tells that bounded leak from an ordinary live count
+/// (`memory::reset_window::record_cow_capture`). One record per refused
+/// capture, inside the reset's own bracket.
+pub const KIND_ARENA_RESET_REFUSED_CAPTURE: u32 = 11;
+
 /// The highest kind that has a site. The mask is a `u64`, so a kind past
 /// 63 would shift out of it and enable the wrong one — a limit worth
 /// failing the build over rather than discovering as a silent
 /// misreading.
-const HIGHEST_KIND: u32 = KIND_ARENA_RESET_SEVERED_EDGE;
+const HIGHEST_KIND: u32 = KIND_ARENA_RESET_REFUSED_CAPTURE;
 
 const _: () = assert!(
     HIGHEST_KIND < 64,
@@ -131,7 +141,8 @@ pub const DEFAULT_KINDS: u64 = bit(KIND_ENTITY_BIRTH)
     | bit(KIND_THREAD_START)
     | bit(KIND_THREAD_EXIT)
     | bit(KIND_EXIT_RESIDUE)
-    | bit(KIND_ARENA_RESET_SEVERED_EDGE);
+    | bit(KIND_ARENA_RESET_SEVERED_EDGE)
+    | bit(KIND_ARENA_RESET_REFUSED_CAPTURE);
 
 /// Which kinds are written, process-wide.
 ///

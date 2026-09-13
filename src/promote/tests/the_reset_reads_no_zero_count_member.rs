@@ -1275,7 +1275,8 @@ fn an_edge_unset_before_its_holder_dies_still_settles_its_child() {
 /// intact; the dying holder is killed by the drain rather than kept.
 ///
 /// The shape is `a_cow_child_of_a_holder_the_drain_killed_settles_to_its_live_holders`
-/// with every segment draw refused.
+/// with the corrections refused and the captures landing, which is the
+/// reset that still reconciles the array (`memory::reset_window::Refusing`).
 #[test]
 fn a_refused_promotion_edge_retains_the_rounds_children_and_settles_no_count_low() {
     use crate::array::entity::ll_array_new;
@@ -1324,7 +1325,9 @@ fn a_refused_promotion_edge_retains_the_rounds_children_and_settles_no_count_low
     }
 
     let _ = crate::memory::reset_window::take_refused_records();
-    let refused = crate::memory::reset_window::RefusedSegments::arm();
+    let refused = crate::memory::reset_window::RefusedRecords::arm(
+        crate::memory::reset_window::Refusing::Corrections,
+    );
     unsafe { arena_reset_full(&mut *arena_ptr) };
     drop(refused);
     set_current_context(std::ptr::null_mut());
@@ -1360,6 +1363,299 @@ fn a_refused_promotion_edge_retains_the_rounds_children_and_settles_no_count_low
 
         // The count is the truth: the last holder's death takes the
         // array with it.
+        assert!(crate::refcount::ll_release(cache as *mut RcHeader));
+        ll_object_die(cache);
+    }
+}
+
+/// A COW survivor whose holders all let go inside the fixpoint is promoted
+/// at zero, and the reconciliation reads it as the live survivor it is.
+///
+/// The shape is a destructor emptying the last two slots that named a
+/// string the descent had already admitted: the count reaches zero before
+/// the counting pass can give it an edge, and a release that empties an
+/// arena entity's count runs no teardown — the arena's entities die with
+/// their blocks. So the promotion stamps it and captures it like any
+/// other, and `reconcile_cow_counts`'s skip for a torn-down survivor is
+/// not reached here.
+///
+/// **Nothing reaches that skip**, which this test is what pins: a promoted
+/// COW survivor's count holds one per counted edge and only that edge's
+/// own release takes it back, so the count cannot reach zero while an edge
+/// stands, and the survivor here reaches zero by never having one
+/// (`promote::SKIPPED_TEARDOWNS`).
+#[test]
+fn a_cow_survivor_whose_slots_empty_inside_the_fixpoint_settles_at_zero() {
+    let _g = crate::memory::block_pool::test_guard();
+
+    static KEEPER: AtomicUsize = AtomicUsize::new(0);
+
+    /// `unset($keeper->s); unset($this->s);` — the last two references to
+    /// the string go while the reset is still settling, so the release
+    /// that empties this object's own slot is the one that kills it.
+    unsafe extern "C" fn empty_both_slots_dtor(o: *mut Object) {
+        unsafe {
+            let arena = crate::memory::context::resolve_arena(std::ptr::null_mut());
+            for owner in [KEEPER.load(Ordering::Relaxed) as *mut Object, o] {
+                let slot = Object::prop_at(owner, 16);
+                let old = entity_checked(&*slot);
+                assert!(ref_store(
+                    arena,
+                    owner as *mut RcHeader,
+                    slot,
+                    old,
+                    Value::null()
+                ));
+            }
+        }
+    }
+
+    let keeper_cls = ClassBuilder::new("TornDownCowKeeper")
+        .prop("s", true)
+        .build();
+    let cache_cls = ClassBuilder::new("TornDownCowCache")
+        .prop("keep", true)
+        .build();
+    let dropper_cls = ClassBuilder::new("TornDownCowDropper")
+        .prop("s", true)
+        .destructor(empty_both_slots_dtor as *const ())
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+    set_current_context(context_ptr);
+
+    let cache = unsafe { new_constructed(&mut *context_ptr, cache_cls, MemoryCategory::GcHeap) };
+    let keeper =
+        unsafe { new_constructed(&mut *context_ptr, keeper_cls, MemoryCategory::RequestArena) };
+    let dropper =
+        unsafe { new_constructed(&mut *context_ptr, dropper_cls, MemoryCategory::RequestArena) };
+    KEEPER.store(keeper as usize, Ordering::Relaxed);
+
+    let string = unsafe {
+        crate::string::ll_string_new(context_ptr, MemoryCategory::RequestArena, b"shared")
+    } as *mut RcHeader;
+
+    unsafe {
+        for owner in [keeper, dropper] {
+            let slot = Object::prop_at(owner, 16);
+            assert!(ref_store(
+                arena_ptr,
+                owner as *mut RcHeader,
+                slot,
+                std::ptr::null_mut(),
+                Value::entity(Tag::String, string),
+            ));
+        }
+
+        // The creation reference goes, as it would at the end of the
+        // statement that built the string, which leaves the two slots the
+        // destructor empties as the whole of the string's count.
+        assert!(!crate::refcount::ll_release(string));
+        assert_eq!(crate::refcount::entity_refcount(string), 2);
+
+        // The keeper escapes, so the descent admits the string before any
+        // destructor runs; the dropper is unheld, so its destructor runs
+        // inside the fixpoint.
+        store_prop(arena_ptr, cache, 16, keeper);
+    }
+
+    let _ = crate::promote::take_skipped_teardowns();
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    set_current_context(std::ptr::null_mut());
+
+    assert_eq!(
+        crate::promote::take_skipped_teardowns(),
+        0,
+        "a release that emptied the count tore the survivor down"
+    );
+    unsafe {
+        assert!(
+            !crate::memory::reset_window::is_torn_down(string),
+            "an arena entity's release at zero runs no teardown"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(string),
+            0,
+            "no holder is left to settle the string to"
+        );
+        assert_eq!(
+            crate::refcount::entity_category(string),
+            MemoryCategory::GcHeap,
+            "the string was promoted with the keeper that named it at the descent"
+        );
+
+        assert!(crate::refcount::ll_release(cache as *mut RcHeader));
+        ll_object_die(cache);
+    }
+}
+
+/// A capture the manager refuses leaves its survivor the references its
+/// arena holders held, and the reset says so.
+///
+/// The capture is what makes a COW survivor one the reconciliation reaches,
+/// so a lost one is a survivor never settled. The direction is upwards:
+/// with `at` the count at promotion, `pre` the references the program held
+/// before the reset and the rest of the terms as the reconciliation sums
+/// them, `now = reconciled + pre` — so the survivor keeps exactly the
+/// arena holders' references the reconciliation exists to discard, which is
+/// a bounded leak rather than an early free (`dev/plans/S47.md`, the Critic
+/// round over S47.7's design). Here `pre` is 2 — the array's own reference
+/// and the holder's store — and the reconciliation would have settled it to
+/// 1, its one promoted holder.
+///
+/// Nothing compensates it, and the edge's channel is the reason: that flag
+/// is read before the promoting loop and spent after it, so a refusal
+/// raised inside the loop would retain the wrong round's population.
+#[test]
+fn a_refused_capture_leaves_its_survivor_the_references_its_arena_holders_held() {
+    use crate::array::entity::ll_array_new;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let holder_cls = ClassBuilder::new("RefusedCaptureHolder")
+        .prop("items", true)
+        .build();
+    let cache_cls = ClassBuilder::new("RefusedCaptureCache")
+        .prop("kept", true)
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+    set_current_context(context_ptr);
+
+    let cache = unsafe { new_constructed(&mut *context_ptr, cache_cls, MemoryCategory::GcHeap) };
+    let holder =
+        unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::RequestArena) };
+    let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+
+    unsafe {
+        assert!(crate::array::testing::push(array, Value::int(7)));
+        let slot = Object::prop_at(holder, 16);
+        assert!(ref_store(
+            arena_ptr,
+            holder as *mut RcHeader,
+            slot,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Array, array as *mut RcHeader),
+        ));
+        store_prop(arena_ptr, cache, 16, holder);
+        assert_eq!(
+            crate::refcount::entity_refcount(array),
+            2,
+            "the array's own reference and the holder's store are what the reset inherits"
+        );
+    }
+
+    let _ = crate::memory::reset_window::take_refused_records();
+    let _ = crate::promote::take_refused_captures();
+    let refused = crate::memory::reset_window::RefusedRecords::arm(
+        crate::memory::reset_window::Refusing::Captures,
+    );
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    drop(refused);
+    set_current_context(std::ptr::null_mut());
+
+    assert_eq!(
+        crate::promote::take_refused_captures(),
+        1,
+        "the reset counted no refused capture"
+    );
+    assert_eq!(
+        crate::memory::reset_window::take_refused_records(),
+        1,
+        "the capture alone was refused: the edge is what the reconciliation \
+         would have counted"
+    );
+    unsafe {
+        assert_eq!(
+            crate::refcount::entity_refcount(array),
+            3,
+            "the survivor keeps `pre` beyond the 1 the reconciliation would \
+             have settled it to"
+        );
+
+        // The leak is bounded and the two references are nameable, so the
+        // test hands them back rather than leaving a payload behind for
+        // whatever runs next on this thread.
+        for _ in 0..2 {
+            assert!(
+                !crate::refcount::ll_release(array as *mut RcHeader),
+                "a reference the program held before the reset killed the array"
+            );
+        }
+
+        assert!(crate::refcount::ll_release(cache as *mut RcHeader));
+        ll_object_die(cache);
+    }
+}
+
+/// A reset that promotes a COW survivor draws nothing from the process
+/// allocator. One survivor is the whole shape needed: every term the
+/// reconciliation reads — the captured count, the promotion edge, and the
+/// correction that takes back a compensating retain — is a record of the
+/// window's log, which is drawn in segments from the thread's own heap
+/// (`dev/DECISIONS.md`, "the reset window's memory comes from the manager").
+#[test]
+fn the_cow_reconciliation_draws_nothing_from_the_global_allocator() {
+    use crate::array::entity::ll_array_new;
+    let _g = crate::memory::block_pool::test_guard();
+
+    let holder_cls = ClassBuilder::new("CowBudgetHolder")
+        .prop("items", true)
+        .build();
+    let cache_cls = ClassBuilder::new("CowBudgetCache")
+        .prop("kept", true)
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+    set_current_context(context_ptr);
+
+    let cache = unsafe { new_constructed(&mut *context_ptr, cache_cls, MemoryCategory::GcHeap) };
+    let holder =
+        unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::RequestArena) };
+    let array = unsafe { ll_array_new(MemoryCategory::RequestArena) };
+
+    unsafe {
+        assert!(crate::array::testing::push(array, Value::int(7)));
+        let slot = Object::prop_at(holder, 16);
+        assert!(ref_store(
+            arena_ptr,
+            holder as *mut RcHeader,
+            slot,
+            std::ptr::null_mut(),
+            Value::entity(Tag::Array, array as *mut RcHeader),
+        ));
+        store_prop(arena_ptr, cache, 16, holder);
+    }
+
+    crate::test_support::allocation_probe::take_allocations();
+    unsafe { arena_reset_full(&mut *arena_ptr) };
+    let (heap, _) = crate::test_support::allocation_probe::take_allocations();
+    set_current_context(std::ptr::null_mut());
+    assert_eq!(
+        heap, 0,
+        "the reset drew {heap} allocations from the process"
+    );
+
+    unsafe {
+        assert_eq!(
+            crate::refcount::entity_category(array),
+            MemoryCategory::GcHeap,
+            "the array stayed behind in the dying arena"
+        );
+        assert_eq!(
+            crate::refcount::entity_refcount(array),
+            1,
+            "the array is held by its one promoted holder and by nothing else"
+        );
+
         assert!(crate::refcount::ll_release(cache as *mut RcHeader));
         ll_object_die(cache);
     }

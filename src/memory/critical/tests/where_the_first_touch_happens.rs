@@ -176,8 +176,8 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("REFUSE_AT_VERTEX", false),      // test-only const Cell, no drop glue
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
         ("REFUSE_LIST_PLACEMENT", false), // test-only const Cell, no drop glue
-        ("REFUSE_SEGMENTS", false),       // test-only const Cell, no drop glue
         ("REFUSE_SURVIVOR_SEGMENTS", false), // test-only const Cell, no drop glue
+        ("REFUSING", false),              // test-only const Cell, no drop glue
         ("REPORT", false), // test-only const RefCell over a Copy report, no drop glue
         ("RESERVE", true),
         ("RING", false),

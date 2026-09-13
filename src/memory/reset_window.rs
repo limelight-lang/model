@@ -44,10 +44,12 @@
 //! it defers, one stack per thread threaded through byte 8 of each
 //! ([`deferred_link`]); torn-down membership is a bit in the entity's own
 //! header ([`is_torn_down`]); and the one structure that grows with the
-//! reset — the log of promotion-time COW edges and compensating retains the
-//! reconciliation reads ([`Record`]) — is drawn through `stdapi::ll_alloc`
-//! in segments, and a segment the manager refuses is answered to the
-//! recorder as a refusal ([`record_promotion_edge`]).
+//! reset — the log the reconciliation reads, holding a capture of each COW
+//! survivor's count beside the promotion-time edges and compensating
+//! retains that correct it ([`Record`]) — is drawn through
+//! `stdapi::ll_alloc` in segments, and a segment the manager refuses is
+//! answered to the recorder as a refusal ([`record_promotion_edge`],
+//! [`record_cow_capture`]).
 //!
 //! The thread-locals are `Cell<*mut _>` rather than `RefCell<Vec<_>>`: a
 //! `Vec` in a thread-local registers drop glue, and this path is reachable
@@ -68,6 +70,11 @@ pub(crate) struct ResetWindow {
     /// Whether a promotion-edge record was refused since the reset last
     /// asked ([`take_refused_promotion_edge`]).
     refused_promotion_edge: bool,
+    /// Whether the log stands ordered by child right now: set by
+    /// [`order_log_by_child`] and cleared by the append that leaves the
+    /// order stale. Read by the searches, which the order is what they
+    /// stand on, and only in a debug build — no other reader depends on it.
+    log_ordered: bool,
     /// The window this one displaced. A destructor run by one reset can
     /// resolve another arena and reset it, so the windows nest and each
     /// close restores its predecessor.
@@ -83,6 +90,7 @@ impl ResetWindow {
         ResetWindow {
             log: std::ptr::null_mut(),
             refused_promotion_edge: false,
+            log_ordered: false,
             prev: std::ptr::null_mut(),
             arena: 0,
         }
@@ -149,6 +157,7 @@ pub(crate) fn open(window: &mut ResetWindow, arena: *mut crate::memory::arena::A
 
     window.log = std::ptr::null_mut();
     window.refused_promotion_edge = false;
+    window.log_ordered = false;
     window.arena = arena as usize;
     window.prev = WINDOW.with(|cell| cell.get());
     let window: *mut ResetWindow = window;
@@ -317,21 +326,97 @@ pub(crate) fn take_counters() -> (usize, usize) {
     (TEARDOWNS.swap(0, Relaxed), TORN_DOWN_WALKS.swap(0, Relaxed))
 }
 
-/// One entry of a window's log: a promotion-time COW edge when `holder` is
-/// the survivor that held `child`, and a compensating retain the counting
-/// pass gave `child` when `holder` is null.
+/// One entry of a window's log, in two words: what the record is, and the
+/// COW child it is about.
 ///
-/// Both are recorded for every COW child that reaches the recorder,
-/// including one this reset never promoted; what narrows them to the
-/// entities the arithmetic is about is the consumer,
-/// `promote::reconcile_cow_counts`, which drops a correction naming no row
-/// of its own (`dev/DECISIONS.md`, "the COW count is the log's edges plus
-/// the delta").
+/// The first word carries all three kinds. Null is a compensating retain
+/// the counting pass gave an already-promoted child; an address is the
+/// survivor that held `child` at the instant of its promotion; and
+/// [`CAPTURE_BIT`] set is that survivor's own count at that instant, in the
+/// bits above the tag. An entity address is eight-aligned, so the bit
+/// belongs to neither of the other two readings.
+///
+/// An edge and a decrement are recorded for every COW child that reaches
+/// the recorder, including one this reset never promoted. What narrows them
+/// to the entities the arithmetic is about is the capture:
+/// `promote::reconcile_cow_counts` walks the captures and asks corrections
+/// of their children alone (`dev/DECISIONS.md`, "the COW count is the log's
+/// edges plus the delta").
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Record {
-    holder: *mut RcHeader,
+    kind_word: usize,
     child: *mut RcHeader,
+}
+
+/// What in [`Record::kind_word`] says the record is a capture rather than a
+/// holder or a null: the count it carries stands above this bit.
+const CAPTURE_BIT: usize = 1;
+
+const _: () = assert!(
+    size_of::<usize>() > size_of::<u32>(),
+    "a capture carries a whole refcount above the tag bit"
+);
+
+impl Record {
+    /// An edge `holder` held to the COW `child` when `holder` was counted.
+    fn promotion_edge(holder: *mut RcHeader, child: *mut RcHeader) -> Record {
+        debug_assert!(
+            !holder.is_null(),
+            "a holder is what tells an edge from a decrement"
+        );
+        debug_assert!(
+            holder as usize & CAPTURE_BIT == 0,
+            "an entity address is eight-aligned, which is what leaves the tag bit free"
+        );
+        Record {
+            kind_word: holder as usize,
+            child,
+        }
+    }
+
+    /// A compensating retain `child` was given and the reconciliation owes
+    /// back.
+    fn deferred_decrement(child: *mut RcHeader) -> Record {
+        Record {
+            kind_word: 0,
+            child,
+        }
+    }
+
+    /// `child`'s count `at` the instant of its promotion, which is what
+    /// makes it one of this reset's own COW survivors.
+    fn capture(child: *mut RcHeader, at: u32) -> Record {
+        Record {
+            kind_word: (at as usize) << 1 | CAPTURE_BIT,
+            child,
+        }
+    }
+
+    /// The correction this record owes the child's count, and **`None` for
+    /// a capture**, which owes none: it states the count the correction
+    /// terms are applied to.
+    fn correction(self) -> Option<Correction> {
+        if self.kind_word & CAPTURE_BIT != 0 {
+            return None;
+        }
+
+        Some(if self.kind_word == 0 {
+            Correction::DeferredDecrement
+        } else {
+            Correction::DeferredIncrement
+        })
+    }
+
+    /// The count captured at the child's promotion, and **`None`** for the
+    /// two correction kinds.
+    fn captured_count(self) -> Option<u32> {
+        if self.kind_word & CAPTURE_BIT == 0 {
+            return None;
+        }
+
+        Some((self.kind_word >> 1) as u32)
+    }
 }
 
 /// The bytes one log segment takes from `ll_alloc`: a size class of the
@@ -350,6 +435,20 @@ struct SegmentHeader {
     next: *mut Segment,
     /// Records written, from the front of `records`.
     len: usize,
+    /// The lowest and the highest child address the segment holds, written
+    /// by [`order_log_by_child`], which also puts the chain in ascending
+    /// order of the first of them. That order is what lets the search stop:
+    /// past the first segment whose lowest child is above the address, no
+    /// segment on the chain can hold it. A reset records a child's edge in
+    /// the round that meets it, so a segment's records are a slice of the
+    /// descent and their addresses a slice of the arena's bump, which is
+    /// what makes the ranges disjoint enough for the stop to pay
+    /// (`dev/BENCHMARKS.md`, 2026-09-13, the reconciliation).
+    ///
+    /// An empty range — the first above the second — is a segment no search
+    /// enters, which is what an unordered or empty log reads as.
+    lowest_child: usize,
+    highest_child: usize,
 }
 
 #[repr(C)]
@@ -367,6 +466,9 @@ const _: () = assert!(SEGMENT_BYTES <= crate::memory::heap::MAX_SMALL);
 fn append(record: Record) -> bool {
     let window = WINDOW.with(|cell| cell.get());
     debug_assert!(!window.is_null(), "a record outside a window");
+    // The append lands past the ordered run, so the order the searches
+    // stand on is stale until it is taken again.
+    unsafe { (*window).log_ordered = false };
     let mut segment = unsafe { (*window).log };
     if segment.is_null() || unsafe { (*segment).header.len } == RECORDS_PER_SEGMENT {
         let fresh = unsafe { draw_segment() };
@@ -377,6 +479,10 @@ fn append(record: Record) -> bool {
         unsafe {
             (*fresh).header.next = segment;
             (*fresh).header.len = 0;
+            // An empty range, so a search that meets an unordered segment
+            // walks past it rather than into its uninitialised header.
+            (*fresh).header.lowest_child = usize::MAX;
+            (*fresh).header.highest_child = 0;
             (*window).log = fresh;
         }
         segment = fresh;
@@ -396,6 +502,18 @@ fn append(record: Record) -> bool {
     true
 }
 
+/// Append a correction, or answer false as a refused segment would. The two
+/// correction kinds are refused together so that a test can hold them still
+/// while a capture lands (`RefusedRecords`, which only a test build has).
+fn append_correction(record: Record) -> bool {
+    #[cfg(test)]
+    if refusing(Refusing::Corrections) {
+        return false;
+    }
+
+    append(record)
+}
+
 /// One segment from the thread's heap, or null on a refusal. Uninitialised
 /// past its header, which [`append`] writes before the first record.
 ///
@@ -404,7 +522,7 @@ fn append(record: Record) -> bool {
 /// contract.
 unsafe fn draw_segment() -> *mut Segment {
     #[cfg(test)]
-    if REFUSE_SEGMENTS.with(|cell| cell.get()) {
+    if REFUSING.with(|cell| cell.get()) == Some(Refusing::Everything) {
         return std::ptr::null_mut();
     }
 
@@ -436,7 +554,7 @@ unsafe fn release_log(window: *mut ResetWindow) {
 /// count's capture, and the capture discards it.
 pub(crate) fn record_promotion_edge(holder: *mut RcHeader, child: *mut RcHeader) {
     let window = WINDOW.with(|cell| cell.get());
-    if window.is_null() || append(Record { holder, child }) {
+    if window.is_null() || append_correction(Record::promotion_edge(holder, child)) {
         return;
     }
 
@@ -464,10 +582,7 @@ pub(crate) fn take_refused_promotion_edge() -> bool {
 /// bounded leak and never an under-count.
 pub(crate) fn record_deferred_decrement(child: *mut RcHeader) {
     if WINDOW.with(|cell| cell.get()).is_null()
-        || append(Record {
-            holder: std::ptr::null_mut(),
-            child,
-        })
+        || append_correction(Record::deferred_decrement(child))
     {
         return;
     }
@@ -476,9 +591,43 @@ pub(crate) fn record_deferred_decrement(child: *mut RcHeader) {
     REFUSED_RECORDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Record `child`'s count `at` the instant the reset promoted it, which is
+/// the last instant the reset can attribute that count to arena holders.
+/// The capture is also what says `child` is one of this reset's own COW
+/// survivors: the reconciliation settles the children it finds a capture
+/// for and no others.
+///
+/// **False when the manager refused the segment**, and the caller answers
+/// that by counting and reporting it — there is no compensation to run.
+/// A survivor the reconciliation never reaches keeps the references its
+/// arena holders held, `now` being `reconciled + pre`, which is a bounded
+/// leak of the class the deferred decrement's own refusal already carries
+/// (`dev/plans/S47.md`, the Critic round over S47.7's design). The refusal
+/// is kept off [`take_refused_promotion_edge`]'s channel deliberately: that
+/// flag is read before the promoting loop and compensated after it, so a
+/// refusal raised inside the loop would retain the next round's population.
+///
+/// True outside a window as well, where no reconciliation will read it.
+pub(crate) fn record_cow_capture(child: *mut RcHeader, at: u32) -> bool {
+    #[cfg(test)]
+    if refusing(Refusing::Captures) {
+        REFUSED_RECORDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return false;
+    }
+
+    if WINDOW.with(|cell| cell.get()).is_null() || append(Record::capture(child, at)) {
+        return true;
+    }
+
+    #[cfg(test)]
+    REFUSED_RECORDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    false
+}
+
 /// A correction term of `promote::reconcile_cow_counts`, named rather than
 /// signed: the two carry opposite signs at the call site, and a boolean
-/// would let a swapped arm compile and turn every +1 into a -1.
+/// would let a swapped arm compile and turn every +1 into a -1. A capture
+/// is neither term and is answered by [`LogByChild::for_each_capture`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Correction {
     /// An edge a survivor of this reset held at its promotion: the count
@@ -492,34 +641,204 @@ pub(crate) enum Correction {
     DeferredDecrement,
 }
 
-/// What this reset owes its COW survivors' counts beyond their deltas,
-/// one call of `f` per correction, in no particular order. Nothing outside
-/// a reset. A holder's fate is not read: an edge is one increment whether
-/// the holder stands, was torn down, or let the edge go.
-pub(crate) fn for_each_correction(mut f: impl FnMut(*mut RcHeader, Correction)) {
+/// The innermost window's log, ordered for reading by the child each record
+/// names, which is what lets [`corrections_for`](LogByChild::corrections_for)
+/// find a child's records by search rather than by walking every record of
+/// every segment. Empty outside a reset.
+pub(crate) struct LogByChild {
+    /// The window whose log is read, or null outside a reset. The window
+    /// rather than its head: a search stands on an order an append makes
+    /// stale, and the window is where that is recorded.
+    window: *mut ResetWindow,
+}
+
+/// Order the log for reading and answer the handle that reads it.
+///
+/// **The last record must already be written.** An append lands past the
+/// ordered run and so makes the order stale, which a debug build reports at
+/// the next read rather than at the append; ordering again is what a caller
+/// with more records to write does.
+///
+/// The segments keep their contents; what moves is the order of the records
+/// inside each and the order of the segments themselves, neither of which a
+/// reader before this one depends on. The chain stops being newest-first,
+/// so an append after it may draw a segment while another still has room.
+pub(crate) fn order_log_by_child() -> LogByChild {
     let window = WINDOW.with(|cell| cell.get());
     if window.is_null() {
-        return;
+        return LogByChild {
+            window: std::ptr::null_mut(),
+        };
     }
 
     let mut segment = unsafe { (*window).log };
     while !segment.is_null() {
-        let len = unsafe { (*segment).header.len };
-        for index in 0..len {
-            let record = unsafe {
-                (&raw const (*segment).records)
-                    .cast::<Record>()
-                    .add(index)
-                    .read()
+        unsafe {
+            let records = records_of(segment);
+            records.sort_unstable_by_key(|record| record.child as usize);
+            let (lowest, highest) = match (records.first(), records.last()) {
+                (Some(first), Some(last)) => (first.child as usize, last.child as usize),
+                _ => (usize::MAX, 0),
             };
-            if record.holder.is_null() {
-                f(record.child, Correction::DeferredDecrement);
-            } else {
-                f(record.child, Correction::DeferredIncrement);
+            (*segment).header.lowest_child = lowest;
+            (*segment).header.highest_child = highest;
+            segment = (*segment).header.next;
+        }
+    }
+
+    // The chain in ascending order of the ranges just written, by insertion:
+    // a reset fills tens of segments, so the square is tens of pointer
+    // writes, and it buys the search its stopping point.
+    let mut ordered: *mut Segment = std::ptr::null_mut();
+    let mut segment = unsafe { (*window).log };
+    while !segment.is_null() {
+        let next = unsafe { (*segment).header.next };
+        let mut behind = &raw mut ordered;
+        unsafe {
+            while !(*behind).is_null()
+                && (**behind).header.lowest_child <= (*segment).header.lowest_child
+            {
+                behind = &raw mut (**behind).header.next;
             }
+
+            (*segment).header.next = *behind;
+            *behind = segment;
         }
 
-        segment = unsafe { (*segment).header.next };
+        segment = next;
+    }
+
+    unsafe {
+        (*window).log = ordered;
+        (*window).log_ordered = true;
+    }
+
+    LogByChild { window }
+}
+
+/// The records a segment holds, which is the front `len` of its array and
+/// never the uninitialised tail past it.
+///
+/// # Safety
+/// `segment` belongs to an open window's log, and no other reference into
+/// its records is live.
+unsafe fn records_of<'a>(segment: *mut Segment) -> &'a mut [Record] {
+    unsafe {
+        std::slice::from_raw_parts_mut(
+            (&raw mut (*segment).records).cast::<Record>(),
+            (*segment).header.len,
+        )
+    }
+}
+
+/// Where `child`'s run begins in `segment`: the first record naming an
+/// address at or past it, or `len` when the segment holds none.
+///
+/// # Safety
+/// `segment` belongs to a log [`order_log_by_child`] has ordered.
+unsafe fn first_record_of(segment: *mut Segment, child: usize) -> usize {
+    let base = unsafe { (&raw const (*segment).records).cast::<Record>() };
+    let (mut low, mut high) = (0, unsafe { (*segment).header.len });
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if (unsafe { base.add(middle).read() }.child as usize) < child {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+
+    low
+}
+
+impl LogByChild {
+    /// The newest segment of the log this handle reads, or null when it was
+    /// taken outside a reset.
+    fn head(&self) -> *mut Segment {
+        if self.window.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        debug_assert!(
+            unsafe { (*self.window).log_ordered },
+            "a record was appended since the log was ordered, so the searches below it are stale"
+        );
+        unsafe { (*self.window).log }
+    }
+
+    /// Every COW survivor this reset promoted, once each, with the count it
+    /// carried at that instant. The order is the log's own.
+    pub(crate) fn for_each_capture(&self, mut f: impl FnMut(*mut RcHeader, u32)) {
+        let mut segment = self.head();
+        while !segment.is_null() {
+            let len = unsafe { (*segment).header.len };
+            let base = unsafe { (&raw const (*segment).records).cast::<Record>() };
+            for index in 0..len {
+                let record = unsafe { base.add(index).read() };
+                if let Some(at) = record.captured_count() {
+                    f(record.child, at);
+                }
+            }
+
+            segment = unsafe { (*segment).header.next };
+        }
+    }
+
+    /// What this reset owes `child`'s count beyond its delta, one call of
+    /// `f` per correction. **Every segment is searched**, because a child's
+    /// records are spread over as many segments as the reset filled, and a
+    /// membership read from one of them drops the rest.
+    ///
+    /// A holder's fate is not read: an edge is one increment whether the
+    /// holder stands, was torn down, or let the edge go.
+    ///
+    /// **One capture per child, which this is the cheap place to check.**
+    /// The reconciliation settles a survivor by reading its count and
+    /// storing the sum back, so a second visit to one capture reads what
+    /// the first stored: `at = 3` with one edge settles to 1, and the
+    /// second pass to `1 - 3 + 1`, clamped to zero — a promoted holder left
+    /// naming an entity the next release frees. The walk below reads the
+    /// child's whole run anyway.
+    pub(crate) fn corrections_for(&self, child: *mut RcHeader, mut f: impl FnMut(Correction)) {
+        let mut captures = 0;
+        let mut segment = self.head();
+        while !segment.is_null() {
+            let len = unsafe { (*segment).header.len };
+            let base = unsafe { (&raw const (*segment).records).cast::<Record>() };
+            let header = unsafe { &raw const (*segment).header };
+            // The chain ascends by lowest child, so a segment that begins
+            // past the address ends the walk rather than skipping one.
+            if (child as usize) < unsafe { (*header).lowest_child } {
+                break;
+            }
+
+            if (child as usize) > unsafe { (*header).highest_child } {
+                segment = unsafe { (*segment).header.next };
+                continue;
+            }
+
+            let mut index = unsafe { first_record_of(segment, child as usize) };
+            while index < len {
+                let record = unsafe { base.add(index).read() };
+                if record.child != child {
+                    break;
+                }
+
+                match record.correction() {
+                    Some(correction) => f(correction),
+                    None => captures += 1,
+                }
+
+                index += 1;
+            }
+
+            segment = unsafe { (*segment).header.next };
+        }
+
+        debug_assert!(
+            captures <= 1,
+            "a child captured twice is settled twice, and the second sum is the first one's answer"
+        );
     }
 }
 
@@ -562,28 +881,58 @@ pub(crate) fn take_refused_records() -> usize {
 
 #[cfg(test)]
 thread_local! {
-    /// While set, every segment draw answers null, which is how a test
-    /// reaches the refusal arm without emptying the thread's heap.
-    static REFUSE_SEGMENTS: Cell<bool> = const { Cell::new(false) };
+    /// What the log refuses while a [`RefusedRecords`] guard stands, or
+    /// `None` when it takes everything it is given.
+    static REFUSING: Cell<Option<Refusing>> = const { Cell::new(None) };
 }
 
-/// Refuse every segment draw on this thread for the guard's life.
+/// What a [`RefusedRecords`] guard refuses.
+///
+/// A refused segment refuses whatever record meets it next and every one
+/// after it, so which arm a test reaches is decided by the record the reset
+/// happened to be writing. The two narrow settings hold one arm still while
+/// the other is read: within one reset the manager's answer does change,
+/// the drain giving memory back between the counting pass and the promoting
+/// loop.
 #[cfg(test)]
-pub(crate) struct RefusedSegments(());
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusing {
+    /// Every record, refused at the segment draw itself.
+    Everything,
+    /// The promotion edges and the deferred decrements, the captures
+    /// landing.
+    Corrections,
+    /// The captures, the corrections landing.
+    Captures,
+}
+
+/// Refuse what `Refusing` names on this thread for the guard's life, which
+/// is how a test reaches a refusal arm without emptying the thread's heap.
+#[cfg(test)]
+pub(crate) struct RefusedRecords(());
 
 #[cfg(test)]
-impl RefusedSegments {
-    pub(crate) fn arm() -> Self {
-        REFUSE_SEGMENTS.with(|cell| cell.set(true));
-        RefusedSegments(())
+impl RefusedRecords {
+    pub(crate) fn arm(what: Refusing) -> Self {
+        REFUSING.with(|cell| cell.set(Some(what)));
+        RefusedRecords(())
     }
 }
 
 #[cfg(test)]
-impl Drop for RefusedSegments {
+impl Drop for RefusedRecords {
     fn drop(&mut self) {
-        REFUSE_SEGMENTS.with(|cell| cell.set(false));
+        REFUSING.with(|cell| cell.set(None));
     }
+}
+
+/// Whether the log turns a record of this kind away at the recorder itself.
+/// **`Everything` is not one of these**: it refuses the segment draw
+/// instead, which is the refusal the manager actually makes, and every
+/// record then meets it through [`append`].
+#[cfg(test)]
+fn refusing(kind: Refusing) -> bool {
+    REFUSING.with(|cell| cell.get()) == Some(kind)
 }
 
 /// Whether a free of an occupant of retained `block` is this reset's own

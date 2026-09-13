@@ -8,6 +8,77 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-13 — S47.7 the COW reconciliation leaves the global allocator: 2 allocations to 0, and the reset of 2400 COW survivors is three times longer
+
+**Machine:** dev box, shared with interactive work, 16 cores. **Base:**
+`0c7de51` before, the working tree after, `rustc 1.96.0`, release profile, both
+arms in one session.
+
+**What changed:** the reset kept each COW survivor's count at promotion in a
+`Vec<(*mut RcHeader, u32)>` and settled it through a
+`HashMap<usize, i64>`. The capture is now a third record kind of the window's
+log, the reconciliation iterates by capture, and a capture's corrections are
+found by binary search in every segment whose child range admits the address.
+
+### Counters
+
+| figure | before | after | how |
+| --- | --- | --- | --- |
+| global allocations, a reset promoting one COW survivor | 2 | 0 | `test_support::allocation_probe` around `arena_reset_full` in `the_reset_reads_no_zero_count_member::the_cow_reconciliation_draws_nothing_from_the_global_allocator`; the two were the vector and the table |
+| the same, before `block_pool::test_guard` warmed the thread's buffer arena | 3 | — | the third was `with_buffer_arena`'s own `Box`, made at the thread's first long-lived payload and charged to whichever test reached one first; the fixture takes it now, and which test paid it depended on the order the harness ran them in |
+| records the log holds per COW survivor | 1 | 2 | the capture joins the edge, so the segment count for a given reset grows by about a third |
+| bytes of a log segment spent on its header | 16 | 32 | the child range the search reads, at one record's cost per 4 KiB |
+
+### The clock: one reset, an array of COW strings
+
+`promote::tests::what_the_cow_reconciliation_costs::measure_the_reconciliation`,
+an ignored probe run in release. Each round builds a fresh arena holding one
+array of `n` arena strings, times `arena_reset_full` alone and lets the heap
+holder go; the figure is the minimum of 15 rounds, and the four runs of each
+arm are given so the spread is visible.
+
+| shape | before, minima of four runs | after, minima of four runs |
+| --- | --- | --- |
+| 120 COW survivors | 5.4, 5.7, 5.7, 5.7 µs | 4.4, 4.5, 4.7, 5.3 µs |
+| 2400 COW survivors | 102.3, 104.1, 105.7, 107.3 µs | 248.1, 255.1, 267.1, 282.6 µs |
+
+At 120 the arms overlap and the table's own allocation is what the difference
+is: 5.4 → 4.4 µs taking the minimum of each. At 2400 the arms are 2.4 times
+apart, and the cause is the shape of the search rather than its constant: a
+reset with `C` COW survivors writes `2C` records, so its log holds `2C / 254`
+segments and the reconciliation walks that chain once per capture — `O(C²)`,
+where the table was `O(C)`. The crossover is near 400 survivors.
+
+**Two cuts were measured on the way to that figure, and both are in it.**
+Recording each segment's lowest and highest child at the sort, and skipping a
+segment whose range excludes the address, took 2400 survivors from 419 µs to
+339 — the binary search went and the visit stayed, because a skip is not a
+stop. Putting the chain itself in ascending order of those ranges gives the
+walk a stopping point, and took the same shape to 248. What is left is the
+term neither cut reaches: the segments a child's address does fall inside,
+which is one per pass over the arena, and the segments below it, which the
+walk crosses to get there.
+
+### The arm that was measured and not taken
+
+**The accumulator in the entity's own count word: 39 µs at 2400, 2.1 at 120.**
+`reconcile_cow_counts` runs after the last destructor and before any death, so
+nothing reads a promoted survivor's count between its first statement and its
+last. Three linear passes over the log therefore settle the same arithmetic
+with no sort, no search and no chain walk per capture: the first writes
+`now - at` into each captured survivor's count word under a tag bit, the
+second adds each correction into the word of any child that carries the tag,
+and the third strips the tag, clamps at zero and stores. Measured on the same
+box in the same session, minima of three runs of fifteen: 2.1, 2.1, 2.2 µs at
+120 survivors and 38.9, 39.3, 39.5 µs at 2400 — 2.6 times shorter than the
+`HashMap` it would replace, against three times longer for the search.
+
+It is not in the tree because the search is what S47.7's design says and what
+Edmond agreed to (`dev/plans/S47.md`). What it costs to adopt is one hazard to
+answer: the tag is bit 31 of the count, so a live COW entity holding more than
+2^31 references and named by a correction would have its count corrupted,
+where the search reads no header it does not write.
+
 ## 2026-09-13 — S47.6 the reset's grouping leaves the global allocator: 4 allocations to 0, and the reset of 2400 survivors is 28 % shorter
 
 **Machine:** dev box, shared with interactive work, 16 cores. **Base:**

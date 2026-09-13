@@ -8,6 +8,67 @@ never edited or deleted.
 
 ---
 
+## 2026-09-13 — a refused capture leaves its survivor the arena holders' references, and nothing compensates it
+
+The reset settles a COW survivor's count from three terms, and the third of
+them — the count at the instant of promotion — is now a record of the
+window's log rather than an entry of a `Vec`. A log record can be refused,
+which gives that count a refusal arm the vector never had.
+
+**The arm is to finish without it, count it and report it.** Deriving the
+terms says which direction the loss goes: the capture is taken after the
+round's counting pass, so `at = pre + eb` with `pre` the references the
+program held before the reset and `eb` the edges recorded before the capture;
+afterwards `now = at + ea - r + m`, and the reconciliation would have stored
+`(eb + ea) + (now - at) - K` with `K = ea`, which is `now - pre`. A survivor
+the reconciliation never reaches therefore keeps exactly `pre` — the arena
+holders' references it exists to discard — so the loss is a bounded leak and
+never an early free. `KIND_ARENA_RESET_REFUSED_CAPTURE` names the survivor
+and the count, which is what separates that leak from an ordinary live count
+when a ring is read.
+
+**"Hold the survivor alive for good" was the first answer and cannot be
+written.** Its only spelling is a large constant in the count word, which is
+the bias this design refuses for a separate reason, and `u32::MAX` saturates
+only under `checked-refcount` while an ordinary build wraps it and a debug
+build panics in `ll_retain`.
+
+**The refusal keeps a channel of its own.**
+`reset_window::take_refused_promotion_edge` is read once per round, before the
+promoting loop, and spent after it by retaining the round's COW children — so
+a refusal raised inside that loop would retain the next round's population, or
+nobody's when the loop was the last. `record_cow_capture` answers its caller
+instead, and the caller journals.
+
+## 2026-09-13 — the capture is a third record kind, discriminated in the word that already held the holder
+
+The window's log held two record kinds, told apart by whether the first word
+named a holder. The capture makes three, and the word carries all of them: an
+entity address is eight-aligned, so bit 0 set marks a capture and the count
+stands above it.
+
+**A third `Correction` variant was refused.** `for_each_correction` decided on
+a null holder, so every capture would have been answered as a deferred
+increment — one reference per COW survivor added to the very count the
+capture states. The capture takes an enumerator of its own and the correction
+search steps over it, which
+`reset_window::tests::a_capture_is_answered_by_its_own_enumerator_and_never_as_a_correction`
+is what holds.
+
+**The corrections of one child are searched for in every segment.** A segment
+holds 254 records and the chain is newest first, so a child's records are
+spread over as many segments as the reset filled; a membership read from one
+segment drops the rest, and dropping an increment frees a live entity. Each
+segment is sorted by child after the last append, and each carries the lowest
+and highest child it holds, so the search skips a segment whose range excludes
+the address.
+
+**What it costs is `O(C²)` in the COW survivors of one reset**, measured at
+three times the `HashMap` it replaces for 2400 of them and shorter than it for
+120 (`dev/BENCHMARKS.md`, 2026-09-13). The alternative that is linear — the
+count word as the accumulator between the reconciliation's passes — is
+measured in the same entry and is not in the tree.
+
 ## 2026-09-13 — a sever takes the smallest unit its holder's layout leaves consistent, and never lands on a counted edge
 
 **Ruled by the Sage, final**, on a Critic finding that the ruling above it —

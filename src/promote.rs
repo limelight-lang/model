@@ -21,11 +21,13 @@
 //!    one compensating retain per heap entity a survivor holds: that
 //!    entity's release-at-reset record assumed the holder would die, and
 //!    the survivor now owes its own release at its real death. The same
-//!    walk records what [`reconcile_cow_counts`] needs of it — each
-//!    survivor's COW edges at that instant, and each compensating retain
-//!    given to an already-promoted COW child. A **COW** survivor is
-//!    counted apart, after the fixpoint, its count being a value the
-//!    mutator reads and destructors being mutator code.
+//!    walk records two of the three things [`reconcile_cow_counts`] reads —
+//!    each survivor's COW edges at that instant, and each compensating
+//!    retain given to an already-promoted COW child — and the promotion
+//!    below records the third, each COW survivor's count at the instant its
+//!    category is rewritten. A **COW** survivor is counted apart, after the
+//!    fixpoint, its count being a value the mutator reads and destructors
+//!    being mutator code.
 //! 3. **Retain blocks** carrying survivors: rewrite each survivor's
 //!    category to GcHeap in place, stamp the blocks `BLOCK_KIND_RETAINED`
 //!    and keep them out of the pool. The pointer-tag alternative was
@@ -45,10 +47,9 @@
 //! one tracer"). The count pass takes `cells::trace_entity`, which hands it
 //! the child; the mark and the re-trace take `cells::trace_cells`
 //! underneath it, which hands them the cell as well, because a child the
-//! arena cannot record has its cell emptied. The COW reconciliation walks
-//! nothing: it reads the count pass's log.
-
-use std::collections::HashMap;
+//! arena cannot record has its cell emptied. The COW reconciliation reaches
+//! no entity's cells at all: it walks the window's log, whose captures name
+//! its population and whose corrections it searches by child.
 
 use crate::journal::kinds::journal_event;
 use crate::memory::arena::Arena;
@@ -94,6 +95,14 @@ const ARENA_RESET_MAX_ROUNDS: usize = 10_000;
 /// entry point has the pending channel `rfc/runtime/exceptions.md` puts it
 /// on; until then the number is this return.
 ///
+/// **A refused capture is not a severance and is not in this number.** It
+/// is the other refusal a reset can meet: the manager declines the log the
+/// COW survivor's count goes in, so the reconciliation never reaches that
+/// survivor and it keeps the references its arena holders held. Nothing is
+/// emptied and nothing is owed back, the loss being a bounded leak, and
+/// what reports it is `KIND_ARENA_RESET_REFUSED_CAPTURE`
+/// (`memory::reset_window::record_cow_capture`).
+///
 /// **The journal counts a second thing**, and the two figures part company
 /// wherever a sever's unit is wider than one cell: a refused hash key
 /// holes its whole entry, so its element loses an edge too, and every
@@ -123,11 +132,6 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     // they named (`dev/DECISIONS.md`, "a survivor cell the pool cannot
     // supply severs the edge, and the reset finishes").
     let mut severed = 0usize;
-    // Each COW survivor's count at the instant it was promoted, which is
-    // the last instant the reset can attribute it to arena holders. What
-    // happens to the count after that belongs to whoever changed it, and
-    // the reconciliation keeps it as a delta.
-    let mut cow_at_promotion: Vec<(*mut RcHeader, u32)> = Vec::new();
     // How many blocks this reset has taken out of circulation, for the
     // journal's third operand. The set that used to answer it also
     // answered "have I retained this one already", which the block's own
@@ -295,7 +299,27 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
 
             unsafe {
                 if mutator_flags(surv) & COW != 0 {
-                    cow_at_promotion.push((surv, header_refcount(surv)));
+                    // This instant is the last the reset can attribute the
+                    // count to arena holders, so it is where the capture
+                    // that makes this survivor one of the reconciliation's
+                    // own is taken. What happens to the count afterwards
+                    // belongs to whoever changed it and stays in the delta.
+                    let at = header_refcount(surv);
+                    if !crate::memory::reset_window::record_cow_capture(surv, at) {
+                        // No compensation follows, and none is owed: the
+                        // survivor keeps the references its arena holders
+                        // held, which is a bounded leak rather than an
+                        // early free (`dev/plans/S47.md`, the Critic round
+                        // over S47.7's design).
+                        #[cfg(test)]
+                        REFUSED_CAPTURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        journal_event!(
+                            crate::journal::kinds::KIND_ARENA_RESET_REFUSED_CAPTURE,
+                            arena as u64,
+                            surv as u64,
+                            at as u64
+                        );
+                    }
                 }
 
                 // 00 = GcHeap; drop the transient arena-reset mark and
@@ -398,7 +422,7 @@ pub unsafe fn arena_reset_full(arena: *mut Arena) -> usize {
     // now: the fixpoint is where mutator code runs, and on a COW entity
     // the count is what that code reads to decide whether a write may go
     // in place.
-    unsafe { reconcile_cow_counts(&cow_at_promotion) };
+    unsafe { reconcile_cow_counts() };
 
     // The weak walk — after every destructor has settled and the
     // survivors' categories are rewritten, before the pages go back:
@@ -1126,6 +1150,42 @@ pub(crate) fn take_pins_spent() -> usize {
     PINS_SPENT.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// COW survivors the reconciliation stepped over because the reset had torn
+/// them down. The sum it would have stored is
+/// `edges_after_the_capture - pre`, positive as soon as a later round
+/// stores the entity into a survivor of its own, and a torn-down slot's
+/// refcount is one the queue requires to stay zero
+/// (`memory::reset_window`).
+///
+/// **No test drives it above zero, and the count is the claim.** A promoted
+/// COW survivor's count carries one for every edge the counting pass found,
+/// and a release of the slot behind such an edge is what takes it back — so
+/// the count cannot reach the zero a teardown needs while any counted edge
+/// stands, and a survivor whose slots empty before the counting pass is
+/// promoted at zero rather than torn down
+/// (`a_cow_survivor_whose_slots_empty_inside_the_fixpoint_settles_at_zero`).
+#[cfg(test)]
+static SKIPPED_TEARDOWNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The torn-down COW survivors the reconciliation stepped over since the
+/// last read, cleared by the read.
+#[cfg(test)]
+pub(crate) fn take_skipped_teardowns() -> usize {
+    SKIPPED_TEARDOWNS.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Captures the manager refused, so a test can say that the survivor it
+/// left high was left high by a refusal rather than by the arithmetic: the
+/// two read the same in the header. A plain static, as `RETRACES` is.
+#[cfg(test)]
+static REFUSED_CAPTURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The captures refused since the last read, cleared by the read.
+#[cfg(test)]
+pub(crate) fn take_refused_captures() -> usize {
+    REFUSED_CAPTURES.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Re-trace passes since a test last read them, so a test can say whether
 /// its destructor round was re-traced at all: a child the re-trace missed
 /// and a child it never looked for read the same in the heap. A plain
@@ -1175,47 +1235,47 @@ unsafe fn retrace_survivors(arena: *mut Arena) -> usize {
 /// whose edge the log carries as well (`dev/DECISIONS.md`, "the COW count
 /// is the log's edges plus the delta").
 ///
-/// `at_promotion` is each COW survivor's count at the instant its
-/// category was rewritten — the last instant the reset can attribute it
-/// to arena holders.
+/// The population is the log's captures, one per COW survivor the reset
+/// promoted: a correction naming a child with no capture belongs to a COW
+/// entity this reset never promoted and is never asked for
+/// (`memory::reset_window::Record`).
+///
+/// **One store per survivor, of the whole sum.** The terms are summed in an
+/// `i64` and clamped once, because a count is unsigned and the terms are
+/// not: `at = 3` with one edge and two post-capture releases sums to `-2`,
+/// and a header walked through the terms would pass through `4.29e9` on its
+/// way there.
+///
+/// A survivor torn down inside the reset is skipped, its count having to
+/// stay zero for the queue that holds it (`memory::reset_window`).
 ///
 /// # Safety
 /// The fixpoint has settled and no user code can run again before the
 /// blocks are disposed of.
-unsafe fn reconcile_cow_counts(at_promotion: &[(*mut RcHeader, u32)]) {
-    if at_promotion.is_empty() {
-        return;
-    }
+unsafe fn reconcile_cow_counts() {
+    use crate::memory::reset_window::Correction;
 
-    // Address → count settled so far: the delta first, the log's terms on top.
-    let mut settled: HashMap<usize, i64> = HashMap::with_capacity(at_promotion.len());
-    for &(s, at) in at_promotion {
-        let now = unsafe { header_refcount(s) } as i64;
-        settled.insert(s as usize, now - at as i64);
-    }
+    let log = crate::memory::reset_window::order_log_by_child();
+    log.for_each_capture(|survivor, at| {
+        if unsafe { crate::memory::reset_window::is_torn_down(survivor) } {
+            #[cfg(test)]
+            SKIPPED_TEARDOWNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
 
-    // A correction naming no row of its own is dropped here, which is
-    // what narrows the window's log — recorded for every COW child the
-    // counting pass met — to this reset's own COW survivors
-    // (`memory::reset_window::Correction`).
-    crate::memory::reset_window::for_each_correction(|child, correction| {
-        use crate::memory::reset_window::Correction;
-        if let Some(entry) = settled.get_mut(&(child as usize)) {
-            *entry += match correction {
+        let mut settled = unsafe { header_refcount(survivor) } as i64 - at as i64;
+        log.corrections_for(survivor, |correction| {
+            settled += match correction {
                 Correction::DeferredIncrement => 1,
                 Correction::DeferredDecrement => -1,
             };
-        }
-    });
-
-    for &(s, _) in at_promotion {
-        let settled_count = settled[&(s as usize)];
+        });
         debug_assert!(
-            settled_count >= 0,
+            settled >= 0,
             "a COW survivor lost more references than it had"
         );
-        unsafe { set_header_refcount(s, settled_count.max(0) as u32) };
-    }
+        unsafe { set_header_refcount(survivor, settled.max(0) as u32) };
+    });
 }
 
 /// True when `cells::trace_entity` enumerates **all** of this entity's
