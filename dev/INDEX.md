@@ -554,8 +554,8 @@ versions live in `docs/history/`, marked at the top.
   under a name that is not a collector's, and `cycle::mark` traces
   through it rather than growing a stride of its own.
 - Cells a class owns **outside** the object body: `src/cells.rs`'s
-  `OutsideCells`, a group of four behaviours — the walk, the sever, the
-  free and the arena carry — reached through
+  `OutsideCells`, a group of five behaviours — the walk, the sever of all
+  cells, the sever of one, the free and the arena carry — reached through
   `class::Class::outside_cells` when the descriptor carries
   `CLASS_OUTSIDE_CELLS`. A coroutine's waker block and a map's table
   chunk are the customers, both outside this crate, so the only class
