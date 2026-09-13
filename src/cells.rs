@@ -49,8 +49,22 @@ pub(crate) struct Cell {
     pub shape: CellShape,
 }
 
-/// How wide a cell is, and therefore how a writer empties it: a bare
-/// 8-byte pointer takes `NULL`, a 16-byte `Value` takes `Value::null()`.
+impl Cell {
+    /// The same cell, marked as one only its class's group may empty.
+    #[inline]
+    pub(crate) fn outside(self) -> Self {
+        Cell {
+            shape: CellShape::Outside,
+            ..self
+        }
+    }
+}
+
+/// What a writer has to know to empty one cell: how wide it is, and which
+/// layout owns it. A bare 8-byte pointer takes `NULL` and a 16-byte
+/// `Value` takes `Value::null()`; the three shapes below them are emptied
+/// by the layout that holds them and not by a store of either width
+/// ([`sever_cell`]).
 ///
 /// This is the one fact about a cell that its address does not carry, and
 /// the sever is what needs it — the tracer reads the child and never
@@ -59,14 +73,38 @@ pub(crate) struct Cell {
 /// walker exists to remove.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum CellShape {
+    /// A bare pointer slot: an object's pointer run.
     Pointer,
+    /// A `Value` inside the entity's own body, or a mixed vector's
+    /// element, which keeps nothing in its reserved bytes.
     Box,
+    /// A hash entry's element, whose reserved bytes carry the entry's
+    /// collision link: a whole-`Value` store would publish zeros over the
+    /// link, and zero is a legal entry index rather than an end of chain.
+    Element,
+    /// A hash entry's string key, which has no cell-wise empty state at
+    /// all: a null key word reads as an integer key, so the unit that can
+    /// be emptied is the entry.
+    Key,
+    /// A cell a class keeps outside its body, which only that class's
+    /// [`OutsideCells`] group can empty.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "only a class hook yields one, and no class does yet"
+        )
+    )]
+    Outside,
 }
 
-/// The four behaviours a class owes when its counted cells lie outside
+/// The five behaviours a class owes when its counted cells lie outside
 /// its own body — a coroutine's waker block, a map's table chunk. It was
 /// six until 2026-08-26: a walk per reader and a re-check went with
-/// `rc-walk`, which is what asked for them. One group rather than four
+/// `rc-walk`, which is what asked for them, and the arena reset's
+/// per-cell sever brought the fifth back
+/// (`dev/DECISIONS.md`, "a sever takes the smallest unit its holder's
+/// layout leaves consistent"). One group rather than five
 /// nullable fields, because a class carrying some
 /// of them and not others fails silently in both directions: a walk
 /// without a sever lets the drain empty a table entry cell-wise, and a
@@ -130,6 +168,23 @@ pub(crate) struct OutsideCells {
     /// entry holds a key beside its value is the shape to watch: both are
     /// occupants, so the walk yields both.
     pub sever: unsafe fn(*mut RcHeader, &mut dyn FnMut(*mut RcHeader)),
+    /// Empty the one cell `cell` names and hand its occupant over
+    /// undropped, the same contract as [`sever`](Self::sever) over one
+    /// cell rather than all of them: empty at the smallest unit this
+    /// layout leaves consistent, move nothing, and release nothing.
+    ///
+    /// **A following [`walk_plain`](Self::walk_plain) yields the previous
+    /// cells minus the ones this displaced.** That is what the arena
+    /// reset stands on: it severs the edge of a child it could not record
+    /// and then counts a survivor's remaining children from the same walk
+    /// (`promote::count_children`), so a cell this leaves standing is one
+    /// the count still includes.
+    ///
+    /// A unit wider than the cell may displace occupants the caller did
+    /// not ask about, and each of them goes to the closure — the ordered
+    /// hash does exactly that for a string key
+    /// (`array::entity::sever_entry_holding`).
+    pub sever_one: unsafe fn(*mut RcHeader, Cell, &mut dyn FnMut(*mut RcHeader)),
     /// Release the storage itself, as the last act of the ordinary
     /// dispose (`object.rs`, the field teardown). Dispose is the only
     /// caller: a
@@ -230,6 +285,14 @@ pub(crate) trait CellReader {
     /// member of the group. The trait is the one place the two readers
     /// differ, so the choice belongs here.
     ///
+    /// **Every cell reaches the visitor as [`CellShape::Outside`]**,
+    /// stamped here rather than by the class: a group builds its cells
+    /// through [`counted_box_cell`], which answers `Box`, and a class that
+    /// forgot the difference would route its own cells to a writer of the
+    /// wrong width with nothing to report it. The shape says who empties
+    /// the cell, and outside the body that is the group whatever the
+    /// cell's width.
+    ///
     /// # Safety
     /// As the group's own members: `base` addresses a live region laid
     /// out by `cls`, whose class carries the group.
@@ -270,7 +333,7 @@ impl CellReader for PlainCells {
         cls: *const crate::class::Class,
         visit: &mut dyn FnMut(Cell),
     ) {
-        unsafe { (group.walk_plain)(base, cls, visit) }
+        unsafe { (group.walk_plain)(base, cls, &mut |cell| visit(cell.outside())) }
     }
 
     #[inline]
@@ -446,13 +509,19 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                     visit(Cell {
                         addr: at as usize + KEY_OFFSET,
                         child: (key as usize & !crate::array::entry::KEY_TAG_MASK) as *mut RcHeader,
-                        shape: CellShape::Pointer,
+                        shape: CellShape::Key,
                     });
                 }
 
                 let value_at = unsafe { at.add(VALUE_OFFSET) };
                 if let Some(cell) = unsafe { counted_box_cell::<R>(value_at) } {
-                    visit(cell);
+                    // The shape the reader built is the width; what the
+                    // entry adds is the collision link in the reserved
+                    // bytes, which only this stride knows is there.
+                    visit(Cell {
+                        shape: CellShape::Element,
+                        ..cell
+                    });
                 }
             }
         }
@@ -482,6 +551,79 @@ pub(crate) unsafe fn empty_cell(cell: Cell) {
         CellShape::Box => unsafe {
             crate::memory::barrier::write_value_slot(cell.addr as *mut Value, Value::null())
         },
+        // In every build, because the arm that writes nothing is worse
+        // than the one that aborts: every caller here hands the child to a
+        // closure that owes it one drop, so a cell left full is a dangling
+        // slot rather than the missed collection an empty fall-through
+        // usually costs.
+        CellShape::Element | CellShape::Key | CellShape::Outside => {
+            panic!("this cell is emptied by the layout that owns it, through sever_cell")
+        }
+    }
+}
+
+/// Sever the one cell `cell` names: empty it at the smallest unit its
+/// holder's layout leaves consistent, and hand every counted occupant that
+/// unit displaced to `displaced` **without releasing it** — one call per
+/// occupant, and the caller owes whatever drop its own protocol says.
+///
+/// For three of the five shapes the unit is the cell: an object's body
+/// cell, a `Reference`'s `Value`, a vector element, and a hash entry's
+/// element, which keeps the entry live with a null value. For a hash
+/// entry's string key the unit is the entry, which becomes a hole, so the
+/// element beside the key arrives at `displaced` as well. A cell outside
+/// the body is the class's, and goes to its group's
+/// [`sever_one`](OutsideCells::sever_one).
+///
+/// **Nothing moves**: every arm writes where the cell is, because the walk
+/// that yielded it is still striding the layout.
+///
+/// The caller that severs a whole entity severs it through
+/// [`sever_cells`] instead, whose contract is the collector's: one drop
+/// per displaced child, against counts that are real.
+///
+/// # Safety
+/// `cell` is one the tracer yielded for `entity` of `kind`, whose cells
+/// are writable and which no other thread writes.
+pub(crate) unsafe fn sever_cell(
+    entity: *mut RcHeader,
+    kind: u32,
+    cell: Cell,
+    displaced: &mut dyn FnMut(*mut RcHeader),
+) {
+    debug_assert!(
+        match cell.shape {
+            CellShape::Element | CellShape::Key => kind == EntityKind::Array as u32,
+            CellShape::Outside =>
+                kind == EntityKind::Object as u32 || kind == EntityKind::Lazy as u32,
+            CellShape::Pointer | CellShape::Box => true,
+        },
+        "the cell's shape does not belong to the kind that yielded it"
+    );
+    match cell.shape {
+        CellShape::Pointer | CellShape::Box => {
+            unsafe { empty_cell(cell) };
+            displaced(cell.child);
+        }
+        CellShape::Element => {
+            let entry = (cell.addr - crate::array::entry::ELEMENT_OFFSET)
+                as *mut crate::array::entry::Entry;
+            unsafe { crate::array::entry::Entry::store_element(entry, Value::null()) };
+            displaced(cell.child);
+        }
+        CellShape::Key => unsafe {
+            crate::array::entity::sever_entry_holding(
+                entity as *mut crate::array::entity::LLArray,
+                cell.addr,
+                displaced,
+            )
+        },
+        CellShape::Outside => {
+            let group =
+                unsafe { crate::class::Class::outside_cells((*(entity as *mut Object)).class) };
+            let group = group.expect("an outside cell was yielded by a class without the group");
+            unsafe { (group.sever_one)(entity, cell, displaced) };
+        }
     }
 }
 

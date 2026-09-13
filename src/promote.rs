@@ -92,8 +92,16 @@ const ARENA_RESET_MAX_ROUNDS: usize = 10_000;
 /// cannot supply severs the edge, and the reset finishes"). Zero is the
 /// ordinary answer. The host learns it through `ll_arena_reset` once that
 /// entry point has the pending channel `rfc/runtime/exceptions.md` puts it
-/// on; until then the number is this return and the journal's
-/// `KIND_ARENA_RESET_SEVERED_EDGE` records.
+/// on; until then the number is this return.
+///
+/// **The journal counts a second thing**, and the two figures part company
+/// wherever a sever's unit is wider than one cell: a refused hash key
+/// holes its whole entry, so its element loses an edge too, and every
+/// emptied edge gets a `KIND_ARENA_RESET_SEVERED_EDGE` record while this
+/// return counts refusals alone. A record carries the arena, the holder
+/// and the child, so the refused child is not distinguished from the one
+/// its entry took with it; distinguishing them needs a record kind of its
+/// own, which no reader has asked for.
 ///
 /// # Safety
 /// The arena must not be reachable by running PHP code anymore (no
@@ -811,14 +819,8 @@ unsafe fn descend_from(arena: *mut Arena, from: usize) -> usize {
                 }
 
                 if !mark_child(arena, cell.child) {
-                    sever_one_edge(s, kind, cell);
+                    sever_one_edge(arena, s, kind, cell);
                     severed += 1;
-                    journal_event!(
-                        crate::journal::kinds::KIND_ARENA_RESET_SEVERED_EDGE,
-                        arena as u64,
-                        s as u64,
-                        cell.child as u64
-                    );
                 }
             });
         }
@@ -827,38 +829,56 @@ unsafe fn descend_from(arena: *mut Arena, from: usize) -> usize {
     severed
 }
 
-/// Empty the one cell a refused child came through.
+/// Empty the one cell a refused child came through, at the unit the
+/// holder's layout leaves consistent, and journal every child that unit
+/// displaced (`dev/DECISIONS.md`, "a sever takes the smallest unit its
+/// holder's layout leaves consistent, and never lands on a counted edge").
 ///
-/// **Only the shapes `cells::empty_cell` is the writer for**, which are an
-/// object's own body cells and a `Reference`'s `Value`. A hash entry and a
-/// class's outside cells are severed by the table and by the group, for the
-/// reasons `cells::sever_cells` states at its two arms: a cleared entry is a
-/// hole rather than a null, an integer-keyed entry has no key cell at all,
-/// and a flat `Value` store over an entry's element publishes zeros over the
-/// collision link, where zero is a legal entry index rather than an end of
-/// chain. `PLAN.md` S47.8 builds the per-layout sever; until it lands this
-/// refuses rather than corrupts a survivor the reset is about to promote.
+/// **Nothing is released, and the holder's category is why.** A sever lands
+/// only on a holder still `RequestArena`, and a store into such a holder
+/// counts nothing into an arena child — `ll_retain` returns before the
+/// counter for an arena non-COW entity — records a heap child's release at
+/// the reset, and never gains an escape, the category barrier's two arms
+/// both testing a mismatch. So every occupant a sever displaces, the
+/// refused one and the collateral alike, holds no count of this holder's:
+/// an arena child's count is rebuilt by `count_children` from the edges
+/// that remain, a heap child's logged release fires once against the retain
+/// its store took, and a COW child's word is replaced by the window's log.
+/// The child's own `IS_ESCAPEE` is a consequence of that rule rather than
+/// the rule (Sage, 2026-09-13, `dev/plans/S47.md`).
+///
+/// **More children may be displaced than the one refused.** A string key's
+/// unit is its whole entry, so the element beside it loses its edge too;
+/// each gets its own journal record, while the reset's severed count stays
+/// one per refused edge.
 ///
 /// # Safety
 /// `cell` is one the tracer yielded for `entity` of `kind`, mid-reset.
-unsafe fn sever_one_edge(entity: *mut RcHeader, kind: u32, cell: crate::cells::Cell) {
-    use crate::refcount::EntityKind;
-    const OBJECT: u32 = EntityKind::Object as u32;
-    const LAZY: u32 = EntityKind::Lazy as u32;
-    const REFERENCE: u32 = EntityKind::Reference as u32;
-
-    let outside = matches!(kind, OBJECT | LAZY)
-        && unsafe {
-            crate::class::Class::outside_cells((*(entity as *mut crate::object::Object)).class)
-                .is_some()
-        };
-    assert!(
-        matches!(kind, OBJECT | LAZY | REFERENCE) && !outside,
-        "a refused child in a hash entry or in a class's outside cells needs \
-         the sever its layout owns, which PLAN.md S47.8 builds"
+#[cfg_attr(not(feature = "debug-journal"), allow(unused_variables))]
+unsafe fn sever_one_edge(
+    arena: *mut Arena,
+    entity: *mut RcHeader,
+    kind: u32,
+    cell: crate::cells::Cell,
+) {
+    debug_assert_eq!(
+        unsafe { crate::object::header_category(entity) },
+        crate::refcount::MemoryCategory::RequestArena,
+        "a sever on a promoted holder would empty an edge somebody counted"
     );
-
-    unsafe { crate::cells::empty_cell(cell) };
+    // Not an assert: a holder of another category costs a bounded leak
+    // rather than an early free, and this path exists to survive a memory
+    // refusal rather than to end the request on one.
+    unsafe {
+        crate::cells::sever_cell(entity, kind, cell, &mut |child| {
+            journal_event!(
+                crate::journal::kinds::KIND_ARENA_RESET_SEVERED_EDGE,
+                arena as u64,
+                entity as u64,
+                child as u64
+            );
+        })
+    };
 }
 
 /// Re-trace passes since a test last read them, so a test can say whether

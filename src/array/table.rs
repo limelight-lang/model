@@ -1174,6 +1174,72 @@ impl Table {
         unsafe { crate::memory::routing::body_alloc(std::ptr::null_mut(), category, bytes) }
     }
 
+    /// The entry the address `at` belongs to, which is what a walker
+    /// holding a cell address rather than an index has to ask: a cell
+    /// carries where it is, and the entry is that address rounded down to
+    /// the stride (`array::entity::sever_entry_holding`).
+    ///
+    /// # Safety
+    /// `at` addresses a word inside an entry of this table's storage.
+    #[inline]
+    pub(crate) unsafe fn entry_index_of(head: &StorageHead, at: usize) -> usize {
+        let base = Self::entries(head) as usize;
+        debug_assert!(at >= base, "the address is below the entry array");
+        let index = (at - base) / size_of::<Entry>();
+        debug_assert!(index < head.used(), "the address is past the entry array");
+        index
+    }
+
+    /// Sever the whole entry at `index`: hole its key, null its element
+    /// with the collision link kept, and hand both occupants to
+    /// `displaced` **without releasing them** — the caller owes whatever
+    /// drop its own protocol says, and the arena reset owes none
+    /// (`dev/DECISIONS.md`, "a sever takes the smallest unit its holder's
+    /// layout leaves consistent, and never lands on a counted edge").
+    ///
+    /// The entry is the unit because a key word has no null: below
+    /// [`KEY_SENTINEL_LIMIT`](crate::array::entry::KEY_SENTINEL_LIMIT) it
+    /// reads as an integer key rather than as a hole, so a key cannot be
+    /// emptied while its element stays. The live and hole counters move as
+    /// [`remove`](Self::remove) moves them.
+    ///
+    /// **Nothing moves and no chain is relinked**, unlike `remove`: this
+    /// runs from inside a walk of the entry array, and the index the walk
+    /// stands at has to stay the entry it was. The entry keeps its link
+    /// and every chain through it stays walkable, a hole matching no key.
+    ///
+    /// # Safety
+    /// `head` is this table's and `index` is below its used count.
+    pub(crate) unsafe fn sever_entry(
+        &mut self,
+        head: &StorageHead,
+        index: usize,
+        displaced: &mut dyn FnMut(*mut RcHeader),
+    ) {
+        let entry = self.entry(head, index);
+        if entry.is_hole() {
+            return;
+        }
+
+        let value = entry.value();
+        let key = entry.string_key();
+        let at = Self::entry_ptr(head, index);
+        unsafe {
+            Entry::store_element(at, Value::null());
+            Entry::make_hole(at);
+        }
+
+        self.live -= 1;
+        self.holes += 1;
+        if value.is_refcounted() {
+            displaced(value.entity_ptr());
+        }
+
+        if !key.is_null() {
+            displaced(key as *mut RcHeader);
+        }
+    }
+
     /// Sever every live entry: null its element, drop its key, and
     /// collect both into `displaced` — **without releasing them**. The
     /// array's half of a cycle teardown's "sever and free"

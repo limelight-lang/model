@@ -211,11 +211,12 @@ unsafe fn close_move(base: *mut u8) {
     unsafe { store_version(base, closed, Ordering::Release) };
 }
 
-/// The group, whose four members are the whole of what a class owes for
+/// The group, whose five members are the whole of what a class owes for
 /// cells the runs cannot describe.
 static GROUP: OutsideCells = OutsideCells {
     walk_plain,
     sever,
+    sever_one,
     free,
     carry,
 };
@@ -241,10 +242,33 @@ unsafe fn sever(entity: *mut RcHeader, displaced: &mut dyn FnMut(*mut RcHeader))
 
     unsafe {
         yield_cells::<PlainCells>(block, &mut |cell| {
-            crate::cells::empty_cell(cell);
+            empty(cell);
             displaced(cell.child);
         })
     };
+}
+
+/// One cell of the block, for the arena reset's per-cell sever. The cells
+/// around it keep what they hold, which is what the reset's count of a
+/// survivor's remaining children then reads.
+unsafe fn sever_one(entity: *mut RcHeader, cell: Cell, displaced: &mut dyn FnMut(*mut RcHeader)) {
+    let block = unsafe { block_at::<PlainCells>(entity as *mut u8) } as usize;
+    debug_assert!(
+        cell.addr >= block && cell.addr < block + BLOCK_SIZE,
+        "the cell is not this instance's"
+    );
+    unsafe { empty(cell) };
+    displaced(cell.child);
+}
+
+/// Empty one cell of the block. A cell here is a whole `Value` with
+/// nothing kept in its reserved bytes, so the barrier's own `Value` store
+/// is the writer; `cells::empty_cell` refuses the shape, which says only
+/// that the layout is the class's to know.
+unsafe fn empty(cell: Cell) {
+    unsafe {
+        crate::memory::barrier::write_value_slot(cell.addr as *mut Value, Value::null());
+    }
 }
 
 /// Give the block back. The slot is nulled first: this runs from the

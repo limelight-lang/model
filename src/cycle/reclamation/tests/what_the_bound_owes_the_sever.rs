@@ -26,6 +26,7 @@ static OUTSIDE_OCCUPANT: AtomicUsize = AtomicUsize::new(0);
 static SEVERS_MORE_THAN_IT_WALKS: OutsideCells = OutsideCells {
     walk_plain: yields_nothing,
     sever: hands_one_over,
+    sever_one: severs_nothing,
     free: frees_nothing,
     carry: carries_nothing,
 };
@@ -34,11 +35,21 @@ static SEVERS_MORE_THAN_IT_WALKS: OutsideCells = OutsideCells {
 static WALKS_MORE_THAN_IT_SEVERS: OutsideCells = OutsideCells {
     walk_plain: yields_the_occupant,
     sever: hands_nothing_over,
+    sever_one: severs_nothing,
     free: frees_nothing,
     carry: carries_nothing,
 };
 
 unsafe fn yields_nothing(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) {}
+
+/// No case here reaches the per-cell sever: these two groups are read by
+/// the teardown's whole-entity bound, which calls `sever` alone.
+unsafe fn severs_nothing(
+    _: *mut crate::refcount::RcHeader,
+    _: Cell,
+    _: &mut dyn FnMut(*mut crate::refcount::RcHeader),
+) {
+}
 
 /// Yields the occupant as a Box cell of the instance's second property, which
 /// is a cell the body stride has already yielded — the address is what a walk

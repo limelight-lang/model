@@ -19,6 +19,7 @@ use crate::cells::OutsideCells;
 static PROBE: OutsideCells = OutsideCells {
     walk_plain: probe_walk,
     sever: probe_sever,
+    sever_one: probe_sever_one,
     free: probe_free,
     carry: probe_carry,
 };
@@ -27,6 +28,13 @@ unsafe fn probe_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) {}
 
 unsafe fn probe_sever(
     _: *mut crate::refcount::RcHeader,
+    _: &mut dyn FnMut(*mut crate::refcount::RcHeader),
+) {
+}
+
+unsafe fn probe_sever_one(
+    _: *mut crate::refcount::RcHeader,
+    _: Cell,
     _: &mut dyn FnMut(*mut crate::refcount::RcHeader),
 ) {
 }
@@ -200,6 +208,7 @@ static FREED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0
 static COUNTING: OutsideCells = OutsideCells {
     walk_plain: probe_walk,
     sever: probe_sever,
+    sever_one: probe_sever_one,
     free: counting_free,
     carry: probe_carry,
 };

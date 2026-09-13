@@ -41,10 +41,12 @@ struct LogSegment {
 
 #[cfg(test)]
 thread_local! {
-    /// While set, the arena records no survivor, which is how a test
-    /// reaches the sever without filling an arena.
-    static REFUSE_SURVIVOR_SEGMENTS: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
+    /// How many survivors the arena still records before it refuses every
+    /// one after them; `None` while no guard is armed. A count rather than
+    /// a flag, because the holder whose layout a sever is measured over is
+    /// itself a survivor the chain has to admit first.
+    static REFUSE_SURVIVOR_SEGMENTS: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Refuse every survivor a reset tries to record on this thread, for the
@@ -58,7 +60,16 @@ pub(crate) struct RefusedSurvivorSegments(());
 #[cfg(test)]
 impl RefusedSurvivorSegments {
     pub(crate) fn arm() -> Self {
-        REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.set(true));
+        Self::after(0)
+    }
+
+    /// Record `admitted` survivors and refuse every one after them, so
+    /// that a case can put the refusal on a child of a holder rather than
+    /// on the holder itself. The holder a layout-specific sever is
+    /// measured over — an array, an object with a block — is reached as a
+    /// child of the escapee and is admitted by the chain like any other.
+    pub(crate) fn after(admitted: usize) -> Self {
+        REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.set(Some(admitted)));
         RefusedSurvivorSegments(())
     }
 }
@@ -66,7 +77,7 @@ impl RefusedSurvivorSegments {
 #[cfg(test)]
 impl Drop for RefusedSurvivorSegments {
     fn drop(&mut self) {
-        REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.set(false));
+        REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.set(None));
     }
 }
 
@@ -755,8 +766,12 @@ impl Arena {
         // pool would take an arena full of survivors and would still leave
         // open which of the reset's draws was the one refused.
         #[cfg(test)]
-        if REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.get()) {
-            return false;
+        if let Some(left) = REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.get()) {
+            if left == 0 {
+                return false;
+            }
+
+            REFUSE_SURVIVOR_SEGMENTS.with(|cell| cell.set(Some(left - 1)));
         }
 
         self.log_push(Log::Survivors, survivor as usize)

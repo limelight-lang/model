@@ -1218,6 +1218,36 @@ pub unsafe fn release_children(a: *mut LLArray) {
     };
 }
 
+/// Sever the one ordered-hash entry the word at `key_at` belongs to,
+/// handing its element and its string key to `displaced` without
+/// releasing either. The single-cell counterpart of
+/// [`sever_counted_children`], for a caller that refused one child and
+/// owes that child's edge alone (`promote::arena_reset_full`).
+///
+/// **The entry is the unit rather than the key word**, because a key word
+/// has no null: the writer that would empty it in place leaves an integer
+/// key behind (`crate::array::entry`, the key word's encoding). What the
+/// caller loses with it is the element beside the key, which arrives at
+/// `displaced` as the entry's second occupant.
+///
+/// # Safety
+/// `a` is a live array in the ordered hash, and `key_at` is the address of
+/// a key word the tracer yielded for it.
+pub(crate) unsafe fn sever_entry_holding(
+    a: *mut LLArray,
+    key_at: usize,
+    displaced: &mut dyn FnMut(*mut RcHeader),
+) {
+    debug_assert_eq!(
+        unsafe { (*a).head.tag() },
+        StorageTag::Hash,
+        "a key word belongs to the ordered hash alone"
+    );
+    let (table, head) = unsafe { as_table_mut(a) };
+    let index = unsafe { crate::array::table::Table::entry_index_of(head, key_at) };
+    unsafe { table.sever_entry(head, index, displaced) };
+}
+
 /// Sever this array's counted children — every element, and under the
 /// ordered hash every string key beside them — collecting them into
 /// `displaced` without releasing them. The array's arm of a cycle

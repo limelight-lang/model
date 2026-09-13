@@ -174,7 +174,10 @@ fn a_detached_log_nobody_walks_is_reported() {
     let mut arena = Arena::new();
     // Never dereferenced: the log stores the word and only a walk reads
     // it, which is the thing this test declines to do.
-    arena.track_destructor(std::ptr::dangling_mut());
+    assert!(
+        arena.track_destructor(std::ptr::dangling_mut()),
+        "the log refused the one record this test hands over"
+    );
     drop(arena.take_destructors());
 }
 
