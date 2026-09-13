@@ -13,8 +13,8 @@ in the specification rather than in this crate.
 
 Updated: 2026-09-13 · Active: S47, whose Critic round of 2026-09-13 took the
 breakdown of 2026-09-12 from five steps to eight, Edmond agreeing the new
-structure the same day (`dev/plans/S47.md`); S47.0 through S47.4 and S47.8 closed on
-2026-09-13, three of them on Sage rulings, and the work continues at S47.5.
+structure the same day (`dev/plans/S47.md`); S47.0 through S47.5 and S47.8 closed on
+2026-09-13, three of them on Sage rulings, and the work continues at S47.6.
 S36's one open step is S36.9, which
 closes on a deny run over a reset inside a collection that `promote`'s own
 containers (S47) still fail; S36.17 closed on 2026-09-12 with the window's
@@ -3659,38 +3659,32 @@ unsound rather than dear.
         header word at the moment the reset pins it, and the loop past
         `finish_reset` spends each of those pins by walking that chain
       tier: T2 · role: Critic
-      handoff: the word is `BlockCollector::reset_pins`, cleared with the
-        rest of the line at retention; zero says "on no chain" and answers
-        "already pinned by this reset" as the set did, and the tail carries
-        a sentinel, an address never being 1. The pin the criterion means is
-        the one the reset holds for itself over a payload it could not carry
-        — a survivor list's pin is the list's, and `release_emptied` spends
-        it. The walk must stay below `place_survivor_lists`: `register`
-        answers false for a chain member only because the reset's hold is
-        still on it. `take_pins_spent` is the probe, one pin for two
-        payloads in one block. Verified: 920 plain three times,
-        `debug-journal` 925 three times, `hash-folding` 920, release 915,
-        `fmt --check` under +1.94, `cargo bench --no-run`, `citations.py`
-        559 with the same six residues, `--list` one test longer. Miri at
-        two threads: `the_memory_a_survivor_takes_with_it` 14/0 in
-        5 m 39 s.
-- [ ] S47.5 The emptied blocks and the placed lists chain through the block
+      handoff: `2f0ebf7` — the word is `BlockCollector::reset_pins`, whose
+        zero says "on no chain" and answers "already pinned by this reset";
+        the walk stays below `place_survivor_lists`, and `take_pins_spent`
+        is the probe.
+- [x] S47.5 The emptied blocks and the placed lists chain through the block
       done: `emptied` and `place_survivor_lists`' `placed` are gone — an
         emptied block links through a named word of the collector line, a
         placed block's list address stands in a second such word between the
         two passes and is published only by `register` as before, and the step
         shows neither word has a reader while the links are live
       tier: T2 · role: Critic
-      note: the collector line has **sixteen bytes left** — its fields sum
-        to 48 of the 64 the const assert at `memory::heap` allows, and a
-        49th byte makes the struct 128 and the line overflow the block's
-        header. So S47.5 and S47.6 together may add two words, not four.
-        The Critic of 2026-09-13 names the way out: a block is never on the
-        pin chain and the emptied chain at the same instant — the walk
-        reads its pin link out at the moment it would join the emptied one
-        — so one word carries both with the phase written on the field.
-        There is also a spare four-byte hole at +36 for anything that can
-        be an index rather than an address.
+      handoff: three words of the collector line are the reset's own —
+        `reset_pins`, `emptied_chain` and `placed_list` — and they fill the
+        line exactly, the header's six fields taking the other 40 bytes.
+        A block is on at most one chain: `register` reports a block empty
+        only when nothing holds it, and a pinned block still carries the
+        reset's own hold. `RefusedListPlacement` injects the refused
+        placement the pool would otherwise have to produce.
+        `who_may_touch_the_resets_words` reads the sources and names the
+        files allowed to reach the three words and the line's own clearing;
+        it was seen red on a planted caller. Verified: 922 plain six times,
+        `debug-journal` 927 three times, `hash-folding` 922, release 917,
+        `fmt --check` under +1.94, `cargo bench --no-run`, `citations.py`
+        559 with the same six residues. Miri at two threads:
+        `where_a_survivor_list_is_placed` 5/0 in 17 s wall,
+        `the_reset_reads_no_zero_count_member` 12/0 in 5 m 56 s.
 - [ ] S47.6 The grouping without `by_block`
       done: `by_block` is gone and the grouping draws nothing — promotion
         partitions a survivor that had a block of its own out of the chain at
@@ -3700,9 +3694,15 @@ unsound rather than dear.
         collector line; the step names the sort's algorithm and measures it
         against the `HashMap` it replaces on the fixpoint cases
       tier: T2 · role: Critic
-      note: its "two words per retained block on the cleared collector
-        line" spends the budget S47.5's note names — read that one before
-        adding a field.
+      note: the collector line is **full** — three of its words are the
+        reset's own and the header's six fields take the rest of the 64 the
+        const assert at `memory::heap` allows, so its "two words per
+        retained block on the cleared collector line" has nowhere to go as
+        new fields. What is left is the four-byte hole at +36 for anything
+        that can be an index rather than an address, and reuse: the sort's
+        scratch is live during the grouping, which is before
+        `place_survivor_lists` writes `placed_list` and before any block
+        joins the emptied chain.
 - [ ] S47.7 The COW rows without a `HashMap`
       done: `settled` and `cow_at_promotion` are gone — `at` is one more
         record kind in the window's log, the capture is draw-free or a refused

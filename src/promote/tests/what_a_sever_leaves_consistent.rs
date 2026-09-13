@@ -20,25 +20,26 @@ use super::*;
 use crate::array::table::Key;
 use crate::memory::arena::RefusedSurvivorSegments;
 
-/// Bytes whose slot agrees with `with`'s under `mask`, found by search
-/// because a string's slot is its own hash under a per-process seed and
-/// cannot be chosen — the same search `array::entity`'s copy tests make
-/// for the integer families they need. A fresh table is neither reseeded
-/// nor strong, so the derivation is `hash::hash_bytes` itself and a
-/// candidate costs no entity.
-fn bytes_sharing_a_slot_with(with: &[u8], mask: u64) -> Vec<u8> {
-    let target = crate::hash::hash_bytes(with) & mask;
+/// Bytes whose slot under `mask` `accept` takes, found by search because a
+/// string's slot is its own hash under a per-process seed and cannot be
+/// chosen — the same search `array::entity`'s copy tests make for the
+/// integer families they need. A fresh table is neither reseeded nor
+/// strong, so the derivation is `hash::hash_bytes` itself and a candidate
+/// costs no entity.
+///
+/// Both a key that shares a bucket and one that avoids it are searched
+/// for: a third key in the same bucket would make the chain three long,
+/// which is a different fixture and, left to the seed, a fixture that
+/// changes from run to run.
+fn bytes_whose_slot(mask: u64, accept: impl Fn(u64) -> bool) -> Vec<u8> {
     for i in 0..100_000u32 {
         let candidate = format!("key{i}").into_bytes();
-        if crate::hash::hash_bytes(&candidate) & mask == target {
+        if accept(crate::hash::hash_bytes(&candidate) & mask) {
             return candidate;
         }
     }
 
-    panic!(
-        "no candidate of 100000 shares a slot of {} with the key",
-        mask + 1
-    );
+    panic!("no candidate of 100000 lands where this fixture needs it");
 }
 
 /// A refused element leaves the entry live with a null value, and leaves
@@ -173,17 +174,20 @@ fn a_refused_string_key_holes_the_whole_entry() {
     let array = unsafe { crate::array::testing::hash_array(MemoryCategory::RequestArena) };
     let alpha =
         unsafe { crate::string::ll_string_new(context_ptr, MemoryCategory::GcHeap, b"alpha") };
-    let beta =
-        unsafe { crate::string::ll_string_new(context_ptr, MemoryCategory::GcHeap, b"beta") };
 
-    let gone = unsafe {
+    let (gone, beta) = unsafe {
         // The first insert is what gives the table its storage, so the
         // slot count the search agrees on is read after it.
         crate::array::testing::insert(array, Key::Str(alpha), Value::int(1))
             .expect("the table refused a key");
         let mask = crate::array::entity::as_table(array).1.nslots() as u64 - 1;
-        let colliding = bytes_sharing_a_slot_with(b"alpha", mask);
-        crate::string::ll_string_new(context_ptr, MemoryCategory::RequestArena, &colliding)
+        let shared = crate::hash::hash_bytes(b"alpha") & mask;
+        let colliding = bytes_whose_slot(mask, |slot| slot == shared);
+        let apart = bytes_whose_slot(mask, |slot| slot != shared);
+        (
+            crate::string::ll_string_new(context_ptr, MemoryCategory::RequestArena, &colliding),
+            crate::string::ll_string_new(context_ptr, MemoryCategory::GcHeap, &apart),
+        )
     };
 
     unsafe {

@@ -322,26 +322,55 @@ struct BlockCollector {
     /// The length of `survivors`, which is a retained block's index space.
     /// Published by the release store of `survivors`.
     survivor_count: AtomicU32,
-    /// The next block on the chain of blocks an arena reset has pinned for
-    /// a window of its own, or [`RESET_PIN_END`] at the tail; zero while
-    /// this block is on no such chain, which is also what says the reset
-    /// has not pinned it yet (`promote::arena_reset_full`).
+    /// The next block on the chain of blocks this arena reset has pinned
+    /// for a payload it could not carry out, or [`RESET_CHAIN_END`] at the
+    /// tail; zero while the block is on no such chain, which is also what
+    /// says the reset has not pinned it yet (`promote::arena_reset_full`).
     ///
     /// **Read and written by `promote::arena_reset_full` alone**, between
     /// the retention that clears this line and the walk past
-    /// `finish_reset` that spends every pin on the chain. That is the
-    /// whole of what keeps it private: the reset window is a thread-local,
-    /// so another thread's collection may well be reading this block's
-    /// line at the same time — what it writes there is `shadow`, and the
-    /// frees that reach the block write `holds`. A block whose pin is
-    /// spent leaves the chain with this word nulled before it can go home.
+    /// `finish_reset` that spends every pin. That is the whole of what
+    /// keeps it private: the reset window is a thread-local, so another
+    /// thread's collection may well be reading this block's line at the
+    /// same time — what it writes there is `shadow`, and the frees that
+    /// reach the block write `holds`.
     reset_pins: AtomicUsize,
+    /// The next block on the chain of blocks this reset owes the pool, or
+    /// [`RESET_CHAIN_END`] at the tail; zero while the block is on no such
+    /// chain.
+    ///
+    /// **A word of its own rather than the pin chain's**, though no block
+    /// is ever on both: `register` reports a block empty only when nothing
+    /// holds it, and a pinned block still carries the reset's own hold. A
+    /// second meaning in one word would make that argument load-bearing —
+    /// the two predicates "the reset pinned this block" and "the reset
+    /// owes this block to the pool" would be one non-zero, and neither
+    /// could be asserted on its own. The line has the room: three words
+    /// and the header's own six fill it exactly.
+    emptied_chain: AtomicUsize,
+    /// This block's survivor list between the pass that places it and the
+    /// pass that publishes it, or zero. A null list — the placement the
+    /// arena refused — is written as [`PLACED_LIST_NONE`], so that zero
+    /// keeps meaning "this block is not in the pass".
+    ///
+    /// **`survivors` cannot hold it**: publishing the address there is
+    /// what makes the list readable, and the whole reason the two passes
+    /// are split is that no block may publish before every list is placed
+    /// (`promote::place_survivor_lists`). Read and written by the reset
+    /// alone, between the two passes, and cleared by the read.
+    placed_list: AtomicUsize,
 }
 
-/// The tail of a reset's pin chain. Not zero, because zero is what says a
+/// The tail of a reset's chain. Not zero, because zero is what says a
 /// block is on no chain, and not an address, because a block header is
 /// 64 KiB-aligned and one is never 1.
-pub(crate) const RESET_PIN_END: usize = 1;
+pub(crate) const RESET_CHAIN_END: usize = 1;
+
+/// A placement the arena refused, written where an address would stand.
+/// Zero is "not in the pass", and a refused placement is a state the
+/// second pass has to see rather than skip: it publishes the count without
+/// a list (`memory::retained::register`).
+pub(crate) const PLACED_LIST_NONE: usize = 1;
 
 /// Where a block's collector line begins: immediately past the header,
 /// which is 192 bytes today because [`BlockRemote`] aligns the header to
@@ -2476,11 +2505,13 @@ pub(crate) unsafe fn clear_collector_line(block: *mut u8) {
         (*line).holds.store(0, Ordering::Relaxed);
         (*line).survivor_count.store(0, Ordering::Relaxed);
         (*line).reset_pins.store(0, Ordering::Relaxed);
+        (*line).emptied_chain.store(0, Ordering::Relaxed);
+        (*line).placed_list.store(0, Ordering::Relaxed);
     }
 }
 
-/// Where `block` stands on the reset's pin chain: zero while the reset has
-/// not pinned it, another block's address or [`RESET_PIN_END`] once it has
+/// Where `block` stands on the reset's pin chain: zero while it is on
+/// none, another block's address or [`RESET_CHAIN_END`] once it is on it
 /// ([`BlockCollector::reset_pins`]).
 ///
 /// # Safety
@@ -2502,6 +2533,65 @@ pub(crate) unsafe fn block_reset_pin(block: *mut u8) -> usize {
 pub(crate) unsafe fn set_block_reset_pin(block: *mut u8, next: usize) {
     let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
     unsafe { (*line).reset_pins.store(next, Ordering::Relaxed) };
+}
+
+/// Where `block` stands on the chain of blocks the reset owes the pool
+/// ([`BlockCollector::emptied_chain`]).
+///
+/// # Safety
+/// As [`block_reset_pin`].
+#[inline]
+pub(crate) unsafe fn block_emptied_chain(block: *mut u8) -> usize {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*line).emptied_chain.load(Ordering::Relaxed) }
+}
+
+/// Put `block` on the chain of blocks the reset owes the pool behind
+/// `next`, or take it off with zero.
+///
+/// # Safety
+/// As [`block_reset_pin`].
+#[inline]
+pub(crate) unsafe fn set_block_emptied_chain(block: *mut u8, next: usize) {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    unsafe { (*line).emptied_chain.store(next, Ordering::Relaxed) };
+}
+
+/// Write `block`'s survivor list where the second pass of the placement
+/// will read it: its address, or [`PLACED_LIST_NONE`] for a placement the
+/// arena refused ([`BlockCollector::placed_list`]).
+///
+/// # Safety
+/// As [`block_reset_chain`].
+#[inline]
+pub(crate) unsafe fn set_block_placed_list(block: *mut u8, list: usize) {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    debug_assert!(list != 0, "a placed list is an address or PLACED_LIST_NONE");
+    unsafe { (*line).placed_list.store(list, Ordering::Relaxed) };
+}
+
+/// Take the list back, clearing the word: the address, or null for a
+/// refused placement. Zero would mean the block was never in the pass,
+/// which is a caller's error.
+///
+/// # Safety
+/// As [`block_reset_chain`].
+#[inline]
+pub(crate) unsafe fn take_block_placed_list(block: *mut u8) -> *mut usize {
+    let line = unsafe { block_collector(block as *mut HeapBlockHeader) };
+    let placed = unsafe { (*line).placed_list.swap(0, Ordering::Relaxed) };
+    debug_assert!(placed != 0, "the block was not in the placement pass");
+    // Zero and the sentinel take the same arm on purpose: a block the
+    // first pass somehow missed then publishes its count without a list,
+    // which is what a refused placement does, rather than reading
+    // `occupants.len()` words out of address zero. The assert above is
+    // where that mistake is reported; this is what it costs when it is
+    // not.
+    if placed == 0 || placed == PLACED_LIST_NONE {
+        std::ptr::null_mut()
+    } else {
+        placed as *mut usize
+    }
 }
 
 /// A retained block's survivor list and its length: `(null, 0)` while

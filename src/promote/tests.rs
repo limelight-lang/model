@@ -24,4 +24,5 @@ mod the_reset_reads_no_zero_count_member;
 mod what_a_destructor_does_during_the_fixpoint;
 mod what_a_sever_leaves_consistent;
 mod where_a_survivor_list_is_placed;
+mod who_may_touch_the_resets_words;
 mod who_survives_a_reset;

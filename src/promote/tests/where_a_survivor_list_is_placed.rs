@@ -347,3 +347,73 @@ fn a_holder_emptied_inside_the_reset_is_read_after_the_list_placed_in_it() {
         );
     }
 }
+
+/// A placement the arena refuses publishes the count without a list. The
+/// block stays retained and is found only by its occupants' deaths, which
+/// is what `retained::register` answers for a null list — and the survivor
+/// it holds is promoted like any other.
+///
+/// **The refusal is injected**, because the only other way to it is a pool
+/// with nothing left in it: three branches stand on this arm — the
+/// sentinel the placing pass writes where an address would go, its reading
+/// by the publishing pass, and `register`'s own null arm — and under a
+/// real exhaustion all three would run for the first time together.
+#[test]
+fn a_refused_placement_publishes_the_count_without_a_list() {
+    use crate::memory::arena::RefusedListPlacement;
+    let _g = crate::memory::block_pool::test_guard();
+    let holder_cls = ClassBuilder::new("RefusedListCache")
+        .prop("last", true)
+        .build();
+    let cls = ClassBuilder::new("RefusedListSurvivor")
+        .prop("x", true)
+        .build();
+
+    let mut arena = Arena::new();
+    let arena_ptr: *mut Arena = &mut arena;
+    let mut context = LLContext { arena: arena_ptr };
+    let context_ptr: *mut LLContext = &mut context;
+
+    let holder = unsafe { new_constructed(&mut *context_ptr, holder_cls, MemoryCategory::GcHeap) };
+    let obj = unsafe { new_constructed(&mut *context_ptr, cls, MemoryCategory::RequestArena) };
+    unsafe { store_prop(arena_ptr, holder, 16, obj) };
+    let block = BlockHeader::of_ptr(obj as *const u8) as usize;
+
+    {
+        let _refused = RefusedListPlacement::arm();
+        unsafe { arena_reset_full(&mut *arena_ptr) };
+    }
+
+    unsafe {
+        assert_eq!(
+            crate::refcount::entity_category(obj),
+            MemoryCategory::GcHeap,
+            "the survivor was not promoted"
+        );
+        assert_eq!(
+            crate::memory::heap::block_survivor_list(block as *mut u8),
+            (std::ptr::null(), 0),
+            "a list was published although the arena refused the memory for it"
+        );
+        assert_eq!(
+            crate::memory::retained::held_occupant_count(block),
+            1,
+            "the hold on the block went with the list it could not place"
+        );
+        assert_eq!(
+            crate::memory::retained::occupant_count(block),
+            None,
+            "a listless block answers no index, which is what a trace reads"
+        );
+
+        // The block still returns by its occupant's death, which is the
+        // whole of what a listless retained block can answer.
+        assert!(crate::refcount::ll_release(holder as *mut RcHeader));
+        ll_object_die(holder);
+        assert_eq!(
+            block_kind(block as *const u8),
+            crate::memory::block_pool::BLOCK_KIND_FREE,
+            "the block outlived the survivor it was retained for"
+        );
+    }
+}

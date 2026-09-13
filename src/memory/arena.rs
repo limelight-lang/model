@@ -49,6 +49,36 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// While set, the arena places no survivor list, which is how a test
+    /// reaches the refused-placement arm without exhausting the pool.
+    static REFUSE_LIST_PLACEMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Refuse every survivor list a reset tries to place on this thread, for
+/// the guard's life. The arm it reaches publishes a block's occupant count
+/// with no list, which leaves the block retained and reachable only by its
+/// deaths (`memory::retained::register`) — and it is otherwise reached
+/// only by a pool with nothing left in it.
+#[cfg(test)]
+pub(crate) struct RefusedListPlacement(());
+
+#[cfg(test)]
+impl RefusedListPlacement {
+    pub(crate) fn arm() -> Self {
+        REFUSE_LIST_PLACEMENT.with(|cell| cell.set(true));
+        RefusedListPlacement(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for RefusedListPlacement {
+    fn drop(&mut self) {
+        REFUSE_LIST_PLACEMENT.with(|cell| cell.set(false));
+    }
+}
+
 /// Refuse every survivor a reset tries to record on this thread, for the
 /// guard's life. The other five logs are untouched, so a case built with
 /// this armed still records its escapees, its destructors and its releases
@@ -446,6 +476,14 @@ impl Arena {
         block: *mut BlockHeader,
         size: usize,
     ) -> *mut u8 {
+        // Fault injection, tests only: the arm below is otherwise reached
+        // by a pool with nothing left in it, and three of the reset's
+        // branches stand on it.
+        #[cfg(test)]
+        if REFUSE_LIST_PLACEMENT.with(|cell| cell.get()) {
+            return std::ptr::null_mut();
+        }
+
         let size = round_up_8(size);
         let current = if self.limit.is_null() {
             std::ptr::null_mut()
