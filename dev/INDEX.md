@@ -543,7 +543,7 @@ versions live in `docs/history/`, marked at the top.
   the reset itself, after `finish_reset`, through a sentinel arm of
   `ll_free` that decrements nothing; and a payload freed **inside** the
   reset that pinned its block spends a pin the reset is still holding a
-  second count against, released through `retained::reset_pin_released`
+  second count against, released through `retained::hold_released`
   once occupant counts are established (`dev/DECISIONS.md`, "the reset
   holds a pin of its own, and releases it after the index is real"). The
   payload's free arrives through `buffer_arena::buffer_free_longlived_payload`,
@@ -579,10 +579,12 @@ versions live in `docs/history/`, marked at the top.
   member, and a refusal answers the bytes it left behind" — that refusal
   is `OutsideCarry::Pinned` now).
 - Weak references: `src/weak.rs` — the kind-11 weak cell, death
-  notification (`notify_death` / `notify_members` / `drain_arena_weak_log`)
+  notification (`notify_death` / `notify_member` / `drain_arena_weak_log`)
   and the `ll_weakref_create` / `ll_weakref_get` ABI. Notification sites
   live in `object.rs` (dispose phase 2, first act) and in arena reset;
-  `notify_members` is the cycle teardown's and has no caller until S36.3.
+  `notify_member` is the cycle teardown's, called from
+  `cycle::finalization` for every member of a condemned component before
+  any destructor runs.
   Design: `rfc/model/weak-references.md`, whose "The weak table: address →
   subscriber row" still writes the table as a `HashMap`.
 - The weak table itself: `src/weak/table.rs` — target address → subscriber
@@ -927,7 +929,8 @@ uncovered term is a gap rather than a local ruling".
 A stage whose section in `PLAN.md` would run past forty lines keeps its role
 lines and its reasoning in `dev/plans/S<n>.md` and its steps in the plan, and
 the file is deleted with the stage (rule 23.1.3). `dev/plans/S47.md` is the
-first, holding the Critic round that reshaped S47.
+first: the round that reshaped S47 into eight steps, the rounds and Sage
+rulings each step went through, and S47.6's own baseline and design.
 
 A comment that says a capability is absent names the `PLAN.md` step that
 builds it, and the commit deleting that stage sweeps the number out of
