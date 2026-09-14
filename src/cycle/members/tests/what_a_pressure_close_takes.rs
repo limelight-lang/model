@@ -210,7 +210,7 @@ fn a_nested_close_appends_nothing_to_a_standing_list() {
 /// it in production is a retained block whose survivor list no longer holds a
 /// row's position, and a debug build ends on `entity_at`'s assertion before
 /// the arm that answers `None` is reached
-/// (`crate::cycle::arena::InjectedHarvestFailure`).
+/// (`crate::cycle::arena::inject_harvest_failure`).
 #[test]
 fn a_harvest_that_unwinds_gives_up_its_records_and_still_sweeps() {
     let _g = test_guard();
@@ -226,7 +226,7 @@ fn a_harvest_that_unwinds_gives_up_its_records_and_still_sweeps() {
     assert_eq!(outcome, TraceOutcome::Complete);
     assert!(active.arm_harvest(MEMBER_CAPACITY), "the region was free");
 
-    let armed = crate::cycle::arena::InjectedHarvestFailure::arm();
+    let armed = crate::cycle::arena::inject_harvest_failure();
     let raised = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         drop(active);
     }));
@@ -242,9 +242,11 @@ fn a_harvest_that_unwinds_gives_up_its_records_and_still_sweeps() {
     }
 
     let standing = take_standing().expect("the harvest was armed");
-    assert!(
-        standing.overflowed(),
-        "a walk that did not finish is a reading short of the whole set"
+    assert_eq!(
+        standing.ending(),
+        HarvestEnding::Abandoned,
+        "a walk that did not finish is a reading short of the whole set, and \
+         not one a bound on the roots could complete"
     );
     assert!(standing.entities().is_empty());
 

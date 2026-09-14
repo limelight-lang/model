@@ -128,12 +128,14 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
     /// Sorted, and each name paired with whether its payload has drop
     /// glue — which is what decides where its first touch may happen.
     const DECLARED: &[(&str, bool)] = &[
+        ("ABANDON_NEXT_PUSH", false), // test-only const Cell, no drop glue
         ("ADMITTED", false),
         ("ALLOCATING", false),
         ("ARMED", false), // test-only const Cell, no drop glue
         ("BLOCKS", false),
         ("BLOCK_BUDGET", false),
         ("COLLECTING", false),
+        ("COLLECTION_ARMED", false),
         ("COUNTS", false),               // test-only const Cell, no drop glue
         ("COUNT_PRESSURE_ROOTS", false), // test-only const Cell, no drop glue
         ("CRITICAL", true),
@@ -143,10 +145,9 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("DISPATCHES_AT_DESCENT_BOUNDARY", false), // test-only const Cell, no drop glue
         ("DISPATCHES_AT_PHASE_BOUNDARY", false),
         ("DISPATCHES_IN_DESCENT", false), // test-only const Cell, no drop glue
-        ("DUE", false),
-        ("EARLY_RETIREMENT", false), // test-only const Cell, no destructor registration
-        ("EARLY_RETURNED_SLOTS", false), // test-only const Cell, no destructor registration
-        ("EDGES_PRUNED", false),     // test-only const Cell, no drop glue
+        ("EARLY_RETIREMENT", false),      // test-only const Cell, no destructor registration
+        ("EARLY_RETURNED_SLOTS", false),  // test-only const Cell, no destructor registration
+        ("EDGES_PRUNED", false),          // test-only const Cell, no drop glue
         ("EDGE_DISPATCHES", false),
         ("EXIT_GUARD", true),
         ("EXIT_PENDING", false),

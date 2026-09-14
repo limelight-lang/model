@@ -627,8 +627,8 @@ impl Table {
     /// The value under `key`, or `None`.
     ///
     /// **A copy, not a reference into the entry.** An entry keeps its
-    /// chain link inside the element's reserved bytes, so the Box has to
-    /// be handed out through `Entry::value`, which clears them
+    /// chain link in the upper bytes of the element's tag word, so the Box
+    /// has to be handed out through `Entry::value`, which clears them
     /// (`array/entry.rs`). The copy also means a caller holds no borrow of
     /// the table, so a value read before a `remove` names an entity the
     /// caller must have its own reference to.
@@ -863,16 +863,19 @@ impl Table {
                     unsafe { Entry::store_link(Self::entry_ptr(head, prev as usize), next) };
                 }
 
-                // The element goes first and the marker second: an
-                // `undef` element carries no edge, so a collector that
-                // reads between the two sees a live key over a value it
-                // will not follow, which is a missed edge and not one that
-                // never existed.
+                // The element goes first and the marker second: a null
+                // element carries no edge, so a collector that reads
+                // between the two sees a live key over a value it will not
+                // follow, which is a missed edge and not one that never
+                // existed. Null and not `undef`: the undef bit is confined
+                // to property slots (`rfc/model/values.md`, "ValueBox
+                // Layout"), and a hole's element is spelled the way the
+                // two severs spell theirs.
                 let at = Self::entry_ptr(head, i as usize);
                 let old = self.entry(head, i as usize).value();
                 let removed_key = self.entry(head, i as usize).string_key();
                 unsafe {
-                    Entry::store_element_and_link(at, Value::undef(), NONE);
+                    Entry::store_element_and_link(at, Value::null(), NONE);
                     Entry::make_hole(at);
                 }
 
@@ -1232,7 +1235,7 @@ impl Table {
 
         self.live -= 1;
         self.holes += 1;
-        if value.is_refcounted() {
+        if value.is_pointer() {
             displaced(value.entity_ptr());
         }
 
@@ -1274,9 +1277,10 @@ impl Table {
             let value = e.value();
             let key = e.string_key();
             // The table's own store rather than the barrier's: a barrier
-            // write publishes a whole Box, zeroed reserved bytes and all,
-            // which would set this entry's chain link to 0 — a legal entry
-            // index where the unlink needs an end of chain
+            // write publishes a whole Box, `(0, 0)` for a null, which
+            // would set this entry's chain link to 0 — a legal entry index
+            // where the unlink needs an end of chain — and leave a `+8`
+            // word the next link store would turn into a pointer
             // (`array/entry.rs`). One composed store keeps the word whole
             // for the collector.
             let at = Self::entry_ptr(head, i);
@@ -1285,7 +1289,7 @@ impl Table {
                 Entry::make_hole(at);
             }
 
-            if value.is_refcounted() {
+            if value.is_pointer() {
                 displaced(value.entity_ptr());
             }
 
@@ -1480,9 +1484,9 @@ impl Table {
     ///
     /// **By value in both directions.** A `&mut Value` into an entry would
     /// let a caller store a whole Box over the chain link the element's
-    /// reserved bytes carry, and zero is a legal entry index rather than
-    /// an end of chain, so the corruption would be a self-referencing
-    /// entry (`array/entry.rs`). Returning the new Box instead routes
+    /// tag word carries, and zero is a legal entry index rather than an
+    /// end of chain, so the corruption would be a self-referencing entry
+    /// (`array/entry.rs`). Returning the new Box instead routes
     /// every write through the one store that keeps the link.
     #[cfg(test)]
     pub fn for_each_value_mut(&mut self, head: &StorageHead, mut f: impl FnMut(Value) -> Value) {

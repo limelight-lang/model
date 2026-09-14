@@ -193,7 +193,7 @@ fn the_walk_and_the_sever_agree_over_an_array() {
     let kind = EntityKind::Array as u32;
     let entity = array as *mut RcHeader;
     let mut walked = 0;
-    unsafe { trace_cells::<crate::cells::PlainCells>(entity, kind, |_| walked += 1) };
+    unsafe { crate::cells::trace_cells::<crate::cells::PlainCells>(entity, kind, |_| walked += 1) };
     assert_eq!(
         walked,
         elements.len(),

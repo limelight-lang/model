@@ -23,24 +23,9 @@
 
 use super::*;
 use crate::cycle::queue::{
-    candidate_count, collect_lane_tokens, deferred_count, deferred_turnover_mirror, refill_spares,
+    candidate_count, deferred_count, deferred_turnover_mirror, refill_spares,
     release_queue_segments, spare_count,
 };
-
-/// Every token this thread's queue holds, sorted.
-fn lane_tokens() -> Vec<*mut RcHeader> {
-    let mut tokens = Vec::new();
-    collect_lane_tokens(&mut tokens);
-    tokens.sort_unstable();
-    tokens
-}
-
-/// `members` as the tokens a queue holding exactly them would yield.
-fn as_tokens(members: &[*mut Object]) -> Vec<*mut RcHeader> {
-    let mut tokens: Vec<*mut RcHeader> = members.iter().map(|&m| m as *mut RcHeader).collect();
-    tokens.sort_unstable();
-    tokens
-}
 
 /// A class with two counted Box properties, through which a case holds a ring
 /// and whatever else it wants to keep alive from outside.

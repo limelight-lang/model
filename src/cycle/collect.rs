@@ -52,6 +52,7 @@ use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
 use crate::cycle::finalization::{Finalization, Revalidated};
 use crate::cycle::maturation::stamp_live_components;
+use crate::cycle::members::HarvestEnding;
 use crate::cycle::members::MEMBER_CAPACITY;
 use crate::cycle::membership::Membership;
 use crate::cycle::reclamation::{DeferredReclamation, reclaim_before_drops};
@@ -152,21 +153,13 @@ struct CollectingThread {
 }
 
 impl CollectingThread {
-    /// Take the right, or answer why this thread may not collect.
-    ///
-    /// Three states refuse it. **A collection already running**, whose rows
-    /// and window a second one would take. **A teardown in flight**, which is
-    /// not a clean point: the dying object stands at count zero with its cells
-    /// still populated, and user code runs inside it
-    /// (`crate::object::teardown_depth`). And **a reset in flight**, which is
-    /// the third place this crate runs user destructors: between
-    /// `promote::retain_block` and `promote::place_survivor_lists` a promoted
-    /// survivor stands in a block stamped `BLOCK_KIND_RETAINED` with no
-    /// occupant list published, and `memory::retained::register` states the
-    /// rule that state breaks — "no trace may address it yet". A collection
-    /// there reads every such survivor as untracked and frees a member into
-    /// the reset window's absorb arm, which reports a teardown that returned
-    /// no memory (`memory::reset_window::absorbs_retained_free`).
+    /// Take the right, or answer why this thread may not collect: the three
+    /// inputs of [`gate`], read in its order. Why each of the three refuses is
+    /// `rfc/model/gc/rc-cycle.md`, "Check collection eligibility before
+    /// waiting"; what a collection inside a reset would do — read a promoted
+    /// survivor as untracked while its block stands stamped retained with no
+    /// occupant list published — is the rule `memory::retained::register`
+    /// states.
     fn take() -> Result<Self, GateClosed> {
         if let Some(closed) = gate() {
             return Err(closed);
@@ -198,9 +191,13 @@ thread_local! {
     /// the count harmless: the thread it left a count on is its own.
     static PRESSURE_COLLECTIONS: Cell<usize> = const { Cell::new(0) };
     /// Roots a pressure collection offered to a completed trace since the
-    /// last reading.  The S40.4 probe reads this beside its time, so a fast
-    /// empty lane cannot be mistaken for the cost of a refused allocation.
+    /// last reading. The refused-allocation probe reads this beside its time,
+    /// so a fast empty lane cannot be mistaken for the cost of a refused
+    /// allocation (`dev/BENCHMARKS.md`, "S40.4 a refused allocation repeats
+    /// the whole live candidate lane").
     static PRESSURE_ROOTS_TRACED: Cell<usize> = const { Cell::new(0) };
+    /// Whether the count above is taken: off by default, so the timed loop of
+    /// the same probe pays one flag read per round and nothing else.
     static COUNT_PRESSURE_ROOTS: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -338,27 +335,19 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
     // waits for a token it could not use (`rfc/model/gc/rc-cycle.md`,
     // "Check collection eligibility before waiting").
     let token = HeldToken::take();
-    let Some(mut window) = ActiveTrace::open() else {
-        return zero(Ending::NoWorkspace);
+    let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS) } {
+        Ok(traced) => traced,
+        Err(TraceRefusal::NoWorkspace) => return zero(Ending::NoWorkspace),
+        Err(TraceRefusal::EmptyLane) => return zero(Ending::EmptyLane),
+        Err(TraceRefusal::AllocationFailed) => return zero(Ending::TraceRefused),
     };
-
-    window.detach_candidates();
-    let (arena, batch) = window.rows_and_roots();
-    if batch.is_empty() {
-        return zero(Ending::EmptyLane);
-    }
-
-    let (outcome, roots) = unsafe { trace_batch(arena, batch, ALL_ROOTS) };
-    if outcome != TraceOutcome::Complete {
-        return zero(Ending::TraceRefused);
-    }
 
     // The scan has answered, and the right to trace ends here — before the
     // exact validation and before the first destructor. The rows outlive it:
     // what the release ends is the tracing, not the window
     // (`crate::cycle::token`).
     drop(token);
-    unsafe { note_scan_end(arena, roots) };
+    unsafe { note_scan_end(window.arena(), roots) };
 
     // The rows this trace wrote, read as the commit's membership. They stand
     // until the window's close sweeps them, which is after everything below.
@@ -371,7 +360,8 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
     let outcome = unsafe { commit(&members, window.arena()) };
     // Per root and not per batch: one trace answers about as many components
     // as its lane holds roots, and the three answers go three ways
-    // (`PLAN.md` S37.6).
+    // (`dev/DECISIONS.md`, "a queue root is the candidate bit, and the epoch is
+    // one reading per root").
     //
     // **The disposition is selected before the first mark is written.** The
     // pass it selects is the one that takes a mark off an entry again, so an
@@ -393,6 +383,45 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
         freed: outcome.freed,
         ending,
     }
+}
+
+/// The prologue both paths share: open the window, detach the lane, and trace
+/// the first `roots` roots of it. Answers the window, still open with its rows
+/// and its batch, and how many roots the trace read.
+///
+/// The token is the caller's: the poll path releases it at the scan's end and
+/// the pressure path holds it through the harvest, and neither takes it here.
+///
+/// # Safety
+/// As [`collect_off_the_poll`].
+unsafe fn open_and_trace(roots: usize) -> Result<(ActiveTrace, usize), TraceRefusal> {
+    let Some(mut window) = ActiveTrace::open() else {
+        return Err(TraceRefusal::NoWorkspace);
+    };
+
+    window.detach_candidates();
+    let (arena, batch) = window.rows_and_roots();
+    if batch.is_empty() {
+        return Err(TraceRefusal::EmptyLane);
+    }
+
+    let (outcome, traced) = unsafe { trace_batch(arena, batch, roots) };
+    if outcome != TraceOutcome::Complete {
+        return Err(TraceRefusal::AllocationFailed);
+    }
+
+    Ok((window, traced))
+}
+
+/// Why [`open_and_trace`] answered no window. Each leaves the heap as it was
+/// and every root registered: the window's drop merges the batch back.
+enum TraceRefusal {
+    /// The thread's workspace could not be had, on its first collection.
+    NoWorkspace,
+    /// The lane held no root at all.
+    EmptyLane,
+    /// An allocation path refused the trace.
+    AllocationFailed,
 }
 
 /// Hand the rows to the census at the scan's end, and do nothing at all
@@ -589,7 +618,10 @@ pub(crate) fn take_exit_residue() -> Option<ExitResidue> {
 /// be torn down ([`crate::cycle::members`]). So an overflow halves the roots
 /// and traces again, on the same graph and with the same registrations; at one
 /// root still overflowing, the collection ends and arms the thread, that
-/// component being past what this path can hold and the poll's to collect.
+/// component being past what this path can hold and the poll's to collect. A
+/// harvest the sweep abandoned — a row that named no entity — is not an
+/// overflow and is not halved: no bound on the roots cures it, so it ends the
+/// collection at once, armed.
 ///
 /// **A teardown that freed something under a bound is followed by another
 /// trace**, on the memory it just returned, because the roots the bound left
@@ -609,7 +641,15 @@ pub(crate) fn take_exit_residue() -> Option<ExitResidue> {
 ///
 /// **The entity allocation path starts one**, on the refusal that would
 /// otherwise be the caller's memory-exhausted
-/// ([`crate::memory::heap::entity_alloc`]). Completed candidate slots return
+/// ([`crate::memory::heap::entity_alloc`]), and starts one on every refusal:
+/// nothing remembers that the last one freed nothing, because a candidate can
+/// die between two refusals and this trace is what returns its slot
+/// (`dev/DECISIONS.md`, "do not cache an empty pressure collection"). Where
+/// the two paths part is the live root: the poll's collection defers a root
+/// its scan read live to the deferred lane for an epoch, and this one merges
+/// its batch back whole, so every refused allocation traces the live lane
+/// again — priced in `dev/BENCHMARKS.md`, "S40.4 a refused allocation repeats
+/// the whole live candidate lane". Completed candidate slots return
 /// after the standing membership ends, before another bounded round and before
 /// this function returns to the allocation retry.
 ///
@@ -619,27 +659,33 @@ pub(crate) fn take_exit_residue() -> Option<ExitResidue> {
 pub(crate) unsafe fn collect_under_pressure() -> usize {
     let _collecting = match CollectingThread::take() {
         Ok(collecting) => collecting,
-        // A refusal inside a teardown alone still returns what a completed
-        // death of the same cascade withheld: a slot that dies while a queue
-        // entry names it comes back only at a retirement, and every other
-        // retirement runs inside a collection — so without this one a
-        // destructor's allocation would be refused K times over up to K−1
-        // returnable slots. The retirement runs outside the collecting flag
-        // because it runs no user code, takes no window and reads no rows, so
-        // nothing inside it can reach a second collection; it passes over
-        // the dying object, whose slot reads no `DEAD_IN_PLACE` until the
-        // free at the end of its frame (`crate::cycle::queue::
-        // retire_candidates`). The other two refusals own their retirement:
-        // a running collection retires at its close, and a reset forbids
-        // one. And the thread is armed, because a refusal at depth says
-        // nothing about the garbage standing behind it; the next poll at a
-        // clean point is what reads that.
-        Err(GateClosed::Teardown) => {
-            unsafe { crate::cycle::queue::retire_candidates() };
+        Err(closed) => {
+            // A refusal inside a teardown alone still returns what a completed
+            // death of the same cascade withheld: a slot that dies while a
+            // queue entry names it comes back only at a retirement, and every
+            // other retirement runs inside a collection — so without this one
+            // a destructor's allocation would be refused K times over up to
+            // K−1 returnable slots. The retirement runs outside the collecting
+            // flag because it runs no user code, takes no window and reads no
+            // rows, so nothing inside it can reach a second collection; it
+            // passes over the dying object, whose slot reads no
+            // `DEAD_IN_PLACE` until the free at the end of its frame
+            // (`crate::cycle::queue::retire_candidates`). The other two
+            // refusals own their retirement: a running collection retires at
+            // its close, and a reset forbids one.
+            if closed == GateClosed::Teardown {
+                unsafe { crate::cycle::queue::retire_candidates() };
+            }
+
+            // Armed on every refusal, because a refusal at depth says nothing
+            // about the garbage standing behind it; the next poll at a clean
+            // point is what reads that. A reset and a running collection are
+            // no different here from a teardown: the allocation that was
+            // refused is answered memory-exhausted either way, and the arming
+            // is the one thing this call can leave for the poll.
             crate::gc::arm();
             return 0;
         }
-        Err(_) => return 0,
     };
 
     #[cfg(test)]
@@ -673,24 +719,39 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             });
         }
 
-        if standing.overflowed() {
-            // The list is empty after an overflow, so nothing is torn down and
-            // nothing is owed; the roots keep their registration and the next
-            // trace of this loop is over fewer of them.
-            let traced = standing.roots_traced;
-            drop(standing);
-            if traced <= 1 {
-                // One root reaches more than the region holds, so no bound
-                // makes this component fit. The poll's collection keeps its
-                // rows and has no region to overflow — though it does have
-                // blocks to be refused, and under the pressure that started
-                // this it may meet the same refusal.
+        match standing.ending() {
+            HarvestEnding::Complete => {}
+            HarvestEnding::Overflowed => {
+                // The list is empty after an overflow, so nothing is torn down
+                // and nothing is owed; the roots keep their registration and
+                // the next trace of this loop is over fewer of them.
+                let traced = standing.roots_traced;
+                drop(standing);
+                if traced <= 1 {
+                    // One root reaches more than the region holds, so no bound
+                    // makes this component fit. The poll's collection keeps
+                    // its rows and has no region to overflow — though it does
+                    // have blocks to be refused, and under the pressure that
+                    // started this it may meet the same refusal.
+                    crate::gc::arm();
+                    break;
+                }
+
+                roots = traced / 2;
+                continue;
+            }
+            HarvestEnding::Abandoned => {
+                // A row named no entity: a disagreement between an array and
+                // a retained block's survivor list, which every trace of this
+                // graph meets again. Halving would repeat the mark and scan
+                // log2(roots) times under the pressure that started this and
+                // end here anyway, so this ends at once; the poll's collection
+                // reads its rows as a membership and refuses the same reading
+                // whole (`crate::cycle::membership`).
+                drop(standing);
                 crate::gc::arm();
                 break;
             }
-
-            roots = traced / 2;
-            continue;
         }
 
         let mut taken = 0;
@@ -700,6 +761,10 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             // over the same workspace, which this thread holds whether or not
             // the pool has anything (`crate::cycle::reclamation`).
             let Some(mut arena) = TraceScratchArena::open() else {
+                // Not reachable past a thread's first collection, the
+                // workspace being the thread's; armed all the same, because
+                // the set in hand is proven garbage this path is leaving.
+                crate::gc::arm();
                 break;
             };
 
@@ -740,11 +805,12 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
 /// first `roots` roots of it, and close the window so that its sweep harvests
 /// the unreachable rows into the thread's member list.
 ///
-/// [`Traced::Nothing`] is the lane that holds nothing and the window that could
-/// not be opened; [`Traced::AllocationFailed`] is the trace an allocation path refused
-/// and the close that found no list armed. Each of them leaves the heap as it
-/// was and every root registered, and they are told apart because one says the
-/// lane is empty and the other says nothing about it at all.
+/// [`Traced::Nothing`] is the lane that holds nothing;
+/// [`Traced::AllocationFailed`] is the window that could not be opened, the
+/// trace an allocation path refused, and the region that could not be armed.
+/// Each of them leaves the heap as it was and every root registered, and they
+/// are told apart because one says the lane is empty and the other says
+/// nothing about it at all.
 ///
 /// The window is closed here rather than by the caller, which is what makes
 /// the blocks go back before the teardown reads the list.
@@ -756,20 +822,13 @@ unsafe fn trace_and_harvest(roots: usize) -> Traced {
     // the token covers; the guard drops with the frame, after
     // `close_and_take_batch`, and before the teardown the caller runs.
     let _token = HeldToken::take();
-    let Some(mut window) = ActiveTrace::open() else {
-        return Traced::AllocationFailed;
+    let (mut window, roots_traced) = match unsafe { open_and_trace(roots) } {
+        Ok(traced) => traced,
+        Err(TraceRefusal::EmptyLane) => return Traced::Nothing,
+        Err(TraceRefusal::NoWorkspace | TraceRefusal::AllocationFailed) => {
+            return Traced::AllocationFailed;
+        }
     };
-
-    window.detach_candidates();
-    let (arena, batch) = window.rows_and_roots();
-    if batch.is_empty() {
-        return Traced::Nothing;
-    }
-
-    let (outcome, roots_traced) = unsafe { trace_batch(arena, batch, roots) };
-    if outcome != TraceOutcome::Complete {
-        return Traced::AllocationFailed;
-    }
 
     // Armed after the trace answered and never before: a trace that gave up
     // leaves no colour that is a verdict, and a harvest of its rows would name
@@ -779,17 +838,16 @@ unsafe fn trace_and_harvest(roots: usize) -> Traced {
     }
 
     let batch = window.close_and_take_batch();
-    match crate::cycle::members::take_standing() {
-        Some(members) => Traced::Harvested(HarvestedMembers {
-            members: Some(members),
-            batch: Some(batch),
-            roots_traced,
-        }),
-        None => {
-            crate::cycle::queue::merge_candidates(batch);
-            Traced::AllocationFailed
-        }
-    }
+    // The arming answered true and nothing between it and the close runs user
+    // code or a second collection, so the list stands: a `None` here is the
+    // region's bookkeeping contradicting its own arming.
+    let members = crate::cycle::members::take_standing()
+        .expect("a harvest the window armed stands at its close");
+    Traced::Harvested(HarvestedMembers {
+        members: Some(members),
+        batch: Some(batch),
+        roots_traced,
+    })
 }
 
 /// What one trace of the pressure path answered.
@@ -816,9 +874,9 @@ struct HarvestedMembers {
 }
 
 impl HarvestedMembers {
-    /// Whether the trace met more unreachable entities than the region holds.
-    fn overflowed(&self) -> bool {
-        self.members().overflowed()
+    /// How the harvest ended ([`crate::cycle::members::HarvestEnding`]).
+    fn ending(&self) -> crate::cycle::members::HarvestEnding {
+        self.members().ending()
     }
 
     fn members(&self) -> &crate::cycle::members::StandingMembers {
@@ -829,6 +887,18 @@ impl HarvestedMembers {
 
     fn take_members(&mut self) -> crate::cycle::members::StandingMembers {
         self.members.take().expect("a harvested list commits once")
+    }
+
+    /// Merge the batch back into the active lane: the disposition of every
+    /// round but one, and what the drop does for a round that never chose.
+    fn restore_batch(&mut self) {
+        crate::cycle::queue::merge_candidates(self.take_batch());
+    }
+
+    /// Send the batch to the deferred lane, to wait out the epoch of the
+    /// reading that found it live.
+    fn defer_batch(&mut self, at_commits: u64) {
+        crate::cycle::queue::defer_candidates(self.take_batch(), at_commits);
     }
 
     fn take_batch(&mut self) -> crate::cycle::queue::InFlightBatch {
@@ -842,6 +912,19 @@ impl Drop for HarvestedMembers {
             crate::cycle::queue::merge_candidates(batch);
         }
     }
+}
+
+/// What [`commit`] answered about one membership.
+struct CommitOutcome {
+    /// Entities the teardown freed.
+    freed: usize,
+    /// The exact validation's first reading of the set.
+    initial: ValidationResult,
+    /// Commits closed process-wide as the reading itself saw them, which is
+    /// before this commit's own close counted one more. A batch that goes to
+    /// the deferred lane waits out the epoch of the reading that found it live,
+    /// not the epoch of the instant its window happens to close.
+    at_commits: u64,
 }
 
 /// Run the commit over one membership and answer how many entities it freed.
@@ -865,16 +948,6 @@ impl Drop for HarvestedMembers {
 /// Every member of `members` is an entity of this thread's GC heap whose slot
 /// is still its own, the membership is valid for the whole call, and the call
 /// runs on the owning thread with no mutator beside it.
-struct CommitOutcome {
-    freed: usize,
-    initial: ValidationResult,
-    /// Commits closed process-wide as the reading itself saw them, which is
-    /// before this commit's own close counted one more. A batch that goes to
-    /// the deferred lane waits out the epoch of the reading that found it live,
-    /// not the epoch of the instant its window happens to close.
-    at_commits: u64,
-}
-
 unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> CommitOutcome {
     let mut initial = ValidationResult::ZeroCountMember;
     let mut at_commits = 0;
@@ -912,35 +985,15 @@ unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> Com
 /// active lane whatever this one answered, because a root the deferred lane
 /// holds is a root no trace is offered until the turnover — and this path runs
 /// because the process is out of memory.
+///
+/// # Safety
+/// As [`commit`], over the membership `standing` holds; `arena` is a second
+/// arena over this thread's workspace, the trace's own having gone back.
 unsafe fn commit_under_pressure(
     standing: &mut HarvestedMembers,
     arena: &mut TraceScratchArena,
     whole_lane: bool,
 ) -> usize {
-    struct BatchOwner(Option<crate::cycle::queue::InFlightBatch>);
-    impl BatchOwner {
-        fn restore(&mut self) {
-            crate::cycle::queue::merge_candidates(
-                self.0.take().expect("one pressure batch disposition"),
-            );
-        }
-
-        fn defer(&mut self, at_commits: u64) {
-            crate::cycle::queue::defer_candidates(
-                self.0.take().expect("one pressure batch disposition"),
-                at_commits,
-            );
-        }
-    }
-    impl Drop for BatchOwner {
-        fn drop(&mut self) {
-            if let Some(batch) = self.0.take() {
-                crate::cycle::queue::merge_candidates(batch);
-            }
-        }
-    }
-
-    let mut batch = BatchOwner(Some(standing.take_batch()));
     let mut members = standing.take_members();
     let mut reading = None;
     let outcome = {
@@ -958,9 +1011,9 @@ unsafe fn commit_under_pressure(
     // membership still names them.
     match reading {
         Some((ValidationResult::ExternallyReferenced, at_commits)) if whole_lane => {
-            batch.defer(at_commits)
+            standing.defer_batch(at_commits)
         }
-        _ => batch.restore(),
+        _ => standing.restore_batch(),
     }
 
     drop(members);
@@ -985,7 +1038,15 @@ unsafe fn commit_under_pressure(
 }
 
 /// Run a commit through the completed member frees, leaving only its deferred
-/// external drops outstanding.
+/// external drops outstanding: the one function both paths commit through,
+/// and so the one place a commit opens exactly one finalization
+/// (`crate::cycle::finalization`). `initial_disposition` is handed the exact
+/// validation's first reading before any destructor runs; `None` is the
+/// teardown's reservation refusal, the set left whole with its guards off
+/// ([`reclaim_before_drops`]).
+///
+/// # Safety
+/// As [`commit`].
 unsafe fn commit_before_drops<'a>(
     members: &Membership<'_>,
     arena: &'a mut TraceScratchArena,
@@ -1125,10 +1186,14 @@ fn early_retirement_enabled() -> bool {
 
 #[cfg(test)]
 thread_local! {
-    /// The in-binary A/B arm of the early-retirement measurement (`dev/BENCHMARKS.md`, "early pressure retirement returns matching slots at one extra queue pass"). Production has no branch: it always takes
+    /// The in-binary A/B arm of the early-retirement measurement
+    /// (`dev/BENCHMARKS.md`, "early pressure retirement returns matching slots
+    /// at one extra queue pass"). Production has no branch: it always takes
     /// the early retirement. A measurement can restore the final-only
     /// placement without maintaining a second source tree.
     static EARLY_RETIREMENT: Cell<bool> = const { Cell::new(true) };
+    /// Slots the early retirement returned since the last reading, which is
+    /// what the measurement compares against the final-only arm.
     static EARLY_RETURNED_SLOTS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -1142,21 +1207,11 @@ fn take_early_returned_slots() -> usize {
     EARLY_RETURNED_SLOTS.with(|returned| returned.replace(0))
 }
 
+/// Hold this thread on the final-only retirement arm for the guard's life
+/// ([`crate::cycle::testing::ArmedInjection`]).
 #[cfg(test)]
-struct FinalOnlyRetirement(bool);
-
-#[cfg(test)]
-impl FinalOnlyRetirement {
-    fn take() -> Self {
-        Self(EARLY_RETIREMENT.with(|enabled| enabled.replace(false)))
-    }
-}
-
-#[cfg(test)]
-impl Drop for FinalOnlyRetirement {
-    fn drop(&mut self) {
-        EARLY_RETIREMENT.with(|enabled| enabled.set(self.0));
-    }
+fn final_only_retirement() -> crate::cycle::testing::ArmedInjection {
+    crate::cycle::testing::ArmedInjection::hold(&EARLY_RETIREMENT, false)
 }
 
 #[cfg(test)]

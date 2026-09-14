@@ -87,9 +87,11 @@
 //! learns the next address from the slot it is freeing, so the returns cannot
 //! overlap (`dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld
 //! chain" and "S44.4 the close against the chain").
-//! A thread exiting with its window still open ends the process, which is the
-//! one process end this module holds and has a reason of its own
-//! ([`dispose_thread_state`]).
+//! A thread exiting with its window still open ends the process
+//! ([`dispose_thread_state`]); the module's other assertions refuse a
+//! window misused by its own caller — a second trace on the thread, a second
+//! detach, a batch handed on twice — and every one of them stands in every
+//! build.
 //!
 //! The workspace's region enters no byte figure, being memory the thread
 //! holds whether or not a collection is running
@@ -653,29 +655,16 @@ thread_local! {
     static PANIC_IN_CLOSE: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Arm the injection for **one** close of this thread, and disarm it when this
-/// guard dies — including on the unwind the injected panic raises.
+/// Arm the injection for **one** close of this thread
+/// ([`crate::cycle::testing::ArmedInjection`]).
 ///
 /// What it stages is an unwind out of the close past the sweep: the rows are
 /// gone by then, so the withheld returns are made by the drop that runs behind
 /// it rather than abandoned (`dev/DECISIONS.md`, "the row sweep runs ahead of
 /// the candidate restore").
 #[cfg(test)]
-pub(crate) struct InjectedCloseUnwind;
-
-#[cfg(test)]
-impl InjectedCloseUnwind {
-    pub(crate) fn arm() -> Self {
-        PANIC_IN_CLOSE.with(|armed| armed.set(true));
-        Self
-    }
-}
-
-#[cfg(test)]
-impl Drop for InjectedCloseUnwind {
-    fn drop(&mut self) {
-        PANIC_IN_CLOSE.with(|armed| armed.set(false));
-    }
+pub(crate) fn inject_close_unwind() -> crate::cycle::testing::ArmedInjection {
+    crate::cycle::testing::ArmedInjection::arm(&PANIC_IN_CLOSE)
 }
 
 /// Raise the armed unwind and disarm it, and do nothing at all without

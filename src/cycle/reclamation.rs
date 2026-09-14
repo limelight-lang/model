@@ -8,13 +8,15 @@
 //! (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 6).
 //! A child inside the component is released where it is met — it stops at its
 //! own guard, every member carrying one until this call ends — and a child
-//! outside it is held in [`DeferredDrops`] until the frees are behind, because
+//! outside it is held in [`DeferredDrops`](crate::cycle::drops::DeferredDrops) until the frees are behind, because
 //! its release runs its destructor.
 //!
-//! The test-only `reclaim` wrapper drains them immediately. The pressure
-//! driver uses [`reclaim_before_drops`]: its linear answer holds those same
-//! references while the driver ends the membership and returns completed
-//! member slots, then the answer's drain runs the child destructors.
+//! [`reclaim_before_drops`] is the teardown, and [`DeferredReclamation`] is
+//! what it hands back: the queued children, held until the driver has ended
+//! the membership and, under pressure, returned the completed member slots —
+//! only then does its drain run the child destructors. Both production paths
+//! reach it through `cycle::collect`'s commit; the test-only `reclaim` is
+//! that call and the drain in one.
 //!
 //! # What a refusal costs, and where it is taken
 //!
@@ -24,8 +26,8 @@
 //! freed, and dropping a child inline is the one thing step 6 forbids. So the
 //! room for the whole component is taken **before the first cell is emptied**,
 //! and a component whose room is
-//! refused keeps every field it had: [`reclaim`] answers
-//! [`Reclaimed::AllocationFailed`], the guards come off through the counted
+//! refused keeps every field it had: [`reclaim_before_drops`] answers `None`,
+//! the guards come off through the counted
 //! release, and the members stand as floating garbage with their candidate bits
 //! up, which a later trace proposes again (`dev/DECISIONS.md`, "under memory
 //! starvation a collection ends itself and gives back everything, and each
@@ -54,7 +56,7 @@
 //! close finds is not the lane the detach emptied — which is why the close
 //! joins the two chains rather than writing one over the other
 //! (`cycle::queue::merge_candidates`). That is the design's own clause, "the
-//! releases the sever performs [being] non-final decrements", read from the
+//! releases the sever performs \[being\] non-final decrements", read from the
 //! side of the entries it produces (`rfc/model/gc/rc-cycle.md`,
 //! "Concurrency").
 //!
@@ -86,33 +88,24 @@
 //! every block back before the teardown, and what it hands over is a second
 //! arena opened over the same workspace.
 
-use crate::cells::{PlainCells, entity_kind, sever_cells, trace_cells};
+use crate::cells::{entity_kind, sever_cells};
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::finalization::{GuardedComponent, release_guards};
 use crate::cycle::membership::Membership;
 use crate::memory::barrier::drop_ref;
 use crate::refcount::{MemoryCategory, RcHeader, severed_edge_release};
 
-/// What [`reclaim`] did with one component.
+/// What [`reclaim`] did with one component: the two answers of
+/// [`reclaim_before_drops`], named.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg(test)]
 pub(crate) enum Reclaimed {
     /// Every member was severed, freed and un-guarded, and every displaced
     /// child outside the component was dropped.
     Freed,
-    /// The queue could not take the component's children, so no cell was
-    /// emptied: the members carry their true counts again, their fields as the
-    /// destructor pass left them, and their candidate bits stand.
-    ///
-    /// **A member whose guard was its last reference is freed all the same**,
-    /// inside the release that takes the guards off — the arm
-    /// [`Revalidated::ExternallyReferenced`](crate::cycle::finalization::Revalidated::ExternallyReferenced)
-    /// carries the same clause — so the caller's slice can name a freed entity
-    /// afterwards.
-    ///
-    /// The name is the trace's for the same event (`crate::cycle::mark`): both
-    /// allocation paths answered null, and what follows is the collection's own
-    /// end rather than the process's.
+    /// The reservation refusal, in the trace's name for the same event
+    /// (`crate::cycle::mark`): both allocation paths answered null, and what
+    /// follows is the collection's own end rather than the process's.
     AllocationFailed,
 }
 
@@ -151,32 +144,11 @@ impl Drop for DeferredReclamation<'_> {
     }
 }
 
-/// Tear one confirmed component down: sever its internal edges, free every
-/// member, then drop the children the sever displaced out of it.
-///
-/// `members` is the membership the revalidation answered about, in whichever
-/// of the two forms the path that produced it holds ([`Membership`]): the
-/// pressure path's harvested list, or the rows a collection off the poll keeps
-/// through its teardown (`rfc/model/gc/rc-cycle.md`, "When the arena goes back
-/// depends on why the collection ran"). It names freed entities when this
-/// returns [`Reclaimed::Freed`], and nothing may read it again.
-///
-/// `component` is that answer, and consuming it here is what states the
-/// teardown happened: this call is the only discharge of it that tears down
-/// (`GuardedComponent::guards_released`).
-///
-/// On [`Reclaimed::AllocationFailed`] the component keeps its edges and gets its
-/// true counts back, which is the state a component the revalidation reads as
-/// externally referenced is left in — a member the guard was the last reference
-/// of included, and that one is freed rather than kept.
+/// [`reclaim_before_drops`] and the drain in one call, for a case that has no
+/// between-phase work.
 ///
 /// # Safety
-/// Every member is an entity of this thread's GC heap carrying exactly one
-/// guard reference, named once in `members`, and `arena` is the collection's,
-/// live for the whole call. The call runs on the owning thread with no mutator
-/// beside it, and the caller reads no other component until it returns
-/// (`dev/DECISIONS.md`, "the revalidation of a component and its teardown are
-/// adjacent").
+/// As [`reclaim_before_drops`].
 #[cfg(test)]
 pub(crate) unsafe fn reclaim(
     component: GuardedComponent<'_>,
@@ -191,19 +163,40 @@ pub(crate) unsafe fn reclaim(
     Reclaimed::Freed
 }
 
-/// Complete a component's sever, frees and guard discharge, leaving only its
-/// external children held in the arena.
+/// Tear one confirmed component down — sever its internal edges, free every
+/// member, take the guards off — and hand back the children the sever
+/// displaced out of it, held for a drain the caller times.
 ///
-/// `None` is the reservation refusal. A returned value names no member and
-/// performs no further membership read; it is therefore safe for the caller
-/// to release the membership and retire completed candidate entries before
-/// draining the external children.
+/// `members` is the membership the revalidation answered about, in whichever
+/// of the two forms the path that produced it holds ([`Membership`]): the
+/// pressure path's harvested list, or the rows a collection off the poll keeps
+/// through its teardown (`rfc/model/gc/rc-cycle.md`, "When the arena goes back
+/// depends on why the collection ran"). When this returns a value the
+/// membership names freed entities, and nothing may read it again.
+///
+/// `component` is that answer, and consuming it here is what states the
+/// teardown happened: this call is the only discharge of it that tears down
+/// (`GuardedComponent::guards_released`).
+///
+/// **`None` is the reservation refusal**, answered before the first cell is
+/// emptied: the component keeps its edges and gets its true counts back, which
+/// is the state a component the revalidation reads as externally referenced is
+/// left in — and, as on that arm, a member whose guard was its last reference
+/// is freed inside the release rather than kept, so the membership can name a
+/// freed entity afterwards.
+///
+/// A returned value names no member and reads the membership no further, so
+/// the caller may end the membership and, under pressure, retire the completed
+/// candidate entries before it drains — a child's destructor may allocate from
+/// a member slot that retirement returned.
 ///
 /// # Safety
 /// Every member is an entity of this thread's GC heap carrying exactly one
-/// guard reference and named once in `members`; the caller owns this thread's
-/// heap. The returned value must be drained before its arena is reset or
-/// dropped.
+/// guard reference, named once in `members`, and `arena` is the collection's,
+/// live until the returned value is drained. The call runs on the owning
+/// thread with no mutator beside it, and the caller reads no other component
+/// until the teardown, the drain included, is behind it (`dev/DECISIONS.md`,
+/// "the revalidation of a component and its teardown are adjacent").
 pub(crate) unsafe fn reclaim_before_drops<'a>(
     component: GuardedComponent<'_>,
     members: &Membership<'_>,
@@ -218,17 +211,7 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
         "the component read again and the membership severed are the same"
     );
 
-    let mut external_children = 0;
-    unsafe {
-        members.for_each(|member| {
-            let kind = entity_kind(member);
-            trace_cells::<PlainCells>(member, kind, |cell| {
-                if !members.contains(cell.child) {
-                    external_children += 1;
-                }
-            });
-        })
-    };
+    let external_children = unsafe { members.external_children() };
 
     if !arena.reserve_drops(external_children) {
         unsafe { component.release(members) };
@@ -261,9 +244,15 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
                 } else {
                     queued += 1;
                     assert!(
-                        queued <= external_children && arena.push_drop(child),
+                        queued <= external_children,
                         "the sever displaces the children the walk ahead of it counted"
                     );
+                    // The room was reserved for exactly this many, so a push
+                    // that refuses is the reservation's own defect — and one
+                    // that a release build must see, because the child's
+                    // counted reference is what the queue holds.
+                    let pushed = arena.push_drop(child);
+                    assert!(pushed, "a reserved deferred drop is never refused");
                 }
             };
 
@@ -285,8 +274,8 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
     // frees it: phase 1 finds `DESTRUCTOR_RAN` and runs nothing, phase 2's
     // first act clears a weak cell a destructor of step 4 re-created, its child
     // releases find every cell null, and the slot goes back through the window
-    // that withholds it while a trace can still address its row (`PLAN.md`
-    // S36.2).
+    // that withholds it while a trace can still address its row
+    // (`crate::cycle::deferred_slot_reuse`, through `memory::stdapi::ll_free`).
     unsafe { release_guards(members) };
     unsafe { component.guards_released() };
     Some(DeferredReclamation {

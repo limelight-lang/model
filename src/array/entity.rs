@@ -833,7 +833,7 @@ unsafe fn element_for_destination(
     reason: CopyReason,
 ) -> Option<Value> {
     let v = unsafe { element_for_copy(element, reason) };
-    if !v.is_refcounted() {
+    if !v.is_pointer() {
         return Some(v);
     }
 
@@ -1135,7 +1135,7 @@ impl<T: Copy> WorkList<T> {
 /// reset and leaves the second counted forever.
 #[inline]
 pub(crate) unsafe fn give_value_back(category: MemoryCategory, v: &Value) {
-    if v.is_refcounted() {
+    if v.is_pointer() {
         unsafe { crate::memory::barrier::drop_ref(category, v.entity_ptr()) };
     }
 }
@@ -1262,7 +1262,7 @@ pub(crate) unsafe fn sever_element_at(
     debug_assert_eq!(
         unsafe { (*a).head.tag() },
         StorageTag::Hash,
-        "an element with reserved bytes belongs to the ordered hash alone"
+        "an element carrying a chain link belongs to the ordered hash alone"
     );
     let entry =
         (element_at - crate::array::entry::ELEMENT_OFFSET) as *mut crate::array::entry::Entry;

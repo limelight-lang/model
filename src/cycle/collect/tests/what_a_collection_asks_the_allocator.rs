@@ -1,7 +1,8 @@
 //! What a collection asks the global allocator between an entry and its last
 //! free, which the GC-memory contract answers with "nothing": every byte a
 //! collection holds comes through the memory manager, and a counting allocator
-//! standing under the whole crate is what says so (`PLAN.md` S36.9).
+//! standing under the whole crate is what says so (`dev/DECISIONS.md`, "GC
+//! memory is counted once, and the block kind is the split").
 //!
 //! **One site is exempt and it is a debug build's alone.**
 //! `cycle::validation`'s two `debug_assert!`s materialise the membership as a

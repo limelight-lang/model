@@ -43,7 +43,7 @@ fn bytes_whose_slot(mask: u64, accept: impl Fn(u64) -> bool) -> Vec<u8> {
 }
 
 /// A refused element leaves the entry live with a null value, and leaves
-/// the collision link the entry carries in its reserved bytes. A whole
+/// the collision link the entry carries in its tag word. A whole
 /// `Value` store over that element would publish zeros over the link,
 /// where zero is a legal entry index rather than an end of chain — the
 /// lookup that follows would then walk a self-referencing entry.
@@ -124,7 +124,7 @@ fn a_refused_element_keeps_the_entry_and_its_link() {
         assert!(
             !crate::array::testing::get(array, Key::Int(1))
                 .expect("the entry is gone")
-                .is_refcounted(),
+                .is_pointer(),
             "the refused child is still the element"
         );
         assert_eq!(
@@ -251,7 +251,7 @@ fn a_refused_string_key_holes_the_whole_entry() {
     }
 }
 
-/// A vector keeps nothing in an element's reserved bytes, so a refused
+/// A vector keeps nothing in an element's tag word's upper bytes, so a refused
 /// element is nulled where it stands and the elements around it are
 /// untouched.
 #[test]
@@ -308,7 +308,7 @@ fn a_refused_vector_element_is_nulled_in_place() {
         assert!(
             !crate::array::testing::at(array, 0)
                 .expect("the element is gone rather than empty")
-                .is_refcounted(),
+                .is_pointer(),
             "the refused child is still the element"
         );
         assert_eq!(crate::array::testing::at(array, 1).unwrap().as_int(), 7);

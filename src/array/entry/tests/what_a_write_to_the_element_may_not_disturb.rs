@@ -1,7 +1,7 @@
-//! The link shares its word with the element and the key sits below
-//! both, so an element store has to carry the link through and leave
-//! the key alone — and a value handed out may not carry the link with
-//! it into another entry.
+//! The link shares the element's tag word and the key sits below both,
+//! so an element store has to carry the link through and leave the key
+//! alone — and a value handed out may not carry the link with it into
+//! another entry.
 
 use super::*;
 

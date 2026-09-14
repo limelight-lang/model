@@ -1,6 +1,14 @@
 //! The successful pressure teardown's split between member retirement and
-//! external-child drops, including the reproducible final-only comparison of
-//! `dev/BENCHMARKS.md`, "early pressure retirement returns matching slots at one extra queue pass".
+//! external-child drops: a member slot the early retirement returned is what
+//! an external child's destructor allocates from, and the final-only arm is
+//! kept as the comparison (`dev/BENCHMARKS.md`, "early pressure retirement
+//! returns matching slots at one extra queue pass").
+//!
+//! The fixture is one block of members, filled to capacity so that the only
+//! slot an allocation can be served from is one the teardown returned, and
+//! the destructors talk to the case through the statics below: a destructor
+//! is an `extern "C"` function with no closure, so what it reads and what it
+//! records goes through a static.
 
 use super::*;
 use crate::cycle::testing::dismantle_ring;
@@ -12,19 +20,37 @@ use crate::refcount::SlotState;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+/// What the case hands the allocating destructor: the size it asks the heap
+/// for.
 static REQUESTED_SIZE: AtomicUsize = AtomicUsize::new(0);
+/// What that destructor answers: the address the heap served, or null.
 static ALLOCATION: AtomicUsize = AtomicUsize::new(0);
+/// How many times it asked.
 static ALLOCATION_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+/// Blocks out of the pool at the instant a child's destructor ran, for the
+/// peak the reading reports.
 static BLOCKS_AT_DESTRUCTOR: AtomicUsize = AtomicUsize::new(0);
+/// The case's arena, for a destructor that resets it.
 static RESET_ARENA: AtomicUsize = AtomicUsize::new(0);
+/// The class a destructor builds a completed candidate death out of.
 static CANDIDATE_CLASS: AtomicUsize = AtomicUsize::new(0);
+/// Which of the two extra acts below the allocating destructor performs.
 static DESTRUCTOR_MODE: AtomicUsize = AtomicUsize::new(0);
+/// The member a resurrecting destructor kept.
 static RESURRECTED_MEMBER: AtomicUsize = AtomicUsize::new(0);
+/// The external child one member holds, for the destructor that releases it.
 static EXTERNAL_CHILD_ROOT: AtomicUsize = AtomicUsize::new(0);
 
+/// A bit of [`DESTRUCTOR_MODE`]: the destructor resets the case's arena after
+/// its allocation.
 const RESET: usize = 1;
+/// A bit of [`DESTRUCTOR_MODE`]: the destructor creates and kills a registered
+/// candidate, a completed death the retirement after it has to see.
 const CREATE_COMPLETED_CANDIDATE: usize = 2;
 
+/// An external child's destructor that allocates an entity of
+/// [`REQUESTED_SIZE`], and performs the acts [`DESTRUCTOR_MODE`] names after
+/// it. Whether the allocation is served is the subject of this file.
 unsafe extern "C" fn allocating_child_destructor(_object: *mut Object) {
     BLOCKS_AT_DESTRUCTOR.store(
         crate::memory::block_pool::BlockPool::global().blocks_out(),
@@ -51,6 +77,8 @@ unsafe extern "C" fn allocating_child_destructor(_object: *mut Object) {
     }
 }
 
+/// An external child's destructor that allocates nothing and only records the
+/// pool's state, the measurement's quiet arm.
 unsafe extern "C" fn allocation_free_child_destructor(_object: *mut Object) {
     BLOCKS_AT_DESTRUCTOR.store(
         crate::memory::block_pool::BlockPool::global().blocks_out(),
@@ -58,11 +86,16 @@ unsafe extern "C" fn allocation_free_child_destructor(_object: *mut Object) {
     );
 }
 
+/// A member's destructor that keeps `$this`, so the revalidation reads the
+/// component as externally referenced and no teardown runs.
 unsafe extern "C" fn resurrecting_member_destructor(object: *mut Object) {
     unsafe { ll_retain(object as *mut RcHeader) };
     RESURRECTED_MEMBER.store(object as usize, Ordering::Relaxed);
 }
 
+/// A member's destructor that releases the case's own reference to the
+/// external child, leaving the member's edge as the child's last: the sever
+/// displaces it, and its destructor runs in the deferred drain.
 unsafe extern "C" fn releasing_child_root(_object: *mut Object) {
     let child = EXTERNAL_CHILD_ROOT.swap(0, Ordering::Relaxed) as *mut RcHeader;
     assert!(
@@ -75,6 +108,9 @@ unsafe extern "C" fn releasing_child_root(_object: *mut Object) {
     );
 }
 
+/// A class of `properties` counted Box properties whose instance size is
+/// exactly a heap size class, so that a block of them fills to a known
+/// capacity. A null `destructor` registers none.
 fn exact_class(name: &str, properties: usize, destructor: *const ()) -> *const Class {
     let names: Vec<String> = (0..properties).map(|index| format!("p{index}")).collect();
     let mut builder = ClassBuilder::new(name);
@@ -92,6 +128,13 @@ fn exact_class(name: &str, properties: usize, destructor: *const ()) -> *const C
     class
 }
 
+/// Take every slot of one fresh block of `size` and hand the slots back to
+/// the caller to hold, so that the next entity of that size opens a block of
+/// its own — the block the case then fills with its members.
+///
+/// # Safety
+/// The caller runs under the test guard and frees every slot through
+/// `free_unpublished`.
 unsafe fn stage_empty_block(size: usize) -> Vec<*mut u8> {
     let capacity = BLOCK_PAYLOAD / size;
     let mut held = Vec::with_capacity(capacity + 1);
@@ -111,18 +154,38 @@ unsafe fn stage_empty_block(size: usize) -> Vec<*mut u8> {
     }
 }
 
+/// What one pressure collection over the fixture did, on either arm.
 #[derive(Clone, Copy, Debug)]
 struct Reading {
+    /// Member slots the early retirement returned before the external drain.
     returned_slots: usize,
+    /// The same, in bytes of the member class.
     returned_bytes: usize,
+    /// Whether the child's allocation landed in one of the two members' slots.
     reused_slots: usize,
+    /// The child's allocations the heap served, and the ones it refused.
     allocations_served: usize,
     allocations_refused: usize,
+    /// The queue passes, records read and records moved the collection cost.
     queue: crate::cycle::queue::QueueWork,
+    /// The most blocks the pool had out above the fixture's own, in bytes.
     peak_bytes: usize,
+    /// The collection's wall time.
     elapsed: Duration,
 }
 
+/// Build the fixture and run one pressure collection over it.
+///
+/// `final_only` holds the retirement on the final-only arm; `child` is the
+/// class of the external child one member holds, or none; `requested_size` is
+/// what that child's destructor allocates, the member size or another class;
+/// `mode` is the acts [`DESTRUCTOR_MODE`] names. The ring of two members and
+/// its fillers occupy one whole block, under a pool budget of zero, so the
+/// child's allocation is served by a slot the teardown returned or by nothing.
+///
+/// # Safety
+/// Called under the test guard, on a thread whose queue holds no other case's
+/// candidates.
 unsafe fn run(
     final_only: bool,
     child: Option<*const Class>,
@@ -185,7 +248,7 @@ unsafe fn run(
     CANDIDATE_CLASS.store(silent_member_class as usize, Ordering::Relaxed);
     DESTRUCTOR_MODE.store(mode, Ordering::Relaxed);
 
-    let _final_only = final_only.then(FinalOnlyRetirement::take);
+    let _final_only = final_only.then(final_only_retirement);
     let _budget = budget_blocks(0);
     let _ = crate::cycle::queue::take_queue_work();
     let _ = take_early_returned_slots();
@@ -233,6 +296,10 @@ unsafe fn run(
     }
 }
 
+/// The subject: with the early retirement, an external child's destructor
+/// allocates from a member slot the teardown just returned; on the final-only
+/// arm the same allocation is refused, the slots still withheld. The price is
+/// one queue pass more.
 #[test]
 fn an_external_childs_destructor_can_allocate_from_an_early_member_slot() {
     let _guard = test_guard();
@@ -272,6 +339,9 @@ fn an_external_childs_destructor_can_allocate_from_an_early_member_slot() {
     assert_eq!(early.queue.record_passes, 3);
 }
 
+/// The external drain runs user code: a destructor that resets an arena and
+/// kills a registered candidate inside it leaves the queue empty afterwards,
+/// the retirement after the drain having seen the new death.
 #[test]
 fn a_reset_and_a_new_completed_death_are_safe_across_the_external_drain() {
     let _guard = test_guard();
@@ -295,6 +365,9 @@ fn a_reset_and_a_new_completed_death_are_safe_across_the_external_drain() {
     assert_eq!(crate::cycle::queue::candidate_count(), 0);
 }
 
+/// A component a destructor resurrected is torn down by nothing, so there is
+/// no early retirement to take: the collection costs the two queue passes of
+/// the trace's close and the final retirement alone.
 #[test]
 fn a_resurrection_takes_only_the_final_retirement() {
     let _guard = test_guard();
@@ -321,6 +394,9 @@ fn a_resurrection_takes_only_the_final_retirement() {
     }
 }
 
+/// A teardown whose reservation is refused frees nothing, so the early
+/// retirement has nothing to return: two passes, every member live, and the
+/// external child released by its member's destructor all the same.
 #[test]
 fn a_refused_drop_reservation_takes_no_early_retirement() {
     let _guard = test_guard();
@@ -358,6 +434,8 @@ fn a_refused_drop_reservation_takes_no_early_retirement() {
     unsafe { crate::cycle::queue::retire_candidates() };
 }
 
+/// The measurement behind the record: both arms interleaved over four
+/// fixtures, thirty-one rounds each, the median of each arm printed.
 #[test]
 #[ignore = "a measurement, recorded in dev/BENCHMARKS.md under early pressure retirement"]
 fn measure_early_pressure_retirement() {
@@ -407,7 +485,10 @@ fn measure_early_pressure_retirement() {
         let baseline = final_only[final_only.len() / 2];
         let early = early[early.len() / 2];
         eprintln!(
-            "{name}: final-only returned-slots={} returned-bytes={} reused-slots={} served={} refused={} peak-bytes={} passes={} read={} moved={} time-ns={}; early returned-slots={} returned-bytes={} reused-slots={} served={} refused={} peak-bytes={} passes={} read={} moved={} time-ns={}",
+            "{name}: final-only returned-slots={} returned-bytes={} reused-slots={} \
+             served={} refused={} peak-bytes={} passes={} read={} moved={} time-ns={}; \
+             early returned-slots={} returned-bytes={} reused-slots={} served={} \
+             refused={} peak-bytes={} passes={} read={} moved={} time-ns={}",
             baseline.returned_slots,
             baseline.returned_bytes,
             baseline.reused_slots,

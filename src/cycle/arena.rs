@@ -64,8 +64,9 @@
 //! waits for its close, and the sweep is that close. On neither path can a
 //! block reach the pool while a row of this collection still names it, so
 //! no later collection recommissions a block into a header word this one
-//! is about to null (`rfc/model/gc/rc-cycle.md`, "Concurrency" and "Death
-//! while enrolled"). [`TraceScratchArena::reset`] sweeps too, and that is
+//! is about to null (`rfc/model/gc/rc-cycle.md`, "Concurrency" and
+//! "Zero-count entities pending slot reuse"). [`TraceScratchArena::reset`]
+//! sweeps too, and that is
 //! the abort path: an abort can only be raised where memory is asked for,
 //! which is inside mark and scan, so an aborting collection has not reached
 //! its close.
@@ -73,10 +74,12 @@
 //! # What it does not hold
 //!
 //! A `Vec`, a `HashMap`, or anything else that reaches the global allocator.
-//! All three of the arena's own lists live in its own memory: the blocks
-//! thread through their headers, the touched list threads through the row
-//! arrays themselves, and the worklist's segments thread through their own
-//! headers in the bump. A collection that grew a `Vec` would allocate through the very
+//! Every list the arena holds stands in its own memory: the blocks thread
+//! through their headers, the touched list threads through the row arrays
+//! themselves, and the three record chains — the worklist, the maturation
+//! descent's component stack and the teardown's deferred drops — thread their
+//! segments through their own headers in the bump. A collection that grew a
+//! `Vec` would allocate through the very
 //! allocation path that has already refused, and an allocation failure inside
 //! `Vec` aborts the process (`rfc/model/gc/cycle/questions.md`, Y14, "Its
 //! working memory must be sized before it is needed").
@@ -88,11 +91,9 @@
 //! (`crate::cycle::shadow`). One refusal point serves both, and it
 //! stands before either exists, so the state the sweep exists to undo —
 //! a block stamped with rows the abort has given back — cannot be
-//! reached. The recorded alternative is a segment chain of its own beside
-//! the arrays, 512 entries to a segment: it allocates a second time, and that allocation's
-//! refusal arrives after the stamp, which is the state above; it also
-//! costs 4 KiB at the first touched block against the prologue's 24
-//! bytes.
+//! reached. The alternative that was refused, a segment chain beside the
+//! arrays, and what it would have cost are `dev/DECISIONS.md`, "a block's
+//! rows and its place on the touched list are one allocation".
 //!
 //! A large entity is the one population with no array, its single row
 //! being a word of its own block header, and it takes a prologue with no
@@ -208,6 +209,9 @@ const _: () = assert!((RETURNS_BASE_BYTES + MEMBERS_BASE_BYTES) % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::LINE_SIZE % 64 == 0);
 const _: () = assert!(crate::memory::block_pool::BLOCK_SIZE % 64 == 0);
 
+#[cfg(test)]
+use crate::cycle::testing::ArmedInjection;
+
 // Whether the next reset on this thread raises where the hand-back does.
 //
 // Fault injection, tests only. The reset's own panic sites are an underflowed
@@ -228,44 +232,21 @@ thread_local! {
     static REFUSE_DROP_RESERVATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Refuse the next pressure teardown reservation of this thread
+/// ([`ArmedInjection`]).
 #[cfg(test)]
-pub(crate) struct RefuseDropReservation(bool);
-
-#[cfg(test)]
-pub(crate) fn refuse_drop_reservation() -> RefuseDropReservation {
-    RefuseDropReservation(REFUSE_DROP_RESERVATION.with(|armed| armed.replace(true)))
+pub(crate) fn refuse_drop_reservation() -> ArmedInjection {
+    ArmedInjection::arm(&REFUSE_DROP_RESERVATION)
 }
 
-#[cfg(test)]
-impl Drop for RefuseDropReservation {
-    fn drop(&mut self) {
-        REFUSE_DROP_RESERVATION.with(|armed| armed.set(self.0));
-    }
-}
-
-/// Arm the injection for **one** reset of this thread, and disarm it when this
-/// guard dies — including on the unwind the injected panic itself raises, so
-/// nothing of it reaches the next test on the thread.
+/// Arm the injection for **one** reset of this thread ([`ArmedInjection`]).
 ///
 /// The reset it interrupts is left half-done, which is the state a poisoned
 /// hand-back leaves: the rows are swept and the blocks are still the arena's.
 /// [`TraceScratchArena::drop`] runs the reset again and gives them back.
 #[cfg(test)]
-pub(crate) struct InjectedResetFailure;
-
-#[cfg(test)]
-impl InjectedResetFailure {
-    pub(crate) fn arm() -> Self {
-        PANIC_IN_RESET.with(|armed| armed.set(true));
-        Self
-    }
-}
-
-#[cfg(test)]
-impl Drop for InjectedResetFailure {
-    fn drop(&mut self) {
-        PANIC_IN_RESET.with(|armed| armed.set(false));
-    }
+pub(crate) fn inject_reset_failure() -> ArmedInjection {
+    ArmedInjection::arm(&PANIC_IN_RESET)
 }
 
 /// Raise the armed failure and disarm it, and do nothing at all without
@@ -292,28 +273,15 @@ thread_local! {
     static PANIC_IN_HARVEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Arm the injection for **one** harvested block of this thread, and disarm it
-/// when this guard dies — including on the unwind the injected panic raises.
+/// Arm the injection for **one** harvested block of this thread
+/// ([`ArmedInjection`]).
 ///
 /// What it interrupts is the sweep: the block being harvested keeps its shadow
 /// pointer and the arrays behind it keep theirs, which is the state the second
 /// sweep of the same close is there to finish.
 #[cfg(test)]
-pub(crate) struct InjectedHarvestFailure;
-
-#[cfg(test)]
-impl InjectedHarvestFailure {
-    pub(crate) fn arm() -> Self {
-        PANIC_IN_HARVEST.with(|armed| armed.set(true));
-        Self
-    }
-}
-
-#[cfg(test)]
-impl Drop for InjectedHarvestFailure {
-    fn drop(&mut self) {
-        PANIC_IN_HARVEST.with(|armed| armed.set(false));
-    }
+pub(crate) fn inject_harvest_failure() -> ArmedInjection {
+    ArmedInjection::arm(&PANIC_IN_HARVEST)
 }
 
 /// Raise the armed failure and disarm it, and do nothing at all without
@@ -727,11 +695,12 @@ impl TraceScratchArena {
     /// aborts instead, so on that build every exit of a collection owes
     /// this call explicitly.
     ///
-    /// **Change this, change the worklist too:** a
-    /// [`TraceStack`](crate::cycle::stack::TraceStack) that drew
-    /// segments from this arena names memory the pool has taken back
-    /// from the moment this returns, and its own `reset` is what says
-    /// so.
+    /// **Change this, change the chains too:** a
+    /// [`LazyChain`](crate::cycle::records::LazyChain) that drew segments
+    /// from this arena names memory the pool has taken back from the moment
+    /// this returns, and its [`rewind`](crate::cycle::records::LazyChain::rewind)
+    /// is what says so — all three of them, the worklist, the component stack
+    /// and the deferred drops.
     ///
     /// **A withheld return waits for [`sweep_rows`](Self::sweep_rows) and not
     /// for this call**, which is the split
@@ -959,20 +928,7 @@ impl TraceScratchArena {
     /// at every boundary the depth crosses after it, so a worklist is refused
     /// exactly where a row array would be.
     pub(crate) fn push_work(&mut self, entry: WorklistEntry) -> bool {
-        if self.worklist.push_into_current(entry) {
-            return true;
-        }
-
-        if !self.worklist.advance_to_kept() {
-            let region = self.alloc_for(SEGMENT_BYTES, Consumer::Worklist);
-            if region.is_null() {
-                return false;
-            }
-
-            unsafe { self.worklist.extend(region, SEGMENT_ENTRIES) };
-        }
-
-        self.worklist.push_into_current(entry)
+        self.push_onto(Consumer::Worklist, entry)
     }
 
     /// The next entity to expand and the row its meeting found, or `None`
@@ -989,25 +945,42 @@ impl TraceScratchArena {
     /// time, the worklist carrying the frames of the path and this one the
     /// vertices that path has visited ([`crate::cycle::maturation`]).
     pub(crate) fn push_component(&mut self, entry: WorklistEntry) -> bool {
-        if self.components.push_into_current(entry) {
-            return true;
-        }
-
-        if !self.components.advance_to_kept() {
-            let region = self.alloc_for(SEGMENT_BYTES, Consumer::Components);
-            if region.is_null() {
-                return false;
-            }
-
-            unsafe { self.components.extend(region, SEGMENT_ENTRIES) };
-        }
-
-        self.components.push_into_current(entry)
+        self.push_onto(Consumer::Components, entry)
     }
 
     /// The newest vertex of the component stack, or `None` when it holds none.
     pub(crate) fn pop_component(&mut self) -> Option<WorklistEntry> {
         self.components.pop()
+    }
+
+    /// Push onto whichever of the two stacks `consumer` names, taking a
+    /// segment of this bump at a boundary the kept segments cannot serve. The
+    /// stack is selected at each touch rather than borrowed once, because the
+    /// draw in between needs the whole arena.
+    fn push_onto(&mut self, consumer: Consumer, entry: WorklistEntry) -> bool {
+        if self.stack_for(consumer).push_into_current(entry) {
+            return true;
+        }
+
+        if !self.stack_for(consumer).advance_to_kept() {
+            let region = self.alloc_for(SEGMENT_BYTES, consumer);
+            if region.is_null() {
+                return false;
+            }
+
+            unsafe { self.stack_for(consumer).extend(region, SEGMENT_ENTRIES) };
+        }
+
+        self.stack_for(consumer).push_into_current(entry)
+    }
+
+    /// The stack `consumer` names; the other two consumers hold no stack.
+    fn stack_for(&mut self, consumer: Consumer) -> &mut TraceStack {
+        match consumer {
+            Consumer::Worklist => &mut self.worklist,
+            Consumer::Components => &mut self.components,
+            Consumer::Rows | Consumer::Drops => unreachable!("no stack stands under this consumer"),
+        }
     }
 
     /// Read the component stack from the newest vertex down, stopping where
@@ -1068,9 +1041,9 @@ impl TraceScratchArena {
     /// `visit` runs user code — a child's destructor — and may not reach this
     /// arena. What stands between it and a second collection is an abort rather
     /// than a proof: a trace opened while this thread holds the workspace ends
-    /// the process ([`crate::cycle::queue::lend_workspace_base`]), and the
-    /// driver that keeps a destructor's allocation failure from starting one is
-    /// `PLAN.md` S36.7's.
+    /// the process ([`crate::cycle::queue::lend_workspace_base`]), and what
+    /// keeps a destructor's allocation failure from starting one is the
+    /// driver's own gate (`crate::cycle::collect`).
     pub(crate) fn drain_drops(&mut self, visit: impl FnMut(*mut RcHeader)) {
         self.drops.drain(visit);
     }

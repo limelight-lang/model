@@ -1,12 +1,12 @@
 //! Thirty-two bytes with the collision link inside the element's
-//! reserved word, and a key cap the index type imposes.
+//! tag word, and a key cap the index type imposes.
 
 use super::*;
 
 /// The layout the design fixes. This test fails if a field is
 /// reordered or the entry grows, which is the point: the key keeping a
 /// word of its own is what lets a hole outlive an element store, and
-/// the element's own reserved bytes are where the chain link lives.
+/// the element's own tag word is where the chain link lives.
 #[test]
 fn entry_layout_is_the_one_the_design_fixes() {
     assert_eq!(std::mem::size_of::<Entry>(), 32);

@@ -173,8 +173,8 @@ unsafe fn stamp_into(
     let extra = crate::refcount::EntityKind::Object.to_flags();
     unsafe {
         // Zero-fill the property region in one pass: a null pointer is
-        // uninitialized, an all-zero Box is `null` (tag 0, refcounted
-        // clear), a zero scalar is 0, a clear bool is false, a clear
+        // uninitialized, an all-zero Box is `null` (`(0, 0)`), a zero
+        // scalar is 0, a clear bool is false, a clear
         // init-bitmap bit is uninitialized — every slot's correct start
         // at once.
         // `size >= size_of::<Object>()` always (16-byte header).
@@ -183,10 +183,13 @@ unsafe fn stamp_into(
         // A defaultless `mixed`/untyped Box slot starts *undefined*, and
         // an all-zero Box is `null` — stamp those few slots from the
         // descriptor's undef runs (`rfc/model/values.md`, Construction).
-        // Non-zero property defaults stay the compiler's explicit stores
-        // at the `new` site; this generic factory is the out-of-line path
-        // and reads the descriptor. Plain stores are sound here: the
-        // header is not yet published, so no walker reads these slots.
+        // The stamp is the whole box, `(0, 0x0003)`: a Null tag word with
+        // the undef bit, whose `+8` word a collector reads as an
+        // immediate value. Non-zero property defaults stay the compiler's
+        // explicit stores at the `new` site; this generic factory is the
+        // out-of-line path and reads the descriptor. Plain stores are
+        // sound here: the header is not yet published, so no walker reads
+        // these slots.
         for run in (*class).undef_runs() {
             for i in 0..run.count {
                 let slot = (obj as *mut u8).add((run.offset + i * 16) as usize) as *mut Value;
@@ -465,7 +468,7 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::cells::CellReader>(
         }
     }
 
-    // Box runs: 16-byte Values, empty is the refcounted flag clear.
+    // Box runs: 16-byte Values, empty is a `+8` word that is no pointer.
     for run in unsafe { (*cls).box_runs() } {
         for i in 0..run.count {
             let at = unsafe { base.add((run.offset + i * 16) as usize) };

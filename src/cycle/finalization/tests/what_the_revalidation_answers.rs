@@ -38,15 +38,11 @@ unsafe extern "C" fn keeping_destructor(obj: *mut Object) {
 }
 
 /// A destructor that keeps `$this` and gives up its own edge to the next
-/// member: the slot is emptied and the reference released, which is the pair
-/// of acts a store of null through the barrier performs over a Box property
-/// whose owner and old value are both of the GC heap.
+/// member ([`release_own_edge`]).
 unsafe extern "C" fn keeping_and_releasing_destructor(obj: *mut Object) {
-    let slot = unsafe { Object::prop_at(obj, prop_offset(0)) };
-    let next = unsafe { crate::test_support::entity_checked(&*slot) };
-    unsafe { write_value_slot(slot, Value::null()) };
+    let (_, reached_zero) = unsafe { release_own_edge(obj) };
     assert!(
-        !unsafe { ll_release(next) },
+        !reached_zero,
         "the member this edge named carries a guard of its own"
     );
     unsafe { keeping_destructor(obj) };
@@ -65,11 +61,6 @@ unsafe extern "C" fn child_destructor(_obj: *mut Object) {
 unsafe extern "C" fn counting_dispose(obj: *mut Object) -> bool {
     DEATHS.fetch_add(1, Ordering::Relaxed);
     unsafe { ll_default_dispose(obj) }
-}
-
-/// The members of `ring` as the header pointers a finalization takes.
-fn headers<const MEMBERS: usize>(ring: &[*mut Object; MEMBERS]) -> [*mut RcHeader; MEMBERS] {
-    ring.map(|member| member as *mut RcHeader)
 }
 
 #[test]
@@ -95,7 +86,7 @@ fn a_finalization_no_destructor_ran_in_is_not_read_again() {
         KEPT_MEMBER.store(0, Ordering::Relaxed);
 
         let mut finalization = Finalization::begin();
-        let mut members = headers(&ring);
+        let mut members = headers(ring);
         assert_eq!(
             unsafe { finalization.confirm(&Membership::listed(&mut members)) },
             ValidationResult::Unreachable
@@ -109,15 +100,16 @@ fn a_finalization_no_destructor_ran_in_is_not_read_again() {
         // inside a block of its own: past it the revalidation is the caller's
         // again and can be closed.
         {
-            // Handed back in the caller's own order, which the sever's
-            // membership test reads by binary search: the fast path sorts
-            // where the exact validation would have.
+            // Handed over in the caller's own order, which
+            // `Membership::listed` replaces by address order on both arms:
+            // the sever's membership test is a binary search, and no reading
+            // of the component, taken or skipped, restores the caller's.
             members.reverse();
             let before = premise_cell_walks();
             let answer = unsafe { revalidation.revalidate(&Membership::listed(&mut members)) };
             assert!(
                 members.is_sorted(),
-                "a component comes back sorted whether or not it was read again"
+                "the caller's order is gone whether or not the component was read again"
             );
             assert_eq!(
                 premise_cell_walks() - before,
@@ -169,7 +161,7 @@ fn a_destructor_that_keeps_this_leaves_the_component_with_its_true_counts() {
     assert!(!cell.is_null(), "the fixture's weak cell");
 
     let mut finalization = Finalization::begin();
-    let mut members = headers(&ring);
+    let mut members = headers(ring);
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable
@@ -237,7 +229,7 @@ fn a_member_whose_guard_was_its_last_reference_dies_at_the_release() {
     DEATHS.store(0, Ordering::Relaxed);
 
     let mut finalization = Finalization::begin();
-    let mut members = headers(&ring);
+    let mut members = headers(ring);
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable
@@ -379,8 +371,9 @@ fn a_child_of_a_dying_member_runs_its_destructor_inside_the_release() {
     // The child stands outside the batch, which is what the design calls a
     // deferred external child: a child of a member that is no member itself
     // (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation",
-    // step 6). Which commits hold one is the driver's partition, `PLAN.md`
-    // S36.7's; the fixture builds the shape rather than deriving it.
+    // step 6). The driver reads its batch as one component, so which
+    // children stand outside it is the trace's; the fixture builds the shape
+    // rather than deriving it.
     let mut context = LLContext { arena: &mut arena };
     let child = unsafe { new_constructed(&mut context, child_class, MemoryCategory::GcHeap) };
     unsafe {
@@ -389,7 +382,7 @@ fn a_child_of_a_dying_member_runs_its_destructor_inside_the_release() {
     }
 
     let mut finalization = Finalization::begin();
-    let mut members = headers(&ring);
+    let mut members = headers(ring);
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
         ValidationResult::Unreachable,
@@ -511,7 +504,7 @@ fn a_component_rooted_by_an_earlier_teardown_is_read_after_it() {
     }
 
     let mut finalization = Finalization::begin();
-    let mut components = [headers(&torn_down), headers(&read_later)];
+    let mut components = [headers(torn_down), headers(read_later)];
     for members in &mut components {
         assert_eq!(
             unsafe { finalization.confirm(&Membership::listed(members)) },

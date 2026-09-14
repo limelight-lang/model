@@ -31,9 +31,9 @@ fn new_stamps_header_class_and_null_props() {
 }
 
 /// A5: a defaultless `mixed` Box slot starts *undefined* — the factory
-/// stamps `VALUE_UNDEF` from the descriptor's undef runs after the
+/// stamps `TAG_WORD_UNDEF` from the descriptor's undef runs after the
 /// zero-fill — while a defaulted one starts `null`. Undef is invisible
-/// to the trace walk (the refcounted flag is clear), any store clears
+/// to the trace walk (its `+8` word is a tag word), any store clears
 /// it (the barrier writes all 16 bytes), and `unset()` is the
 /// undef-store + `drop_ref` composition, which restores the state and
 /// releases the displaced entity.

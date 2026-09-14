@@ -149,8 +149,8 @@ fn draining_the_weak_log_asks_the_global_allocator_for_nothing_extra() {
 
     // The control arm runs the same reset over the same objects with no weak
     // reference taken, so the difference is the weak walk and nothing else:
-    // the reset's own collect-first buffers are `promote`'s, and no slice of
-    // S36.9 claims them.
+    // the reset's own bookkeeping is `promote`'s, and this case does not
+    // claim it.
     let (without_weak, _) = a_reset_of_eight_objects(false);
     let (with_weak, cells) = a_reset_of_eight_objects(true);
 

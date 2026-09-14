@@ -223,7 +223,7 @@ pub(crate) unsafe fn publish_child(
     owner_cat: MemoryCategory,
     new: Value,
 ) -> Option<Value> {
-    if !new.is_refcounted() {
+    if !new.is_pointer() {
         return Some(new);
     }
 
@@ -290,10 +290,11 @@ pub unsafe fn store_ptr(
 /// Write an 8-byte pointer slot of an object a collector may be tracing.
 /// The store is a relaxed atomic: a concurrent trace reads fields, a
 /// racing plain store is undefined behaviour, and the relaxed store is
-/// the same instruction. Same story for
-/// [`write_value_slot`], whose two words the walker may see torn — the
-/// design absorbs the tear (a phantom or missed edge, repaired by
-/// Phases 3-4), the atomics make it defined.
+/// the same instruction. Same story for [`write_value_slot`], whose two
+/// words go out one store each: a reader of the `+8` word sees a pointer,
+/// a tag word or zero, never a value under the wrong reading, because
+/// that word alone decides the arm (`rfc/model/values.md`, "ValueBox
+/// Layout") and the atomics make the race defined.
 #[inline]
 pub(crate) unsafe fn write_ptr_slot(slot: *mut *mut RcHeader, new: *mut RcHeader) {
     unsafe {
@@ -307,17 +308,19 @@ pub(crate) unsafe fn write_ptr_slot(slot: *mut *mut RcHeader, new: *mut RcHeader
 pub(crate) unsafe fn write_value_slot(slot: *mut Value, new: Value) {
     unsafe {
         use std::sync::atomic::{AtomicU64, Ordering};
-        let words = core::mem::transmute::<Value, [u64; 2]>(new);
+        let words = new.into_words();
         (*(slot as *const AtomicU64)).store(words[0], Ordering::Relaxed);
-        (*((slot as *const u8).add(8) as *const AtomicU64)).store(words[1], Ordering::Relaxed);
+        (*((slot as *const u8).add(crate::value::DISCRIMINATING_WORD_OFFSET) as *const AtomicU64))
+            .store(words[1], Ordering::Relaxed);
     };
 }
 
 /// The `store_box` micro-op: the same publish for a 16-byte `Value` slot.
 ///
-/// **The whole `Value` is written**, not just the payload word — a torn
-/// "new pointer, old tag" slot is a crash for a reentrant reader, and one
-/// writer for one slot is the right rule. Publish only, like [`store_ptr`];
+/// **The whole `Value` is written**, not just one word — a slot left
+/// between two stores holds a `+8` word of one arm over a `+0` word of the
+/// other, which a reentrant reader of the box would decode as a value
+/// nobody stored, and one writer for one slot is the right rule. Publish only, like [`store_ptr`];
 /// the displaced value is released by [`drop_ref`]. A non-entity `new`
 /// (int, bool, null) counts as no entity: nothing retained or noted.
 ///

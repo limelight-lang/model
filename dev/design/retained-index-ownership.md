@@ -11,7 +11,8 @@ block — with the count word atomic because `ll_free` is ABI. The ruling
 is `dev/DECISIONS.md`, "a retained block's survivor list lives in the
 arena's own memory, and the process registry goes"; the normative text is
 `rfc/model/gc/rc-cycle.md`, "The survivor list of a retained block"; the
-code is S36.9 slice (e). What stands of this document: the block answers
+code is `memory::retained` and `promote::place_survivor_lists`. What stands
+of this document: the block answers
 for itself, the words move into its collector line, and the refusals in
 the last section. What is superseded: the manager chain, the thread-owner
 word, thread-exit abandonment and adoption of retained blocks, and the

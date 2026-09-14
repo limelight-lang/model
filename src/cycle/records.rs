@@ -1,11 +1,14 @@
 //! A chain of fixed-size records over segments its owner supplies.
 //!
-//! Two collection structures hold an unbounded number of small records and
-//! know a bound on neither: the trace's worklist, whose depth is the traced
-//! subgraph's, and the deferred drops of a teardown, whose length is the
+//! Three collection structures hold an unbounded number of small records and
+//! know a bound on none: the trace's worklist, whose depth is the traced
+//! subgraph's; the maturation descent's component stack, whose depth is the
+//! live subgraph's; and the deferred drops of a teardown, whose length is the
 //! component's external children. A fixed array would abort a collection the
-//! memory could serve, and a growing vector would own an allocation this crate
-//! refuses the collector (`PLAN.md`, S36.11). So the records are held in
+//! memory could serve, and a growing vector would own an allocation the
+//! collector may not make — every byte it holds comes through the memory
+//! manager (`rfc/model/gc/cycle/questions.md`, Y14, "Its working memory must
+//! be sized before it is needed"). So the records are held in
 //! segments, each one a header line and the records behind it, threaded both
 //! ways.
 //!
@@ -21,10 +24,10 @@
 //!
 //! **Each segment carries its own capacity**, which a boundary crossing reads
 //! instead of a constant, so a chain of unequal segments hands its records
-//! back exactly. Each of the two users attaches segments of one size of its
-//! own, so no chain of unequal ones stands today.
+//! back exactly. Each user attaches segments of one size of its own — the two
+//! stacks share the worklist's — so no chain of unequal ones stands today.
 //!
-//! Two access orders, one per user. [`RecordChain::pop`] takes the newest
+//! Two access orders. [`RecordChain::pop`] takes the newest
 //! record, which is what a descent needs, and [`RecordChain::drain`] hands
 //! every record over oldest first, which is what a replay in the order the
 //! records were written needs — the deferred drops of a cycle teardown, whose
@@ -377,11 +380,12 @@ impl<T: Copy> RecordChain<T> {
 /// A [`RecordChain`] whose first region is drawn at the first push rather than
 /// at its birth, and whose segments are its owner's to give back.
 ///
-/// Both users of the chain want this and neither wants it differently: a trace
-/// that queues no entity and a teardown that displaces no child each pay for no
-/// segment, and both hold their chain inside the arena whose bump the segments
-/// come from, so [`rewind`](Self::rewind) is what the arena owes the instant it
-/// hands those blocks back. What differs is only the verb each user needs — a
+/// Every user of the chain wants this and none wants it differently: a trace
+/// that queues no entity, a descent that meets no live vertex and a teardown
+/// that displaces no child each pay for no segment, and all hold their chain
+/// inside the arena whose bump the segments come from, so
+/// [`rewind`](Self::rewind) is what the arena owes the instant it hands those
+/// blocks back. What differs is only the verb each user needs — a
 /// descent takes [`pop`](Self::pop) and grows through
 /// [`extend`](Self::extend), a replay takes [`drain`](Self::drain) and reserves
 /// through [`attach`](Self::attach) — and both verbs stand here rather than in

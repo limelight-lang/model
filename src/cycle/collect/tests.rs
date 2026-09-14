@@ -123,16 +123,40 @@ unsafe fn live_candidate_lane(arena: &mut Arena, members: usize) -> Vec<*mut Obj
 }
 
 /// The middle duration of one arm, in nanoseconds.
+/// Every token this thread's queue holds, sorted, so that a case compares
+/// multisets rather than the order two lanes happen to yield.
+fn lane_tokens() -> Vec<*mut RcHeader> {
+    let mut tokens = Vec::new();
+    crate::cycle::queue::collect_lane_tokens(&mut tokens);
+    tokens.sort_unstable();
+    tokens
+}
+
+/// `members` as the tokens a queue holding exactly them would yield.
+fn as_tokens(members: &[*mut Object]) -> Vec<*mut RcHeader> {
+    let mut tokens: Vec<*mut RcHeader> = members.iter().map(|&m| m as *mut RcHeader).collect();
+    tokens.sort_unstable();
+    tokens
+}
+
+/// A class with one counted Box property, through which a case holds a ring
+/// from outside.
+fn keeper_class(name: &str) -> *const Class {
+    ClassBuilder::new(name).prop("held", true).build()
+}
+
 fn median_nanos(samples: &mut [Duration]) -> u128 {
     samples.sort_unstable();
     samples[samples.len() / 2].as_nanos()
 }
 
-/// Repeated failed allocations with a nonempty live candidate lane are the
-/// S40.4 workload.  This is ignored because its timing belongs in the dated
-/// benchmark record, not in the ordinary correctness gate.
+/// Repeated failed allocations with a nonempty live candidate lane: the
+/// workload that prices the trace a refused allocation repeats. Ignored
+/// because its timing belongs in the dated benchmark record and not in the
+/// correctness gate (`dev/BENCHMARKS.md`, "S40.4 a refused allocation repeats
+/// the whole live candidate lane").
 #[test]
-#[ignore = "S40.4 measurement; record three release runs in dev/BENCHMARKS.md"]
+#[ignore = "a measurement, run in release and recorded in dev/BENCHMARKS.md"]
 fn measure_refused_pressure_trace_repetition() {
     const ATTEMPTS: usize = 127;
     const STRUCTURAL_ATTEMPTS: usize = 3;
@@ -208,7 +232,8 @@ fn measure_refused_pressure_trace_repetition() {
         }
         let median = median_nanos(&mut samples);
         println!(
-            "S40.4: {members} live candidates, {ATTEMPTS} refusals: median {median} ns ({} ns/refusal)",
+            "refused-allocation trace: {members} live candidates, {ATTEMPTS} refusals: \
+             median {median} ns ({} ns/refusal)",
             median / ATTEMPTS as u128
         );
     }
@@ -261,6 +286,61 @@ fn a_population_past_the_harvest_region_is_collected_over_several_traces() {
         unsafe { ll_gc_collect_cycles() },
         0,
         "and nothing of the population was left behind"
+    );
+}
+
+/// A harvest the sweep abandons — a row that named no entity — ends the
+/// pressure collection after one trace, armed. It is not an overflow: the
+/// disagreement stands in the graph, so every re-trace over fewer roots would
+/// meet it again and pay a full mark and scan for nothing.
+#[test]
+fn an_abandoned_harvest_ends_the_pressure_path_after_one_trace() {
+    let _g = test_guard();
+    let class = node_class(
+        "CollectAbandonedHarvestNode",
+        counting_destructor as *const (),
+    );
+    let mut arena = Arena::new();
+    let pairs = 8;
+    let mut members = Vec::with_capacity(pairs * 2);
+    for _ in 0..pairs {
+        members.extend_from_slice(&unsafe { ring(&mut arena, [class, class]) });
+    }
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+    crate::gc::disarm();
+
+    let abandon = crate::cycle::members::abandon_next_harvest();
+    let _ = take_pressure_roots_traced();
+    crate::cycle::collect::count_pressure_roots(true);
+    let freed = unsafe { collect_under_pressure() };
+    crate::cycle::collect::count_pressure_roots(false);
+    drop(abandon);
+
+    assert_eq!(
+        freed, 0,
+        "the pressure path frees nothing off a reading it gave up"
+    );
+    assert_eq!(
+        take_pressure_roots_traced(),
+        members.len(),
+        "one trace over every root, and no halving after it"
+    );
+    assert!(
+        crate::gc::is_armed(),
+        "the poll's collection is what reads the graph next"
+    );
+    assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 0);
+    for &member in &members {
+        assert_eq!(
+            unsafe { slot_state(member as *mut RcHeader) },
+            SlotState::Live
+        );
+    }
+
+    assert_eq!(
+        unsafe { ll_gc_collect_cycles() },
+        members.len(),
+        "and the poll's collection, whose sweep is not the injected one, frees them"
     );
 }
 
@@ -588,6 +668,58 @@ fn a_collection_reached_from_an_arena_reset_is_refused() {
         unsafe { ll_gc_collect_cycles() },
         2,
         "and the collection the reset refused runs once the reset is over"
+    );
+    let _ = (ring, in_arena);
+}
+
+/// A destructor that asks for a collection while one is running, through the
+/// pressure entry the allocation slow path takes rather than the poll.
+unsafe extern "C" fn pressure_collecting_destructor(_object: *mut Object) {
+    NESTED_CALLS.fetch_add(1, Ordering::Relaxed);
+    NESTED_ANSWERS.fetch_add(unsafe { collect_under_pressure() }, Ordering::Relaxed);
+}
+
+/// The pressure entry refused under an arena reset arms the thread, as it does
+/// under a teardown: the allocation it was asked for is answered
+/// memory-exhausted, and what stands behind the refusal — here a garbage
+/// ring — is the next poll's to read. The gate keeps the poll's arming by
+/// refusing before the disarm; the pressure entry has no arming to keep and
+/// has to leave one.
+#[test]
+fn a_pressure_collection_refused_under_a_reset_arms_the_thread() {
+    let _g = test_guard();
+    let garbage = ClassBuilder::new("PressureDuringResetGarbage")
+        .prop("next", true)
+        .build();
+    let dying = node_class(
+        "PressureDuringResetNode",
+        pressure_collecting_destructor as *const (),
+    );
+
+    let mut arena = Arena::new();
+    let ring = unsafe { ring(&mut arena, [garbage, garbage]) };
+    let mut context = LLContext { arena: &mut arena };
+    let in_arena = unsafe { new_constructed(&mut context, dying, MemoryCategory::RequestArena) };
+    NESTED_CALLS.store(0, Ordering::Relaxed);
+    NESTED_ANSWERS.store(0, Ordering::Relaxed);
+    assert!(!crate::gc::is_armed(), "the case starts unarmed");
+
+    unsafe { crate::promote::arena_reset_full(&mut arena) };
+
+    assert_eq!(NESTED_CALLS.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        NESTED_ANSWERS.load(Ordering::Relaxed),
+        0,
+        "the reset refused the pressure collection"
+    );
+    assert!(
+        crate::gc::is_armed(),
+        "and the refusal armed the thread for the poll"
+    );
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "which collects the ring the refusal left standing"
     );
     let _ = (ring, in_arena);
 }

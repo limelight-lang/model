@@ -1,7 +1,7 @@
 use super::*;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::finalization::{Finalization, Revalidated};
-use crate::cycle::testing::{dismantle_ring, open_arena, read_as_unreachable, ring};
+use crate::cycle::testing::{dismantle_ring, headers, open_arena, read_as_unreachable, ring};
 use crate::cycle::validation::ValidationResult;
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
@@ -38,7 +38,7 @@ unsafe fn spend_creation_references(entities: &[*mut Object]) {
 /// invalidation, the destructor pass, the second reading, and the teardown this
 /// module builds.
 ///
-/// The chain is the driver's shape (`PLAN.md` S36.7) with one component in it,
+/// The chain is the driver's shape (`cycle::collect`) with one component in it,
 /// which is what lets a case say what the teardown did rather than how it was
 /// reached. A component the second reading finds externally referenced fails
 /// the case: every fixture here is garbage nothing keeps.
@@ -66,11 +66,6 @@ unsafe fn commit(members: &mut [*mut RcHeader], arena: &mut TraceScratchArena) -
 
     revalidation.close();
     answer
-}
-
-/// The members of a fixture as the header pointers the commit takes.
-fn headers<const MEMBERS: usize>(members: [*mut Object; MEMBERS]) -> [*mut RcHeader; MEMBERS] {
-    members.map(|member| member as *mut RcHeader)
 }
 
 /// A class with `next` and `child` Box properties at [`prop_offset`] 0 and 1,

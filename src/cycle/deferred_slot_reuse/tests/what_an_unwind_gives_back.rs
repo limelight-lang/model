@@ -91,7 +91,7 @@ fn a_window_dropped_before_its_rows_are_gone_abandons_what_it_withheld() {
 /// Staged rather than provoked: the disposition of the batch is a merge into
 /// whatever the lane holds and has no refusal of its own
 /// (`queue::merge_candidates`), so the only unwind between the sweep and the
-/// returns is an injected one ([`InjectedCloseUnwind`]).
+/// returns is an injected one ([`inject_close_unwind`]).
 #[test]
 fn an_unwind_out_of_the_close_returns_what_was_withheld() {
     const CLASS: usize = ENTITY_SIZE * 8;
@@ -121,7 +121,7 @@ fn an_unwind_out_of_the_close_returns_what_was_withheld() {
         "the death was withheld"
     );
 
-    let armed = InjectedCloseUnwind::arm();
+    let armed = inject_close_unwind();
     let raised = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         drop(window);
     }));
@@ -160,7 +160,7 @@ fn an_unwind_out_of_the_close_returns_what_was_withheld() {
 ///
 /// The panic is injected, the reset's own sites being an underflowed ledger
 /// and a poisoned pool mutex: a test can raise neither without taking the
-/// tests after it down with it (`crate::cycle::arena::InjectedResetFailure`).
+/// tests after it down with it (`crate::cycle::arena::inject_reset_failure`).
 ///
 /// A live entity keeps the victim's block off the pool, so the block's own
 /// words can be read after the unwind.
@@ -195,7 +195,7 @@ fn a_panic_in_the_reset_returns_every_withheld_slot() {
         "the death was withheld"
     );
 
-    let armed = crate::cycle::arena::InjectedResetFailure::arm();
+    let armed = crate::cycle::arena::inject_reset_failure();
     let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         drop(window);
     }));

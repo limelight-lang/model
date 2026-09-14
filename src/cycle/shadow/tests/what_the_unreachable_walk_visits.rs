@@ -19,7 +19,7 @@ unsafe fn visited(array: *mut RowArray) -> Vec<u32> {
     let mut seen = Vec::new();
     assert!(
         unsafe {
-            for_each_unreachable(array, |index| {
+            for_each_of_color(array, Color::PotentiallyUnreachable, |index| {
                 seen.push(index);
                 true
             })
@@ -130,7 +130,7 @@ fn a_refusing_visitor_stops_the_walk_and_is_reported() {
 
     let mut seen = Vec::new();
     let ran_out = unsafe {
-        for_each_unreachable(array, |index| {
+        for_each_of_color(array, Color::PotentiallyUnreachable, |index| {
             seen.push(index);
             seen.len() < 2
         })

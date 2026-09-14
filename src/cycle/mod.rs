@@ -1,7 +1,8 @@
 //! `rc-cycle`: cycle collection from a mutator-fed candidate set.
 //!
 //! The design is `rfc/model/gc/rc-cycle.md` and is normative; this module
-//! is its implementation as `PLAN.md`'s S36 through S40 build it. Nothing
+//! is its implementation, the in-line collection whole, with the maturation
+//! prune and the collector thread still `PLAN.md` S37's and S38's. Nothing
 //! [`collect`] is the order the rest of them run in, and the two ABI entries
 //! of `crate::gc` are its callers. **Candidates are gathered by the mutator**
 //! — [`queue`] takes one from every non-final decrement — so that when a trace

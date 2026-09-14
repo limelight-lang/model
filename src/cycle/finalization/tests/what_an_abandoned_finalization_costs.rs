@@ -189,8 +189,37 @@ fn a_revalidation_dropped_instead_of_closed_fails() {
 
     let output = child_run("a_revalidation_dropped_instead_of_closed_fails", CHILD);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("a revalidation holding guarded members"),
+        String::from_utf8_lossy(&output.stderr)
+            .contains("a revalidation was dropped instead of closed"),
         "a component never read again keeps the guards the confirm wrote"
+    );
+}
+
+/// The close is where the commit is counted, so the refusal does not depend
+/// on a guard standing: an empty finalization dropped past its destructor pass
+/// fails the run the same way, where a guard count would have read zero
+/// against zero and let it go.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns a child process, which Miri's isolation forbids"
+)]
+fn an_empty_revalidation_dropped_instead_of_closed_fails() {
+    const CHILD: &str = "LL_FINALIZATION_UNCLOSED_EMPTY_REVALIDATION_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let _g = test_guard();
+        let pass = Finalization::begin().seal().destructors();
+        drop(pass.close());
+        return;
+    }
+
+    let output = child_run(
+        "an_empty_revalidation_dropped_instead_of_closed_fails",
+        CHILD,
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("the commit goes uncounted"),
+        "an empty commit is counted at the close, so its revalidation is closed or the run fails"
     );
 }
 

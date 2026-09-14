@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::array::head::{CoherentView, StorageHead, StorageTag};
 use crate::refcount::{MemoryCategory, RcHeader};
-use crate::value::Value;
+use crate::value::{DISCRIMINATING_WORD_OFFSET, Value};
 
 /// One element to the next. The walkers stride the storage by raw
 /// offsets rather than through a `&Value`, because they may be racing a
@@ -238,7 +238,7 @@ impl Vector {
             let at = self.element_ptr(head, i);
             let value = unsafe { load_element(at) };
             unsafe { store_element(at, Value::null()) };
-            if value.is_refcounted() {
+            if value.is_pointer() {
                 displaced(value.entity_ptr());
             }
         }
@@ -289,8 +289,8 @@ unsafe fn load_element(at: *mut u8) -> Value {
 /// Publish `v` at `at` as the two words the collector loads.
 ///
 /// **Both words go out whole**, unlike the ordered hash's entry, which
-/// masks its second word because it keeps a chain link in the Box's
-/// reserved bytes. A vector has no links to keep, so there is nothing to
+/// composes the element's tag word because it keeps a chain link in its
+/// upper bytes. A vector has no links to keep, so there is nothing to
 /// preserve and nothing that could travel in a copy.
 ///
 /// # Safety
@@ -300,7 +300,8 @@ unsafe fn store_element(at: *mut u8, v: Value) {
     let words = v.into_words();
     unsafe {
         (*(at as *const AtomicU64)).store(words[0], Ordering::Relaxed);
-        (*(at.add(8) as *const AtomicU64)).store(words[1], Ordering::Relaxed);
+        (*(at.add(DISCRIMINATING_WORD_OFFSET) as *const AtomicU64))
+            .store(words[1], Ordering::Relaxed);
     }
 }
 

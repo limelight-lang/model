@@ -23,7 +23,7 @@
 
 use crate::object::Object;
 use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind, RcHeader};
-use crate::value::Value;
+use crate::value::{DISCRIMINATING_WORD_OFFSET, Value};
 
 /// The kind bits of a live entity's header.
 ///
@@ -76,11 +76,12 @@ pub(crate) enum CellShape {
     /// A bare pointer slot: an object's pointer run.
     Pointer,
     /// A `Value` inside the entity's own body, or a mixed vector's
-    /// element, which keeps nothing in its reserved bytes.
+    /// element, which keeps nothing in its tag word's upper bytes.
     Box,
-    /// A hash entry's element, whose reserved bytes carry the entry's
-    /// collision link: a whole-`Value` store would publish zeros over the
-    /// link, and zero is a legal entry index rather than an end of chain.
+    /// A hash entry's element, whose tag word carries the entry's
+    /// collision link in its upper bytes: a whole-`Value` store would
+    /// publish zeros over the link, and zero is a legal entry index rather
+    /// than an end of chain.
     Element,
     /// A hash entry's string key, which has no cell-wise empty state at
     /// all: a null key word reads as an integer key, so the unit that can
@@ -252,8 +253,9 @@ pub(crate) enum OutsideCarry {
 /// otherwise be one per layout. Tracing on a quiescent heap reads
 /// plainly; a collector thread races the mutator and must read
 /// relaxed-atomically, because a plain read against a concurrent store
-/// is undefined behaviour rather than a torn value — and the design
-/// rests on a torn read costing at most a phantom edge or a missed one.
+/// is undefined behaviour rather than a stale value — and the design
+/// rests on the one word a reader interprets being written by one store
+/// (`rfc/model/values.md`, "ValueBox Layout").
 /// Parameterizing the read instead of copying the stride is what lets
 /// one enumerator serve both. Only the plain reader exists today; S38.0
 /// adds the collector's (`PLAN.md`).
@@ -295,9 +297,9 @@ pub(crate) trait CellReader {
         visit: &mut dyn FnMut(Cell),
     );
 
-    /// Read the eight bytes at `addr` as an integer. For the second word
-    /// of a `Value`, which carries the tag and flags rather than an
-    /// address.
+    /// Read the eight bytes at `addr` as an integer. For the `+8` word
+    /// of a `Value`, which is decided on as an integer — a tag word, zero,
+    /// or the pointer's bits — and never dereferenced as read.
     ///
     /// # Safety
     /// `addr` must be an aligned, readable eight-byte word of a live
@@ -342,30 +344,31 @@ impl CellReader for PlainCells {
 /// The counted child of the sixteen-byte `Value` at `at`, or `None` when
 /// the cell holds nothing counted.
 ///
-/// The payload word is read as an **integer** rather than as a pointer,
-/// which is `Value`'s doing rather than a shortcut: `Value::entity` stores
-/// the address as a `u64`, so the bytes carry no provenance and reading
-/// them back as a pointer yields one Miri rejects on first use.
-/// `entity_ptr` recovers it by the same cast.
+/// One load: the `+8` word alone decides, non-zero with bit 0 clear being
+/// the pointer and anything else — zero, a tag word, a container's null —
+/// no child (`rfc/model/values.md`, "ValueBox Layout"). The `+0` word is
+/// never read, so no store the mutator makes can be seen half-way: each
+/// spelling of `+8` is one store's.
 ///
-/// The payload is read before the flags, and both readers may see a store
-/// land between the two, so a `Value` can be read torn across its words.
-/// A torn read costs a phantom edge or a missed one, never a wrong free
-/// (`rfc/model/gc/rc-cycle.md`, "Speculative tracing and exact validation").
+/// The word is read as an **integer** rather than as a pointer, which is
+/// `Value`'s doing rather than a shortcut: `Value::entity` stores the
+/// address as a `u64`, so the bytes carry no provenance and reading them
+/// back as a pointer yields one Miri rejects on first use. `entity_ptr`
+/// recovers it by the same cast.
 ///
 /// # Safety
 /// `at` addresses a readable, aligned `Value` of a live entity, which a
 /// concurrent reader `R` may find the mutator writing.
 #[inline]
 pub(crate) unsafe fn counted_box_cell<R: CellReader>(at: *const u8) -> Option<Cell> {
-    let child = unsafe { R::word(at) } as *mut RcHeader;
-    if !Value::refcounted_in_meta_word(unsafe { R::word(at.add(8)) }) {
+    let w8 = unsafe { R::word(at.add(DISCRIMINATING_WORD_OFFSET)) };
+    if !Value::is_pointer_word(w8) {
         return None;
     }
 
     Some(Cell {
         addr: at as usize,
-        child,
+        child: w8 as *mut RcHeader,
         shape: CellShape::Box,
     })
 }
@@ -422,17 +425,20 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
     const REFERENCE: u32 = EntityKind::Reference as u32;
     const ARRAY: u32 = EntityKind::Array as u32;
     const KEY_OFFSET: usize = std::mem::offset_of!(crate::array::entry::Entry, key_word);
-    const VALUE_OFFSET: usize = crate::array::entry::ELEMENT_OFFSET;
+    const ELEMENT_OFFSET: usize = crate::array::entry::ELEMENT_OFFSET;
+    const CLASS_OFFSET: usize = std::mem::offset_of!(crate::object::Object, class);
+    const REFERENCE_VALUE_OFFSET: usize =
+        std::mem::offset_of!(crate::reference::LLReference, value);
     match kind {
         OBJECT | LAZY => {
             // The class word is the entity's own and goes through the
             // reader; the descriptor it names is immortal and does not.
-            let class =
-                unsafe { R::ptr((entity as *const u8).add(8)) } as *const crate::class::Class;
+            let class = unsafe { R::ptr((entity as *const u8).add(CLASS_OFFSET)) }
+                as *const crate::class::Class;
             unsafe { crate::object::for_each_counted_cell::<R>(entity as *mut u8, class, visit) }
         }
         REFERENCE => {
-            let at = unsafe { (entity as *const u8).add(8) };
+            let at = unsafe { (entity as *const u8).add(REFERENCE_VALUE_OFFSET) };
             if let Some(cell) = unsafe { counted_box_cell::<R>(at) } {
                 visit(cell);
             }
@@ -505,11 +511,11 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                     });
                 }
 
-                let value_at = unsafe { at.add(VALUE_OFFSET) };
+                let value_at = unsafe { at.add(ELEMENT_OFFSET) };
                 if let Some(cell) = unsafe { counted_box_cell::<R>(value_at) } {
                     // The shape the reader built is the width; what the
-                    // entry adds is the collision link in the reserved
-                    // bytes, which only this stride knows is there.
+                    // entry adds is the collision link in its tag word,
+                    // which only this stride knows is there.
                     visit(Cell {
                         shape: CellShape::Element,
                         ..cell
@@ -527,7 +533,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
 /// a collection may be in flight, and the collector reads the same cell
 /// as a relaxed atomic. A plain write against that load is a
 /// mixed-atomicity data race, which is undefined behaviour rather than
-/// the torn value a trace is built to tolerate.
+/// the stale word a trace is built to tolerate.
 ///
 /// # Safety
 /// `cell` addresses a live, writable `Pointer` or `Box` cell; the three
@@ -631,7 +637,9 @@ pub(crate) unsafe fn sever_cell(
 /// than a cell because no caller writes the cell again — the sever has
 /// already emptied it — and it is a closure rather than a container because
 /// the memory a collection's teardown holds its children in comes from the
-/// memory manager (`PLAN.md` S36.9; [`crate::cycle::reclamation`]).
+/// memory manager and never from a `Vec` ([`crate::cycle::reclamation`];
+/// `dev/DECISIONS.md`, "the reset window's memory comes from the manager, and
+/// an allocation it cannot get is a refusal").
 ///
 /// **The single sever dispatch**, beside [`trace_cells`], and it goes
 /// through that walker rather than striding again: one layout, one

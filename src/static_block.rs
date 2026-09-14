@@ -168,8 +168,11 @@ unsafe fn free_list(list: *mut Registered) {
 unsafe fn tear_down(block: *mut u8, layout: *const Class) {
     // The `Vec` is this pass's own and not a collection's: thread exit runs
     // outside a collection, on the machine stack, and the sink the sever takes
-    // is whatever its caller can hold (`PLAN.md` S36.9's rule binds the bytes
-    // cycle collection owns).
+    // is whatever its caller can hold. It is still a global allocation on a
+    // runtime path, which the ruling forbids; the backlog line "The exit's
+    // own containers" in `PLAN.md` owes its replacement (`dev/DECISIONS.md`,
+    // "the reset window's memory comes from the manager, and an allocation it
+    // cannot get is a refusal").
     let mut displaced: Vec<*mut RcHeader> = Vec::new();
     unsafe { crate::object::sever_counted_slots(block, &*layout, |child| displaced.push(child)) };
     for child in displaced {

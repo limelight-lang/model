@@ -22,7 +22,7 @@
 //! binary search. The row form holds the head of the collection's touched list
 //! — the arena's own memory, and a raw pointer rather than a borrow so that a
 //! reader holding a membership can still hand the arena to a teardown that
-//! needs it ([`crate::cycle::reclamation::reclaim`]).
+//! needs it ([`crate::cycle::reclamation::reclaim_before_drops`]).
 //!
 //! # Why the row form counts once, at construction
 //!
@@ -37,6 +37,7 @@
 //! is closed under its in-edges, so a part of one is not a set that can be
 //! torn down (`crate::cycle::members`).
 
+use crate::cells::{self, PlainCells};
 use crate::cycle::arena::find_initialized_row;
 use crate::cycle::row::{self, EdgeTarget, entity_at, resolve_edge_target};
 use crate::cycle::shadow::{self, Color, RowArray};
@@ -128,6 +129,48 @@ impl<'a> Membership<'a> {
                 );
             }
         }
+    }
+
+    /// The counted edges from a member to a member: what the members hold of
+    /// each other, which the exact validation subtracts from their sum.
+    ///
+    /// # Safety
+    /// As [`for_each`](Self::for_each), and every member's cells are readable
+    /// under the exact validation's own condition — the owning thread, no
+    /// mutator beside it.
+    pub(crate) unsafe fn internal_edges(&self) -> usize {
+        unsafe { self.count_cells_where(|inside| inside) }
+    }
+
+    /// The counted edges from a member to an entity outside the commit: the
+    /// children a sever displaces, and the room its deferred drops need.
+    ///
+    /// # Safety
+    /// As [`internal_edges`](Self::internal_edges).
+    pub(crate) unsafe fn external_children(&self) -> usize {
+        unsafe { self.count_cells_where(|inside| !inside) }
+    }
+
+    /// One stride over every member's counted cells through the plain tracer,
+    /// counting the cells whose child `chosen` keeps, given whether that child
+    /// is a member. The same cells and the same membership test the sever
+    /// uses, which is what lets the sever's count be checked against this one.
+    unsafe fn count_cells_where(&self, chosen: impl Fn(bool) -> bool) -> usize {
+        let mut count = 0;
+        unsafe {
+            self.for_each(|member| {
+                // The kind is loaded here and passed down rather than read
+                // inside the tracer, which is the contract `trace_cells`
+                // states.
+                let kind = cells::entity_kind(member);
+                cells::trace_cells::<PlainCells>(member, kind, |cell| {
+                    if chosen(self.contains(cell.child)) {
+                        count += 1;
+                    }
+                });
+            })
+        };
+        count
     }
 
     /// Whether `entity` is a member of this commit.

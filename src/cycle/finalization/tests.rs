@@ -1,6 +1,8 @@
 use super::*;
 use crate::class::ClassBuilder;
-use crate::cycle::testing::{dismantle_ring, read_as_unreachable, ring, traced_unreachable_ring};
+use crate::cycle::testing::{
+    dismantle_ring, headers, read_as_unreachable, release_own_edge, ring, traced_unreachable_ring,
+};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
@@ -50,7 +52,7 @@ unsafe fn drop_cell(cell: *mut LLWeakRef) {
 }
 
 /// The refcount each member carries, in the caller's own order — which
-/// `Finalization::confirm` does not keep, sorting the slice it is handed.
+/// `Membership::listed` does not keep, sorting the slice it is handed.
 ///
 /// # Safety
 /// Every member is a live object of this thread's GC heap.

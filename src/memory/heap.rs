@@ -2210,7 +2210,7 @@ pub(crate) fn exit_sequences() -> usize {
 /// The refusal was written against a withheld free, whose backlog the exit
 /// disposed and nothing rebuilt. What withholds today withholds one slot at a
 /// time, in two forms: a slot a queue entry names waits for the entry, and a
-/// death inside S36.2's trace window waits on that window's own stack
+/// death inside a trace window waits on that window's own stack
 /// (`memory::stdapi::ll_free`). The refusal therefore still protects a
 /// real backlog during thread exit.
 pub(crate) fn thread_may_free() -> bool {
@@ -2404,7 +2404,11 @@ unsafe fn entity_alloc_once(size: usize) -> *mut u8 {
 /// free-list load on a path that has already paid a whole trace, and a null
 /// from it goes to the factory, whose caller raises memory-exhausted
 /// (`rfc/runtime/exceptions.md`, "Allocation failure is an ordinary
-/// exception").
+/// exception"). The collection is not skipped on a "last one freed nothing"
+/// reading either — a registered candidate can die between two refusals, and
+/// the trace is the one owner action that returns its slot; what a throttle
+/// would have to invalidate on, and the price of the repeats as measured, is
+/// `dev/DECISIONS.md`, "do not cache an empty pressure collection".
 ///
 /// **A collection returns completed candidate slots at the owner's final
 /// reading.** The commit first withholds them through `ll_free`; after the
@@ -2485,7 +2489,7 @@ pub unsafe extern "C" fn ll_entity_reserve(
 /// where this collection has met the cell's block: the stamp is the whole of
 /// that condition (`crate::cycle::deferred_slot_reuse::classify`), so a cell
 /// of a block no row addresses goes back at once and one of a stamped block
-/// waits for the close (S36.2, `PLAN.md`).
+/// waits for the close.
 ///
 /// # Safety
 /// Every element must be an unconsumed cell from [`ll_entity_reserve`].

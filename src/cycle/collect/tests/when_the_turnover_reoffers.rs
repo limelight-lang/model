@@ -32,12 +32,6 @@ use crate::cycle::queue::{
 };
 use crate::refcount::read_maturation_stamp;
 
-/// A class with one counted Box property, which a case uses to hold a ring
-/// member from outside the component.
-fn keeper_class(name: &str) -> *const Class {
-    ClassBuilder::new(name).prop("held", true).build()
-}
-
 /// The age the stamp of `entity` carries: how many collections of one epoch
 /// have read its component live.
 ///

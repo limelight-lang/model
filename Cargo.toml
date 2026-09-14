@@ -122,6 +122,10 @@ harness = false
 name = "strings"
 harness = false
 
+[[bench]]
+name = "value"
+harness = false
+
 # The hardware arm of `PLAN.md` S40.3: a driver over the loads, run under
 # `perf stat` by hand. Built with `--features bench-loads`; without it the
 # binary compiles to a line of output, so the gate's `--no-run` still checks

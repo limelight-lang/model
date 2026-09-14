@@ -460,8 +460,8 @@ fn the_density_and_edge_readings_draw_nothing_and_move_no_ledger_figure() {
         let fixture = build(class, 16, &(0..16).collect::<Vec<usize>>());
 
         // The window and the trace run outside the bracket: what is
-        // priced is the reading, and a collection's own draws are
-        // S36.11's subject.
+        // priced is the reading, and a collection's own draws are the
+        // census's subject (`crate::cycle::census`).
         let mut active = ActiveTrace::open().expect("the pool funded the trace window");
         active.detach_candidates();
         let (arena, batch) = active.rows_and_roots();

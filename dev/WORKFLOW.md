@@ -264,7 +264,7 @@ the other five named a stage the plan had deleted that week. The maps are swept 
 kind of forward claim; `dev/DECISIONS.md`, `dev/POSTMORTEM.md` and
 `dev/BENCHMARKS.md` are not, an entry there naming the stage of its own
 day being a record rather than a pointer. Grep the bare number, because
-punctuation hides one: `(S36.2)`, `S36-2`, `marked S36.2`.
+punctuation hides one: `(S<n>.<m>)`, `S<n>-<m>`, `marked S<n>.<m>`.
 
 **An `S<n>` in this tree is this plan's, and a debt the `rfc` plan owns is
 never written as one.** The two plans number independently and both delete
@@ -276,7 +276,7 @@ question stands anyway. Found on 2026-08-27, when the queue's comments named
 `rfc/dev/PLAN.md` S8.5 in four places and the sweep reported a dead stage.
 
 An
-`#[expect(dead_code, reason = "…S36.2")]` is the self-reporting form of
+`#[expect(dead_code, reason = "…S<n>.<m>")]` is the self-reporting form of
 the same debt — the attribute goes unfulfilled the moment the caller
 arrives.
 
@@ -435,28 +435,66 @@ all of them pass a normal `cargo test`.
 **It runs at the close of a logical block, not at the close of a step**
 (Edmond, 2026-09-01). A block is the work a reader would name as one thing —
 a stage, or the group of slices that share a structure — and its run is
-targeted at the modules the whole block touched, named in the closing record.
-Steps inside the block are gated by the commands above and by their own tests.
-The reason is the clock: a slice costs ten minutes to an hour of a box that
-has no core to spare while it runs, and a per-step run spends that on the same
-code several times.
+targeted at the tests that reach what the block changed in `unsafe` code, named
+in the closing record. Steps inside the block are gated by the commands above
+and by their own tests. The reason is the clock: a slice costs ten minutes to an
+hour of a box that has no core to spare while it runs, and a per-step run
+spends that on the same code several times.
 
 **A change that adds no `unsafe` and no pointer arithmetic needs no run at
 all** — a rename, a comment pass, an edit confined to tests. The vocabulary
 stage of 2026-09-02 closed without one.
+
+**The run selects tests, never modules** (Edmond, 2026-09-14: machine time is
+paid for, and a run over a module spends most of it on code the change never
+reached). What Miri finds is a defect in `unsafe` code, so the population is
+the tests that execute the `unsafe` lines the change touched, and it is taken
+from the diff rather than from the file list. Pull every added or removed line
+that carries `unsafe`, a raw pointer, `.add(`, `ptr::`, `as usize`, `from_raw`
+or `NonNull`; name the function each line stands in; select the tests that
+execute that function — its own module's tests where every one of them runs
+through it, otherwise the tests that name it, found by grep, passed to the
+harness by name. A function reached through another module's call selects
+that module's tests too: `Membership::count_cells_where` is reached by every
+validation and every reclamation, so both test modules ran for it on
+2026-09-14 while `membership`'s own three did not. A line the change moved
+without altering — a wrapper folded, a visibility widened, a call re-arranged
+around the same pointer operations — selects one test per branch of the
+function it moved into, because Miri reports a wrong retag on the first
+execution and not on the thousandth. A fixture that holds raw pointers counts
+as `unsafe` code for this purpose, because the fixtures have broken the
+provenance rule before (`dev/POSTMORTEM.md`, "the write-provenance rule was
+broken again, in a file no Miri slice covered"). A test the previous run of
+the same tree passed is not run again: a killed run's log names what it
+finished, and each test is its own execution under Miri.
+
+The record names the selection and the line each part of it was chosen for,
+so that a reader can tell a narrow run from a short one. The first run under
+this rule, 2026-09-14, is the measure of what it saves: the module run it
+replaced had spent an hour on 44 of 153 tests before the timeout killed it,
+and the 47 the diff selected from the 108 left finished in 25 minutes of wall
+across four processes, all green (`git log`, 2026-09-14, the commit that
+records the repairs).
 
 ```
 MIRIFLAGS="-Zmiri-ignore-leaks" cargo +nightly miri test \
     --target x86_64-unknown-linux-gnu --lib -- --test-threads=2
 ```
 
-**Cap the threads and time the run from outside.** The harness defaults
-to one thread per core and each Miri thread carries its own view of the
-interpreted heap; that default took the machine down on 2026-08-09, when the
-box read 7.8 GiB of memory and 2 GiB of swap. Two threads held, at a load
-around 2. On 2026-09-06 the same box reads 23 GiB, 8 GiB of swap and sixteen
-cores, so the cap stands on the older reading and what a wider run costs here
-is unmeasured. And the
+**Cap the threads, parallelise by process, and time the run from outside.**
+The harness defaults to one thread per core and each Miri thread carries its
+own view of the interpreted heap; that default took the machine down on
+2026-08-09, when the box read 7.8 GiB of memory and 2 GiB of swap. Two threads
+held, at a load around 2. On 2026-09-06 the same box reads 23 GiB, 8 GiB of
+swap and sixteen cores, so the cap stands on the older reading and what a
+wider run costs here is unmeasured. A wider run would buy no time in any case:
+Miri interprets every test thread on one host thread, so `--test-threads` sets
+how many interpreted heaps stand at once and nothing about the clock — a run
+at eight threads on 2026-09-14 held one core at 100 % and the other fifteen
+idle. What runs slices at once is one `cargo miri test` process per slice:
+cargo holds the build-directory lock only until the binary is up to date, and
+four such processes on 2026-09-14 ran their tests side by side at 0.6–0.9 GiB
+of resident memory each. And the
 `finished in …s` line is Miri's own clock rather than the wall's — two
 runs over different trees reported 154.41 s and 154.59 s while each cost
 tens of minutes — so a Miri run is timed by `time` or by the shell, and a
@@ -484,7 +522,7 @@ two-configuration figures of 2026-08-08 went with the configurations
 themselves. One test dominating
 a run has taken it from a quarter of an hour to 28 minutes on its own
 (`dev/POSTMORTEM.md`, 2026-08-08). That is the second reason the run is
-targeted at the modules a block touched rather than at the suite; whether a
+targeted at the tests a block's `unsafe` changes reach rather than at the suite; whether a
 whole-suite run belongs before a release is Edmond's, and open.
 
 **Run it in slices.** `array::` alone is about an hour at two threads,

@@ -7,18 +7,22 @@
 //! +0   hash_or_key  u64   full hash of a string key, or the integer key
 //! +8   key_word     usize string key, tagged in its low three bits;
 //!                         0 = integer key, 1 = hole
-//! +16  element      Box   the value; its reserved bytes carry the entry's
-//!                         collision link, a u32 at +28
+//! +16  element      Box   the value; the top four bytes of its tag word
+//!                         carry the entry's collision link, a u32 at the
+//!                         entry's +28 on the immediate arm and +20 on the
+//!                         pointer arm (`rfc/model/arrays-hashtable.md`,
+//!                         "The collision link lives inside the element's
+//!                         ValueBox")
 //! ```
 //!
-//! Two rules the code here exists to hold. Every write to the element's
-//! second word, and to `key_word`, is one relaxed atomic store of the width
+//! Two rules the code here exists to hold. Every write to either word of
+//! the element, and to `key_word`, is one relaxed atomic store of the width
 //! the collector loads (`cells::trace_cells`): change one width and change
 //! the other. And every link is an index rather than a pointer, so
 //! promotion copies the storage without fixing anything up.
 
 use crate::string::LLString;
-use crate::value::Value;
+use crate::value::{DISCRIMINATING_WORD_OFFSET, TAG_WORD_BIT, TAG_WORD_MASK, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// End of a chain, and the empty index slot.
@@ -49,14 +53,18 @@ pub(crate) const KEY_TAG_MASK: usize = 7;
 /// `2` and array `3` when it arrives.
 pub(crate) const KEY_TAG_STRING: usize = 1;
 
-/// Where the link sits inside the element's second word: the top four
-/// bytes, which is the Box's reserved offset +12 and the entry's +28. The
-/// four below it are the tag, the flags and two bytes still spare.
+/// Where the link sits inside the element's tag word: the top four bytes.
+/// The four below it are the flags, the tag and two bytes still spare.
 const LINK_SHIFT: u32 = 32;
-/// What a stored second word keeps of the Box: the tag and the flags. The
-/// two spare bytes above them read back as zero, so a Box handed out of an
-/// entry is bit-identical to one built by a constructor.
-const BOX_META_MASK: u64 = 0x0000_0000_0000_FFFF;
+/// The `+8` word an entry spells a null element with, before the link goes
+/// in: `(0, link << 32)` would be an even non-zero `+8` word, which is a
+/// pointer to a collector reading that word alone. Both element writers
+/// normalise a zero `+8` word to this one; `store_link` requires it done.
+/// What a stored tag word keeps of the box is its low sixteen bits
+/// ([`TAG_WORD_MASK`]), so a box handed out of an entry is bit-identical
+/// to one built by a constructor — except a null, which comes out as
+/// `(0, 0x0001)`.
+const NULL_ELEMENT_WORD: u64 = TAG_WORD_BIT;
 
 /// Where the element begins inside an entry. The walkers stride the
 /// storage by raw offsets rather than through `&Entry`, because they may
@@ -77,11 +85,12 @@ pub struct Entry {
     /// the sentinels carry state no `Option` could; the pointer edge is
     /// [`string_key`](Self::string_key) alone.
     pub key_word: usize,
-    /// The element, and the chain link in its reserved bytes. Private:
-    /// a flat assignment would publish zeroed reserved bytes over the
-    /// link, and zero is a legal entry index rather than an end of chain,
-    /// so the corruption would be a self-referencing entry rather than a
-    /// crash.
+    /// The element, and the chain link in the top bytes of its tag word.
+    /// Private: a flat assignment would publish a zeroed tag word over
+    /// the link, and zero is a legal entry index rather than an end of
+    /// chain, so the corruption would be a self-referencing entry rather
+    /// than a crash — and it would publish a null as `(0, 0)`, which the
+    /// next `store_link` would turn into a pointer.
     element: Value,
 }
 
@@ -117,17 +126,18 @@ impl Entry {
         }
     }
 
-    /// The element, with the reserved bytes cleared, so no caller ever
-    /// holds this entry's chain link.
+    /// The element, with the container bits of its tag word cleared, so
+    /// no caller ever holds this entry's chain link.
     #[inline]
     pub fn value(&self) -> Value {
-        self.element.without_reserved()
+        self.element.without_container_bits()
     }
 
-    /// The next entry in this bucket's chain, or [`NONE`].
+    /// The next entry in this bucket's chain, or [`NONE`]: the top bytes
+    /// of whichever word is the tag word, selected by the `+8` word's arm.
     #[inline]
     pub fn link(&self) -> u32 {
-        (self.element.into_words()[1] >> LINK_SHIFT) as u32
+        (self.element.tag_word() >> LINK_SHIFT) as u32
     }
 
     /// Mark as deleted. The element is *not* cleared here: releasing it is
@@ -170,25 +180,21 @@ impl Entry {
     }
 
     /// Publish `v` as the element, keeping the chain link this entry
-    /// already carries.
+    /// already carries. The link moves with the tag word when the arm
+    /// changes, and the word that stops being the tag word loses it.
     ///
     /// Two relaxed atomic stores, one per word, because a collector
-    /// reads both words relaxed and an access of another width — or a
+    /// reads the `+8` word relaxed and an access of another width — or a
     /// plain store — against that is a data race rather than a torn
-    /// value, which costs at most a phantom edge.
+    /// value. Torn, the pair is still one the collector reads correctly:
+    /// it interprets `+8` alone, and each spelling of it is one store's.
     ///
     /// # Safety
     /// `e` addresses a live entry of a live table.
     #[inline]
     pub unsafe fn store_element(e: *mut Entry, v: Value) {
-        let words = v.into_words();
-        unsafe {
-            let payload = Self::payload_word(e);
-            let meta = Self::meta_word(e);
-            let link = (*meta).load(Ordering::Relaxed) & !BOX_META_MASK;
-            (*payload).store(words[0], Ordering::Relaxed);
-            (*meta).store((words[1] & BOX_META_MASK) | link, Ordering::Relaxed);
-        }
+        let link = unsafe { Self::link_bits(e) };
+        unsafe { Self::store_words(e, Self::compose(v, link)) };
     }
 
     /// Publish `v` as the element **and** `link` as the chain link, which
@@ -198,26 +204,88 @@ impl Entry {
     /// `e` addresses a live entry of a live table.
     #[inline]
     pub unsafe fn store_element_and_link(e: *mut Entry, v: Value, link: u32) {
-        let words = v.into_words();
+        unsafe { Self::store_words(e, Self::compose(v, (link as u64) << LINK_SHIFT)) };
+    }
+
+    /// Repoint this entry's chain link, keeping the element: one store,
+    /// into the tag word of the element's arm.
+    ///
+    /// # Safety
+    /// `e` addresses a live entry of a live table, whose element was
+    /// published by one of the two writers above.
+    #[inline]
+    pub unsafe fn store_link(e: *mut Entry, link: u32) {
         unsafe {
-            (*Self::payload_word(e)).store(words[0], Ordering::Relaxed);
-            (*Self::meta_word(e)).store(
-                (words[1] & BOX_META_MASK) | ((link as u64) << LINK_SHIFT),
-                Ordering::Relaxed,
-            );
+            let w8 = (*Self::word(e, DISCRIMINATING_WORD_OFFSET)).load(Ordering::Relaxed);
+            debug_assert_ne!(w8, 0, "an entry never holds the barrier's all-zero null");
+            let tag_word = Self::word(e, Self::tag_word_offset(w8));
+            let kept = (*tag_word).load(Ordering::Relaxed) & TAG_WORD_MASK;
+            (*tag_word).store(kept | ((link as u64) << LINK_SHIFT), Ordering::Relaxed);
         }
     }
 
-    /// Repoint this entry's chain link, keeping the element.
+    /// The two words `v` is published as with `link` — already shifted
+    /// into the top bytes — in its tag word: a null is spelled with
+    /// [`NULL_ELEMENT_WORD`] first, so that the link never makes an even
+    /// non-zero `+8` word.
+    ///
+    /// Selects rather than indexes the pair: an index into `[w0, w8]`
+    /// compiles to a spill of both words and a read-modify-write through
+    /// the stack, on the store path as on the chain walk
+    /// (`dev/BENCHMARKS.md`, "S48.2 the box's price after the relayout").
+    #[inline]
+    fn compose(v: Value, link: u64) -> [u64; 2] {
+        let [w0, w8] = v.into_words();
+        let w8 = if w8 == 0 { NULL_ELEMENT_WORD } else { w8 };
+        let pointer = Value::is_pointer_word(w8);
+        let tag_word = if pointer { w0 } else { w8 };
+        debug_assert_eq!(
+            tag_word & !TAG_WORD_MASK,
+            0,
+            "a box entering an entry carries no container bits"
+        );
+        let composed = (tag_word & TAG_WORD_MASK) | link;
+        if pointer {
+            [composed, w8]
+        } else {
+            [w0, composed]
+        }
+    }
+
+    /// The link this entry carries, in place in its tag word and with the
+    /// box's own bits cleared.
+    ///
+    /// # Safety
+    /// As [`store_link`](Self::store_link).
+    #[inline]
+    unsafe fn link_bits(e: *mut Entry) -> u64 {
+        unsafe {
+            let w8 = (*Self::word(e, DISCRIMINATING_WORD_OFFSET)).load(Ordering::Relaxed);
+            debug_assert_ne!(w8, 0, "an entry never holds the barrier's all-zero null");
+            (*Self::word(e, Self::tag_word_offset(w8))).load(Ordering::Relaxed) & !TAG_WORD_MASK
+        }
+    }
+
+    /// Publish both words of the element, `+0` first.
     ///
     /// # Safety
     /// `e` addresses a live entry of a live table.
     #[inline]
-    pub unsafe fn store_link(e: *mut Entry, link: u32) {
+    unsafe fn store_words(e: *mut Entry, words: [u64; 2]) {
         unsafe {
-            let meta = Self::meta_word(e);
-            let kept = (*meta).load(Ordering::Relaxed) & BOX_META_MASK;
-            (*meta).store(kept | ((link as u64) << LINK_SHIFT), Ordering::Relaxed);
+            (*Self::word(e, 0)).store(words[0], Ordering::Relaxed);
+            (*Self::word(e, DISCRIMINATING_WORD_OFFSET)).store(words[1], Ordering::Relaxed);
+        }
+    }
+
+    /// The offset inside the element of its tag word, given its `+8`
+    /// word: `+0` on the pointer arm, `+8` on the immediate arm.
+    #[inline]
+    fn tag_word_offset(w8: u64) -> usize {
+        if Value::is_pointer_word(w8) {
+            0
+        } else {
+            DISCRIMINATING_WORD_OFFSET
         }
     }
 
@@ -234,14 +302,11 @@ impl Entry {
         }
     }
 
+    /// The element's word at `offset` — 0 or [`DISCRIMINATING_WORD_OFFSET`]
+    /// — as the atomic every store and load of it goes through.
     #[inline]
-    unsafe fn payload_word(e: *mut Entry) -> *const AtomicU64 {
-        unsafe { (&raw mut (*e).element) as *const AtomicU64 }
-    }
-
-    #[inline]
-    unsafe fn meta_word(e: *mut Entry) -> *const AtomicU64 {
-        unsafe { ((&raw mut (*e).element) as *mut u8).add(8) as *const AtomicU64 }
+    unsafe fn word(e: *mut Entry, offset: usize) -> *const AtomicU64 {
+        unsafe { ((&raw mut (*e).element) as *mut u8).add(offset) as *const AtomicU64 }
     }
 }
 

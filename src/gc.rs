@@ -3,10 +3,11 @@
 //! What the compiler emits calls to, and what those calls owe the rest of
 //! the runtime. The collector behind them is `rc-cycle`
 //! (`rfc/model/gc/rc-cycle.md`), and the order it runs in is
-//! `crate::cycle::collect`. The two strategies that used to live here —
+//! `crate::cycle::collect`. The two strategies this module once carried —
 //! `rc-trace`'s candidate buffer and trial deletion, and `rc-walk`'s epoch
-//! handshake — were deleted on 2026-08-26 (`dev/DECISIONS.md`), and the code
-//! is on the branch `archive/pre-rc-cycle`.
+//! handshake — are on the branch `archive/pre-rc-cycle`, and why they went is
+//! `dev/DECISIONS.md`, "what the old collectors left behind is deleted, and
+//! what is kept is named".
 //!
 //! **The four symbols survive the deletion because three of the module's
 //! four duties are not the collector's.** The checkpoint pair is the
@@ -35,24 +36,30 @@ thread_local! {
     ///
     /// `Cell<bool>` has no drop glue, which is the rule for anything a
     /// thread exit can reach (`memory::heap::ll_thread_exit`).
-    static DUE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static COLLECTION_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Arm this thread for a collection at its next clean point.
 ///
-/// What arms it today is the candidate queue running out of room in a
-/// spare cell: a reserve draw, or a refusal at both allocation paths.
-/// Neither can collect where it stands, `ll_release` holding no frame, so
-/// the arming is how the poll hears about it (`rfc/model/gc/strategies.md`,
-/// "Collection requests and triggers").
+/// Three callers arm, none of which can collect where it stands. The
+/// candidate queue, when a spare cell runs out of room — a reserve draw, or a
+/// refusal at both allocation paths — because `ll_release` holds no frame
+/// (`crate::cycle::queue`). The pressure collection, at every ending that
+/// leaves a prefix of the lane unread or that the gate refused, because what
+/// stands behind it is garbage the poll has to read
+/// (`crate::cycle::collect::collect_under_pressure`). And the poll itself,
+/// when the epoch has turned over and the deferred lane is re-offered, so
+/// that the same safepoint traces the re-offered roots. The arming is how the
+/// poll hears about any of them (`rfc/model/gc/strategies.md`, "Collection
+/// requests and triggers").
 pub(crate) fn arm() {
-    DUE.with(|due| due.set(true));
+    COLLECTION_ARMED.with(|armed| armed.set(true));
 }
 
 /// Whether this thread was armed, and disarm it.
 #[inline]
-fn take_due() -> bool {
-    DUE.with(|due| due.replace(false))
+fn take_arming() -> bool {
+    COLLECTION_ARMED.with(|armed| armed.replace(false))
 }
 
 /// Whether this thread is armed, without disarming it.
@@ -62,7 +69,7 @@ fn take_due() -> bool {
 /// whether the arming happened or not.
 #[cfg(test)]
 pub(crate) fn is_armed() -> bool {
-    DUE.with(|due| due.get())
+    COLLECTION_ARMED.with(|armed| armed.get())
 }
 
 /// Lower the flag, for a case whose subject is an arming.
@@ -72,7 +79,7 @@ pub(crate) fn is_armed() -> bool {
 /// starts from a flag it lowered rather than from one it assumed down.
 #[cfg(test)]
 pub(crate) fn disarm() {
-    take_due();
+    take_arming();
 }
 
 /// ABI: run a cycle collection now, whether or not one was armed. Returns
@@ -118,7 +125,7 @@ pub extern "C" fn ll_gc_reoffer_deferred() -> usize {
 /// boundary, allocation slow path, request end (`rfc/model/gc/strategies.md`,
 /// §2 and the arm/fire split). The arming *policy* — which signals, which
 /// thresholds — is the compiler's decision, outside this crate; the runtime
-/// records "due" and collects here, where the graph is clean.
+/// records the arming and collects here, where the graph is clean.
 ///
 /// The reserve refills and queue maintenance below happen whether or not the
 /// fire does, an unarmed poll being the ordinary case and the maintenance
@@ -178,7 +185,7 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         return 0;
     }
 
-    if !take_due() {
+    if !take_arming() {
         return 0;
     }
 

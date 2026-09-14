@@ -96,9 +96,8 @@ fn a_slotted_load(class_bytes: usize, members: usize, fillers_between: usize) ->
 ///
 /// Every collection is printed on its own line rather than averaged: the
 /// first draws the thread's workspace and the rest do not, and that
-/// asymmetry is what S36.12 slice (b) asks about, and what
-/// `dev/BENCHMARKS.md`, "S43.1 the sweep's walk against the withheld chain"
-/// reports one line at a time.
+/// asymmetry is what `dev/BENCHMARKS.md`, "S43.1 the sweep's walk against
+/// the withheld chain" reports one line at a time.
 fn report(load: &Load) {
     println!(
         "\n== class {} ({} slots a block), {} members, {} fillers between ==",
@@ -144,10 +143,10 @@ fn report(load: &Load) {
 /// not a density.
 fn every_collection_agrees(load: &Load) {
     let first = load.collections[0];
-    // A reading of nothing is the shape this takes when the arena's row
-    // sweep moves into the scan, which is S36.7's to wire: the walk
-    // would then find a null touched head and every figure would be
-    // zero, and every equality below would still hold.
+    // A reading of nothing is the shape this would take if the arena's row
+    // sweep ever moved into the scan: the walk would then find a null
+    // touched head and every figure would be zero, and every equality below
+    // would still hold.
     assert!(
         first.density.slotted.blocks > 0,
         "the load touched at least one block"

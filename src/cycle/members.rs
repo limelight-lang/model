@@ -32,7 +32,7 @@
 //! colour too: a prefix of the set is not a set that can be torn down, its
 //! members being named by the entities left behind. An overflow therefore
 //! empties the list rather than handing back what fitted, and the driver
-//! traces again over fewer roots (`PLAN.md` S36.7).
+//! traces again over fewer roots (`crate::cycle::collect`).
 //!
 //! # What holds the list between the sweep and the teardown
 //!
@@ -55,10 +55,11 @@ use crate::refcount::RcHeader;
 /// heap.
 ///
 /// Derived rather than round: the lower bound is two median closures of the corpus
-/// this collector is sized against, 381 entities each (`PLAN.md` S37), and the
-/// ceiling is the three widest row arrays the bump must still hold beside it.
-/// What revises it is a measurement of a real pressure collection, which
-/// `PLAN.md` S40.1 takes.
+/// this collector is sized against, 381 entities each, and the ceiling is the
+/// three widest row arrays the bump must still hold beside it
+/// (`dev/DECISIONS.md`, "the member list is the workspace's second region, and
+/// its capacity is 1,024 records"). What revises it is a measurement of a real
+/// pressure collection, which `PLAN.md` S40.1 takes.
 pub(crate) const MEMBER_CAPACITY: u32 = 1_024;
 
 /// The head of the list and the words the sweep reads beside it, resident in
@@ -72,18 +73,44 @@ pub(crate) const MEMBER_CAPACITY: u32 = 1_024;
 #[repr(C, align(64))]
 struct MemberControl {
     /// Records written since the arming, and the length of the list a driver
-    /// reads. Zero after an overflow, which is what makes a refused harvest
-    /// indistinguishable from one that met nothing — [`overflowed`] is the
+    /// reads. Zero after a refused harvest, which is what makes one
+    /// indistinguishable from a harvest that met nothing — [`ending`] is the
     /// word that tells them apart.
     ///
-    /// [`overflowed`]: MemberControl::overflowed
+    /// [`ending`]: MemberControl::ending
     fill: Cell<u32>,
     /// What this arming takes before it gives up, never above
     /// [`MEMBER_CAPACITY`]. A word rather than the constant, so a case can
     /// stage an overflow without writing a thousand entities.
     capacity: Cell<u32>,
-    /// Whether the sweep met more than the capacity holds.
-    overflowed: Cell<bool>,
+    /// How the harvest ended, as a [`HarvestEnding`] code.
+    ending: Cell<u8>,
+}
+
+/// How a harvest ended, which decides what the driver does with an empty list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub(crate) enum HarvestEnding {
+    /// The sweep reached its end and every unreachable row is in the list.
+    Complete = 0,
+    /// The sweep met more than the capacity holds. Fewer roots may fit, so
+    /// the driver traces again over a bound.
+    Overflowed = 1,
+    /// The sweep gave the set up: a row named no entity, or the walk did not
+    /// reach its end. No bound on the roots cures it, so the driver ends the
+    /// collection rather than tracing the same graph again.
+    Abandoned = 2,
+}
+
+impl HarvestEnding {
+    fn from_code(code: u8) -> Self {
+        match code {
+            0 => Self::Complete,
+            1 => Self::Overflowed,
+            2 => Self::Abandoned,
+            other => unreachable!("a harvest ending code no arming wrote: {other}"),
+        }
+    }
 }
 
 const _: () = assert!(size_of::<MemberControl>() == 64);
@@ -138,7 +165,7 @@ pub(crate) unsafe fn arm(region: *mut u8, capacity: u32) -> bool {
     unsafe {
         (&raw mut (*control).fill).write(Cell::new(0));
         (&raw mut (*control).capacity).write(Cell::new(capacity));
-        (&raw mut (*control).overflowed).write(Cell::new(false));
+        (&raw mut (*control).ending).write(Cell::new(HarvestEnding::Complete as u8));
     }
 
     MEMBER_LIST.with(|list| list.set(control));
@@ -172,9 +199,15 @@ pub(crate) unsafe fn push(entity: *mut RcHeader) -> bool {
         "a harvest appends only while it is armed"
     );
 
+    #[cfg(test)]
+    if ABANDON_NEXT_PUSH.with(|armed| armed.replace(false)) {
+        unsafe { abandon() };
+        return false;
+    }
+
     let fill = unsafe { (*control).fill.get() };
     if fill == unsafe { (*control).capacity.get() } {
-        unsafe { (*control).overflowed.set(true) };
+        unsafe { (*control).ending.set(HarvestEnding::Overflowed as u8) };
         return false;
     }
 
@@ -184,8 +217,9 @@ pub(crate) unsafe fn push(entity: *mut RcHeader) -> bool {
 }
 
 /// Give the whole harvest up, which is what a row the dispatch cannot place
-/// costs: the list is emptied at [`end_harvest`] and the driver reads the
-/// refusal the way it reads an overflow.
+/// costs: the list is emptied at [`end_harvest`] and the driver reads
+/// [`HarvestEnding::Abandoned`], which ends its collection — unlike an
+/// overflow, no bound on the roots makes this set fit.
 ///
 /// # Safety
 /// As [`push`].
@@ -196,7 +230,23 @@ pub(crate) unsafe fn abandon() {
         "a harvest is given up only while it is armed"
     );
 
-    unsafe { (*control).overflowed.set(true) };
+    unsafe { (*control).ending.set(HarvestEnding::Abandoned as u8) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether the next record pushed on this thread abandons the harvest
+    /// instead, which is the only way a test build reaches the abandoned
+    /// ending: what raises it in production is a row that names no entity,
+    /// and a debug build ends on `entity_at`'s assertion before that arm.
+    static ABANDON_NEXT_PUSH: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Abandon the next harvest of this thread at its first record
+/// ([`crate::cycle::testing::ArmedInjection`]).
+#[cfg(test)]
+pub(crate) fn abandon_next_harvest() -> crate::cycle::testing::ArmedInjection {
+    crate::cycle::testing::ArmedInjection::arm(&ABANDON_NEXT_PUSH)
 }
 
 /// End the harvest the sweep was running: an overflowed or abandoned list is
@@ -211,7 +261,7 @@ pub(crate) unsafe fn end_harvest() {
         "a harvest ends only where one was armed"
     );
 
-    if unsafe { (*control).overflowed.get() } {
+    if unsafe { (*control).ending.get() } != HarvestEnding::Complete as u8 {
         unsafe { (*control).fill.set(0) };
     }
 }
@@ -244,7 +294,7 @@ impl StandingMembers {
     /// The entities the sweep took, in the order it met them: block by block
     /// of the touched list, and by ascending row inside each block.
     ///
-    /// **Empty after an overflow**, which [`overflowed`](Self::overflowed)
+    /// **Empty after a refused harvest**, which [`ending`](Self::ending)
     /// tells apart from a trace that met nothing unreachable.
     pub(crate) fn entities(&self) -> &[*mut RcHeader] {
         let fill = unsafe { (*self.control).fill.get() } as usize;
@@ -263,11 +313,17 @@ impl StandingMembers {
         unsafe { std::slice::from_raw_parts_mut(records(self.control), fill) }
     }
 
-    /// Whether the trace met more unreachable entities than the region holds,
-    /// which is the driver's signal to trace again over fewer roots rather
-    /// than to tear anything down.
+    /// How the harvest ended: complete, overflowed — the driver's signal to
+    /// trace again over fewer roots rather than to tear anything down — or
+    /// abandoned, which ends the driver's collection.
+    pub(crate) fn ending(&self) -> HarvestEnding {
+        HarvestEnding::from_code(unsafe { (*self.control).ending.get() })
+    }
+
+    /// Whether the trace met more unreachable entities than the region holds.
+    #[cfg(test)]
     pub(crate) fn overflowed(&self) -> bool {
-        unsafe { (*self.control).overflowed.get() }
+        self.ending() == HarvestEnding::Overflowed
     }
 }
 

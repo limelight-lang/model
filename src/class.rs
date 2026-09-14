@@ -78,8 +78,8 @@ pub enum SlotKind {
     Pointer = 1,
     /// A 16-byte [`crate::value::Value`] Box — the one boxed slot form,
     /// for an untyped / `mixed` property (nullable scalars join it later).
-    /// Traced as a Box run (stride 16, skip when the refcounted flag is
-    /// clear).
+    /// Traced as a Box run (stride 16, skip unless the `+8` word is a
+    /// pointer).
     Boxed = 2,
     /// A `bool` byte (1 byte), never traced. Bit-packing into a byte block
     /// is a deferred optimization (`rfc` backlog, A7).
@@ -218,10 +218,10 @@ pub struct Class {
     pub outside: *const (),
     /// Counted-pointer trace runs (stride 8, skip `NULL`).
     pub ptr_runs: *const Run,
-    /// Box trace runs (stride 16, skip when the refcounted flag is clear).
+    /// Box trace runs (stride 16, skip unless the `+8` word is a pointer).
     pub box_runs: *const Run,
     /// Box slots declared **without** a default (stride 16): the factory
-    /// stamps [`crate::value::VALUE_UNDEF`] over these after the
+    /// stamps [`crate::value::TAG_WORD_UNDEF`] over these after the
     /// zero-fill, since an all-zero Box is `null`, not undefined
     /// (`rfc/model/values.md`, Construction). Always a sub-range of a
     /// box run; construction is the only consumer — the GC and teardown
@@ -473,8 +473,8 @@ impl ClassBuilder {
     /// default** (starts `null` from the zero-fill, never undef-tracked),
     /// `false` → a [`SlotKind::Scalar`] slot. Bare-pointer, `bool` and
     /// defaultless-Box slots have their own declarations.
-    pub fn prop(self, name: &str, refcounted: bool) -> Self {
-        let kind = if refcounted {
+    pub fn prop(self, name: &str, boxed: bool) -> Self {
+        let kind = if boxed {
             SlotKind::Boxed
         } else {
             SlotKind::Scalar
@@ -496,7 +496,7 @@ impl ClassBuilder {
 
     /// Declare a `mixed`/untyped property **without a default**: a Boxed
     /// slot that starts uninitialized — the factory stamps its
-    /// [`crate::value::VALUE_UNDEF`] flag via the class's `undef_runs`.
+    /// [`crate::value::TAG_WORD_UNDEF`] bit via the class's `undef_runs`.
     /// [`Self::prop`]'s Boxed form models the defaulted declaration,
     /// which starts `null` (the zero-fill) and is never tracked.
     pub fn prop_boxed_without_default(self, name: &str) -> Self {

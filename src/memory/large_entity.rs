@@ -218,8 +218,9 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// before the unmap, a free of a run this collection has met withholds
 /// instead of running, and a collection does not begin reading a thread's
 /// blocks until that thread has entered it. The owner-side withholding is
-/// S36.2's; S38.1/S38.3 must make the claim and withholding owner-addressable
-/// before a worker may rely on all three (`PLAN.md`).
+/// `cycle::deferred_slot_reuse`'s; S38.1/S38.3 must make the claim and
+/// withholding owner-addressable before a worker may rely on all three
+/// (`PLAN.md`).
 ///
 /// **The middle condition covers a met run alone, and nothing here covers an
 /// unmet one.** A run whose own row reads `Color::Untouched` is unmapped
@@ -260,7 +261,7 @@ pub(crate) fn snapshot() -> Vec<usize> {
 /// runs on every dispatch, and a `Vec` per OS-direct edge would put a global
 /// allocation on the collection path of a test build — which is the very
 /// thing a deny case over a collection is there to read
-/// (`PLAN.md` S36.9).
+/// (`cycle::collect::tests::what_a_collection_asks_the_allocator`).
 ///
 /// It takes no visitor, so nothing a caller supplies can free a run or
 /// re-enter [`RUNS`] while the lock is held.
@@ -334,7 +335,7 @@ unsafe impl Send for Runs {}
 /// what makes that sound is that no section stores before its last panic
 /// site**: [`link`] and [`unlink`] assert and then write raw pointers
 /// only, [`snapshot`] allocates under the lock but mutates nothing, and
-/// [`holds_run`] reads `next` and compares, so
+/// `holds_run` reads `next` and compares, so
 /// a panic here cannot leave a half-linked list. Propagating instead would
 /// abort — [`unlink`] is reached from `stdapi::ll_free`, whose C-ABI
 /// callers `object::ll_entity_die` and `stdapi::ll_c_free` turn an unwind

@@ -7,6 +7,47 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-14 — the driver's two paths diverged where no test laid them side by side
+
+**What happened.** S36's stage-close review read `cycle::collect`'s two
+paths against each other and found two places where they answered the same
+state differently by accident. The pressure entry, refused by the gate, armed
+the thread only for a teardown in flight and returned bare zero for a reset
+or a running collection, though the sentence beside the teardown arm — "a
+refusal at depth says nothing about the garbage standing behind it" — holds
+for all three. And a row the dispatch could not place ended the poll's
+collection at once (`Membership::rows` answers `None`) while the same state
+under pressure was written into the word an overflow sets, so the driver
+halved its roots and traced the whole graph again, log2(roots) times, for a
+disagreement no bound could cure. A third hole was of the same shape inside
+one chain: `Revalidation`'s drop let a value go quietly whenever every guard
+was released, so an empty commit dropped unclosed lost its epoch count and
+nothing refused it.
+
+**Why it was possible.** Each path was built by its own step against its own
+criterion, and each criterion was met: the poll path's refusal test drove
+the poll, which keeps its arming by a different mechanism; the pressure
+path's overflow test drove an overflow, which halving does cure; the chain's
+abandonment tests dropped values with guards still on. The two paths share
+one function for the commit and nothing above it, so the states where they
+part — a closed gate, an unplaceable row — were each covered on one side and
+read as covered.
+
+**Why it was not caught earlier.** The stage's earlier reviews were scoped
+to a repair or to the fixtures, and a Critic round over one step reads that
+step's path. Only a reader holding both paths at once asks why an ending on
+one is not an ending on the other, and no step of the stage had that
+question.
+
+**The rule.** A driver with two paths through one state machine gets one
+test per shared state that drives both paths and asserts the same ending,
+and the module doc names where the paths part on purpose; an ending on one
+path with no counterpart on the other is a finding until the difference is
+written down. A value whose close has a side effect refuses every unclosed
+drop, not only the ones that leave state behind.
+
+---
+
 ## 2026-09-13 — a branch whose only observer is the journal was green when deleted
 
 **What happened.** S47's stage-close review read `Table::sever_entry`'s

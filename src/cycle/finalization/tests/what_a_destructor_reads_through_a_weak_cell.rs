@@ -8,9 +8,6 @@
 //! `DestructorPass::run`, then each component read again.
 
 use super::*;
-use crate::memory::barrier::write_value_slot;
-use crate::test_support::entity_checked;
-use crate::value::Value;
 
 /// The cell naming the first member of the ring, published before the
 /// destructors run.
@@ -59,16 +56,13 @@ unsafe extern "C" fn second_member_destructor(_obj: *mut Object) {
     read_through(&FIRST_CELL, &SEEN_BY_THE_SECOND);
 }
 
-/// A destructor that gives up its own edge to the ring's other member: the
-/// slot is emptied and the reference it held released, which is the pair of
-/// acts a store of null through the barrier performs over a Box property whose
-/// owner and old value are both of the GC heap.
+/// A destructor that gives up its own edge to the ring's other member
+/// ([`release_own_edge`]), recording which member and what the release
+/// answered.
 unsafe extern "C" fn releasing_destructor(obj: *mut Object) {
-    let slot = unsafe { Object::prop_at(obj, prop_offset(0)) };
-    let member = unsafe { entity_checked(&*slot) };
-    unsafe { write_value_slot(slot, Value::null()) };
+    let (member, reached_zero) = unsafe { release_own_edge(obj) };
     RELEASED_MEMBER.store(member as usize, Ordering::Relaxed);
-    RELEASE_REACHED_ZERO.store(unsafe { ll_release(member) }, Ordering::Relaxed);
+    RELEASE_REACHED_ZERO.store(reached_zero, Ordering::Relaxed);
 }
 
 /// A weak cell naming `member`, which the case hands to a destructor through a

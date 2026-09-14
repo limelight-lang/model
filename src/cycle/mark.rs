@@ -141,7 +141,7 @@ const _: () = assert!(
 ///
 /// Both are read once per [`mark`] call (module doc, "The epoch is one reading
 /// per call"), the threshold being [`TRAVERSAL_AGE_THRESHOLD`] or the value a
-/// test pinned through [`pin_threshold`].
+/// test pinned through `pin_threshold`.
 #[derive(Clone, Copy)]
 struct Prune {
     epoch: u32,
@@ -421,7 +421,7 @@ unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, prune: Prune
         && !is_registered_candidate(unsafe { mutator_flags(child) })
 }
 
-/// Add one to [`EDGES_PRUNED`], and nothing at all without `cfg(test)`.
+/// Add one to `EDGES_PRUNED`, and nothing at all without `cfg(test)`.
 ///
 /// The counter is the trace's own and not the density instrument's: what it
 /// reports is an event no final row state records, a target the mark did not

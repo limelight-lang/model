@@ -127,7 +127,7 @@ unsafe fn prefetched_round(
                 slot,
                 values[cursor(round, i + STORES, mask)]
             ));
-            if old.is_refcounted() {
+            if old.is_pointer() {
                 drop_ref(MemoryCategory::GcHeap, old.entity_ptr());
             }
         }
@@ -201,7 +201,7 @@ unsafe fn teardown(
             let slot = Object::prop_at(*owner, 16);
             let held = std::ptr::read(slot);
             std::ptr::write(slot, Value::null());
-            if held.is_refcounted() {
+            if held.is_pointer() {
                 drop_ref(MemoryCategory::GcHeap, held.entity_ptr());
             }
         }

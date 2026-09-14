@@ -4,7 +4,7 @@
 //! The stamp is what the next collection's descent reads to stop at an edge
 //! rather than follow it (`crate::cycle::mark`), so the cases here are about which
 //! components earn one and what age it carries. Every one of them drives the
-//! finalization chain by hand, as S36.7's driver will: the stamp is written at
+//! finalization chain by hand, as `cycle::collect` does: the stamp is written at
 //! the reading that proves the component live, and the commit is counted at
 //! the close.
 //!
@@ -90,9 +90,9 @@ fn a_component_read_live_ages_by_one_at_every_collection() {
         "the ring is born unstamped"
     );
 
-    let mut headers = members.map(|member| member as *mut RcHeader);
+    let mut component = headers(members);
     for age in [1, 2, 3, 3] {
-        unsafe { commit_reading_live(&mut headers) };
+        unsafe { commit_reading_live(&mut component) };
         assert_eq!(unsafe { stamps(&members) }, vec![stamped(1, age); 2]);
     }
 
@@ -127,10 +127,10 @@ fn every_closed_commit_is_counted_toward_the_turnover() {
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
     unsafe { store_prop(&mut arena, keeper, prop_offset(0), members[0]) };
 
-    let mut headers = members.map(|member| member as *mut RcHeader);
+    let mut component = headers(members);
     let before = epoch::commits();
     for _ in 0..3 {
-        unsafe { commit_reading_live(&mut headers) };
+        unsafe { commit_reading_live(&mut component) };
     }
 
     assert!(
@@ -165,16 +165,16 @@ fn a_stamp_of_another_epoch_starts_the_age_again() {
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
     unsafe { store_prop(&mut arena, keeper, prop_offset(0), members[0]) };
 
-    let mut headers = members.map(|member| member as *mut RcHeader);
+    let mut component = headers(members);
     {
         let _epoch = epoch::pin(1);
-        unsafe { commit_reading_live(&mut headers) };
-        unsafe { commit_reading_live(&mut headers) };
+        unsafe { commit_reading_live(&mut component) };
+        unsafe { commit_reading_live(&mut component) };
         assert_eq!(unsafe { stamps(&members) }, vec![stamped(1, 2); 2]);
     }
 
     let _epoch = epoch::pin(2);
-    unsafe { commit_reading_live(&mut headers) };
+    unsafe { commit_reading_live(&mut component) };
     assert_eq!(
         unsafe { stamps(&members) },
         vec![stamped(2, 1); 2],
@@ -222,7 +222,7 @@ fn the_youngest_member_decides_the_component_age() {
     let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
     unsafe { store_prop(&mut arena, keeper, prop_offset(0), first) };
 
-    let mut whole = members.map(|member| member as *mut RcHeader);
+    let mut whole = headers(members);
     unsafe { commit_reading_live(&mut whole) };
     assert_eq!(
         unsafe { stamps(&members) },
@@ -275,19 +275,19 @@ fn a_component_read_unreachable_is_never_stamped() {
 unsafe fn a_component_read_unreachable_takes_no_stamp(classes: [*const crate::class::Class; 2]) {
     let mut arena = Arena::new();
     let members = unsafe { traced_unreachable_ring(&mut arena, classes) };
-    let mut headers = members.map(|member| member as *mut RcHeader);
+    let mut membership = headers(members);
 
     let mut finalization = Finalization::begin();
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut headers)) },
+        unsafe { finalization.confirm(&Membership::listed(&mut membership)) },
         ValidationResult::Unreachable
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(&Membership::listed(&mut headers)) };
+    unsafe { pass.run(&Membership::listed(&mut membership)) };
     let mut revalidation = pass.close();
     let Revalidated::Unreachable(component) =
-        (unsafe { revalidation.revalidate(&Membership::listed(&mut headers)) })
+        (unsafe { revalidation.revalidate(&Membership::listed(&mut membership)) })
     else {
         panic!("nothing took a reference to this component");
     };
@@ -301,7 +301,7 @@ unsafe fn a_component_read_unreachable_takes_no_stamp(classes: [*const crate::cl
     // The teardown itself is `cycle::reclamation`'s; what this case owes the
     // finalization is the guards, and the release is the discharge that tears
     // nothing down.
-    unsafe { component.release(&Membership::listed(&mut headers)) };
+    unsafe { component.release(&Membership::listed(&mut membership)) };
     revalidation.close();
 
     unsafe { dismantle_ring(&mut arena, members) };
@@ -325,11 +325,11 @@ fn a_resurrected_component_is_stamped_at_the_second_reading() {
 
     let mut arena = Arena::new();
     let members = unsafe { traced_unreachable_ring(&mut arena, [plain, keeper]) };
-    let mut headers = members.map(|member| member as *mut RcHeader);
+    let mut component = headers(members);
 
     let mut finalization = Finalization::begin();
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut headers)) },
+        unsafe { finalization.confirm(&Membership::listed(&mut component)) },
         ValidationResult::Unreachable
     );
     assert_eq!(
@@ -339,11 +339,11 @@ fn a_resurrected_component_is_stamped_at_the_second_reading() {
     );
 
     let mut pass = finalization.seal().destructors();
-    unsafe { pass.run(&Membership::listed(&mut headers)) };
+    unsafe { pass.run(&Membership::listed(&mut component)) };
     let mut revalidation = pass.close();
     assert!(
         matches!(
-            unsafe { revalidation.revalidate(&Membership::listed(&mut headers)) },
+            unsafe { revalidation.revalidate(&Membership::listed(&mut component)) },
             Revalidated::ExternallyReferenced
         ),
         "the destructor kept a reference the component does not contain"

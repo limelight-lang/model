@@ -189,5 +189,6 @@ mod what_a_sever_leaves_behind;
 mod what_a_walker_is_shown;
 mod what_a_walker_reads_while_the_storage_is_released;
 mod what_moves_the_entries;
+mod what_the_discriminating_word_of_every_element_reads;
 mod where_the_salt_comes_from;
 mod where_the_storage_comes_from;

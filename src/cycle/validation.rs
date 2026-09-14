@@ -1,4 +1,4 @@
-//! The exact test: one component validated against its members' current
+//! The exact validation: one component validated against its members' current
 //! fields, on the thread that owns them.
 //!
 //! A trace answers with a shortlist rather than a verdict. It may read
@@ -14,7 +14,7 @@
 //! # No row is written here, and the counts come from the heap
 //!
 //! The trace token covers the mark, the scan and the rows they write, and it
-//! is released before the exact test of any component
+//! is released before the exact validation of any component
 //! (`rfc/model/gc/rc-cycle.md`, "Concurrency"). What the release ends is the
 //! right to trace rather than the life of the rows: a collection off the poll
 //! keeps its arena through the teardown and its membership **is** those rows,
@@ -61,12 +61,12 @@ use crate::cycle::membership::Membership;
 use crate::object::header_category;
 use crate::refcount::{MemoryCategory, RcHeader, header_refcount};
 
-/// What the exact test answered about one component.
+/// What the exact validation answered about one component.
 ///
 /// **The answer is the one refusal the finalization protocol has**, so a
 /// caller that drops it tears down whatever it validated: a component this
 /// refuses is live, or holds a member somebody else is already tearing down.
-#[must_use = "an unread answer tears down a component the exact test may have refused"]
+#[must_use = "an unread answer tears down a component the exact validation may have refused"]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ValidationResult {
     /// No reference to any member exists outside the component, so the
@@ -90,7 +90,7 @@ pub(crate) enum ValidationResult {
 /// test, and the two forms answer both.
 ///
 /// `guard_refs_per_member` is the teardown guard outstanding on every member:
-/// zero before the guards are taken, one for the re-verify a destructor forces.
+/// zero before the guards are taken, one for the revalidation a destructor forces.
 /// Without it the guards would leave every component externally referenced and
 /// nothing is ever freed (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step
 /// 5).
@@ -113,8 +113,9 @@ pub(crate) enum ValidationResult {
 /// Every member is an entity header of this thread's GC heap whose
 /// slot is still its own. A member that died ordinarily reads count zero and
 /// its header, which is what the zero-count rule reads, and the withholding
-/// that keeps that header readable while an entry names the slot is `PLAN.md`
-/// S36.2's. The validation runs on the owning thread with no mutator beside it,
+/// that keeps that header readable while an entry names the slot is
+/// `memory::stdapi::ll_free`'s. The validation runs on the owning thread with
+/// no mutator beside it,
 /// which is the condition `cells::trace_cells` reads an entity's cells plainly
 /// under.
 pub(crate) unsafe fn validate_component(
@@ -155,19 +156,7 @@ pub(crate) unsafe fn validate_component(
         return ValidationResult::ZeroCountMember;
     }
 
-    let mut internal_edges = 0u64;
-    unsafe {
-        members.for_each(|member| {
-            // The kind is loaded here and passed down rather than read inside
-            // the tracer, which is the contract `trace_cells` states.
-            let kind = cells::entity_kind(member);
-            cells::trace_cells::<PlainCells>(member, kind, |cell| {
-                if members.contains(cell.child) {
-                    internal_edges += 1;
-                }
-            });
-        })
-    };
+    let internal_edges = unsafe { members.internal_edges() } as u64;
 
     debug_assert!(
         unsafe { member_counts_cover_internal_edges(members, guard_refs_per_member) },
@@ -288,7 +277,9 @@ pub(crate) fn premise_cell_walks() -> usize {
 ///
 /// A case that asks what a collection asks the allocator subtracts this rather
 /// than asserting a bare zero, the premise check being the one site of the
-/// collection path the GC-memory contract exempts (`PLAN.md` S36.9). What pins
+/// collection path the GC-memory contract exempts (`dev/DECISIONS.md`, "a deny
+/// case subtracts the debug checks by reading them, not by writing the figure
+/// down"). What pins
 /// the figure is
 /// `validation::tests::what_the_premise_check_costs::a_validation_allocates_what_its_debug_checks_allocate`,
 /// which reads it off the call rather than deriving it.

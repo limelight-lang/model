@@ -735,8 +735,9 @@ Default:
   leaves registered, with the reading that left it and the count it freed.
 
 A collection's begin and end were in this list and are not any more: the
-two kinds went with `rc-walk` and `rc-trace` on 2026-08-26, and
-`rc-cycle`'s own events are S36's to name (`PLAN.md`).
+two kinds went with `rc-walk` and `rc-trace` on 2026-08-26, and `rc-cycle`'s
+own events are unnamed; the backlog line "The collection's journal kinds" in
+`PLAN.md` owns them.
 
 On demand:
 

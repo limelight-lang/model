@@ -8,6 +8,189 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-14 — S48.2 the box's price after the relayout: A/B/A with a placement control
+
+**Machine:** dev box, shared with interactive work, 16 cores; load average
+2.5 at the first run, 4.0 at the last. **Base:** A = `dae310b` (the
+four-field struct, S48.0's closing commit), B = `ab6478a` (the two-word
+box, S48.1 and the link's select), C = A's tree with a 46-instruction pad
+inlined at the head of `main` behind `--cfg placement_pad`, every other
+function byte-identical to A's (3094 functions compared by normalised
+body); `rustc 1.96.0`, bench profile, `benches/value.rs` byte-identical in
+A and B. All three binaries were built before any run; one run of A was
+discarded as warm-up; then A, B, A, C, A in one sitting.
+
+**Minima per operation, nanoseconds** (the reading for every arm; the
+null pair beside the arm where it differs):
+
+| arm | A | B | A | C | A |
+|---|---|---|---|---|---|
+| arithmetic, per box | 1.108 | 0.909 | 1.113 | 1.113 | 1.108 |
+| arithmetic, null pair | 1.130 | 0.909 | 1.108 | 1.108 | 1.108 |
+| one-word tests, per box | 0.607 | 0.459 | 0.607 | 0.594 | 0.607 |
+| decode, per box | 0.365 | 0.589 | 0.363 | 0.363 | 0.364 |
+| truth test, per box | 0.444 | 0.808 | 0.444 | 0.446 | 0.444 |
+| lookup, 32-hop chain | 65.34 | 67.38 | 65.18 | 76.14 | 67.63 |
+| lookup, 32-hop chain, null pair | 65.42 | 67.40 | 65.34 | 74.90 | 67.69 |
+| lookup, 1 hop | 11.62 | 6.22 | 11.62 | 11.82 | 11.82 |
+
+**Medians (criterion), per operation:**
+
+| arm | A | B | A | C | A |
+|---|---|---|---|---|---|
+| arithmetic | 1.443 | 1.027 | 1.409 | 1.353 | 1.332 |
+| one-word tests | 0.710 | 0.547 | 0.707 | 0.656 | 0.679 |
+| decode | 0.421 | 0.703 | 0.418 | 0.407 | 0.413 |
+| truth test | 0.503 | 0.956 | 0.504 | 0.491 | 0.490 |
+| lookup, 32-hop chain | 73.15 | 77.21 | 74.18 | 84.09 | 80.95 |
+| lookup, 1 hop | 13.44 | 7.19 | 12.77 | 13.26 | 13.45 |
+
+**The bars.** The null pairs agree to the third digit on every in-memory
+minimum but the first arithmetic run (1.130 against 1.108, 2 %); the three
+A's agree to the third digit on every in-memory minimum, and on the lookup
+read 65.3, 65.2 and 67.6 (3.7 %) while the medians drift upward through the
+session with the load, so the lookup is read on the minimum. The placement
+control moved no in-memory minimum by more than 2 % (one-word 0.594
+against 0.607) and moved the 32-hop chain by 10.8 ns (76.1 against 65.3,
+16 %) with the one-hop figure unmoved — the pad shifted the hop loop — so
+the lookup's bar is 0.35 ns a hop, and the in-memory bar is 2 %.
+
+**What each arm did, against what was expected.** The arithmetic arm fell
+18 %, 1.108 to 0.909. The disassembly of A's loop is five loads and five
+stores per box, the four fields and the reserved bytes through a stack
+temporary, around two byte compares; B's is two loads, the select
+(`test`, `cmove`), a shift, the decode's range check (`cmp $9; ja` to the
+abort), a bit test for the arms the switch leaves alone, the Int/Float
+compare, and two qword stores. The S48.0 entry expected the store-back's
+share to go — about 0.5 ns by its scratch figure of 0.610 with a two-qword
+store-back on the old struct — and the fall is 0.2, so the decode that
+remains costs about 0.3 ns a box more than the old byte read did. That
+0.3 is a difference against a figure from another binary and another
+sitting, so it is a hypothesis with the placement bar of Method on it,
+not a measurement; the net is what this sitting measured. The one-word
+tests fell 24 %, 0.607 to 0.459: the compiler autovectorised B's loop,
+comparing pairs of `+8` words with SSE2, where A's tested a tag byte and
+then loaded a flags byte behind a branch; expected unmoved. The decode
+rose 62 %, 0.363 to 0.589: B's loop loads `+8`, branches on bit 0
+(`test $1; jne`) to a second load of `+0` on the pointer arm, shifts,
+range-checks and increments the histogram, where A's was one byte load and
+the increment; the ruling priced a second load as throughput, the compiler
+emitted a branch rather than the `cmov` the ruling assumed, and the
+population's six classes are what that branch is predicted over. The
+truth test rose 82 %, 0.444 to 0.808: A's loop is a byte load, one compare
+and a table lookup; B's is autovectorised over 64-bit compares emulated
+with `pcmpgtd`/`pcmpeqd` pairs — the shape `is_truthy_tag` takes under
+this loop (a null test on the whole word and two 16-bit compares), not a
+count of loads; expected unmoved, since it reads `+8` alone. The lookup's
+one-hop figure fell 46 %, 11.62 to 6.22: that is `element::get`'s own
+constant — the element copy out of the entry and its decode — going from
+field-wise to two qwords. Its 32-hop figure is 67.4 against 65.3 and 65.2
+before it and 67.6 after, so the slope `(chain32 − chain1) / 31` is 1.73,
+1.73 and 1.80 ns a hop on A, 1.97 on B and 2.07 on C: B's +0.24 ns a hop
+is below the placement bar of 0.35, and the hop's shape is a load of `+8`,
+a predicted branch on bit 0 and a load of `+0` on the pointer arm
+(`element_at`'s disassembly; `ab6478a` for the spill-and-reload that an
+index into the word pair compiled to and was replaced before the first
+run). The ruling expected a `test` and a `cmov` per hop, about 0.5 ns; the
+instrument sees a branch and cannot resolve its cost below 0.35.
+
+**Outside the expectations by more than the bar:** the decode (+0.23 ns
+a box), the truth test (+0.36), the one-word tests (−0.15) and, as a
+hypothesis, the arithmetic decode's +0.3 against the store-back's share.
+By the S48.2 note these reopen the ruling's price and not the stage, and
+they went to Edmond before the stage closed.
+
+## 2026-09-14 — S48.0 the box's price before the relayout: the instrument and its calibration
+
+**Machine:** dev box, shared with interactive work, 16 cores. **Base:**
+`950ff79` (the commit the bench lands in; the accessors it calls are
+`471df55`'s), `rustc 1.96.0`, bench profile. **Not a before-arm:** these
+figures calibrate the instrument — the spread of each null pair and the
+resolution the lookup needs — and the before-arm of the relayout is taken
+by S48.2 from a worktree at this HEAD, in one sitting with the after-arm
+(Method).
+
+**What the instrument is.** `benches/value.rs`, three benches with a null
+pair each — two arms of one closure under two names, whose difference is
+zero by construction and whose spread is the error bar: an arithmetic loop
+over 1,024 `int` and `float` boxes in memory (read, unbox, add, box, store
+back; 64 passes per region); a tag-only bench in three arms over one mixed
+population of six tag classes — the one-word tests `is_null` and `is_int`,
+the decode (`tag()` under a `match`), and the truth test; and a hash lookup
+over 32 integer keys striding by 64, one bucket at every table size, one
+short of the collision defence, walked from the deepest key, the elements
+alternating a pointer-arm object and an integer in an aperiodic order; the
+one-hop lookup on the shallowest key beside it. Every loop bound is
+`black_box`ed, and each region is timed on its own inside `iter_custom` so
+the minimum stands beside criterion's median. What the ruling expects of
+each arm after the relayout is `rfc/dev/DECISIONS.md`, "A1 closes on a
+discriminating word", the cost line and the Critic paragraph.
+
+**Three runs, per operation, median (criterion) and minimum (the bench's
+own), nanoseconds.** Run 1 is quoted rather than discarded as Method's
+warm-up: the box was warm from the build, and the three agree within the
+spreads below; a reading that starts cold discards its first run.
+
+| arm | run 1 | run 2 | run 3 | min 1 | min 2 | min 3 |
+|---|---|---|---|---|---|---|
+| arithmetic, per box | 1.295 | 1.302 | 1.346 | 1.108 | 1.108 | 1.108 |
+| arithmetic, null pair | 1.295 | 1.303 | 1.343 | 1.108 | 1.108 | 1.108 |
+| one-word tests, per box | 0.651 | 0.653 | 0.662 | 0.607 | 0.607 | 0.607 |
+| one-word tests, null pair | 0.652 | 0.649 | 0.665 | 0.607 | 0.607 | 0.607 |
+| decode, per box | 0.399 | 0.397 | 0.406 | 0.362 | 0.362 | 0.363 |
+| truth test, per box | 0.485 | 0.478 | 0.490 | 0.437 | 0.437 | 0.437 |
+| lookup, 32-hop chain | 74.8 | 73.2 | 75.2 | 67.9 | 67.8 | 69.8 |
+| lookup, 32-hop chain, null pair | 74.6 | 75.8 | 76.3 | 67.8 | 67.8 | 69.9 |
+| lookup, 1 hop | 12.6 | 12.9 | 12.6 | 11.6 | 11.8 | 11.8 |
+
+**What the calibration says.** The null pairs of the in-memory loops
+agree to 0.1–0.5 % on the median and to the third digit on the minimum,
+so within one binary a change of a tenth of a nanosecond per box is
+readable. The across-run floor of one binary, which Method defines, is
+3.9 % on the arithmetic median and 4.1 % on the lookup's, 0–0.3 % on the
+in-memory minima and 2.9 % (67.8 to 69.8 ns) on the lookup's minimum. The
+lookup's median pair disagrees by up to 3.5 % (run 2: 73.2 against 75.8)
+while its minimum pair agrees to 0.2 %, so the lookup is read on the
+minimum and the median is quoted beside it. Thirty-one hops cost
+75 − 12.6 = 62 ns, 2.0 ns a hop, and the reading is that slope on each
+tree, `(chain32 − chain1) / 31`, because the one-hop figure carries
+`element::get`'s own constant — an indirect call, the element copy and the
+reference decode — which moves for reasons of its own. The hop is
+latency-bound (a load, a shift, an add on the chain), so a `cmov` on the
+arm test joins that chain and costs its whole latency, about 0.5 ns a hop
+and 15 ns over 31 — a fifth of the figure; a branch, learned by the
+predictor because the walk is the same on every lookup, costs nothing
+here. The instrument therefore sees a `cmov` and not a branch, and which
+was emitted is read from the disassembly of `Entry::link` at S48.2.
+
+**Two things the Bench role's reading of this instrument settled** (its
+scratch measurements reproduced the calibration piecewise; nothing in the
+project was run by it). The arithmetic arm's store-back compiles
+field-wise on the four-field struct — the payload qword, the tag byte,
+the flags byte, and the six reserved bytes through a stack temporary —
+five loads and five stores per box; the same loop with a two-qword
+store-back measured 0.610 against 1.109 ns per box, A/B/A three times, so
+45 % of the arm is the representation's copy, which the two-word struct
+of S48.1 will make two qwords. That drop is expected and is not the
+ruling's price; S48.2 reads the arm as the decode-and-add that remains. A
+copy arm to subtract it was tried and refused, `black_box` spilling the
+sixteen-byte value. And two builds with an instruction-identical loop
+differed by 7–10 % on the loop's minimum through code placement alone,
+which no null pair sees — the placement bar now in Method, and S48.2's
+second bar.
+
+The one-word tests cost more than the decode today (0.65 against 0.40
+per box): `is_null` compiles to a branch on the tag and a conditional
+flags load, `is_int` to a compare, while the decode is one byte load and
+a memory increment into a histogram whose critical path is the six
+store-forwarding chains — so the second load the ruling expects of the
+decode lands off that path and shows as throughput, not latency; S48.2
+reads it as such.
+
+**What is not here.** A cache-cold arm: the populations are 16 KiB and the
+table's storage smaller, so every figure is L1-resident by design and the
+relayout's effect on a cold walk is not this instrument's question.
+
 ## 2026-09-13 — S47.9 the COW reconciliation is three linear passes: 2400 survivors 248 → 41.7 µs, and 102.3 against the `HashMap` it started from
 
 **Machine:** dev box, shared with interactive work, 16 cores. **Base:** the
@@ -777,6 +960,21 @@ the back-to-back rule does not.
 reproducibly. Cold caches, cold branch predictors, a cold frequency
 state. Treat the first measurement as warm-up and discard it. Several
 comparisons were wrecked by using it as arm A.
+
+**The placement bar: a null pair inside one binary is not the bar between
+two.** Two builds whose timed loop is instruction-identical differed by
+7–10 % on the minimum of that loop on 2026-09-14 — 1.109 against 1.187 ns
+per box, A/B/A/B interleaved, and padding the stack environment by 0–56
+bytes moved neither — through the placement of code alone (the Bench
+role's reading of `benches/value.rs`, the S48.0 entry). A null pair —
+one closure under two names in one binary — cannot see that term, and
+neither can A/B/A, which compares the same two binaries every time. A
+before/after that builds two trees therefore carries a second bar: two
+builds of *one* tree that differ only in code layout — a no-op function
+of a different size behind a `cfg` or an environment variable read at
+link time — measured the same way, and the larger of the null-pair
+spread and that difference is the error bar a cross-build difference is
+read against. Below it, a difference is placement until shown otherwise.
 
 **A band of "normal" values is less useful than it sounds.** One was
 recorded here as 749–769 µs for larson and 1.89–1.93 ms for rptest, and

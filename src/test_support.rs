@@ -88,7 +88,7 @@ pub(crate) fn wide_class(
 
 /// Entity pointer behind a Box slot, or null for scalar/null Boxes.
 pub(crate) fn entity_checked(v: &Value) -> *mut RcHeader {
-    if v.is_refcounted() {
+    if v.is_pointer() {
         v.entity_ptr()
     } else {
         std::ptr::null_mut()

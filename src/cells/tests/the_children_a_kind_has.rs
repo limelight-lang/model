@@ -23,8 +23,8 @@ fn wide_ring_class(name: &str, fillers: usize) -> *const crate::class::Class {
 /// The shape was a ring — `$a->r = &$a` — until 2026-08-26, and the
 /// observable was that a collection reclaimed it. That observable died
 /// with the collector; the contract it stood for is the enumeration
-/// asserted here, and reclamation returns as a test of the commit stage
-/// at S36 (`PLAN.md`).
+/// asserted here, and that a collection reclaims such a ring is
+/// `cycle::collect`'s tests' to say.
 #[test]
 fn a_reference_box_passes_an_edge_through() {
     let _g = crate::memory::block_pool::test_guard();
@@ -171,7 +171,7 @@ fn a_cycle_through_large_entities_is_walked_and_collected() {
         // contract this test carries is the enumeration below — a large
         // entity is found in whichever half of the population it landed
         // in — and it needs no collector. Reclaiming a ring of large
-        // entities returns as a test of the commit stage at S36.
+        // entities is `cycle::collect`'s tests' subject.
         tie(a, 16, b);
     }
 

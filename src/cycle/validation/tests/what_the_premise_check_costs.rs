@@ -47,7 +47,8 @@ fn the_premise_check_walks_every_member_s_cells_once() {
 /// back.
 ///
 /// This is the calibration a deny case over a collection stands on
-/// (`PLAN.md` S36.9). Such a case asserts `heap == v *
+/// (`dev/DECISIONS.md`, "a deny case subtracts the debug checks by reading
+/// them, not by writing the figure down"). Such a case asserts `heap == v *
 /// EXEMPT_ALLOCATIONS_PER_VALIDATION` for the `v` validations its commit ran,
 /// so a fourth allocation added here reddens every one of them.
 #[test]

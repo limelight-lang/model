@@ -2,8 +2,9 @@
 //! already has.
 //!
 //! `candidate_count` walks the chain and `overflow_len` reads the buffer, and
-//! neither can say which entity a record names. The rule S36.12 has to state
-//! is about entities: one `CANDIDATE_BIT` to one record, and no record in two
+//! neither can say which entity a record names. The rule the batch's
+//! membership rests on is about entities: one `CANDIDATE_BIT` to one record,
+//! and no record in two
 //! lanes. `collect_lane_tokens` is what can state it, so it is calibrated here
 //! against a population whose answer is known and against both counters.
 

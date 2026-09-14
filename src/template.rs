@@ -200,7 +200,7 @@ pub unsafe fn ll_template_new(
 /// an instance of category `owner_cat` that was not published.
 unsafe fn release_stored(owner_cat: MemoryCategory, slots: &mut [Value], i: usize) {
     for slot in &mut slots[..i] {
-        if slot.is_refcounted() {
+        if slot.is_pointer() {
             unsafe { crate::memory::barrier::drop_ref(owner_cat, slot.entity_ptr()) };
         }
     }

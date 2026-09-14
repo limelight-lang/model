@@ -111,24 +111,20 @@
 //! **What the type does not establish is that one commit uses one
 //! finalization.** A driver that sealed per component and ran that component's
 //! destructors before validating the next would satisfy every obligation here
-//! and still interleave the two steps the design orders. The step that opens
-//! exactly one finalization over a commit is `PLAN.md` S36.7's driver.
+//! and still interleave the two steps the design orders. That one commit
+//! opens exactly one finalization is `cycle::collect`'s, in the one function
+//! both paths commit through.
 //!
 //! # The unit is the caller's
 //!
 //! [`Finalization::confirm`] takes what the exact validation takes: one
-//! component's whole membership, as a slice it sorts. A batch validated as its
-//! union has the same shape, and which of the two a driver hands over is
-//! `PLAN.md` S36.7's to choose — the trace proposes rows and nothing in the
-//! crate partitions them into components yet.
-//!
-//! **A slice is what only one of the two production paths has.** The pressure
-//! path's harvest is a list already, and what stands between it and this
-//! signature is a mutable view: `cycle::members::StandingMembers` answers a
-//! shared slice, and a sort would cost the order it documents. The path off
-//! the poll holds its rows through the teardown and derives no member list at
-//! all (`rfc/model/gc/rc-cycle.md`, "Concurrency"), so what serves it is
-//! unbuilt and unowned — `PLAN.md` S36.7 is where both are answered.
+//! component's whole membership, in either of the two forms a path holds it
+//! ([`Membership`]) — the pressure path's harvested list, or the rows a
+//! collection off the poll keeps through its teardown. The commit reads the
+//! whole batch as one component, its union: the trace proposes rows and
+//! nothing partitions them (`rfc/model/gc/rc-cycle.md`, "Cycle finalization
+//! and reclamation"). Which members the driver hands over is its own; this
+//! module counts what it was given and matches the counts at each close.
 //!
 //! # What it holds, and what it can refuse
 //!
@@ -243,7 +239,7 @@ impl Finalization {
     /// **What this writes cannot be undone by the value that wrote it.** No
     /// type of this chain holds a member list, so the guards come off where a
     /// member list exists: the caller's teardown
-    /// ([`crate::cycle::reclamation::reclaim`]), or
+    /// ([`crate::cycle::reclamation::reclaim_before_drops`]), or
     /// [`release_guards`] over a component the revalidation reads as
     /// externally referenced. An unwind out of this call reaches neither and
     /// strands the guards it has already written. Two debug assertions stand inside it: the exact
@@ -291,7 +287,7 @@ impl Finalization {
     }
 
     /// Close the finalization: no component joins it after this, and the
-    /// answer is what the destructor pass takes (`PLAN.md` S36.4).
+    /// answer is what the destructor pass takes.
     pub(crate) fn seal(mut self) -> Invalidated {
         self.sealed = true;
         Invalidated {
@@ -357,15 +353,10 @@ pub(crate) struct Invalidated {
 }
 
 impl Invalidated {
-    /// Members guarded, over every component the finalization confirmed.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "a driver counts the membership it holds; this reading of \
-                      the chain's own count is a test's"
-        )
-    )]
+    /// Members guarded, over every component the finalization confirmed: a
+    /// test's reading of the chain's own count, where a driver counts the
+    /// membership it holds.
+    #[cfg(test)]
     pub(crate) fn members(&self) -> usize {
         self.members
     }
@@ -446,7 +437,7 @@ impl DestructorPass {
     /// there would have its class word read out of a field that is not one.
     /// What runs is phase 1 alone (`object::run_user_destructor`) — the child
     /// releases and the free are the teardown's
-    /// ([`crate::cycle::reclamation::reclaim`]) — and "exactly
+    /// ([`crate::cycle::reclamation::reclaim_before_drops`]) — and "exactly
     /// once" is the header's `DESTRUCTOR_RAN`.
     ///
     /// **User code runs here.** It may store, release, allocate or resurrect,
@@ -482,7 +473,7 @@ impl DestructorPass {
     /// runs no destructor, `DESTRUCTOR_RAN` standing, and the count still
     /// reaches the total. What the sum catches is a driver that stopped short;
     /// that its partition covers the commit once is the driver's own
-    /// (`PLAN.md` S36.7).
+    /// (`cycle::collect`).
     pub(crate) fn close(mut self) -> Revalidation {
         assert_eq!(
             self.members_run, self.guarded,
@@ -549,16 +540,15 @@ impl Revalidation {
     /// Read one component again, and where a destructor left a reference to it
     /// outside itself, give every member its true count back.
     ///
-    /// `members` is the membership [`Finalization::confirm`] took, and **the
-    /// slice is sorted in place** again by the exact validation.
+    /// `members` is the membership [`Finalization::confirm`] took.
     ///
     /// [`Revalidated::Unreachable`] carries the component's guards, which the
     /// sever, the free and [`GuardedComponent::guards_released`] take off
-    /// ([`crate::cycle::reclamation::reclaim`]);
+    /// ([`crate::cycle::reclamation::reclaim_before_drops`]);
     /// [`Revalidated::ExternallyReferenced`] has taken them
     /// off already, so its component is the driver's to forget — **and the
-    /// slice may name a freed entity when it does**, a member whose guard was
-    /// its last reference having died in the release.
+    /// membership may name a freed entity when it does**, a member whose guard
+    /// was its last reference having died in the release.
     ///
     /// **A commit no destructor ran in is not read again at all**, the answer
     /// being the one the exact validation already gave (step 5). What makes
@@ -570,8 +560,7 @@ impl Revalidation {
     /// either — and the only channel left, a counted reference from outside,
     /// is what the exact validation read. The induction is also where the
     /// skip stops being sound: anything else that can publish a member between
-    /// step 3 and step 5 breaks it. The slice is sorted here all the same, so
-    /// the answer carries the same order on both paths.
+    /// step 3 and step 5 breaks it.
     ///
     /// # Safety
     /// As [`Finalization::confirm`], and every member is one this finalization
@@ -588,7 +577,7 @@ impl Revalidation {
             }
             ValidationResult::ExternallyReferenced => {
                 // Ahead of the release, which is where a member whose guard was
-                // its last reference dies: past it the slice can name a slot
+                // its last reference dies: past it the membership can name a slot
                 // the allocator has back, and the stamp would be written into
                 // whatever occupies it next.
                 unsafe { stamp_component(members, self.epoch) };
@@ -634,17 +623,20 @@ impl Revalidation {
 
 impl Drop for Revalidation {
     /// The refusal the two values before it make, over whatever is left: a
-    /// component unread keeps its guards, and nothing else takes them off.
+    /// component unread keeps its guards, and nothing else takes them off. The
+    /// refusal stands with every guard released too, and for an empty commit,
+    /// because [`Revalidation::close`] is the one site that counts the commit:
+    /// a value dropped past its last release would leave the epoch one commit
+    /// short, which no guard reads and no count catches.
     fn drop(&mut self) {
-        if self.closed || self.members_released == self.guarded {
+        if self.closed || std::thread::panicking() {
             return;
         }
 
-        if std::thread::panicking() {
-            return;
-        }
-
-        panic!("a revalidation holding guarded members was dropped instead of closed");
+        panic!(
+            "a revalidation was dropped instead of closed: the commit goes uncounted, and a \
+             guarded member unread keeps its guard"
+        );
     }
 }
 
@@ -664,8 +656,8 @@ pub(crate) enum Revalidated<'a> {
     /// component having been read live twice.
     ///
     /// **A member the guard was the last reference of is freed here**, so the
-    /// slice the caller passed can name an entity whose slot is back with the
-    /// allocator. Nothing may read it again.
+    /// membership the caller passed can name an entity whose slot is back with
+    /// the allocator. Nothing may read it again.
     ExternallyReferenced,
 }
 
@@ -702,7 +694,7 @@ impl<'a> GuardedComponent<'a> {
     /// the guard reference off every member, which ends this component's
     /// finalization.
     ///
-    /// The sever and the free are [`crate::cycle::reclamation::reclaim`]'s —
+    /// The sever and the free are [`crate::cycle::reclamation::reclaim_before_drops`]'s —
     /// it walks the same members, nulls the internal edges and lets each
     /// member reaching zero die through the ordinary death path. This is the
     /// statement that it happened, and one of the two things that let the
@@ -731,7 +723,7 @@ impl<'a> GuardedComponent<'a> {
     ///
     /// The one caller is a teardown that could not get the memory its own
     /// children need and has written nothing yet
-    /// ([`crate::cycle::reclamation::reclaim`]). What this does is what the
+    /// ([`crate::cycle::reclamation::reclaim_before_drops`]). What this does is what the
     /// [`Revalidated::ExternallyReferenced`] arm does, on a component read as
     /// unreachable, so **a member whose guard was its last reference is freed
     /// here** and the caller's membership can name a freed entity afterwards.
@@ -783,7 +775,7 @@ impl Drop for GuardedComponent<'_> {
 /// A member still carrying its guard cannot be freed by a death this loop
 /// starts, its count being at least the guard, so no iteration reads a member
 /// an earlier one freed. A member already past its own release can be, and
-/// the caller's slice names it afterwards.
+/// the caller's membership names it afterwards.
 ///
 /// **User code runs here**, once a member dies: its teardown drops the
 /// external children it held, and their destructors are the mutator's own

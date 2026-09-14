@@ -54,8 +54,8 @@ versions live in `docs/history/`, marked at the top.
   `rc-satb` were deleted on 2026-08-26, and what survives of the old code and
   why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26, the
   code being on the branch `archive/pre-rc-cycle`. What is not built yet is
-  the collection an allocation failure starts, the maturation prune and the
-  second thread — `PLAN.md` S36 through S40. What each module does and what
+  the second thread — `PLAN.md` S38 — and the maturation prune's corpus
+  figures, S37. What each module does and what
   it may not know is `dev/ARCHITECTURE.md`'s `cycle` row; where each one is:
 
   | module | what is there | production caller |
@@ -285,13 +285,16 @@ versions live in `docs/history/`, marked at the top.
   no index, no holes and none of the hash's flood defences. One storage
   allocation holds `u32` index slots followed by a dense insertion-ordered
   array of 32-byte entries (`entry.rs`): `hash_or_key`, `key`, and the
-  element Box, whose reserved bytes carry the collision link as a `u32` at
-  +28. That link is the reason the element field is private and every
-  write to it goes through `Entry::store_element` / `store_link`, which
-  compose tag, flags and link into one relaxed atomic store — the width
-  the collector's load uses — while `Entry::value` clears the bytes on the
-  way out so a link never travels in a copy (`dev/DECISIONS.md`,
-  2026-08-07).
+  element Box, whose tag word carries the collision link as a `u32` in its
+  top bytes — at the entry's +28 on the immediate arm and +20 on the
+  pointer arm, selected by the `+8` word's arm. That link is the reason
+  the element field is private and every write to it goes through
+  `Entry::store_element` / `store_link`, which compose tag, flags and link
+  into one relaxed atomic store — the width the collector's load uses —
+  and spell a null element `(0, 0x0001 | link << 32)` so its `+8` word is
+  never an even non-zero non-pointer, while `Entry::value` clears the
+  bytes on the way out so a link never travels in a copy
+  (`dev/DECISIONS.md`, 2026-08-07).
   `table.rs` is the core — lookup, insert, remove, growth by doubling or by
   dropping the holes (one body, `move_entries`, and both into a freshly
   allocated chunk: sliding entries inside the published one raced the
@@ -360,7 +363,7 @@ versions live in `docs/history/`, marked at the top.
   trace read is re-read against one — a cell is read a second time on
   the owning thread, which re-reads the current fields before any free
   (`cycle::validation`), and the collector-thread reader answers no version
-  either, a torn read costing at most a phantom edge or a missed one
+  either, reading each element's `+8` word alone, which one store wrote
   (`PLAN.md` S38.0). `entity::for_each_counted_child` is an
   adapter over it, and `ll_entity_die`'s Array arm goes through that; the
   release side uses the barrier's `drop_ref`, so a child the array held
@@ -443,7 +446,8 @@ versions live in `docs/history/`, marked at the top.
   the block arrived with, which is how §9.5's third block event is asked
   for; and the thread's two in `heap`. A collection's two kinds were
   deleted with the collectors that raised them, and `rc-cycle`'s are
-  S36's to name. A site must not sit anywhere the *first* record's path
+  unnamed — the backlog line "The collection's journal kinds" in `PLAN.md`
+  owns them. A site must not sit anywhere the *first* record's path
   reaches, that one initialising the thread, allocating and locking —
   which is why `BlockPool::put` stages its overflow flush in a fixed
   array and pushes with nothing borrowed (`dev/DECISIONS.md`,
@@ -480,7 +484,7 @@ versions live in `docs/history/`, marked at the top.
   reads the block is withheld, and for a run that is soundness rather than
   economy — its memory is unmapped at the free while a trace may still
   address it. `cycle::deferred_slot_reuse` defers that return and owns the
-  sweep-before-return order (`PLAN.md` S36.2).
+  sweep-before-return order.
   The doors
   above it are
   `heap::entity_alloc` past `MAX_SMALL` and `Arena::alloc_entity` past
@@ -671,8 +675,13 @@ versions live in `docs/history/`, marked at the top.
   configuration since 2026-08-26), `benches/strings.rs` (hash across the function's branch
   boundaries, create-hash-die, and the append loop in both memory
   categories — the harness the bump-top growth optimization was blocked
-  on); no collector-side probe since the two collectors were deleted on
-  2026-08-26; external probes in `bench-external/`.
+  on), `benches/value.rs` (the sixteen-byte box's price in memory —
+  arithmetic, tag-only reads in three arms, a 32-hop hash lookup — with a
+  null pair beside each and the minimum printed beside criterion's median;
+  the instrument the relayout was read against, `dev/BENCHMARKS.md`, "S48.2
+  the box's price after the relayout"); no collector-side probe
+  since the two collectors were deleted on 2026-08-26; external probes in
+  `bench-external/`.
   Store-side probe, same shape and same reason:
   `memory::barrier::tests::what_a_store_costs_by_working_set::measure_store_cost`
   — inside the lib, because a bench is a separate crate and reaches every
@@ -786,7 +795,9 @@ rptest); headline comparison in `benches/RESULTS.md`, change log in
 - `RcHeader` 8 bytes at offset 0: `refcount::tests::`
   `header_is_8_bytes_at_offset_zero`.
 - `Value` 16 bytes, fixed offsets: `value::tests::`
-  `box_is_16_bytes_with_fixed_offsets`.
+  `box_is_16_bytes_with_fixed_offsets`; the sample boxes of
+  `rfc/model/values.md`, "ValueBox Layout", byte for byte:
+  `the_sample_boxes_of_the_layout_byte_for_byte` beside it.
 - A published header is read through `refcount`'s helpers, and since
   2026-08-26 the compiler enforces the field half: `RcHeader`'s `refcount`
   and `flags` carry no visibility modifier, so nothing outside that module
@@ -883,7 +894,8 @@ and superseded on the storage question: the list is written into the
 arena's own memory rather than a per-thread chain of manager blocks
 (`dev/DECISIONS.md`, "a retained block's survivor list lives in the
 arena's own memory, and the process registry goes"). Kept as the record
-of what was considered; the code is S36.9 (e).
+of what was considered; the code is `memory::retained` and
+`promote::place_survivor_lists`.
 
 
 `dev/tools/census_perf.sh` — the hardware arm of S40.3: every load of
@@ -914,7 +926,7 @@ one per surface".
 `dev/CYCLE-COLLECTOR-REVIEW.md` — the 2026-09-01 read-only review of
 `src/cycle/` with Edmond's ruling per finding: arena tail waste, the
 scan's double row lookup, the retained registry lock, and three T1
-items. Read before the S36 memory steps.
+items. Read before changing what a collection holds in memory.
 
 Documents deleted on 2026-08-26 with the collectors they described —
 `dev/design/epoch-walk.md`, `epoch-walk-structures.md`,
@@ -940,9 +952,8 @@ uncovered term is a gap rather than a local ruling".
 
 A stage whose section in `PLAN.md` would run past forty lines keeps its role
 lines and its reasoning in `dev/plans/S<n>.md` and its steps in the plan, and
-the file is deleted with the stage (rule 23.1.3). `dev/plans/S47.md` is the
-first: the round that reshaped S47 into eight steps, the rounds and Sage
-rulings each step went through, and S47.6's own baseline and design.
+the file is deleted with the stage (rule 23.1.3). A ruling or a measurement
+the file held goes to the journals before it does; the file is not a record.
 
 A comment that says a capability is absent names the `PLAN.md` step that
 builds it, and the commit deleting that stage sweeps the number out of

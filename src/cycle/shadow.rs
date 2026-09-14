@@ -482,13 +482,21 @@ pub(crate) const fn group_count(row_count: u32) -> u32 {
     (padded(row_count) / GROUP as usize) as u32
 }
 
-/// Visit the index of every row of `array` the scan left
-/// [`Color::PotentiallyUnreachable`], lowest index first, and stop where
-/// `visit` answers false.
+/// Visit the index of every row of `array` the scan left `wanted`, lowest
+/// index first, and stop where `visit` answers false.
 ///
 /// **False when it stopped early**, which is the visitor's own refusal
 /// handed back to whoever owns it. True when the array is exhausted,
 /// including where nothing was visited at all.
+///
+/// Two colours are asked for. [`Color::PotentiallyUnreachable`] is the
+/// population both readings a collection takes of its rows walk — the
+/// pressure path's harvest and the membership a collection off the poll reads
+/// its rows as; [`Color::Live`] is the population the maturation descent walks
+/// and the teardown never reads, a live row naming an entity this collection
+/// proved held from outside ([`crate::cycle::maturation`]). The dispatch that
+/// adds the population with no array — a large entity's one row in its own
+/// block header — is [`crate::cycle::row`]'s, and every reader goes through it.
 ///
 /// Only the groups a trace met are read. An unmet group's eight rows are
 /// whatever the block that held this memory before left in them, so
@@ -502,32 +510,7 @@ pub(crate) const fn group_count(row_count: u32) -> u32 {
 ///
 /// # Safety
 /// `array` is an initialised array whose collection has been scanned.
-pub(crate) unsafe fn for_each_unreachable(
-    array: *mut RowArray,
-    visit: impl FnMut(u32) -> bool,
-) -> bool {
-    unsafe { for_each_of_color(array, Color::PotentiallyUnreachable, visit) }
-}
-
-/// Visit the index of every row of `array` the scan left [`Color::Live`],
-/// stopping where `visit` answers false, and answer **false when it stopped
-/// early**.
-///
-/// The population the maturation descent walks, and the one the teardown never
-/// reads: a live row names an entity this collection proved held from outside
-/// ([`crate::cycle::maturation`]).
-///
-/// # Safety
-/// As [`for_each_unreachable`].
-pub(crate) unsafe fn for_each_live(array: *mut RowArray, visit: impl FnMut(u32) -> bool) -> bool {
-    unsafe { for_each_of_color(array, Color::Live, visit) }
-}
-
-/// The walk both colours take: met groups only, one row read per index.
-///
-/// # Safety
-/// As [`for_each_unreachable`].
-unsafe fn for_each_of_color(
+pub(crate) unsafe fn for_each_of_color(
     array: *mut RowArray,
     wanted: Color,
     mut visit: impl FnMut(u32) -> bool,

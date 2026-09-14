@@ -19,7 +19,7 @@ impl Holder {
     }
 
     fn entity_ptr(&self) -> *mut RcHeader {
-        if self.slot.is_refcounted() {
+        if self.slot.is_pointer() {
             self.slot.entity_ptr()
         } else {
             std::ptr::null_mut()

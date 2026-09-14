@@ -31,6 +31,9 @@
 //! `density`'s, `mark`'s and `census`'s — each build a population eight
 //! collections deep, and a heap no other case has touched is what makes the
 //! first collection's reading the same on every run.
+//!
+//! [`ArmedInjection`] is the one shape every fault injection in the tree takes:
+//! a thread-local flag armed for one firing and restored when the guard dies.
 
 use crate::class::Class;
 use crate::cycle::arena::TraceScratchArena;
@@ -147,6 +150,37 @@ pub(crate) unsafe fn traced_unreachable_from(
     }
 
     arena
+}
+
+/// What a destructor does when it gives up its own edge to the next member:
+/// the Box property at [`prop_offset`] 0 is emptied and the reference it held
+/// released, which is the pair of acts a store of null through the barrier
+/// performs over a slot whose owner and old value are both of the GC heap.
+/// Answers the member the edge named and whether the release reached zero.
+///
+/// # Safety
+/// `obj` is a live object whose property 0 holds a counted entity pointer.
+pub(crate) unsafe fn release_own_edge(obj: *mut Object) -> (*mut RcHeader, bool) {
+    let slot = unsafe { Object::prop_at(obj, prop_offset(0)) };
+    let member = unsafe { crate::test_support::entity_checked(&*slot) };
+    unsafe { crate::memory::barrier::write_value_slot(slot, crate::value::Value::null()) };
+    (member, unsafe { ll_release(member) })
+}
+
+/// The row `ensure_row` handed back, or a panic naming what it answered
+/// instead, for a case that asks for a row it expects to get.
+pub(crate) fn met(answer: crate::cycle::arena::RowLookup) -> *mut u32 {
+    match answer {
+        crate::cycle::arena::RowLookup::Ready { row, .. } => row,
+        other => panic!("the arena refused a row: {other:?}"),
+    }
+}
+
+/// The members of a fixture as the header pointers a commit takes.
+pub(crate) fn headers<const MEMBERS: usize>(
+    members: [*mut Object; MEMBERS],
+) -> [*mut RcHeader; MEMBERS] {
+    members.map(|member| member as *mut RcHeader)
 }
 
 /// A ring of GC-heap objects, one per class given, each member naming the next
@@ -296,4 +330,44 @@ pub(crate) fn on_a_fresh_thread<T: Send + 'static>(case: impl FnOnce() -> T + Se
     })
     .join()
     .expect("the case finished")
+}
+
+/// A fault injection armed on one thread-local flag for a single firing —
+/// the firing site reads the flag with `replace(false)` — and restored to what
+/// it was when this guard dies, including on the unwind the injected panic
+/// itself raises, so nothing of it reaches the next test on the thread.
+///
+/// The arming sites are the constructors beside each flag:
+/// `arena::inject_reset_failure`, `arena::inject_harvest_failure`,
+/// `arena::refuse_drop_reservation` and
+/// `deferred_slot_reuse::inject_close_unwind`, each with what its firing
+/// leaves half-done.
+pub(crate) struct ArmedInjection {
+    flag: &'static std::thread::LocalKey<std::cell::Cell<bool>>,
+    before: bool,
+}
+
+impl ArmedInjection {
+    /// Arm `flag`, remembering what it held.
+    pub(crate) fn arm(flag: &'static std::thread::LocalKey<std::cell::Cell<bool>>) -> Self {
+        Self::hold(flag, true)
+    }
+
+    /// Hold `flag` at `value` for the guard's life, remembering what it held:
+    /// the form a knob whose armed state is `false` takes.
+    pub(crate) fn hold(
+        flag: &'static std::thread::LocalKey<std::cell::Cell<bool>>,
+        value: bool,
+    ) -> Self {
+        Self {
+            flag,
+            before: flag.with(|armed| armed.replace(value)),
+        }
+    }
+}
+
+impl Drop for ArmedInjection {
+    fn drop(&mut self) {
+        self.flag.with(|armed| armed.set(self.before));
+    }
 }

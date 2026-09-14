@@ -100,7 +100,7 @@ pub(crate) unsafe fn reference_die(boxed: *mut LLReference) {
     // walks a box and none has a promotion edge of one to restore; the
     // assertion above is what says so.
     let v = unsafe { (*boxed).value };
-    if v.is_refcounted() {
+    if v.is_pointer() {
         unsafe {
             crate::memory::barrier::write_value_slot(&raw mut (*boxed).value, Value::null());
             crate::memory::barrier::drop_ref(owner_cat, v.entity_ptr());

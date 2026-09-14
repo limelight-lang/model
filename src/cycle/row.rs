@@ -207,7 +207,7 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
 /// where `visit` answers false, and answer **false when it stopped early**.
 ///
 /// The reason this stands here rather than in
-/// [`crate::cycle::shadow::for_each_unreachable`] is the population that has
+/// [`crate::cycle::shadow::for_each_of_color`] is the population that has
 /// no row in its array: a large entity's colour is a word of its own block
 /// header, and the dispatch that knows so is this module's. Both readings a
 /// collection takes of its rows go through here — the harvest of the pressure
@@ -224,18 +224,15 @@ pub(crate) unsafe fn for_each_unreachable(
     population: Population,
     visit: impl FnMut(u32) -> bool,
 ) -> bool {
-    let mut visit = visit;
-    if population == Population::SingleEntity {
-        crate::cycle::shadow::note_row_read();
-        let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
-        if crate::cycle::shadow::color(row) != crate::cycle::shadow::Color::PotentiallyUnreachable {
-            return true;
-        }
-
-        return visit(SINGLE_ENTITY_INDEX);
+    unsafe {
+        for_each_of_color(
+            array,
+            block,
+            population,
+            crate::cycle::shadow::Color::PotentiallyUnreachable,
+            visit,
+        )
     }
-
-    unsafe { crate::cycle::shadow::for_each_unreachable(array, visit) }
 }
 
 /// Visit the index of every row of `block` the scan left
@@ -255,18 +252,40 @@ pub(crate) unsafe fn for_each_live(
     population: Population,
     visit: impl FnMut(u32) -> bool,
 ) -> bool {
-    let mut visit = visit;
+    unsafe {
+        for_each_of_color(
+            array,
+            block,
+            population,
+            crate::cycle::shadow::Color::Live,
+            visit,
+        )
+    }
+}
+
+/// The walk both colours take: a large entity's one row is read out of its
+/// block header, every other population's out of the array.
+///
+/// # Safety
+/// As [`for_each_unreachable`].
+unsafe fn for_each_of_color(
+    array: *mut crate::cycle::shadow::RowArray,
+    block: *mut u8,
+    population: Population,
+    wanted: crate::cycle::shadow::Color,
+    mut visit: impl FnMut(u32) -> bool,
+) -> bool {
     if population == Population::SingleEntity {
         crate::cycle::shadow::note_row_read();
         let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
-        if crate::cycle::shadow::color(row) != crate::cycle::shadow::Color::Live {
+        if crate::cycle::shadow::color(row) != wanted {
             return true;
         }
 
         return visit(SINGLE_ENTITY_INDEX);
     }
 
-    unsafe { crate::cycle::shadow::for_each_live(array, visit) }
+    unsafe { crate::cycle::shadow::for_each_of_color(array, wanted, visit) }
 }
 
 /// The row at `index` of `block`, which is what a walk over
@@ -348,8 +367,9 @@ pub(crate) unsafe fn entity_at(
 //
 // The dispatch is the trace's per-edge cost — a block-kind load, and for a
 // retained block a search of the survivor list — and the worklist entry's
-// shape decides how many of them a scan makes per entity. Nothing collects
-// yet, so the figure that decides the shape is this count and not a duration
+// shape decides how many of them a scan makes per entity. The count is what
+// decides the shape rather than a duration, because a dispatch is a few loads
+// and the clock cannot resolve one where a count can
 // (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 2).
 //
 // Per thread, because the tests that trace run beside each other.
@@ -382,7 +402,8 @@ fn note_dispatch() {
 /// registry answers membership without listing itself
 /// (`memory::large_entity::holds_run`). That matters here because this
 /// assertion stands on the trace's edge dispatch, where an allocation of its
-/// own would be read as the collection's (`PLAN.md` S36.9). The registry is
+/// own would be read as the collection's by the deny run over it
+/// (`cycle::collect::tests::what_a_collection_asks_the_allocator`). The registry is
 /// asked only where the regions answer no, an OS-direct run being the one
 /// population no region contains.
 ///
@@ -447,7 +468,7 @@ pub(crate) fn note_descent_boundary() {
 }
 
 /// Add what the descent just made to its own total, which is read by
-/// [`take_dispatches_in_the_descent`]. The body is empty without `cfg(test)`.
+/// `take_dispatches_in_the_descent`. The body is empty without `cfg(test)`.
 ///
 /// **The end of the descent and not the end of the commit.** Everything past
 /// it resolves rows of its own — the exact validation asks a membership about

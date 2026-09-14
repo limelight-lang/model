@@ -630,7 +630,12 @@ would.
 Two rules about the slot itself, both paid for by defects. **`store_box`
 writes the whole 16-byte `Value`, not just its payload word** (the
 `store_ptr` form writes the 8-byte pointer) — one slot has one writer, and
-a caller stamping the tag afterwards leaves the slot torn in between. And
+a caller stamping the tag word afterwards leaves the slot between two
+stores with a `+8` word that says one arm over a `+0` word of the other.
+The two words go out as two relaxed atomic stores, and a collector reading
+the slot decides on the `+8` word alone (`rfc/model/values.md`, "ValueBox
+Layout"), so a reader never sees a value under the wrong reading; what it
+may see is the old value or the new, never a pair whose halves disagree. And
 **the slot is published before the displaced value is released** — the
 `store_*` precedes the `drop` — because releasing can run `__destruct`,
 which is user code that may collect: a collection that still sees the old
@@ -707,8 +712,8 @@ underflow.
 The withheld returns of a trace, the weak table and the survivor lists of
 retained blocks are outside the global allocator as well, each in the memory
 of the layer that owns it — the dying entities themselves, a buffer payload,
-the arena's own blocks. What remains in PLAN S36.9 is the composite source
-audit and the deny test over a wired collection.
+the arena's own blocks. The composite source audit and the deny run over a
+wired collection stand in `cycle::collect::tests::what_a_collection_asks_the_allocator`.
 
 ### The critical reserve
 

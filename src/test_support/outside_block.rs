@@ -262,8 +262,8 @@ unsafe fn sever_one(entity: *mut RcHeader, cell: Cell, displaced: &mut dyn FnMut
 }
 
 /// Empty one cell of the block. A cell here is a whole `Value` with
-/// nothing kept in its reserved bytes, so the barrier's own `Value` store
-/// is the writer; `cells::empty_cell` refuses the shape, which says only
+/// nothing kept in its tag word's upper bytes, so the barrier's own
+/// `Value` store is the writer; `cells::empty_cell` refuses the shape, which says only
 /// that the layout is the class's to know.
 unsafe fn empty(cell: Cell) {
     unsafe {

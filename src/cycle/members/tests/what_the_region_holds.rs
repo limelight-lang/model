@@ -22,7 +22,8 @@ fn address(word: usize) -> *mut RcHeader {
 ///
 /// The workspace is one 64 KiB block, so what the prefix takes the rows do not
 /// get, and the pair is what the choice of 1,024 records was made against
-/// (`PLAN.md` S36.12).
+/// (`dev/DECISIONS.md`, "the member list is the workspace's second region, and
+/// its capacity is 1,024 records").
 #[test]
 fn the_region_takes_eight_kilobytes_and_leaves_the_rest_to_the_rows() {
     assert_eq!(MEMBER_CAPACITY, 1_024);
@@ -162,12 +163,13 @@ fn an_empty_list_says_whether_it_overflowed() {
     assert!(!standing.overflowed(), "nothing was refused");
 }
 
-/// A row the dispatch cannot place gives the whole harvest up, and the driver
-/// reads that refusal the way it reads an overflow: the set is closed under
-/// its in-edges, so a list with one member missing is not a list a teardown
-/// may take.
+/// A row the dispatch cannot place gives the whole harvest up: the set is
+/// closed under its in-edges, so a list with one member missing is not a list
+/// a teardown may take, and the list comes back empty. The ending is its own
+/// and not an overflow's, because the driver halves its roots on an overflow
+/// and a disagreement in the graph is met again at every bound.
 #[test]
-fn a_given_up_harvest_reads_as_an_overflow() {
+fn a_given_up_harvest_reads_as_abandoned_and_empty() {
     let _g = test_guard();
 
     let mut arena = open_arena();
@@ -177,7 +179,8 @@ fn a_given_up_harvest_reads_as_an_overflow() {
     drop(arena);
 
     let standing = take_standing().expect("a harvest was armed");
-    assert!(standing.overflowed());
+    assert_eq!(standing.ending(), HarvestEnding::Abandoned);
+    assert!(!standing.overflowed());
     assert!(standing.entities().is_empty());
 }
 

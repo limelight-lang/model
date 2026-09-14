@@ -20,12 +20,12 @@
 //! from either of its roots, so the entities a second collection frees cannot
 //! see one lost token inside one ring; a second ring makes a lost token cost
 //! two entities. The tokens themselves are read through
-//! [`collect_lane_tokens`], a count of one lane being unable to state either
+//! [`collect_lane_tokens`](crate::cycle::queue::collect_lane_tokens), a count of one lane being unable to state either
 //! half of the rule — a bit standing over no record, or one entity recorded
 //! twice.
 //!
 //! **A token's lane is asserted separately from its identity.**
-//! [`collect_lane_tokens`] concatenates the active chain, the deferred lane
+//! [`collect_lane_tokens`](crate::cycle::queue::collect_lane_tokens) concatenates the active chain, the deferred lane
 //! and the overflow buffer, so the multiset says which entities are recorded
 //! and never where. [`candidate_count`] answers the active chain alone, and
 //! the two together pin all four tokens to it: a deferral that took half of
@@ -57,31 +57,9 @@
 //! lane instead of the active one (`when_the_turnover_reoffers`).
 
 use super::*;
-use crate::cycle::queue::{candidate_count, collect_lane_tokens, release_queue_segments};
+use crate::cycle::queue::{candidate_count, release_queue_segments};
 use crate::cycle::row::take_dispatches_in_mark_phase;
 use crate::refcount::{CANDIDATE_BIT, mutator_flags, take_admissions};
-
-/// A class with one counted Box property, through which a case holds a ring
-/// member from outside the component.
-fn keeper_class(name: &str) -> *const Class {
-    ClassBuilder::new(name).prop("held", true).build()
-}
-
-/// Every token this thread's queue holds, sorted, so that a case compares
-/// multisets rather than the order two lanes happen to yield.
-fn lane_tokens() -> Vec<*mut RcHeader> {
-    let mut tokens = Vec::new();
-    collect_lane_tokens(&mut tokens);
-    tokens.sort_unstable();
-    tokens
-}
-
-/// `members` as the tokens a queue holding exactly them would yield.
-fn as_tokens(members: &[*mut Object]) -> Vec<*mut RcHeader> {
-    let mut tokens: Vec<*mut RcHeader> = members.iter().map(|&m| m as *mut RcHeader).collect();
-    tokens.sort_unstable();
-    tokens
-}
 
 /// Members of `ring` that still carry [`CANDIDATE_BIT`].
 ///

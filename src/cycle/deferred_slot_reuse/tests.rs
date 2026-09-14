@@ -4,6 +4,7 @@ use crate::class::Class;
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
+use crate::cycle::testing::met;
 use crate::memory::Arena;
 use crate::memory::block_pool::{
     BLOCK_KIND_FREE, BLOCK_KIND_RETAINED, BlockHeader, force_oom, test_guard,
@@ -86,13 +87,6 @@ unsafe fn link_of(entity: *mut RcHeader) -> *mut u8 {
 unsafe fn retire_by_hand(header: *mut RcHeader) {
     unsafe { crate::refcount::clear_candidate_bit(header) };
     unsafe { crate::memory::stdapi::hand_back_and_free(header as *mut u8) };
-}
-
-fn met(answer: crate::cycle::arena::RowLookup) -> *mut u32 {
-    match answer {
-        crate::cycle::arena::RowLookup::Ready { row, .. } => row,
-        other => panic!("the arena refused a row: {other:?}"),
-    }
 }
 
 unsafe fn ensure_row(arena: &mut TraceScratchArena, entity: *mut RcHeader, count: u32) -> *mut u32 {

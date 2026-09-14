@@ -76,7 +76,10 @@ pub(crate) struct WorklistEntry {
     pub(crate) row: *mut u32,
 }
 
-/// The descent's worklist: entities met but not yet expanded.
+/// A stack of worklist entries out of the arena's bump: the trace's
+/// worklist — entities met but not yet expanded — and, in the same record,
+/// the maturation descent's stack of live vertices not yet assigned to a
+/// component (`crate::cycle::maturation`).
 ///
 /// Held by the arena whose memory it stands on and spent by one collection.
 /// **A worklist does not outlive an arena reset**: that call hands the drawn
@@ -88,8 +91,8 @@ pub(crate) struct WorklistEntry {
 /// reset is what empties it, and the retry after an abort is the collection
 /// that depends on this.
 ///
-/// The type is the chain both collection structures share
-/// ([`crate::cycle::records::LazyChain`]); what makes it a worklist is the
+/// The type is the chain every collection structure shares
+/// ([`crate::cycle::records::LazyChain`]); what makes it a stack is the
 /// record and the verbs the arena reaches for — `push_into_current` and `pop`,
 /// growing through `extend` at every boundary the depth crosses.
 pub(crate) type TraceStack = LazyChain<WorklistEntry>;

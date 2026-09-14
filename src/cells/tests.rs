@@ -33,4 +33,5 @@ unsafe fn tie(a: *mut Object, offset: u32, b: *mut Object) {
 }
 
 mod the_children_a_kind_has;
+mod what_a_box_cell_yields;
 mod what_the_walk_enumerates;

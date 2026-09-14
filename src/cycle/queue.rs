@@ -878,7 +878,7 @@ impl Drop for InFlightBatch {
 /// the write position only when it is full.
 ///
 /// Eight others rest on the same rule, and the list is what a reader sweeps
-/// when S38.1 ends it. [`candidate_count`] and [`deferred_count`] count by it,
+/// when S38.1 ends it. `candidate_count` and `deferred_count` count by it,
 /// deliberately without this walk, so that the two readings cross-check;
 /// [`release_queue_segments`] discharges one payload per segment behind the
 /// head, once for each chain; [`append_with_new_segment`] carries a
@@ -1123,7 +1123,7 @@ impl Drop for LiftedActiveLane {
 /// The caller owns the epoch comparison. This transition itself is the same
 /// allocation-free bounded merge as a trace restore and leaves no record in
 /// the deferred lane. A reader that wants the count moved takes
-/// [`deferred_count`] before the call: nothing is counted here.
+/// `deferred_count` before the call: nothing is counted here.
 pub(crate) fn reoffer_deferred_candidates() {
     let state = owner_state();
     if state.is_null() {

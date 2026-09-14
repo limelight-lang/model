@@ -1,4 +1,5 @@
 use super::*;
+use crate::cycle::testing::met;
 use crate::memory::block_pool::{force_oom, test_guard};
 
 /// A block the arena may stamp a shadow pointer on: a commissioned
@@ -24,15 +25,6 @@ fn slot_row(block: *mut u8, index: u32) -> crate::cycle::row::RowKey {
         block: block as usize,
         index,
         population: crate::cycle::row::Population::Slotted,
-    }
-}
-
-/// The row `ensure_row` handed back, or a panic naming what it answered
-/// instead. Every test here asks for a row it expects to get.
-fn met(answer: RowLookup) -> *mut u32 {
-    match answer {
-        RowLookup::Ready { row, .. } => row,
-        other => panic!("the arena refused a row: {other:?}"),
     }
 }
 

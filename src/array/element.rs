@@ -161,7 +161,7 @@ unsafe fn write_through(
     slot: *mut Value,
     write: impl FnOnce(*mut LLArray, *mut crate::memory::arena::Arena) -> bool,
 ) -> bool {
-    // The tag, not `is_refcounted`: a ReferenceBox passes the flag test,
+    // The tag, not `is_pointer`: a ReferenceBox passes the arm test,
     // and `ll_cow_separate` has no arm for that kind — in release it
     // hands the box back, and the table write below would then lay an
     // `LLArray` over an `LLReference`'s `Value`.
@@ -637,7 +637,7 @@ unsafe fn store_through_box(
 ) -> bool {
     let slot = unsafe { &raw mut (*boxed).value };
     let held = unsafe { *slot };
-    let old = if held.is_refcounted() {
+    let old = if held.is_pointer() {
         held.entity_ptr()
     } else {
         std::ptr::null_mut()
@@ -711,9 +711,9 @@ unsafe fn box_element(
     // Through `write_value_slot`, not a plain assignment: the factory
     // publishes the header before it returns, so the box is a counted
     // entity in the census from that instant and the collector's relaxed
-    // reader can be striding it. A plain 16-byte assignment orders the
-    // payload and the meta word not at all, and a reader that sees the
-    // meta half first takes a refcounted tag with a null payload. No
+    // reader can be striding it. A plain 16-byte assignment is a data
+    // race against the collector's relaxed load of the `+8` word rather
+    // than a stale reading of it. No
     // holder but the entry below names the box yet, which is why the
     // store need not be `ref_store`'s composition.
     unsafe { crate::memory::barrier::write_value_slot(&raw mut (*boxed).value, held) };

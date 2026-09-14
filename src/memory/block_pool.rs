@@ -91,8 +91,9 @@ pub(crate) unsafe fn load_block_kind(kind_field: *const AtomicU32) -> u32 {
 /// a slot returns only when the collection that could be reading its row
 /// is over, so a block cannot empty and reach the pool mid-trace
 /// (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse"). The owner-side
-/// trace window is S36.2's; S38.1/S38.3 must make the same exclusion
-/// owner-addressable before a worker reads another thread's blocks.
+/// trace window is `cycle::deferred_slot_reuse`; S38.1/S38.3 must make the
+/// same exclusion owner-addressable before a worker reads another thread's
+/// blocks (`PLAN.md`).
 ///
 /// # Safety
 /// `kind_field` must be the `kind` word of a block header mapped for the
