@@ -854,7 +854,9 @@ window there is.
         given up mid-move and read after, and a store beside the trace — two
         mutations of the walk seen red, ThreadSanitizer silent on the code
         and reporting on a plain-load mutant, Miri green over the four in
-        2 min of wall. The array count's ordering was already the table's
+        2 min of wall at a thousand traces, and in seconds at the twenty
+        Miri runs (its detector orders accesses by vector clock, so the
+        count buys nothing there). The array count's ordering was already the table's
         rule and the rfc now names it; storage is not zero-filled. The ARM64
         fence price is unmeasured by Edmond's ruling
         (`rfc/dev/DECISIONS.md`, "the publication fence lands before its

@@ -298,8 +298,15 @@ fn an_array_mid_move_is_given_up_and_read_once_the_move_ends() {
 
 /// How many traces the collector runs over the ring while the owner stores
 /// into it. A thousand is long enough that the owner's loop, released by
-/// the same signal, runs stores under most of them.
-const TRACES_BESIDE_THE_STORES: usize = 1_000;
+/// the same signal, runs stores under most of them. Under Miri a handful:
+/// its race detector orders accesses by vector clock and finds the pair on
+/// the first trace or never, and a thousand interpreted traces cost two
+/// minutes of wall for nothing more (the shape
+/// `array::table::tests::what_a_walker_reads_while_the_storage_is_released`
+/// takes for its rounds).
+fn traces_beside_the_stores() -> usize {
+    if cfg!(miri) { 20 } else { 1_000 }
+}
 
 /// The bound on the owner's loop, for a collector that never signals: a
 /// failed assertion on the collector thread would otherwise leave the owner
@@ -350,7 +357,7 @@ fn a_store_beside_the_trace_is_read_whole() {
         assert!(unsafe { (*token).try_take() }, "the owner was tracing");
         storing.recv().expect("the owner stored once");
         let mut traces = 0;
-        for _ in 0..TRACES_BESIDE_THE_STORES {
+        for _ in 0..traces_beside_the_stores() {
             let mut arena =
                 TraceScratchArena::open().expect("the collector thread drew a workspace");
             assert_eq!(
@@ -384,7 +391,7 @@ fn a_store_beside_the_trace_is_read_whole() {
     }
 
     let traces = collector.join().expect("the collector thread returned");
-    assert_eq!(traces, TRACES_BESIDE_THE_STORES, "every trace completed");
+    assert_eq!(traces, traces_beside_the_stores(), "every trace completed");
     assert!(stores > 0, "the owner stored before the first trace");
 
     unsafe {
