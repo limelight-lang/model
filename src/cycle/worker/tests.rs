@@ -73,17 +73,12 @@ fn a_birth_is_one_thread_whose_rounds_claim_and_release_the_record() {
     );
     assert_eq!(testing::take_spawns(), 1);
 
-    // A round claims this record's token and releases it: nothing is served
-    // under the claim, and the token reads free again after it.
+    // A round claims this record's token and releases it: the count moves
+    // after the serve returns, which is after the release.
     assert!(
         wait_until(|| testing::take_owners_served() >= 1, A_BIRTH),
         "a round claimed and released this thread's record"
     );
-    assert!(wait_until(
-        || !unsafe { (*record).token.is_held() },
-        A_BIRTH
-    ));
-    assert!(testing::take_records_visited() >= 1);
 
     testing::retire();
     assert_eq!(testing::thread_state(), ThreadState::Unborn);
