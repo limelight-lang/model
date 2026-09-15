@@ -11,9 +11,9 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-15 · Active: S37, S38 and S40. S38.0 closed on 2026-09-15
-— the collector's reader, its fence and the trace from a second thread — and
-S38.3 is unblocked by it; S38.5, the worker, is carried out of it and waits on
+Updated: 2026-09-15 · Active: S37, S38 and S40. S38.0 and S38.3 closed on
+2026-09-15 — the collector's reader with its fence, and the owner's returns
+withheld under a foreign holder of its token; S38.5, the worker, waits on
 `rfc` S8.7; every other open step is blocked outside this repository or on a
 corpus. **S48 closed and was deleted
 on 2026-09-14**, the ValueBox relayout to `rfc/model/values.md`, "ValueBox
@@ -745,130 +745,16 @@ are unreachable while `ActiveTrace::open`'s per-thread assert is the only
 window there is.
 
 - [x] S38.0 The collector's reader
-      done: the collector's `CellReader` reads a `ValueBox` cell as one relaxed
-        8-byte load of the +8 word — a scalar when bit 0 is set, null when
-        zero, otherwise the counted pointer — under the layout `rfc/model/values.md`,
-        "ValueBox Layout" states after `rfc` S8.11; the collector-thread trace
-        instantiates `trace_cells` with it; the publication clause is built
-        beside it — a release fence per construction event on the building
-        thread, after the last building store and before the store that hands
-        the address out (after `publish_header`, which is the last store of
-        `stamp_into`; before an array's `set_storage`; after a ReferenceBox's
-        header), and an acquire load on every load through which the worker
-        obtains an address (a box's +8 word, a counted-pointer slot, an
-        array's storage head, a hash entry's key word, the detached chain's
-        entries), its ARM64 allocation-path cost measured before the fence is
-        emitted (`rfc/model/gc/rc-cycle.md`, "Concurrency"); the count an
-        array's walker bounds its stride by is ordered the same way, or the
-        storage is zero-filled at install — this step picks; and a Miri slice
-        drives the reader over an object with outside cells and over an array
-        mid-move
-      tier: T2 · role: Critic
-      correction 2026-09-14: A1 closed on Edmond's proposal, ruled by the Sage
-        and attacked by one Critic round (`rfc/dev/DECISIONS.md`, "A1 closes on
-        a discriminating word"): the +8 word of a `ValueBox` is either the
-        pointer (bit 0 clear) or a tag word (bit 0 set), so the reader needs no
-        version, no lock and no snapshot. The criterion above replaces the
-        four-way choice. What the closure left this step is the publication
-        order, which is not a slot tear: a relaxed slot store can become
-        visible before the entity's class-word store, and a worker reading a
-        recycled slot's previous class would stride the wrong `box_runs`. The
-        crate's own relayout landed on 2026-09-14: `Value` is two words,
-        `counted_box_cell` is one integer load of the +8 word through
-        `CellReader::word` and `Value::is_pointer_word`, and this step
-        instantiates that reader for the collector thread and adds the
-        fence; the reader's price is `dev/BENCHMARKS.md`, "S48.2 the box's
-        price after the relayout".
-      correction 2026-09-04: the criterion read "no storage version and no
-        give-up, because a torn read costs at most a phantom edge or a missed
-        one". A1 rejects that justification in terms: a wide `ValueBox` is
-        published as two stores, "this cannot be treated as harmless staleness
-        because the resulting pointer need not have been valid at any instant",
-        and "until then, only synchronous owner-side tracing is memory-safe".
-        `rfc/model/gc/rc-cycle.md` repeats it — "This statement assumes a
-        memory-safe protocol for concurrent slot reads; that protocol is
-        currently an open blocker". So the step refused by name one of the four
-        resolutions it is required to pick from. **The step is blocked until A1
-        closes**, and that is a design ruling, not an implementation choice.
-        `rfc/model/layouts.md` licenses relaxed atomics for the header, not for
-        a two-word cell. The same block reaches the cross-thread arms of S38.1
-        and S38.3; the several-collectors-at-once part is licensed separately
-        (`dev/DECISIONS.md`, 2026-08-26) and only the reads are blocked.
-      handoff: `RelaxedCells` and its re-check plumbing died at S30.2 because
-        they existed for `rc-walk`'s precision. What the accelerator needs is
-        strictly smaller, and the `CellReader` trait is the socket it plugs into.
-      handoff: two debts carried from S31 before that stage was deleted. **The
-        stale stamp byte** is this step's to zero, at both producers — a
-        recycled `heap::FreeSlot` and a promoted survivor — because this is
-        where the second thread arrives and the byte stops being inert; the
-        prune in `cycle::mark` is what it breaks. Neither producer reaches a
-        reader today: `refcount::publish_header` stores the whole eight-byte
-        word, so a recycled slot carries no stamp of its previous occupant,
-        and nothing writes byte 6 of an arena entity, so a promoted survivor
-        arrives with it zero (read 2026-09-10). And **`dev/WORKFLOW.md`'s ThreadSanitizer run has
-        selected no test since 2026-08-26**, its only one having lived in the
-        deleted `collector::`, so the instrument that reports
-        plain-against-atomic is         unavailable until this step gives it a pairing
-        to watch.
-      handoff: the collector thread's birth is this step's to name — startup
-        or first pressure — with its floor refusal following it; a mandatory
-        floor drawn at first pressure is the worst moment
-        (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued").
-      handoff 2026-09-12, from S39.1: the exit waits on the thread's token
-        once and then collects with takes of its own, so between and after
-        those takes a collector could take the token of a thread whose exit
-        has begun and trace blocks the exit is about to abandon — this step's
-        collector reads the owner's exit phase before its take, through a
-        word it adds: `memory::heap::thread_exit_running` reads the calling
-        thread's own thread-local and cannot answer for another. And the
-        inbox the rfc's handoff names is the fourth chain the exit would
-        drain; today it has three (`cycle::collect::collect_before_exit`),
-        and a fourth joins `queue::registered_count`, the offer before each
-        round and `release_queue_segments` alike.
-      Critic 2026-09-15: the store-beside-the-trace case established no
-        overlap — its signal was sent before the trace and the owner's loop
-        ran zero times in the ordinary run — and its doc claimed a torn
-        pointer would fail the row dispatch, which an aligned 8-byte load
-        never produces. Accepted: the collector now waits for the owner's
-        first store and traces a thousand times while the owner stores until
-        it is done (about 22,000 stores per run, probed once), and the doc
-        says what the case proves — the pairing under ThreadSanitizer and
-        Miri, which find a race by ordering. `trace_cells`' "mature" safety
-        clause named no happens-before; rewritten to the fence-and-acquire
-        pairing, and `template::value_count_at`'s with it. `OutsideCells`
-        stated the reader's obligations and none of the writer's; the atomic
-        store and fill-before-publish rules now stand beside the category
-        rule. `StorageHead::coherent`'s fence carried one duty in its comment
-        and two in the code; the storage pairing is named. A reserved cell's
-        address handed out before construction would reach a worker ahead of
-        the fence; `rfc/model/memory/bulk-operations.md` now states the order.
-      handoff 2026-09-15: the reader is `cells::AtomicCells` — every load
-        atomic and `Acquire` — paired with one `fence(Release)` after the
-        header store in `refcount::publish_header`, and `OutsideCells` gained
-        `walk_concurrent`, which strides only a reading the class's version
-        bracket validated; `mark`, `scan` and `trace_batch` take the reader
-        as a type parameter (`dev/DECISIONS.md`, "the collector's reader loads
-        with `Acquire`"). The trace on another thread is
-        `cells::tests::what_a_collector_thread_reads`: four cases, the rows
-        an owner's trace would leave, an outside block and an array each
-        given up mid-move and read after, and a store beside the trace — two
-        mutations of the walk seen red, ThreadSanitizer silent on the code
-        and reporting on a plain-load mutant, Miri green over the four in
-        2 min of wall at a thousand traces, and in seconds at the twenty
-        Miri runs (its detector orders accesses by vector clock, so the
-        count buys nothing there). The array count's ordering was already the table's
-        rule and the rfc now names it; storage is not zero-filled. The ARM64
-        fence price is unmeasured by Edmond's ruling
-        (`rfc/dev/DECISIONS.md`, "the publication fence lands before its
-        ARM64 price"; the backlog line "The publication fence's ARM64
-        price"). The stale stamp byte closes by reading: `publish_header`
-        writes the whole word (pinned by
-        `refcount::tests::the_maturation_stamp_the_commit_writes`), and no
-        writer stamps an arena entity, which resolves to no row
-        (`refcount::MaturationStamp`'s doc). What this step did not build is
-        the worker itself, S38.5 below: the collector thread's birth, the
-        exit-phase word, the inbox chain, and the shadow assertion's
-        conditioning all wait on it. Commit: see `git log`, 2026-09-15.
+      handoff: `cells::AtomicCells`, every load atomic and `Acquire`, paired
+        with the `fence(Release)` after the header store in
+        `refcount::publish_header`; `OutsideCells::walk_concurrent`; `mark`,
+        `scan` and `trace_batch` generic over the reader; the trace from a
+        second thread is `cells::tests::what_a_collector_thread_reads` and
+        the fixture `cycle::testing::traced_from_a_collector_thread`. Records:
+        `dev/DECISIONS.md`, "the collector's reader loads with `Acquire`";
+        `rfc/dev/DECISIONS.md`, "the publication fence lands before its ARM64
+        price"; `dev/BENCHMARKS.md`, "S48.2 the box's price after the
+        relayout" for the reader's price. Commits `b6839ca`, `6c1225e`.
 - [x] S38.1 The claim
       handoff: `cycle::token` — `TraceToken` (a CAS flag, a futex `Mutex<()>`
         and a `Condvar`), `HeldToken` taken around the trace on both paths,
@@ -927,7 +813,7 @@ window there is.
         moved. Seen red with the count's increment deleted, after the holder's
         10 s bound. The exactness clause is `cycle::validation`'s, in-degree
         from the members' current cells on the owner after the release.
-- [~] S38.3 Deferring the mutator's frees during a trace
+- [x] S38.3 Deferring the mutator's frees during a trace
       order, agreed with Edmond 2026-09-15: (1) the gate and the stack for a
         foreign holder of the token, the first test red by construction;
         (2) who makes the returns — the owner, at its next free, the poll
@@ -959,7 +845,22 @@ window there is.
         `what_else_a_foreign_trace_withholds.rs`, each gate seen red by
         mutation, Miri green over the deferral module, `stdapi`, the pool's
         and the buffer arena's tests (`dev/DECISIONS.md`, the same entry's
-        extension). What stands open is (4), the cost.
+        extension). (4) the same day: `dev/BENCHMARKS.md`, "S38.3 what a
+        foreign holder costs the owner" — 2.6 ns to withhold a death, 4.2 ns
+        more to return it later, 12 ns more per chunk, and the churn held as
+        a bound from the trace lengths of the census loads, the corpus's own
+        death rate being unmeasured.
+      handoff: the three windows `ll_free` asks are the queue entry, the
+        owner's own trace and a foreign holder of the token; the third
+        withholds every death, every chunk at `buffer_free_longlived_payload`,
+        every block at `BlockPool::put` and every run at `ll_free`'s run arm,
+        on three per-thread stacks the owner makes at its next free, the poll
+        and the exit (`cycle::deferred_slot_reuse`, "A foreign holder of the
+        token"; `dev/DECISIONS.md`, "a foreign holder of the token withholds
+        every death, and the owner makes the returns"). What it left to
+        S38.5: the collector's sweep-before-release order, and the exit-phase
+        word a holder arriving after the exit's last pop needs. Commits
+        `9c25aa4` and the two that follow it.
       note: `cycle::deferred_slot_reuse` is the owner-side substrate for one
         thread, where nothing frees inside the window: mark and scan only read, and the trace window
         ends before the user-code teardown by the decision of 2026-08-31. The

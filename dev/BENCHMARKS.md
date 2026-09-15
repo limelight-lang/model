@@ -8,6 +8,50 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-15 — S38.3 what a foreign holder costs the owner: 2.6 ns to withhold a death, 4.2 ns more to return it later
+
+The window a foreign holder of the token opens over the owner's returns
+(`cycle::deferred_slot_reuse`, "A foreign holder of the token") is priced per
+return, by `deferred_slot_reuse::tests::what_a_foreign_holder_costs`, run as
+`cargo test --release --lib -- --ignored --nocapture measure_what_a_foreign_holder_costs`
+on the i7-11700K. Every arm frees 20,000 distinct dead entities of the
+64-byte class, or 20,000 chunks of 256 bytes, so the returned and the
+withheld arm stride the same memory and differ in the gate alone; the arms
+interleave over nine rounds after one warm-up round dropped; three runs of
+the whole probe agree to 0.1 ns on every free arm but the returned slot
+free, whose third run read 0.4 ns above the first two. The allocation arm
+was added for the third run.
+
+| arm | median ns | min ns |
+|---|---:|---:|
+| slot allocation and header stamp | 3.43 | 3.40 |
+| slot free, token free (returned) | 4.28 – 4.76 | 4.24 – 4.53 |
+| slot free, token held (withheld) | 2.62 – 2.63 | 2.54 – 2.57 |
+| slot pop, per slot (hand back and return) | 5.94 – 6.07 | 4.43 – 4.60 |
+| chunk free, token free (returned) | 4.33 – 4.42 | 4.09 – 4.13 |
+| chunk free, token held (withheld) | 4.13 – 4.38 | 3.87 – 3.97 |
+| chunk pop, per chunk | 12.46 – 13.21 | 7.76 – 12.12 |
+
+Withholding a death is cheaper than returning it — one link store and one
+head store against the heap's free-list link, the `used` decrement and the
+relink — and the return made later costs what the free would have, plus the
+hand-back's flags store: a death under a foreign holder costs the owner
+about 4.2 ns more than one outside it, a chunk about 12 ns more, the chunk's
+pop being a second pass through `buffer_free_longlived_payload`'s routing.
+The chunk pop's minimum moved between runs (7.8 against 12.1) and its median
+did not; the median is quoted.
+
+**The churn held across one collection is this rate against the trace's
+length, and the length is the load's.** A mutator that does nothing but
+allocate and free a 64-byte object costs about 8 ns per death on this box —
+3.4 to allocate and stamp, 4.3 to 4.8 to free — so a trace of 50 µs, the
+381-member dense ring's collection at 105,000 to 180,000 cycles ("The
+hardware arm, per collection" above), holds at most about 6,000 slots,
+400 KiB, and the 200 µs one-per-block collection at most about 25,000 slots,
+1.6 MB, until the owner's next free or poll. Those are bounds from a
+mutator with no other work; the corpus's own death rate is unmeasured
+(`PLAN.md`, S37.5's corpus), and no figure here is quoted as a workload's.
+
 ## 2026-09-14 — S48.2 the box's price after the relayout: A/B/A with a placement control
 
 **Machine:** dev box, shared with interactive work, 16 cores; load average
