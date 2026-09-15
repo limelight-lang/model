@@ -37,7 +37,7 @@ static DESTRUCTORS: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "C" fn token_reading_destructor(_object: *mut Object) {
     DESTRUCTORS.fetch_add(1, Ordering::Relaxed);
-    if TOKEN.with(TraceToken::is_held) {
+    if unsafe { (*this_thread_token()).is_held() } {
         HELD_IN_A_DESTRUCTOR.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -53,7 +53,7 @@ fn a_held_token_blocks_this_thread_s_collection_alone_until_the_release() {
     DESTRUCTORS.store(0, Ordering::Relaxed);
     let class = node_class("TokenHeldRing", counting_destructor as *const ());
     let mut arena = Arena::new();
-    let waits_before = TOKEN.with(TraceToken::waits);
+    let waits_before = unsafe { (*this_thread_token()).waits() };
 
     let mut held = HeldByACollector::take(this_thread_token(), false);
 
@@ -83,7 +83,7 @@ fn a_held_token_blocks_this_thread_s_collection_alone_until_the_release() {
 
     let freed = unsafe { ll_gc_collect_cycles() };
     assert!(
-        TOKEN.with(TraceToken::waits) > waits_before,
+        unsafe { (*this_thread_token()).waits() } > waits_before,
         "the collection went to wait on its held token"
     );
     assert_eq!(
@@ -138,7 +138,7 @@ fn the_token_is_released_before_the_first_destructor_on_both_paths() {
         "a destructor ran with this thread's token held"
     );
     assert!(
-        !TOKEN.with(TraceToken::is_held),
+        !unsafe { (*this_thread_token()).is_held() },
         "the token is free after a collection"
     );
 }
@@ -148,7 +148,7 @@ fn the_token_is_released_before_the_first_destructor_on_both_paths() {
 #[test]
 fn a_thread_that_may_not_collect_does_not_wait_for_its_held_token() {
     let _g = test_guard();
-    let waits_before = TOKEN.with(TraceToken::waits);
+    let waits_before = unsafe { (*this_thread_token()).waits() };
     let mut held = HeldByACollector::take(this_thread_token(), false);
 
     let mut window = crate::memory::reset_window::ResetWindow::closed();
@@ -162,21 +162,20 @@ fn a_thread_that_may_not_collect_does_not_wait_for_its_held_token() {
     );
     drop(guard);
     assert_eq!(
-        TOKEN.with(TraceToken::waits),
+        unsafe { (*this_thread_token()).waits() },
         waits_before,
         "the refusal went to wait on the token"
     );
 
     held.release();
-    assert!(!TOKEN.with(TraceToken::is_held));
+    assert!(!unsafe { (*this_thread_token()).is_held() });
 }
 
 /// The wait itself: a take that finds the token held returns once the holder
 /// releases, and a release that races the waiter's test is not lost.
 #[test]
 fn a_take_that_finds_the_token_held_returns_at_the_release() {
-    let token = TraceToken::new();
-    assert!(token.try_take());
+    let token = TraceToken::new_held();
     assert!(!token.try_take(), "held twice");
 
     std::thread::scope(|scope| {
@@ -211,12 +210,12 @@ fn a_held_token_blocks_the_collection_under_pressure_too() {
     let class = node_class("TokenHeldPressureRing", counting_destructor as *const ());
     let mut arena = Arena::new();
     let _members = unsafe { ring(&mut arena, [class; 2]) };
-    let waits_before = TOKEN.with(TraceToken::waits);
+    let waits_before = unsafe { (*this_thread_token()).waits() };
 
     let mut held = HeldByACollector::take(this_thread_token(), true);
     let freed = unsafe { crate::cycle::collect::collect_under_pressure() };
     assert!(
-        TOKEN.with(TraceToken::waits) > waits_before,
+        unsafe { (*this_thread_token()).waits() } > waits_before,
         "the round went to wait on its held token"
     );
     assert_eq!(freed, 2);

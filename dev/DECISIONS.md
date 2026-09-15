@@ -8,6 +8,52 @@ never edited or deleted.
 
 ---
 
+## 2026-09-15 — the token stands in a record the process keeps, and the exit's claim on it is never released
+
+**Decided:** the trace token moves out of the thread-local into a 64-byte
+per-thread record (`cycle::owner_record`) that also holds the outbox, the
+inbox and the request word of the worker's handoff, carved from a chain of
+GC-metadata blocks the process never returns and reused through a free list.
+A record leaves the registry with its token held and the thread that takes
+it releases the token when its initialisation is complete — at the end of
+`ll_thread_init`, or at the first take of a thread the runtime never
+registered. The exit claims the token first of all, before its rounds of
+collection, and keeps the claim: the record goes back to the free list held,
+and the next thread's initialisation is what releases it. The rounds run
+under that claim, a take inside the owner's own claim being nested and
+releasing nothing. The free path tells the owner's own claim from a foreign
+holder's by a note in the record the owner alone writes (`owner_holds`),
+read only when the token reads held.
+
+**Why:** a worker's first access to an owner is a load made under no claim,
+and only the lifetime of what it reads can make that legal
+(`rfc/dev/DECISIONS.md`, "the owner detaches at its poll, and the worker
+takes the chain from a one-word outbox"): a thread-local dies with the thread,
+and a block the exit returns can be reissued under the read. The token says
+whether a record is anyone's without a liveness word of its own: a claim is
+a compare-and-swap from free, and the record is held while nobody lives in
+it, while its thread is exiting, and until its next thread is ready. The
+note is the owner's rather than a third state of the word because the only
+reader that needs the holder's kind is the owner's free path; the worker
+still reads one bit, which is what the ruling of 2026-08-27 asked for
+(`rfc/dev/DECISIONS.md`, "the trace token covers the trace alone").
+
+**Rejected:** the record in the queue's base block, where nine bytes of
+padding would hold it — the exit returns that block and a worker reads
+before it holds anything (the `rfc` Critic of 2026-09-15). Aborting a thread
+whose record the pool refuses: a thread without a record collects untokened
+and is reached by no collector, which excludes nobody, so the refusal is
+tolerated and the next take asks again. A third token state for the owner's
+hold: two readers of the word would then need to agree on three values where
+one of them needs one bit.
+
+**Cost:** the free path reads the token through a pointer in a thread-local
+rather than a thread-local directly, measured at no difference
+(`dev/BENCHMARKS.md`, "S38.5 the token through the record"). One 64 KiB block
+per 1,020 threads that have ever lived at once, never returned. The exit's
+held claim is the one holder that keeps the token past its last row read;
+it stalls nobody, since a worker never waits.
+
 ## 2026-09-15 — a foreign holder of the token withholds every death, and the owner makes the returns
 
 **Decided:** while another thread holds this thread's trace token and no

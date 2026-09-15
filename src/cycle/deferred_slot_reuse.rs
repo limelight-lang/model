@@ -790,7 +790,7 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
         return unsafe { withhold(window, ptr, kind) };
     }
 
-    if crate::cycle::token::this_thread_token_is_held() {
+    if crate::cycle::token::held_by_a_foreign_holder() {
         // The reset's whole-block sentinel addresses a block header, which
         // has no byte 8 to thread the stack through; the block's return
         // waits at the pool's own entry instead
@@ -814,7 +814,7 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
 /// a collect that finds no trace (`crate::memory::heap::Heap::collect_remote`).
 #[inline]
 pub(crate) fn returns_are_withheld() -> bool {
-    !DEFERRED_RETURNS.with(Cell::get).is_null() || crate::cycle::token::this_thread_token_is_held()
+    !DEFERRED_RETURNS.with(Cell::get).is_null() || crate::cycle::token::held_by_a_foreign_holder()
 }
 
 /// The address bits of a packed chunk word, below the size.
@@ -905,7 +905,7 @@ fn under_a_foreign_holder() -> bool {
         .try_with(Cell::get)
         .unwrap_or(std::ptr::null_mut())
         .is_null()
-        && crate::cycle::token::this_thread_token_is_held()
+        && crate::cycle::token::held_by_a_foreign_holder()
 }
 
 /// Withhold a buffer chunk's return while another thread's trace holds this
@@ -1002,7 +1002,7 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
     // answers at once.
     let mut taken = WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
     while !taken.is_null() {
-        if crate::cycle::token::this_thread_token_is_held() {
+        if crate::cycle::token::held_by_a_foreign_holder() {
             // A holder arrived between two returns: what is left goes back
             // on the head, behind whatever the returns so far re-withheld.
             WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
@@ -1035,7 +1035,7 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
         CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
     while !taken.is_null() {
         let (next, capacity) = unsafe { chunk_link(taken) };
-        if crate::cycle::token::this_thread_token_is_held() {
+        if crate::cycle::token::held_by_a_foreign_holder() {
             CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
                 let mut last = taken;
                 loop {
@@ -1062,7 +1062,7 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
     let mut taken =
         BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
     while !taken.is_null() {
-        if crate::cycle::token::this_thread_token_is_held() {
+        if crate::cycle::token::held_by_a_foreign_holder() {
             BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
                 let mut last = taken;
                 loop {

@@ -67,7 +67,8 @@ versions live in `docs/history/`, marked at the top.
   | `shadow` | the row: two bits of colour over thirty of working count, which past the scan belong to `cycle::maturation` in a live row | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to, and the test-build assertion that the target stands in memory this process carved for blocks | none |
   | `epoch` | the process's count of closed commits, and the two-bit epoch a maturation stamp carries: `(commits / 64) % 4` | `cycle::finalization`, which reads it at a commit's start and advances it at its close, and `cycle::mark`, which reads it once per root |
-  | `token` | the per-thread trace token: taken by compare-and-swap around the trace, released by one store after its last row read — the scan's end, or the harvest sweep under pressure — and waited on through a mutex by an owner whose graph a collector is tracing | `cycle::collect`, both paths |
+  | `token` | the per-thread trace token: taken by compare-and-swap around the trace, released by one store after its last row read — the scan's end, or the harvest sweep under pressure — and waited on through a mutex by an owner whose graph a collector is tracing; the exit's claim is the one never released | `cycle::collect`, both paths |
+  | `owner_record` | the 64-byte record the token stands in, with the outbox, the inbox and the request word of the worker's handoff, carved from GC-metadata blocks the process keeps and reused through a free list, held while nobody lives in it | `memory::heap::ll_thread_init` and `ll_thread_exit`, `cycle::token` |
   | `mark` | the trace: trial deletion over the rows, and the prune that keeps it out of the mature live core — an edge target at the traversal age threshold under this collection's epoch that no candidate queue names is not descended into; `pin_threshold` holds a test thread's threshold at another `k`, which is how `mark/tests/what_the_prune_saves.rs` reads the pruned-edge counter at 1, 2 and 3 (`dev/BENCHMARKS.md`, 2026-09-12) | none |
   | `maturation` | the descent that stamps the live components a commit read: strongly connected components over the rows the scan left live, Pearce's single index held in the row's own count, and the age one more than the component's youngest member | `cycle::collect`, inside the commit and before the first guard |
   | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | `cycle::collect`'s path under pressure |
@@ -166,8 +167,8 @@ versions live in `docs/history/`, marked at the top.
   and the reason it must be fixed there — TLS destructor order is
   unspecified — is `dev/DECISIONS.md`, 2026-08-03. **Rule for anything
   new on that path:** no `thread_local!` it can reach may have drop
-  glue. The exit's own collection — the wait on the token, the rounds
-  over every chain and the residue it reports — is
+  glue. The exit's own collection — the claim of the token it keeps, the
+  rounds over every chain and the residue it reports — is
   `cycle::collect::collect_before_exit`, its cases
   `cycle/collect/tests/what_an_exit_collects.rs`, and the reason
   `dev/DECISIONS.md`, "the exit collects in bounded rounds, and reports its

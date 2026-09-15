@@ -8,6 +8,29 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-15 — S38.5 the token through the record: no difference on the free path
+
+The free path's read of the trace token moved from a thread-local to a
+record reached through a thread-local pointer (`cycle::owner_record`), and
+the arm that reads it is the returned slot free of
+`deferred_slot_reuse::tests::what_a_foreign_holder_costs`. Two release test
+binaries of the same probe, A the pre-step tree (`1193b1a`, built in a
+worktree) and B the step's tree, run A B A B A on the i7-11700K at a load
+average near 3, the first A discarded as warm-up; minima in ns over 9 rounds
+of 20,000:
+
+| arm | A | B | A | B |
+|---|---:|---:|---:|---:|
+| slot free, token free (returned) | 4.72 | 4.35 | 4.58 | 4.34 |
+| slot free, token held (withheld) | 3.01 | 2.85 | 2.83 | 2.89 |
+| slot allocation and header stamp | 3.67 | 3.62 | 3.53 | 3.43 |
+
+B reads 0.2–0.4 ns below A on the returned arm and equal on the other two,
+which is the size of the placement difference two binaries carry
+("S48.2 the box's price after the relayout"): the dependent load the record
+adds is not visible at this instrument's resolution, and no speedup is
+claimed either.
+
 ## 2026-09-15 — S38.3 what a foreign holder costs the owner: 2.6 ns to withhold a death, 4.2 ns more to return it later
 
 The window a foreign holder of the token opens over the owner's returns

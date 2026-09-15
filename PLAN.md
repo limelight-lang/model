@@ -13,9 +13,11 @@ in the specification rather than in this crate.
 
 Updated: 2026-09-15 · Active: S37, S38 and S40. S38.0 and S38.3 closed on
 2026-09-15 — the collector's reader with its fence, and the owner's returns
-withheld under a foreign holder of its token; S38.5, the worker, was
-unblocked the same evening by `rfc` S8.7 and is the next step; every other
-open step is blocked outside this repository or on a corpus. **S48 closed and was deleted
+withheld under a foreign holder of its token; the worker, unblocked the same
+evening by `rfc` S8.7, is S38.5 through S38.7 — the record, the offer and the
+pickup, the thread — S38.5 closed the same evening and S38.6 is the next
+step; every other open step is blocked outside this repository or on a
+corpus. **S48 closed and was deleted
 on 2026-09-14**, the ValueBox relayout to `rfc/model/values.md`, "ValueBox
 Layout", in three steps, its close read by the Code Reviewer, whose
 findings (a duplicated mask, two selectors for one fact, a spill on the
@@ -884,38 +886,102 @@ window there is.
         lands); the cost is
         measured as the churn held across one collection
       tier: T2 · role: —
-- [ ] S38.5 The collector worker
-      done: a collector thread takes an owner's chain from the outbox the
-        owner's poll fills on the worker's request, under the owner's token
-        and by one acquire exchange, traces it through `cells::AtomicCells`
-        and posts it to the owner's inbox before the token's release, walked
-        or not; the outbox, the inbox, the request word and the token share a
-        per-thread record whose storage outlives the thread; the exit claims
-        its token for good, reclaims the outbox, drains the inbox as its
-        fourth chain, runs its rounds under the claim and releases the record
-        with the token held; the pickup and the offer stand behind the entry
-        gate; the thread's birth is named — startup or first pressure — with
-        its floor refusal after it (`rfc/dev/DECISIONS.md`, "the baseline
-        overflow segment is allocator-issued"); `shadow`'s `count >= edges`
-        assertion is conditioned on whose pass it is, because a worker's row
-        starts from a count the mutator moves under it; and
-        `cycle::token::note_last_row_read` reads the owner's token rather
-        than the tracing thread's own
+- [x] S38.5 The owner's record
+      done: the trace token, the outbox, the inbox and the request word stand
+        in one per-thread record whose storage is a chain of GC-metadata
+        blocks the process never returns; a thread takes a record at init or
+        at its first need and its exit claims the record's token for good
+        before the record goes back to the free list; a second thread claims
+        a live record's token through the record and reads the free path's
+        withholding as before; a claim on a released record fails, and a
+        record reused by a later thread is released to claimants only once
+        that thread's init is complete; the free path's cost of reading the
+        token through the record rather than the thread-local is measured
+        against the pre-step tree (`dev/BENCHMARKS.md`)
       tier: T2 · role: Critic
       handoff: carried out of S38.0 on 2026-09-15, which built the reader and
         the fence and left the worker's four duties here. The `expect(dead_code)`
         on `cells::AtomicCells`, on `OutsideCells::walk_concurrent` and on
-        `cycle::token::this_thread_token` name this step's caller.
+        `cycle::token::this_thread_token` name the worker's caller.
       handoff: unblocked 2026-09-15 by `rfc` S8.7 (`rfc/dev/DECISIONS.md`,
         "the owner detaches at its poll, and the worker takes the chain from
-        a one-word outbox"): the detach stays the owner's, so this step moves
+        a one-word outbox"): the detach stays the owner's, so the worker moves
         no queue word from another thread and `queue.rs`'s single-mover
-        invariant holds under the worker. The exit-phase read the criterion
-        used to name went with the ruling: the worker acts on a record only
-        under its token, and the exit's final claim is what refuses it. The
-        token today is a `thread_local!` (`cycle::token::TOKEN`), which no
-        worker can address; the record the ruling names is this step's first
-        build.
+        invariant holds under it. The exit-phase read the old criterion named
+        went with the ruling: the worker acts on a record only under its
+        token, and the exit's final claim is what refuses it. The token today
+        was a `thread_local!` (`cycle::token::TOKEN`), which no worker could
+        address; the record is this step's build, and the one step of S38.5
+        as first written became S38.5 through S38.7 on 2026-09-15 because
+        each of the three closes on a result of its own.
+      baseline 2026-09-15, before the first edit: the token a `thread_local!`
+        of three fields, no manager memory, the free path's read one
+        thread-local load (`this_thread_token_is_held`), the exit taking and
+        releasing the token per round with nothing between the rounds
+        refusing a claim; the free path's figures under "S38.5 the token
+        through the record" in `dev/BENCHMARKS.md`, column A.
+      Critic 2026-09-15: six findings, two accepted with a repair and a case
+        each. A recordless thread's exit could draw a record in a round's
+        nested take and release it, so the record reached the free list free
+        — `ensure_thread_record` answers null while the exit runs, pinned by
+        `an_exit_draws_no_record`. A pool thread's second life was unpinned
+        — `a_thread_living_twice_takes_a_record_per_life`, red with the
+        release leaving the locator set. The count and identity assertions
+        could move under other tests' threads — read as membership of one
+        record. The module doc said a claim fails on "a thread that is
+        exiting", true only from the exit's second step — reworded, with the
+        thread that never exits named as keeping its record claimable. The
+        registry lock held across the pool's draw was raised and refused:
+        `BlockPool::get` refuses and starts no collection. The free-path
+        read from a second thread while the owner holds is untested; the
+        owner's own reading is.
+      handoff: closed 2026-09-15. `cycle::owner_record` (`OwnerRecord`, the
+        registry's block chain and free list, `ensure_thread_record`,
+        `initialize_thread_record`, `release_thread_record`); the token's
+        thread side rebuilt over it (`token::HeldToken` with nested takes
+        and `keep`, `held_by_a_foreign_holder` in place of
+        `this_thread_token_is_held`); `ll_thread_init` draws the record last
+        and tolerates a refusal, `collect_before_exit` claims first and
+        keeps, `retire_the_journal` gives the record back after the base
+        block. Seven cases in `owner_record/tests.rs`, six mutations seen
+        red (the exit releasing; init not releasing; the foreign reading
+        ignoring the note; a nested drop releasing; the exit drawing; the
+        locator kept). `dev/DECISIONS.md`, "the token stands in a record the
+        process keeps"; `dev/BENCHMARKS.md`, "S38.5 the token through the
+        record": no difference on the free path at the probe's resolution.
+        Untested: a thread whose record the pool refuses at its first
+        collection (no fixture refuses one draw of the registry alone).
+        Miri over the tests the diff's `unsafe` lines select — the record's
+        seven, the token's five and the exit's eight — 20 passed, 62 s of
+        Miri's clock, 73 s wall at two threads. The `mark` case seen red once
+        in the gate is in the backlog's flake line.
+- [ ] S38.6 The offer and the pickup   *(after S38.5)*
+      done: a poll whose record carries a request detaches its lane into the
+        outbox with one release store, after the pickup and behind the entry
+        gate, and only into an empty outbox; an owner about to collect in
+        line reclaims the outbox first; the pickup takes the inbox chain,
+        re-enqueues every unmarked record and traces the marked roots in line
+        as an ordinary collection whose batch is that chain; a stand-in
+        worker on a test thread takes the outbox under the token by one
+        acquire exchange, traces through `cells::AtomicCells`, marks, and
+        posts before its release, and the roots it marked are collected at
+        the owner's next poll while the ones it acquitted are back in the
+        lane; an offer taken back by the exit and one taken back before a
+        pressure collection each keep every root
+      tier: T2 · role: Critic
+- [ ] S38.7 The collector thread   *(after S38.6)*
+      done: a collector thread born at startup or at first pressure — which
+        is named, with its floor refusal after it (`rfc/dev/DECISIONS.md`,
+        "the baseline overflow segment is allocator-issued") — rounds over
+        the records, sets a request, and on a set outbox claims the token,
+        checks the inbox empty, takes the chain, traces it through its own
+        workspace and posts it, walked or not, before the release; a held
+        token, an empty outbox and a full inbox are each a skip; `shadow`'s
+        `count >= edges` assertion is conditioned on whose pass it is,
+        because a worker's row starts from a count the mutator moves under
+        it; and `cycle::token::note_last_row_read` reads the owner's token
+        rather than the tracing thread's own
+      tier: T2 · role: Critic
 
 ## S40 — Measure the trace's density and decide the row form
 
@@ -1559,7 +1625,12 @@ in `dev/INDEX.md`. What it did not do is below.
   a third thread draws GC memory in that window; none was seen to fail in the
   500 runs. What would close them is a reading of a named thread's figures
   that outlives the thread, which is a structure rather than a patch — worth
-  its cost only if one of them is seen to fail. The defect one of the five
+  its cost only if one of them is seen to fail. A sixth was seen once, on
+  2026-09-15 in one plain run of the gate of some twenty-five that day:
+  `mark::tests::an_aborted_mark_writes_nothing::`
+  `a_refusal_two_entities_deep_leaves_the_heap_byte_identical`, whose
+  `force_oom` is process-wide and whose reserve reading is asserted at zero;
+  ten further runs were green and no cause was established. The defect one of the five
   carried is closed: `a_thread_nothing_will_tear_down_is_not_funded` read the
   same process figure into two variables and asserted both, so its segment
   claim had no reading behind it, and it now reads `gc_metadata::thread_stats`

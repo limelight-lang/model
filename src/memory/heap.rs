@@ -1861,13 +1861,17 @@ pub extern "C" fn ll_thread_exit() {
     //    is still alive — heaps, context, weak table.
     crate::static_block::run_thread_exit_teardown();
 
-    // 2. Wait for any trace over this thread's blocks, then collect what the
-    //    releases above and the thread's life left registered, until a round
-    //    makes no progress. The second and last step that runs user code, and
-    //    it runs it over the same live structures. What it could not take
-    //    keeps its candidate bit into the abandoned blocks below, and is
-    //    reported as the exit's residue (`dev/DECISIONS.md`, "a thread waits
-    //    for the trace, collects, and then exits").
+    // 2. Claim this thread's token for good — the wait for any trace over
+    //    this thread's blocks — then collect what the releases above and the
+    //    thread's life left registered, until a round makes no progress. The
+    //    second and last step that runs user code, and it runs it over the
+    //    same live structures. What it could not take keeps its candidate bit
+    //    into the abandoned blocks below, and is reported as the exit's
+    //    residue (`dev/DECISIONS.md`, "a thread waits for the trace,
+    //    collects, and then exits"). The claim outlives this function: the
+    //    record goes back to the registry held, so no collector takes this
+    //    thread's token between here and the record's next life
+    //    (`crate::cycle::owner_record`).
     unsafe { crate::cycle::collect::collect_before_exit() };
 
     // 3. The trace window, before anything it could still be addressing goes
@@ -1959,6 +1963,11 @@ fn retire_the_journal() {
     // than for its queue's contents
     // (`crate::cycle::queue::release_queue_base`).
     crate::cycle::queue::release_queue_base();
+    // The record last of the collector's structures, under the claim step 2
+    // of `ll_thread_exit` took and kept: it is what a collector reaches this
+    // thread through, and after this line the thread has nothing a collector
+    // could reach.
+    unsafe { crate::cycle::owner_record::release_thread_record() };
     crate::memory::reserve::drain();
     crate::memory::critical::drain();
     crate::memory::block_pool::drain_thread_cache();
@@ -2154,6 +2163,12 @@ pub extern "C" fn ll_thread_init() -> bool {
             EXIT_PHASE.with(|phase| phase.set(ExitPhase::Live));
             crate::journal::reopen_thread();
         }
+
+        // The record a collector reaches this thread through, made
+        // claimable here, where nothing of this thread's initialisation is
+        // left: its refusal is tolerated, and the thread takes one at its
+        // first collection instead (`crate::cycle::owner_record`).
+        let _ = crate::cycle::owner_record::initialize_thread_record();
 
         // After the reopen, so a pool thread's second life records its
         // start in the ring of that life rather than in the one it

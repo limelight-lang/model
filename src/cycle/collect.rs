@@ -520,16 +520,16 @@ pub(crate) const EXIT_ROUNDS: usize = 8;
 /// (`dev/DECISIONS.md`, "a thread waits for the trace, collects, and then
 /// exits").
 ///
-/// **The wait is the first round's take of the token**: a trace holding rows
-/// over this thread's blocks holds the token, the round's collection takes it
-/// before it reads the lane, and the exit does not abandon a block under one.
-/// The gate is open here by construction — `ll_thread_exit` runs only outside
-/// a collection, a teardown and a reset, recording a request made inside one
-/// for the thread's top (`memory::heap::thread_exit_pending`) — so every
-/// round reaches that take. Nothing here stops a collector from taking the
-/// token over a thread whose exit has begun; the collector worker that traces
-/// another thread's graph is `PLAN.md` S38.5's, and reading the exit phase
-/// before its take is that step's.
+/// **The wait is the exit's own claim of the token, and the claim is kept**:
+/// a trace holding rows over this thread's blocks holds the token, the claim
+/// below waits for it, and from then on no collector takes this thread's
+/// token again — the rounds run under the claim, their takes nested, and the
+/// record goes back to the registry still held
+/// (`crate::cycle::owner_record`; `rfc/model/gc/rc-cycle.md`, "Concurrency",
+/// the exit paragraph). The gate is open here by construction —
+/// `ll_thread_exit` runs only outside a collection, a teardown and a reset,
+/// recording a request made inside one for the thread's top
+/// (`memory::heap::thread_exit_pending`) — so the claim is reached.
 ///
 /// **Every chain is offered before every round.** The overflow buffer drains
 /// into the lane behind the poll's own refill of the spare cells
@@ -548,6 +548,7 @@ pub(crate) const EXIT_ROUNDS: usize = 8;
 /// As [`collect_off_the_poll`], with the heaps, the buffer arena and the weak
 /// table still alive for the destructors the rounds run.
 pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
+    let claim = HeldToken::take();
     let mut freed = 0;
     let mut registered = crate::cycle::queue::registered_count();
     let mut ending = ExitEnding::RoundCap;
@@ -572,12 +573,12 @@ pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
         ending = ExitEnding::OverflowUnread;
     }
 
-    // The returns a foreign holder left this thread withholding, made after
-    // the last round's wait for it: an abandoned heap may carry no slot that
-    // is neither live nor on a free list, and the exit's own frees went
-    // through the rounds' windows. A holder arriving after this pop is the
-    // gap `PLAN.md` S38.5 closes with the exit-phase word.
+    // The returns a foreign holder left this thread withholding, made under
+    // the claim: an abandoned heap may carry no slot that is neither live nor
+    // on a free list, the exit's own frees went through the rounds' windows,
+    // and no holder arrives after this pop, the claim being kept.
     unsafe { crate::cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace() };
+    claim.keep();
 
     let residue = ExitResidue {
         freed,

@@ -164,6 +164,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("LATE_CELL", false),
         ("MEMBER_LIST", false),
         ("MEMBER_LIST_HELD", false),
+        ("OWNER_RECORD", false), // const Cell of a pointer into a record the process keeps, no drop glue
         ("OWNER_STATE", false),
         ("PANIC_IN_CLOSE", false),
         ("PANIC_IN_HARVEST", false),
@@ -175,6 +176,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PRESSURE_COLLECTIONS", false),
         ("PRESSURE_ROOTS_TRACED", false), // test-only const Cell, no drop glue
         ("QUEUE_WORK", false),            // test-only const Cell, no destructor registration
+        ("RECORDS_TAKEN", false),         // test-only const Cell, no drop glue
         ("REFUSED_ENTITY_REFILLS", false), // test-only const Cell of an array, no drop glue
         ("REFUSE_AT_VERTEX", false),      // test-only const Cell, no drop glue
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
@@ -192,7 +194,6 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("THREAD_CACHE", true),
         ("THREAD_FIGURES", false),
         ("THREAD_HEAP", false),
-        ("TOKEN", false), // const futex mutex, flag and condvar: no drop glue
         ("WEAK_TABLE", false),
         ("WINDOW", false),
         ("WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue

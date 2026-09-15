@@ -147,6 +147,9 @@ pub(crate) mod stack;
 // The per-thread trace token: taken by [`collect`] around its trace,
 // waited for by an owner whose graph a collector is tracing.
 pub(crate) mod token;
+// The record the token stands in, with the words a collector thread's
+// handoff uses, in storage that outlives the thread.
+pub(crate) mod owner_record;
 // The two phases of one trace, in the order the rows require.
 pub(crate) mod trace;
 // The row readers and the ring fixtures the collector's tests share. Test

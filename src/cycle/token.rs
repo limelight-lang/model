@@ -3,19 +3,23 @@
 //! read its live candidate queue (`rfc/model/gc/rc-cycle.md`, "Concurrency").
 //!
 //! One token per mutator thread, taken by compare-and-swap and released by
-//! one store. A thread meets its own token held only by a collector that is
-//! tracing its graph, never by itself: mark and scan run no user code, and the
-//! teardown that does runs after the release. So the in-line collection takes
-//! the token before it detaches the lane and releases it after its last row
-//! read — the scan's end on the path off the poll, the harvest sweep on the
-//! path under pressure — and everything from the exact validation on runs
-//! untokened. What the release ends is the right to trace, not the life of
-//! the rows: a collection off the poll keeps reading its rows through the
-//! teardown, and whether a foreign holder may take the token over rows that
-//! teardown is still reading is a ruling nobody has made
-//! (`rfc/model/gc/rc-cycle.md`, "Concurrency", the readership paragraph);
-//! until one is, the only tracer is the owner, and the question has no
-//! second party.
+//! one store. It stands in the thread's record, whose storage outlives the
+//! thread so that a collector may reach it before holding anything
+//! (`crate::cycle::owner_record`). A thread meets its own token held only by
+//! a collector that is tracing its graph, never by itself: mark and scan run
+//! no user code, and the teardown that does runs after the release. So the
+//! in-line collection takes the token before it detaches the lane and
+//! releases it after its last row read — the scan's end on the path off the
+//! poll, the harvest sweep on the path under pressure — and everything from
+//! the exact validation on runs untokened. The one holder that keeps the
+//! token past its last row read is the exit, whose final claim is never
+//! released (`rfc/model/gc/rc-cycle.md`, "Concurrency", the exit paragraph).
+//! What the release ends is the right to trace, not the life of the rows: a
+//! collection off the poll keeps reading its rows through the teardown, and
+//! whether a foreign holder may take the token over rows that teardown is
+//! still reading is a ruling nobody has made (`rfc/model/gc/rc-cycle.md`,
+//! "Concurrency", the readership paragraph); until one is, the only tracer is
+//! the owner, and the question has no second party.
 //!
 //! **A waiter blocks rather than spins.** The owner that finds its token held
 //! waits on a mutex and is woken by the release; a trace runs no user code and
@@ -41,8 +45,8 @@ use std::sync::{Condvar, Mutex};
 ///
 /// Three fields: the flag the compare-and-swap takes, and the mutex and
 /// condition variable a waiter blocks on. None of the three may carry drop
-/// glue, because the token stands in a `thread_local!` that thread exit
-/// reaches (`crate::memory::heap::ll_thread_exit`); the assertion below holds
+/// glue, because the token stands in a record that is written in place and
+/// never dropped (`crate::cycle::owner_record`); the assertion below holds
 /// that on every target, and a target whose mutex is not futex-backed fails
 /// there.
 pub(crate) struct TraceToken {
@@ -61,13 +65,16 @@ pub(crate) struct TraceToken {
 
 const _: () = assert!(
     !std::mem::needs_drop::<TraceToken>(),
-    "a thread-local the exit path reaches may carry no drop glue"
+    "a record written in place and never dropped may carry no drop glue"
 );
 
 impl TraceToken {
-    const fn new() -> Self {
+    /// A token already held, the state a record leaves the registry in
+    /// (`crate::cycle::owner_record`): the taker releases it when its
+    /// initialisation is complete, and no claim succeeds before that.
+    pub(crate) const fn new_held() -> Self {
         Self {
-            held: AtomicBool::new(false),
+            held: AtomicBool::new(true),
             wait: Mutex::new(()),
             released: Condvar::new(),
             #[cfg(test)]
@@ -151,50 +158,61 @@ impl TraceToken {
     }
 }
 
-thread_local! {
-    /// This thread's token. `const`-initialised and without drop glue, as the
-    /// exit path requires.
-    static TOKEN: TraceToken = const { TraceToken::new() };
-}
-
 /// The token of the calling thread, as a pointer a collector can hold from
-/// another thread.
+/// another thread, drawing this thread's record if it has none yet.
 ///
-/// The pointee lives until this thread exits. The exit waits for a holder
-/// before it hands its blocks over (`crate::cycle::collect::collect_before_exit`),
-/// and nothing yet keeps a holder from taking the token after that wait: the
-/// collector worker that would trace another thread's graph is `PLAN.md`
-/// S38.5's, and reading the exit phase before its take is that step's, as is
-/// how it finds an owner's token. Today the pointer is taken by the cases that
-/// stand in for a collector, and every such case joins the holder before it
-/// returns.
+/// A case that stands in for a collector takes the pointer today; the
+/// collector thread that rounds over the records is `PLAN.md` S38.7's.
+///
+/// The pointee is a line of the owner's record, and the record's storage
+/// outlives the thread (`crate::cycle::owner_record`), so the pointer stays
+/// valid after this thread exits; what a holder finds there after the exit's
+/// final claim is a token held for good. Null when the pool refused the
+/// record's block, which the next call asks again for.
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "the collector worker is the caller, and it waits on the detach \
-                  protocol (`rfc/model/gc/rc-cycle.md`, \"Worker-to-owner handoff\"); \
-                  until it lands only a test takes the pointer"
+        reason = "the collector thread that rounds over the records is S38.7's; until it lands \
+                  only a test takes the pointer"
     )
 )]
 pub(crate) fn this_thread_token() -> *const TraceToken {
-    TOKEN.with(|token| token as *const TraceToken)
+    let (record, taken) = crate::cycle::owner_record::ensure_thread_record();
+    if record.is_null() {
+        return std::ptr::null();
+    }
+
+    if taken {
+        // A record drawn outside `ll_thread_init` — a thread the runtime never
+        // registered, or a test thread asking for its token first — is made
+        // claimable here, the draw having been its initialisation.
+        unsafe { (*record).token.release() };
+    }
+
+    unsafe { &raw const (*record).token }
 }
 
-/// Whether this thread's token is held now, by this thread or by another
-/// ([`TraceToken::is_held`]). The owner's own take stands inside its trace
-/// window, so a reader that has already asked for that window and found none
-/// reads a foreign holder here.
+/// Whether a thread other than this one holds this thread's token now
+/// ([`TraceToken::is_held`], less the owner's own claim). False for a thread
+/// with no record: no collector can reach a token that does not exist.
 #[inline]
-pub(crate) fn this_thread_token_is_held() -> bool {
-    // `try_with`: a block goes back to the pool from a thread-local's drop
-    // on the exit path, where this thread-local may be gone — and a thread
-    // that far into its exit has waited for every holder already.
-    TOKEN.try_with(TraceToken::is_held).unwrap_or(false)
+pub(crate) fn held_by_a_foreign_holder() -> bool {
+    let record = crate::cycle::owner_record::this_thread_record();
+    !record.is_null() && unsafe { (*record).held_by_another() }
 }
 
 /// The token of the calling thread, held from the call to the guard's drop:
 /// the owner's own take around its trace.
+///
+/// **A take inside the owner's own claim is nested and releases nothing**:
+/// the exit claims its token once for good and runs its collection rounds
+/// under that claim (`crate::cycle::collect::collect_before_exit`), and each
+/// round's take must neither wait on the exit's own word nor let go of it.
+///
+/// **A thread whose record the pool refused holds nothing** and collects
+/// untokened, which excludes no one: a collector reaches a thread through
+/// its record, and this thread has none. The next take asks the pool again.
 ///
 /// The drop releases on the unwind as well as on the return, so a panic
 /// inside a trace leaves no token held for a waiter to block on forever. Not
@@ -202,16 +220,42 @@ pub(crate) fn this_thread_token_is_held() -> bool {
 /// moved to another thread would free that thread's token instead.
 #[must_use = "the token is released when this guard drops"]
 pub(crate) struct HeldToken {
+    /// The record whose token this guard released on drop, or null for a
+    /// nested take and for a thread without a record.
+    releases: *mut crate::cycle::owner_record::OwnerRecord,
     thread_bound: std::marker::PhantomData<*const ()>,
 }
 
 impl HeldToken {
     /// Take this thread's token, waiting while a collector holds it.
     pub(crate) fn take() -> Self {
-        TOKEN.with(TraceToken::take);
+        let (record, taken) = crate::cycle::owner_record::ensure_thread_record();
+        let releases = if record.is_null() {
+            std::ptr::null_mut()
+        } else if unsafe { crate::cycle::owner_record::owner_holds(record) } {
+            std::ptr::null_mut()
+        } else {
+            // A record this instant drawn comes with its token held, and
+            // that hold is this take.
+            if !taken {
+                unsafe { (*record).token.take() };
+            }
+
+            unsafe { crate::cycle::owner_record::note_owner_holds(record, true) };
+            record
+        };
+
         Self {
+            releases,
             thread_bound: std::marker::PhantomData,
         }
+    }
+
+    /// Keep the claim past the guard: the token stays held by this thread,
+    /// and nothing releases it. The exit's final claim
+    /// (`crate::cycle::owner_record::release_thread_record`).
+    pub(crate) fn keep(self) {
+        std::mem::forget(self);
     }
 }
 
@@ -233,7 +277,11 @@ thread_local! {
 #[inline]
 pub(crate) fn note_last_row_read() {
     #[cfg(test)]
-    HELD_AT_LAST_ROW_READ.with(|held| held.set(Some(TOKEN.with(TraceToken::is_held))));
+    {
+        let record = crate::cycle::owner_record::this_thread_record();
+        let held = !record.is_null() && unsafe { (*record).token.is_held() };
+        HELD_AT_LAST_ROW_READ.with(|cell| cell.set(Some(held)));
+    }
 }
 
 /// The last reading [`note_last_row_read`] made, and clear it.
@@ -244,7 +292,14 @@ pub(crate) fn take_held_at_last_row_read() -> Option<bool> {
 
 impl Drop for HeldToken {
     fn drop(&mut self) {
-        TOKEN.with(TraceToken::release);
+        if self.releases.is_null() {
+            return;
+        }
+
+        unsafe {
+            crate::cycle::owner_record::note_owner_holds(self.releases, false);
+            (*self.releases).token.release();
+        }
     }
 }
 
