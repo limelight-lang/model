@@ -35,6 +35,7 @@
 //! [`ArmedInjection`] is the one shape every fault injection in the tree takes:
 //! a thread-local flag armed for one firing and restored when the guard dies.
 
+use crate::cells::PlainCells;
 use crate::class::Class;
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::mark::{MarkResult, mark};
@@ -133,11 +134,11 @@ pub(crate) unsafe fn traced_unreachable_from(
 ) -> TraceScratchArena {
     let mut arena = open_arena();
     assert_eq!(
-        unsafe { mark(&mut arena, root as *mut RcHeader) },
+        unsafe { mark::<PlainCells>(&mut arena, root as *mut RcHeader) },
         MarkResult::Complete
     );
     assert_eq!(
-        unsafe { scan(&mut arena, root as *mut RcHeader) },
+        unsafe { scan::<PlainCells>(&mut arena, root as *mut RcHeader) },
         ScanResult::Complete
     );
 

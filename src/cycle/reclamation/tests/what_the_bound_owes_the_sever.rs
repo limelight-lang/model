@@ -25,6 +25,7 @@ static OUTSIDE_OCCUPANT: AtomicUsize = AtomicUsize::new(0);
 /// A group whose walk yields nothing and whose sever hands one occupant over.
 static SEVERS_MORE_THAN_IT_WALKS: OutsideCells = OutsideCells {
     walk_plain: yields_nothing,
+    walk_concurrent: yields_nothing,
     sever: hands_one_over,
     sever_one: severs_nothing,
     free: frees_nothing,
@@ -34,6 +35,7 @@ static SEVERS_MORE_THAN_IT_WALKS: OutsideCells = OutsideCells {
 /// A group whose walk yields one occupant and whose sever hands none over.
 static WALKS_MORE_THAN_IT_SEVERS: OutsideCells = OutsideCells {
     walk_plain: yields_the_occupant,
+    walk_concurrent: yields_the_occupant,
     sever: hands_nothing_over,
     sever_one: severs_nothing,
     free: frees_nothing,

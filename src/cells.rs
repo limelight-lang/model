@@ -21,6 +21,8 @@
 //! through [`trace_cells`] rather than growing a stride of its own
 //! (`crate::cycle::mark`).
 
+use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+
 use crate::object::Object;
 use crate::refcount::{ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, EntityKind, RcHeader};
 use crate::value::{DISCRIMINATING_WORD_OFFSET, Value};
@@ -92,13 +94,14 @@ pub(crate) enum CellShape {
     Outside,
 }
 
-/// The five behaviours a class owes when its counted cells lie outside
-/// its own body — a coroutine's waker block, a map's table chunk. It was
-/// six until 2026-08-26: a walk per reader and a re-check went with
-/// `rc-walk`, which is what asked for them; the sever of one cell is the
-/// arena reset's (`dev/DECISIONS.md`, "a sever takes the smallest unit its
-/// holder's layout leaves consistent"). One group rather than five
-/// nullable fields, because a class carrying some
+/// The six behaviours a class owes when its counted cells lie outside
+/// its own body — a coroutine's waker block, a map's table chunk: a walk
+/// per reader, the sever of all cells and of one, the free and the arena
+/// carry. The concurrent walk answers no version and takes no re-check,
+/// which is what `rc-walk`'s did and what went with it on 2026-08-26; the
+/// sever of one cell is the arena reset's (`dev/DECISIONS.md`, "a sever
+/// takes the smallest unit its holder's layout leaves consistent"). One
+/// group rather than six nullable fields, because a class carrying some
 /// of them and not others fails silently in both directions: a walk
 /// without a sever lets the drain empty a table entry cell-wise, and a
 /// sever without a walk makes every child of the chunk a computed root
@@ -127,6 +130,22 @@ pub(crate) enum CellShape {
 /// memory (`dev/DECISIONS.md`, "a hooked class draws its storage under its
 /// own category, and the arena carry waits").
 ///
+/// **Two rules for the storage's writer, kept by the class and checked by
+/// nothing here**, because the reader on another thread rests on them
+/// (`rfc/model/gc/rc-cycle.md`, "Publication, for a reader on another
+/// thread"). Every word of a published cell is written by one 8-byte atomic
+/// store — a `Value` through `crate::memory::barrier::write_value_slot`, as
+/// the test class routes its stores through `ref_store` — since a plain
+/// 16-byte store beside the reader's atomic load is a data race and not a
+/// stale word. And a fresh storage is filled before the store that publishes
+/// it, with that store a release or a release fence before it, so a reader
+/// that acquired the storage's address sees the cells it holds; the
+/// storage the instance replaced is then not written again while a trace
+/// may hold the owner's token, its return being what `PLAN.md` S38.3 withholds
+/// and its reuse under the walker being the phantom in-edge the free direction
+/// does not cover. Both customers are in other repositories, where a plain
+/// store into a cell passes every test this crate can write.
+///
 /// **The category rule is the class's to keep, and nothing here can check it.**
 /// A zero-count member runs no member of this group — that is what makes the
 /// rule worth having — so the one moment the mistake matters is the one moment
@@ -144,6 +163,33 @@ pub(crate) struct OutsideCells {
     /// (`promote::reconcile_cow_counts`), so a walk that yielded nothing
     /// would write that count below the truth.
     pub walk_plain: unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)),
+    /// Yield every cell outside the body to a trace on another thread,
+    /// while the mutator that owns the instance may be storing into them
+    /// or replacing the storage that holds them.
+    ///
+    /// **It may yield nothing where [`walk_plain`](Self::walk_plain)
+    /// would not**, which is the one licence the concurrent form has: a
+    /// storage pointer read while the mutator is moving the storage is
+    /// given up rather than strided, the way an array whose head does not
+    /// read coherently is (`crate::array::head::StorageHead::coherent`).
+    /// The direction is safe because a cell not yielded is an in-edge not
+    /// subtracted, so its child reads as externally referenced. Every word
+    /// it reads of the instance and of the storage is an atomic load, and
+    /// the load through which it obtains the storage's address is an
+    /// acquire (`rfc/model/gc/rc-cycle.md`, "Publication, for a reader on
+    /// another thread"). That the storage it strides is not freed under
+    /// it is the trace window's contract, not the walk's
+    /// (`PLAN.md` S38.3).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read by `AtomicCells`, whose production caller is the collector \
+                      worker; the worker waits on the detach protocol \
+                      (`rfc/model/gc/rc-cycle.md`, \"Worker-to-owner handoff\")"
+        )
+    )]
+    pub walk_concurrent: unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)),
     /// Empty the outside cells and collect their former occupants,
     /// without dropping them. Not [`empty_cell`], which writes a whole
     /// `Value` and a bare `NULL`: in a table entry the first zeroes the
@@ -214,7 +260,13 @@ pub(crate) struct OutsideCells {
         reason = "only a class hook constructs one, and no class does yet"
     )
 )]
-/// What a class's [`OutsideCells::carry`] did about a survivor's storage.
+/// What a class's [`OutsideCells::carry`] did about a survivor's storage,
+/// and the three cases are not two: a promotion that moved the storage and
+/// one that had none to move leave the arena reset different work.
+///
+/// Only a class's own hook constructs one, and no class does yet: the
+/// first is the map of `rfc/model/maps.md`, and the tests here build one
+/// of their own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum OutsideCarry {
     /// The storage is out of the arena, and the instance points at it.
@@ -240,25 +292,17 @@ pub(crate) enum OutsideCarry {
     Nothing,
 }
 
-/// What a class's outside-cell carry answers, and the three cases are
-/// not two: a promotion that moved the storage and one that had none to
-/// move leave the arena reset different work.
-///
-/// Only a class's own hook constructs one, and no class does yet: the
-/// first is the map of `rfc/model/maps.md`, and the tests here build one
-/// of their own.
 /// How a walk reads the entity memory it strides over.
 ///
 /// This is the **only** difference between the walks that would
 /// otherwise be one per layout. Tracing on a quiescent heap reads
 /// plainly; a collector thread races the mutator and must read
-/// relaxed-atomically, because a plain read against a concurrent store
+/// atomically, because a plain read against a concurrent store
 /// is undefined behaviour rather than a stale value — and the design
 /// rests on the one word a reader interprets being written by one store
 /// (`rfc/model/values.md`, "ValueBox Layout").
 /// Parameterizing the read instead of copying the stride is what lets
-/// one enumerator serve both. Only the plain reader exists today; S38.0
-/// adds the collector's (`PLAN.md`).
+/// one enumerator serve both: [`PlainCells`] and [`AtomicCells`].
 ///
 /// It covers reads of the **entity's own** memory only. A class descriptor and
 /// a template shape are immortal static data no mutator writes, so both
@@ -318,6 +362,61 @@ pub(crate) trait CellReader {
 /// The ordinary reader: a quiescent heap, or memory only this thread can
 /// reach.
 pub(crate) struct PlainCells;
+
+/// The collector thread's reader: a trace over a heap whose owner is
+/// running beside it.
+///
+/// Every load is atomic, because the mutator's store into the same word
+/// is one (`crate::memory::barrier::write_value_slot`), and every load is
+/// an acquire, because each one is how the trace obtains an address —
+/// the `+8` word decides whether the cell holds one, and the pointer
+/// forms are one — and the entity behind that address was built on the
+/// owner's thread, whose release fence after the header's publication
+/// is the other half of the pairing (`crate::refcount::publish_header`;
+/// `rfc/model/gc/rc-cycle.md`, "Publication, for a reader on another
+/// thread"). On x86-64 the acquire is the plain load; on ARM64 it is an
+/// `ldar` per cell, which is the reader's price and is paid on the
+/// collector thread alone.
+///
+/// The cells outside the body go through the group's concurrent member,
+/// which may yield nothing for a storage the mutator is moving
+/// ([`OutsideCells::walk_concurrent`]).
+///
+/// Its production caller is the collector worker, whose entry waits on the
+/// detach protocol (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner
+/// handoff"); until it lands, the trace on another thread is
+/// `cells::tests::what_a_collector_thread_reads`'.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the collector worker is the caller, and it waits on the detach \
+                  protocol (`rfc/model/gc/rc-cycle.md`, \"Worker-to-owner handoff\")"
+    )
+)]
+pub(crate) struct AtomicCells;
+
+impl CellReader for AtomicCells {
+    #[inline]
+    unsafe fn walk_outside(
+        group: &OutsideCells,
+        base: *mut u8,
+        cls: *const crate::class::Class,
+        visit: &mut dyn FnMut(Cell),
+    ) {
+        unsafe { (group.walk_concurrent)(base, cls, &mut |cell| visit(cell.outside())) }
+    }
+
+    #[inline]
+    unsafe fn word(at: *const u8) -> u64 {
+        unsafe { (*(at as *const AtomicU64)).load(Ordering::Acquire) }
+    }
+
+    #[inline]
+    unsafe fn ptr(at: *const u8) -> *mut u8 {
+        unsafe { (*(at as *const AtomicPtr<u8>)).load(Ordering::Acquire) }
+    }
+}
 
 impl CellReader for PlainCells {
     #[inline]
@@ -412,9 +511,13 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
 ///
 /// # Safety
 /// `entity` is a live entity of `kind` whose cells are readable. Under a
-/// concurrent reader `R` it must be **mature**: the class word at `+8` is
-/// chased, and that is safe only for an entity published long enough ago
-/// for the read to be ordered.
+/// concurrent reader `R` the address of `entity` was obtained through one
+/// of `R`'s own loads, or crossed to the tracing thread by a
+/// synchronizing operation: the class word at `+8` is chased, and what
+/// orders it before the read is the release fence after the header's
+/// publication paired with that acquire (`crate::refcount::publish_header`),
+/// which holds for an entity built one instruction before its address was
+/// stored as much as for one built an hour before.
 pub(crate) unsafe fn trace_cells<R: CellReader>(
     entity: *mut RcHeader,
     kind: u32,

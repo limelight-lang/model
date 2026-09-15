@@ -615,7 +615,7 @@ other way round.
 
 ```
 RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -Zbuild-std \
-    --lib --target x86_64-unknown-linux-gnu -- --test-threads=1 a_free_running
+    --lib --target x86_64-unknown-linux-gnu -- --test-threads=1 what_a_collector_thread_reads
 ```
 
 **`-Zbuild-std` is not optional.** Without it the build fails outright on an
@@ -639,15 +639,20 @@ is weak evidence and a report is strong evidence, the same asymmetry loom has.
 It is outside the commit gate. Run it when a change touches header access,
 the collector's own writes, or anything else two threads reach.
 
-**Since 2026-08-26 the run has no test.** `a_free_running_mutator_survives_`
-`concurrent_epochs` lived in `collector::`, which went with `rc-walk` and
-`rc-trace`, so the command above now selects nothing and reports silence for
-that reason rather than for the good one. Nothing in the crate pairs a live
-collector with a mutator today. The debt belongs to `PLAN.md` S38.0, which is
-where the second thread arrives; until it lands, a change to header access is
-verified by reading the sources, by
-`refcount::tests::who_may_read_a_header`, and by Miri, which sees the
-mixed-size access but not the plain-against-atomic race.
+**The pairing the run watches is `cells::tests::what_a_collector_thread_reads`**,
+since 2026-09-15: a thread holding the owner's token traces the owner's ring
+through `cells::AtomicCells` while the owner stores into a cell of it, and the
+mutator's atomic store beside the collector's atomic load is the pair a plain
+access on either side turns into a report. The run over the four cases takes
+9 s on a warm `-Zbuild-std`. The instrument was calibrated the day the cases
+landed: with the reader's `word` changed to a plain load the run reported
+`Read of size 8` under `a_store_beside_the_trace_is_read_whole` against
+`atomic_store::<u64>`, and with the load restored it was silent. From
+2026-08-26 to that day the command selected no test — its one case had lived in
+the deleted `collector::` — and a change to header access was verified by
+reading the sources, by `refcount::tests::who_may_read_a_header`, and by Miri.
+The report does not fail the test: read the log for `WARNING: ThreadSanitizer`,
+because the result line says `ok` either way.
 
 ## Loom
 

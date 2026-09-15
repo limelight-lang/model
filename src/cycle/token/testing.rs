@@ -1,6 +1,8 @@
 //! A token held from another thread, for the cases that need one: the
-//! stand-in for a collector tracing this mutator's graph, until S38.0's
-//! collector exists to take it itself.
+//! stand-in for a collector tracing this mutator's graph, until the
+//! collector worker exists to take it itself (`rfc/model/gc/rc-cycle.md`,
+//! "Worker-to-owner handoff"). A collector thread that traces as well as
+//! holds is `cells::tests::what_a_collector_thread_reads`'.
 //!
 //! Two test trees hold a token this way — the token's own, and the entity
 //! allocation's slow path, which reaches the wait through a refusal — and a

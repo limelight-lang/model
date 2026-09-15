@@ -602,6 +602,18 @@ impl RcHeader {
 /// flags — because a wide one would be a mixed-size atomic access
 /// against the collector's byte stores.
 ///
+/// **A release fence follows the store, one per entity built.** A reader
+/// on another thread reaches this entity through an address it loads from a
+/// slot with `Acquire`, and the fence is what orders the body, the class word
+/// and this header before whichever store later hands the address out — on
+/// a weakly ordered target the address could otherwise become visible before
+/// the words it names, and a recycled slot would show its previous occupant's
+/// class (`rfc/model/gc/rc-cycle.md`, "Publication, for a reader on another
+/// thread"). The slot stores themselves stay relaxed. On x86-64 the fence is
+/// a compiler barrier and no instruction; its ARM64 price is unmeasured, and
+/// is measured before the first ARM64 build (`rfc/dev/DECISIONS.md`, "the
+/// publication fence lands before its ARM64 price").
+///
 /// # Safety
 /// `slot` must be 8-aligned, writable, and not yet published as a live
 /// entity (the body must already be fully formed).
@@ -620,6 +632,7 @@ pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
         (*(slot as *const core::sync::atomic::AtomicU64))
             .store(word, core::sync::atomic::Ordering::Relaxed)
     };
+    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
     // After the publication, never before it: a reader resolving the
     // record's subject must find a live entity there, and until the store
@@ -896,7 +909,11 @@ pub(crate) unsafe fn mutator_flags(header: *const RcHeader) -> u32 {
 ///
 /// An entity no commit has stamped answers epoch 0 and age 0, which the
 /// publication gives it — [`publish_header`] writes the whole word, so a
-/// recycled slot carries no stamp of its previous occupant. An age is read
+/// recycled slot carries no stamp of its previous occupant. A survivor the
+/// arena reset promotes arrives unstamped too: both writers stamp the members
+/// a trace met, and an arena entity resolves to no row
+/// (`crate::cycle::row::EdgeTarget::Untracked`), so nothing writes byte 6 of
+/// one before its category is rewritten. An age is read
 /// against the epoch beside it and means nothing on its own: the two are one
 /// field in two parts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

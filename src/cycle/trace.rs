@@ -29,6 +29,7 @@
 //! rule that reads its count before its cells is `crate::cycle::mark`'s. The
 //! scan meets no row for such a root and passes over it.
 
+use crate::cells::CellReader;
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::queue::InFlightBatch;
@@ -79,12 +80,15 @@ pub(crate) const ALL_ROOTS: usize = usize::MAX;
 /// them needs to know what the bound was worth: the batch carries no count and
 /// the walk is the only place one is taken.
 ///
+/// `R` is how the cells are read: `PlainCells` on the owning thread,
+/// `AtomicCells` from a collector thread holding the owner's token
+/// (`cells::CellReader`).
+///
 /// # Safety
-/// As [`mark`]: every root is an entity header of this thread's heap whose slot
-/// is still its own, and the trace runs where `cells::trace_cells` may read an
-/// entity's cells plainly — on the owning thread, with no mutator running
-/// beside it.
-pub(crate) unsafe fn trace_batch(
+/// As [`mark`]: every root is an entity header of the owning thread's heap
+/// whose slot is still its own, and the trace runs where `cells::trace_cells`
+/// may read an entity's cells through `R`.
+pub(crate) unsafe fn trace_batch<R: CellReader>(
     arena: &mut TraceScratchArena,
     batch: &InFlightBatch,
     roots: usize,
@@ -97,7 +101,7 @@ pub(crate) unsafe fn trace_batch(
         }
 
         traced += 1;
-        refused = unsafe { mark(arena, root) } != MarkResult::Complete;
+        refused = unsafe { mark::<R>(arena, root) } != MarkResult::Complete;
         !refused
     });
 
@@ -118,7 +122,7 @@ pub(crate) unsafe fn trace_batch(
         }
 
         scanned += 1;
-        refused = unsafe { scan(arena, root) } != ScanResult::Complete;
+        refused = unsafe { scan::<R>(arena, root) } != ScanResult::Complete;
         !refused
     });
 

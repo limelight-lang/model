@@ -1,5 +1,5 @@
 //! A class whose counted cells lie in a block outside the object's own
-//! body, and the four behaviours that reach them
+//! body, and the six behaviours that reach them
 //! (`crate::cells::OutsideCells`).
 //!
 //! Neither real customer is in this crate — `limelight-lang/io`'s
@@ -18,9 +18,9 @@
 //! **The block is replaced whole rather than written in place**, and the
 //! version word beside it is the array head's bracket in miniature
 //! (`crate::array::head::StorageHead::coherent`): odd while the pointer
-//! moves. Nothing validates a reading against it here — the walk stopped
-//! answering a version when `rc-walk`'s re-check went — and it is kept
-//! because it is the mutator half S38.0's Miri slice races against. The
+//! moves. The concurrent walk validates its reading of the pointer
+//! against it and gives the instance up while it is odd; the plain walk
+//! reads no version, having no writer to race. The
 //! window covers the release as well as the move, which is
 //! `StorageHead`'s rule too: a
 //! class whose block goes away while the instance lives — a coroutine
@@ -38,7 +38,7 @@
 
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering, fence};
 
-use crate::cells::{Cell, CellReader, OutsideCarry, OutsideCells, PlainCells};
+use crate::cells::{AtomicCells, Cell, CellReader, OutsideCarry, OutsideCells, PlainCells};
 use crate::class::{Class, ClassBuilder};
 use crate::memory::arena::Arena;
 use crate::memory::context::LLContext;
@@ -190,6 +190,24 @@ unsafe fn publish_block(base: *mut u8, block: *mut u8) {
     unsafe { close_move(base) };
 }
 
+/// Open the window over `obj`'s block without moving it — the mutator half
+/// a case stages for a concurrent walk, which gives the instance up while
+/// the window is open. Closed by [`end_move`].
+///
+/// # Safety
+/// `obj` is a live instance of a class from [`class`] with no window open.
+pub(crate) unsafe fn begin_move(obj: *mut Object) {
+    unsafe { open_move(obj as *mut u8) }
+}
+
+/// Close the window [`begin_move`] opened.
+///
+/// # Safety
+/// `obj` is the instance [`begin_move`] was called on.
+pub(crate) unsafe fn end_move(obj: *mut Object) {
+    unsafe { close_move(obj as *mut u8) }
+}
+
 /// The version goes odd, and the fence comes **after** the store rather
 /// than the store being a release: what must stay on this side is
 /// everything the move writes next, which a release store would leave
@@ -211,10 +229,11 @@ unsafe fn close_move(base: *mut u8) {
     unsafe { store_version(base, closed, Ordering::Release) };
 }
 
-/// The group, whose five members are the whole of what a class owes for
+/// The group, whose six members are the whole of what a class owes for
 /// cells the runs cannot describe.
 static GROUP: OutsideCells = OutsideCells {
     walk_plain,
+    walk_concurrent,
     sever,
     sever_one,
     free,
@@ -230,6 +249,42 @@ unsafe fn walk_plain(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)
     }
 
     unsafe { yield_cells::<PlainCells>(block, visit) };
+}
+
+/// How many times the concurrent walk re-reads the block pointer under a
+/// moving version before it gives the instance up; the array head's
+/// number, for the array head's reason.
+const COHERENT_READ_ATTEMPTS: usize = 4;
+
+/// The walk from a collector thread: the block pointer taken inside the
+/// version bracket, and the cells strided only from a reading the
+/// bracket validated. An instance whose block keeps moving is given up,
+/// which yields nothing — the safe direction (`OutsideCells::walk_concurrent`).
+///
+/// The bracket is `StorageHead::coherent`'s: an acquire load of the
+/// version, the pointer, an acquire *fence*, the version again. The
+/// fence rather than an acquire load on the second read, because an
+/// acquire load orders what follows it and would leave the pointer's
+/// load free to be taken after the check it is meant to pass.
+unsafe fn walk_concurrent(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)) {
+    for _ in 0..COHERENT_READ_ATTEMPTS {
+        let before = unsafe { version(base) };
+        if before % 2 != 0 {
+            continue;
+        }
+
+        let block = unsafe { block_at::<AtomicCells>(base) };
+        fence(Ordering::Acquire);
+        if unsafe { version_relaxed(base) } != before {
+            continue;
+        }
+
+        if !block.is_null() {
+            unsafe { yield_cells::<AtomicCells>(block, visit) };
+        }
+
+        return;
+    }
 }
 
 /// Empty every cell and hand its former occupant back undropped, the
@@ -364,6 +419,13 @@ unsafe fn block_at<R: CellReader>(base: *mut u8) -> *mut u8 {
 #[inline]
 unsafe fn version(base: *mut u8) -> usize {
     unsafe { (*(base.add(VERSION_AT) as *const AtomicU64)).load(Ordering::Acquire) as usize }
+}
+
+/// The version word after an acquire fence, which is the only reader
+/// that may take it relaxed (`walk_concurrent`).
+#[inline]
+unsafe fn version_relaxed(base: *mut u8) -> usize {
+    unsafe { (*(base.add(VERSION_AT) as *const AtomicU64)).load(Ordering::Relaxed) as usize }
 }
 
 #[inline]

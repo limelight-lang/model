@@ -173,9 +173,11 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 /// The clamp's below-zero arm is therefore reached by no test in the
 /// gate's builds, since reaching it trips the assertion first.
 ///
-/// The assertion cannot tell a speculative trace from the owner's; a
-/// worker trace does not yet exist, and `PLAN.md` S38.0, where the second
-/// thread arrives, is what conditions the assertion on whose pass this is.
+/// The assertion cannot tell a speculative trace from the owner's, and a
+/// trace on another thread reads a count the mutator moves under it
+/// (`cells::AtomicCells`); a worker trace in production does not yet
+/// exist, and `PLAN.md` S38.5, where it arrives, is what conditions the
+/// assertion on whose pass this is.
 ///
 /// **A saturated count is absorbing** and this call leaves it alone: it
 /// is a lower bound, so what the subtraction knows about the remainder is

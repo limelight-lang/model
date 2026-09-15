@@ -532,7 +532,9 @@ fn a_candidate_killed_by_the_reset_keeps_its_allocation_through_the_next_reset()
 
     let mut scratch = crate::cycle::testing::open_arena();
     assert_eq!(
-        unsafe { crate::cycle::mark::mark(&mut scratch, survivor_header) },
+        unsafe {
+            crate::cycle::mark::mark::<crate::cells::PlainCells>(&mut scratch, survivor_header)
+        },
         crate::cycle::mark::MarkResult::Complete
     );
     scratch.reset();

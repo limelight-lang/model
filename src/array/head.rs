@@ -82,8 +82,8 @@ pub(crate) enum StorageTag {
 ///
 /// The version they agreed on is **not** kept beside them. It was, for
 /// `rc-walk`'s re-check, which re-read a recorded cell and asked whether
-/// the chunk was still the array's; that phase is gone, and S38.0's
-/// reader answers no version either (`PLAN.md`).
+/// the chunk was still the array's; that phase is gone, and the collector
+/// thread's reader answers no version either (`crate::cells::AtomicCells`).
 pub(crate) struct CoherentView {
     pub(crate) tag: StorageTag,
     /// Null when the representation has never allocated.
@@ -291,7 +291,13 @@ impl StorageHead {
             // orders what follows it, so the words it is meant to
             // validate could be read past it and the check would validate
             // nothing. `ck_sequence_read_retry` fences and then loads
-            // plainly, for this reason (`dev/RESEARCH.md`).
+            // plainly, for this reason (`dev/RESEARCH.md`). The same fence
+            // is the acquire half of the storage's publication: the
+            // relaxed load of `storage` above synchronizes with
+            // `set_storage`'s release store through it, which is what
+            // lets a reader on another thread stride the chunk it names —
+            // an acquire load on the version here would keep the seqlock
+            // and drop that pairing.
             fence(Ordering::Acquire);
             if head.version.load(Ordering::Relaxed) != before {
                 continue;

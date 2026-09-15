@@ -65,7 +65,7 @@
 //! is read before the trace token is released (`rfc/model/gc/rc-cycle.md`,
 //! "Concurrency").
 
-use crate::cells::{self, PlainCells};
+use crate::cells::{self, CellReader};
 use crate::cycle::arena::{TraceScratchArena, find_initialized_row};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow::{self, Color};
@@ -98,17 +98,20 @@ pub(crate) enum ScanResult {
 /// mark, and every root must have been marked before the first scan runs.
 ///
 /// # Safety
-/// As `mark`: `root` is an entity header of this thread's heap whose slot is
-/// still its own — a candidate the queue names, live or dead — and the trace
-/// runs where `cells::trace_cells` may read an entity's cells plainly, on the
-/// owning thread with no mutator running beside it. A root that was torn down
+/// As `mark`: `root` is an entity header of the owning thread's heap whose
+/// slot is still its own — a candidate the queue names, live or dead — and the
+/// trace runs where `cells::trace_cells` may read an entity's cells through
+/// `R`. A root that was torn down
 /// has no met row, so the dispatch reads the block header, and for a large
 /// entity the header's own flags and for a retained one its count
 /// (`crate::cycle::row`) — all of them the slot's own while a queue entry names
 /// it. Its cells are never read: the mark meets no row at count zero
 /// (`crate::cycle::mark`, "A root at count zero is expanded by nothing"), and
 /// only a met row reaches the expansion.
-pub(crate) unsafe fn scan(arena: &mut TraceScratchArena, root: *mut RcHeader) -> ScanResult {
+pub(crate) unsafe fn scan<R: CellReader>(
+    arena: &mut TraceScratchArena,
+    root: *mut RcHeader,
+) -> ScanResult {
     if !unsafe { classify_and_schedule_entity(arena, root, false) } {
         return ScanResult::AllocationFailed;
     }
@@ -125,7 +128,7 @@ pub(crate) unsafe fn scan(arena: &mut TraceScratchArena, root: *mut RcHeader) ->
         let kind = unsafe { cells::entity_kind(entry.entity) };
         let mut refused = false;
         unsafe {
-            cells::trace_cells::<PlainCells>(entry.entity, kind, |cell| {
+            cells::trace_cells::<R>(entry.entity, kind, |cell| {
                 // The refusal cannot break out of the tracer, so the
                 // remaining cells of this entity are read and dropped.
                 // They cost a load each and nothing else: the collection

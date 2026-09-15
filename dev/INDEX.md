@@ -364,7 +364,7 @@ versions live in `docs/history/`, marked at the top.
   the owning thread, which re-reads the current fields before any free
   (`cycle::validation`), and the collector-thread reader answers no version
   either, reading each element's `+8` word alone, which one store wrote
-  (`PLAN.md` S38.0). `entity::for_each_counted_child` is an
+  (`cells::AtomicCells`). `entity::for_each_counted_child` is an
   adapter over it, and `ll_entity_die`'s Array arm goes through that; the
   release side uses the barrier's `drop_ref`, so a child the array held
   last is torn down rather than only decremented. An arena array that
@@ -571,12 +571,24 @@ versions live in `docs/history/`, marked at the top.
   (`trace_entity`, `trace_cells`), the sever dispatch, and a
   `#[cfg(test)]` heap census over `memory::heap::for_each_entity_slot`;
   entity blocks and the region registry are in `heap.rs`/`block_pool.rs`.
+  The stride is read through a `CellReader`, and there are two:
+  `PlainCells` for the owning thread and `AtomicCells` for a trace on
+  another thread, whose every load is atomic and `Acquire` — the pairing of
+  the release fence `refcount::publish_header` emits after the header store
+  (`rfc/model/gc/rc-cycle.md`, "Publication, for a reader on another
+  thread"). `cycle::mark`, `cycle::scan` and `cycle::trace::trace_batch`
+  take the reader as a type parameter; the owner's paths pass `PlainCells`,
+  and the collector thread's caller is the worker, which waits on
+  `rfc`'s detach protocol — until then `cells::tests::what_a_collector_thread_reads`
+  is the thread that traces through `AtomicCells`, and the pairing
+  ThreadSanitizer watches (`dev/WORKFLOW.md`, "ThreadSanitizer").
   It is the upper half of the deleted `walk.rs`, moved on 2026-08-26
   under a name that is not a collector's, and `cycle::mark` traces
   through it rather than growing a stride of its own.
 - Cells a class owns **outside** the object body: `src/cells.rs`'s
-  `OutsideCells`, a group of five behaviours — the walk, the sever of all
-  cells, the sever of one, the free and the arena carry — reached through
+  `OutsideCells`, a group of six behaviours — the walk for each reader, the
+  sever of all cells, the sever of one, the free and the arena carry — reached
+  through
   `class::Class::outside_cells` when the descriptor carries
   `CLASS_OUTSIDE_CELLS`. A coroutine's waker block and a map's table
   chunk are the customers, both outside this crate, so the only class

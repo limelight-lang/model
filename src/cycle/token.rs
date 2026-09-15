@@ -153,15 +153,17 @@ thread_local! {
 /// The pointee lives until this thread exits. The exit waits for a holder
 /// before it hands its blocks over (`crate::cycle::collect::collect_before_exit`),
 /// and nothing yet keeps a holder from taking the token after that wait: the
-/// collector that would trace another thread's graph is `PLAN.md` S38.0's,
-/// and reading the exit phase before its take is that step's, as is how it
-/// finds an owner's token. Today the pointer is taken by the case that stands
-/// in for a collector, and every such case joins the holder before it returns.
+/// collector worker that would trace another thread's graph is `PLAN.md`
+/// S38.5's, and reading the exit phase before its take is that step's, as is
+/// how it finds an owner's token. Today the pointer is taken by the cases that
+/// stand in for a collector, and every such case joins the holder before it
+/// returns.
 #[cfg_attr(
     not(test),
     expect(
         dead_code,
-        reason = "a collector tracing another thread's graph is S38.0's; \
+        reason = "the collector worker is the caller, and it waits on the detach \
+                  protocol (`rfc/model/gc/rc-cycle.md`, \"Worker-to-owner handoff\"); \
                   until it lands only a test takes the pointer"
     )
 )]

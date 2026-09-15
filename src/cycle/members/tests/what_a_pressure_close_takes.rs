@@ -3,6 +3,7 @@
 
 use super::*;
 
+use crate::cells::PlainCells;
 use crate::cycle::shadow;
 use crate::memory::gc_metadata::thread_stats;
 use crate::test_support::allocation_probe;
@@ -221,7 +222,7 @@ fn a_harvest_that_unwinds_gives_up_its_records_and_still_sweeps() {
     active.detach_candidates();
     let outcome = {
         let (arena, batch) = active.rows_and_roots();
-        unsafe { trace_batch(arena, batch, ALL_ROOTS).0 }
+        unsafe { trace_batch::<PlainCells>(arena, batch, ALL_ROOTS).0 }
     };
     assert_eq!(outcome, TraceOutcome::Complete);
     assert!(active.arm_harvest(MEMBER_CAPACITY), "the region was free");

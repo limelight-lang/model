@@ -106,7 +106,7 @@
 //! the call that read it. The rule lives here rather than in the caller that
 //! drains the queue, so that a second caller of [`mark`] inherits it.
 
-use crate::cells::{self, PlainCells};
+use crate::cells::{self, CellReader};
 use crate::cycle::arena::{RowLookup, TraceScratchArena};
 use crate::cycle::epoch;
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
@@ -250,12 +250,20 @@ pub(crate) enum MarkResult {
 /// doc), which is not a refusal: the answer is [`MarkResult::Complete`] and
 /// the collection carries on with its other roots.
 ///
+/// `R` is how the cells are read (`cells::CellReader`): plainly on the
+/// owning thread, atomically from a collector thread that holds the owner's
+/// token while the owner runs.
+///
 /// # Safety
-/// `root` is an entity header of this thread's heap whose slot is still its
-/// own — a candidate the queue names, live or dead — and the trace runs where
-/// `cells::trace_cells` may read an entity's cells plainly: on the owning
-/// thread, with no mutator running beside it.
-pub(crate) unsafe fn mark(arena: &mut TraceScratchArena, root: *mut RcHeader) -> MarkResult {
+/// `root` is an entity header of the owning thread's heap whose slot is still
+/// its own — a candidate the queue names, live or dead — and the trace runs
+/// where `cells::trace_cells` may read an entity's cells through `R`: on the
+/// owning thread with no mutator running beside it for `PlainCells`, under
+/// the owner's trace token for `AtomicCells`.
+pub(crate) unsafe fn mark<R: CellReader>(
+    arena: &mut TraceScratchArena,
+    root: *mut RcHeader,
+) -> MarkResult {
     // Read here rather than taken from the caller: the prune is this module's
     // rule, so a second caller of `mark` inherits it with no argument to
     // forget, and the cost of the reading is one per root instead of one per
@@ -277,7 +285,7 @@ pub(crate) unsafe fn mark(arena: &mut TraceScratchArena, root: *mut RcHeader) ->
         let kind = unsafe { cells::entity_kind(entity) };
         let mut refused = false;
         unsafe {
-            cells::trace_cells::<PlainCells>(entity, kind, |cell| {
+            cells::trace_cells::<R>(entity, kind, |cell| {
                 // The refusal cannot break out of the tracer, so the
                 // remaining cells of this entity are read and dropped.
                 // They cost a load each and nothing else: the collection

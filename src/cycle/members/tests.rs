@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::cells::PlainCells;
 use crate::class::ClassBuilder;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
 use crate::cycle::testing::open_arena;
@@ -95,7 +96,7 @@ fn trace_and_close(capacity: Option<u32>) -> bool {
     active.detach_candidates();
     let outcome = {
         let (arena, batch) = active.rows_and_roots();
-        unsafe { trace_batch(arena, batch, ALL_ROOTS).0 }
+        unsafe { trace_batch::<PlainCells>(arena, batch, ALL_ROOTS).0 }
     };
     assert_eq!(outcome, TraceOutcome::Complete);
 

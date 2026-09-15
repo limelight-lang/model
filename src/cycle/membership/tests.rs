@@ -8,6 +8,7 @@
 //! another.
 
 use super::*;
+use crate::cells::PlainCells;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::scan::{ScanResult, scan};
@@ -129,11 +130,11 @@ fn the_row_form_names_a_large_member() {
     // (`crate::cycle::testing::row_word`).
     let mut scratch = open_arena();
     assert_eq!(
-        unsafe { mark(&mut scratch, members[0] as *mut RcHeader) },
+        unsafe { mark::<PlainCells>(&mut scratch, members[0] as *mut RcHeader) },
         MarkResult::Complete
     );
     assert_eq!(
-        unsafe { scan(&mut scratch, members[0] as *mut RcHeader) },
+        unsafe { scan::<PlainCells>(&mut scratch, members[0] as *mut RcHeader) },
         ScanResult::Complete
     );
 

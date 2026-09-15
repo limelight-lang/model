@@ -8,6 +8,43 @@ never edited or deleted.
 
 ---
 
+## 2026-09-15 — the collector's reader loads with `Acquire`, and the group's concurrent walk gives up rather than re-checks
+
+**Decided:** `cells::AtomicCells` reads every cell word — the `+8` word of a
+`Value`, a pointer slot, an object's class word, a hash entry's key word, an
+outside block's storage pointer — through an atomic load with `Acquire`
+ordering, and the release fence it pairs with is one `fence(Release)` after
+the header store in `refcount::publish_header`, so every entity kind pays it
+once at publication (`rfc/model/gc/rc-cycle.md`, "Publication, for a reader
+on another thread"; the ARM64 price is Edmond's ruling, `rfc/dev/DECISIONS.md`,
+"the publication fence lands before its ARM64 price"). `OutsideCells` gains
+`walk_concurrent`, the reader's member: it takes the storage pointer inside the
+class's version bracket and strides only a reading the bracket validated, and
+an instance whose storage keeps moving yields nothing — the array head's shape
+(`StorageHead::coherent`) and the array's safe direction, an in-edge not
+subtracted reading its child as externally referenced. `mark`, `scan` and
+`trace_batch` take the reader as a type parameter.
+
+**Why:** S38.0's criterion of 2026-09-04 said "one relaxed 8-byte load", and
+the rfc's paragraph of 2026-09-14 makes every load through which a worker
+obtains an address an acquire; the two agree on x86-64, where both are the
+plain load, and differ on ARM64, where the acquire is the reader's price
+(`ldar` per cell) and the relaxed load would leave the fence with no partner.
+The rfc is normative, so the reader follows it. The array count's ordering,
+which the criterion left to this step, was already the table's rule — the
+count's `Release` store follows the entry's stores — so storage is not
+zero-filled at install and the rfc names the rule the crate keeps.
+
+**Rejected:** a `walk_concurrent` that validates *after* yielding, which
+would hand the visitor cells of a storage the mutator was replacing; and a
+re-check phase that keeps the version beside each row, which is `rc-walk`'s
+precision and went with it on 2026-08-26.
+
+**Cost:** four test group literals gain a member; the reader's production
+caller is the collector worker, which waits on the detach protocol, so the
+lib build carries `expect(dead_code)` on the reader and on the member until it
+lands.
+
 ## 2026-09-13 — the COW reconciliation accumulates in the count word, and flags bit 24 says so
 
 **Ruled by the Sage, final**, on the measurement S47.7's own criterion

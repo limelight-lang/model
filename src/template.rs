@@ -86,11 +86,13 @@ pub(crate) unsafe fn values<'a>(t: *const Template) -> &'a [Value] {
 /// The **shape word** is the instance's and goes through the reader; the
 /// count inside the shape does not, the shape being static data no
 /// mutator writes. Chasing that word is safe for the concurrent reader
-/// for the same reason the class word is: the entity is mature, so the
-/// store that published it was ordered long before the read.
+/// for the same reason the class word is: the reader obtained the
+/// instance's address through an acquire load, and the fence after the
+/// header's publication ordered the shape word before any store of that
+/// address (`crate::refcount::publish_header`).
 ///
 /// # Safety
-/// `base` is a live template instance, and under a relaxed reader its
+/// `base` is a live template instance, and under a concurrent reader its
 /// cells may be concurrently written.
 #[inline]
 pub(crate) unsafe fn value_count_at<R: crate::cells::CellReader>(base: *const u8) -> usize {

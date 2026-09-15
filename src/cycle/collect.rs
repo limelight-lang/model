@@ -48,6 +48,7 @@
 
 use std::cell::Cell;
 
+use crate::cells::PlainCells;
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
 use crate::cycle::finalization::{Finalization, Revalidated};
@@ -405,7 +406,7 @@ unsafe fn open_and_trace(roots: usize) -> Result<(ActiveTrace, usize), TraceRefu
         return Err(TraceRefusal::EmptyLane);
     }
 
-    let (outcome, traced) = unsafe { trace_batch(arena, batch, roots) };
+    let (outcome, traced) = unsafe { trace_batch::<PlainCells>(arena, batch, roots) };
     if outcome != TraceOutcome::Complete {
         return Err(TraceRefusal::AllocationFailed);
     }
@@ -526,8 +527,8 @@ pub(crate) const EXIT_ROUNDS: usize = 8;
 /// a collection, a teardown and a reset, recording a request made inside one
 /// for the thread's top (`memory::heap::thread_exit_pending`) — so every
 /// round reaches that take. Nothing here stops a collector from taking the
-/// token over a thread whose exit has begun; the collector that traces
-/// another thread's graph is `PLAN.md` S38.0's, and reading the exit phase
+/// token over a thread whose exit has begun; the collector worker that traces
+/// another thread's graph is `PLAN.md` S38.5's, and reading the exit phase
 /// before its take is that step's.
 ///
 /// **Every chain is offered before every round.** The overflow buffer drains

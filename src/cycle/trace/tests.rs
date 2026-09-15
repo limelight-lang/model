@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::cells::PlainCells;
 use crate::class::ClassBuilder;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
 use crate::cycle::queue::candidate_count;
@@ -128,19 +129,19 @@ fn every_root_marks_before_any_root_scans() {
     let mut interleaved = open_arena();
     unsafe {
         assert_eq!(
-            mark(&mut interleaved, alpha as *mut RcHeader),
+            mark::<PlainCells>(&mut interleaved, alpha as *mut RcHeader),
             MarkResult::Complete
         );
         assert_eq!(
-            scan(&mut interleaved, alpha as *mut RcHeader),
+            scan::<PlainCells>(&mut interleaved, alpha as *mut RcHeader),
             ScanResult::Complete
         );
         assert_eq!(
-            mark(&mut interleaved, beta as *mut RcHeader),
+            mark::<PlainCells>(&mut interleaved, beta as *mut RcHeader),
             MarkResult::Complete
         );
         assert_eq!(
-            scan(&mut interleaved, beta as *mut RcHeader),
+            scan::<PlainCells>(&mut interleaved, beta as *mut RcHeader),
             ScanResult::Complete
         );
     }
@@ -169,7 +170,7 @@ fn every_root_marks_before_any_root_scans() {
             vec![alpha as *mut RcHeader, beta as *mut RcHeader],
             "the control arm above ran the order the batch offers"
         );
-        unsafe { trace_batch(arena, batch, ALL_ROOTS).0 }
+        unsafe { trace_batch::<PlainCells>(arena, batch, ALL_ROOTS).0 }
     };
     assert_eq!(outcome, TraceOutcome::Complete);
     assert_eq!(
@@ -221,7 +222,7 @@ fn a_refusal_in_the_mark_abandons_the_whole_trace() {
     let oom = force_oom();
     let outcome = {
         let (arena, batch) = active.rows_and_roots();
-        unsafe { trace_batch(arena, batch, ALL_ROOTS).0 }
+        unsafe { trace_batch::<PlainCells>(arena, batch, ALL_ROOTS).0 }
     };
     drop(oom);
 

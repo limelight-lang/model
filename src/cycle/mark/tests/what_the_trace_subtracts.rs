@@ -6,6 +6,7 @@
 //! unreachable.
 
 use super::*;
+use crate::cells::PlainCells;
 
 /// The arithmetic, on a graph whose three entities end at three
 /// different counts. Two of the edges point at the same entity, so a
@@ -41,7 +42,7 @@ fn every_internal_edge_comes_off_the_row_it_points_at() {
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
     assert_eq!(
-        unsafe { mark(&mut shadow_arena, root as *mut RcHeader) },
+        unsafe { mark::<PlainCells>(&mut shadow_arena, root as *mut RcHeader) },
         MarkResult::Complete
     );
 
@@ -92,7 +93,7 @@ fn a_ring_no_one_holds_reads_internally_balanced() {
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
     assert_eq!(
-        unsafe { mark(&mut shadow_arena, first as *mut RcHeader) },
+        unsafe { mark::<PlainCells>(&mut shadow_arena, first as *mut RcHeader) },
         MarkResult::Complete
     );
 
@@ -125,7 +126,7 @@ fn a_ring_held_from_outside_keeps_the_holder_s_count() {
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
     assert_eq!(
-        unsafe { mark(&mut shadow_arena, first as *mut RcHeader) },
+        unsafe { mark::<PlainCells>(&mut shadow_arena, first as *mut RcHeader) },
         MarkResult::Complete
     );
 
@@ -170,7 +171,7 @@ fn a_second_root_already_met_leaves_every_count_where_it_was() {
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
     assert_eq!(
-        unsafe { mark(&mut shadow_arena, root as *mut RcHeader) },
+        unsafe { mark::<PlainCells>(&mut shadow_arena, root as *mut RcHeader) },
         MarkResult::Complete
     );
     let after_first = (unsafe { working_count(root) }, unsafe {
@@ -179,7 +180,7 @@ fn a_second_root_already_met_leaves_every_count_where_it_was() {
     assert_eq!(after_first, (1, 0));
 
     assert_eq!(
-        unsafe { mark(&mut shadow_arena, child as *mut RcHeader) },
+        unsafe { mark::<PlainCells>(&mut shadow_arena, child as *mut RcHeader) },
         MarkResult::Complete
     );
     assert_eq!(

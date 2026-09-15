@@ -17,6 +17,7 @@
 //! process, not only the ones this trace touched.
 
 use super::*;
+use crate::cells::PlainCells;
 
 /// Bytes the arena hands out for `bytes`, which is the request rounded
 /// up to its eight-byte grain (`TraceScratchArena::alloc`). The fixture leaves
@@ -103,7 +104,7 @@ fn a_refusal_two_entities_deep_leaves_the_heap_byte_identical() {
         "and the reserve allocation path has nothing to serve"
     );
 
-    let answer = unsafe { mark(&mut shadow_arena, head as *mut RcHeader) };
+    let answer = unsafe { mark::<PlainCells>(&mut shadow_arena, head as *mut RcHeader) };
     drop(oom);
 
     assert_eq!(answer, MarkResult::AllocationFailed);

@@ -18,6 +18,7 @@ use crate::cells::OutsideCells;
 /// empty bodies, and what is checked is which group a subclass finds.
 static PROBE: OutsideCells = OutsideCells {
     walk_plain: probe_walk,
+    walk_concurrent: probe_walk,
     sever: probe_sever,
     sever_one: probe_sever_one,
     free: probe_free,
@@ -207,6 +208,7 @@ static FREED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0
 
 static COUNTING: OutsideCells = OutsideCells {
     walk_plain: probe_walk,
+    walk_concurrent: probe_walk,
     sever: probe_sever,
     sever_one: probe_sever_one,
     free: counting_free,

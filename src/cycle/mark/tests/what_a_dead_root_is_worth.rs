@@ -11,6 +11,7 @@
 //! above zero cannot fall to a torn-down entity under it.
 
 use super::*;
+use crate::cells::PlainCells;
 
 /// The whole of the rule, on the smallest graph that shows it: a torn-down
 /// entity whose cell still names a live one. Expanding it subtracts an edge
@@ -45,7 +46,7 @@ fn a_root_at_count_zero_expands_nothing() {
 
     let mut shadow_arena = crate::cycle::testing::open_arena();
     assert_eq!(
-        unsafe { mark(&mut shadow_arena, torn_down as *mut RcHeader) },
+        unsafe { mark::<PlainCells>(&mut shadow_arena, torn_down as *mut RcHeader) },
         MarkResult::Complete,
         "a root at zero is not a refusal: there is nothing to trace and nothing failed"
     );

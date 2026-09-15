@@ -13,6 +13,7 @@
 
 use super::*;
 
+use crate::cells::PlainCells;
 use crate::class::ClassBuilder;
 use crate::cycle::arena::RowLookup;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
@@ -190,7 +191,7 @@ fn collect() -> Reading {
     let _ = crate::cycle::row::take_edge_dispatches();
     let (arena, batch) = active.rows_and_roots();
     assert_eq!(
-        unsafe { trace_batch(arena, batch, ALL_ROOTS).0 },
+        unsafe { trace_batch::<PlainCells>(arena, batch, ALL_ROOTS).0 },
         TraceOutcome::Complete,
         "the trace completed, so its rows are a whole closure"
     );
@@ -466,7 +467,7 @@ fn the_density_and_edge_readings_draw_nothing_and_move_no_ledger_figure() {
         active.detach_candidates();
         let (arena, batch) = active.rows_and_roots();
         assert_eq!(
-            unsafe { trace_batch(arena, batch, ALL_ROOTS).0 },
+            unsafe { trace_batch::<PlainCells>(arena, batch, ALL_ROOTS).0 },
             TraceOutcome::Complete
         );
 
