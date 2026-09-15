@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-15 · Active: S37, S38, S40 and S49. S49 opened the same night on Edmond's ruling that restores his read-behind queue, and replaces the outbox form S38.5–S38.7 built. S38.0 and S38.3 closed on
+Updated: 2026-09-15 · Active: S37, S38, S40, S49 and S50 (opened 2026-09-15 on Edmond's ruling that `ll_thread_init` is called once). S49 opened the same night on Edmond's ruling that restores his read-behind queue, and replaces the outbox form S38.5–S38.7 built. S38.0 and S38.3 closed on
 2026-09-15 — the collector's reader with its fence, and the owner's returns
 withheld under a foreign holder of its token; the worker, unblocked the same
 evening by `rfc` S8.7, is S38.5 through S38.7 — the record, the offer and the
@@ -1243,6 +1243,37 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         collector its word names, and a wake sent to an ended sibling is
         lost until the next poll; cases for the birth, the handover, the end
         and the lost wake
+      tier: T2 · role: Critic
+
+## S50 — `ll_thread_init` is called once, and a refusal closes the thread
+
+Goal: `ll_thread_init` is the one initialisation a thread gets, made once by
+whoever starts the thread; a refusal is a thread that never starts, and no
+path inside the crate calls it for a thread that skipped it. Edmond's ruling
+of 2026-09-15 (`dev/DECISIONS.md`, "`ll_thread_init` is called once, and a
+refusal closes the thread"), given when the rollback of a repeated init was
+found returning a live thread's queue.
+
+Done when: the three self-initialising calls — `stdapi::ll_alloc_init`,
+`heap::entity_alloc_init` and the journal's ring open — are gone; a second
+`ll_thread_init` on a started thread is refused by a `debug_assert` and
+answers true in release without touching anything; a thread that reaches an
+allocation, a registration or a record site without its init is handled the
+one way S50.1 decides; `cycle::queue`'s "thread the runtime never registered"
+paragraph and `ensure_queue_base_or_abort` go with the lazy draw; the cases
+that drove the lazy paths go with them and the contract is re-pinned.
+
+- [ ] S50.1 Decide what an uninitialised thread gets at its first allocation or registration: an abort, or a null from the allocator with the registration refused
+      done: Edmond's answer recorded in `dev/DECISIONS.md` under the ruling
+        above; the question was put on 2026-09-15 and he said to go on
+      tier: T1 · role: — (Edmond decides)
+- [ ] S50.2 Remove the lazy calls and pin the once-only contract   *(after S50.1)*
+      done: the three call sites and `ensure_queue_base_or_abort` are gone;
+        `ll_thread_init` refuses a second call under `debug_assert`; the
+        uninitialised thread's arm is what S50.1 chose, pinned by a case per
+        entry point; `a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring`
+        and the unregistered-thread cases are rewritten or deleted with the
+        mechanism; `ll_thread_init`'s doc says once
       tier: T2 · role: Critic
 
 ## S40 — Measure the trace's density and decide the row form

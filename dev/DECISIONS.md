@@ -8,6 +8,18 @@ never edited or deleted.
 
 ---
 
+## 2026-09-15 — `ll_thread_init` is called once, and a refusal closes the thread
+
+**Ruled by Edmond:** `ll_thread_init` is an initialisation, not an "ensure":
+it is called once, by whoever starts the thread, and if it refuses the
+thread closes. The crate's three lazy calls of it — `stdapi::ll_alloc_init`,
+`heap::entity_alloc_init`, the journal's ring open — and the notion of a
+thread the runtime never registered are wrong by this ruling; `PLAN.md` S50
+removes them. Found when a repeated init's rollback was seen returning a
+live thread's queue. What an uninitialised thread gets at its first
+allocation — an abort or a null — is S50.1's, put to Edmond and not yet
+answered.
+
 ## 2026-09-15 — the owner record is four lines, drawn beside the base block, and its refusal is a thread that never starts
 
 **Decided (`PLAN.md` S49.2, on Edmond's ruling in `rfc/dev/DECISIONS.md`,
