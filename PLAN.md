@@ -13,9 +13,9 @@ in the specification rather than in this crate.
 
 Updated: 2026-09-15 · Active: S37, S38 and S40. S38.0 and S38.3 closed on
 2026-09-15 — the collector's reader with its fence, and the owner's returns
-withheld under a foreign holder of its token; S38.5, the worker, waits on
-`rfc` S8.7; every other open step is blocked outside this repository or on a
-corpus. **S48 closed and was deleted
+withheld under a foreign holder of its token; S38.5, the worker, was
+unblocked the same evening by `rfc` S8.7 and is the next step; every other
+open step is blocked outside this repository or on a corpus. **S48 closed and was deleted
 on 2026-09-14**, the ValueBox relayout to `rfc/model/values.md`, "ValueBox
 Layout", in three steps, its close read by the Code Reviewer, whose
 findings (a duplicated mask, two selectors for one fact, a spill on the
@@ -884,17 +884,21 @@ window there is.
         lands); the cost is
         measured as the churn held across one collection
       tier: T2 · role: —
-- [ ] S38.5 The collector worker   *(blocked: `rfc` S8.7 — the detach of the owner's active chain is not linearized against registration, `rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff")*
-      done: a collector thread traces an owner's detached chain through
-        `cells::AtomicCells` and posts the marked chain to the owner's inbox,
-        which the exit drains as its fourth chain; the thread's birth is
-        named — startup or first pressure — with its floor refusal after it
-        (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is
-        allocator-issued"); the worker reads the owner's exit phase before its
-        take, through a word `memory::heap::thread_exit_running` cannot
-        answer for another thread; `shadow`'s `count >= edges` assertion is
-        conditioned on whose pass it is, because a worker's row starts from a
-        count the mutator moves under it; and
+- [ ] S38.5 The collector worker
+      done: a collector thread takes an owner's chain from the outbox the
+        owner's poll fills on the worker's request, under the owner's token
+        and by one acquire exchange, traces it through `cells::AtomicCells`
+        and posts it to the owner's inbox before the token's release, walked
+        or not; the outbox, the inbox, the request word and the token share a
+        per-thread record whose storage outlives the thread; the exit claims
+        its token for good, reclaims the outbox, drains the inbox as its
+        fourth chain, runs its rounds under the claim and releases the record
+        with the token held; the pickup and the offer stand behind the entry
+        gate; the thread's birth is named — startup or first pressure — with
+        its floor refusal after it (`rfc/dev/DECISIONS.md`, "the baseline
+        overflow segment is allocator-issued"); `shadow`'s `count >= edges`
+        assertion is conditioned on whose pass it is, because a worker's row
+        starts from a count the mutator moves under it; and
         `cycle::token::note_last_row_read` reads the owner's token rather
         than the tracing thread's own
       tier: T2 · role: Critic
@@ -902,6 +906,16 @@ window there is.
         the fence and left the worker's four duties here. The `expect(dead_code)`
         on `cells::AtomicCells`, on `OutsideCells::walk_concurrent` and on
         `cycle::token::this_thread_token` name this step's caller.
+      handoff: unblocked 2026-09-15 by `rfc` S8.7 (`rfc/dev/DECISIONS.md`,
+        "the owner detaches at its poll, and the worker takes the chain from
+        a one-word outbox"): the detach stays the owner's, so this step moves
+        no queue word from another thread and `queue.rs`'s single-mover
+        invariant holds under the worker. The exit-phase read the criterion
+        used to name went with the ruling: the worker acts on a record only
+        under its token, and the exit's final claim is what refuses it. The
+        token today is a `thread_local!` (`cycle::token::TOKEN`), which no
+        worker can address; the record the ruling names is this step's first
+        build.
 
 ## S40 — Measure the trace's density and decide the row form
 

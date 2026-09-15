@@ -6,8 +6,10 @@
 //! **owner's side** of that contract: the write, the growth and the
 //! funding. The read side belongs to whoever holds the trace token:
 //! `cycle::mark` traces from one root, and the collection that draws
-//! those roots out of this queue is `cycle::collect`. The accelerator that reads
-//! another thread's queue arrives at S38.1, with the claim it needs.
+//! those roots out of this queue is `cycle::collect`. A collector thread reads
+//! a chain this owner detached and offered, never the lane itself
+//! (`rfc/dev/DECISIONS.md`, "the owner detaches at its poll, and the worker
+//! takes the chain from a one-word outbox"); the worker is S38.5's.
 //!
 //! # The three storage paths
 //!
@@ -28,7 +30,7 @@
 //! carry the marks a reader writes over an entry it does not own. **Bit 0 is
 //! the close's**, which is where it says a root belongs to the deferred lane
 //! ([`DEFERRED_MARK`]); bits 1 to 3 are the dirty reader's, which is what Y12
-//! clause 7 reserves them for and what S38.1 builds. Both are written over a
+//! clause 7 reserves them for and what S38.5 builds. Both are written over a
 //! detached batch and read once, and neither survives the pass that disposes
 //! of it.
 //!
@@ -55,14 +57,13 @@
 //! the owner is the only one moving segments, a full segment is the only
 //! one that leaves the write position, so every segment behind the head
 //! holds exactly [`SEGMENT_CAPACITY`] entries and the chain needs no
-//! per-segment length. **That is a property of today's single mover and
-//! not of the structure**: clause 2's reader detaches a chain whose head
-//! is partly filled, and the count that bounds it is in a cell the writer
-//! is about to reset. What the two agree on is open
-//! (`rfc/model/gc/cycle/questions.md`, Y12 clause 2), and S38.1 is where a
-//! second thread swaps the chain for the first time — so a reader written
-//! against "every segment is full" is written against an invariant that
-//! ends there.
+//! per-segment length. **That is a property of a single mover, and the owner
+//! is the one mover under both forms** (`rfc/dev/DECISIONS.md`, "the owner
+//! detaches at its poll, and the worker takes the chain from a one-word
+//! outbox"): a collector thread reads a chain the owner detached and
+//! published with a release store, whose fill the owner never touches again,
+//! so the bound holds for the chain it took. No thread but the owner writes
+//! the head, the fill or a segment's link.
 //!
 //! # Why the growth path allocates nothing
 //!
@@ -182,8 +183,9 @@ pub(crate) const POLL_STRIDE: usize = OVERFLOW_CAPACITY / 2;
 /// Spare segments a thread keeps ahead of the next growth.
 ///
 /// Two, which covers the two consumptions one interval between polls can
-/// hold: one growth, and one in-line collection whose own request to
-/// the pool was refused (`rfc/model/gc/cycle/questions.md`, Y12
+/// hold: one overflow, and the first registration after a detach — the
+/// in-line collection's, or the offer to a worker at the poll — which finds
+/// the write position empty (`rfc/model/gc/cycle/questions.md`, Y12
 /// clause 3). Beyond the two the critical reserve answers, which is what
 /// it is for.
 pub(crate) const SPARE_SEGMENTS: usize = 2;
@@ -410,7 +412,7 @@ unsafe fn append_with_new_segment(state: *mut OwnerCycleState, entity: *mut RcHe
         // `release_queue_segments` discharges a
         // payload for every segment behind the head, so a part-filled one
         // there would discharge bytes nothing charged. The invariant is
-        // today's single mover's, and the module doc names where it ends.
+        // the single mover's, and the owner is the one mover (module doc).
         debug_assert_eq!(usize::from(owner_state.write_len.get()), SEGMENT_CAPACITY);
         gc_metadata::charge(BLOCK_PAYLOAD);
     }
@@ -877,8 +879,8 @@ impl Drop for InFlightBatch {
 /// the head holds [`SEGMENT_CAPACITY`], and that holds because a segment leaves
 /// the write position only when it is full.
 ///
-/// Eight others rest on the same rule, and the list is what a reader sweeps
-/// when S38.1 ends it. `candidate_count` and `deferred_count` count by it,
+/// Eight others rest on the same rule, and the list is what a change of the
+/// rule would sweep. `candidate_count` and `deferred_count` count by it,
 /// deliberately without this walk, so that the two readings cross-check;
 /// [`release_queue_segments`] discharges one payload per segment behind the
 /// head, once for each chain; [`append_with_new_segment`] carries a
