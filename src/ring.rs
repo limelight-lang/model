@@ -1,0 +1,895 @@
+//! A single-producer single-consumer ring of pool blocks: one thread writes
+//! entries at the tail, another reads them behind it at the front, and
+//! neither touches the other's index. The form is moodycamel's
+//! `ReaderWriterQueue` (`rfc/dev/SPSC-QUEUE-SURVEY.md`; `rfc/dev/DECISIONS.md`,
+//! "the candidate queue is read behind its writer, and the collector's
+//! verdicts come back by a second ring"), over 64 KiB pool blocks instead
+//! of `malloc`ed ones and with release/acquire on the index words instead of
+//! fences.
+//!
+//! # The shape
+//!
+//! Blocks are linked in a circle through a `next` word the writer owns.
+//! Each block holds `front` and `tail`, indices into its slots that wrap at
+//! [`CAPACITY`] with one slot always left empty, so that `front == tail` is
+//! the empty block and never the full one. `front` is the reader's word,
+//! `tail` the writer's, and each stands on its own line beside a local copy
+//! of the other's: the writer reads `front` only when its local copy says
+//! the block is full, the reader reads `tail` only when its local copy says
+//! the block is empty, so the common case of both touches no line the other
+//! thread writes.
+//!
+//! ```text
+//!         writer ──▶ tail block ──next──▶ consumed ──next──▶ consumed ─┐
+//!                        ▲                                             │
+//!                        └── … ◀──next── front block ◀── reader ◀──────┘
+//! ```
+//!
+//! The writer fills the tail block and moves to `next` when that block is
+//! not the reader's front block — every block between the tail and the
+//! front around the circle has been read — and otherwise takes a fresh block
+//! from the caller and links it in after the tail. The reader empties the
+//! front block and moves to its `next` when the front block is not the tail
+//! block. Neither ever passes the other.
+//!
+//! # Where the two block pointers live
+//!
+//! Not here. The ring is two words, the front block and the tail block, and
+//! the caller keeps them where its own lines put them ([`Slots`]): the
+//! reader's word beside what the reader owns, the writer's beside what the
+//! writer owns. A ring with both words null holds no block and is empty; the
+//! writer's first push takes its first block and publishes both words.
+//!
+//! # Who may do what
+//!
+//! [`Writer`] is the one producer's handle and [`Reader`] the one consumer's;
+//! the two run on different threads at once. The writer also splices a chain
+//! of blocks in after its tail block and unlinks a consumed block for
+//! return, both with the reader running: the blocks past the tail block are
+//! the writer's by the protocol. [`Quiescent`] is the owner's handle while no
+//! reader is active: it walks the entries in place and packs the ring after
+//! some are dropped. That nobody reads while a `Quiescent` acts is the
+//! caller's exclusion to keep, not this module's.
+//!
+//! # Memory
+//!
+//! Nothing here allocates. A fresh block comes from the closure the writer
+//! is handed, and a block leaves the ring only through the writer's unlink
+//! and the owner's dismantle, which hand it back to the caller.
+
+// Dead in a build without tests until the queue registers through the ring
+// (`PLAN.md` S49.3); the tests are the module's only driver until then.
+#![cfg_attr(not(test), allow(dead_code))]
+
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
+
+/// Bytes of one cache line, which each control word of a block is given.
+const LINE: usize = 64;
+
+/// Slots one block holds. One stays empty by construction, so a block holds
+/// at most `CAPACITY - 1` entries.
+pub(crate) const CAPACITY: usize = (BLOCK_PAYLOAD - 3 * LINE) / size_of::<usize>();
+
+/// Entries one block holds when it is full.
+pub(crate) const BLOCK_ENTRIES: usize = CAPACITY - 1;
+
+/// The reader's line: the index it reads at, and its copy of the writer's.
+#[repr(C, align(64))]
+struct ReaderLine {
+    /// Elements are read from here. Written by the reader with release,
+    /// loaded by the writer with acquire when its local copy says full.
+    front: AtomicUsize,
+    /// The reader's copy of [`WriterLine::tail`], refreshed when it says
+    /// the block is empty. The reader's alone.
+    local_tail: UnsafeCell<usize>,
+}
+
+/// The writer's line: the index it writes at, and its copy of the reader's.
+#[repr(C, align(64))]
+struct WriterLine {
+    /// Elements are written here. Written by the writer with release after
+    /// the slot's store, loaded by the reader with acquire when its local
+    /// copy says empty.
+    tail: AtomicUsize,
+    /// The writer's copy of [`ReaderLine::front`], refreshed when it says
+    /// the block is full. The writer's alone.
+    local_front: UnsafeCell<usize>,
+}
+
+/// The link's line: on its own so that the tail's stores never share a line
+/// with a word the reader loads at a block change.
+#[repr(C, align(64))]
+struct LinkLine {
+    /// The next block around the circle. The writer's word, stored with
+    /// release when a block is linked in; the reader loads it with acquire
+    /// at its block change, and only for a block that is not the tail block.
+    next: AtomicPtr<BlockHeader>,
+}
+
+/// A block's payload in ring form.
+#[repr(C)]
+struct RingBlock {
+    reader: ReaderLine,
+    writer: WriterLine,
+    link: LinkLine,
+    /// The entries. A slot is written by the writer before the tail store
+    /// that publishes it and read by the reader after the tail load that
+    /// saw it, which is the ordering that makes the plain accesses sound;
+    /// a slot the reader has passed is the writer's again after its acquire
+    /// load of `front`.
+    slots: [UnsafeCell<usize>; CAPACITY],
+}
+
+const _: () = assert!(size_of::<RingBlock>() == BLOCK_PAYLOAD);
+const _: () = assert!(std::mem::offset_of!(RingBlock, writer) == LINE);
+const _: () = assert!(std::mem::offset_of!(RingBlock, link) == 2 * LINE);
+
+/// The index after `index`, wrapping at [`CAPACITY`].
+#[inline]
+fn step(index: usize) -> usize {
+    if index + 1 == CAPACITY { 0 } else { index + 1 }
+}
+
+/// Entries between `front` and `tail` in one block.
+#[inline]
+fn span(front: usize, tail: usize) -> usize {
+    if tail >= front {
+        tail - front
+    } else {
+        tail + CAPACITY - front
+    }
+}
+
+#[inline]
+fn ring(block: *mut BlockHeader) -> *mut RingBlock {
+    BlockHeader::payload_start(block) as *mut RingBlock
+}
+
+/// Put `block` in ring form: empty, unlinked.
+///
+/// # Safety
+/// `block` is a pool block nobody else uses.
+unsafe fn init_block(block: *mut BlockHeader) {
+    let b = ring(block);
+    unsafe {
+        (*b).reader.front.store(0, Ordering::Relaxed);
+        *(*b).reader.local_tail.get() = 0;
+        (*b).writer.tail.store(0, Ordering::Relaxed);
+        *(*b).writer.local_front.get() = 0;
+        (*b).link
+            .next
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
+    }
+}
+
+/// The ring's two words, wherever the caller keeps them: the front block is
+/// the reader's, the tail block the writer's. Both null is a ring with no
+/// block.
+#[derive(Clone, Copy)]
+pub(crate) struct Slots<'a> {
+    pub(crate) front_block: &'a AtomicPtr<BlockHeader>,
+    pub(crate) tail_block: &'a AtomicPtr<BlockHeader>,
+}
+
+/// What a push answers when the tail block is full and the caller's closure
+/// gave no block: the entry was not written.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct NoBlock;
+
+/// The one producer's handle.
+pub(crate) struct Writer<'a>(Slots<'a>);
+
+impl<'a> Writer<'a> {
+    /// The writer over `slots`.
+    ///
+    /// # Safety
+    /// The calling thread is the ring's one producer, and no other `Writer`
+    /// over these slots is in use.
+    pub(crate) unsafe fn new(slots: Slots<'a>) -> Self {
+        Self(slots)
+    }
+
+    /// Append `entry`. The tail block takes it while it has room; a full
+    /// tail block moves the writer to the next block of the circle when the
+    /// reader is not in it, and otherwise to the block `fresh` answers, which
+    /// is linked in after the tail. `fresh` answering null is [`NoBlock`],
+    /// and the entry is not written.
+    pub(crate) fn push(
+        &self,
+        entry: usize,
+        fresh: impl FnOnce() -> *mut BlockHeader,
+    ) -> Result<(), NoBlock> {
+        let tail_block = self.0.tail_block.load(Ordering::Relaxed);
+        if tail_block.is_null() {
+            return self.push_into_fresh(entry, fresh, std::ptr::null_mut());
+        }
+
+        let b = ring(tail_block);
+        let tail = unsafe { (*b).writer.tail.load(Ordering::Relaxed) };
+        let next_tail = step(tail);
+        let mut front = unsafe { *(*b).writer.local_front.get() };
+        if next_tail == front {
+            front = unsafe { (*b).reader.front.load(Ordering::Acquire) };
+            unsafe { *(*b).writer.local_front.get() = front };
+        }
+
+        if next_tail != front {
+            unsafe {
+                *(*b).slots[tail].get() = entry;
+                (*b).writer.tail.store(next_tail, Ordering::Release);
+            }
+            return Ok(());
+        }
+
+        // The tail block is full. The next block of the circle is free when
+        // the reader is not in it: every block between the tail and the
+        // front has been read to its end.
+        let next = unsafe { (*b).link.next.load(Ordering::Relaxed) };
+        if next != self.0.front_block.load(Ordering::Acquire) {
+            let n = ring(next);
+            let front = unsafe { (*n).reader.front.load(Ordering::Acquire) };
+            let tail = unsafe { (*n).writer.tail.load(Ordering::Relaxed) };
+            debug_assert_eq!(front, tail, "a block behind the front block is empty");
+            unsafe {
+                *(*n).writer.local_front.get() = front;
+                *(*n).slots[tail].get() = entry;
+                (*n).writer.tail.store(step(tail), Ordering::Release);
+            }
+            self.0.tail_block.store(next, Ordering::Release);
+            return Ok(());
+        }
+
+        self.push_into_fresh(entry, fresh, tail_block)
+    }
+
+    /// Take a block from `fresh`, write `entry` as its first slot, and link
+    /// it in after `after` — or, with `after` null, as the ring's first
+    /// block, publishing both words.
+    fn push_into_fresh(
+        &self,
+        entry: usize,
+        fresh: impl FnOnce() -> *mut BlockHeader,
+        after: *mut BlockHeader,
+    ) -> Result<(), NoBlock> {
+        let block = fresh();
+        if block.is_null() {
+            return Err(NoBlock);
+        }
+
+        unsafe { init_block(block) };
+        let n = ring(block);
+        unsafe {
+            *(*n).slots[0].get() = entry;
+            (*n).writer.tail.store(1, Ordering::Relaxed);
+        }
+
+        if after.is_null() {
+            // A circle of one. The reader's word is published by the writer
+            // this once; from here the reader alone stores it. The tail
+            // block goes first: the reader keys off the front block, and its
+            // acquire of that word carries the tail block's store with it,
+            // so a non-null front block is never read beside a null tail.
+            unsafe { (*n).link.next.store(block, Ordering::Relaxed) };
+            self.0.tail_block.store(block, Ordering::Release);
+            self.0.front_block.store(block, Ordering::Release);
+            return Ok(());
+        }
+
+        let a = ring(after);
+        let after_next = unsafe { (*a).link.next.load(Ordering::Relaxed) };
+        unsafe {
+            (*n).link.next.store(after_next, Ordering::Relaxed);
+            // The reader may see the new `next` before the new tail block;
+            // it cannot advance into it before the tail block moves, since
+            // it reads `next` only off a block that is not the tail block.
+            (*a).link.next.store(block, Ordering::Release);
+        }
+        self.0.tail_block.store(block, Ordering::Release);
+        Ok(())
+    }
+
+    /// Link the chain `first..=last` in after the tail block and make `last`
+    /// the tail block, while the reader may be running: the chain's blocks
+    /// lie inside the reader's region from the store of the tail block on,
+    /// and the reader enters the first of them only through the old tail
+    /// block's `next`, which is stored with release after the chain is
+    /// complete. Every block of the chain holds at least one entry, so the
+    /// reader's rule that the block ahead of an emptied front block holds an
+    /// entry is kept; `last.next` is rewritten here.
+    ///
+    /// # Safety
+    /// The chain's blocks are the caller's, in ring form as [`Chain`] leaves
+    /// them, and none of them is in a ring.
+    pub(crate) unsafe fn splice_after_tail(&self, first: *mut BlockHeader, last: *mut BlockHeader) {
+        let tail = self.0.tail_block.load(Ordering::Relaxed);
+        if tail.is_null() {
+            unsafe { (*ring(last)).link.next.store(first, Ordering::Relaxed) };
+            self.0.tail_block.store(last, Ordering::Release);
+            self.0.front_block.store(first, Ordering::Release);
+            return;
+        }
+
+        let t = ring(tail);
+        let after = unsafe { (*t).link.next.load(Ordering::Relaxed) };
+        unsafe {
+            (*ring(last)).link.next.store(after, Ordering::Relaxed);
+            (*t).link.next.store(first, Ordering::Release);
+        }
+        self.0.tail_block.store(last, Ordering::Release);
+    }
+
+    /// Unlink and answer the block after the tail block when it is empty and
+    /// not the front block, or null: the one block the circle can spare
+    /// while the reader runs, since the reader never walks past the tail
+    /// block. Its emptiness is read with acquire, after the reader's release
+    /// of its last read there.
+    pub(crate) fn unlink_after_tail(&self) -> *mut BlockHeader {
+        let tail = self.0.tail_block.load(Ordering::Relaxed);
+        if tail.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        let t = ring(tail);
+        let spare = unsafe { (*t).link.next.load(Ordering::Relaxed) };
+        if spare == tail || spare == self.0.front_block.load(Ordering::Acquire) {
+            return std::ptr::null_mut();
+        }
+
+        let s = ring(spare);
+        let empty = unsafe {
+            (*s).reader.front.load(Ordering::Acquire) == (*s).writer.tail.load(Ordering::Relaxed)
+        };
+        if !empty {
+            return std::ptr::null_mut();
+        }
+
+        let after = unsafe { (*s).link.next.load(Ordering::Relaxed) };
+        unsafe {
+            (*t).link.next.store(after, Ordering::Release);
+            (*s).link
+                .next
+                .store(std::ptr::null_mut(), Ordering::Relaxed);
+        }
+        spare
+    }
+}
+
+/// Entries a [`Reader::peek`] read and has not yet consumed: where they
+/// stand, so that [`Reader::commit`] can advance past exactly them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Peeked {
+    /// The block the entries begin in, and how many of them it holds.
+    first: *mut BlockHeader,
+    in_first: usize,
+    /// The block the entries continue in, read off `first`'s link before
+    /// anything moved, and how many of them it holds; null for none.
+    second: *mut BlockHeader,
+    in_second: usize,
+}
+
+impl Peeked {
+    /// Entries peeked.
+    pub(crate) fn len(&self) -> usize {
+        self.in_first + self.in_second
+    }
+}
+
+/// The one consumer's handle.
+pub(crate) struct Reader<'a>(Slots<'a>);
+
+impl<'a> Reader<'a> {
+    /// The reader over `slots`.
+    ///
+    /// # Safety
+    /// The calling thread is the ring's one consumer, and no other `Reader`
+    /// or [`Quiescent`] over these slots is in use.
+    pub(crate) unsafe fn new(slots: Slots<'a>) -> Self {
+        Self(slots)
+    }
+
+    /// Take up to `out.len()` entries from the front, oldest first, and
+    /// answer how many were taken. Zero is the ring read empty.
+    pub(crate) fn take(&self, out: &mut [usize]) -> usize {
+        let mut front_block = self.0.front_block.load(Ordering::Acquire);
+        let mut taken = 0;
+        while taken < out.len() && !front_block.is_null() {
+            let b = ring(front_block);
+            let front = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
+            let mut tail = unsafe { *(*b).reader.local_tail.get() };
+            if front == tail {
+                tail = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
+                unsafe { *(*b).reader.local_tail.get() = tail };
+            }
+
+            if front != tail {
+                out[taken] = unsafe { *(*b).slots[front].get() };
+                unsafe { (*b).reader.front.store(step(front), Ordering::Release) };
+                taken += 1;
+                continue;
+            }
+
+            // The front block read empty. Whether another block is ahead is
+            // read off the tail block *after* that reading: the writer can
+            // fill this block and move on between the two, and a reader
+            // that read the tail block first would skip a filled block.
+            #[cfg(test)]
+            testing::between_the_reads();
+            if front_block == self.0.tail_block.load(Ordering::Acquire) {
+                break;
+            }
+
+            let tail = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
+            unsafe { *(*b).reader.local_tail.get() = tail };
+            if front != tail {
+                // Filled between the two reads: taken from here next round.
+                continue;
+            }
+
+            let next = unsafe { (*b).link.next.load(Ordering::Acquire) };
+            // The tail block moves only after a write into it, so the block
+            // ahead holds an entry.
+            self.0.front_block.store(next, Ordering::Release);
+            front_block = next;
+        }
+
+        taken
+    }
+
+    /// Read up to `out.len()` entries from the front, oldest first, over at
+    /// most two blocks, without consuming them: `front` and the front block
+    /// stay where they are until [`Reader::commit`] moves them past exactly
+    /// these entries. A consumer that must not lose entries it has not yet
+    /// acted on reads this way and commits when it is done; `take` is the
+    /// same read with the commit built in.
+    pub(crate) fn peek(&self, out: &mut [usize]) -> Peeked {
+        let mut peeked = Peeked {
+            first: std::ptr::null_mut(),
+            in_first: 0,
+            second: std::ptr::null_mut(),
+            in_second: 0,
+        };
+        let front_block = self.0.front_block.load(Ordering::Acquire);
+        if front_block.is_null() || out.is_empty() {
+            return peeked;
+        }
+
+        peeked.first = front_block;
+        let (read, tail) = self.read_block(front_block, out);
+        peeked.in_first = read;
+        if read == out.len() {
+            return peeked;
+        }
+
+        // The front block is read to its tail. Whether a block is ahead is
+        // read off the tail block after that reading, then the front block's
+        // tail again ([`Reader::take`] says why); a block ahead holds an
+        // entry, and its link is read before anything moves.
+        #[cfg(test)]
+        testing::between_the_reads();
+        if front_block == self.0.tail_block.load(Ordering::Acquire) {
+            return peeked;
+        }
+
+        let b = ring(front_block);
+        let tail_again = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
+        if tail_again != tail {
+            unsafe { *(*b).reader.local_tail.get() = tail_again };
+            let mut index = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
+            for _ in 0..read {
+                index = step(index);
+            }
+            while index != tail_again && peeked.in_first < out.len() {
+                out[peeked.in_first] = unsafe { *(*b).slots[index].get() };
+                peeked.in_first += 1;
+                index = step(index);
+            }
+            return peeked;
+        }
+
+        let next = unsafe { (*b).link.next.load(Ordering::Acquire) };
+        peeked.second = next;
+        let (read, _) = self.read_block(next, &mut out[peeked.in_first..]);
+        peeked.in_second = read;
+        peeked
+    }
+
+    /// Read `block`'s entries from its front into `out`, as many as fit, and
+    /// answer how many and the tail they were read against.
+    fn read_block(&self, block: *mut BlockHeader, out: &mut [usize]) -> (usize, usize) {
+        let b = ring(block);
+        let mut index = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
+        let mut tail = unsafe { *(*b).reader.local_tail.get() };
+        if index == tail {
+            tail = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
+            unsafe { *(*b).reader.local_tail.get() = tail };
+        }
+
+        let mut read = 0;
+        while index != tail && read < out.len() {
+            out[read] = unsafe { *(*b).slots[index].get() };
+            read += 1;
+            index = step(index);
+        }
+        (read, tail)
+    }
+
+    /// Consume what `peeked` read: advance the first block's front past its
+    /// entries, move the front block to the second where the read crossed,
+    /// and advance that block's front past the rest. Three stores at most,
+    /// each a release, and the caller's guard is what makes them one act
+    /// against an unwind between them.
+    pub(crate) fn commit(&self, peeked: Peeked) {
+        if peeked.first.is_null() {
+            return;
+        }
+
+        let f = ring(peeked.first);
+        let mut front = unsafe { (*f).reader.front.load(Ordering::Relaxed) };
+        for _ in 0..peeked.in_first {
+            front = step(front);
+        }
+        unsafe { (*f).reader.front.store(front, Ordering::Release) };
+        if peeked.second.is_null() {
+            return;
+        }
+
+        self.0.front_block.store(peeked.second, Ordering::Release);
+        let s = ring(peeked.second);
+        let mut front = unsafe { (*s).reader.front.load(Ordering::Relaxed) };
+        for _ in 0..peeked.in_second {
+            front = step(front);
+        }
+        unsafe { (*s).reader.front.store(front, Ordering::Release) };
+    }
+
+    /// Entries not yet taken, as of the tail the reader sees now: the front
+    /// block's span and every block's between it and the tail block.
+    pub(crate) fn unread(&self) -> usize {
+        let front_block = self.0.front_block.load(Ordering::Acquire);
+        if front_block.is_null() {
+            return 0;
+        }
+
+        let tail_block = self.0.tail_block.load(Ordering::Acquire);
+        let mut count = 0;
+        let mut block = front_block;
+        loop {
+            let b = ring(block);
+            let front = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
+            let tail = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
+            count += span(front, tail);
+            if block == tail_block {
+                return count;
+            }
+
+            block = unsafe { (*b).link.next.load(Ordering::Acquire) };
+        }
+    }
+}
+
+/// The owner's handle while no reader is active: every word of the ring is
+/// its own to read and write plainly.
+pub(crate) struct Quiescent<'a>(Slots<'a>);
+
+impl<'a> Quiescent<'a> {
+    /// The owner's handle over `slots`.
+    ///
+    /// # Safety
+    /// No [`Reader`] over these slots runs while this handle is in use, and
+    /// the calling thread is the ring's one producer.
+    pub(crate) unsafe fn new(slots: Slots<'a>) -> Self {
+        Self(slots)
+    }
+
+    fn front_block(&self) -> *mut BlockHeader {
+        self.0.front_block.load(Ordering::Relaxed)
+    }
+
+    fn tail_block(&self) -> *mut BlockHeader {
+        self.0.tail_block.load(Ordering::Relaxed)
+    }
+
+    /// Whether the ring holds a block at all.
+    pub(crate) fn has_blocks(&self) -> bool {
+        !self.front_block().is_null()
+    }
+
+    /// Entries between the front and the tail, with no entry read.
+    pub(crate) fn count(&self) -> usize {
+        let mut count = 0;
+        self.for_each_block_in_order(|b| {
+            count += unsafe {
+                span(
+                    (*b).reader.front.load(Ordering::Relaxed),
+                    (*b).writer.tail.load(Ordering::Relaxed),
+                )
+            };
+        });
+        count
+    }
+
+    /// Call `visit` on every entry from the front to the tail, oldest first,
+    /// stopping at the first answer of false. **False** when it stopped.
+    pub(crate) fn walk(&self, mut visit: impl FnMut(usize) -> bool) -> bool {
+        let mut ok = true;
+        self.for_each_block_in_order(|b| {
+            if !ok {
+                return;
+            }
+            let mut index = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
+            let tail = unsafe { (*b).writer.tail.load(Ordering::Relaxed) };
+            while index != tail {
+                if !visit(unsafe { *(*b).slots[index].get() }) {
+                    ok = false;
+                    return;
+                }
+                index = step(index);
+            }
+        });
+        ok
+    }
+
+    /// Rewrite every entry from the front to the tail in place: `keep`
+    /// answers the word to write back, or `None` to drop the entry. The kept
+    /// words are packed from the front block's front in their order, the tail
+    /// block becomes the last block with a kept entry, every block whose tail
+    /// moved has the reader's local copy rewritten to match, and the blocks
+    /// past the new tail stay in the circle, empty, for the writer's next
+    /// round.
+    pub(crate) fn rewrite(&self, mut keep: impl FnMut(usize) -> Option<usize>) {
+        let first = self.front_block();
+        if first.is_null() {
+            return;
+        }
+        let last = self.tail_block();
+
+        // The write cursor runs through the same blocks the read cursor does
+        // and never passes it, since it writes at most what was read.
+        let mut write_block = first;
+        let mut write = unsafe { (*ring(first)).reader.front.load(Ordering::Relaxed) };
+
+        let mut read_block = first;
+        loop {
+            let rb = ring(read_block);
+            let mut read = unsafe { (*rb).reader.front.load(Ordering::Relaxed) };
+            let read_tail = unsafe { (*rb).writer.tail.load(Ordering::Relaxed) };
+            while read != read_tail {
+                let entry = unsafe { *(*rb).slots[read].get() };
+                read = step(read);
+                let Some(kept) = keep(entry) else { continue };
+
+                let wb = ring(write_block);
+                if step(write) == unsafe { (*wb).reader.front.load(Ordering::Relaxed) } {
+                    // The write block is full: close it and move on. The
+                    // next block is the one the read cursor is in or one it
+                    // has passed, so its front is where its entries begin.
+                    unsafe { self.set_tail(write_block, write) };
+                    write_block = unsafe { (*wb).link.next.load(Ordering::Relaxed) };
+                    write = unsafe { (*ring(write_block)).reader.front.load(Ordering::Relaxed) };
+                }
+                unsafe { *(*ring(write_block)).slots[write].get() = kept };
+                write = step(write);
+            }
+
+            if read_block == last {
+                break;
+            }
+            read_block = unsafe { (*rb).link.next.load(Ordering::Relaxed) };
+        }
+
+        // Close the write block and empty every block from it to the old
+        // tail block.
+        unsafe { self.set_tail(write_block, write) };
+        let mut block = write_block;
+        while block != last {
+            block = unsafe { (*ring(block)).link.next.load(Ordering::Relaxed) };
+            let b = ring(block);
+            let front = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
+            unsafe { self.set_tail(block, front) };
+        }
+        self.0.tail_block.store(write_block, Ordering::Relaxed);
+    }
+
+    /// Set `block`'s tail and the reader's local copy of it.
+    unsafe fn set_tail(&self, block: *mut BlockHeader, tail: usize) {
+        let b = ring(block);
+        unsafe {
+            (*b).writer.tail.store(tail, Ordering::Relaxed);
+            *(*b).reader.local_tail.get() = tail;
+        }
+    }
+
+    /// Take every block out of the ring, handing each to `give_back` in
+    /// circle order from the front block, and leave the ring with no block.
+    /// The entries go with the blocks.
+    pub(crate) fn dismantle(&self, mut give_back: impl FnMut(*mut BlockHeader)) {
+        let first = self.front_block();
+        if first.is_null() {
+            return;
+        }
+
+        self.0
+            .front_block
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
+        self.0
+            .tail_block
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
+        let mut block = first;
+        loop {
+            let next = unsafe { (*ring(block)).link.next.load(Ordering::Relaxed) };
+            unsafe {
+                (*ring(block))
+                    .link
+                    .next
+                    .store(std::ptr::null_mut(), Ordering::Relaxed)
+            };
+            give_back(block);
+            if next == first {
+                return;
+            }
+            block = next;
+        }
+    }
+
+    /// Blocks in the circle.
+    pub(crate) fn block_count(&self) -> usize {
+        let first = self.front_block();
+        if first.is_null() {
+            return 0;
+        }
+
+        let mut count = 1;
+        let mut block = unsafe { (*ring(first)).link.next.load(Ordering::Relaxed) };
+        while block != first {
+            count += 1;
+            block = unsafe { (*ring(block)).link.next.load(Ordering::Relaxed) };
+        }
+        count
+    }
+
+    /// `visit` over the blocks from the front block to the tail block, in
+    /// read order.
+    fn for_each_block_in_order(&self, mut visit: impl FnMut(*mut RingBlock)) {
+        let mut block = self.front_block();
+        if block.is_null() {
+            return;
+        }
+        let last = self.tail_block();
+        loop {
+            visit(ring(block));
+            if block == last {
+                return;
+            }
+            block = unsafe { (*ring(block)).link.next.load(Ordering::Relaxed) };
+        }
+    }
+}
+
+/// A linear chain of blocks in ring form, filled by its owner alone and
+/// spliced into a ring whole ([`Quiescent::splice_after_tail`]). Every block
+/// but the last is full, and the last holds at least one entry: an empty
+/// block would break the reader's rule that the block ahead of an emptied
+/// front block holds an entry.
+pub(crate) struct Chain {
+    first: *mut BlockHeader,
+    last: *mut BlockHeader,
+    entries: usize,
+}
+
+impl Chain {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            first: std::ptr::null_mut(),
+            last: std::ptr::null_mut(),
+            entries: 0,
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.first.is_null()
+    }
+
+    /// Entries the chain holds.
+    pub(crate) fn len(&self) -> usize {
+        self.entries
+    }
+
+    /// Append `entry`, taking a block from `fresh` when the last one is full
+    /// or there is none; null from `fresh` is [`NoBlock`].
+    pub(crate) fn push(
+        &mut self,
+        entry: usize,
+        fresh: impl FnOnce() -> *mut BlockHeader,
+    ) -> Result<(), NoBlock> {
+        if !self.last.is_null() {
+            let l = ring(self.last);
+            let tail = unsafe { (*l).writer.tail.load(Ordering::Relaxed) };
+            if tail < BLOCK_ENTRIES {
+                unsafe {
+                    *(*l).slots[tail].get() = entry;
+                    (*l).writer.tail.store(tail + 1, Ordering::Relaxed);
+                    *(*l).reader.local_tail.get() = tail + 1;
+                }
+                self.entries += 1;
+                return Ok(());
+            }
+        }
+
+        let block = fresh();
+        if block.is_null() {
+            return Err(NoBlock);
+        }
+
+        unsafe { init_block(block) };
+        let b = ring(block);
+        unsafe {
+            *(*b).slots[0].get() = entry;
+            (*b).writer.tail.store(1, Ordering::Relaxed);
+            *(*b).reader.local_tail.get() = 1;
+        }
+        if self.last.is_null() {
+            self.first = block;
+        } else {
+            unsafe { (*ring(self.last)).link.next.store(block, Ordering::Relaxed) };
+        }
+        self.last = block;
+        self.entries += 1;
+        Ok(())
+    }
+
+    /// Call `visit` on every entry, oldest first.
+    pub(crate) fn walk(&self, mut visit: impl FnMut(usize)) {
+        let mut block = self.first;
+        while !block.is_null() {
+            let b = ring(block);
+            let tail = unsafe { (*b).writer.tail.load(Ordering::Relaxed) };
+            for index in 0..tail {
+                visit(unsafe { *(*b).slots[index].get() });
+            }
+            block = unsafe { (*b).link.next.load(Ordering::Relaxed) };
+        }
+    }
+
+    /// The chain's blocks, first and last, leaving this empty: what a splice
+    /// takes.
+    pub(crate) fn take(&mut self) -> Option<(*mut BlockHeader, *mut BlockHeader)> {
+        if self.first.is_null() {
+            return None;
+        }
+
+        let taken = (self.first, self.last);
+        *self = Self::empty();
+        Some(taken)
+    }
+
+    /// Hand every block to `give_back`, entries and all, leaving this empty.
+    pub(crate) fn dismantle(&mut self, mut give_back: impl FnMut(*mut BlockHeader)) {
+        let mut block = self.first;
+        while !block.is_null() {
+            let next = unsafe { (*ring(block)).link.next.load(Ordering::Relaxed) };
+            give_back(block);
+            block = next;
+        }
+        *self = Self::empty();
+    }
+
+    /// Blocks in the chain.
+    pub(crate) fn block_count(&self) -> usize {
+        let mut count = 0;
+        let mut block = self.first;
+        while !block.is_null() {
+            count += 1;
+            block = unsafe { (*ring(block)).link.next.load(Ordering::Relaxed) };
+        }
+        count
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod testing;
+
+#[cfg(test)]
+mod tests;

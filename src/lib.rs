@@ -43,6 +43,7 @@ pub mod object;
 pub mod promote;
 pub mod refcount;
 pub mod reference;
+pub(crate) mod ring;
 pub mod static_block;
 pub mod string;
 pub mod template;
