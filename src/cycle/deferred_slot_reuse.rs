@@ -551,6 +551,18 @@ impl ActiveTrace {
         self.batch = Some(crate::cycle::queue::detach_candidates());
     }
 
+    /// Give this trace a chain a collector thread posted instead of the lane:
+    /// the owner's pickup, whose walks visit the proposed roots alone and
+    /// whose close disposes of every entry the same way a detached lane's
+    /// does (`crate::cycle::queue::take_proposal`).
+    pub(crate) fn adopt_proposal(&mut self, proposal: crate::cycle::queue::InFlightBatch) {
+        assert!(
+            self.batch.is_none(),
+            "a trace takes one chain, detached or posted"
+        );
+        self.batch = Some(proposal);
+    }
+
     /// The arena and the detached batch in one answer, because a trace reads
     /// the batch's roots while writing the arena's rows and two calls would
     /// borrow this window twice.

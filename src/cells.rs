@@ -180,15 +180,6 @@ pub(crate) struct OutsideCells {
     /// another thread"). That the storage it strides is not freed under
     /// it is the trace window's contract, not the walk's
     /// (`PLAN.md` S38.3).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by `AtomicCells`, whose production caller is the collector \
-                      worker; the worker waits on the detach protocol \
-                      (`rfc/model/gc/rc-cycle.md`, \"Worker-to-owner handoff\")"
-        )
-    )]
     pub walk_concurrent: unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)),
     /// Empty the outside cells and collect their former occupants,
     /// without dropping them. Not [`empty_cell`], which writes a whole
@@ -391,18 +382,10 @@ pub(crate) struct PlainCells;
 /// which may yield nothing for a storage the mutator is moving
 /// ([`OutsideCells::walk_concurrent`]).
 ///
-/// Its production caller is the collector worker, whose entry waits on the
-/// detach protocol (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner
-/// handoff"); until it lands, the trace on another thread is
-/// `cells::tests::what_a_collector_thread_reads`'.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the collector worker is the caller, and it waits on the detach \
-                  protocol (`rfc/model/gc/rc-cycle.md`, \"Worker-to-owner handoff\")"
-    )
-)]
+/// Its production caller is `cycle::worker::serve`, the collector thread's
+/// trace of a chain the owner offered (`rfc/model/gc/rc-cycle.md`,
+/// "Worker-to-owner handoff"); the trace on another thread with the owner
+/// running beside it is `cells::tests::what_a_collector_thread_reads`'.
 pub(crate) struct AtomicCells;
 
 impl CellReader for AtomicCells {

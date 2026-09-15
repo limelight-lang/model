@@ -335,14 +335,15 @@ impl Compaction {
 
     /// Take one entry off the input and decide where it goes.
     ///
-    /// **The mark comes off here and travels in the frame**, so nothing below
-    /// this line reads a tagged pointer: the header the slot state is read
-    /// through, the entry written into either lane, and the pointer handed to
-    /// `ll_free` are all the entity's own address
-    /// (`crate::cycle::queue::DEFERRED_MARK`).
+    /// **The marks come off here and the one that decides travels in the
+    /// frame**, so nothing below this line reads a tagged pointer: the header
+    /// the slot state is read through, the entry written into either lane,
+    /// and the pointer handed to `ll_free` are all the entity's own address
+    /// (`crate::cycle::queue::DEFERRED_MARK`; a collector thread's
+    /// `PROPOSED_MARK` was read by the trace and decides nothing here).
     fn stage_entry(&mut self, entry: *mut RcHeader) {
         let marked = entry.addr() & DEFERRED_MARK != 0;
-        let entity = entry.map_addr(|address| address & !DEFERRED_MARK);
+        let entity = entry.map_addr(|address| address & !ENTRY_MARK_BITS);
         self.pending = entity;
         self.pending_to = if self.retire
             && matches!(

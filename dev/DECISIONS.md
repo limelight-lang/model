@@ -8,6 +8,63 @@ never edited or deleted.
 
 ---
 
+## 2026-09-15 — the pickup is a collection whose batch is the posted chain, and an armed poll fires instead of offering
+
+**Decided:** the owner's pickup of a chain a collector thread posted is an
+ordinary collection off the poll whose batch is that chain rather than the
+detached lane (`cycle::collect::collect_proposal_off_the_poll`): the batch's
+walks visit the roots the worker marked proposed alone, the exact validation
+and the teardown run as they do for a detached lane, and the close disposes
+of every entry through the same pass — the roots the worker read live go back
+to the lane unread, as a root the trace did not walk does. The worker's mark
+is bit 1 of the entry (`queue::PROPOSED_MARK`), beside the close's bit 0, and
+every walk that hands an entry out masks the two. The poll picks up before it
+offers, and an armed poll fires instead of offering: a fire would reclaim the
+offer at once, so the request stands for the next unarmed poll. A poll whose
+inbox is empty opens no window for the pickup, and neither does one whose
+posted chain carries no mark — the chain goes back to the lane by a walk.
+Every in-line collection over the lane — the fire, the pressure path, the
+exit's rounds — drains the inbox into the lane before it detaches, as it
+reclaims the outbox: a posted chain is garbage a collection short of memory
+would otherwise not see, and the round traces every root of it exactly. A
+chain a worker took is posted from the unwind too, by the guard that holds
+it.
+
+**Why:** the exact reading needs a membership, and the in-line collection
+builds one from the rows its own trace writes; a second trace over the
+proposed roots, on the owner, is what the accelerator was priced at — the
+worker reduces the owner's validation work to the roots it could not acquit
+(`rfc/model/gc/rc-cycle.md`, "Speculative tracing and exact validation"). A
+filter pass that split the posted chain into two chains would need segments
+the pickup may not have, while a mark on the entry costs nothing and the walk
+already masks the close's own mark. The offer's order behind the pickup is
+the ruling's (`rfc/dev/DECISIONS.md`, "the owner detaches at its poll, and
+the worker takes the chain from a one-word outbox"); the fire's precedence
+over the offer is this crate's, because both trace the same lane and the fire
+is the one that cannot wait.
+
+**Rejected:** a separate pickup driver that validates the marked roots
+without a trace — the membership the validation compares against is the
+rows, and no other source of it exists; splitting the chain at the pickup —
+a copy into fresh segments on a path that may hold none; masking four bits
+of an entry, which the slots' alignment frees — a fixture's header stands on
+any eight-byte boundary, and a wider mask folds two into one, so the mask is
+the two bits a mark can occupy.
+
+**Cost:** an unread merge of a posted chain strips its marks before the copy,
+a pass over the chain that no case can see fail, since every reader of a lane
+entry masks the bits anyway; kept for the invariant that a lane entry is an
+address. A request a poll cannot serve is spent — an empty lane, an offer
+standing — and the worker asks again. A root the worker read live goes back
+to the active lane and is offered again at the next request, where the
+in-line close would have deferred it for an epoch: a speculative reading may
+not move an entry to the deferred lane (`rfc/model/gc/cycle/questions.md`,
+Y12 clause 8), so a long-lived root is re-traced by the worker once per
+request until an in-line collection reads it — the treadmill the Critic of
+2026-09-15 named, and a question for the rfc (`PLAN.md`, the backlog line
+"A root the worker read live is never deferred"). A thread armed at every
+poll never offers; the fire traces its lane instead.
+
 ## 2026-09-15 — the token stands in a record the process keeps, and the exit's claim on it is never released
 
 **Decided:** the trace token moves out of the thread-local into a 64-byte

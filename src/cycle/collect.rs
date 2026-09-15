@@ -265,6 +265,49 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
     unsafe { collection_off_the_poll() }.freed
 }
 
+/// Where a collection's roots come from.
+enum Roots {
+    /// This thread's active lane, detached whole.
+    Lane,
+    /// The chain a collector thread posted to this thread's inbox, its
+    /// proposed roots alone (`crate::cycle::queue::take_proposal`).
+    Proposal(crate::cycle::queue::InFlightBatch),
+}
+
+impl Roots {
+    fn is_lane(&self) -> bool {
+        matches!(self, Self::Lane)
+    }
+}
+
+/// Collect the proposal a collector thread posted, if one stands: the pickup.
+/// An ordinary collection off the poll whose batch is the posted chain, so
+/// the proposed roots are traced and validated exactly here, and the ones
+/// read live go back to the lane at its close. Zero when nothing is posted.
+///
+/// # Safety
+/// As [`collect_off_the_poll`].
+pub(crate) unsafe fn collect_proposal_off_the_poll() -> usize {
+    // Read before anything is opened: most polls find no proposal, and a
+    // window opened to find that out would draw the workspace and withhold
+    // returns for nothing.
+    let record = crate::cycle::owner_record::this_thread_record();
+    if record.is_null() || !unsafe { crate::cycle::owner_record::proposal_stands(record) } {
+        return 0;
+    }
+
+    // A chain the worker marked nothing in has no root to trace: it goes back
+    // to the lane without a window, which a window over an empty batch would
+    // cost the workspace and a round of withheld returns to find out.
+    let proposal = crate::cycle::queue::take_proposal();
+    if !proposal.holds_a_proposed_root() {
+        crate::cycle::queue::merge_proposal(proposal);
+        return 0;
+    }
+
+    unsafe { collection_from(Roots::Proposal(proposal)) }.freed
+}
+
 /// Where a collection off the poll ended. Every arm but the last is a zero
 /// answer, and the exit names the one its residue stands behind.
 ///
@@ -322,6 +365,14 @@ pub(crate) struct Collection {
 /// # Safety
 /// As [`collect_off_the_poll`].
 pub(crate) unsafe fn collection_off_the_poll() -> Collection {
+    unsafe { collection_from(Roots::Lane) }
+}
+
+/// [`collection_off_the_poll`] over `roots`.
+///
+/// # Safety
+/// As [`collect_off_the_poll`].
+unsafe fn collection_from(roots: Roots) -> Collection {
     let zero = |ending| Collection { freed: 0, ending };
     let Ok(_collecting) = CollectingThread::take() else {
         // Reached only by the explicit fire: the poll reads the gate before it
@@ -334,9 +385,18 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
 
     // Eligibility above, the token below: a thread that may not collect never
     // waits for a token it could not use (`rfc/model/gc/rc-cycle.md`,
-    // "Check collection eligibility before waiting").
+    // "Check collection eligibility before waiting"). The outbox first: a
+    // chain offered to a worker and not yet taken is this collection's to
+    // trace, and once the token is held no worker takes it. A collection over
+    // the lane drains the inbox into it as well — a posted chain is garbage
+    // this collection would otherwise not see, and the round traces every
+    // root of it exactly, so its marks decide nothing.
+    crate::cycle::queue::reclaim_offer();
+    if roots.is_lane() {
+        crate::cycle::queue::merge_proposal(crate::cycle::queue::take_proposal());
+    }
     let token = HeldToken::take();
-    let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS) } {
+    let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS, roots) } {
         Ok(traced) => traced,
         Err(TraceRefusal::NoWorkspace) => return zero(Ending::NoWorkspace),
         Err(TraceRefusal::EmptyLane) => return zero(Ending::EmptyLane),
@@ -386,21 +446,28 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
     }
 }
 
-/// The prologue both paths share: open the window, detach the lane, and trace
-/// the first `roots` roots of it. Answers the window, still open with its rows
-/// and its batch, and how many roots the trace read.
+/// The prologue both paths share: open the window, take the chain `source`
+/// names — the lane detached, or the posted proposal — and trace the first
+/// `roots` roots of it. Answers the window, still open with its rows and its
+/// batch, and how many roots the trace read.
 ///
 /// The token is the caller's: the poll path releases it at the scan's end and
 /// the pressure path holds it through the harvest, and neither takes it here.
 ///
 /// # Safety
 /// As [`collect_off_the_poll`].
-unsafe fn open_and_trace(roots: usize) -> Result<(ActiveTrace, usize), TraceRefusal> {
+unsafe fn open_and_trace(
+    roots: usize,
+    source: Roots,
+) -> Result<(ActiveTrace, usize), TraceRefusal> {
     let Some(mut window) = ActiveTrace::open() else {
         return Err(TraceRefusal::NoWorkspace);
     };
 
-    window.detach_candidates();
+    match source {
+        Roots::Lane => window.detach_candidates(),
+        Roots::Proposal(proposal) => window.adopt_proposal(proposal),
+    }
     let (arena, batch) = window.rows_and_roots();
     if batch.is_empty() {
         return Err(TraceRefusal::EmptyLane);
@@ -549,6 +616,12 @@ pub(crate) const EXIT_ROUNDS: usize = 8;
 /// table still alive for the destructors the rounds run.
 pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
     let claim = HeldToken::take();
+    // Under the claim no worker takes or posts, so the outbox and the inbox
+    // hold everything a worker had of this thread's, and both go back into
+    // the lane for the rounds: the proposal's marks decide nothing here,
+    // every root of it being traced exactly by the round.
+    crate::cycle::queue::reclaim_offer();
+    crate::cycle::queue::merge_proposal(crate::cycle::queue::take_proposal());
     let mut freed = 0;
     let mut registered = crate::cycle::queue::registered_count();
     let mut ending = ExitEnding::RoundCap;
@@ -829,9 +902,12 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
 unsafe fn trace_and_harvest(roots: usize) -> Traced {
     // Held through the harvest, which is the last read of the touched list
     // the token covers; the guard drops with the frame, after
-    // `close_and_take_batch`, and before the teardown the caller runs.
+    // `close_and_take_batch`, and before the teardown the caller runs. The
+    // outbox is reclaimed and the inbox drained first, as off the poll.
+    crate::cycle::queue::reclaim_offer();
+    crate::cycle::queue::merge_proposal(crate::cycle::queue::take_proposal());
     let _token = HeldToken::take();
-    let (mut window, roots_traced) = match unsafe { open_and_trace(roots) } {
+    let (mut window, roots_traced) = match unsafe { open_and_trace(roots, Roots::Lane) } {
         Ok(traced) => traced,
         Err(TraceRefusal::EmptyLane) => return Traced::Nothing,
         Err(TraceRefusal::NoWorkspace | TraceRefusal::AllocationFailed) => {

@@ -150,6 +150,9 @@ pub(crate) mod token;
 // The record the token stands in, with the words a collector thread's
 // handoff uses, in storage that outlives the thread.
 pub(crate) mod owner_record;
+// What a collector thread does for one owner: take the offered chain under
+// the token, trace it through the collector's reader, mark and post.
+pub(crate) mod worker;
 // The two phases of one trace, in the order the rows require.
 pub(crate) mod trace;
 // The row readers and the ring fixtures the collector's tests share. Test

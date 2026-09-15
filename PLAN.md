@@ -15,8 +15,8 @@ Updated: 2026-09-15 · Active: S37, S38 and S40. S38.0 and S38.3 closed on
 2026-09-15 — the collector's reader with its fence, and the owner's returns
 withheld under a foreign holder of its token; the worker, unblocked the same
 evening by `rfc` S8.7, is S38.5 through S38.7 — the record, the offer and the
-pickup, the thread — S38.5 closed the same evening and S38.6 is the next
-step; every other open step is blocked outside this repository or on a
+pickup, the thread — S38.5 and S38.6 closed the same evening and S38.7 is the
+next step; every other open step is blocked outside this repository or on a
 corpus. **S48 closed and was deleted
 on 2026-09-14**, the ValueBox relayout to `rfc/model/values.md`, "ValueBox
 Layout", in three steps, its close read by the Code Reviewer, whose
@@ -955,7 +955,7 @@ window there is.
         seven, the token's five and the exit's eight — 20 passed, 62 s of
         Miri's clock, 73 s wall at two threads. The `mark` case seen red once
         in the gate is in the backlog's flake line.
-- [ ] S38.6 The offer and the pickup   *(after S38.5)*
+- [x] S38.6 The offer and the pickup   *(after S38.5)*
       done: a poll whose record carries a request detaches its lane into the
         outbox with one release store, after the pickup and behind the entry
         gate, and only into an empty outbox; an owner about to collect in
@@ -969,6 +969,37 @@ window there is.
         lane; an offer taken back by the exit and one taken back before a
         pressure collection each keep every root
       tier: T2 · role: Critic
+      baseline 2026-09-15, before the first edit: the poll's duties ended at
+        the re-offer and the fire; a batch was two words the window held from
+        `detach_candidates` to its close; a lane entry carried the close's
+        bit 0 alone; no in-line collection read a record.
+      Critic 2026-09-15: six findings, three accepted with a repair and a
+        case each. The fire and the pressure path never read the inbox, so
+        a posted chain of garbage stood through the collection that ran
+        short of memory — every lane collection drains the inbox before its
+        take (`an_in_line_collection_drains_the_inbox_before_it_traces`). A
+        panic in the worker's trace dropped the taken chain unposted, every
+        root of it stranded — the chain lives in a guard that posts from the
+        unwind (`a_trace_that_panics_still_posts_its_chain`). A posted chain
+        with no mark opened a window to trace nothing — it goes back by a
+        walk (`a_chain_with_no_proposed_root_goes_back_without_a_window`).
+        Refused: the worker's `arena.reset` leaving shadow pointers standing
+        — `reset` sweeps the rows. Recorded as cost: the treadmill of a root
+        the worker reads live, and the offer's starvation on a thread armed
+        at every poll. The rfc's "marked as far as the trace got" was
+        amended to what the code does.
+      handoff: closed 2026-09-15. `owner_record`'s six word operations;
+        `queue::{offer_lane, reclaim_offer, take_proposal, merge_proposal}`,
+        the batch's word form and `PROPOSED_MARK`; `collect::Roots` and
+        `collect_proposal_off_the_poll`; `gc`'s poll picks up then offers,
+        armed it fires; `cycle::worker::serve` is the round's body, driven
+        by a case's thread. Ten cases in `worker/tests.rs`, nine mutations
+        seen red and one green (an unread merge keeping its marks: every
+        reader masks, the strip is the invariant's). Miri over the worker's
+        and the batch's cases: 17 passed, 82 s Miri's clock, 3 m 34 s wall.
+        Untested: any interleaving where the owner moves while the worker
+        serves — every case joins the collector first; a chain across a
+        segment boundary through the word form; the pickup ending live.
 - [ ] S38.7 The collector thread   *(after S38.6)*
       done: a collector thread born at startup or at first pressure — which
         is named, with its floor refusal after it (`rfc/dev/DECISIONS.md`,
@@ -1637,6 +1668,15 @@ in `dev/INDEX.md`. What it did not do is below.
   on the child thread itself — the peak exactly at the base block and both
   spare segments, in both builds, and both current figures at zero. Seen red
   on a build whose `ll_thread_init` refills no spares.
+- [ ] **A root the worker read live is never deferred.** The pickup puts a
+  root the collector thread read live back in the active lane, where the
+  in-line close would have deferred it for an epoch, because Y12 clause 8
+  lets no speculative reading move an entry to the deferred lane. A
+  long-lived root is therefore re-offered at every request and re-traced by
+  the worker until an in-line collection reads it. Whether the owner may
+  defer on the worker's reading — a delay of one epoch at most for a garbage
+  root the worker misread — is the rfc's question; the crate carries the
+  treadmill until it is answered (S38.6's Critic, 2026-09-15).
 - [ ] **The deferred lane is not swept, and the close no longer sweeps it.**
   `defer_candidates` lifted the active lane and ran the retirement pass over
   the deferred one, so a record whose entity had died gave its slot back on the

@@ -29,10 +29,25 @@
 //! (`memory::heap::SIZE_CLASSES`), so an entry's low four bits are free and
 //! carry the marks a reader writes over an entry it does not own. **Bit 0 is
 //! the close's**, which is where it says a root belongs to the deferred lane
-//! ([`DEFERRED_MARK`]); bits 1 to 3 are the dirty reader's, which is what Y12
-//! clause 7 reserves them for and what S38.5 builds. Both are written over a
-//! detached batch and read once, and neither survives the pass that disposes
-//! of it.
+//! ([`DEFERRED_MARK`]); **bit 1 is a collector thread's**, which is where its
+//! trace says a root's component read potentially unreachable
+//! ([`PROPOSED_MARK`]); bits 2 and 3 are unused. Every mark is written over a
+//! detached batch and read once, and none survives the pass that disposes of
+//! it: every walk that hands an entry out as an address masks the two bits
+//! ([`ENTRY_MARK_BITS`]).
+//!
+//! # The chain a collector thread takes
+//!
+//! A batch is two words, and it travels as one: the head's address with the
+//! fill in its low sixteen bits ([`InFlightBatch::into_word`]), which is what
+//! the owner's poll publishes to its outbox and a worker posts to the inbox
+//! (`crate::cycle::owner_record`; `rfc/dev/DECISIONS.md`, "the owner detaches
+//! at its poll, and the worker takes the chain from a one-word outbox"). The
+//! owner offers on a worker's request and only into an empty outbox
+//! ([`offer_lane`]), takes an untaken offer back before it collects in line
+//! ([`reclaim_offer`]), and takes a posted chain as a batch whose walks visit
+//! the proposed roots alone ([`take_proposal`]) — the rest go back to the
+//! lane at the close, as a root the trace did not walk does.
 //!
 //! A **segment is one 64 KiB pool block**, which is the only unit both
 //! allocation paths dispense (`rfc/model/gc/cycle/questions.md`, Y12
@@ -141,17 +156,19 @@
 //!
 //! # What the poll does for this module
 //!
-//! Four things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
+//! Six things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
 //! It refills the spare cells, asking [`needs_spares`] — the count itself,
 //! never a flag a draw sets, because a thread whose fill at init was refused
 //! has never drawn and would never be asked again. It then drains the overflow
 //! buffer into the queue, which is why the refill comes first; compares the
 //! full-width epoch against the deferred lane's mirror and re-offers that lane
-//! where it moved; and fires a collection when `gc::take_due` answers true.
-//! A reserve draw, an overflow append, or a due deferred re-offer arms it.
+//! where it moved; picks up a chain a collector thread posted
+//! ([`take_proposal`]); and, armed, fires a collection — or, unarmed and
+//! asked by a worker, offers the lane to it ([`offer_lane`]). A reserve
+//! draw, an overflow append, or a due deferred re-offer arms it.
 use std::cell::Cell;
 
-use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
+use crate::memory::block_pool::{BLOCK_MASK, BLOCK_PAYLOAD, BlockHeader};
 use crate::memory::gc_metadata;
 use crate::refcount::RcHeader;
 
@@ -778,6 +795,9 @@ pub(crate) struct InFlightBatch {
     head: *mut BlockHeader,
     /// Entries in [`InFlightBatch::head`]. Meaningless when the head is null.
     fill: usize,
+    /// Whether the walks visit only the entries carrying [`PROPOSED_MARK`]:
+    /// a chain a collector thread posted, whose other roots it read live.
+    proposed_only: bool,
 }
 
 impl InFlightBatch {
@@ -797,8 +817,36 @@ impl InFlightBatch {
     /// it at the death (`rfc/model/gc/cycle/questions.md`, Y12 clause 7). The
     /// reader is what applies the zero-count rule, which for the trace is
     /// `crate::cycle::mark`'s.
-    pub(crate) fn walk_roots(&self, visit: impl FnMut(*mut RcHeader) -> bool) -> bool {
-        walk_chain(self.head, self.fill, visit)
+    pub(crate) fn walk_roots(&self, mut visit: impl FnMut(*mut RcHeader) -> bool) -> bool {
+        let proposed_only = self.proposed_only;
+        walk_chain(self.head, self.fill, |entry| {
+            if proposed_only && entry.addr() & PROPOSED_MARK == 0 {
+                return true;
+            }
+
+            visit(entry.map_addr(|address| address & !ENTRY_MARK_BITS))
+        })
+    }
+
+    /// The batch as one word for a record's outbox or inbox: the head's
+    /// address with the fill in its low sixteen bits, or zero for an empty
+    /// batch. The head is a block, so its low sixteen bits are free, and a
+    /// fill is at most [`SEGMENT_CAPACITY`]. Consumes the batch: the chain
+    /// belongs to whoever takes the word.
+    pub(crate) fn into_word(mut self) -> usize {
+        let word = self.head.addr() | self.fill;
+        self.head = std::ptr::null_mut();
+        word
+    }
+
+    /// The batch a word of [`Self::into_word`]'s form names, its walks
+    /// visiting every root, or the proposed ones alone with `proposed_only`.
+    pub(crate) fn from_word(word: usize, proposed_only: bool) -> Self {
+        Self {
+            head: (word & !BLOCK_MASK) as *mut BlockHeader,
+            fill: word & BLOCK_MASK,
+            proposed_only,
+        }
     }
 }
 
@@ -813,6 +861,19 @@ impl InFlightBatch {
 /// anything else masks it off first (`crate::cycle::queue::compaction`).
 pub(crate) const DEFERRED_MARK: usize = 1;
 
+/// The bit a collector thread writes over a batch entry after its trace: the
+/// root's component read potentially unreachable, and the owner's pickup is
+/// asked to read it exactly. Bit 1 of the stored pointer; written by
+/// [`InFlightBatch::mark_proposed`] on the worker's thread and read by the
+/// owner's walks, which visit a posted chain's proposed roots alone.
+pub(crate) const PROPOSED_MARK: usize = 2;
+
+/// The two low bits of an entry that carry a mark, masked off wherever an
+/// entry is handed out as an address. Two and not the four a slot's
+/// alignment frees: a fixture's header stands on any eight-byte boundary, and
+/// a mask over bits nothing writes would fold two such headers into one.
+pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK | PROPOSED_MARK;
+
 impl InFlightBatch {
     /// Mark every entry whose root `deferrable` answers true for, and answer
     /// how many were marked.
@@ -825,7 +886,55 @@ impl InFlightBatch {
     /// assertion below holds.
     pub(crate) fn mark_for_deferral(
         &mut self,
-        mut deferrable: impl FnMut(*mut RcHeader) -> bool,
+        deferrable: impl FnMut(*mut RcHeader) -> bool,
+    ) -> usize {
+        self.mark_entries(DEFERRED_MARK, deferrable)
+    }
+
+    /// Whether any entry carries [`PROPOSED_MARK`]: a posted chain with none
+    /// has nothing for a pickup to trace.
+    pub(crate) fn holds_a_proposed_root(&self) -> bool {
+        !walk_chain(self.head, self.fill, |entry| {
+            entry.addr() & PROPOSED_MARK == 0
+        })
+    }
+
+    /// Take every mark off every entry, and make the walks visit every root
+    /// again: what a posted chain goes through before it is merged back
+    /// unread.
+    fn strip_marks(&mut self) {
+        let mut segment = self.head;
+        let mut bound = self.fill;
+        while !segment.is_null() {
+            for index in 0..bound {
+                let slot = unsafe { segment_entries(segment).add(index) };
+                let entry = unsafe { slot.read() };
+                unsafe { slot.write(entry.map_addr(|address| address & !ENTRY_MARK_BITS)) };
+            }
+
+            segment = unsafe { (*segment).next };
+            bound = SEGMENT_CAPACITY;
+        }
+
+        self.proposed_only = false;
+    }
+
+    /// Mark every entry whose root `proposed` answers true for with
+    /// [`PROPOSED_MARK`], and answer how many. The collector thread's write,
+    /// made over a chain it took and before it posts the chain.
+    pub(crate) fn mark_proposed(&mut self, proposed: impl FnMut(*mut RcHeader) -> bool) -> usize {
+        self.mark_entries(PROPOSED_MARK, proposed)
+    }
+
+    /// Write `mark` over every entry whose root — handed to `select` without
+    /// its marks — answers true, and answer how many. A batch takes each mark
+    /// once, which the assertion below holds; a proposal batch's own walk rule
+    /// applies, so a posted chain's roots read live are neither offered to
+    /// `select` nor marked.
+    fn mark_entries(
+        &mut self,
+        mark: usize,
+        mut select: impl FnMut(*mut RcHeader) -> bool,
     ) -> usize {
         let mut marked = 0;
         let mut segment = self.head;
@@ -834,13 +943,13 @@ impl InFlightBatch {
             for index in 0..bound {
                 let slot = unsafe { segment_entries(segment).add(index) };
                 let entry = unsafe { slot.read() };
-                debug_assert_eq!(
-                    entry.addr() & DEFERRED_MARK,
-                    0,
-                    "a batch entry was marked twice"
-                );
-                if deferrable(entry) {
-                    unsafe { slot.write(entry.map_addr(|address| address | DEFERRED_MARK)) };
+                debug_assert_eq!(entry.addr() & mark, 0, "a batch entry was marked twice");
+                if self.proposed_only && entry.addr() & PROPOSED_MARK == 0 {
+                    continue;
+                }
+
+                if select(entry.map_addr(|address| address & !ENTRY_MARK_BITS)) {
+                    unsafe { slot.write(entry.map_addr(|address| address | mark)) };
                     marked += 1;
                 }
             }
@@ -945,6 +1054,7 @@ pub(crate) fn detach_candidates() -> InFlightBatch {
         return InFlightBatch {
             head: std::ptr::null_mut(),
             fill: 0,
+            proposed_only: false,
         };
     }
 
@@ -952,7 +1062,70 @@ pub(crate) fn detach_candidates() -> InFlightBatch {
     InFlightBatch {
         head: owner_state.write_segment.replace(std::ptr::null_mut()),
         fill: usize::from(owner_state.write_len.replace(0)),
+        proposed_only: false,
     }
+}
+
+/// Detach this thread's lane and publish it to the record's outbox for a
+/// collector thread, answering whether an offer was made. Nothing is offered
+/// for an empty lane, and nothing while an earlier offer stands untaken —
+/// the lane keeps its chain in both cases. The request word is what asks for
+/// this, and the poll is where it is answered
+/// (`rfc/model/gc/cycle/questions.md`, Y12 clause 2).
+pub(crate) fn offer_lane() -> bool {
+    let record = crate::cycle::owner_record::this_thread_record();
+    if record.is_null() || unsafe { crate::cycle::owner_record::offer_stands(record) } {
+        return false;
+    }
+
+    let batch = detach_candidates();
+    if batch.is_empty() {
+        batch.into_word();
+        return false;
+    }
+
+    let offered = unsafe { crate::cycle::owner_record::offer(record, batch.into_word()) };
+    debug_assert!(
+        offered,
+        "the outbox read empty a moment ago, and only this thread fills it"
+    );
+    offered
+}
+
+/// Take an untaken offer back into the lane, before this thread collects in
+/// line or exits: a chain a worker has not taken is the owner's to trace.
+/// Nothing happens for a thread without a record or an offer.
+pub(crate) fn reclaim_offer() {
+    let record = crate::cycle::owner_record::this_thread_record();
+    if record.is_null() {
+        return;
+    }
+
+    let word = unsafe { crate::cycle::owner_record::reclaim(record) };
+    if word != 0 {
+        merge_candidates(InFlightBatch::from_word(word, false));
+    }
+}
+
+/// Put a posted chain back into the lane whole, its marks stripped: the
+/// exit's drain, whose rounds trace every root exactly and read no proposal.
+pub(crate) fn merge_proposal(proposal: InFlightBatch) {
+    merge_candidates(proposal);
+}
+
+/// Take the chain a collector thread posted, as a batch whose walks visit the
+/// proposed roots alone, or an empty batch when nothing is posted. The owner's
+/// pickup; the close of the collection that traces it disposes of every
+/// entry, the ones read live going back to the lane
+/// (`crate::cycle::queue::compaction`).
+pub(crate) fn take_proposal() -> InFlightBatch {
+    let record = crate::cycle::owner_record::this_thread_record();
+    let word = if record.is_null() {
+        0
+    } else {
+        unsafe { crate::cycle::owner_record::take_inbox(record) }
+    };
+    InFlightBatch::from_word(word, true)
 }
 
 /// Combine a detached batch and the active lane without drawing memory.
@@ -967,6 +1140,13 @@ pub(crate) fn merge_candidates(mut batch: InFlightBatch) {
     let batch_head = batch.head;
     if batch_head.is_null() {
         return;
+    }
+
+    // A posted chain carries a worker's marks, and a lane entry is an
+    // address: the marks come off before any entry of it is copied or
+    // published (the retiring pass strips them itself).
+    if batch.proposed_only {
+        batch.strip_marks();
     }
 
     let state = owner_state();
@@ -1135,6 +1315,7 @@ pub(crate) fn reoffer_deferred_candidates() {
     let batch = InFlightBatch {
         head: owner_state.deferred_segment.replace(std::ptr::null_mut()),
         fill: usize::from(owner_state.deferred_len.replace(0)),
+        proposed_only: false,
     };
     merge_candidates(batch);
 }

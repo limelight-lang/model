@@ -53,11 +53,18 @@
 //! the exit's held claim is the reader that does, and its note is the
 //! owner's rather than the word's, so a worker still reads one bit.
 //!
-//! # What the record holds for the steps after this one
+//! # The three words beside the token
 //!
-//! The outbox, the inbox and the request word are here so the layout is
-//! decided with the token; the offer and the pickup that use the first two
-//! are `PLAN.md` S38.6's, and the worker that sets the third is S38.7's.
+//! The outbox carries a chain the owner detached at its poll on a worker's
+//! request, the inbox the chain the worker traced and posted back, the
+//! request word the worker's ask. Each is one word, and the owner is the
+//! only party that fills the outbox and empties the inbox, the worker the
+//! only one that empties the outbox and fills the inbox: the exchanges are
+//! how the two hand a chain across without either reading the other's
+//! (`crate::cycle::queue`, "The chain a collector thread takes"). The worker
+//! touches the outbox and the inbox only under the token; its one earlier
+//! access is a load of the outbox word. The collector thread that makes the
+//! round is `PLAN.md` S38.7's; its body is `crate::cycle::worker`.
 
 use std::cell::Cell;
 use std::sync::Mutex;
@@ -159,6 +166,102 @@ impl OwnerRecord {
     pub(crate) fn held_by_another(&self) -> bool {
         self.token.is_held() && !self.owner_holds.load(Ordering::Relaxed)
     }
+}
+
+/// Publish a detached chain to `record`'s outbox for a collector thread,
+/// answering false when an earlier offer still stands there. The store is a
+/// release: every entry and link store of the chain precedes it, and the
+/// worker's acquire exchange follows it ([`take_offer`]).
+///
+/// # Safety
+/// `record` is this thread's record and `word` names a chain this thread
+/// detached and will not touch until it comes back through [`reclaim`] or
+/// [`take_inbox`].
+pub(crate) unsafe fn offer(record: *mut OwnerRecord, word: usize) -> bool {
+    unsafe { &*record }
+        .outbox
+        .compare_exchange(0, word, Ordering::Release, Ordering::Relaxed)
+        .is_ok()
+}
+
+/// Whether an offer stands untaken in `record`'s outbox.
+///
+/// # Safety
+/// `record` is a record of the registry's.
+pub(crate) unsafe fn offer_stands(record: *mut OwnerRecord) -> bool {
+    unsafe { &*record }.outbox.load(Ordering::Relaxed) != 0
+}
+
+/// Take the offer back, answering the chain's word or zero when a worker took
+/// it: the owner's exchange before it collects in line and before its exit.
+///
+/// # Safety
+/// `record` is this thread's record.
+pub(crate) unsafe fn reclaim(record: *mut OwnerRecord) -> usize {
+    unsafe { &*record }.outbox.swap(0, Ordering::Acquire)
+}
+
+/// Take the offered chain for a trace, answering its word or zero when the
+/// owner reclaimed it meanwhile. The collector thread's exchange, made after
+/// it claimed `record`'s token and before its first read of the chain.
+///
+/// # Safety
+/// The caller holds `record`'s token.
+pub(crate) unsafe fn take_offer(record: *mut OwnerRecord) -> usize {
+    unsafe { &*record }.outbox.swap(0, Ordering::Acquire)
+}
+
+/// Post a traced chain to `record`'s inbox for the owner's pickup, marked or
+/// not. A release store, made before the token's release store; the inbox is
+/// empty by the worker's own check before its take.
+///
+/// # Safety
+/// The caller holds `record`'s token, the inbox is empty, and `word` names
+/// the chain the caller took from the outbox.
+pub(crate) unsafe fn post(record: *mut OwnerRecord, word: usize) {
+    let previous = unsafe { &*record }.inbox.swap(word, Ordering::Release);
+    debug_assert_eq!(previous, 0, "a chain was posted over one not yet picked up");
+}
+
+/// Whether a posted chain stands unpicked in `record`'s inbox.
+///
+/// # Safety
+/// `record` is a record of the registry's.
+pub(crate) unsafe fn proposal_stands(record: *mut OwnerRecord) -> bool {
+    unsafe { &*record }.inbox.load(Ordering::Relaxed) != 0
+}
+
+/// Take the posted chain, answering its word or zero: the owner's pickup at
+/// its poll and at its exit.
+///
+/// # Safety
+/// `record` is this thread's record.
+pub(crate) unsafe fn take_inbox(record: *mut OwnerRecord) -> usize {
+    unsafe { &*record }.inbox.swap(0, Ordering::Acquire)
+}
+
+/// Ask `record`'s owner to offer its lane at its next poll. The collector
+/// thread's write; the poll clears it as it offers ([`take_request`]).
+///
+/// # Safety
+/// `record` is a record of the registry's.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the collector thread's ask before its round, S38.7's"
+    )
+)]
+pub(crate) unsafe fn request(record: *mut OwnerRecord) {
+    unsafe { &*record }.request.store(true, Ordering::Relaxed);
+}
+
+/// Whether a worker asked this owner for an offer, clearing the request.
+///
+/// # Safety
+/// `record` is this thread's record.
+pub(crate) unsafe fn take_request(record: *mut OwnerRecord) -> bool {
+    unsafe { &*record }.request.swap(false, Ordering::Relaxed)
 }
 
 /// This thread's record, or null while it has none.
@@ -302,9 +405,20 @@ fn take_record() -> *mut OwnerRecord {
     record
 }
 
+/// Unlink and answer the first record of the free list, or null.
+#[cfg(not(test))]
+fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
+    let record = registry.free;
+    if !record.is_null() {
+        registry.free = unsafe { (*record).free_link.get() };
+    }
+
+    record
+}
+
 /// Unlink and answer the first record of the free list a taker may have, or
-/// null. Every record on the list but a pinned one, and outside test builds
-/// every record on it.
+/// null: every record on the list but a pinned one.
+#[cfg(test)]
 fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
     let mut link: *mut *mut OwnerRecord = &raw mut registry.free;
     loop {
@@ -313,7 +427,6 @@ fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
             return record;
         }
 
-        #[cfg(test)]
         if unsafe { (*record).pinned.load(Ordering::Relaxed) } {
             link = unsafe { (*record).free_link.as_ptr() };
             continue;

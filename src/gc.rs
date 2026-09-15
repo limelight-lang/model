@@ -191,8 +191,26 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         return 0;
     }
 
+    // The pickup, behind the gate like the fire: a chain a collector thread
+    // posted is validated here, exactly, and its roots read live go back to
+    // the lane (`crate::cycle::collect::collect_proposal_off_the_poll`). Before
+    // the offer, so that what comes back is in the lane the offer detaches.
+    let picked_up = unsafe { crate::cycle::collect::collect_proposal_off_the_poll() };
+
     if !take_arming() {
-        return 0;
+        // The offer, where a worker asked for one and no fire is due: a fire
+        // would reclaim the offer at once, so an armed poll traces the lane
+        // itself and leaves the request standing for the next
+        // (`crate::cycle::queue::offer_lane`).
+        // The request is spent whether or not a chain was offered — an empty
+        // lane, or an offer still standing, offers nothing — and a worker asks
+        // again at its next round.
+        let record = crate::cycle::owner_record::this_thread_record();
+        if !record.is_null() && unsafe { crate::cycle::owner_record::take_request(record) } {
+            let _ = crate::cycle::queue::offer_lane();
+        }
+
+        return picked_up;
     }
 
     // Armed, so fire. The disarm happens whether or not the fire collects
@@ -200,7 +218,7 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // stayed armed past a fire would fire at every poll for the rest of its
     // life. The gate above is the one refusal that keeps the arming, and it
     // is the one where no fire happened.
-    unsafe { ll_gc_collect_cycles() }
+    picked_up + unsafe { ll_gc_collect_cycles() }
 }
 
 /// ABI: serve the collector's checkpoint now. The compiler emits it once
