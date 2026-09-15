@@ -493,6 +493,39 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     unsafe { ll_free_large(ptr, block, kind) };
 }
 
+/// Unmap an OS-direct run by the length its header records.
+///
+/// # Safety
+/// `block` is the header of a live run nothing reads any more.
+unsafe fn unmap_run(block: *mut u8) {
+    let hdr = block as *mut LargeHeader;
+    let run_bytes = unsafe { (*hdr).run_bytes };
+    crate::memory::os::unmap(block, run_bytes);
+}
+
+/// Make the return of a block or a run a foreign trace withheld: a run is
+/// unmapped, anything else goes back to the pool through the entry that
+/// withheld it, which withholds it again under a holder that arrived since
+/// (`cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace`).
+///
+/// # Safety
+/// `block` is a block header or a run header this thread's free reached
+/// and the deferral withheld.
+pub(crate) unsafe fn return_withheld_block(block: *mut u8) {
+    let kind = unsafe { crate::memory::block_pool::load_block_kind(block as *const AtomicU32) };
+    if kind == BLOCK_KIND_LARGE_RUN {
+        if unsafe { crate::cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace(block) }
+        {
+            return;
+        }
+
+        unsafe { unmap_run(block) };
+        return;
+    }
+
+    BlockPool::global().put(block as *mut BlockHeader);
+}
+
 /// # Safety
 /// `block` must be the block header of a live non-heap allocation, and
 /// `ptr` the freed address inside it — or `block` itself, which only the
@@ -511,9 +544,18 @@ unsafe fn ll_free_large(ptr: *mut u8, block: *mut u8, kind: u32) {
             crate::memory::large_entity::free(block, kind)
         },
         BLOCK_KIND_LARGE_RUN => {
-            let hdr = block as *mut LargeHeader;
-            let run_bytes = unsafe { (*hdr).run_bytes };
-            crate::memory::os::unmap(block, run_bytes);
+            // A trace on another thread may stride a run that is an
+            // array's storage, and unmapped memory survives no stale
+            // reading, so the unmapping waits for that trace's end
+            // (`cycle::deferred_slot_reuse`, "A foreign holder of the
+            // token").
+            if unsafe {
+                crate::cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace(block)
+            } {
+                return;
+            }
+
+            unsafe { unmap_run(block) };
         }
         crate::memory::block_pool::BLOCK_KIND_BUFFER => {
             // A buffer-arena chunk carries no metadata, so its size lives

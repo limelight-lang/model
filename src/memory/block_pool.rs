@@ -745,6 +745,21 @@ impl BlockPool {
             BLOCK_KIND_GC_METADATA,
             "GC metadata returns through memory::gc_metadata"
         );
+        // A trace on another thread holds addresses into this thread's
+        // blocks — an arena's, a buffer arena's, a retained one's — and a
+        // block recommissioned under it resolves those addresses to
+        // whatever occupies it next, so the return waits for that trace's
+        // end (`cycle::deferred_slot_reuse`, "A foreign holder of the
+        // token"). Ahead of the count and the restamp: a withheld block
+        // is still out, and still its kind.
+        if unsafe {
+            crate::cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace(
+                block as *mut u8,
+            )
+        } {
+            return;
+        }
+
         // A retained block carries promoted survivors, and it comes back
         // only through `retained::release_emptied`, which restamps it once
         // its count word reports nothing left holding it — the last live

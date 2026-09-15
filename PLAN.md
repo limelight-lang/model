@@ -954,8 +954,12 @@ window there is.
         block's shadow word is atomic both ways, so the reading is a stale
         stamp at worst and the owner under a foreign holder reads no stamp;
         the order is the worker's (S38.5) to fix when the worker exists.
-        The reset's whole-block sentinel passes the foreign gate unwithheld
-        until (3).
+        (3) landed the same day: the chunk arm, the pool's `put` and the
+        run arm each read the token once, three cases in
+        `what_else_a_foreign_trace_withholds.rs`, each gate seen red by
+        mutation, Miri green over the deferral module, `stdapi`, the pool's
+        and the buffer arena's tests (`dev/DECISIONS.md`, the same entry's
+        extension). What stands open is (4), the cost.
       note: `cycle::deferred_slot_reuse` is the owner-side substrate for one
         thread, where nothing frees inside the window: mark and scan only read, and the trace window
         ends before the user-code teardown by the decision of 2026-08-31. The

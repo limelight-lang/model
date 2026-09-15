@@ -750,9 +750,11 @@ before that arena gives its own blocks back; and a foreign holder of the
 thread's trace token withholds every death, stacked the same way under a
 thread-local head, until the owner reads the token free and makes the
 returns — at its next free, at the poll, before its exit
-(`cycle::deferred_slot_reuse`, "A foreign holder of the token"). The owner's
-reclaim of cross-thread frees waits the same way. The windows close in any
-order.
+(`cycle::deferred_slot_reuse`, "A foreign holder of the token"). The same
+holder withholds a buffer chunk at its free, a whole block at the pool's
+`put` and an OS-direct run at `ll_free`'s run arm, on two more stacks the
+owner makes at the same moments. The owner's reclaim of cross-thread frees
+waits the same way. The windows close in any order.
 
 Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's
 out-of-line body lives: a string's payload and an array's table storage.

@@ -50,6 +50,20 @@ acquire load of the class word on the day the case landed.
 **Cost:** one thread-local read on every free while no window is open, a walk
 of the returns at every poll, and the churn held for a trace's length.
 
+**Extended the same day to the three other addresses the contract names.**
+A buffer chunk waits at `buffer_free_longlived_payload`'s chunk arm, threaded
+through its own first word with the capacity packed above the link — the one
+word of a chunk no stride reads, an index pair in the hash form and the first
+element's `+0` in the vector form. A whole block waits at `BlockPool::put`,
+threaded through the pool's own link word, which covers the arena's blocks at
+a reset, an emptied buffer or entity block, the retained block `release_emptied`
+returns and the reset's whole-block sentinel with one gate rather than one per
+caller; an OS-direct run waits at `ll_free`'s run arm through the same word,
+which holds its `size`, a figure the unmapping does not read. Rejected: a gate
+per block-returning caller, which the sentinel and `release_emptied` would each
+have needed and a later caller would forget; a separate record for a chunk's
+capacity, which a free path may not allocate.
+
 ## 2026-09-15 — the collector's reader loads with `Acquire`, and the group's concurrent walk gives up rather than re-checks
 
 **Decided:** `cells::AtomicCells` reads every cell word — the `+8` word of a

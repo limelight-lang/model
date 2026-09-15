@@ -960,21 +960,26 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         // event, which is what the block was waiting for. With its last
         // occupant and its last payload gone the block goes home.
         //
-        // A worker trace in flight has to stop this: the trace holds
-        // addresses inside the block, and a block handed to the pool is
-        // re-stamped as another kind under them. `rc-walk` held back the
-        // whole call for the length of its epoch; S38.3 owns `rc-cycle`'s
-        // narrower per-owner replacement and is not built.
+        // A trace on another thread holds addresses inside the block, and
+        // a block handed to the pool is re-stamped as another kind under
+        // them: the block's return waits at the pool's own entry
+        // (`cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace`,
+        // reached from `BlockPool::put`).
         let block = (ptr as usize) & !BLOCK_MASK;
         if unsafe { crate::memory::retained::payload_freed(block) } {
             unsafe { crate::memory::retained::release_emptied(block) };
         }
     } else if kind == BLOCK_KIND_BUFFER {
-        // The same hazard as the retained arm above, and the same gap:
-        // `free` decrements the block's live count, and an emptied block
-        // goes back to the global pool to be re-stamped as another kind
-        // while a trace still holds addresses inside it. S38.3 owns the
-        // replacement withholding for this buffer-chunk path.
+        // A trace on another thread may stride the chunk from a reading it
+        // validated before this free, so the chunk waits for that trace's
+        // end before it reaches a free list; an emptied block's return to
+        // the pool waits at the pool's own entry.
+        if unsafe {
+            crate::cycle::deferred_slot_reuse::withhold_chunk_under_a_foreign_trace(ptr, capacity)
+        } {
+            return;
+        }
+
         unsafe { free_chunk(ptr, capacity) };
     } else {
         // OS-direct run: the standard path frees it by mask.

@@ -187,7 +187,10 @@ pub(crate) fn this_thread_token() -> *const TraceToken {
 /// reads a foreign holder here.
 #[inline]
 pub(crate) fn this_thread_token_is_held() -> bool {
-    TOKEN.with(TraceToken::is_held)
+    // `try_with`: a block goes back to the pool from a thread-local's drop
+    // on the exit path, where this thread-local may be gone — and a thread
+    // that far into its exit has waited for every holder already.
+    TOKEN.try_with(TraceToken::is_held).unwrap_or(false)
 }
 
 /// The token of the calling thread, held from the call to the guard's drop:

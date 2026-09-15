@@ -74,6 +74,21 @@
 //! ([`returns_are_withheld`]). What this costs is the churn one trace lasts,
 //! which `PLAN.md` S38.3 measures.
 //!
+//! **The deaths are one of three stacks**, because a trace holds addresses
+//! into more than entity slots (`rfc/model/gc/rc-cycle.md`, "The deferral's
+//! contract"). A buffer chunk an array's growth or an owner's death would
+//! free waits on the second, threaded through the chunk's first word with
+//! its capacity packed above the link ([`withhold_chunk_under_a_foreign_trace`]);
+//! a whole block — an arena's at its reset, a buffer arena's or an entity
+//! heap's when it empties, a retained one's when its last occupant and
+//! payload are gone, the reset's whole-block sentinel among them — and an
+//! OS-direct run wait on the third, threaded through the header word the
+//! pool links by ([`withhold_block_under_a_foreign_trace`]). The block's
+//! gate stands in the pool's own `put`, which is the one entry every block
+//! return reaches, and the run's in the run arm of `ll_free`. The owner
+//! makes all three at the same three moments, the slots first, because a
+//! slot's return can empty its block and reach the pool.
+//!
 //! The link the stack is threaded through is the dead object's class word
 //! and the dead array's version word, both of which such a trace loads, so
 //! it is written as a release and read as an acquire ([`withheld_link`]); a
@@ -777,9 +792,9 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
 
     if crate::cycle::token::this_thread_token_is_held() {
         // The reset's whole-block sentinel addresses a block header, which
-        // has no byte 8 to thread the stack through; its wait for a foreign
-        // trace is the arena-block arm `PLAN.md` S38.3 builds beside the
-        // buffer chunk's and the retained block's.
+        // has no byte 8 to thread the stack through; the block's return
+        // waits at the pool's own entry instead
+        // (`withhold_block_under_a_foreign_trace`).
         if kind == BLOCK_KIND_RETAINED && ptr == BlockHeader::of_ptr(ptr) as *mut u8 {
             return false;
         }
@@ -800,6 +815,144 @@ pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
 #[inline]
 pub(crate) fn returns_are_withheld() -> bool {
     !DEFERRED_RETURNS.with(Cell::get).is_null() || crate::cycle::token::this_thread_token_is_held()
+}
+
+/// The address bits of a packed chunk word, below the size.
+const CHUNK_LINK_BITS: u32 = 48;
+
+/// The next chunk a withheld chunk names, and the chunk's own capacity, read
+/// off its first word: the address in the low 48 bits and the capacity above
+/// them, a chunk being at most one block's payload
+/// (`memory::block_pool::BLOCK_PAYLOAD`), which fits the 16 bits left.
+///
+/// The first word and no other: a trace on another thread may still stride
+/// the chunk from a reading it validated before the free, and the words it
+/// reads are an element's `+8` and an entry's key — never the chunk's first
+/// word, which is an index slot pair in the hash form and the first
+/// element's `+0` in the vector form (`crate::cells::trace_cells`).
+///
+/// # Safety
+/// `chunk` is a withheld chunk of this thread's.
+#[inline]
+unsafe fn chunk_link(chunk: *mut u8) -> (*mut u8, usize) {
+    let word = unsafe {
+        (*(chunk as *const std::sync::atomic::AtomicU64)).load(std::sync::atomic::Ordering::Acquire)
+    };
+    (
+        (word & ((1 << CHUNK_LINK_BITS) - 1)) as usize as *mut u8,
+        (word >> CHUNK_LINK_BITS) as usize,
+    )
+}
+
+/// Write `next` and `capacity` into `chunk`'s first word ([`chunk_link`]).
+///
+/// # Safety
+/// As [`chunk_link`], and `capacity` is below `1 << 16`.
+#[inline]
+unsafe fn set_chunk_link(chunk: *mut u8, next: *mut u8, capacity: usize) {
+    debug_assert!(
+        capacity < 1 << (64 - CHUNK_LINK_BITS),
+        "a chunk's capacity fits above the link"
+    );
+    debug_assert!(
+        next as usize >> CHUNK_LINK_BITS == 0,
+        "an address fits the link"
+    );
+    let word = (next as usize as u64) | ((capacity as u64) << CHUNK_LINK_BITS);
+    unsafe {
+        (*(chunk as *const std::sync::atomic::AtomicU64))
+            .store(word, std::sync::atomic::Ordering::Release)
+    };
+}
+
+/// The next block a withheld block names, through the header word the pool
+/// links by (`memory::block_pool::BlockHeader::next`), which a block reaching
+/// its return is on no list through, and which a run keeps its `size` in —
+/// a figure its unmapping does not read.
+///
+/// # Safety
+/// `block` is a withheld block or run of this thread's.
+#[inline]
+unsafe fn block_link(block: *mut u8) -> *mut u8 {
+    unsafe {
+        (*(block.add(8) as *const std::sync::atomic::AtomicPtr<u8>))
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Name `next` from `block` ([`block_link`]).
+///
+/// # Safety
+/// As [`block_link`].
+#[inline]
+unsafe fn set_block_link(block: *mut u8, next: *mut u8) {
+    unsafe {
+        (*(block.add(8) as *const std::sync::atomic::AtomicPtr<u8>))
+            .store(next, std::sync::atomic::Ordering::Release)
+    };
+}
+
+/// Whether a return of this thread's memory made now would be made under a
+/// foreign holder of its token: the token held and no window of the
+/// thread's own open. The owner's own window withholds by its stamp and
+/// frees no chunk and no block while it traces
+/// (`rfc/model/gc/rc-cycle.md`, "The deferral's contract").
+#[inline]
+fn under_a_foreign_holder() -> bool {
+    // `try_with`, as the token's reader: the pool's `put` runs from a
+    // thread-local's drop on the exit path.
+    DEFERRED_RETURNS
+        .try_with(Cell::get)
+        .unwrap_or(std::ptr::null_mut())
+        .is_null()
+        && crate::cycle::token::this_thread_token_is_held()
+}
+
+/// Withhold a buffer chunk's return while another thread's trace holds this
+/// thread's token, and answer whether it was withheld: a trace may stride
+/// the chunk from a reading it validated before the free
+/// (`memory::buffer_arena::buffer_free_longlived_payload`). The chunk is
+/// threaded by its first word, which no stride reads ([`chunk_link`]).
+///
+/// # Safety
+/// `(chunk, capacity)` is one live chunk of this thread's buffer arena, and
+/// `capacity` is at most a block's payload.
+#[inline]
+pub(crate) unsafe fn withhold_chunk_under_a_foreign_trace(chunk: *mut u8, capacity: usize) -> bool {
+    if !under_a_foreign_holder() {
+        return false;
+    }
+
+    CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
+        unsafe { set_chunk_link(chunk, head.get(), capacity) };
+        head.set(chunk);
+    });
+    true
+}
+
+/// Withhold a whole block's or an OS-direct run's return while another
+/// thread's trace holds this thread's token, and answer whether it was
+/// withheld: a trace holds addresses into an arena's blocks as untracked
+/// children, into a buffer block's chunks, into a retained block's
+/// survivors, and a block the pool recommissioned or a run the system
+/// unmapped under it is memory no stale reading survives
+/// (`memory::block_pool::BlockPool::put`, `memory::stdapi::ll_free`'s run
+/// arm). Threaded by the header's second word ([`block_link`]).
+///
+/// # Safety
+/// `block` is a block header of this thread's on no list, or the header of
+/// an OS-direct run about to be unmapped.
+#[inline]
+pub(crate) unsafe fn withhold_block_under_a_foreign_trace(block: *mut u8) -> bool {
+    if !under_a_foreign_holder() {
+        return false;
+    }
+
+    BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
+        unsafe { set_block_link(block, head.get()) };
+        head.set(block);
+    });
+    true
 }
 
 /// Withhold a death while another thread's trace holds this thread's token.
@@ -843,9 +996,10 @@ unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8) {
 /// a dead entity this thread's free withheld.
 pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
     // The whole stack is taken off the head first: each return re-enters
-    // `ll_free`, which asks this function again, and a head still naming the
-    // rest would make the returns a recursion one frame deep per slot.
-    // Re-entered with an empty head it makes nothing and answers at once.
+    // the entry that withheld it, which asks this function again, and a head
+    // still naming the rest would make the returns a recursion one frame
+    // deep per slot. Re-entered with an empty head it makes nothing and
+    // answers at once.
     let mut taken = WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
     while !taken.is_null() {
         if crate::cycle::token::this_thread_token_is_held() {
@@ -871,6 +1025,64 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
         let slot = taken;
         taken = unsafe { withheld_next(slot) };
         unsafe { crate::memory::stdapi::hand_back_and_free(slot) };
+    }
+
+    // The chunks, then the blocks, each the same way. The slots go first
+    // because a slot's return can empty its block and reach the pool,
+    // which is where a block would be withheld again under a holder that
+    // arrived meanwhile — and then the block list below finds it.
+    let mut taken =
+        CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
+    while !taken.is_null() {
+        let (next, capacity) = unsafe { chunk_link(taken) };
+        if crate::cycle::token::this_thread_token_is_held() {
+            CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
+                let mut last = taken;
+                loop {
+                    let (next, _) = unsafe { chunk_link(last) };
+                    if next.is_null() {
+                        break;
+                    }
+
+                    last = next;
+                }
+
+                let (_, last_capacity) = unsafe { chunk_link(last) };
+                unsafe { set_chunk_link(last, head.get(), last_capacity) };
+                head.set(taken);
+            });
+            return;
+        }
+
+        let chunk = taken;
+        taken = next;
+        unsafe { crate::memory::buffer_arena::buffer_free_longlived_payload(chunk, capacity) };
+    }
+
+    let mut taken =
+        BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
+    while !taken.is_null() {
+        if crate::cycle::token::this_thread_token_is_held() {
+            BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
+                let mut last = taken;
+                loop {
+                    let next = unsafe { block_link(last) };
+                    if next.is_null() {
+                        break;
+                    }
+
+                    last = next;
+                }
+
+                unsafe { set_block_link(last, head.get()) };
+                head.set(taken);
+            });
+            return;
+        }
+
+        let block = taken;
+        taken = unsafe { block_link(block) };
+        unsafe { crate::memory::stdapi::return_withheld_block(block) };
     }
 }
 
@@ -1023,7 +1235,13 @@ pub(crate) fn dispose_thread_state() {
         "a thread cannot exit inside its trace window"
     );
     assert!(
-        WITHHELD_UNDER_A_FOREIGN_TRACE.with(Cell::get).is_null(),
+        WITHHELD_UNDER_A_FOREIGN_TRACE.with(Cell::get).is_null()
+            && CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE
+                .with(Cell::get)
+                .is_null()
+            && BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE
+                .with(Cell::get)
+                .is_null(),
         "a thread cannot exit with returns withheld under a foreign trace"
     );
 }
@@ -1037,6 +1255,44 @@ thread_local! {
     /// anything on its free path. No drop glue, as every thread-local the
     /// exit reaches (`memory::heap::ll_thread_exit`).
     static WITHHELD_UNDER_A_FOREIGN_TRACE: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+thread_local! {
+    /// Newest buffer chunk withheld under a foreign holder, or null; each
+    /// names the next through its own first word, packed with its size
+    /// ([`chunk_link`]).
+    static CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
+    /// Newest whole block or OS-direct run withheld under a foreign holder,
+    /// or null; each names the next through its header's second word, the
+    /// pool's own link ([`block_link`]).
+    static BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// How many chunks this thread is withholding under a foreign holder.
+#[cfg(test)]
+pub(crate) fn foreign_withheld_chunks() -> usize {
+    let mut count = 0;
+    let mut chunk = CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(Cell::get);
+    while !chunk.is_null() {
+        count += 1;
+        chunk = unsafe { chunk_link(chunk) }.0;
+    }
+
+    count
+}
+
+/// How many blocks and runs this thread is withholding under a foreign
+/// holder.
+#[cfg(test)]
+pub(crate) fn foreign_withheld_blocks() -> usize {
+    let mut count = 0;
+    let mut block = BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(Cell::get);
+    while !block.is_null() {
+        count += 1;
+        block = unsafe { block_link(block) };
+    }
+
+    count
 }
 
 /// How many returns this thread is withholding under a foreign holder of its
