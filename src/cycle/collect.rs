@@ -572,6 +572,13 @@ pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
         ending = ExitEnding::OverflowUnread;
     }
 
+    // The returns a foreign holder left this thread withholding, made after
+    // the last round's wait for it: an abandoned heap may carry no slot that
+    // is neither live nor on a free list, and the exit's own frees went
+    // through the rounds' windows. A holder arriving after this pop is the
+    // gap `PLAN.md` S38.5 closes with the exit-phase word.
+    unsafe { crate::cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace() };
+
     let residue = ExitResidue {
         freed,
         registered,

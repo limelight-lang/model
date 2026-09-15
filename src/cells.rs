@@ -319,6 +319,15 @@ pub(crate) enum OutsideCarry {
 /// `template::tests::the_instance_as_an_ordinary_entity::a_dying_template_releases_what_it_held`
 /// reported a dangling pointer with no provenance.
 pub(crate) trait CellReader {
+    /// Whether the mutator that owns the memory may be running beside this
+    /// reader. A trace under a concurrent reader reads counts the mutator
+    /// moves: a child whose count reads zero is one the mutator tore
+    /// down after the cell was read, and a row can be found more in-edges
+    /// than the count it started from; the owner's trace reads exact counts
+    /// and asserts both cannot happen (`crate::cycle::mark::visit_child`,
+    /// `crate::cycle::shadow::subtract`).
+    const CONCURRENT: bool;
+
     /// Walk a class's cells outside its own body with this reader's
     /// member of the group. The trait is the one place the two readers
     /// differ, so the choice belongs here.
@@ -397,6 +406,8 @@ pub(crate) struct PlainCells;
 pub(crate) struct AtomicCells;
 
 impl CellReader for AtomicCells {
+    const CONCURRENT: bool = true;
+
     #[inline]
     unsafe fn walk_outside(
         group: &OutsideCells,
@@ -419,6 +430,8 @@ impl CellReader for AtomicCells {
 }
 
 impl CellReader for PlainCells {
+    const CONCURRENT: bool = false;
+
     #[inline]
     unsafe fn walk_outside(
         group: &OutsideCells,
@@ -538,6 +551,21 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
             // reader; the descriptor it names is immortal and does not.
             let class = unsafe { R::ptr((entity as *const u8).add(CLASS_OFFSET)) }
                 as *const crate::class::Class;
+            // Under a concurrent reader the word may be the withheld
+            // returns' link rather than a class: the entity died after
+            // its address was read, and `ll_free` threads its stack
+            // through this word. The link's store is a release ordered
+            // after the count's fall, and the class load above was an
+            // acquire, so a count read as zero here is what a link would
+            // come with — and a torn-down entity's cells are severed, so there is
+            // nothing to stride (`crate::cycle::deferred_slot_reuse`).
+            if R::CONCURRENT
+                && unsafe { crate::refcount::slot_state(entity) }
+                    != crate::refcount::SlotState::Live
+            {
+                return;
+            }
+
             unsafe { crate::object::for_each_counted_cell::<R>(entity as *mut u8, class, visit) }
         }
         REFERENCE => {

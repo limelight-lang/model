@@ -294,7 +294,7 @@ pub(crate) unsafe fn mark<R: CellReader>(
                     return;
                 }
 
-                refused = !visit_child(arena, cell.child, prune);
+                refused = !visit_child::<R>(arena, cell.child, prune);
             })
         };
 
@@ -370,10 +370,22 @@ unsafe fn schedule_root_if_unvisited(arena: &mut TraceScratchArena, root: *mut R
 /// entity's own count without a dispatch of any kind (module doc, "The mature
 /// live core is not descended into").
 ///
+/// **A child at count zero under a concurrent reader is a torn-down entity**: the
+/// mutator tore it down between the cell's read and the header's, its own
+/// cells are already severed, and its slot is withheld from reuse for as long
+/// as this trace holds the token (`crate::cycle::deferred_slot_reuse`). It
+/// takes no row and no subtraction, which is the safe direction — an in-edge
+/// not subtracted from a dead entity changes no live row.
+///
 /// # Safety
 /// As [`mark`], and `child` is a counted child `cells::trace_cells`
-/// yielded, hence a live entity header.
-unsafe fn visit_child(arena: &mut TraceScratchArena, child: *mut RcHeader, prune: Prune) -> bool {
+/// yielded, hence an entity header: live under the owner's reader, live or
+/// torn down under a concurrent one.
+unsafe fn visit_child<R: CellReader>(
+    arena: &mut TraceScratchArena,
+    child: *mut RcHeader,
+    prune: Prune,
+) -> bool {
     if unsafe { stands_as_an_opaque_live_external(child, prune) } {
         note_edge_pruned();
         return true;
@@ -383,21 +395,24 @@ unsafe fn visit_child(arena: &mut TraceScratchArena, child: *mut RcHeader, prune
         return true;
     };
 
-    // A counted edge is a reference, so the entity it names holds at least
-    // that one. A zero here is an expansion of a torn-down entity's residual
-    // cells, which [`schedule_root_if_unvisited`] is what keeps out of the
-    // descent.
-    debug_assert_ne!(
-        unsafe { header_refcount(child) },
-        0,
-        "a counted child at count zero: the trace expanded a corpse"
-    );
+    let count = unsafe { header_refcount(child) };
+    if count == 0 {
+        // Under the owner's reader a counted edge is a reference, so the
+        // entity it names holds at least that one, and a zero is an
+        // expansion of a torn-down entity's residual cells, which
+        // [`schedule_root_if_unvisited`] is what keeps out of the descent.
+        debug_assert!(
+            R::CONCURRENT,
+            "a counted child at count zero: the trace expanded a corpse"
+        );
+        return true;
+    }
 
-    match unsafe { arena.ensure_row(row, header_refcount(child)) } {
+    match unsafe { arena.ensure_row(row, count) } {
         RowLookup::AllocationFailed => false,
         RowLookup::Untracked => true,
         RowLookup::Ready { row, first_visit } => {
-            unsafe { shadow::subtract(row, 1) };
+            unsafe { shadow::subtract(row, 1, !R::CONCURRENT) };
             if first_visit {
                 arena.push_work(WorklistEntry { entity: child, row })
             } else {

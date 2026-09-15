@@ -129,9 +129,19 @@ impl TraceToken {
 
     /// Whether some tracer holds the token now — a reading, not a claim, and
     /// stale by the time it is read unless the reader is the holder.
-    #[cfg(test)]
+    ///
+    /// The owner reads it on its free path to decide whether a return waits
+    /// for a foreign trace (`crate::cycle::deferred_slot_reuse`), and both
+    /// stale directions are safe there: a holder that let go just after the
+    /// read costs one return withheld until the owner's next pop, and a
+    /// taker that arrived just after it starts a trace that never held the
+    /// address the owner is returning. The load is an acquire, paired with
+    /// [`release`](Self::release)'s store: a return the owner makes after
+    /// reading the token free then happens after every load of the trace
+    /// that held it, and the free-list link it writes into the dead entity
+    /// does not race the trace's load of that word.
     pub(crate) fn is_held(&self) -> bool {
-        self.held.load(Ordering::Relaxed)
+        self.held.load(Ordering::Acquire)
     }
 
     /// How many times a taker has gone to wait on this token so far.
@@ -169,6 +179,15 @@ thread_local! {
 )]
 pub(crate) fn this_thread_token() -> *const TraceToken {
     TOKEN.with(|token| token as *const TraceToken)
+}
+
+/// Whether this thread's token is held now, by this thread or by another
+/// ([`TraceToken::is_held`]). The owner's own take stands inside its trace
+/// window, so a reader that has already asked for that window and found none
+/// reads a foreign holder here.
+#[inline]
+pub(crate) fn this_thread_token_is_held() -> bool {
+    TOKEN.with(TraceToken::is_held)
 }
 
 /// The token of the calling thread, held from the call to the guard's drop:

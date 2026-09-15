@@ -67,8 +67,8 @@ fn a_saturated_count_absorbs_every_subtraction() {
     let row = &raw mut word;
     assert!(is_saturated(unsafe { *row }));
 
-    assert_eq!(unsafe { subtract(row, 1) }, COUNT_MAX);
-    assert_eq!(unsafe { subtract(row, COUNT_MAX) }, COUNT_MAX);
+    assert_eq!(unsafe { subtract(row, 1, true) }, COUNT_MAX);
+    assert_eq!(unsafe { subtract(row, COUNT_MAX, true) }, COUNT_MAX);
     assert!(
         is_saturated(unsafe { *row }),
         "the entity is externally referenced whatever the trace found"
@@ -79,7 +79,7 @@ fn a_saturated_count_absorbs_every_subtraction() {
     // which is what makes the clause a clause rather than a ceiling.
     let mut ordinary = compose(Color::Unclassified, COUNT_MAX - 1);
     let row = &raw mut ordinary;
-    assert_eq!(unsafe { subtract(row, 1) }, COUNT_MAX - 2);
+    assert_eq!(unsafe { subtract(row, 1, true) }, COUNT_MAX - 2);
 }
 
 /// The reserved code. A zeroed row is untouched and nothing else, so a
@@ -158,8 +158,8 @@ fn a_subtraction_stops_at_zero_and_keeps_the_colour() {
     let mut word = compose(Color::Unclassified, 3);
     let row = &raw mut word;
 
-    assert_eq!(unsafe { subtract(row, 1) }, 2);
-    assert_eq!(unsafe { subtract(row, 2) }, 0);
+    assert_eq!(unsafe { subtract(row, 1, true) }, 2);
+    assert_eq!(unsafe { subtract(row, 2, true) }, 0);
     assert_eq!(color(unsafe { *row }), Color::Unclassified);
     assert_eq!(
         count(unsafe { *row }),
@@ -169,7 +169,7 @@ fn a_subtraction_stops_at_zero_and_keeps_the_colour() {
 
     let mut unreachable_row = compose(Color::PotentiallyUnreachable, 7);
     let row = &raw mut unreachable_row;
-    assert_eq!(unsafe { subtract(row, 7) }, 0);
+    assert_eq!(unsafe { subtract(row, 7, true) }, 0);
     assert_eq!(
         color(unsafe { *row }),
         Color::PotentiallyUnreachable,
@@ -190,5 +190,5 @@ fn a_subtraction_below_the_count_fails_a_test_build() {
     let mut word = compose(Color::Unclassified, 1);
     let row = &raw mut word;
 
-    unsafe { subtract(row, 2) };
+    unsafe { subtract(row, 2, true) };
 }

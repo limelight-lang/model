@@ -8,12 +8,15 @@
 //! to its heap waits here (`rfc/model/gc/rc-cycle.md`, "Zero-count entities
 //! pending slot reuse").
 //!
-//! There are two independent reasons a dead slot may still be named:
+//! There are three independent reasons a dead slot may still be named:
 //!
 //! - a candidate-queue entry, represented by
 //!   [`crate::refcount::CANDIDATE_BIT`];
 //! - this window, represented by a non-null [`DEFERRED_RETURNS`], while mark
-//!   or scan may still use a shadow row for the slot.
+//!   or scan may still use a shadow row for the slot;
+//! - a trace on another thread, represented by this thread's token being
+//!   held while no window of its own is open, which may hold the slot's
+//!   address from before its death (below, "A foreign holder of the token").
 //!
 //! Every attempted return goes through `memory::stdapi::ll_free`. That entry
 //! point first refuses the queue window and then calls
@@ -51,6 +54,31 @@
 //! destructor may not depend on the platform's TLS destructor order
 //! (`dev/DECISIONS.md`, "thread exit owns the order its per-thread state dies
 //! in").
+//!
+//! # A foreign holder of the token
+//!
+//! A trace on another thread holds this thread's token and reads its blocks
+//! (`rfc/model/gc/rc-cycle.md`, "The deferral's contract"). While it does,
+//! **every death of this thread's is withheld and no stamp is read**
+//! ([`withhold_under_a_foreign_trace`]): between reading a cell and meeting
+//! the child's row that trace holds an address in a block that carries no
+//! stamp yet, so the stamp cannot say which slots it holds. The stack is the
+//! window's own shape — threaded through the dead entities, the head one
+//! thread-local word — and it draws nothing, so a thread that never
+//! collected withholds without a workspace. The owner makes the returns once
+//! it reads the token free ([`make_returns_withheld_under_a_foreign_trace`]):
+//! at its next free, at the safepoint poll and before its exit; a holder
+//! that arrives meanwhile leaves them standing. A cross-thread free of an
+//! entity slot is a return of the owner's memory made at the owner's reclaim
+//! of its remote stack, and that reclaim waits the same way
+//! ([`returns_are_withheld`]). What this costs is the churn one trace lasts,
+//! which `PLAN.md` S38.3 measures.
+//!
+//! The link the stack is threaded through is the dead object's class word
+//! and the dead array's version word, both of which such a trace loads, so
+//! it is written as a release and read as an acquire ([`withheld_link`]); a
+//! reader that finds the link where a class was re-reads the count as zero
+//! and strides nothing (`crate::cells::trace_cells`).
 //!
 //! # What a refusal costs, and where it is answered
 //!
@@ -241,9 +269,7 @@ impl WithheldReturns {
         // one occupant its block or mapping waits for. None of the three moves
         // when a block changes hands: adoption writes the owner word and no
         // slot's state.
-        self.control()
-            .withheld
-            .set(unsafe { withheld_link(slot).read() });
+        self.control().withheld.set(unsafe { withheld_next(slot) });
         Some(slot)
     }
 
@@ -309,17 +335,46 @@ pub(crate) fn take_slots_popped() -> usize {
 
 /// The word a stacked slot names the next one through: the eight bytes a free
 /// slot links through (`crate::memory::heap::FREE_LIST_LINK_OFFSET`), which
-/// hold nothing while the slot is dead and which the return overwrites.
+/// hold nothing the mutator reads while the slot is dead and which the return
+/// overwrites.
 ///
-/// Plain rather than atomic: the stack has one writer and one reader, the
-/// thread whose window is open, and no other thread reads these bytes until
-/// it receives the return.
+/// **Written and read atomically, and the write is a release**, because in
+/// an object the word is the class word and in an array the head's version,
+/// both of which a trace on another thread loads: such a trace may hold the
+/// dead entity's address from before its death and read the word after it.
+/// The release orders the count's fall before the link, so a reader whose
+/// acquire load of the class word returned the link re-reads the count as
+/// zero and expands nothing (`crate::cells::trace_cells`); a version read
+/// as the link fails the bracket or finds the null storage the dispose left.
+/// On the owner's own window the stack has one writer and one reader and the
+/// atomics cost nothing.
 ///
 /// # Safety
 /// `slot` is a dead entity slot of at least the free list's two words.
 #[inline]
-unsafe fn withheld_link(slot: *mut u8) -> *mut *mut u8 {
-    unsafe { slot.add(crate::memory::heap::FREE_LIST_LINK_OFFSET) as *mut *mut u8 }
+unsafe fn withheld_link(slot: *mut u8) -> &'static std::sync::atomic::AtomicPtr<u8> {
+    unsafe {
+        &*(slot.add(crate::memory::heap::FREE_LIST_LINK_OFFSET)
+            as *const std::sync::atomic::AtomicPtr<u8>)
+    }
+}
+
+/// The next slot `slot` names on its stack ([`withheld_link`]).
+///
+/// # Safety
+/// As [`withheld_link`].
+#[inline]
+unsafe fn withheld_next(slot: *mut u8) -> *mut u8 {
+    unsafe { withheld_link(slot) }.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Name `next` from `slot` ([`withheld_link`]).
+///
+/// # Safety
+/// As [`withheld_link`].
+#[inline]
+unsafe fn set_withheld_next(slot: *mut u8, next: *mut u8) {
+    unsafe { withheld_link(slot) }.store(next, std::sync::atomic::Ordering::Release);
 }
 
 /// Put `slot` on this window's stack of withheld returns.
@@ -327,7 +382,7 @@ unsafe fn withheld_link(slot: *mut u8) -> *mut *mut u8 {
 /// # Safety
 /// As [`withheld_link`], and `control` is this thread's open window.
 unsafe fn push_withheld(control: &WindowControl, slot: *mut u8) {
-    unsafe { withheld_link(slot).write(control.withheld.get()) };
+    unsafe { set_withheld_next(slot, control.withheld.get()) };
     control.withheld.set(slot);
 }
 
@@ -715,12 +770,108 @@ impl Drop for ActiveTrace {
 #[inline]
 pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
     let control = DEFERRED_RETURNS.with(Cell::get);
-    if control.is_null() {
-        return false;
+    if !control.is_null() {
+        let window = unsafe { &*control };
+        return unsafe { withhold(window, ptr, kind) };
     }
 
-    let window = unsafe { &*control };
-    unsafe { withhold(window, ptr, kind) }
+    if crate::cycle::token::this_thread_token_is_held() {
+        // The reset's whole-block sentinel addresses a block header, which
+        // has no byte 8 to thread the stack through; its wait for a foreign
+        // trace is the arena-block arm `PLAN.md` S38.3 builds beside the
+        // buffer chunk's and the retained block's.
+        if kind == BLOCK_KIND_RETAINED && ptr == BlockHeader::of_ptr(ptr) as *mut u8 {
+            return false;
+        }
+
+        unsafe { withhold_under_a_foreign_trace(ptr) };
+        return true;
+    }
+
+    unsafe { make_returns_withheld_under_a_foreign_trace() };
+    false
+}
+
+/// Whether a return of this thread's entity memory would be made under a
+/// trace — this thread's own window, or a foreign holder of its token — and
+/// so has to wait. For the reclaim of cross-thread frees, which reaches no
+/// `ll_free` on the owner: the slots stay on their block's remote stack until
+/// a collect that finds no trace (`crate::memory::heap::Heap::collect_remote`).
+#[inline]
+pub(crate) fn returns_are_withheld() -> bool {
+    !DEFERRED_RETURNS.with(Cell::get).is_null() || crate::cycle::token::this_thread_token_is_held()
+}
+
+/// Withhold a death while another thread's trace holds this thread's token.
+///
+/// **Every death is withheld, and no stamp is read**, unlike the owner's own
+/// window ([`classify`]): a trace on another thread holds an address between
+/// reading the cell that named it and meeting its row, and in that interval
+/// the block carries no stamp yet, so a return made on the strength of a
+/// clear stamp could be handed out again under the address the trace still
+/// holds. The cost is the churn one trace lasts, measured as `PLAN.md` S38.3
+/// asks. The stack is threaded through the dead entities like the window's
+/// ([`withheld_link`]), headed in a word of this thread's, and nothing is drawn.
+///
+/// # Safety
+/// As [`defer_reuse_if_tracing`], and this thread has no window of its own
+/// open.
+#[inline]
+unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8) {
+    WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
+        unsafe { set_withheld_next(ptr, head.get()) };
+        head.set(ptr);
+    });
+}
+
+/// Make the returns withheld under a foreign holder, once the token is free.
+///
+/// Called by the owner and by nobody else — a free that finds the token
+/// free, the safepoint poll, and the exit after its wait for the holder —
+/// because the slots are the owner's and the physical return is its heap's.
+/// Nothing is made while the token is held: a holder that arrived after the
+/// release keeps every return standing, and a pop that finds the token taken
+/// between two returns puts the slot back and stops, so a slot is never
+/// handed back under a trace and the loop ends whatever the holders do.
+///
+/// Each return re-enters `ll_free` through the hand-back, which is the one
+/// entry a withheld slot goes back through
+/// (`crate::memory::stdapi::hand_back_and_free`).
+///
+/// # Safety
+/// This thread has no window of its own open, and every slot on the stack is
+/// a dead entity this thread's free withheld.
+pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
+    // The whole stack is taken off the head first: each return re-enters
+    // `ll_free`, which asks this function again, and a head still naming the
+    // rest would make the returns a recursion one frame deep per slot.
+    // Re-entered with an empty head it makes nothing and answers at once.
+    let mut taken = WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
+    while !taken.is_null() {
+        if crate::cycle::token::this_thread_token_is_held() {
+            // A holder arrived between two returns: what is left goes back
+            // on the head, behind whatever the returns so far re-withheld.
+            WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
+                let mut last = taken;
+                loop {
+                    let next = unsafe { withheld_next(last) };
+                    if next.is_null() {
+                        break;
+                    }
+
+                    last = next;
+                }
+
+                unsafe { set_withheld_next(last, head.get()) };
+                head.set(taken);
+            });
+            return;
+        }
+
+        let slot = taken;
+        taken = unsafe { withheld_next(slot) };
+        unsafe { crate::memory::stdapi::hand_back_and_free(slot) };
+    }
 }
 
 /// How a death is withheld, or that it needs no withholding at all.
@@ -871,6 +1022,35 @@ pub(crate) fn dispose_thread_state() {
         DEFERRED_RETURNS.with(Cell::get).is_null(),
         "a thread cannot exit inside its trace window"
     );
+    assert!(
+        WITHHELD_UNDER_A_FOREIGN_TRACE.with(Cell::get).is_null(),
+        "a thread cannot exit with returns withheld under a foreign trace"
+    );
+}
+
+thread_local! {
+    /// Newest return withheld because another thread holds this thread's
+    /// trace token, or null; each names the next through [`withheld_link`].
+    /// No control line stands behind it: the stack is threaded through the
+    /// dead entities, and the head is this one word, so a thread that never
+    /// collected — and so never drew a workspace — withholds without drawing
+    /// anything on its free path. No drop glue, as every thread-local the
+    /// exit reaches (`memory::heap::ll_thread_exit`).
+    static WITHHELD_UNDER_A_FOREIGN_TRACE: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// How many returns this thread is withholding under a foreign holder of its
+/// token, by walking that stack.
+#[cfg(test)]
+pub(crate) fn foreign_withheld_count() -> usize {
+    let mut count = 0;
+    let mut slot = WITHHELD_UNDER_A_FOREIGN_TRACE.with(Cell::get);
+    while !slot.is_null() {
+        count += 1;
+        slot = unsafe { withheld_next(slot) };
+    }
+
+    count
 }
 
 /// How many returns this thread's open window is holding, by walking the
@@ -886,7 +1066,7 @@ pub(crate) fn deferred_slot_count() -> usize {
     let mut slot = unsafe { &*control }.withheld.get();
     while !slot.is_null() {
         count += 1;
-        slot = unsafe { withheld_link(slot).read() };
+        slot = unsafe { withheld_next(slot) };
     }
 
     count

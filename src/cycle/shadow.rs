@@ -164,20 +164,16 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 /// a dirty pass, because the counts it reads may be stale, and the exact
 /// test on the owner's thread is what turns a candidate into a verdict
 /// (`rfc/model/gc/rc-cycle.md`, "Speculative tracing and exact
-/// validation"); so a release build clamps at zero. The only trace today
-/// is the in-line owner trace, which reads exact counts ("Synchronous
-/// collection is exact by construction", same document) and cannot find
-/// more in-edges than the refcount holds, so a test build asserts `count
-/// >= edges` before the subtraction: a double subtraction fails the suite
-/// rather than clamping (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 6).
-/// The clamp's below-zero arm is therefore reached by no test in the
-/// gate's builds, since reaching it trips the assertion first.
-///
-/// The assertion cannot tell a speculative trace from the owner's, and a
-/// trace on another thread reads a count the mutator moves under it
-/// (`cells::AtomicCells`); a worker trace in production does not yet
-/// exist, and `PLAN.md` S38.5, where it arrives, is what conditions the
-/// assertion on whose pass this is.
+/// validation"); so a release build clamps at zero. The in-line owner
+/// trace reads exact counts ("Synchronous collection is exact by
+/// construction", same document) and cannot find more in-edges than the
+/// refcount holds, so with `exact` a test build asserts `count >= edges`
+/// before the subtraction: a double subtraction fails the suite rather than
+/// clamping (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 6). A trace on another
+/// thread reads a count the mutator moves under it — a reference stored
+/// after the row started is one more in-edge than the count — and passes
+/// `exact` false, so it clamps where the owner's trace asserts
+/// (`cells::CellReader::CONCURRENT`).
 ///
 /// **A saturated count is absorbing** and this call leaves it alone: it
 /// is a lower bound, so what the subtraction knows about the remainder is
@@ -187,14 +183,14 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 /// `row` is a row of a met entity, reached through
 /// [`TraceScratchArena::ensure_row`](crate::cycle::arena::TraceScratchArena::ensure_row).
 #[inline]
-pub(crate) unsafe fn subtract(row: *mut u32, edges: u32) -> u32 {
+pub(crate) unsafe fn subtract(row: *mut u32, edges: u32, exact: bool) -> u32 {
     let word = unsafe { *row };
     if is_saturated(word) {
         return COUNT_MAX;
     }
 
     debug_assert!(
-        count(word) >= edges,
+        !exact || count(word) >= edges,
         "a subtraction below the count: the owner trace found more in-edges \
          than the refcount holds"
     );

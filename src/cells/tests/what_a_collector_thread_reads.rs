@@ -21,97 +21,16 @@
 use super::*;
 use crate::array::entity::ll_array_new;
 use crate::array::testing::push;
-use crate::cycle::arena::TraceScratchArena;
-use crate::cycle::mark::{MarkResult, mark};
-use crate::cycle::scan::{ScanResult, scan};
 use crate::cycle::shadow::Color;
-use crate::cycle::testing::{dismantle_ring, ring, row_color};
-use crate::cycle::token::testing::Handed;
-use crate::cycle::token::this_thread_token;
+use crate::cycle::testing::{
+    Sent, colors, dismantle_ring, ring_with_a_spare_property, traced_from_a_collector_thread,
+};
 use crate::memory::barrier::ref_store;
 use crate::memory::block_pool::test_guard;
 use crate::object::{Object, ll_entity_die};
 use crate::refcount::{RcHeader, ll_retain};
 use crate::test_support::{outside_block, prop_offset, store_prop};
 use std::sync::mpsc;
-
-/// An entity pointer handed to the collector thread. The pointee is the
-/// owner's, and the owner joins the thread before it touches the entity
-/// again.
-struct Sent<T>(T);
-
-unsafe impl<T> Send for Sent<T> {}
-
-impl<T> Sent<T> {
-    /// The value, through a method so that a closure captures the wrapper
-    /// rather than its field.
-    fn into_inner(self) -> T {
-        self.0
-    }
-}
-
-/// Trace `root` from a second thread holding this thread's token, through
-/// the collector's reader, and answer what `read` found in the rows before
-/// they went back with the collector's workspace.
-///
-/// # Safety
-/// `root` is a candidate of this thread's heap, and nothing frees an entity
-/// or a storage it reaches until this returns.
-unsafe fn traced_from_a_collector_thread<T: Send + 'static>(
-    root: *mut RcHeader,
-    read: impl FnOnce() -> T + Send + 'static,
-) -> std::thread::JoinHandle<T> {
-    let token = Handed(this_thread_token());
-    let root = Sent(root);
-    std::thread::spawn(move || {
-        assert!(
-            crate::memory::heap::ll_thread_init(),
-            "the pool served the collector thread"
-        );
-        let token = token.token();
-        let root = root.into_inner();
-        assert!(unsafe { (*token).try_take() }, "the owner was tracing");
-        let mut arena = TraceScratchArena::open().expect("the collector thread drew a workspace");
-        assert_eq!(
-            unsafe { mark::<AtomicCells>(&mut arena, root) },
-            MarkResult::Complete
-        );
-        assert_eq!(
-            unsafe { scan::<AtomicCells>(&mut arena, root) },
-            ScanResult::Complete
-        );
-        let answer = read();
-        arena.reset();
-        unsafe { (*token).release() };
-        crate::cycle::queue::release_queue_segments();
-        answer
-    })
-}
-
-/// The colours the trace left for `entities`, in their order.
-///
-/// # Safety
-/// As `row_color`: every entity's block was touched by the trace whose
-/// rows are still standing.
-unsafe fn colors(entities: &[*mut RcHeader]) -> Vec<Color> {
-    entities
-        .iter()
-        .map(|&entity| unsafe { row_color(entity) })
-        .collect()
-}
-
-/// A ring of three whose first member holds a second property, which is
-/// where each case hangs its subject.
-fn ring_with_a_spare_property(arena: &mut Arena, name: &str) -> [*mut Object; 3] {
-    let first = ClassBuilder::new(&format!("{name}First"))
-        .prop("next", true)
-        .prop("held", true)
-        .build();
-    let member = ClassBuilder::new(&format!("{name}Member"))
-        .prop("next", true)
-        .build();
-    unsafe { ring(arena, [first, member, member]) }
-}
 
 /// An instance of the outside-block class with its block installed and
 /// its creation reference still to spend.
@@ -132,7 +51,7 @@ fn holder_with_a_block(arena: &mut Arena, class_name: &str) -> *mut Object {
 fn a_collector_thread_leaves_the_rows_the_owner_would() {
     let _g = test_guard();
     let mut arena = Arena::new();
-    let [a, b, c] = ring_with_a_spare_property(&mut arena, "CollectorReads");
+    let [a, b, c] = unsafe { ring_with_a_spare_property(&mut arena, "CollectorReads") };
     let holder = holder_with_a_block(&mut arena, "CollectorReadsHolder");
     unsafe {
         store_prop(&mut arena, a, prop_offset(1), holder);
@@ -156,7 +75,9 @@ fn a_collector_thread_leaves_the_rows_the_owner_would() {
         holder as *mut RcHeader,
     ]);
     let found = unsafe {
-        traced_from_a_collector_thread(a as *mut RcHeader, move || colors(&members.into_inner()))
+        traced_from_a_collector_thread(a as *mut RcHeader, 1, None, move || {
+            colors(&members.into_inner())
+        })
     }
     .join()
     .expect("the collector thread returned");
@@ -179,7 +100,7 @@ fn a_collector_thread_leaves_the_rows_the_owner_would() {
 fn an_outside_block_mid_move_is_given_up_and_read_once_the_move_ends() {
     let _g = test_guard();
     let mut arena = Arena::new();
-    let [a, b, c] = ring_with_a_spare_property(&mut arena, "CollectorMidMove");
+    let [a, b, c] = unsafe { ring_with_a_spare_property(&mut arena, "CollectorMidMove") };
     let holder = holder_with_a_block(&mut arena, "CollectorMidMoveHolder");
     unsafe {
         store_prop(&mut arena, a, prop_offset(1), holder);
@@ -203,7 +124,9 @@ fn an_outside_block_mid_move_is_given_up_and_read_once_the_move_ends() {
     unsafe { outside_block::begin_move(holder) };
     let sent = Sent(members);
     let found = unsafe {
-        traced_from_a_collector_thread(a as *mut RcHeader, move || colors(&sent.into_inner()))
+        traced_from_a_collector_thread(a as *mut RcHeader, 1, None, move || {
+            colors(&sent.into_inner())
+        })
     }
     .join()
     .expect("the collector thread returned");
@@ -216,7 +139,9 @@ fn an_outside_block_mid_move_is_given_up_and_read_once_the_move_ends() {
     unsafe { outside_block::end_move(holder) };
     let sent = Sent(members);
     let found = unsafe {
-        traced_from_a_collector_thread(a as *mut RcHeader, move || colors(&sent.into_inner()))
+        traced_from_a_collector_thread(a as *mut RcHeader, 1, None, move || {
+            colors(&sent.into_inner())
+        })
     }
     .join()
     .expect("the collector thread returned");
@@ -238,7 +163,7 @@ fn an_outside_block_mid_move_is_given_up_and_read_once_the_move_ends() {
 fn an_array_mid_move_is_given_up_and_read_once_the_move_ends() {
     let _g = test_guard();
     let mut arena = Arena::new();
-    let [a, b, c] = ring_with_a_spare_property(&mut arena, "CollectorArrayMove");
+    let [a, b, c] = unsafe { ring_with_a_spare_property(&mut arena, "CollectorArrayMove") };
     let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
     unsafe {
         let slot = Object::prop_at(a, prop_offset(1));
@@ -267,7 +192,9 @@ fn an_array_mid_move_is_given_up_and_read_once_the_move_ends() {
     unsafe { (*head).begin_move() };
     let sent = Sent(members);
     let found = unsafe {
-        traced_from_a_collector_thread(a as *mut RcHeader, move || colors(&sent.into_inner()))
+        traced_from_a_collector_thread(a as *mut RcHeader, 1, None, move || {
+            colors(&sent.into_inner())
+        })
     }
     .join()
     .expect("the collector thread returned");
@@ -280,7 +207,9 @@ fn an_array_mid_move_is_given_up_and_read_once_the_move_ends() {
     unsafe { (*head).end_move() };
     let sent = Sent(members);
     let found = unsafe {
-        traced_from_a_collector_thread(a as *mut RcHeader, move || colors(&sent.into_inner()))
+        traced_from_a_collector_thread(a as *mut RcHeader, 1, None, move || {
+            colors(&sent.into_inner())
+        })
     }
     .join()
     .expect("the collector thread returned");
@@ -331,7 +260,7 @@ const STORE_TIME_BOUND: std::time::Duration = std::time::Duration::from_secs(10)
 fn a_store_beside_the_trace_is_read_whole() {
     let _g = test_guard();
     let mut arena = Arena::new();
-    let [a, b, c] = ring_with_a_spare_property(&mut arena, "CollectorRaces");
+    let [a, b, c] = unsafe { ring_with_a_spare_property(&mut arena, "CollectorRaces") };
     let leaf = ClassBuilder::new("CollectorRacesLeaf").build();
     let (x, y) = {
         let mut context = LLContext { arena: &mut arena };
@@ -345,38 +274,14 @@ fn a_store_beside_the_trace_is_read_whole() {
 
     let (storing_sender, storing) = mpsc::channel();
     let (done_sender, done) = mpsc::channel();
-    let token = Handed(this_thread_token());
-    let root = Sent(a as *mut RcHeader);
-    let collector = std::thread::spawn(move || {
-        assert!(
-            crate::memory::heap::ll_thread_init(),
-            "the pool served the collector thread"
-        );
-        let token = token.token();
-        let root = root.into_inner();
-        assert!(unsafe { (*token).try_take() }, "the owner was tracing");
-        storing.recv().expect("the owner stored once");
-        let mut traces = 0;
-        for _ in 0..traces_beside_the_stores() {
-            let mut arena =
-                TraceScratchArena::open().expect("the collector thread drew a workspace");
-            assert_eq!(
-                unsafe { mark::<AtomicCells>(&mut arena, root) },
-                MarkResult::Complete
-            );
-            assert_eq!(
-                unsafe { scan::<AtomicCells>(&mut arena, root) },
-                ScanResult::Complete
-            );
-            arena.reset();
-            traces += 1;
-        }
-
-        unsafe { (*token).release() };
-        crate::cycle::queue::release_queue_segments();
-        done_sender.send(()).expect("the owner waits for this");
-        traces
-    });
+    let collector = unsafe {
+        traced_from_a_collector_thread(
+            a as *mut RcHeader,
+            traces_beside_the_stores(),
+            Some(storing),
+            move || done_sender.send(()).expect("the owner waits for this"),
+        )
+    };
 
     let bound = std::time::Instant::now() + STORE_TIME_BOUND;
     let mut stores = 0;
@@ -390,8 +295,7 @@ fn a_store_beside_the_trace_is_read_whole() {
         }
     }
 
-    let traces = collector.join().expect("the collector thread returned");
-    assert_eq!(traces, traces_beside_the_stores(), "every trace completed");
+    collector.join().expect("the collector thread returned");
     assert!(stores > 0, "the owner stored before the first trace");
 
     unsafe {

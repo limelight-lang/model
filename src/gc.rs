@@ -167,6 +167,12 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // rounds (`crate::cycle::queue::refill_and_drain`).
     crate::cycle::queue::refill_and_drain();
 
+    // And the returns a foreign trace left this thread withholding, made
+    // here so that a thread which frees nothing after the holder let go
+    // still gives them back at its next safepoint
+    // (`crate::cycle::deferred_slot_reuse`).
+    unsafe { crate::cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace() };
+
     // A ring whose root sits in the deferred lane can be this thread's only
     // garbage, so it cannot wait for a collection that an empty active queue
     // would never start. The owner alone compares its full-width mirror and

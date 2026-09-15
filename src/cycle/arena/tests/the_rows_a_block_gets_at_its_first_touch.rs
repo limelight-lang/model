@@ -65,7 +65,7 @@ fn a_second_reach_leaves_the_working_count_alone() {
     let row = met(unsafe { arena.ensure_row(slot_row(block, 0), 3) });
 
     // What the mark does with the row it is handed.
-    assert_eq!(unsafe { shadow::subtract(row, 1) }, 2);
+    assert_eq!(unsafe { shadow::subtract(row, 1, true) }, 2);
 
     let (again, first_visit) = met_first(unsafe { arena.ensure_row(slot_row(block, 0), 3) });
     assert_eq!(again, row, "the same slot resolves to the same row");
@@ -442,7 +442,7 @@ fn a_second_collection_meets_a_slotted_block_at_the_refcount_again() {
 
     let mut first = crate::cycle::testing::open_arena();
     let row = met(unsafe { first.ensure_row(slot_row(block, 0), 6) });
-    assert_eq!(unsafe { shadow::subtract(row, 4) }, 2);
+    assert_eq!(unsafe { shadow::subtract(row, 4, true) }, 2);
     first.clear_touched_rows();
     first.reset();
     // Dropped rather than left standing: the thread's workspace goes back with
@@ -509,7 +509,7 @@ fn an_entity_referenced_past_the_field_is_met_at_the_bound() {
     // subtraction cannot walk a saturated count down to zero.
     for _ in 0..4 {
         assert_eq!(
-            unsafe { shadow::subtract(row, 1_000_000) },
+            unsafe { shadow::subtract(row, 1_000_000, true) },
             shadow::COUNT_MAX
         );
     }

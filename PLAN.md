@@ -927,7 +927,35 @@ window there is.
         moved. Seen red with the count's increment deleted, after the holder's
         10 s bound. The exactness clause is `cycle::validation`'s, in-degree
         from the members' current cells on the owner after the release.
-- [ ] S38.3 Deferring the mutator's frees during a trace   *(unblocked 2026-09-15: the tracer on another thread is `cells::tests::what_a_collector_thread_reads`' fixture, whose mutator half may not free until this step lands)*
+- [~] S38.3 Deferring the mutator's frees during a trace
+      order, agreed with Edmond 2026-09-15: (1) the gate and the stack for a
+        foreign holder of the token, the first test red by construction;
+        (2) who makes the returns — the owner, at its next free, the poll
+        and the exit — and the sweep-before-release order on the collector's
+        side; (3) the four addresses beside the slot — a buffer chunk
+        (`buffer_free_longlived_payload`), a retained block
+        (`release_emptied`), an OS-direct run, an arena block the reset
+        returns under a held token — each with its link and its return;
+        (4) the cost, the churn held across one collection on the census
+        loads, in `dev/BENCHMARKS.md`.
+      progress 2026-09-15: (1) and (2) landed — `dev/DECISIONS.md`, "a
+        foreign holder of the token withholds every death, and the owner
+        makes the returns"; six cases in
+        `deferred_slot_reuse/tests/what_a_foreign_trace_withholds.rs`, the
+        first red before the gate, the exit's pop and the reclaim's gate
+        each seen red by mutation; Miri green over the six and the reader's
+        four; ThreadSanitizer reports the fence-ordered publication in the
+        churn case because it does not model `fence` (`dev/WORKFLOW.md`,
+        "ThreadSanitizer"). The collector-thread fixture moved to
+        `cycle::testing::traced_from_a_collector_thread`. What (2) left
+        open: the collector's sweep-before-release order, because the
+        stand-in's arena reset follows its release today and the owner's
+        pop after it reads a shadow pointer the sweep is nulling — the
+        block's shadow word is atomic both ways, so the reading is a stale
+        stamp at worst and the owner under a foreign holder reads no stamp;
+        the order is the worker's (S38.5) to fix when the worker exists.
+        The reset's whole-block sentinel passes the foreign gate unwithheld
+        until (3).
       note: `cycle::deferred_slot_reuse` is the owner-side substrate for one
         thread, where nothing frees inside the window: mark and scan only read, and the trace window
         ends before the user-code teardown by the decision of 2026-08-31. The

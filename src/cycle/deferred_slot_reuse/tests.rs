@@ -220,6 +220,7 @@ fn in_use_bytes() -> usize {
 }
 
 mod how_each_population_is_classified;
+mod what_a_foreign_trace_withholds;
 mod what_a_window_asks_the_allocator;
 mod what_an_unwind_gives_back;
 mod what_the_close_and_the_abort_return;

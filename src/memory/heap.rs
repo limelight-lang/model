@@ -1227,6 +1227,19 @@ impl Heap {
     /// count `used` must drop by — the same amortised deal mimalloc makes in
     /// `_mi_page_thread_free_collect`.
     fn collect_remote(&mut self, block: *mut HeapBlockHeader) -> bool {
+        // An entity slot another thread freed is a return of this thread's
+        // memory, and it waits for a trace the way a local free does: the
+        // slots stay on the remote stack, where nothing hands them out, until
+        // a collect that finds no window and no holder
+        // (`cycle::deferred_slot_reuse::returns_are_withheld`). Not for
+        // `collect_remote_locked`: an abandoned block is under no trace, by
+        // the exit's order.
+        if unsafe { (*block).kind.load(Ordering::Relaxed) } == BLOCK_KIND_ENTITY
+            && crate::cycle::deferred_slot_reuse::returns_are_withheld()
+        {
+            return false;
+        }
+
         // See [`collect_remote_locked`] on why this takes the raw block.
         let head = unsafe {
             (*block)

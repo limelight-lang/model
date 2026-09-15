@@ -654,6 +654,21 @@ reading the sources, by `refcount::tests::who_may_read_a_header`, and by Miri.
 The report does not fail the test: read the log for `WARNING: ThreadSanitizer`,
 because the result line says `ok` either way.
 
+**ThreadSanitizer does not model `fence`**, and one case reports for that
+reason alone. `cycle::deferred_slot_reuse::tests::what_a_foreign_trace_withholds::`
+`a_death_under_a_running_trace_is_not_reused_before_the_release` builds
+entities while the collector thread traces, and the publication of an entity
+to a reader on another thread is ordered by the release fence after the
+header store paired with the reader's acquire load of the slot
+(`refcount::publish_header`). ThreadSanitizer's `atomic_thread_fence` is a
+no-op for its happens-before analysis, so it reports the factory's plain
+class-word write against the reader's acquire load of it, one report per run.
+Checked on 2026-09-15: with the slot store made a release store instead the
+run is silent, and the crate keeps the fence because a release per slot store
+is the ARM64 price the design refuses. Miri models the fence and is the
+instrument for that pairing; the same case runs green under it. A second
+report under that case, or one under any other, is a finding.
+
 ## Loom
 
 Loom explores the executions the C11 model permits, which is how an

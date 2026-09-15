@@ -8,6 +8,48 @@ never edited or deleted.
 
 ---
 
+## 2026-09-15 — a foreign holder of the token withholds every death, and the owner makes the returns
+
+**Decided:** while another thread holds this thread's trace token and no
+window of the thread's own is open, `ll_free` withholds every death of the
+thread's — entity slot, retained survivor, large entity — without reading the
+block's stamp, on a stack threaded through the dead entities under a
+thread-local head (`cycle::deferred_slot_reuse`, "A foreign holder of the
+token"). The owner makes the returns once it reads the token free, and only
+the owner: at its next free, at the safepoint poll and before its exit, the
+whole stack taken off the head first so that the returns re-entering `ll_free`
+recurse into nothing, and a holder arriving between two returns leaving the
+rest standing. The owner's reclaim of cross-thread frees onto an entity block's
+free list waits the same way (`Heap::collect_remote`). The token's `is_held`
+read is an acquire paired with the release, so a return made after it happens
+after every load of the trace that held it. The stack's link — the dead
+object's class word, the dead array's version — is written as a release and
+read as an acquire, and a concurrent stride that finds the link where a class
+was re-reads the count as zero and expands nothing; the two count assertions
+of the owner's trace, a child at count zero and a subtraction below the row,
+are conditioned on `CellReader::CONCURRENT`, a corpse taking no row and the
+row clamping where the owner's trace asserts.
+
+**Why:** the owner's own window reads the stamp because its trace runs no
+user code and frees nothing, so a block with no rows holds no address the
+trace still needs. A trace on another thread holds an address between reading
+the cell and meeting the row, and in that interval the block carries no stamp:
+a return made on a clear stamp could be handed out again under an address the
+trace holds. Reading every trace's state from the free path would cost the
+owner a walk of another thread's arena; withholding everything costs the churn
+one trace lasts, which is `PLAN.md` S38.3's figure to measure, and draws
+nothing.
+
+**Rejected:** classifying by the stamp under a foreign holder (the interval
+above); a control line for the foreign stack, which a thread that never
+collected would have to draw on its free path; the collector making the
+owner's returns, which are the owner's heap's and whose free path is the
+owner's; a plain link write, which Miri reported against the collector's
+acquire load of the class word on the day the case landed.
+
+**Cost:** one thread-local read on every free while no window is open, a walk
+of the returns at every poll, and the churn held for a trace's length.
+
 ## 2026-09-15 — the collector's reader loads with `Acquire`, and the group's concurrent walk gives up rather than re-checks
 
 **Decided:** `cells::AtomicCells` reads every cell word — the `+8` word of a

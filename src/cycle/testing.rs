@@ -36,7 +36,7 @@
 //! a thread-local flag armed for one firing and restored when the guard dies.
 
 use crate::cells::PlainCells;
-use crate::class::Class;
+use crate::class::{Class, ClassBuilder};
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::row::{EdgeTarget, RowKey, resolve_edge_target};
@@ -312,6 +312,127 @@ pub(crate) unsafe fn dismantle_ring<const MEMBERS: usize>(
             ll_object_die(member);
         }
     }
+}
+
+/// A value handed to another thread by a case that knows the pointee
+/// outlives it — an entity pointer, or an array of them — because the owner
+/// joins that thread before it touches the pointee again.
+pub(crate) struct Sent<T>(pub(crate) T);
+
+unsafe impl<T> Send for Sent<T> {}
+
+impl<T> Sent<T> {
+    /// The value, through a method so that a closure captures the wrapper
+    /// rather than its field.
+    pub(crate) fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+/// Trace `root` from a second thread holding this thread's token, `traces`
+/// times through the collector's reader, and answer what `read` found in
+/// the rows of the last trace before they went back with the collector's
+/// workspace. Returns once the collector holds the token, so the owner's
+/// next free is under it.
+///
+/// With `wait_for` the collector holds the token and waits on it before its
+/// first trace, for a case whose mutator half has to be running beside the
+/// trace. The thread is the stand-in for the collector worker
+/// (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"): it takes the
+/// owner's token, opens a workspace of its own and runs the two phases
+/// through `cells::AtomicCells`.
+///
+/// # Safety
+/// `root` is a candidate of this thread's heap, and nothing frees a storage
+/// it reaches until this returns — an entity's death goes through `ll_free`,
+/// which withholds the slot under the holder (`cycle::deferred_slot_reuse`).
+pub(crate) unsafe fn traced_from_a_collector_thread<T: Send + 'static>(
+    root: *mut RcHeader,
+    traces: usize,
+    wait_for: Option<std::sync::mpsc::Receiver<()>>,
+    read: impl FnOnce() -> T + Send + 'static,
+) -> std::thread::JoinHandle<T> {
+    let token = crate::cycle::token::testing::Handed(crate::cycle::token::this_thread_token());
+    let root = Sent(root);
+    let (held_sender, held) = std::sync::mpsc::channel();
+    let collector = std::thread::spawn(move || {
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the pool served the collector thread"
+        );
+        let token = token.token();
+        let root = root.into_inner();
+        assert!(unsafe { (*token).try_take() }, "the owner was tracing");
+        held_sender.send(()).expect("the owner waits for this");
+        // Released on the unwind as well as on the return: a collector that
+        // failed an assertion while holding the token would leave the
+        // owner's exit waiting for it forever, and the case's own failure
+        // would never be reported.
+        struct ReleaseOnDrop(*const crate::cycle::token::TraceToken);
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                unsafe { (*self.0).release() };
+            }
+        }
+        let _held = ReleaseOnDrop(token);
+        if let Some(wait_for) = wait_for {
+            wait_for.recv().expect("the owner signalled");
+        }
+
+        let mut read = Some(read);
+        let mut answer = None;
+        for trace in 0..traces {
+            let mut arena =
+                TraceScratchArena::open().expect("the collector thread drew a workspace");
+            assert_eq!(
+                unsafe { mark::<crate::cells::AtomicCells>(&mut arena, root) },
+                MarkResult::Complete
+            );
+            assert_eq!(
+                unsafe { scan::<crate::cells::AtomicCells>(&mut arena, root) },
+                ScanResult::Complete
+            );
+            if trace + 1 == traces {
+                answer = Some((read.take().expect("read once"))());
+            }
+
+            arena.reset();
+        }
+
+        drop(_held);
+        crate::cycle::queue::release_queue_segments();
+        answer.expect("at least one trace ran")
+    });
+    held.recv().expect("the collector took the token");
+    collector
+}
+
+/// The colours the last trace left for `entities`, in their order.
+///
+/// # Safety
+/// As [`row_color`]: every entity's block was touched by the trace whose
+/// rows are still standing.
+pub(crate) unsafe fn colors(entities: &[*mut RcHeader]) -> Vec<Color> {
+    entities
+        .iter()
+        .map(|&entity| unsafe { row_color(entity) })
+        .collect()
+}
+
+/// A ring of three whose first member holds a second property, which is
+/// where a case hangs its subject.
+///
+/// # Safety
+/// As [`ring`].
+pub(crate) unsafe fn ring_with_a_spare_property(arena: &mut Arena, name: &str) -> [*mut Object; 3] {
+    let first = ClassBuilder::new(&format!("{name}First"))
+        .prop("next", true)
+        .prop("held", true)
+        .build();
+    let member = ClassBuilder::new(&format!("{name}Member"))
+        .prop("next", true)
+        .build();
+    unsafe { ring(arena, [first, member, member]) }
 }
 
 /// Run `case` on a thread whose heap no other case has touched, and answer

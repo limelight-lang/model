@@ -740,13 +740,19 @@ having gone back with the blocks; a collection off the poll keeps its arena
 instead and arms nothing (`dev/DECISIONS.md`, "the member list is the pressure
 path's alone").
 
-Withholding a physical return — `memory::stdapi::ll_free` asks two windows
+Withholding a physical return — `memory::stdapi::ll_free` asks three windows
 before a slot, a retained block or a large run goes back: an entity whose
 header still carries `CANDIDATE_BIT` waits with no record kept, the queue entry
 being the record; an open trace sends the return to
 `cycle::deferred_slot_reuse::ActiveTrace`, which stacks it through the dead
 entity and makes it after its trace scratch arena has swept its rows and
-before that arena gives its own blocks back. The two close in either order.
+before that arena gives its own blocks back; and a foreign holder of the
+thread's trace token withholds every death, stacked the same way under a
+thread-local head, until the owner reads the token free and makes the
+returns — at its next free, at the poll, before its exit
+(`cycle::deferred_slot_reuse`, "A foreign holder of the token"). The owner's
+reclaim of cross-thread frees waits the same way. The windows close in any
+order.
 
 Buffer arena (`src/memory/buffer_arena.rs`) — where an entity's
 out-of-line body lives: a string's payload and an array's table storage.

@@ -193,6 +193,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("TOKEN", false), // const futex mutex, flag and condvar: no drop glue
         ("WEAK_TABLE", false),
         ("WINDOW", false),
+        ("WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue
         ("WRITTEN_BYTES", false),
     ];
 
