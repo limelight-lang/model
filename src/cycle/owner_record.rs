@@ -1,13 +1,31 @@
 //! The owner's record: the words of one mutator thread that a collector
-//! thread reaches — its trace token, and beside it the owner's note of who
-//! holds that token — in storage that outlives the thread
+//! thread reaches, in storage that outlives the thread
 //! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"; `dev/DECISIONS.md`,
 //! "the token stands in a record the process keeps, and the exit's claim on
-//! it is never released"). The candidate ring a collector reads behind its
-//! writer, and the verdict ring the owner reads back, stand in this record
-//! too once they are built (`rfc/dev/DECISIONS.md`, "the candidate queue is
-//! read behind its writer, and the collector's verdicts come back by a
-//! second ring"); until then the record is the token's line alone.
+//! it is never released"). Four lines: the trace token with the owner's
+//! note of who holds it; the reader's line, the collector's words of the
+//! two rings; the writer's line, the owner's words of them; and a spare
+//! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
+//! and the collector's verdicts come back by a second ring"). The lines are
+//! split by who writes them, so a registration's store and a batch's load
+//! never share a line. Nothing reads the two ring lines until the rings
+//! are built (`PLAN.md` S49.3 and S49.4).
+//!
+//! # When a thread takes its record
+//!
+//! At `ll_thread_init`, beside the base block and before anything the
+//! initialisation would have to undo: the registry's refusal is a thread
+//! that never starts, as the base block's is
+//! ([`draw_thread_record`]). The token stays held until the initialisation
+//! is complete ([`make_thread_record_claimable`]), so a collector claims no
+//! half-built thread. A thread the runtime never registered takes its
+//! record at its first candidate registration, through the registry's
+//! lock, beside the base block that path draws for it
+//! (`crate::cycle::queue`, the base block's draw for an unregistered
+//! thread); that lock is the one exception to the registration path's ban
+//! on locking, paid once per thread. The exit releases the record last of
+//! the collector's structures, after the queue whose registrations its
+//! rounds could still make (`crate::memory::heap::ll_thread_exit`).
 //!
 //! # Why the storage outlives the thread
 //!
@@ -23,14 +41,16 @@
 //! # The token is what says whether a record is anyone's
 //!
 //! A record's token is held from the moment the registry carves it until the
-//! thread that took it has finished its initialisation, and again from the
-//! exit's final claim until the next thread's initialisation ends. A worker's
+//! thread that took it has finished its initialisation — noted as the
+//! owner's own claim, so the free path withholds nothing under it — and
+//! again from the exit's final claim until the next thread's initialisation
+//! ends. A worker's
 //! claim is a compare-and-swap from free, so it fails on a record nobody has
 //! taken yet, on one an exit has released, and on one whose next thread is
 //! not yet ready — without a liveness word of its own, which would have to be
 //! ordered against the token anyway. The exit's claim is never released: the
 //! record goes to the free list held, and the taker releases it
-//! ([`initialize_thread_record`]). Until that claim — through the static
+//! ([`make_thread_record_claimable`]). Until that claim — through the static
 //! blocks' teardown, the exit's first step — the token is free and a claim
 //! succeeds, which is what the claim's wait is for. A thread that never
 //! exits — one the runtime never registered, taking its record at its first
@@ -62,14 +82,15 @@
 
 use std::cell::Cell;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 use crate::cycle::token::TraceToken;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
 use crate::memory::gc_metadata;
 
-/// One mutator thread's record. Sixty-four bytes, one line, so that the
-/// worker's loads of one owner touch nothing of another's.
+/// One mutator thread's record: four 64-byte lines, each written by one
+/// party, so that the worker's loads of one owner touch nothing of
+/// another's and nothing the owner's registration stores into.
 #[repr(C, align(64))]
 pub(crate) struct OwnerRecord {
     /// The trace token, taken by a collector thread around its trace of this
@@ -88,13 +109,95 @@ pub(crate) struct OwnerRecord {
     /// its own thread's exit.
     #[cfg(test)]
     pinned: AtomicBool,
+    /// The collector's words of the two rings.
+    reader: ReaderLine,
+    /// The owner's words of the two rings.
+    writer: WriterLine,
+    /// Room for what the two lines above outgrow.
+    spare: SpareLine,
+}
+
+/// The line the collector writes: where it reads R from, where it posts
+/// verdicts into P, and how many roots it takes per batch. Loaded by the
+/// owner only where the ring's rules say so (`PLAN.md` S49.3, the writer's
+/// read of the front block on a full tail block).
+// Loaded by nothing outside the tests until S49.3 and S49.4 build the rings.
+#[cfg_attr(not(test), allow(dead_code))]
+#[repr(C, align(64))]
+struct ReaderLine {
+    /// The block of R the collector reads from; null until S49.3 builds R.
+    r_front_block: AtomicPtr<BlockHeader>,
+    /// The block of P the collector posts into; null until S49.4 builds P.
+    p_tail_block: AtomicPtr<BlockHeader>,
+    /// Roots the collector takes from this owner per batch, halved on a
+    /// batch that met its budget and doubled back on a completed one
+    /// (`PLAN.md` S49.5); zero until then.
+    batch: AtomicUsize,
+}
+
+/// The line the owner writes: where it registers into R, and where it
+/// reads verdicts from P.
+// Loaded by nothing outside the tests until S49.3 and S49.4 build the rings.
+#[cfg_attr(not(test), allow(dead_code))]
+#[repr(C, align(64))]
+struct WriterLine {
+    /// The block of R the owner registers into; null until S49.3 builds R.
+    r_tail_block: AtomicPtr<BlockHeader>,
+    /// The block of P the owner reads verdicts from; null until S49.4
+    /// builds P.
+    p_front_block: AtomicPtr<BlockHeader>,
+}
+
+/// A line nobody writes yet.
+#[repr(C, align(64))]
+struct SpareLine {
+    _room: [u8; 64],
+}
+
+impl ReaderLine {
+    const fn empty() -> Self {
+        Self {
+            r_front_block: AtomicPtr::new(std::ptr::null_mut()),
+            p_tail_block: AtomicPtr::new(std::ptr::null_mut()),
+            batch: AtomicUsize::new(0),
+        }
+    }
+
+    /// Empty the line in place, for a record taken off the free list.
+    fn reset(&self) {
+        self.r_front_block
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
+        self.p_tail_block
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
+        self.batch.store(0, Ordering::Relaxed);
+    }
+}
+
+impl WriterLine {
+    const fn empty() -> Self {
+        Self {
+            r_tail_block: AtomicPtr::new(std::ptr::null_mut()),
+            p_front_block: AtomicPtr::new(std::ptr::null_mut()),
+        }
+    }
+
+    /// Empty the line in place, for a record taken off the free list.
+    fn reset(&self) {
+        self.r_tail_block
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
+        self.p_front_block
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
+    }
 }
 
 // The free link is written under the registry's lock and every other field
 // is atomic, which is what lets a record be reached from two threads.
 unsafe impl Sync for OwnerRecord {}
 
-const _: () = assert!(size_of::<OwnerRecord>() == 64);
+const _: () = assert!(size_of::<OwnerRecord>() == 256);
+const _: () = assert!(std::mem::offset_of!(OwnerRecord, reader) == 64);
+const _: () = assert!(std::mem::offset_of!(OwnerRecord, writer) == 128);
+const _: () = assert!(std::mem::offset_of!(OwnerRecord, spare) == 192);
 const _: () = assert!(
     !std::mem::needs_drop::<OwnerRecord>(),
     "a record is written in place and never dropped"
@@ -141,6 +244,9 @@ impl OwnerRecord {
             owner_holds: AtomicBool::new(false),
             #[cfg(test)]
             pinned: AtomicBool::new(false),
+            reader: ReaderLine::empty(),
+            writer: WriterLine::empty(),
+            spare: SpareLine { _room: [0; 64] },
         }
     }
 
@@ -194,7 +300,10 @@ pub(crate) fn this_thread_record() -> *mut OwnerRecord {
 /// The record comes out with its token held; the caller is the one that
 /// releases it, or keeps it as its own claim ([`crate::cycle::token::HeldToken`]).
 /// Whether the token was just taken is `taken`, so the caller can tell a
-/// record it already lived in from one it has this instant.
+/// record it already lived in from one it has this instant. Every thread
+/// that registers a candidate has a record before it does, so a caller on
+/// a production path finds one present; the take here is the test's, whose
+/// thread asks for its token before anything else.
 pub(crate) fn ensure_thread_record() -> (*mut OwnerRecord, bool) {
     let present = this_thread_record();
     if !present.is_null() {
@@ -215,22 +324,57 @@ pub(crate) fn ensure_thread_record() -> (*mut OwnerRecord, bool) {
     (record, true)
 }
 
-/// Give this thread a record at its initialisation and make it claimable:
-/// the token is released here, once nothing else of the initialisation is
-/// left to do. Answers false when the pool refused; the thread then takes a
-/// record at its first collection instead
-/// (`crate::memory::heap::ll_thread_init`).
-pub(crate) fn initialize_thread_record() -> bool {
-    let (record, taken) = ensure_thread_record();
-    if record.is_null() {
-        return false;
-    }
+/// What [`draw_thread_record`] did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RecordDraw {
+    /// The thread had a record already, and keeps it as it was: an
+    /// initialisation run again on a started thread owes it nothing.
+    Present,
+    /// This call took one, with its token held; the caller releases the
+    /// hold ([`make_thread_record_claimable`]) or gives the record back
+    /// ([`release_thread_record`]).
+    Drawn,
+    /// The registry could not carve one, which the caller treats as it
+    /// treats a refused base block.
+    AllocationFailed,
+}
 
-    if taken {
-        unsafe { (*record).token.release() };
+/// Give this thread a record, with its token held as the owner's own claim:
+/// the draw `ll_thread_init` makes beside the base block, and the one a
+/// thread the runtime never registered makes at its first registration.
+///
+/// The hold is noted as the owner's, because the rest of the initialisation
+/// runs under it and its returns — a rollback's, a re-entered draw's — go
+/// through the free path, which withholds under a foreign holder and not
+/// under the owner ([`OwnerRecord::owner_holds`]).
+pub(crate) fn draw_thread_record() -> RecordDraw {
+    match ensure_thread_record() {
+        (record, _) if record.is_null() => RecordDraw::AllocationFailed,
+        (record, true) => {
+            unsafe { note_owner_holds(record, true) };
+            RecordDraw::Drawn
+        }
+        (_, false) => RecordDraw::Present,
     }
+}
 
-    true
+/// Make this thread's record claimable: the release of the hold
+/// [`draw_thread_record`] took, made once, after the last thing a
+/// collector's claim may not overtake.
+///
+/// # Safety
+/// This thread's record was drawn by this thread's initialisation
+/// ([`RecordDraw::Drawn`]) and nothing has released it since.
+pub(crate) unsafe fn make_thread_record_claimable() {
+    let record = this_thread_record();
+    debug_assert!(
+        !record.is_null() && unsafe { (*record).token.is_held() && owner_holds(record) },
+        "the initialisation's hold is what this releases"
+    );
+    unsafe {
+        note_owner_holds(record, false);
+        (*record).token.release();
+    }
 }
 
 /// Note whether the owner holds its own token. Written by
@@ -255,10 +399,11 @@ pub(crate) unsafe fn owner_holds(record: *mut OwnerRecord) -> bool {
 
 /// Give this thread's record back to the registry, for the next thread.
 ///
-/// The token stays held: the exit's final claim is what stands on it, and
-/// the thread that takes the record next releases it when its own
-/// initialisation is complete. A thread that never had a record has nothing
-/// to give back.
+/// The token stays held: the exit's final claim is what stands on it — or
+/// the initialisation's own hold, for a thread `ll_thread_init` refused
+/// after the draw — and the thread that takes the record next releases it
+/// when its own initialisation is complete. A thread that never had a
+/// record has nothing to give back.
 ///
 /// # Safety
 /// This thread holds its record's token and will not touch the record again.
@@ -269,8 +414,15 @@ pub(crate) unsafe fn release_thread_record() {
     }
 
     debug_assert!(
-        unsafe { (*record).token.is_held() && owner_holds(record) },
-        "a record goes back under the exit's own claim"
+        unsafe { (*record).token.is_held() },
+        "a record goes back held: under the exit's claim, or under the \
+         initialisation's own hold"
+    );
+    #[cfg(test)]
+    debug_assert!(
+        crate::cycle::queue::queue_base().is_null(),
+        "the record goes back after the base block, whose queue's rounds \
+         could still register"
     );
     let mut registry = REGISTRY
         .lock()
@@ -283,6 +435,11 @@ pub(crate) unsafe fn release_thread_record() {
 /// out of the head block, then one out of a block drawn for it. Null when
 /// the pool refuses that draw.
 fn take_record() -> *mut OwnerRecord {
+    #[cfg(test)]
+    if REFUSE_DRAWS.with(Cell::get) {
+        return std::ptr::null_mut();
+    }
+
     let mut registry = REGISTRY
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -295,6 +452,8 @@ fn take_record() -> *mut OwnerRecord {
         unsafe {
             (*released).owner_holds.store(false, Ordering::Relaxed);
             (*released).free_link.set(std::ptr::null_mut());
+            (*released).reader.reset();
+            (*released).writer.reset();
         }
         return released;
     }
@@ -305,6 +464,8 @@ fn take_record() -> *mut OwnerRecord {
             return std::ptr::null_mut();
         }
 
+        #[cfg(test)]
+        BLOCKS_CARVED.with(|count| count.set(count.get() + 1));
         unsafe { (*block).next = registry.head };
         registry.head = block;
         registry.carved = 0;
@@ -314,6 +475,8 @@ fn take_record() -> *mut OwnerRecord {
         (BlockHeader::payload_start(registry.head) as *mut OwnerRecord).add(registry.carved)
     };
     registry.carved += 1;
+    #[cfg(test)]
+    RECORDS_CARVED.with(|count| count.set(count.get() + 1));
     gc_metadata::charge(size_of::<OwnerRecord>());
     unsafe { record.write(OwnerRecord::taken()) };
     record
@@ -331,9 +494,13 @@ fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
 }
 
 /// Unlink and answer the first record of the free list a taker may have, or
-/// null: every record on the list but a pinned one.
+/// null: every record on the list but a pinned one — or the one record the
+/// taking thread named with [`take_this_record_for_test`], pinned or not,
+/// so that a case can read what a re-take of one record does while other
+/// cases' threads move the list's top.
 #[cfg(test)]
 fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
+    let wanted = TAKE_THIS.with(|cell| cell.replace(std::ptr::null_mut()));
     let mut link: *mut *mut OwnerRecord = &raw mut registry.free;
     loop {
         let record = unsafe { *link };
@@ -341,7 +508,12 @@ fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
             return record;
         }
 
-        if unsafe { (*record).pinned.load(Ordering::Relaxed) } {
+        let skipped = if wanted.is_null() {
+            unsafe { (*record).pinned.load(Ordering::Relaxed) }
+        } else {
+            record != wanted
+        };
+        if skipped {
             link = unsafe { (*record).free_link.as_ptr() };
             continue;
         }
@@ -349,6 +521,13 @@ fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
         unsafe { *link = (*record).free_link.get() };
         return record;
     }
+}
+
+/// Make this thread's next take pop `record` off the free list, wherever it
+/// stands and pinned or not; null when the list does not hold it.
+#[cfg(test)]
+pub(crate) fn take_this_record_for_test(record: *mut OwnerRecord) {
+    TAKE_THIS.with(|cell| cell.set(record));
 }
 
 /// Keep `record` on the free list, or let it go again, for a case that
@@ -363,6 +542,67 @@ thread_local! {
     /// Records this thread has taken out of the registry, for a case that
     /// reads whether an exit drew one.
     static RECORDS_TAKEN: Cell<usize> = const { Cell::new(0) };
+    /// Registry blocks this thread's takes drew from the pool, and records
+    /// they carved fresh rather than popped: what a take leaves with the
+    /// process, read on the thread so that other threads' carves are not in
+    /// the figure.
+    static BLOCKS_CARVED: Cell<usize> = const { Cell::new(0) };
+    static RECORDS_CARVED: Cell<usize> = const { Cell::new(0) };
+    /// The one record this thread's next take pops, or null for the list's
+    /// first unpinned record; cleared by the take.
+    static TAKE_THIS: Cell<*mut OwnerRecord> = const { Cell::new(std::ptr::null_mut()) };
+    /// Whether this thread's draws answer null, for a case that reads what
+    /// a refused record costs. Every draw while it stands, rather than the
+    /// next one: under `debug-journal` the base block's draw runs a second
+    /// `ll_thread_init` from inside the journal, whose own draw would spend
+    /// a one-shot refusal before the case's init reached its.
+    static REFUSE_DRAWS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Refuse this thread's draws of a record, or serve them again, as a
+/// registry whose block the pool refused would; the refusal names the draw
+/// and nothing else.
+#[cfg(test)]
+pub(crate) fn refuse_record_draws(refuse: bool) {
+    REFUSE_DRAWS.with(|cell| cell.set(refuse));
+}
+
+/// Write into `record`'s reader and writer lines, for a case that reads
+/// whether a re-take empties them.
+#[cfg(test)]
+pub(crate) fn scribble_lines_for_test(record: *mut OwnerRecord) {
+    let scribble = std::ptr::dangling_mut::<BlockHeader>();
+    unsafe {
+        (*record)
+            .reader
+            .r_front_block
+            .store(scribble, Ordering::Relaxed);
+        (*record)
+            .reader
+            .p_tail_block
+            .store(scribble, Ordering::Relaxed);
+        (*record).reader.batch.store(7, Ordering::Relaxed);
+        (*record)
+            .writer
+            .r_tail_block
+            .store(scribble, Ordering::Relaxed);
+        (*record)
+            .writer
+            .p_front_block
+            .store(scribble, Ordering::Relaxed);
+    }
+}
+
+/// Whether `record`'s reader and writer lines hold nothing.
+#[cfg(test)]
+pub(crate) fn lines_are_empty(record: *mut OwnerRecord) -> bool {
+    let reader = unsafe { &(*record).reader };
+    let writer = unsafe { &(*record).writer };
+    reader.r_front_block.load(Ordering::Relaxed).is_null()
+        && reader.p_tail_block.load(Ordering::Relaxed).is_null()
+        && reader.batch.load(Ordering::Relaxed) == 0
+        && writer.r_tail_block.load(Ordering::Relaxed).is_null()
+        && writer.p_front_block.load(Ordering::Relaxed).is_null()
 }
 
 /// How many records this thread has taken out of the registry so far.
@@ -390,6 +630,18 @@ pub(crate) fn registry_lists_free(record: *mut OwnerRecord) -> bool {
     }
 
     false
+}
+
+/// Registry blocks this thread's takes drew and records they carved fresh,
+/// for a case that reads what a thread's draw left with the process: a
+/// carved record is charged once and stays carved, and the block it stands
+/// in stays with the registry.
+#[cfg(test)]
+pub(crate) fn carved_by_this_thread() -> (usize, usize) {
+    (
+        BLOCKS_CARVED.with(Cell::get),
+        RECORDS_CARVED.with(Cell::get),
+    )
 }
 
 /// Whether `block` is one of the registry's, for a case that reads where a

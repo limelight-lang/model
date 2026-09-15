@@ -8,7 +8,7 @@
 //! cases here are the draw, the refusal that ends a thread, the draw a thread
 //! the runtime never registered makes for itself, and the return.
 //!
-//! **The two aborts have no test**, and neither has the abort the overflow
+//! **The three aborts have no test**, and neither has the abort the overflow
 //! buffer takes when it is full, which predates them: nothing in this crate
 //! ends a process and comes back to report it. What is tested instead is every
 //! path that reaches them.
@@ -260,6 +260,14 @@ fn a_threads_whole_life_gives_every_block_back() {
 /// draw `ll_thread_init` makes through `gc_metadata` before it asks whether
 /// the teardown will run. Three in the `debug-journal` build as well,
 /// measured rather than argued from what the journal reaches.
+///
+/// **What the owner record leaves is the registry's, not the thread's.** The
+/// record is drawn beside the base block and goes back to the registry's
+/// free list, which is where the next thread takes it from; a record carved
+/// fresh stays carved and charged, and the block it was carved from stays
+/// with the process (`crate::cycle::owner_record`, "Why the storage outlives
+/// the thread"). What this thread carved is read on the thread, so the
+/// figures stay exact under other cases' carves.
 #[test]
 fn a_thread_nothing_will_tear_down_is_not_funded() {
     let _g = test_guard();
@@ -267,35 +275,44 @@ fn a_thread_nothing_will_tear_down_is_not_funded() {
     let before = pool.blocks_out();
     let blocks_before = stats().current_blocks();
 
-    let (started, drawn_there) = std::thread::spawn(|| {
+    let (started, drawn_there, (registry_blocks, records_carved)) = std::thread::spawn(|| {
         crate::memory::heap::FORCE_GUARD_UNARMED.store(true, Ordering::Relaxed);
         let started = crate::memory::heap::ll_thread_init();
         crate::memory::heap::FORCE_GUARD_UNARMED.store(false, Ordering::Relaxed);
         assert!(queue_base().is_null(), "and it holds no base block");
-        (started, thread_stats())
+        assert!(
+            crate::cycle::owner_record::this_thread_record().is_null(),
+            "and no record"
+        );
+        (
+            started,
+            thread_stats(),
+            crate::cycle::owner_record::carved_by_this_thread(),
+        )
     })
     .join()
     .unwrap();
+    let carved_bytes = records_carved * size_of::<crate::cycle::owner_record::OwnerRecord>();
 
     assert!(!started, "the thread reports that it did not start");
     assert!(
-        pool.blocks_out() <= before,
-        "and left nothing out of the pool"
+        pool.blocks_out() <= before + registry_blocks,
+        "and left nothing out of the pool but the registry's block"
     );
-    assert_eq!(stats().current_blocks(), blocks_before);
+    assert!(stats().current_blocks() <= blocks_before + registry_blocks);
     assert_eq!(
         drawn_there.peak_blocks(),
-        1 + SPARE_SEGMENTS,
-        "the base block and both spare segments were drawn"
+        1 + SPARE_SEGMENTS + registry_blocks,
+        "the base block and both spare segments were drawn, and the registry's block if it carved one"
     );
     assert_eq!(
         drawn_there.current_blocks(),
-        0,
-        "and every one of them went back"
+        registry_blocks,
+        "and every one of them went back but the registry's"
     );
     assert_eq!(
         drawn_there.current_bytes_in_use(),
-        0,
-        "as did the bytes the control line took"
+        carved_bytes,
+        "as did the bytes the control line took; a carved record stays charged"
     );
 }

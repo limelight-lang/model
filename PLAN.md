@@ -1109,7 +1109,20 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         born until S49.7; the in-line paths still detach and merge as
         today; the `S38.x` citations are swept; the gate is green
       tier: T1 · role: —
-- [ ] S49.2 The record at 256 bytes, drawn beside the base block   *(after S49.1)*
+- [x] S49.2 The record at 256 bytes, drawn beside the base block   *(closed 2026-09-15)*
+      handoff: Critic, one round, six findings — the re-take case pinned the
+        reset only when it won the free list's race (the taking thread now
+        names its record, `take_this_record_for_test`); the never-started
+        case had gone from exact figures to process-wide bounds (the carves
+        are counted on the thread now); a link to the deleted
+        `initialize_thread_record`; the exit's order after the base block
+        had no pin (a `cfg(test)` assertion in `release_thread_record`); the
+        model journal still described the 64-byte record and the tolerated
+        refusal (new entry); a rollback keyed on presence would release a
+        base block the call found rather than drew (guarded). Trap met on the
+        way, recorded in the journal entry: the initialisation's hold read as
+        a foreign holder and the rollback's returns were withheld. Miri
+        green over `cycle::owner_record`.
       done: `OwnerRecord` is 256 bytes — the token's line; the reader's line
         with R's `frontBlock`, P's `tailBlock` and the per-owner batch size;
         the writer's line with R's `tailBlock`, P's `frontBlock`; a spare

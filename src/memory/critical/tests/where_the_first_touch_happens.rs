@@ -133,6 +133,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("ALLOCATING", false),
         ("ARMED", false), // test-only const Cell, no drop glue
         ("BLOCKS", false),
+        ("BLOCKS_CARVED", false), // test-only const Cell, no drop glue
         ("BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue
         ("BLOCK_BUDGET", false),
         ("CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue
@@ -176,9 +177,11 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PRESSURE_COLLECTIONS", false),
         ("PRESSURE_ROOTS_TRACED", false), // test-only const Cell, no drop glue
         ("QUEUE_WORK", false),            // test-only const Cell, no destructor registration
+        ("RECORDS_CARVED", false),        // test-only const Cell, no drop glue
         ("RECORDS_TAKEN", false),         // test-only const Cell, no drop glue
         ("REFUSED_ENTITY_REFILLS", false), // test-only const Cell of an array, no drop glue
         ("REFUSE_AT_VERTEX", false),      // test-only const Cell, no drop glue
+        ("REFUSE_DRAWS", false),          // test-only const Cell, no drop glue
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
         ("REFUSE_LIST_PLACEMENT", false), // test-only const Cell, no drop glue
         ("REFUSING", false),              // test-only const Cell, no drop glue
@@ -189,6 +192,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("SLOTS_POPPED", false), // test-only const Cell, no drop glue
         ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
         ("SURVIVORS_ADMITTED_BEFORE_REFUSAL", false), // test-only const Cell, no drop glue
+        ("TAKE_THIS", false),    // test-only const Cell of a raw pointer, no drop glue
         ("TEARDOWN_DEPTH", false), // const Cell<u32>, no drop glue
         ("THREAD_BUFFER_ARENA", false),
         ("THREAD_CACHE", true),

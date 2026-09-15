@@ -8,6 +8,31 @@ never edited or deleted.
 
 ---
 
+## 2026-09-15 — the owner record is four lines, drawn beside the base block, and its refusal is a thread that never starts
+
+**Decided (`PLAN.md` S49.2, on Edmond's ruling in `rfc/dev/DECISIONS.md`,
+"the candidate queue is read behind its writer, and the collector's
+verdicts come back by a second ring"):** the record grows from one line to
+four — the token's, the collector's words of the two rings, the owner's
+words of them, and a spare — and is drawn in `ll_thread_init` beside the
+base block rather than at the end; the registry's refusal ends the thread
+as a refused base block does, and a thread the runtime never registered
+draws it at its first registration through the registry's lock. This
+supersedes the 64-byte record and the tolerated refusal of the entry below,
+"the token stands in a record the process keeps".
+
+**Why:** a registration's store and a batch's load must not share a line,
+and a thread must have its record before its first registration, so that
+the collector can read the ring behind the writer from the first entry;
+tolerating the refusal would leave a thread whose ring no collector can
+reach. The initialisation's hold on the token is noted as the owner's own:
+the rollback of a refused init returns blocks through the free path, which
+withholds under a foreign holder, and a hold read as foreign stranded three
+blocks (caught by `a_thread_nothing_will_tear_down_is_not_funded`).
+
+**Cost:** 255 records per block instead of 1,020; one lock take per thread
+on the registration path, for unregistered threads only.
+
 ## 2026-09-15 — the outbox form is deleted: the collector reads the ring behind its writer
 
 **Decided (Edmond; `rfc/dev/DECISIONS.md`, "the candidate queue is read

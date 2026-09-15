@@ -105,9 +105,12 @@
 //! Entity work also reaches threads the runtime never registered —
 //! self-initialising allocation, a releaser-only FFI consumer — and such
 //! a thread draws its base block at its first registration instead,
-//! through the ordinary allocation path ([`ensure_queue_base_or_abort`]).
-//! That draw refusing aborts, which is the funded class's last resort
-//! reached one step earlier than the overflow buffer's own bound below.
+//! through the ordinary allocation path, and its owner record beside it
+//! through the registry's lock — the one lock the registration path takes,
+//! once per such thread, and clause 3's one exception
+//! ([`ensure_queue_base_or_abort`]). Either draw refusing aborts, which is
+//! the funded class's last resort reached one step earlier than the
+//! overflow buffer's own bound below.
 //!
 //! The overflow buffer is emptied at the next safepoint poll, which is
 //! also where the thread does what the ruling asks: collect, or wait for
@@ -533,7 +536,25 @@ fn ensure_queue_base_or_abort() -> *mut OwnerCycleState {
         std::process::abort();
     }
 
+    // The record beside the base block, as `ll_thread_init` draws it, and
+    // claimable at once, this draw being the whole of the thread's
+    // initialisation. The registry's lock is the one lock on the
+    // registration path, paid once per such thread
+    // (`crate::cycle::owner_record`, "When a thread takes its record").
+    match crate::cycle::owner_record::draw_thread_record() {
+        crate::cycle::owner_record::RecordDraw::Drawn => unsafe {
+            crate::cycle::owner_record::make_thread_record_claimable()
+        },
+        crate::cycle::owner_record::RecordDraw::Present => {}
+        crate::cycle::owner_record::RecordDraw::AllocationFailed => std::process::abort(),
+    }
+
     state
+}
+
+/// Whether this thread holds a base block now.
+pub(crate) fn queue_base_present() -> bool {
+    !owner_state().is_null()
 }
 
 /// Ensure this thread has a base block, and report whether it has one.

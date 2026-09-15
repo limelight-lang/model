@@ -2075,12 +2075,26 @@ pub extern "C" fn ll_thread_init() -> bool {
     tls::ensure_slot();
 
     // The base block before the best-effort fills below, and before anything
-    // that would have to be undone: it is the only draw here whose
-    // refusal ends the thread, so it is the one that runs while nothing
-    // is yet built.
+    // that would have to be undone: its refusal ends the thread, so it runs
+    // while nothing is yet built. The record a collector reaches this
+    // thread through is drawn beside it under the same rule; its token stays
+    // held until the end of this function, so no collector claims a thread
+    // that is still being built (`crate::cycle::owner_record`).
+    let had_base_block = crate::cycle::queue::queue_base_present();
     if !crate::cycle::queue::initialize_queue_base() {
         return false;
     }
+
+    let record = crate::cycle::owner_record::draw_thread_record();
+    if record == crate::cycle::owner_record::RecordDraw::AllocationFailed {
+        // A base block this call drew goes back; one it found is the
+        // started thread's, and stays.
+        if !had_base_block {
+            crate::cycle::queue::release_queue_base();
+        }
+        return false;
+    }
+    let drew_record = record == crate::cycle::owner_record::RecordDraw::Drawn;
 
     // The three reserves first, and **before** the heap allocation below,
     // which returns early when the OS refuses it. A thread that comes out
@@ -2108,6 +2122,12 @@ pub extern "C" fn ll_thread_init() -> bool {
     if !thread_exit_will_run() {
         crate::cycle::queue::release_queue_segments();
         crate::cycle::queue::release_queue_base();
+        // Under the initialisation's own hold, which is never released for
+        // a thread that never starts; a record this call found is the
+        // started thread's, and stays.
+        if drew_record {
+            unsafe { crate::cycle::owner_record::release_thread_record() };
+        }
         crate::memory::reserve::drain();
         crate::memory::critical::drain();
         return false;
@@ -2122,6 +2142,13 @@ pub extern "C" fn ll_thread_init() -> bool {
         let layout = std::alloc::Layout::new::<ThreadHeaps>();
         let heap = unsafe { std::alloc::alloc(layout) } as *mut ThreadHeaps;
         if heap.is_null() {
+            // A heapless thread is a started one, and it registers
+            // candidates: its record is made claimable as a funded thread's
+            // is, or its own first collection would wait on the hold this
+            // function took.
+            if drew_record {
+                unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
+            }
             return true;
         }
 
@@ -2140,6 +2167,9 @@ pub extern "C" fn ll_thread_init() -> bool {
             // already report as null.
             unsafe { std::ptr::drop_in_place(heap) };
             unsafe { std::alloc::dealloc(heap as *mut u8, layout) };
+            if drew_record {
+                unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
+            }
             return true;
         }
 
@@ -2164,16 +2194,17 @@ pub extern "C" fn ll_thread_init() -> bool {
             crate::journal::reopen_thread();
         }
 
-        // The record a collector reaches this thread through, made
-        // claimable here, where nothing of this thread's initialisation is
-        // left: its refusal is tolerated, and the thread takes one at its
-        // first collection instead (`crate::cycle::owner_record`).
-        let _ = crate::cycle::owner_record::initialize_thread_record();
-
         // After the reopen, so a pool thread's second life records its
         // start in the ring of that life rather than in the one it
         // retired.
         journal_event!(crate::journal::kinds::KIND_THREAD_START, 0, 0, 0);
+    }
+
+    // The record drawn beside the base block is made claimable here, where
+    // nothing of this thread's initialisation is left
+    // (`crate::cycle::owner_record`).
+    if drew_record {
+        unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
     }
 
     true

@@ -2,7 +2,11 @@
 //! anyone may claim it: never before its thread's initialisation is complete,
 //! never after its exit's final claim, and only through the record while its
 //! thread lives. The owner's own claim is told from a foreign holder's by
-//! the free path, which withholds under the second and not the first.
+//! the free path, which withholds under the second and not the first. The
+//! record is four lines — the token's, the reader's, the writer's and a
+//! spare — drawn at `ll_thread_init` beside the base block, so that its
+//! refusal is a thread that never starts, and by an unregistered thread at
+//! its first registration.
 
 use super::*;
 use crate::cycle::testing::Sent;
@@ -212,7 +216,7 @@ fn a_foreign_holder_is_read_as_one() {
 }
 
 #[test]
-fn a_record_is_one_line_carved_from_a_gc_block() {
+fn a_record_is_carved_from_a_gc_block_on_a_line_boundary() {
     let _g = test_guard();
     let (token, record, release, thread) = a_started_thread();
     let block = BlockHeader::of_ptr(record as *const u8);
@@ -233,4 +237,140 @@ fn a_record_is_one_line_carved_from_a_gc_block() {
     let _ = token;
     drop(release);
     thread.join().expect("the thread exited");
+}
+
+#[test]
+fn a_record_is_four_lines_and_a_block_holds_255() {
+    assert_eq!(size_of::<OwnerRecord>(), 256);
+    assert_eq!(std::mem::offset_of!(OwnerRecord, token), 0);
+    assert_eq!(
+        std::mem::offset_of!(OwnerRecord, reader),
+        64,
+        "the collector's words are the second line"
+    );
+    assert_eq!(
+        std::mem::offset_of!(OwnerRecord, writer),
+        128,
+        "the owner's words are the third"
+    );
+    assert_eq!(std::mem::offset_of!(OwnerRecord, spare), 192);
+    assert_eq!(RECORDS_PER_BLOCK, 255);
+}
+
+/// The record is drawn beside the base block, and a registry that cannot
+/// carve one refuses the thread the way a refused base block does: nothing
+/// of the thread is left funded.
+///
+/// What the thread drew is read on the thread, through the GC-metadata
+/// ledger, rather than off the pool: under `debug-journal` the init's first
+/// record site opens the thread's journal ring, which the registry keeps
+/// past the thread and which is not this case's subject.
+#[test]
+fn a_refused_record_is_a_thread_that_never_starts() {
+    let _g = test_guard();
+
+    let (started, base_block, record, drawn_there) = std::thread::spawn(|| {
+        refuse_record_draws(true);
+        let started = crate::memory::heap::ll_thread_init();
+        refuse_record_draws(false);
+        (
+            started,
+            crate::cycle::queue::queue_base().is_null(),
+            this_thread_record().is_null(),
+            crate::memory::gc_metadata::thread_stats(),
+        )
+    })
+    .join()
+    .expect("the thread returned");
+
+    assert!(!started, "the thread reports that it did not start");
+    assert!(
+        base_block,
+        "the base block drawn before the record went back"
+    );
+    assert!(record, "and the thread holds no record");
+    assert_eq!(
+        drawn_there.current_blocks(),
+        0,
+        "nothing of the GC metadata the init drew stayed with the thread"
+    );
+}
+
+/// A thread the runtime never registered takes its record at its first
+/// registration, through the registry's lock: the one lock on that path,
+/// paid once per thread.
+///
+/// Not under `debug-journal`, for the reason the base block's case gives
+/// (`crate::cycle::queue::tests::the_base_block_a_thread_holds_for_its_life`).
+#[test]
+#[cfg_attr(
+    feature = "debug-journal",
+    ignore = "the journal registers every thread at its first record site"
+)]
+fn an_unregistered_thread_draws_its_record_at_its_first_registration() {
+    let _g = test_guard();
+    let (drawn, claimable) = std::thread::spawn(|| {
+        assert!(this_thread_record().is_null(), "nothing has run here yet");
+        // A header the candidate gate admits at count two, as the queue's
+        // own cases build one: the registration dereferences no entry.
+        let mut header = crate::refcount::RcHeader::new(
+            crate::refcount::MemoryCategory::GcHeap,
+            crate::refcount::EntityKind::Object.to_flags(),
+        );
+        unsafe { crate::refcount::ll_retain(&raw mut header) };
+        assert!(unsafe { !crate::refcount::ll_release(&raw mut header) });
+
+        let record = this_thread_record();
+        let readings = (
+            !record.is_null(),
+            !record.is_null() && unsafe { (*record).token.try_take() },
+        );
+        if readings.1 {
+            unsafe { (*record).token.release() };
+        }
+        crate::cycle::queue::release_queue_segments();
+        readings
+    })
+    .join()
+    .expect("the thread returned");
+    assert!(
+        drawn,
+        "the registration drew the record with the base block"
+    );
+    assert!(
+        claimable,
+        "and made it claimable, the draw being its initialisation"
+    );
+}
+
+/// A record off the free list is reset in place: its reader's and writer's
+/// lines are empty for the next thread, and the token word is the one the
+/// exit left rather than a rewritten one.
+#[test]
+fn a_retaken_record_starts_with_empty_lines() {
+    let _g = test_guard();
+    let (token, record, release, thread) = a_started_thread();
+    scribble_lines_for_test(record);
+    pin_for_test(record, true);
+    drop(release);
+    thread.join().expect("the thread exited");
+    assert!(unsafe { (*token).is_held() });
+    assert!(!lines_are_empty(record), "the scribble outlived the exit");
+
+    // The re-take is made on a fresh thread, which names the record it
+    // takes: the list's top moves under the parallel harness, and the pin
+    // keeps every other thread off this record until the reading is made.
+    let sent = Sent(record);
+    let (retook_it, lines_empty) = std::thread::spawn(move || {
+        let record = sent.into_inner();
+        take_this_record_for_test(record);
+        assert!(crate::memory::heap::ll_thread_init());
+        let mine = this_thread_record();
+        (mine == record, lines_are_empty(mine))
+    })
+    .join()
+    .expect("the thread returned");
+    assert!(retook_it, "the named record was the one taken");
+    assert!(lines_empty, "the re-take reset the lines in place");
+    pin_for_test(record, false);
 }
