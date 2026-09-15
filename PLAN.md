@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-15 · Active: S37, S38 and S40. S38.0 and S38.3 closed on
+Updated: 2026-09-15 · Active: S37, S38, S40 and S49. S49 opened the same night on Edmond's ruling that restores his read-behind queue, and replaces the outbox form S38.5–S38.7 built. S38.0 and S38.3 closed on
 2026-09-15 — the collector's reader with its fence, and the owner's returns
 withheld under a foreign holder of its token; the worker, unblocked the same
 evening by `rfc` S8.7, is S38.5 through S38.7 — the record, the offer and the
@@ -1072,6 +1072,160 @@ window there is.
         block (1020 records), a record mid-init met by a round, the
         `PostedUntraced` arm from a trace the rows refused (only the
         workspace refusal is pinned), the STARTING exclusion.
+
+## S49 — The candidate ring read behind its writer, and the collector's rounds
+
+Goal: the collector reads a mutator's candidates while the mutator registers
+into the same ring, without a safepoint of the mutator and without either
+thread touching the other's index, and answers by a verdict ring the mutator
+reads at its poll; the registration stays two plain stores. Edmond's design
+of 2026-08-25, restored 2026-09-15 (`rfc/dev/DECISIONS.md`, "the candidate
+queue is read behind its writer, and the collector's verdicts come back by a
+second ring"; `rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"; Y12
+clauses 2 and 8) after the outbox form S38.5–S38.7 built on it replaced it
+without his word; amended by one Critic round the same night, whose findings
+are folded into the steps. What the outbox form built and this stage keeps:
+the token, the owner record, the collector thread and its round,
+`worker::serve`'s trace through `cells::AtomicCells`, the deferred lane, the
+spare cells and the overflow buffer.
+
+Done when: a collector thread traces roots a mutator registered since its
+last batch while that mutator keeps registering; no entry of R is consumed
+twice and no root is dropped; the owner's reading of the verdicts frees a
+proposed ring, defers a root read live for an epoch, retires a zero-count
+entry whose death completed and keeps one whose destructor resurrected it;
+the mutator's registration is two plain stores on the probe; and `src/`
+carries no outbox, no offer, no pickup walk-back and no request relay.
+
+- [ ] S49.1 Delete the outbox form with its cases
+      done: `offer_lane`, `reclaim_offer`, `take_proposal`, `merge_proposal`,
+        `PROPOSED_MARK`, the outbox and inbox words, the request word, the
+        shortage note and its relay, `Roots::Proposal`,
+        `collect_proposal_off_the_poll`, `note_shortage_for_the_worker` and
+        the poll's pickup and offer are gone, and so are the cases that
+        drove them (a refuted mechanism costs its own tests; S49's Done-when
+        re-pins what survives); `worker::serve` takes and posts nothing and
+        `worker::round` serves nothing, and the collector thread is not
+        born until S49.7; the in-line paths still detach and merge as
+        today; the `S38.x` citations are swept; the gate is green
+      tier: T1 · role: —
+- [ ] S49.2 The record at 256 bytes, drawn beside the base block   *(after S49.1)*
+      done: `OwnerRecord` is 256 bytes — the token's line; the reader's line
+        with R's `frontBlock`, P's `tailBlock` and the per-owner batch size;
+        the writer's line with R's `tailBlock`, P's `frontBlock`; a spare
+        line — reset in place at every re-take, `RECORDS_PER_BLOCK` at 255
+        and the census guard's figures moved; the record is drawn in
+        `ll_thread_init` beside the base block, before the heapless return,
+        its refusal a thread that never starts, and an unregistered thread
+        draws it at its first registration through the registry's lock,
+        pinned by a case and named in the queue's module doc as clause 3's
+        one exception; the exit releases the record after the last
+        registration its rounds can make; nothing reads the new lines yet
+      tier: T2 · role: Critic
+- [ ] S49.3 The ring: blocks in a circle, the reader's API, the in-line reader, the compaction, the splice   *(after S49.2)*
+      done: a queue segment is a block of moodycamel's `ReaderWriterQueue`
+        form — `front` and `tail` on separate lines with the local copies,
+        indices wrapping at the capacity with one spare slot, `next` the
+        writer's, linked in a circle — and R's two block pointers stand in
+        the record; a registration stores the entry, then `tail + 1` by a
+        release store, and reads as two plain stores on the release path's
+        probe against the pre-step figure; a full tail block moves the writer
+        to the next block of the circle when it is not the front block and
+        otherwise takes a fresh block from the cells, the reserve and the
+        overflow buffer as today; the reader's API is one product of this
+        step — take up to K entries from the front, the double read of an
+        empty front block, the block advance with the link read first —
+        driven by a stand-in reader on a test thread while the case's thread
+        registers, no entry consumed twice, the second read pinned by a case
+        that fills and leaves the front block between the reader's two
+        reads; `COLLECTING` moves into the record as the collecting word,
+        set before the token is taken and cleared by a release store that is
+        the close's last; the in-line collection takes every entry from the
+        front block to the tail as its batch, traces, and at its close
+        compacts the ring in place — dropping what it disposed of, keeping in
+        order a refused or resurrected component, an uncompleted zero-count
+        entity, a root read live with nothing proposed and a root a refused
+        trace never walked, packed from the front block's `front`,
+        `tailBlock` on the last block with a kept entry, the local copies
+        rewritten in every block whose `tail` moved, the overflow phase kept
+        — which replaces `detach_candidates`, `merge_candidates`,
+        `dispose_candidates`, `defer_candidates`' lifted lane,
+        `retire_candidates`' whole-queue pass and `compaction::finish`'s
+        two-input form together, the pressure round and the closed-gate
+        teardown retirement compacting instead (the latter after taking the
+        token); the re-offer is a splice with no copy — the deferred lane's
+        blocks linked after the tail block and `tailBlock` moved to the last
+        of them — pinned by a case with three deferred blocks, empty cells
+        and an empty reserve at the poll, and arming the collection only
+        while the record names no living collector; every count that
+        assumed a full segment behind the write position reads `(tail −
+        front) mod cap` instead
+      tier: T2 · role: Critic
+- [ ] S49.4 The verdict ring and the owner's disposition   *(after S49.3)*
+      done: P is one block per thread of the same form with the roles
+        swapped, drawn with the record, never grown; a stand-in collector on
+        a test thread clamps its batch to P's room, posts verdicts in R's
+        order and advances R's front by the count posted through the
+        reader's API; the open-gate poll and every in-line collection —
+        fire, pressure, exit — read P first: a proposed root and an unwalked
+        root join the batch of one in-line collection over them, validated
+        exactly and finalized; a root read live goes to the deferred lane
+        with the poll's commit count as its mirror; a zero-count verdict is
+        retired only on the entity's completed-free bit, re-read here; every
+        entry the reading cannot dispose of is written back into R as a
+        registration before P's `front` advances at the close — a
+        resurrection by a destructor that stores `$this` among the cases; a
+        closed-gate poll reads no verdict; the teardown retirement takes the
+        token and reads P's prefix up to the first verdict it cannot dispose
+        of
+      tier: T2 · role: Critic
+- [ ] S49.5 The collector's batch   *(after S49.4)*
+      done: `worker::serve` opens the collector's workspace, takes the
+        owner's token by compare-and-swap, reads the collecting word with
+        acquire and releases on it, checks P's room and clamps K to it —
+        K under a block's capacity, a batch over at most two blocks — takes
+        the entries through the reader's API, traces the copy through
+        `cells::AtomicCells` under a block budget B, posts the verdicts to P
+        in R's order, advances by the per-block counts under one guard —
+        from the unwind as well, pinned by a panic between the stores — and
+        releases; a batch that meets B or a refused allocation posts its
+        roots unwalked and halves the owner's K, a completed one doubles it
+        back; the pressure path makes the withheld returns under its own
+        token before its allocation retry; the case's mutator registers
+        throughout the batch on its own thread and the owner's next
+        collection finds no entry consumed twice; Miri green over the cases
+        the diff's `unsafe` lines select, and ThreadSanitizer run over a case
+        whose mutator publishes no header during the batch
+      tier: T2 · role: Critic
+- [ ] S49.6 The poll's shrink   *(after S49.5)*
+      done: the poll unlinks the empty block after R's tail block into a
+        spare cell or the reserve's return path, never the front block,
+        pinned by a case whose ring grew under a burst and shrank after it
+      tier: T2 · role: Critic
+- [ ] S49.7 The wake channel and the fallback timer   *(after S49.6)*
+      done: the collector is born at the first pressure collection as today
+        and parks with a timeout that is its fallback interval, adapted
+        between two named bounds — lengthened after an empty round,
+        shortened when an owner's poll wrote that its last disposition freed
+        something — and unparked by a mutator's soft signal, its poll finding
+        R's unread count at or above a threshold, and by its pressure path;
+        a case shows a signalled collector serving within one round and an
+        unsignalled one making no round through an interval set above the
+        case's wait, read by a rounds probe; `gc.rs`'s sentence that puts
+        every threshold outside the crate names the soft threshold as the
+        runtime's own
+      tier: T2 · role: Critic
+- [ ] S49.8 Siblings   *(after S49.7)*
+      done: each owner record names its collector; a collector with backlog
+        after two consecutive rounds births a sibling — through the same
+        `ensure_thread` path, retry interval included — hands it half of its
+        owners by rewriting their words and wakes it; a sibling idle for a
+        named number of rounds is stripped of its owners and ended by the
+        elder; a cap the embedder sets; a mutator's signal reaches the
+        collector its word names, and a wake sent to an ended sibling is
+        lost until the next poll; cases for the birth, the handover, the end
+        and the lost wake
+      tier: T2 · role: Critic
 
 ## S40 — Measure the trace's density and decide the row form
 
