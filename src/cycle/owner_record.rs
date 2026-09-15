@@ -57,14 +57,16 @@
 //!
 //! The outbox carries a chain the owner detached at its poll on a worker's
 //! request, the inbox the chain the worker traced and posted back, the
-//! request word the worker's ask. Each is one word, and the owner is the
+//! request word the worker's ask, and beside them the owner's note that it
+//! ran short, which the worker's ask relays. Each is one word, and the owner is the
 //! only party that fills the outbox and empties the inbox, the worker the
 //! only one that empties the outbox and fills the inbox: the exchanges are
 //! how the two hand a chain across without either reading the other's
 //! (`crate::cycle::queue`, "The chain a collector thread takes"). The worker
 //! touches the outbox and the inbox only under the token; its one earlier
 //! access is a load of the outbox word. The collector thread that makes the
-//! round is `PLAN.md` S38.7's; its body is `crate::cycle::worker`.
+//! round, and the round itself, are `crate::cycle::worker`; the round reaches
+//! every record through [`for_each_record`].
 
 use std::cell::Cell;
 use std::sync::Mutex;
@@ -95,6 +97,10 @@ pub(crate) struct OwnerRecord {
     owner_holds: AtomicBool,
     /// Whether a worker asked the owner's next poll for an offer.
     request: AtomicBool,
+    /// Whether the owner ran short of memory since a worker last relayed
+    /// that into a request: the owner's pressure path writes it, the
+    /// collector thread's round takes it ([`note_shortage`], [`take_shortage`]).
+    shortage: AtomicBool,
     /// Whether a case has asked the registry to leave this record on the
     /// free list: other tests' threads start and exit under the parallel
     /// harness, and a record they could pop is one no case can read after
@@ -155,6 +161,7 @@ impl OwnerRecord {
             free_link: Cell::new(std::ptr::null_mut()),
             owner_holds: AtomicBool::new(false),
             request: AtomicBool::new(false),
+            shortage: AtomicBool::new(false),
             #[cfg(test)]
             pinned: AtomicBool::new(false),
         }
@@ -245,13 +252,6 @@ pub(crate) unsafe fn take_inbox(record: *mut OwnerRecord) -> usize {
 ///
 /// # Safety
 /// `record` is a record of the registry's.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the collector thread's ask before its round, S38.7's"
-    )
-)]
 pub(crate) unsafe fn request(record: *mut OwnerRecord) {
     unsafe { &*record }.request.store(true, Ordering::Relaxed);
 }
@@ -262,6 +262,57 @@ pub(crate) unsafe fn request(record: *mut OwnerRecord) {
 /// `record` is this thread's record.
 pub(crate) unsafe fn take_request(record: *mut OwnerRecord) -> bool {
     unsafe { &*record }.request.swap(false, Ordering::Relaxed)
+}
+
+/// Note that this owner ran short of memory: the pressure path's write,
+/// which the collector thread's next round turns into a request
+/// ([`take_shortage`]). The note is what makes an owner offer its lane at
+/// all — a worker asks only an owner that ran short since it last asked
+/// (`dev/DECISIONS.md`, "the worker relays the owner's shortage into its
+/// request").
+///
+/// # Safety
+/// `record` is this thread's record.
+pub(crate) unsafe fn note_shortage(record: *mut OwnerRecord) {
+    unsafe { &*record }.shortage.store(true, Ordering::Relaxed);
+}
+
+/// Whether the owner ran short since the last call, clearing the note. The
+/// collector thread's read, made in the round that relays it.
+///
+/// # Safety
+/// `record` is a record of the registry's.
+pub(crate) unsafe fn take_shortage(record: *mut OwnerRecord) -> bool {
+    unsafe { &*record }.shortage.swap(false, Ordering::Relaxed)
+}
+
+/// Call `visit` on every record the registry has carved so far, in no
+/// particular order: the records threads live in, the ones on the free list
+/// and the calling thread's own alike, since a record is never returned and
+/// a walk cannot tell them apart without a claim. The registry's lock is held
+/// for the reading of how far the carve got and not across the visits, so a
+/// record carved during the walk is the next walk's.
+pub(crate) fn for_each_record(mut visit: impl FnMut(*mut OwnerRecord)) {
+    let (head, carved) = {
+        let registry = REGISTRY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (registry.head, registry.carved)
+    };
+
+    // Every block behind the head is carved whole: a block leaves the head
+    // position only once `carved` reaches its capacity.
+    let mut block = head;
+    let mut records = carved;
+    while !block.is_null() {
+        let first = BlockHeader::payload_start(block) as *mut OwnerRecord;
+        for index in 0..records {
+            visit(unsafe { first.add(index) });
+        }
+
+        block = unsafe { (*block).next };
+        records = RECORDS_PER_BLOCK;
+    }
 }
 
 /// This thread's record, or null while it has none.
@@ -380,6 +431,7 @@ fn take_record() -> *mut OwnerRecord {
             (*released).outbox.store(0, Ordering::Relaxed);
             (*released).inbox.store(0, Ordering::Relaxed);
             (*released).request.store(false, Ordering::Relaxed);
+            (*released).shortage.store(false, Ordering::Relaxed);
             (*released).free_link.set(std::ptr::null_mut());
         }
         return released;

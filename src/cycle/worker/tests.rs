@@ -11,6 +11,7 @@
 use super::*;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::testing::{Sent, ring};
+use crate::cycle::worker::testing::{self, ThreadState};
 use crate::gc::{ll_gc_collect_cycles, ll_gc_maybe_collect};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::test_guard;
@@ -505,4 +506,354 @@ fn a_closed_gate_does_not_offer() {
         unsafe { owner_record::take_request(record) },
         "the request stands for a poll at a clean point"
     );
+}
+
+#[test]
+fn a_collector_threads_last_row_read_is_under_the_owners_token() {
+    let _g = test_guard();
+    crate::cycle::queue::release_queue_segments();
+    let mut arena = Arena::new();
+    let record = record();
+    let _ring = unsafe { garbage_ring::<2>(&mut arena, "ProbedRing") };
+    crate::gc::disarm();
+    unsafe { owner_record::request(record) };
+    unsafe { ll_gc_maybe_collect() };
+    assert!(unsafe { owner_record::offer_stands(record) });
+
+    // The probe is read on the collector thread, whose own token nobody
+    // holds: a reading of `true` is the owner's token, held through the
+    // scan's end by the collector.
+    let sent = Sent(record);
+    let (served, held) = std::thread::spawn(move || {
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the pool served the collector thread"
+        );
+        let _ = crate::cycle::token::take_held_at_last_row_read();
+        let served = unsafe { serve(sent.into_inner()) };
+        let held = crate::cycle::token::take_held_at_last_row_read();
+        crate::memory::heap::ll_thread_exit();
+        (served, held)
+    })
+    .join()
+    .expect("the collector thread returned");
+    assert!(matches!(served, Served::Posted { roots: 2, .. }));
+    assert_eq!(
+        held,
+        Some(true),
+        "the last row read was made under the owner's token"
+    );
+
+    DESTRUCTORS.store(0, Ordering::Relaxed);
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2, "the pickup");
+}
+
+/// Ends the collector thread when the case ends, on a panic as on a return,
+/// so that a failed case leaves no thread rounding under the next one.
+struct RetireOnDrop;
+
+impl Drop for RetireOnDrop {
+    fn drop(&mut self) {
+        testing::retire();
+    }
+}
+
+/// Whether `reached` answered true within `within`, asked every millisecond.
+fn wait_until(mut reached: impl FnMut() -> bool, within: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        if reached() {
+            return true;
+        }
+
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+const A_BIRTH: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Poll this thread, unarmed, until `freed` entities came back or `within`
+/// passed, and answer how many did.
+fn poll_until_freed(freed: usize, within: std::time::Duration) -> usize {
+    let mut total = 0;
+    wait_until(
+        || {
+            crate::gc::disarm();
+            total += unsafe { ll_gc_maybe_collect() };
+            total >= freed
+        },
+        within,
+    );
+    total
+}
+
+#[test]
+fn the_first_pressure_collection_births_the_thread_whose_rounds_serve_the_lane() {
+    let _g = test_guard();
+    crate::cycle::queue::release_queue_segments();
+    let mut arena = Arena::new();
+    let record = record();
+    assert_eq!(testing::thread_state(), ThreadState::Unborn);
+    testing::confine_rounds_to(record);
+    testing::permit_births(true);
+    let _end = RetireOnDrop;
+    let _ = testing::take_spawns();
+
+    // An empty lane: the collection has nothing to do, and births at its end.
+    unsafe { crate::cycle::collect::collect_under_pressure() };
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
+        "the first pressure collection birthed the thread"
+    );
+    unsafe { crate::cycle::collect::collect_under_pressure() };
+    assert_eq!(
+        testing::thread_state(),
+        ThreadState::Alive,
+        "a second pressure collection births no second thread"
+    );
+    assert_eq!(testing::take_spawns(), 1);
+
+    // The shortage above is relayed into a request, this owner's unarmed
+    // poll offers the lane, a round serves the offer, and the poll after the
+    // post picks it up: the ring is collected by a poll that never fired.
+    let _ring = unsafe { garbage_ring::<3>(&mut arena, "BirthRing") };
+    DESTRUCTORS.store(0, Ordering::Relaxed);
+    let _ = testing::take_chains_posted();
+    let freed = poll_until_freed(3, A_BIRTH);
+    assert_eq!(freed, 3, "the pickup collected the ring");
+    assert_eq!(DESTRUCTORS.load(Ordering::Relaxed), 3);
+    assert!(
+        testing::take_chains_posted() >= 1,
+        "a round of the thread posted the chain the poll picked up"
+    );
+    assert!(testing::take_records_visited() >= 1);
+
+    testing::retire();
+    assert_eq!(testing::thread_state(), ThreadState::Unborn);
+}
+
+#[test]
+fn a_lane_is_served_once_per_shortage_and_not_per_round() {
+    let _g = test_guard();
+    crate::cycle::queue::release_queue_segments();
+    let mut arena = Arena::new();
+    let record = record();
+    testing::confine_rounds_to(record);
+    testing::permit_births(true);
+    let _end = RetireOnDrop;
+
+    // A live ring, held from outside: every service reads it live and puts
+    // it back in the lane, so a service per round would be a treadmill.
+    let live = unsafe { garbage_ring::<2>(&mut arena, "TreadmillRing") };
+    unsafe { ll_retain(live[0] as *mut RcHeader) };
+    unsafe { crate::cycle::collect::collect_under_pressure() };
+    assert!(wait_until(
+        || testing::thread_state() == ThreadState::Alive,
+        A_BIRTH
+    ));
+    let _ = testing::take_chains_posted();
+    assert!(
+        wait_until(
+            || {
+                crate::gc::disarm();
+                unsafe { ll_gc_maybe_collect() };
+                testing::take_chains_posted() >= 1
+            },
+            A_BIRTH
+        ),
+        "the shortage was relayed and the offer served"
+    );
+
+    // Many rounds, many polls, no shortage: nothing is offered again.
+    let rounds = std::time::Duration::from_millis(100);
+    assert!(!wait_until(
+        || {
+            crate::gc::disarm();
+            unsafe { ll_gc_maybe_collect() };
+            testing::take_chains_posted() >= 1
+        },
+        rounds
+    ));
+    assert_eq!(
+        crate::cycle::queue::registered_count(),
+        2,
+        "the ring is in the lane"
+    );
+    assert!(!unsafe { owner_record::offer_stands(record) });
+
+    // A second shortage, a second service.
+    unsafe { crate::cycle::collect::collect_under_pressure() };
+    assert!(
+        wait_until(
+            || {
+                crate::gc::disarm();
+                unsafe { ll_gc_maybe_collect() };
+                testing::take_chains_posted() >= 1
+            },
+            A_BIRTH
+        ),
+        "the second shortage was relayed and served"
+    );
+
+    unsafe { ll_release(live[0] as *mut RcHeader) };
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 2);
+}
+
+#[test]
+fn a_refused_base_block_is_a_birth_a_later_pressure_collection_repeats() {
+    let _g = test_guard();
+    crate::cycle::queue::release_queue_segments();
+    let mut arena = Arena::new();
+    let record = record();
+    assert_eq!(testing::thread_state(), ThreadState::Unborn);
+    testing::confine_rounds_to(record);
+    testing::permit_births(true);
+    let _end = RetireOnDrop;
+    let _ = testing::take_spawns();
+
+    testing::refuse_the_next_births_base_block();
+    unsafe { crate::cycle::collect::collect_under_pressure() };
+    assert_ne!(
+        testing::thread_state(),
+        ThreadState::Alive,
+        "a thread whose base block was refused never started"
+    );
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Unborn, A_BIRTH),
+        "and the process is without a thread again"
+    );
+    assert_eq!(testing::take_spawns(), 1);
+
+    // With no worker to relay it, the shortage's note makes no offer: the
+    // lane stays where it is through a poll.
+    let _ring = unsafe { garbage_ring::<2>(&mut arena, "UnrelayedRing") };
+    crate::gc::disarm();
+    unsafe { ll_gc_maybe_collect() };
+    assert!(!unsafe { owner_record::offer_stands(record) });
+    assert!(!unsafe { owner_record::take_request(record) });
+    assert_eq!(crate::cycle::queue::registered_count(), 2);
+
+    // A pressure collection inside the interval spawns nothing; one after it
+    // births.
+    unsafe { crate::cycle::collect::collect_under_pressure() };
+    assert_eq!(
+        testing::take_spawns(),
+        0,
+        "a refused birth is not retried at once"
+    );
+    std::thread::sleep(BIRTH_RETRY_INTERVAL);
+    unsafe { crate::cycle::collect::collect_under_pressure() };
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
+        "a pressure collection after the interval birthed one"
+    );
+    assert_eq!(testing::take_spawns(), 1);
+}
+
+#[test]
+fn a_workspace_the_pool_refuses_posts_the_chain_untraced() {
+    let _g = test_guard();
+    crate::cycle::queue::release_queue_segments();
+    let mut arena = Arena::new();
+    let record = record();
+    let _ring = unsafe { garbage_ring::<2>(&mut arena, "UntracedRing") };
+    crate::gc::disarm();
+    unsafe { owner_record::request(record) };
+    unsafe { ll_gc_maybe_collect() };
+    assert!(unsafe { owner_record::offer_stands(record) });
+
+    // The collector thread's first trace draws its workspace, and a budget
+    // of zero on that thread refuses the draw.
+    let sent = Sent(record);
+    let served = std::thread::spawn(move || {
+        assert!(crate::memory::heap::ll_thread_init());
+        let _budget = crate::memory::block_pool::budget_blocks(0);
+        let served = unsafe { serve(sent.into_inner()) };
+        drop(_budget);
+        crate::memory::heap::ll_thread_exit();
+        served
+    })
+    .join()
+    .expect("the collector thread returned");
+    assert_eq!(served, Served::PostedUntraced);
+    assert!(unsafe { owner_record::proposal_stands(record) });
+    assert!(!unsafe { (*record).token.is_held() });
+
+    // Unmarked, so the pickup opens no window and every root goes back.
+    let census = crate::cycle::census::arm();
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    let report = crate::cycle::census::take();
+    drop(census);
+    assert!(report.scan.is_none());
+    assert_eq!(crate::cycle::queue::registered_count(), 2);
+    DESTRUCTORS.store(0, Ordering::Relaxed);
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 2);
+}
+
+#[test]
+fn a_round_reaches_a_record_beyond_the_callers_and_leaves_a_free_one_alone() {
+    let _g = test_guard();
+    let own = record();
+    // A record another thread lived in and gave back, pinned so that no
+    // thread of another case takes it while this one reads it.
+    let free = crate::cycle::testing::on_a_fresh_thread(|| {
+        let record = owner_record::this_thread_record();
+        owner_record::pin_for_test(record, true);
+        Sent(record)
+    })
+    .into_inner();
+    assert!(owner_record::registry_lists_free(free));
+    assert!(
+        unsafe { (*free).token.is_held() },
+        "held by the exit's claim"
+    );
+
+    // The round, driven on this thread: it skips this thread's own record,
+    // reaches the free one, and asks nothing of it — a record on the free
+    // list carries no shortage note.
+    testing::confine_rounds_to(free);
+    let _ = testing::take_records_visited();
+    round();
+    assert!(
+        testing::take_records_visited() >= 1,
+        "the walk reached past the caller's record"
+    );
+    assert!(unsafe { (*free).token.is_held() });
+    assert!(!unsafe { owner_record::take_request(free) });
+    assert!(!unsafe { owner_record::take_request(own) });
+    testing::confine_rounds_to(std::ptr::null_mut());
+    owner_record::pin_for_test(free, false);
+}
+
+#[test]
+fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
+    let _g = test_guard();
+    let record = record();
+    testing::confine_rounds_to(record);
+    testing::permit_births(true);
+    let _end = RetireOnDrop;
+    let _ = testing::take_spawns();
+
+    unsafe { crate::cycle::collect::collect_under_pressure() };
+    assert!(wait_until(
+        || testing::thread_state() == ThreadState::Alive,
+        A_BIRTH
+    ));
+    testing::panic_at_the_next_visit();
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Unborn, A_BIRTH),
+        "the panic unwound out of the thread and the word went back"
+    );
+
+    // Which is what lets the next pressure collection birth again.
+    unsafe { crate::cycle::collect::collect_under_pressure() };
+    assert!(wait_until(
+        || testing::thread_state() == ThreadState::Alive,
+        A_BIRTH
+    ));
+    assert_eq!(testing::take_spawns(), 2);
 }

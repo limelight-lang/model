@@ -8,6 +8,121 @@ never edited or deleted.
 
 ---
 
+## 2026-09-15 — the worker relays the owner's shortage into its request
+
+**Decided (Sage, on the Critic's first and third findings over S38.7):** the
+request word that makes an owner offer its lane is written by the collector
+thread as a relay of that owner's own shortage. `collect_under_pressure`
+leaves a one-bit note on its own record at every ending, the refused ones
+included (`owner_record::note_shortage`); the thread's round, finding an
+owner whose outbox is empty and whose note is set, takes the note and sets
+the request; a round that finds neither an offer nor a note leaves the
+record alone, and a round that serves an offer leaves the note for the next
+round. The timed round of the entry below stands as a service loop — it
+serves standing offers and relays notes, and it originates no request of
+its own — and so does the birth at the end of the first pressure collection.
+A refused birth is retried by a pressure collection
+`worker::BIRTH_RETRY_INTERVAL` (1 s) or more after the refusal, not by the
+next one; the thread's word goes back to unborn from the unwind of a
+panicking round as well.
+
+**Why:** how often a lane is offered is how often a heap is traced (the
+closure of one candidate is in practice the owner's heap), and that rate is
+a threshold policy `rfc/model/gc/strategies.md`, "Collection requests and
+triggers" keeps out of the model whatever clock reads it; the runtime owns
+one such decision, the allocation slow path, so a request derived from it
+gives the worker's pass the standing the in-line collection has — a tail of
+a shortage's collection rather than a collection the runtime started on its
+own. That also bounds the token's duty cycle in the mutator's own rate: a
+worker holds an owner's token at most once per shortage that owner
+suffered, for one trace of the lane it offered after it, so the returns the
+owner withholds under a foreign holder and the collections it waits with
+are withheld once per shortage and never per interval. The relay rather
+than the owner writing its own request: an offer detaches the lane and
+sends the next registration to the growth path, so it is made only to a
+thread that exists to take it, and the owner never needs to know whether
+one lives. The retry interval: a starving process collects at every refused
+allocation, and without the wait it spawns an OS thread per refusal.
+
+**Refused:** the request on every record every round, built first the same
+day — a wall-clock trigger inside the model whose duty cycle grows toward
+one with the heap, and no measurement bounds it because the trace time is
+the embedder's heap; a per-owner backoff over it, which keeps the clock,
+adds a second dial and re-traces a heap for a trickle of garbage; the owner
+writing its own request, which offers into nothing when the birth was
+refused; deferring the roots a worker read live, which is Y12 clause 8's
+sentence to change and does not bound the duty cycle on its own.
+
+**Cost, written down because it is the larger one:** under this ruling the
+accelerator does little. It makes one concurrent pass per shortage over a
+lane the shortage has just read exactly, and its yield is the registrations
+the teardown's severing made plus whatever died between the two traces. It
+earns its name only when something outside the model asks for a trace
+before pressure — the compiler's arming policy or the embedder, through an
+ABI the rfc has not written — and whether that reach is acceptable, or the
+ABI is specified first, is Edmond's. Two rfc sentences follow from the
+ruling and are his as well: Y12 clause 8, whether the owner may defer on
+the worker's reading, stays open and is what would make a live root's
+acquittal durable; and `strategies.md`'s "never fires on its own" now reads
+a pickup as the tail of the shortage that requested it, so a purely
+explicit configuration collects at shortages and at their pickup tails.
+Mechanically: one relaxed store on the pressure path, one byte in the
+record's padding, one more load per record per round, up to one interval of
+latency between the shortage and the offer.
+
+## 2026-09-15 — the collector thread is born at the first pressure collection, and rounds on a timer
+
+**Decided:** the process has one collector thread (`cycle::worker`), and it
+is born at the end of the first collection an allocation failure started:
+`collect_under_pressure` asks for it after its loop, every later pressure
+collection asks again, and the ask is a load of one word once a thread
+stands. The thread registers through `ll_thread_init` like any thread the
+runtime runs, so its base block can be refused and a refused draw is a thread
+that never started; the process is then without a collector until the next
+pressure collection, which births again. A round walks every record the
+registry has carved (`owner_record::for_each_record`), serves each owner
+whose outbox is set (`worker::serve`), and sets the request word of each
+owner whose outbox is empty, so that owner's next unarmed poll offers its
+lane; between rounds the thread sleeps 10 ms (`worker::ROUND_INTERVAL`),
+and nothing wakes it earlier. It skips its own record, ends only when a
+test asks, and holds what a registered thread holds: the base block, two
+spare segments, the reserves and, from its first trace, a workspace.
+
+**Why the pressure collection and not startup.** The crate has no
+process-start symbol, so "startup" would be the first `ll_thread_init` of
+the process, and a thread born there would trace the lanes of every
+embedder and every test binary whether or not any of them ever runs short
+of memory — a triggering policy in the model, which
+`rfc/model/gc/strategies.md`, "Collection requests and triggers" keeps out
+of it: the runtime owns one fire point, the allocation slow path. A birth
+at that point costs a process that never runs short nothing, and its birth
+is placed after the collection rather than before it so that the base block
+is drawn from memory the collection returned. **Why a timer.** The rfc's
+skips — an empty outbox, a held token, a full inbox — presume a later round;
+a round woken only by an offer would sleep for ever once every request was
+spent on an empty lane, and a round woken only by pressure would serve an
+offer no sooner than the next shortage. The interval is the one dial and is
+not measured against anything: 10 ms is a placeholder for the corpus figure
+S37 waits on.
+
+**Rejected:** an ABI symbol the embedder calls to start the thread, which
+would be a third birth the agreed criterion does not name; a wake from the
+owner's `offer_lane` on top of the timer, which adds a cross-thread word to
+the poll for a latency the interval already bounds; requesting only the
+owners whose lanes are non-empty, which the collector cannot read under no
+claim.
+
+**Cost:** a wakeup every 10 ms for the life of the process after its first
+shortage; a request set on every record every round, spent by the owner's
+next poll whether or not it offers; the treadmill of a live root the
+backlog already carries, now driven at the interval; ~700 KB a registered
+thread holds, on the collector too. The spawn allocates through the global
+allocator — the thread's name and the handle's shared state — on the path
+the no-panic ruling covers; the backlog names it beside the exit's own
+containers. In the test binary the thread is born only through a switch a
+case sets, and its rounds are confined to that case's record, because a
+request set on a stranger's record makes that thread's next poll offer.
+
 ## 2026-09-15 — the pickup is a collection whose batch is the posted chain, and an armed poll fires instead of offering
 
 **Decided:** the owner's pickup of a chain a collector thread posted is an

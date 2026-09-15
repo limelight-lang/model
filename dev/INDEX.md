@@ -54,8 +54,7 @@ versions live in `docs/history/`, marked at the top.
   `rc-satb` were deleted on 2026-08-26, and what survives of the old code and
   why is `src/lib.rs`'s module doc and `dev/DECISIONS.md`, 2026-08-26, the
   code being on the branch `archive/pre-rc-cycle`. What is not built yet is
-  the second thread — `PLAN.md` S38 — and the maturation prune's corpus
-  figures, S37. What each module does and what
+  the maturation prune's corpus figures, `PLAN.md` S37. What each module does and what
   it may not know is `dev/ARCHITECTURE.md`'s `cycle` row; where each one is:
 
   | module | what is there | production caller |
@@ -68,8 +67,8 @@ versions live in `docs/history/`, marked at the top.
   | `row` | `resolve_edge_target`, which row a traced edge resolves to, and the test-build assertion that the target stands in memory this process carved for blocks | none |
   | `epoch` | the process's count of closed commits, and the two-bit epoch a maturation stamp carries: `(commits / 64) % 4` | `cycle::finalization`, which reads it at a commit's start and advances it at its close, and `cycle::mark`, which reads it once per root |
   | `token` | the per-thread trace token: taken by compare-and-swap around the trace, released by one store after its last row read — the scan's end, or the harvest sweep under pressure — and waited on through a mutex by an owner whose graph a collector is tracing; the exit's claim is the one never released | `cycle::collect`, both paths |
-  | `owner_record` | the 64-byte record the token stands in, with the outbox, the inbox and the request word of the worker's handoff — the owner fills the outbox and empties the inbox, the worker the reverse, each by one exchange — carved from GC-metadata blocks the process keeps and reused through a free list, held while nobody lives in it | `memory::heap::ll_thread_init` and `ll_thread_exit`, `cycle::token`, `gc`'s poll, `cycle::queue` |
-  | `worker` | what a collector thread does for one owner: read the outbox, claim the token, take the chain by one exchange, trace it through `cells::AtomicCells` over a workspace of its own, mark the roots read potentially unreachable (`queue::PROPOSED_MARK`), post before the release — walked or not | none until S38.7's thread; a case stands in |
+  | `owner_record` | the 64-byte record the token stands in, with the outbox, the inbox, the request word and the shortage note of the worker's handoff — the owner fills the outbox and empties the inbox, the worker the reverse, each by one exchange — carved from GC-metadata blocks the process keeps and reused through a free list, held while nobody lives in it | `memory::heap::ll_thread_init` and `ll_thread_exit`, `cycle::token`, `gc`'s poll, `cycle::queue` |
+  | `worker` | the collector thread — born at the end of the first pressure collection, registered through `ll_thread_init`, rounding over the records every 10 ms — and what it does for one owner: read the outbox, claim the token, take the chain by one exchange, trace it through `cells::AtomicCells` over a workspace of its own, mark the roots read potentially unreachable (`queue::PROPOSED_MARK`), post before the release — walked or not — and relay an owner's shortage note into its request, which is the only way a lane is offered | `cycle::collect`'s pressure path, which births it and leaves the note |
   | `mark` | the trace: trial deletion over the rows, and the prune that keeps it out of the mature live core — an edge target at the traversal age threshold under this collection's epoch that no candidate queue names is not descended into; `pin_threshold` holds a test thread's threshold at another `k`, which is how `mark/tests/what_the_prune_saves.rs` reads the pruned-edge counter at 1, 2 and 3 (`dev/BENCHMARKS.md`, 2026-09-12) | none |
   | `maturation` | the descent that stamps the live components a commit read: strongly connected components over the rows the scan left live, Pearce's single index held in the row's own count, and the age one more than the component's youngest member | `cycle::collect`, inside the commit and before the first guard |
   | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | `cycle::collect`'s path under pressure |
@@ -583,9 +582,8 @@ versions live in `docs/history/`, marked at the top.
   (`rfc/model/gc/rc-cycle.md`, "Publication, for a reader on another
   thread"). `cycle::mark`, `cycle::scan` and `cycle::trace::trace_batch`
   take the reader as a type parameter; the owner's paths pass `PlainCells`,
-  and the collector thread's caller is the worker, which waits on
-  `rfc`'s detach protocol — until then `cells::tests::what_a_collector_thread_reads`
-  is the thread that traces through `AtomicCells`, and the pairing
+  and `cycle::worker` traces through `AtomicCells` on the collector thread;
+  `cells::tests::what_a_collector_thread_reads` is the pairing
   ThreadSanitizer watches (`dev/WORKFLOW.md`, "ThreadSanitizer").
   It is the upper half of the deleted `walk.rs`, moved on 2026-08-26
   under a name that is not a collector's, and `cycle::mark` traces

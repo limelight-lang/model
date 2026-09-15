@@ -192,3 +192,22 @@ fn a_subtraction_below_the_count_fails_a_test_build() {
 
     unsafe { subtract(row, 2, true) };
 }
+
+/// A collector thread's pass reads a count the mutator moves under it, so a
+/// reference stored after the row started is one more in-edge than the
+/// count holds; the subtraction clamps at zero there, in every build, where
+/// the owner's pass asserts (`cells::CellReader::CONCURRENT` is what
+/// `cycle::mark` passes as `exact`).
+#[test]
+fn a_subtraction_below_the_count_clamps_on_a_collector_threads_pass() {
+    let mut word = compose(Color::Unclassified, 1);
+    let row = &raw mut word;
+
+    assert_eq!(unsafe { subtract(row, 2, false) }, 0);
+    assert_eq!(
+        count(unsafe { *row }),
+        0,
+        "clamped at zero rather than wrapped"
+    );
+    assert_eq!(color(unsafe { *row }), Color::Unclassified);
+}

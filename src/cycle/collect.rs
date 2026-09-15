@@ -766,6 +766,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             // refused is answered memory-exhausted either way, and the arming
             // is the one thing this call can leave for the poll.
             crate::gc::arm();
+            note_shortage_for_the_worker();
             return 0;
         }
     };
@@ -880,7 +881,23 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
         break;
     }
 
+    note_shortage_for_the_worker();
     freed
+}
+
+/// Leave this thread's shortage for the collector thread, and birth that
+/// thread if the process has none: the collector traces a lane only after
+/// its owner ran short, which is what keeps every trace it runs tied to the
+/// one fire point the runtime owns (`crate::cycle::worker`, "The thread, and
+/// the round over the records"). Called at every ending of a pressure
+/// collection, the refused ones included.
+fn note_shortage_for_the_worker() {
+    let record = crate::cycle::owner_record::this_thread_record();
+    if !record.is_null() {
+        unsafe { crate::cycle::owner_record::note_shortage(record) };
+    }
+
+    crate::cycle::worker::ensure_thread();
 }
 
 /// One trace of the pressure path: open the window, take the batch, trace the

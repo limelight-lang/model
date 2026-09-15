@@ -18,8 +18,11 @@
 //! collection off the poll keeps reading its rows through the teardown, and
 //! whether a foreign holder may take the token over rows that teardown is
 //! still reading is a ruling nobody has made (`rfc/model/gc/rc-cycle.md`,
-//! "Concurrency", the readership paragraph); until one is, the only tracer is
-//! the owner, and the question has no second party.
+//! "Concurrency", the readership paragraph). The collector thread never
+//! meets the case: it claims a token only over a set outbox, every in-line
+//! collection reclaims the outbox before it takes the token, and a poll
+//! inside the teardown offers nothing behind its closed gate
+//! (`crate::cycle::worker`).
 //!
 //! **A waiter blocks rather than spins.** The owner that finds its token held
 //! waits on a mutex and is woken by the release; a trace runs no user code and
@@ -158,25 +161,18 @@ impl TraceToken {
     }
 }
 
-/// The token of the calling thread, as a pointer a collector can hold from
-/// another thread, drawing this thread's record if it has none yet.
-///
-/// A case that stands in for a collector takes the pointer today; the
-/// collector thread that rounds over the records is `PLAN.md` S38.7's.
+/// The token of the calling thread, as a pointer a case standing in for a
+/// collector holds from another thread, drawing this thread's record if it
+/// has none yet. The collector thread itself reaches a token through the
+/// record a round hands it (`crate::cycle::worker`), and no production path
+/// takes the pointer.
 ///
 /// The pointee is a line of the owner's record, and the record's storage
 /// outlives the thread (`crate::cycle::owner_record`), so the pointer stays
 /// valid after this thread exits; what a holder finds there after the exit's
 /// final claim is a token held for good. Null when the pool refused the
 /// record's block, which the next call asks again for.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the collector thread that rounds over the records is S38.7's; until it lands \
-                  only a test takes the pointer"
-    )
-)]
+#[cfg(test)]
 pub(crate) fn this_thread_token() -> *const TraceToken {
     let (record, taken) = crate::cycle::owner_record::ensure_thread_record();
     if record.is_null() {
@@ -261,16 +257,36 @@ impl HeldToken {
 
 #[cfg(test)]
 thread_local! {
-    /// Whether this thread's token was held at the trace's last row read —
-    /// the scan's end, and the harvest sweep under pressure — since a case
-    /// last asked. The upper edge of what the token covers, which no
+    /// Whether the traced owner's token was held at the trace's last row
+    /// read — the scan's end, and the harvest sweep under pressure — since a
+    /// case last asked. The upper edge of what the token covers, which no
     /// destructor can observe.
     static HELD_AT_LAST_ROW_READ: std::cell::Cell<Option<bool>> =
         const { std::cell::Cell::new(None) };
+
+    /// The record of the owner whose graph this thread is tracing as a
+    /// collector, null while it traces as an owner: the token the probe
+    /// above reads is that owner's rather than this thread's own.
+    static TRACED_OWNER: std::cell::Cell<*mut crate::cycle::owner_record::OwnerRecord> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// Name the owner whose graph the calling collector thread traces under a
+/// foreign claim, or null once its trace is over, and do nothing at all
+/// without `cfg(test)`.
+///
+/// Called by `cycle::worker` around its trace, and by nothing else.
+#[inline]
+pub(crate) fn note_traced_owner(record: *mut crate::cycle::owner_record::OwnerRecord) {
+    #[cfg(test)]
+    TRACED_OWNER.with(|cell| cell.set(record));
+    #[cfg(not(test))]
+    let _ = record;
 }
 
 /// Record whether the token is held at the reading that ends a trace's row
-/// reads, and do nothing at all without `cfg(test)`.
+/// reads, and do nothing at all without `cfg(test)`. The token is the traced
+/// owner's: this thread's own unless [`note_traced_owner`] named another.
 ///
 /// Called by `cycle::trace` at the scan's end and by the arena's harvest
 /// sweep, and by nothing else.
@@ -278,7 +294,11 @@ thread_local! {
 pub(crate) fn note_last_row_read() {
     #[cfg(test)]
     {
-        let record = crate::cycle::owner_record::this_thread_record();
+        let mut record = TRACED_OWNER.with(std::cell::Cell::get);
+        if record.is_null() {
+            record = crate::cycle::owner_record::this_thread_record();
+        }
+
         let held = !record.is_null() && unsafe { (*record).token.is_held() };
         HELD_AT_LAST_ROW_READ.with(|cell| cell.set(Some(held)));
     }
