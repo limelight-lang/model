@@ -10,9 +10,9 @@
 //! The chunk is not strided here. A trace on another thread strides only
 //! a reading this bracket validated (`cells::tests::what_a_collector_thread_reads`),
 //! and that the chunk is not freed under the stride is the trace window's
-//! contract, which `PLAN.md` S38.3 builds for a worker. The bracket this
-//! test drives belongs to the array rather than to a collector, which is
-//! why it survives having none.
+//! contract (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the
+//! token"). The bracket this test drives belongs to the array rather than to
+//! a collector, which is why it survives having none.
 
 use super::*;
 use std::sync::Arc;

@@ -93,8 +93,9 @@ pub(crate) fn class(name: &str) -> *const Class {
 }
 
 /// Give `obj` a fresh block, carrying over what the old one held, and free the
-/// old one — through the same category-routed entry point, which S38.3 must
-/// hold back while a worker trace may still be striding it.
+/// old one — through the same category-routed entry point, which is held
+/// back while a worker trace may still be striding it
+/// (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the token").
 ///
 /// Answers the new block, whose granted capacity the object keeps. The
 /// cells of a fresh block are written plainly: no walker can reach a

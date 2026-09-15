@@ -236,8 +236,8 @@ impl BufferArena {
     /// free list: nothing is released here, which is the second thing this
     /// path is worth. The growth it replaces frees the old payload, and a
     /// payload freed while a worker trace is in flight has to be withheld
-    /// (S38.3);
-    /// a payload that never moves has nothing to withhold.
+    /// (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the
+    /// token"); a payload that never moves has nothing to withhold.
     ///
     /// # Safety
     /// `(ptr, old_size)` must be exactly one live allocation of this arena.
@@ -759,8 +759,8 @@ fn pop_fit_in(
 /// The link is written into the freed chunk itself, which is sound for
 /// the same reason the owner's free list is — the chunk is dead, and its
 /// first 16 bytes are the arena's by contract. A chunk a worker trace may
-/// still be reading must not reach here — S38.3 owns that cross-thread
-/// withholding (`PLAN.md`).
+/// still be reading must not reach here: the free path withholds it under
+/// the foreign holder (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the token").
 ///
 /// # Safety
 /// `(ptr, size)` is a live chunk of `block`, freed by this call.

@@ -1,20 +1,24 @@
 //! The owner's record: the words of one mutator thread that a collector
-//! thread reaches — its trace token, and beside it the outbox, the inbox
-//! and the request word the worker's handoff uses — in storage that outlives
-//! the thread (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff";
-//! `rfc/dev/DECISIONS.md`, "the owner detaches at its poll, and the worker
-//! takes the chain from a one-word outbox").
+//! thread reaches — its trace token, and beside it the owner's note of who
+//! holds that token — in storage that outlives the thread
+//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"; `dev/DECISIONS.md`,
+//! "the token stands in a record the process keeps, and the exit's claim on
+//! it is never released"). The candidate ring a collector reads behind its
+//! writer, and the verdict ring the owner reads back, stand in this record
+//! too once they are built (`rfc/dev/DECISIONS.md`, "the candidate queue is
+//! read behind its writer, and the collector's verdicts come back by a
+//! second ring"); until then the record is the token's line alone.
 //!
 //! # Why the storage outlives the thread
 //!
-//! A worker's first access to an owner is a load of its outbox word, made
-//! before it holds any token. Nothing in the design covers a read made under
-//! no claim except the lifetime of what is read: a word in a thread-local dies
-//! with the thread, and a word in a block the exit returns can be read after
-//! the pool has reissued the block. So the records stand in a chain of
-//! GC-metadata blocks the process never returns, and a record a thread has
-//! finished with goes to a free list for the next thread rather than back to
-//! the pool.
+//! A collector's first access to an owner is a load of a word of its record,
+//! made before it holds any token. Nothing in the design covers a read made
+//! under no claim except the lifetime of what is read: a word in a
+//! thread-local dies with the thread, and a word in a block the exit returns
+//! can be read after the pool has reissued the block. So the records stand
+//! in a chain of GC-metadata blocks the process never returns, and a record
+//! a thread has finished with goes to a free list for the next thread rather
+//! than back to the pool.
 //!
 //! # The token is what says whether a record is anyone's
 //!
@@ -30,8 +34,7 @@
 //! blocks' teardown, the exit's first step — the token is free and a claim
 //! succeeds, which is what the claim's wait is for. A thread that never
 //! exits — one the runtime never registered, taking its record at its first
-//! collection — keeps its record claimable for the life of the process; it
-//! offers nothing, so a worker that reads its outbox never claims it.
+//! collection — keeps its record claimable for the life of the process.
 //!
 //! **The exit draws no record.** A thread that reaches its exit without one
 //! is reached by no collector, so its claim is empty, and a record taken by
@@ -53,24 +56,13 @@
 //! the exit's held claim is the reader that does, and its note is the
 //! owner's rather than the word's, so a worker still reads one bit.
 //!
-//! # The three words beside the token
-//!
-//! The outbox carries a chain the owner detached at its poll on a worker's
-//! request, the inbox the chain the worker traced and posted back, the
-//! request word the worker's ask, and beside them the owner's note that it
-//! ran short, which the worker's ask relays. Each is one word, and the owner is the
-//! only party that fills the outbox and empties the inbox, the worker the
-//! only one that empties the outbox and fills the inbox: the exchanges are
-//! how the two hand a chain across without either reading the other's
-//! (`crate::cycle::queue`, "The chain a collector thread takes"). The worker
-//! touches the outbox and the inbox only under the token; its one earlier
-//! access is a load of the outbox word. The collector thread that makes the
-//! round, and the round itself, are `crate::cycle::worker`; the round reaches
-//! every record through [`for_each_record`].
+//! The collector thread that makes the round, and the round itself, are
+//! `crate::cycle::worker`; the round reaches every record through
+//! [`for_each_record`].
 
 use std::cell::Cell;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cycle::token::TraceToken;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
@@ -83,11 +75,6 @@ pub(crate) struct OwnerRecord {
     /// The trace token, taken by a collector thread around its trace of this
     /// owner's graph and by the owner around its own.
     pub(crate) token: TraceToken,
-    /// The chain the owner's poll detached for a worker: the head segment's
-    /// address with its fill in the low sixteen bits, or zero.
-    outbox: AtomicUsize,
-    /// The chain a worker traced and posted back, in the same form, or zero.
-    inbox: AtomicUsize,
     /// The next free record, meaningful while this one is on the registry's
     /// free list and written under its lock alone.
     free_link: Cell<*mut OwnerRecord>,
@@ -95,12 +82,6 @@ pub(crate) struct OwnerRecord {
     /// Written by the owner alone, beside its take and its release, and
     /// read by the owner alone, so relaxed on both sides.
     owner_holds: AtomicBool,
-    /// Whether a worker asked the owner's next poll for an offer.
-    request: AtomicBool,
-    /// Whether the owner ran short of memory since a worker last relayed
-    /// that into a request: the owner's pressure path writes it, the
-    /// collector thread's round takes it ([`note_shortage`], [`take_shortage`]).
-    shortage: AtomicBool,
     /// Whether a case has asked the registry to leave this record on the
     /// free list: other tests' threads start and exit under the parallel
     /// harness, and a record they could pop is one no case can read after
@@ -152,16 +133,12 @@ thread_local! {
 
 impl OwnerRecord {
     /// A record in the state the registry hands out: token held by nobody in
-    /// particular, nothing offered, nothing posted, nothing asked.
+    /// particular.
     const fn taken() -> Self {
         Self {
             token: TraceToken::new_held(),
-            outbox: AtomicUsize::new(0),
-            inbox: AtomicUsize::new(0),
             free_link: Cell::new(std::ptr::null_mut()),
             owner_holds: AtomicBool::new(false),
-            request: AtomicBool::new(false),
-            shortage: AtomicBool::new(false),
             #[cfg(test)]
             pinned: AtomicBool::new(false),
         }
@@ -173,117 +150,6 @@ impl OwnerRecord {
     pub(crate) fn held_by_another(&self) -> bool {
         self.token.is_held() && !self.owner_holds.load(Ordering::Relaxed)
     }
-}
-
-/// Publish a detached chain to `record`'s outbox for a collector thread,
-/// answering false when an earlier offer still stands there. The store is a
-/// release: every entry and link store of the chain precedes it, and the
-/// worker's acquire exchange follows it ([`take_offer`]).
-///
-/// # Safety
-/// `record` is this thread's record and `word` names a chain this thread
-/// detached and will not touch until it comes back through [`reclaim`] or
-/// [`take_inbox`].
-pub(crate) unsafe fn offer(record: *mut OwnerRecord, word: usize) -> bool {
-    unsafe { &*record }
-        .outbox
-        .compare_exchange(0, word, Ordering::Release, Ordering::Relaxed)
-        .is_ok()
-}
-
-/// Whether an offer stands untaken in `record`'s outbox.
-///
-/// # Safety
-/// `record` is a record of the registry's.
-pub(crate) unsafe fn offer_stands(record: *mut OwnerRecord) -> bool {
-    unsafe { &*record }.outbox.load(Ordering::Relaxed) != 0
-}
-
-/// Take the offer back, answering the chain's word or zero when a worker took
-/// it: the owner's exchange before it collects in line and before its exit.
-///
-/// # Safety
-/// `record` is this thread's record.
-pub(crate) unsafe fn reclaim(record: *mut OwnerRecord) -> usize {
-    unsafe { &*record }.outbox.swap(0, Ordering::Acquire)
-}
-
-/// Take the offered chain for a trace, answering its word or zero when the
-/// owner reclaimed it meanwhile. The collector thread's exchange, made after
-/// it claimed `record`'s token and before its first read of the chain.
-///
-/// # Safety
-/// The caller holds `record`'s token.
-pub(crate) unsafe fn take_offer(record: *mut OwnerRecord) -> usize {
-    unsafe { &*record }.outbox.swap(0, Ordering::Acquire)
-}
-
-/// Post a traced chain to `record`'s inbox for the owner's pickup, marked or
-/// not. A release store, made before the token's release store; the inbox is
-/// empty by the worker's own check before its take.
-///
-/// # Safety
-/// The caller holds `record`'s token, the inbox is empty, and `word` names
-/// the chain the caller took from the outbox.
-pub(crate) unsafe fn post(record: *mut OwnerRecord, word: usize) {
-    let previous = unsafe { &*record }.inbox.swap(word, Ordering::Release);
-    debug_assert_eq!(previous, 0, "a chain was posted over one not yet picked up");
-}
-
-/// Whether a posted chain stands unpicked in `record`'s inbox.
-///
-/// # Safety
-/// `record` is a record of the registry's.
-pub(crate) unsafe fn proposal_stands(record: *mut OwnerRecord) -> bool {
-    unsafe { &*record }.inbox.load(Ordering::Relaxed) != 0
-}
-
-/// Take the posted chain, answering its word or zero: the owner's pickup at
-/// its poll and at its exit.
-///
-/// # Safety
-/// `record` is this thread's record.
-pub(crate) unsafe fn take_inbox(record: *mut OwnerRecord) -> usize {
-    unsafe { &*record }.inbox.swap(0, Ordering::Acquire)
-}
-
-/// Ask `record`'s owner to offer its lane at its next poll. The collector
-/// thread's write; the poll clears it as it offers ([`take_request`]).
-///
-/// # Safety
-/// `record` is a record of the registry's.
-pub(crate) unsafe fn request(record: *mut OwnerRecord) {
-    unsafe { &*record }.request.store(true, Ordering::Relaxed);
-}
-
-/// Whether a worker asked this owner for an offer, clearing the request.
-///
-/// # Safety
-/// `record` is this thread's record.
-pub(crate) unsafe fn take_request(record: *mut OwnerRecord) -> bool {
-    unsafe { &*record }.request.swap(false, Ordering::Relaxed)
-}
-
-/// Note that this owner ran short of memory: the pressure path's write,
-/// which the collector thread's next round turns into a request
-/// ([`take_shortage`]). The note is what makes an owner offer its lane at
-/// all — a worker asks only an owner that ran short since it last asked
-/// (`dev/DECISIONS.md`, "the worker relays the owner's shortage into its
-/// request").
-///
-/// # Safety
-/// `record` is this thread's record.
-pub(crate) unsafe fn note_shortage(record: *mut OwnerRecord) {
-    unsafe { &*record }.shortage.store(true, Ordering::Relaxed);
-}
-
-/// Whether the owner ran short since the last call, clearing the note. The
-/// collector thread's read, made in the round that relays it.
-///
-/// # Safety
-/// `record` is a record of the registry's.
-pub(crate) unsafe fn take_shortage(record: *mut OwnerRecord) -> bool {
-    unsafe { &*record }.shortage.swap(false, Ordering::Relaxed)
 }
 
 /// Call `visit` on every record the registry has carved so far, in no
@@ -428,10 +294,6 @@ fn take_record() -> *mut OwnerRecord {
         // the held one the exit left rather than a rewritten one.
         unsafe {
             (*released).owner_holds.store(false, Ordering::Relaxed);
-            (*released).outbox.store(0, Ordering::Relaxed);
-            (*released).inbox.store(0, Ordering::Relaxed);
-            (*released).request.store(false, Ordering::Relaxed);
-            (*released).shortage.store(false, Ordering::Relaxed);
             (*released).free_link.set(std::ptr::null_mut());
         }
         return released;

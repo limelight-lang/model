@@ -1097,7 +1097,7 @@ entry whose death completed and keeps one whose destructor resurrected it;
 the mutator's registration is two plain stores on the probe; and `src/`
 carries no outbox, no offer, no pickup walk-back and no request relay.
 
-- [ ] S49.1 Delete the outbox form with its cases
+- [x] S49.1 Delete the outbox form with its cases   *(closed 2026-09-15)*
       done: `offer_lane`, `reclaim_offer`, `take_proposal`, `merge_proposal`,
         `PROPOSED_MARK`, the outbox and inbox words, the request word, the
         shortage note and its relay, `Roots::Proposal`,

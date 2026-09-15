@@ -72,7 +72,8 @@
 //! entity slot is a return of the owner's memory made at the owner's reclaim
 //! of its remote stack, and that reclaim waits the same way
 //! ([`returns_are_withheld`]). What this costs is the churn one trace lasts,
-//! which `PLAN.md` S38.3 measures.
+//! measured in `dev/BENCHMARKS.md`, "S38.3 what a foreign holder costs the
+//! owner".
 //!
 //! **The deaths are one of three stacks**, because a trace holds addresses
 //! into more than entity slots (`rfc/model/gc/rc-cycle.md`, "The deferral's
@@ -551,18 +552,6 @@ impl ActiveTrace {
         self.batch = Some(crate::cycle::queue::detach_candidates());
     }
 
-    /// Give this trace a chain a collector thread posted instead of the lane:
-    /// the owner's pickup, whose walks visit the proposed roots alone and
-    /// whose close disposes of every entry the same way a detached lane's
-    /// does (`crate::cycle::queue::take_proposal`).
-    pub(crate) fn adopt_proposal(&mut self, proposal: crate::cycle::queue::InFlightBatch) {
-        assert!(
-            self.batch.is_none(),
-            "a trace takes one chain, detached or posted"
-        );
-        self.batch = Some(proposal);
-    }
-
     /// The arena and the detached batch in one answer, because a trace reads
     /// the batch's roots while writing the arena's rows and two calls would
     /// borrow this window twice.
@@ -974,9 +963,10 @@ pub(crate) unsafe fn withhold_block_under_a_foreign_trace(block: *mut u8) -> boo
 /// reading the cell that named it and meeting its row, and in that interval
 /// the block carries no stamp yet, so a return made on the strength of a
 /// clear stamp could be handed out again under the address the trace still
-/// holds. The cost is the churn one trace lasts, measured as `PLAN.md` S38.3
-/// asks. The stack is threaded through the dead entities like the window's
-/// ([`withheld_link`]), headed in a word of this thread's, and nothing is drawn.
+/// holds. The cost is the churn one trace lasts (`dev/BENCHMARKS.md`, "S38.3
+/// what a foreign holder costs the owner"). The stack is threaded through
+/// the dead entities like the window's ([`withheld_link`]), headed in a word
+/// of this thread's, and nothing is drawn.
 ///
 /// # Safety
 /// As [`defer_reuse_if_tracing`], and this thread has no window of its own

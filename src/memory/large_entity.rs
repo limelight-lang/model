@@ -217,10 +217,10 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// together make the read sound — the registry entry is removed strictly
 /// before the unmap, a free of a run this collection has met withholds
 /// instead of running, and a collection does not begin reading a thread's
-/// blocks until that thread has entered it. The owner-side withholding is
-/// `cycle::deferred_slot_reuse`'s; S38.1/S38.3 must make the claim and
-/// withholding owner-addressable before a worker may rely on all three
-/// (`PLAN.md`).
+/// blocks until that thread has entered it. The withholding is
+/// `cycle::deferred_slot_reuse`'s, under the owner's own window and under a
+/// foreign holder of its token alike (`crate::cycle::deferred_slot_reuse`,
+/// "A foreign holder of the token").
 ///
 /// **The middle condition covers a met run alone, and nothing here covers an
 /// unmet one.** A run whose own row reads `Color::Untouched` is unmapped
@@ -229,9 +229,10 @@ pub(crate) unsafe fn occupant(block: *mut u8) -> (*mut u8, usize) {
 /// `classify`); what the third condition answers is *whose*
 /// blocks a collection reads, not whether an enumerator that took its
 /// snapshot before the registry removal may still dereference the address.
-/// The gap is one thread's own, so a quiescent mutator closes it today; a
-/// worker reading another thread's runs waits on S38.3 for it as for the
-/// rest.
+/// The gap is one thread's own, so a quiescent mutator closes it today; for
+/// a worker reading another thread's runs it is closed by the same
+/// withholding under the foreign holder (`crate::cycle::deferred_slot_reuse`,
+/// "A foreign holder of the token").
 ///
 /// **A visitor must not free a run while walking this list.** The
 /// addresses are a snapshot, so a run freed during the walk leaves

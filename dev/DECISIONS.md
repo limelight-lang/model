@@ -8,6 +8,40 @@ never edited or deleted.
 
 ---
 
+## 2026-09-15 — the outbox form is deleted: the collector reads the ring behind its writer
+
+**Decided (Edmond; `rfc/dev/DECISIONS.md`, "the candidate queue is read
+behind its writer, and the collector's verdicts come back by a second
+ring"):** the outbox form the three entries below built on 2026-09-15 is
+withdrawn, and `PLAN.md` S49 builds his queue in its place. S49.1 deletes the
+form's code with its cases: the outbox, the inbox, the request word and the
+shortage note of `owner_record`; `queue::offer_lane`, `reclaim_offer`,
+`take_proposal`, `merge_proposal` and `PROPOSED_MARK`; the poll's pickup and
+offer in `gc`; `collect::collect_proposal_off_the_poll` and the pressure
+path's relay; the worker's take, trace, mark and post. What stays is the
+token, the record and its registry, the collector thread with its round, and
+the in-line collection's detach and merge. `worker::serve` claims the token
+and releases it, `worker::ensure_thread` has no production caller, and the
+thread is born by nothing until S49.7 wires the pressure path to it: a
+thread born now would round over records it can serve nothing from, and
+every claim it made would be a foreign holder the owner withholds returns
+under.
+
+**Why:** the outbox replaced a design Edmond made on 2026-08-25 without his
+word; the entry in `rfc` records the restoration and the three Critic rounds
+over it. The mechanism the deleted entries argued for, a lane offered once
+per shortage, was an answer to a cost the detach form created: a detach empties
+the lane and sends the next registration to the growth path, so it had to be
+rationed. A reader behind the writer detaches nothing, and the rationing goes
+with the detach.
+
+**Cost:** fifteen cases of `cycle::worker::tests` went with the mechanism they
+drove (a refuted mechanism costs its own tests; S49's "Done when" re-pins what
+survives). The birth, the retry after a refused base block, the round's reach
+and the panicking round keep their cases, driven by `ensure_thread` directly.
+`cells::AtomicCells` has no production reader until S49.5 and is allowed dead
+in the untested build with `worker` for the same interval.
+
 ## 2026-09-15 — the worker relays the owner's shortage into its request
 
 **Decided (Sage, on the Critic's first and third findings over S38.7):** the

@@ -1018,9 +1018,9 @@ impl Table {
     /// it races nothing.
     ///
     /// The old chunk is freed once the window is closed. A worker trace still
-    /// striding it must read intact bytes; S38.3 owns the buffer-chunk
-    /// withholding that extends this protection across another thread's trace
-    /// (`PLAN.md`).
+    /// striding it must read intact bytes, which the buffer-chunk withholding
+    /// under a foreign holder extends across another thread's trace
+    /// (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the token").
     fn move_entries(
         &mut self,
         head: &StorageHead,

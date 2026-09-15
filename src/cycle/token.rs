@@ -18,11 +18,11 @@
 //! collection off the poll keeps reading its rows through the teardown, and
 //! whether a foreign holder may take the token over rows that teardown is
 //! still reading is a ruling nobody has made (`rfc/model/gc/rc-cycle.md`,
-//! "Concurrency", the readership paragraph). The collector thread never
-//! meets the case: it claims a token only over a set outbox, every in-line
-//! collection reclaims the outbox before it takes the token, and a poll
-//! inside the teardown offers nothing behind its closed gate
-//! (`crate::cycle::worker`).
+//! "Concurrency", the readership paragraph). The collector thread's batch
+//! is `PLAN.md` S49.5's, and the collecting word S49.3 moves into the record
+//! is what keeps it off an in-line collection's rows
+//! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
+//! and the collector's verdicts come back by a second ring").
 //!
 //! **A waiter blocks rather than spins.** The owner that finds its token held
 //! waits on a mutex and is woken by the release; a trace runs no user code and

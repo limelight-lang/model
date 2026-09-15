@@ -61,14 +61,14 @@ versions live in `docs/history/`, marked at the top.
   |---|---|---|
   | `queue` | the per-thread candidate queue, its two lanes, base block, spares and overflow buffer, and the cell that lends the collection workspace; `compaction` is the one pass that combines them, with three destinations — the active lane, the deferred one and `ll_free` | `refcount::release_word`, `gc`'s poll |
   | `deferred_slot_reuse` | `ActiveTrace`, the physical-return barrier, its stack of withheld returns through the dead entities, and the detached candidate batch a collection traces | `stdapi::ll_free` |
-  | `collect` | the order a collection runs in, the two paths it takes through them, the pickup of a posted chain as a collection whose batch is that chain, and the flag that refuses a collection reached from inside one | `gc`'s two collecting entries and its pickup, and `memory::heap::entity_alloc` for the path under pressure |
+  | `collect` | the order a collection runs in, the two paths it takes through them, and the flag that refuses a collection reached from inside one | `gc`'s two collecting entries, and `memory::heap::entity_alloc` for the path under pressure |
   | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace behind the withheld returns' region, the worklist it holds, and `ensure_row`/`find_initialized_row` | `cycle::collect` |
   | `shadow` | the row: two bits of colour over thirty of working count, which past the scan belong to `cycle::maturation` in a live row | none |
   | `row` | `resolve_edge_target`, which row a traced edge resolves to, and the test-build assertion that the target stands in memory this process carved for blocks | none |
   | `epoch` | the process's count of closed commits, and the two-bit epoch a maturation stamp carries: `(commits / 64) % 4` | `cycle::finalization`, which reads it at a commit's start and advances it at its close, and `cycle::mark`, which reads it once per root |
   | `token` | the per-thread trace token: taken by compare-and-swap around the trace, released by one store after its last row read — the scan's end, or the harvest sweep under pressure — and waited on through a mutex by an owner whose graph a collector is tracing; the exit's claim is the one never released | `cycle::collect`, both paths |
-  | `owner_record` | the 64-byte record the token stands in, with the outbox, the inbox, the request word and the shortage note of the worker's handoff — the owner fills the outbox and empties the inbox, the worker the reverse, each by one exchange — carved from GC-metadata blocks the process keeps and reused through a free list, held while nobody lives in it | `memory::heap::ll_thread_init` and `ll_thread_exit`, `cycle::token`, `gc`'s poll, `cycle::queue` |
-  | `worker` | the collector thread — born at the end of the first pressure collection, registered through `ll_thread_init`, rounding over the records every 10 ms — and what it does for one owner: read the outbox, claim the token, take the chain by one exchange, trace it through `cells::AtomicCells` over a workspace of its own, mark the roots read potentially unreachable (`queue::PROPOSED_MARK`), post before the release — walked or not — and relay an owner's shortage note into its request, which is the only way a lane is offered | `cycle::collect`'s pressure path, which births it and leaves the note |
+  | `owner_record` | the 64-byte record the token stands in, carved from GC-metadata blocks the process keeps and reused through a free list, held while nobody lives in it; the two rings of `PLAN.md` S49 join it at S49.2 | `memory::heap::ll_thread_init` and `ll_thread_exit`, `cycle::token` |
+  | `worker` | the collector thread — born by `ensure_thread`, registered through `ll_thread_init`, rounding over the records every 10 ms — and what it does for one owner: claim the token and release it; the batch under the claim is `PLAN.md` S49.5's, and no production path births the thread until S49.7 | the tests alone |
   | `mark` | the trace: trial deletion over the rows, and the prune that keeps it out of the mature live core — an edge target at the traversal age threshold under this collection's epoch that no candidate queue names is not descended into; `pin_threshold` holds a test thread's threshold at another `k`, which is how `mark/tests/what_the_prune_saves.rs` reads the pruned-edge counter at 1, 2 and 3 (`dev/BENCHMARKS.md`, 2026-09-12) | none |
   | `maturation` | the descent that stamps the live components a commit read: strongly connected components over the rows the scan left live, Pearce's single index held in the row's own count, and the age one more than the component's youngest member | `cycle::collect`, inside the commit and before the first guard |
   | `members` | the entities a pressure collection takes out of its rows before the blocks go back, and the fixed region of the workspace they stand in | `cycle::collect`'s path under pressure |
@@ -160,9 +160,7 @@ versions live in `docs/history/`, marked at the top.
   before it, in order: refill the log reserve, refill the critical reserve,
   refill the queue's spare segments, drain its overflow buffer, make the
   returns a foreign trace left withheld, re-offer the deferred lane where the
-  epoch moved; then, behind the gate, pick up a chain a collector thread
-  posted, and — unarmed, on a worker's request — offer its lane to the
-  worker; armed, it fires instead.
+  epoch moved; then, behind the gate and armed, it fires.
 - Static blocks and thread exit: `src/static_block.rs` — the per-thread
   registry and the teardown pass that releases each block's roots at
   exit (A6, `rfc/model/classes.md` "Teardown at thread exit"). The order
@@ -582,7 +580,8 @@ versions live in `docs/history/`, marked at the top.
   (`rfc/model/gc/rc-cycle.md`, "Publication, for a reader on another
   thread"). `cycle::mark`, `cycle::scan` and `cycle::trace::trace_batch`
   take the reader as a type parameter; the owner's paths pass `PlainCells`,
-  and `cycle::worker` traces through `AtomicCells` on the collector thread;
+  and `cycle::worker`'s batch (`PLAN.md` S49.5) traces through `AtomicCells`
+  on the collector thread;
   `cells::tests::what_a_collector_thread_reads` is the pairing
   ThreadSanitizer watches (`dev/WORKFLOW.md`, "ThreadSanitizer").
   It is the upper half of the deleted `walk.rs`, moved on 2026-08-26

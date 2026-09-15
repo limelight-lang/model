@@ -4,11 +4,12 @@
 //! ends, and a store beside the trace read whole.
 //!
 //! The thread here is the stand-in for the collector worker, whose own
-//! entry waits on the detach protocol (`rfc/model/gc/rc-cycle.md`,
-//! "Worker-to-owner handoff"): it takes the owner's token, opens a
-//! workspace of its own and runs the two phases through `AtomicCells`.
-//! What it may not do is free anything the owner holds — that window is
-//! `PLAN.md` S38.3's — so the mutator half of every case here stores and
+//! batch over the owner's ring is `PLAN.md` S49.5's
+//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"): it takes the
+//! owner's token, opens a workspace of its own and runs the two phases
+//! through `AtomicCells`. What it may not do is free anything the owner
+//! holds — that window is `crate::cycle::deferred_slot_reuse`, "A foreign
+//! holder of the token" — so the mutator half of every case here stores and
 //! moves, and never frees, while the trace runs.
 //!
 //! The last case is the pairing ThreadSanitizer and Miri watch

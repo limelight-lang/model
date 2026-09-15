@@ -117,8 +117,9 @@ pub(crate) enum CellShape {
 /// memory category**, through [`crate::memory::routing::body_alloc`], the way a
 /// table's storage is. Two obligations meet in that one rule. The storage must
 /// be withholdable — a block whose cells a worker trace is reading may not be
-/// freed under it (S38.3), and that withholding machinery must take a freeable
-/// block kind or a buffer-arena chunk, never an allocation from `std::alloc`.
+/// freed under it (`crate::cycle::deferred_slot_reuse`, "A foreign holder of
+/// the token"), and that withholding machinery must take a freeable block
+/// kind or a buffer-arena chunk, never an allocation from `std::alloc`.
 /// And the category is what decides who frees the storage of an instance that
 /// dies without a teardown: an arena object gets the user destructor alone at
 /// reset, so
@@ -141,10 +142,11 @@ pub(crate) enum CellShape {
 /// it, with that store a release or a release fence before it, so a reader
 /// that acquired the storage's address sees the cells it holds; the
 /// storage the instance replaced is then not written again while a trace
-/// may hold the owner's token, its return being what `PLAN.md` S38.3 withholds
-/// and its reuse under the walker being the phantom in-edge the free direction
-/// does not cover. Both customers are in other repositories, where a plain
-/// store into a cell passes every test this crate can write.
+/// may hold the owner's token, its return being what a foreign holder
+/// withholds (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the
+/// token") and its reuse under the walker being the phantom in-edge the free
+/// direction does not cover. Both customers are in other repositories, where
+/// a plain store into a cell passes every test this crate can write.
 ///
 /// **The category rule is the class's to keep, and nothing here can check it.**
 /// A zero-count member runs no member of this group — that is what makes the
@@ -179,7 +181,10 @@ pub(crate) struct OutsideCells {
     /// acquire (`rfc/model/gc/rc-cycle.md`, "Publication, for a reader on
     /// another thread"). That the storage it strides is not freed under
     /// it is the trace window's contract, not the walk's
-    /// (`PLAN.md` S38.3).
+    /// (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the
+    /// token"). Read by [`AtomicCells`] alone, and with it by nothing
+    /// outside the tests until S49.5.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub walk_concurrent: unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)),
     /// Empty the outside cells and collect their former occupants,
     /// without dropping them. Not [`empty_cell`], which writes a whole
@@ -382,10 +387,13 @@ pub(crate) struct PlainCells;
 /// which may yield nothing for a storage the mutator is moving
 /// ([`OutsideCells::walk_concurrent`]).
 ///
-/// Its production caller is `cycle::worker::serve`, the collector thread's
-/// trace of a chain the owner offered (`rfc/model/gc/rc-cycle.md`,
-/// "Worker-to-owner handoff"); the trace on another thread with the owner
-/// running beside it is `cells::tests::what_a_collector_thread_reads`'.
+/// Its production caller will be `cycle::worker::serve`, the collector
+/// thread's trace of the batch it takes from the owner's ring
+/// (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"), which `PLAN.md`
+/// S49.5 builds; until then only the tests read through it, and the trace on
+/// another thread with the owner running beside it is
+/// `cells::tests::what_a_collector_thread_reads`'.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct AtomicCells;
 
 impl CellReader for AtomicCells {

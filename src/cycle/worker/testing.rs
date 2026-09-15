@@ -1,12 +1,13 @@
-//! The switches a case sets on the collector thread: whether the pressure
-//! path may birth one, which record its rounds visit, whether its base block
-//! is refused, and how it is ended.
+//! The switches a case sets on the collector thread: whether
+//! [`super::ensure_thread`] may birth one, which record its rounds visit,
+//! whether its base block is refused, and how it is ended.
 //!
 //! Every switch is process-wide, so a case that sets one holds the memory
 //! tests' guard, and births are forbidden again before the case ends.
 //! The rounds are confined because the harness runs other cases' threads
-//! beside this one: a request set on a stranger's record makes its next poll
-//! offer, which a case asserting on its own lane reads as a wrong count.
+//! beside this one: a claim on a stranger's record is a foreign holder its
+//! free path withholds returns under, which a case counting its own returns
+//! reads as a wrong count.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
@@ -45,7 +46,7 @@ pub(crate) fn thread_state() -> ThreadState {
     }
 }
 
-/// Let the pressure path birth the thread, or forbid it again.
+/// Let [`super::ensure_thread`] birth the thread, or forbid it again.
 pub(crate) fn permit_births(permitted: bool) {
     BIRTHS_PERMITTED.store(permitted, Ordering::Relaxed);
 }
@@ -83,21 +84,18 @@ pub(crate) fn take_records_visited() -> usize {
     RECORDS_VISITED.swap(0, Ordering::Relaxed)
 }
 
-/// Chains the rounds posted, traced or not, since a case last asked.
-static CHAINS_POSTED: AtomicUsize = AtomicUsize::new(0);
+/// Owners the rounds claimed and released since a case last asked.
+static OWNERS_SERVED: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn note_served(served: super::Served) {
-    if matches!(
-        served,
-        super::Served::Posted { .. } | super::Served::PostedUntraced
-    ) {
-        CHAINS_POSTED.fetch_add(1, Ordering::Relaxed);
+    if served == super::Served::Idle {
+        OWNERS_SERVED.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-/// Chains the rounds posted since the last call, and zero the count.
-pub(crate) fn take_chains_posted() -> usize {
-    CHAINS_POSTED.swap(0, Ordering::Relaxed)
+/// Owners the rounds claimed since the last call, and zero the count.
+pub(crate) fn take_owners_served() -> usize {
+    OWNERS_SERVED.swap(0, Ordering::Relaxed)
 }
 
 /// Refuse the base block of the next birth: its `ll_thread_init` runs under a
