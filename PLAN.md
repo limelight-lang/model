@@ -1207,9 +1207,10 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         and parks with a timeout that is its fallback interval, adapted
         between two named bounds — lengthened after an empty round,
         shortened when an owner's poll wrote that its last disposition freed
-        something — and unparked by a mutator's soft signal, its poll finding
-        R's unread count at or above a threshold, and by its pressure path;
-        a wake only starts a round, and the round takes a batch from an owner
+        something — and unparked by a mutator's soft signal, its poll having
+        registered N entries since its last signal, counted by its own writes
+        and reading no word of the reader's, and by its pressure path; a
+        wake only starts a round, and the round takes a batch from an owner
         whose unread count the collector itself reads at or above the
         threshold (Edmond, 2026-09-15, `rfc/dev/DECISIONS.md`, "the collector
         traces on the count it reads itself"), pinned by a case whose wake
