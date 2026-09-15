@@ -860,7 +860,7 @@ window there is.
         every death, and the owner makes the returns"). What it left to
         S38.5: the collector's sweep-before-release order, and the exit-phase
         word a holder arriving after the exit's last pop needs. Commits
-        `9c25aa4` and the two that follow it.
+        `ee12c47`, `23c98c5` and `b81a95d`.
       note: `cycle::deferred_slot_reuse` is the owner-side substrate for one
         thread, where nothing frees inside the window: mark and scan only read, and the trace window
         ends before the user-code teardown by the decision of 2026-08-31. The
