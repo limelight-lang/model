@@ -11,13 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-16 · Active: S37, S38 and S40. **S50 closed and was deleted on 2026-09-16**: `ll_thread_init` is called once per thread life, the lazy self-initialising paths are gone, and an allocation or a candidate registration on a thread nobody started ends the process with a named reason; its record is `dev/DECISIONS.md`, "an entry point reached outside a thread's life ends the process, and the base block is the mark of a started thread", its trap `dev/POSTMORTEM.md`, "a reason printed before an abort is captured by the harness"; the Critic's and the Code Reviewer's rounds are folded into that entry. **S49 closed and was deleted on 2026-09-16**: the candidate ring read behind its writer, the verdict ring, the collector's batch, its wakes and timer, and the sibling collectors, on Edmond's ruling that restored his read-behind queue over the outbox form S38.5–S38.7 built; its rulings are in `dev/DECISIONS.md` under 2026-09-16, its one trap in `dev/POSTMORTEM.md`, and what it named and left is in the backlog ("What S49 named and left"). S38.0 and S38.3 closed on
-2026-09-15 — the collector's reader with its fence, and the owner's returns
-withheld under a foreign holder of its token; the worker, unblocked the same
-evening by `rfc` S8.7, is S38.5 through S38.7 — the record, the offer and the
-pickup, the thread — all three closed the same night, so S38's steps are
-done and the stage waits on Edmond's answer to the Sage's question in S38.7
-and then on its Code Reviewer before it is deleted; every other open step is
+Updated: 2026-09-16 · Active: S37 and S40. **S38 closed and was deleted on 2026-09-16** on Edmond's ruling of that evening: the question its S38.7 had left him was asked of the shortage relay S49 deleted, so nothing stood between its closed steps and the Code Reviewer, whose seventeen findings over the surviving code — the token, the entry gate, the wait, the collector's reader, the deferral under a foreign holder — landed the same night, the one defect being the free path's reading of the token, which ordered nothing the owner stored before it against a taker's loads after its take and is fenced now; its record is `dev/DECISIONS.md`, "the free path's reading of the token is fenced against the take, and the accelerator question of 2026-09-15 is void", its trap `dev/POSTMORTEM.md`, "a stale-direction argument was stated for both directions and proved for one", its price `dev/BENCHMARKS.md`, "the free path's fence against the take", and the loom model `cycle/token/free_path_model.rs`; the form that moves that price from the free path to the take is a question for Edmond, named in the decision. **S50 closed and was deleted on 2026-09-16**: `ll_thread_init` is called once per thread life, the lazy self-initialising paths are gone, and an allocation or a candidate registration on a thread nobody started ends the process with a named reason; its record is `dev/DECISIONS.md`, "an entry point reached outside a thread's life ends the process, and the base block is the mark of a started thread", its trap `dev/POSTMORTEM.md`, "a reason printed before an abort is captured by the harness"; the Critic's and the Code Reviewer's rounds are folded into that entry. **S49 closed and was deleted on 2026-09-16**: the candidate ring read behind its writer, the verdict ring, the collector's batch, its wakes and timer, and the sibling collectors, on Edmond's ruling that restored his read-behind queue over the outbox form S38.5–S38.7 built; its rulings are in `dev/DECISIONS.md` under 2026-09-16, its one trap in `dev/POSTMORTEM.md`, and what it named and left is in the backlog ("What S49 named and left"). Every open step is
 blocked outside this repository or on a corpus. **S48 closed and was deleted
 on 2026-09-14**, the ValueBox relayout to `rfc/model/values.md`, "ValueBox
 Layout", in three steps, its close read by the Code Reviewer, whose
@@ -66,13 +60,7 @@ collection runs at the thread's top"). **S39 closed and was deleted on 2026-09-1
 being S39.1 — the exit's wait on the thread's token and its bounded rounds of
 collection over every chain, the residue reported as a journal record; what
 outlived it is `dev/DECISIONS.md` under 2026-09-09 and 2026-09-12 and
-`dev/BENCHMARKS.md` for the early-return measurement. S38.2 closed the same
-day on code S38.1 and S38.4 had built — the wait on a held token, reached
-through the allocation refusal and counted at the wait. S38.4 closed on 2026-09-11 —
-the entry gate with the teardown depth as its second input, a refused poll
-keeping its arming, and the slow path's refusal named by size class. S38.1
-closed the same day — the per-thread trace token, taken around the trace and
-waited on through a mutex. S37.3 closed the same day — the ownership mark is moved by the
+`dev/BENCHMARKS.md` for the early-return measurement. S37.3 closed on 2026-09-11 — the ownership mark is moved by the
 barrier's owned store and honoured by the holder's `dispose`. S37.0, S37.6
 and S37.1 closed on 2026-09-10 — the
 live-component stamp producer, the per-root disposition and the edge-side
@@ -120,8 +108,9 @@ than whole; the copy tests of that module ran 25 in 59 s.
 
 **The crate collects cycles in-line.** `cycle::collect` is the collector
 and the heap's slow path its allocation-pressure caller. Ordinary collections keep rows through
-teardown; pressure collections harvest a bounded member list. The worker is
-still S38's. S30 deleted `rc-walk`, `rc-trace` and `rc-satb` on 2026-08-26;
+teardown; pressure collections harvest a bounded member list. The collector
+thread is `cycle::worker`, S49's, and the exclusion between it and the
+in-line collection is the trace token, `cycle::token`. S30 deleted `rc-walk`, `rc-trace` and `rc-satb` on 2026-08-26;
 that code is on `archive/pre-rc-cycle` and its removal is recorded in
 `dev/DECISIONS.md`. S28 was abandoned by that ruling, and S29's second half
 was carried as S39, closed on 2026-09-12.
@@ -138,7 +127,7 @@ the first code edit and recorded in the step; a red test is then seen failing;
 after the implementation, the Critic reviews the repair and its mutations
 before the step can be checked, and a finding the model can neither accept
 with a repair nor refuse with a reason goes to the Sage. The findings are
-recorded in the step's handoff. This applies to every step of S37, S38 and
+recorded in the step's handoff. This applies to every step of S37 and
 S40; one broad review does not waive a later step's gate. Until 2026-09-12 this paragraph put the Sage before the first edit.
 
 **Every byte owned for cycle collection comes from the memory manager and is
@@ -164,8 +153,9 @@ A line here is an unresolved question rather than a step: it carries no
 criterion, and it leaves when it gets one or when it is ruled on.
 
 The six the review of 2026-09-01 raised over `52b2cbf` and `0416e83` left the
-same day — four by Edmond's rulings, recorded in `dev/DECISIONS.md` and in the
-`done:` clause of S38.3, and two by the repairs they prompted. The `dev/` sweep of the same day raised one more — `FORCE_OOM` against
+same day — four by Edmond's rulings, recorded in `dev/DECISIONS.md` (the
+deferral's `done:` clause carried them until S38 was deleted), and two by
+the repairs they prompted. The `dev/` sweep of the same day raised one more — `FORCE_OOM` against
 the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
 than carried: the flag is raised only through `block_pool::force_oom`, whose
 guard lowers it on the unwind as well as on the return.
@@ -728,351 +718,6 @@ stage is what makes a trace affordable rather than what tunes it.
         and `the_ordinary_store`: 14 passed, 29.30 s Miri's clock, 31.0 s
         wall.
 
-## S38 — The claim and concurrency
-
-Goal: a collection runs either in a collector thread or in the mutator, never
-both, and the losing side never deadlocks.
-
-**What the token has to cover, as of 2026-09-05.** Three clauses have gathered
-on the premise that one window is open in the process at a time, and every one
-of them is a correctness clause rather than a performance one. A block's
-`marked_link` word, which two windows splicing at once would put on two lists.
-A block's shadow pointer, which the free path reads past the region to decide
-whether a death has to be withheld at all: a stale null returns a slot under
-another window's rows. And `DEAD_IN_PLACE` itself, which carries no owner — a
-block walk cannot separate its own window's marks from a foreign window's, so a
-thread that stacks a slot of a stranger's block depends on that stranger not
-walking the block meanwhile (`dev/DECISIONS.md`, "a death the collection never
-met is returned at once, and a foreign slot is stacked", its last paragraph). All three
-are unreachable while `ActiveTrace::open`'s per-thread assert is the only
-window there is.
-
-- [x] S38.0 The collector's reader
-      handoff: `cells::AtomicCells`, every load atomic and `Acquire`, paired
-        with the `fence(Release)` after the header store in
-        `refcount::publish_header`; `OutsideCells::walk_concurrent`; `mark`,
-        `scan` and `trace_batch` generic over the reader; the trace from a
-        second thread is `cells::tests::what_a_collector_thread_reads` and
-        the fixture `cycle::testing::traced_from_a_collector_thread`. Records:
-        `dev/DECISIONS.md`, "the collector's reader loads with `Acquire`";
-        `rfc/dev/DECISIONS.md`, "the publication fence lands before its ARM64
-        price"; `dev/BENCHMARKS.md`, "S48.2 the box's price after the
-        relayout" for the reader's price. Commits `b6839ca`, `6c1225e`.
-- [x] S38.1 The claim
-      handoff: `cycle::token` — `TraceToken` (a CAS flag, a futex `Mutex<()>`
-        and a `Condvar`), `HeldToken` taken around the trace on both paths,
-        `this_thread_token` for a holder on another thread; five cases in
-        `token/tests/who_may_trace_this_thread.rs`, six mutations seen red;
-        why the exclusion is per thread is `rfc/dev/DECISIONS.md`, "a trace
-        stays inside the blocks of the thread it claimed".
-- [x] S38.4 The entry gate and the slow-path fire   *(before S38.2)*
-      handoff: the gate is `cycle::collect::may_collect` over `gate()` — the
-        collecting flag, the reset window and `object::teardown_depth` — read
-        by `CollectingThread::take` and by `ll_gc_maybe_collect` before
-        `take_due`; the refused allocation is named per size class by
-        `heap::take_refused_entity_refills`; nine cases in
-        `heap/tests/the_collection_a_refusal_starts.rs`, one in
-        `cycle/collect/tests.rs`, eleven mutations seen red. Decisions:
-        `dev/DECISIONS.md`, "the entry gate reads the teardown depth, and a
-        poll it refuses keeps its arming"; `rfc/dev/DECISIONS.md`, "the entry
-        gate's third input is the reset window".
-- [x] S38.2 The working wait
-      done: an in-line collection needs no verdict list, no handshake and no
-        second phase — it is exact with respect to the counts because the owner
-        re-reads its own current fields — and a mutator that cannot allocate
-        while the claim is held waits for the trace to end
-        rather than preempting; the test's running collection is staged by
-        S38.1's harness seizure and reaches the wait through S38.4's path, with
-        a `#[cfg(test)]` counter past the wait asserted non-zero, because a test
-        that merely terminates terminates most easily when the wait is never
-        taken
-      tier: T2 · role: Critic
-      Critic 2026-09-12, over the claim that S38.1 and S38.4 already meet
-        this criterion: no clause is unevidenced, and two wanted narrowing.
-        The case asserted `waited == 1` where `Condvar::wait` may return
-        spuriously and the loop counts each wait, a contractual flake; both
-        cases that read the count assert it moved now, which is the
-        criterion's own wording. "Past the wait" has two readings and the
-        code holds the sound one — the count moves on the wait path before
-        the block on the condition variable, and the holder's `release`
-        takes the mutex the waiter holds until it blocks, so a moved count
-        followed by the collection proves the wait was entered and ended by
-        the release; a counter after the block would give the holder no
-        signal. Recorded: the case's
-        holder is a stand-in that does no trace's work, which the criterion
-        accepts by naming the harness seizure; the design's own worker
-        empties the lane it traces, so "and is then served" in the case's
-        name holds against the stand-in alone, and the collector's case is
-        S38.0's. Refuted as a hole: the rfc's "Worker-to-owner handoff"
-        inbox is the worker path's, and the in-line form has no second
-        tracer. Drift repaired in `rfc`: "Concurrency" placed the release
-        at the end of scan on both paths while the pressure path holds the
-        token through the harvesting sweep; the sentence names both
-        instants now.
-      handoff: no new code; the wait is `HeldToken::take` in
-        `trace_and_harvest`, reached from `entity_alloc`'s refusal, and the
-        case is `a_refusal_under_a_held_token_waits_for_the_release_and_is_then_served`
-        with `HeldByACollector::take(.., true)` releasing only once the count
-        moved. Seen red with the count's increment deleted, after the holder's
-        10 s bound. The exactness clause is `cycle::validation`'s, in-degree
-        from the members' current cells on the owner after the release.
-- [x] S38.3 Deferring the mutator's frees during a trace
-      order, agreed with Edmond 2026-09-15: (1) the gate and the stack for a
-        foreign holder of the token, the first test red by construction;
-        (2) who makes the returns — the owner, at its next free, the poll
-        and the exit — and the sweep-before-release order on the collector's
-        side; (3) the four addresses beside the slot — a buffer chunk
-        (`buffer_free_longlived_payload`), a retained block
-        (`release_emptied`), an OS-direct run, an arena block the reset
-        returns under a held token — each with its link and its return;
-        (4) the cost, the churn held across one collection on the census
-        loads, in `dev/BENCHMARKS.md`.
-      progress 2026-09-15: (1) and (2) landed — `dev/DECISIONS.md`, "a
-        foreign holder of the token withholds every death, and the owner
-        makes the returns"; six cases in
-        `deferred_slot_reuse/tests/what_a_foreign_trace_withholds.rs`, the
-        first red before the gate, the exit's pop and the reclaim's gate
-        each seen red by mutation; Miri green over the six and the reader's
-        four; ThreadSanitizer reports the fence-ordered publication in the
-        churn case because it does not model `fence` (`dev/WORKFLOW.md`,
-        "ThreadSanitizer"). The collector-thread fixture moved to
-        `cycle::testing::traced_from_a_collector_thread`. What (2) left
-        open: the collector's sweep-before-release order, because the
-        stand-in's arena reset follows its release today and the owner's
-        pop after it reads a shadow pointer the sweep is nulling — the
-        block's shadow word is atomic both ways, so the reading is a stale
-        stamp at worst and the owner under a foreign holder reads no stamp;
-        the order is the worker's (S38.5) to fix when the worker exists.
-        (3) landed the same day: the chunk arm, the pool's `put` and the
-        run arm each read the token once, three cases in
-        `what_else_a_foreign_trace_withholds.rs`, each gate seen red by
-        mutation, Miri green over the deferral module, `stdapi`, the pool's
-        and the buffer arena's tests (`dev/DECISIONS.md`, the same entry's
-        extension). (4) the same day: `dev/BENCHMARKS.md`, "S38.3 what a
-        foreign holder costs the owner" — 2.6 ns to withhold a death, 4.2 ns
-        more to return it later, 12 ns more per chunk, and the churn held as
-        a bound from the trace lengths of the census loads, the corpus's own
-        death rate being unmeasured.
-      handoff: the three windows `ll_free` asks are the queue entry, the
-        owner's own trace and a foreign holder of the token; the third
-        withholds every death, every chunk at `buffer_free_longlived_payload`,
-        every block at `BlockPool::put` and every run at `ll_free`'s run arm,
-        on three per-thread stacks the owner makes at its next free, the poll
-        and the exit (`cycle::deferred_slot_reuse`, "A foreign holder of the
-        token"; `dev/DECISIONS.md`, "a foreign holder of the token withholds
-        every death, and the owner makes the returns"). What it left to
-        S38.5: the collector's sweep-before-release order, and the exit-phase
-        word a holder arriving after the exit's last pop needs. Commits
-        `ee12c47`, `23c98c5` and `b81a95d`.
-      note: `cycle::deferred_slot_reuse` is the owner-side substrate for one
-        thread, where nothing frees inside the window: mark and scan only read, and the trace window
-        ends before the user-code teardown by the decision of 2026-08-31. The
-        hazard is this step's, and it is the one rc-walk already paid for — a
-        collector reading an entity another thread frees underneath it
-        (Edmond, 2026-09-01).
-      done: while a collection is in flight over a thread's blocks, that
-        thread's frees are deferred until it ends, whichever thread performs
-        them, and the deferral covers every address the trace holds rather than entity
-        slots alone — an array's table storage in a buffer chunk
-        (`cells::trace_cells` strides it, and
-        `buffer_arena::buffer_free_longlived_payload` returns it past the
-        gate), a retained payload whose block goes home through
-        `retained::release_emptied`, an OS-direct run, and an arena block
-        `ll_arena_reset` returns while the token is held (added 2026-09-14 by
-        the Sage's answer to the A1 Critic round, `rfc/dev/DECISIONS.md`,
-        "A1 closes on a discriminating word": a recommissioned block under a
-        trace would let `resolve_edge_target` charge a phantom in-edge to
-        whatever occupies the address; `rfc/model/gc/rc-cycle.md`,
-        "Concurrency" carries the deferral's contract once `rfc` S8.11
-        lands); the cost is
-        measured as the churn held across one collection
-      tier: T2 · role: —
-- [x] S38.5 The owner's record
-      done: the trace token, the outbox, the inbox and the request word stand
-        in one per-thread record whose storage is a chain of GC-metadata
-        blocks the process never returns; a thread takes a record at init or
-        at its first need and its exit claims the record's token for good
-        before the record goes back to the free list; a second thread claims
-        a live record's token through the record and reads the free path's
-        withholding as before; a claim on a released record fails, and a
-        record reused by a later thread is released to claimants only once
-        that thread's init is complete; the free path's cost of reading the
-        token through the record rather than the thread-local is measured
-        against the pre-step tree (`dev/BENCHMARKS.md`)
-      tier: T2 · role: Critic
-      handoff: carried out of S38.0 on 2026-09-15, which built the reader and
-        the fence and left the worker's four duties here. The `expect(dead_code)`
-        on `cells::AtomicCells`, on `OutsideCells::walk_concurrent` and on
-        `cycle::token::this_thread_token` name the worker's caller.
-      handoff: unblocked 2026-09-15 by `rfc` S8.7 (`rfc/dev/DECISIONS.md`,
-        "the owner detaches at its poll, and the worker takes the chain from
-        a one-word outbox"): the detach stays the owner's, so the worker moves
-        no queue word from another thread and `queue.rs`'s single-mover
-        invariant holds under it. The exit-phase read the old criterion named
-        went with the ruling: the worker acts on a record only under its
-        token, and the exit's final claim is what refuses it. The token today
-        was a `thread_local!` (`cycle::token::TOKEN`), which no worker could
-        address; the record is this step's build, and the one step of S38.5
-        as first written became S38.5 through S38.7 on 2026-09-15 because
-        each of the three closes on a result of its own.
-      baseline 2026-09-15, before the first edit: the token a `thread_local!`
-        of three fields, no manager memory, the free path's read one
-        thread-local load (`this_thread_token_is_held`), the exit taking and
-        releasing the token per round with nothing between the rounds
-        refusing a claim; the free path's figures under "S38.5 the token
-        through the record" in `dev/BENCHMARKS.md`, column A.
-      Critic 2026-09-15: six findings, two accepted with a repair and a case
-        each. A recordless thread's exit could draw a record in a round's
-        nested take and release it, so the record reached the free list free
-        — `ensure_thread_record` answers null while the exit runs, pinned by
-        `an_exit_draws_no_record`. A pool thread's second life was unpinned
-        — `a_thread_living_twice_takes_a_record_per_life`, red with the
-        release leaving the locator set. The count and identity assertions
-        could move under other tests' threads — read as membership of one
-        record. The module doc said a claim fails on "a thread that is
-        exiting", true only from the exit's second step — reworded, with the
-        thread that never exits named as keeping its record claimable. The
-        registry lock held across the pool's draw was raised and refused:
-        `BlockPool::get` refuses and starts no collection. The free-path
-        read from a second thread while the owner holds is untested; the
-        owner's own reading is.
-      handoff: closed 2026-09-15. `cycle::owner_record` (`OwnerRecord`, the
-        registry's block chain and free list, `ensure_thread_record`,
-        `initialize_thread_record`, `release_thread_record`); the token's
-        thread side rebuilt over it (`token::HeldToken` with nested takes
-        and `keep`, `held_by_a_foreign_holder` in place of
-        `this_thread_token_is_held`); `ll_thread_init` draws the record last
-        and tolerates a refusal, `collect_before_exit` claims first and
-        keeps, `retire_the_journal` gives the record back after the base
-        block. Seven cases in `owner_record/tests.rs`, six mutations seen
-        red (the exit releasing; init not releasing; the foreign reading
-        ignoring the note; a nested drop releasing; the exit drawing; the
-        locator kept). `dev/DECISIONS.md`, "the token stands in a record the
-        process keeps"; `dev/BENCHMARKS.md`, "S38.5 the token through the
-        record": no difference on the free path at the probe's resolution.
-        Untested: a thread whose record the pool refuses at its first
-        collection (no fixture refuses one draw of the registry alone).
-        Miri over the tests the diff's `unsafe` lines select — the record's
-        seven, the token's five and the exit's eight — 20 passed, 62 s of
-        Miri's clock, 73 s wall at two threads. The `mark` case seen red once
-        in the gate is in the backlog's flake line.
-- [x] S38.6 The offer and the pickup   *(after S38.5)*
-      done: a poll whose record carries a request detaches its lane into the
-        outbox with one release store, after the pickup and behind the entry
-        gate, and only into an empty outbox; an owner about to collect in
-        line reclaims the outbox first; the pickup takes the inbox chain,
-        re-enqueues every unmarked record and traces the marked roots in line
-        as an ordinary collection whose batch is that chain; a stand-in
-        worker on a test thread takes the outbox under the token by one
-        acquire exchange, traces through `cells::AtomicCells`, marks, and
-        posts before its release, and the roots it marked are collected at
-        the owner's next poll while the ones it acquitted are back in the
-        lane; an offer taken back by the exit and one taken back before a
-        pressure collection each keep every root
-      tier: T2 · role: Critic
-      baseline 2026-09-15, before the first edit: the poll's duties ended at
-        the re-offer and the fire; a batch was two words the window held from
-        `detach_candidates` to its close; a lane entry carried the close's
-        bit 0 alone; no in-line collection read a record.
-      Critic 2026-09-15: six findings, three accepted with a repair and a
-        case each. The fire and the pressure path never read the inbox, so
-        a posted chain of garbage stood through the collection that ran
-        short of memory — every lane collection drains the inbox before its
-        take (`an_in_line_collection_drains_the_inbox_before_it_traces`). A
-        panic in the worker's trace dropped the taken chain unposted, every
-        root of it stranded — the chain lives in a guard that posts from the
-        unwind (`a_trace_that_panics_still_posts_its_chain`). A posted chain
-        with no mark opened a window to trace nothing — it goes back by a
-        walk (`a_chain_with_no_proposed_root_goes_back_without_a_window`).
-        Refused: the worker's `arena.reset` leaving shadow pointers standing
-        — `reset` sweeps the rows. Recorded as cost: the treadmill of a root
-        the worker reads live, and the offer's starvation on a thread armed
-        at every poll. The rfc's "marked as far as the trace got" was
-        amended to what the code does.
-      handoff: closed 2026-09-15. `owner_record`'s six word operations;
-        `queue::{offer_lane, reclaim_offer, take_proposal, merge_proposal}`,
-        the batch's word form and `PROPOSED_MARK`; `collect::Roots` and
-        `collect_proposal_off_the_poll`; `gc`'s poll picks up then offers,
-        armed it fires; `cycle::worker::serve` is the round's body, driven
-        by a case's thread. Ten cases in `worker/tests.rs`, nine mutations
-        seen red and one green (an unread merge keeping its marks: every
-        reader masks, the strip is the invariant's). Miri over the worker's
-        and the batch's cases: 17 passed, 82 s Miri's clock, 3 m 34 s wall.
-        Untested: any interleaving where the owner moves while the worker
-        serves — every case joins the collector first; a chain across a
-        segment boundary through the word form; the pickup ending live.
-- [x] S38.7 The collector thread   *(after S38.6)*
-      done: a collector thread born at startup or at first pressure — which
-        is named, with its floor refusal after it (`rfc/dev/DECISIONS.md`,
-        "the baseline overflow segment is allocator-issued") — rounds over
-        the records, sets a request, and on a set outbox claims the token,
-        checks the inbox empty, takes the chain, traces it through its own
-        workspace and posts it, walked or not, before the release; a held
-        token, an empty outbox and a full inbox are each a skip; `shadow`'s
-        `count >= edges` assertion is conditioned on whose pass it is,
-        because a worker's row starts from a count the mutator moves under
-        it; and `cycle::token::note_last_row_read` reads the owner's token
-        rather than the tracing thread's own
-      tier: T2 · role: Critic
-      baseline 2026-09-15, before the first edit: no collector thread;
-        `worker::serve` is driven by a case's thread alone; the registry's
-        block chain is walked by two test readers and enumerated by nothing;
-        `collect_under_pressure` starts no thread; `note_last_row_read` reads
-        the tracing thread's own record; `shadow::subtract`'s assertion is
-        already conditioned on the reader (`mark` passes `!R::CONCURRENT`,
-        S38.0), with no case exercising the concurrent arm.
-      Critic 2026-09-15: five findings. Two went to the Sage: the request
-        set on every record every round re-traces every live lane per
-        interval and holds the owner's token for the trace, so the duty
-        cycle grows toward one with the heap; and a timer that requests is
-        the triggering policy the decision had refused startup-birth for.
-        Accepted with a repair and a case each: a refused birth retried at
-        every pressure collection spawns a thread per refused allocation
-        under starvation — `BIRTH_RETRY_INTERVAL`; a panic in a round left
-        the word at alive for good — `UnbornOnDrop`, and the retire
-        tolerates a panicked join; the `PostedUntraced` arm and the walk past
-        the caller's record were reached by no case — two cases. Named as
-        met by mechanism and asserted by nothing: the STARTING exclusion
-        (one CAS), "through its own workspace" (`TraceScratchArena::open`
-        lends the calling thread's). The "born after the collection so that
-        the base block comes from returned memory" argument was a suspicion
-        and was withdrawn: the placement keeps the birth's draws off a
-        collection in flight, no more.
-      Sage 2026-09-15: the request is a relay of the owner's own shortage —
-        the pressure path notes it on its record, the round takes the note
-        and sets the request; the timed round serves and relays and
-        originates nothing; the birth at pressure stands. Refused: the
-        per-round request, a backoff over it, the owner writing its own
-        request, deferring on the worker's reading. Final. Recorded in
-        `dev/DECISIONS.md`, "the worker relays the owner's shortage into its
-        request". Three things named as Edmond's: Y12 clause 8; whether the
-        accelerator's reach under this ruling — one concurrent pass per
-        shortage — is acceptable for the stage or an outside driver (an ABI
-        for the compiler's arming or the embedder) is specified first; and
-        `rfc/model/gc/strategies.md`'s "never fires on its own", which now
-        reads a pickup as the tail of the shortage that requested it.
-      handoff: closed 2026-09-15 by its criterion, the stage's close waiting
-        on Edmond's answer above. `cycle::worker`: `ensure_thread` (called
-        at every ending of `collect_under_pressure` through
-        `note_shortage_for_the_worker`), `thread_body`, `round`,
-        `ROUND_INTERVAL` 10 ms, `BIRTH_RETRY_INTERVAL` 1 s; the test
-        switches in `worker/testing.rs` (births permitted, rounds confined
-        to one record, the next birth's base block refused by a zero block
-        budget, a panic at the next visit, retire); `owner_record::
-        {for_each_record, note_shortage, take_shortage}`;
-        `token::note_traced_owner`. Eight cases, seven in `worker/tests.rs`
-        and the clamp in `shadow/tests/what_a_row_word_holds.rs`; nine
-        mutations seen red (no birth; a refused birth leaving the word;
-        no request; the probe not naming the owner; a wrapping subtract;
-        a request without a note; no note on the pressure path; a refusal
-        retried at once; no unwind guard). Miri over the seven worker
-        cases: 7 passed, 158 s Miri's clock, 1 m 39 s wall at two threads.
-        ThreadSanitizer over the birth, the served-once case, the probe and
-        the reader's four: silent. Untested: a registry of more than one
-        block (1020 records), a record mid-init met by a round, the
-        `PostedUntraced` arm from a trace the rows refused (only the
-        workspace refusal is pinned), the STARTING exclusion.
-
 ## S40 — Measure the trace's density and decide the row form
 
 Goal: the readings the row form is decided on, and the decision.
@@ -1594,21 +1239,21 @@ own checkbox.
   (code 9) is not carried here: `string::publish_uninit` stamps it whenever the
   placement is out of line, so the kind has a producer.
 - [ ] **The threshold arming policy and the collector-thread accelerator.**
-  What is left of the old escalation ladder after S38.4 built the entry gate
-  and the slow-path fire. The arming policy is the compiler's
+  What is left of the old escalation ladder after the entry gate
+  (`cycle::collect::may_collect`) and the slow-path fire. The arming policy is the compiler's
   (`rfc/model/gc/strategies.md`, arm/fire); the critical reserve's third
   customer, the mutator whose gate is closed, is answered null today and
   draws nothing, because which runtime progress operations a reserve would
   fund is what the ABI does not yet name (`rfc/model/memory/critical-reserve.md`,
   "Mutator progress while collection is unavailable"). The collector thread
-  exists since S38.7 (`cycle::worker`, born at the first pressure collection,
-  serving every 10 ms the offers that its relay of an owner's shortage
-  produced), and its reach is one concurrent pass per shortage: what would
-  make it an accelerator is a request from outside the model — the
-  compiler's arming policy or the embedder — through an ABI the rfc has not
-  written, which is Edmond's to specify or to leave (`dev/DECISIONS.md`,
-  "the worker relays the owner's shortage into its request"); whether an
-  in-line pause is shortened by it is the corpus measurement S37 waits on.
+  (`cycle::worker`, born at the first pressure collection) wakes on the
+  owner's count of its own registrations and on its timer, and traces on
+  the count it reads itself (`dev/DECISIONS.md`, "the collector's wake is
+  a soft signal counted on the owner's line, and its timer adapts between
+  two unmeasured bounds"), so it works ahead of a shortage with no ABI;
+  what an arming ABI would add is a request from the compiler's policy or
+  the embedder ahead of the count, and whether an in-line pause is
+  shortened by either is the corpus measurement S37 waits on.
 - [ ] **The birth count and the unique-owner policy** — **the text went with
   the file** on 2026-08-26 and no section landed in `rc-cycle.md` or
   `cycle/questions.md`; it is on `archive/pre-rc-cycle`. What is left in the
@@ -1746,19 +1391,6 @@ in `dev/INDEX.md`. What it did not do is below.
   on the child thread itself — the peak exactly at the base block and both
   spare segments, in both builds, and both current figures at zero. Seen red
   on a build whose `ll_thread_init` refills no spares.
-- [ ] **A root the worker read live is never deferred.** The pickup puts a
-  root the collector thread read live back in the active lane, where the
-  in-line close would have deferred it for an epoch, because Y12 clause 8
-  lets no speculative reading move an entry to the deferred lane. A
-  long-lived root is therefore re-offered at every request and re-traced by
-  the worker until an in-line collection reads it. Whether the owner may
-  defer on the worker's reading — a delay of one epoch at most for a garbage
-  root the worker misread — is the rfc's question; the crate carries the
-  treadmill until it is answered (S38.6's Critic, 2026-09-15). Its rate is
-  once per shortage the owner suffers, not once per request, since the
-  worker's request is a relay of the owner's pressure collection
-  (`dev/DECISIONS.md`, "the worker relays the owner's shortage into its
-  request").
 - [ ] **The deferred lane is not swept, and the close no longer sweeps it.**
   `defer_candidates` lifted the active lane and ran the retirement pass over
   the deferred one, so a record whose entity had died gave its slot back on the
@@ -1912,7 +1544,8 @@ What S36 left without an owner, 2026-09-14:
   allocation the manager could have refused (`dev/DECISIONS.md`, "the reset
   window's memory comes from the manager") covers it; what closes it is a
   spawn over `pthread_create` with a stack the manager issues, which is target
-  code nobody has written. Named by S38.7 on 2026-09-15.
+  code nobody has written. Named on 2026-09-15, by the step that built the
+  thread.
 - [ ] **The exit's own containers.** Three sites on paths a destructor or the
   thread's exit reaches allocate through the global allocator, under the
   ruling that no runtime path may end the process on an allocation the

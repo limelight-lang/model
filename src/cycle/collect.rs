@@ -73,10 +73,12 @@ enum GateClosed {
     Reset,
     /// A teardown is in flight on this thread (`crate::object::teardown_depth`).
     Teardown,
-    /// The thread has no record for the collecting word to stand in and the
-    /// registry could not carve one: answered by [`CollectingThread::take`]
-    /// alone, never by [`gate`], since a thread without a record has
-    /// registered nothing and its exit has nothing to wait for.
+    /// The thread has no record for the collecting word to stand in: one
+    /// past its exit's release of it, the record being drawn at
+    /// `ll_thread_init` for every started thread. Answered by
+    /// [`CollectingThread::take`] alone, never by [`gate`], since a thread
+    /// without a record has registered nothing and its exit has nothing to
+    /// wait for.
     NoRecord,
 }
 
@@ -181,7 +183,7 @@ impl CollectingThread {
         // the owner's release at the scan's end reads the word set. A thread
         // with no record — one past its exit's release of it — does not
         // collect.
-        let record = crate::cycle::token::this_thread_token_record();
+        let record = crate::cycle::owner_record::this_thread_record();
         if record.is_null() {
             return Err(GateClosed::NoRecord);
         }

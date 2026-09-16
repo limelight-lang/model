@@ -362,8 +362,18 @@ impl OwnerRecord {
 
     /// Whether a thread other than the owner holds the token now: a reading,
     /// stale in both directions in the ways [`TraceToken::is_held`] names.
+    ///
+    /// The owner's free path reads it before it returns memory a trace
+    /// could still address, and the `SeqCst` fence ahead of the load is
+    /// paired with the one after a taker's swap
+    /// ([`TraceToken::try_take`]): the pair orders the owner's stores
+    /// before this reading against the taker's loads after its take, so a
+    /// take this reading missed sees every store made before it. A fence
+    /// per free is its price (`dev/BENCHMARKS.md`, "the free path's fence
+    /// against the take").
     #[inline]
     pub(crate) fn held_by_another(&self) -> bool {
+        std::sync::atomic::fence(Ordering::SeqCst);
         self.token.is_held() && !self.owner_holds.load(Ordering::Relaxed)
     }
 

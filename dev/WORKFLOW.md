@@ -673,13 +673,16 @@ report under that case, or one under any other, is a finding.
 
 Loom explores the executions the C11 model permits, which is how an
 ordering defect is exhibited on a box whose hardware reorders nothing.
-Two models exist, four cases each — `src/array/version_bracket_model.rs`
-for the array table's version bracket and `src/journal/ring_model.rs` for
-the journal ring's, which is the same bracket read the other way round:
+Three models exist, four cases each — `src/array/version_bracket_model.rs`
+for the array table's version bracket, `src/journal/ring_model.rs` for
+the journal ring's, which is the same bracket read the other way round,
+and `src/cycle/token/free_path_model.rs` for the free path's reading of
+the trace token against a collector's take, the store-buffering pair:
 
 ```
 RUSTFLAGS="--cfg loom" cargo test --lib version_bracket
 RUSTFLAGS="--cfg loom" cargo test --lib ring_bracket
+RUSTFLAGS="--cfg loom" cargo test --lib free_path
 ```
 
 It is outside the commit gate, and the dependency is gated the same way

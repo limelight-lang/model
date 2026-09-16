@@ -8,6 +8,42 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-16 — the free path's fence against the take: 2.5 to 3 ns per free, the same as a read-modify-write
+
+The owner's reading of the token on its free path
+(`owner_record::OwnerRecord::held_by_another`) gained a `SeqCst` fence
+ahead of its load, paired with a fence after a taker's swap
+(`token::TraceToken::try_take`), because the acquire load alone left the
+owner's stores before the reading unordered against the taker's loads after
+its take — the store-buffering execution `token/free_path_model.rs` exhibits
+under loom, in which a collector traces an array's old storage after the
+owner freed it. The price is the fence on every free that reaches the
+reading, measured with `deferred_slot_reuse::tests::what_a_foreign_holder_costs`
+on the i7-11700K at a load average of 3 to 6 (interactive work beside the
+run), three runs per tree, one binary per tree; minima in ns over 9 rounds
+of 20,000, the median being 1.5 to 2 ns above every minimum under that
+load and not quoted:
+
+| arm | A, acquire load | B, fence and load | C, `fetch_or(false, SeqCst)` |
+|---|---:|---:|---:|
+| slot free, token free (returned) | 4.74 – 5.10 | 7.26 – 7.39 | 7.42 – 8.03 |
+| slot free, token held (withheld) | 3.17 – 3.32 | 6.10 – 6.20 | 6.05 – 6.71 |
+| slot pop, per slot (hand back and return) | 5.28 – 6.53 | 12.52 – 13.24 | 12.54 – 13.12 |
+| chunk free, token free (returned) | 7.52 – 8.17 | 7.34 – 8.65 | 7.87 – 11.33 |
+| slot allocation and header stamp | 5.02 – 5.36 | 4.31 – 4.53 | 4.51 – 5.60 |
+
+The fence costs the slot free 2.5 to 3 ns and the pop about 7 ns, the pop
+reading the token twice per slot; the chunk arms and the allocation arm,
+which read no token, moved within the run-to-run spread. C, the reading
+made as a read-modify-write on the token word in place of the fence and
+the load, is no cheaper than B on this box, so B stays: it keeps the
+reading a load and writes nothing into the record's line. What was not
+measured is the form that moves the whole price to the taker — an
+asymmetric barrier at the take (`membarrier` on Linux,
+`FlushProcessWriteBuffers` on Windows) with a compiler fence alone on the
+owner — which is target code the crate has none of, and whether the free
+path pays the fence or the take pays a system call is Edmond's to rule.
+
 ## 2026-09-15 — S38.5 the token through the record: no difference on the free path
 
 The free path's read of the trace token moved from a thread-local to a

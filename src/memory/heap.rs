@@ -1228,9 +1228,11 @@ impl Heap {
     /// `_mi_page_thread_free_collect`.
     fn collect_remote(&mut self, block: *mut HeapBlockHeader) -> bool {
         // An entity slot another thread freed is a return of this thread's
-        // memory, and it waits for a trace the way a local free does: the
-        // slots stay on the remote stack, where nothing hands them out, until
-        // a collect that finds no window and no holder
+        // memory, and it waits for a trace more coarsely than a local free
+        // does — a local free returns a death in a block the owner's own
+        // window never touched, while the slots here stay on the remote
+        // stack, where nothing hands them out, until a collect that finds no
+        // window and no holder
         // (`cycle::deferred_slot_reuse::returns_are_withheld`). Not for
         // `collect_remote_locked`: an abandoned block is under no trace, by
         // the exit's order.

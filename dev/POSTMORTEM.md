@@ -7,6 +7,40 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-16 — a stale-direction argument was stated for both directions and proved for one
+
+**What happened.** The trace token's `is_held` documented its free-path
+reading as safe in both stale directions: a holder that let go just after
+the read costs one withheld return, and "a taker that arrived just after it
+starts a trace that never held the address the owner is returning". The
+first half was proved by the acquire load pairing with the release; the
+second was a sentence. It described the store-buffering shape — the owner's
+stores, then its load of the flag; the taker's swap of the flag, then its
+loads — which no acquire/release pairing orders, and under which a collector
+reads an array's old storage after the owner freed it. It stood from the
+deferral's build on 2026-09-15 through a Critic round, a Miri run and a
+ThreadSanitizer run to the stage's Code Reviewer, who found it by reading.
+
+**Why it was possible.** The two directions were written as one symmetric
+sentence, and the proof that followed ("the load is an acquire, paired with
+`release`'s store") reads as if it covered both; a reader who checks the
+pairing finds it correct and stops. The instruments could not see the
+other half: ThreadSanitizer tracks happens-before through the same pairing
+the argument names, and reports nothing where the pairing is there and the
+ordering is still missing; Miri exhibits a weak-memory reordering only on
+an interleaving that reaches it, and the cases join the holder before the
+owner grows anything.
+
+**Rule.** A claim that a flag read orders a store made before the read
+against a load made after another thread's write of the flag is the
+Dekker shape, and it needs `SeqCst` on both sides or a fence pair; an
+acquire load proves the other direction only. Where such a claim is
+written, its loom model is written with it, and the defective configuration
+stays pinned as `should_panic` — `token/free_path_model.rs`, beside the two
+bracket models, is the form. A comment that argues two directions cites
+the mechanism of each; one mechanism named for two directions is the
+sentence to attack first.
+
 ## 2026-09-16 — a reason printed before an abort is captured by the harness, so the abort reads as silent
 
 **What happened.** Removing the lazy initialisations (`PLAN.md` S50.2) made

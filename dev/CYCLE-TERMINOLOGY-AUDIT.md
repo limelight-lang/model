@@ -234,7 +234,7 @@ takes the canonical term whole and is named `deferred_slot_reuse`.
 | `TraceWindow` | `ActiveTrace` | RAII holder of trace state and delayed reuse; *guard* is spent on guard references |
 | `ACTIVE` | `TRACE_ACTIVE` | state being tested |
 | `PARKED` | `DEFERRED_SLOTS` | delayed slot returns |
-| `park_if_active` | `defer_reuse_if_tracing` | observable operation and condition |
+| `park_if_active` | `withhold_under_a_trace_or_make_returns` | observable operation and condition |
 | `parked_count` | test-only `deferred_slot_count` | direct measurement |
 | `dispose` | `dispose_thread_state` | thread-exit lifecycle boundary |
 

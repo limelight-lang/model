@@ -79,10 +79,12 @@ fn can_lose_trace_identity(kind: u32) -> bool {
 /// sentinel `promote::arena_reset_full` passes to `ll_free` when a newly
 /// indexed block is already empty.
 ///
-/// The sentinel takes no mark and is never withheld: `cycle::deferred_slot_reuse`'s
-/// `classify` returns it at once, no row of a collection addressing a block
-/// `retain_block` has just cleared. It must not pass the refcount or candidate
-/// tests: offset zero is a `BlockHeader`, not an `RcHeader`.
+/// The sentinel takes no mark and is never withheld at the slot level:
+/// `cycle::deferred_slot_reuse`'s `classify` returns it at once, no row of a
+/// collection addressing a block `retain_block` has just cleared, and under a
+/// foreign holder the block's return waits at the pool's own entry. It must
+/// not pass the refcount or candidate tests: offset zero is a `BlockHeader`,
+/// not an `RcHeader`.
 #[inline]
 fn points_to_gc_entity(kind: u32, ptr: *mut u8, block: *mut u8) -> bool {
     kind == BLOCK_KIND_ENTITY
@@ -451,7 +453,9 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // point when the trace closes. Whichever window closes last performs the
     // physical return (`cycle::deferred_slot_reuse`).
     if can_lose_trace_identity(kind)
-        && unsafe { crate::cycle::deferred_slot_reuse::defer_reuse_if_tracing(ptr, kind) }
+        && unsafe {
+            crate::cycle::deferred_slot_reuse::withhold_under_a_trace_or_make_returns(ptr, kind)
+        }
     {
         return;
     }
@@ -508,16 +512,26 @@ unsafe fn unmap_run(block: *mut u8) {
 pub(crate) unsafe fn return_withheld_block(block: *mut u8) {
     let kind = unsafe { crate::memory::block_pool::load_block_kind(block as *const AtomicU32) };
     if kind == BLOCK_KIND_LARGE_RUN {
-        if unsafe { crate::cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace(block) }
-        {
-            return;
-        }
-
-        unsafe { unmap_run(block) };
-        return;
+        return unsafe { unmap_run_unless_withheld(block) };
     }
 
     BlockPool::global().put(block as *mut BlockHeader);
+}
+
+/// Unmap a run, unless a trace on another thread may still stride it — a
+/// run that is an array's storage, read from a reading the trace validated
+/// before the free — in which case the unmapping waits for that trace's
+/// end, since unmapped memory survives no stale reading
+/// (`cycle::deferred_slot_reuse`, "A foreign holder of the token").
+///
+/// # Safety
+/// `block` is the header of a mapped run this thread's free reached.
+unsafe fn unmap_run_unless_withheld(block: *mut u8) {
+    if unsafe { crate::cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace(block) } {
+        return;
+    }
+
+    unsafe { unmap_run(block) };
 }
 
 /// # Safety
@@ -537,20 +551,7 @@ unsafe fn ll_free_large(ptr: *mut u8, block: *mut u8, kind: u32) {
         | crate::memory::block_pool::BLOCK_KIND_ENTITY_LARGE_RUN => unsafe {
             crate::memory::large_entity::free(block, kind)
         },
-        BLOCK_KIND_LARGE_RUN => {
-            // A trace on another thread may stride a run that is an
-            // array's storage, and unmapped memory survives no stale
-            // reading, so the unmapping waits for that trace's end
-            // (`cycle::deferred_slot_reuse`, "A foreign holder of the
-            // token").
-            if unsafe {
-                crate::cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace(block)
-            } {
-                return;
-            }
-
-            unsafe { unmap_run(block) };
-        }
+        BLOCK_KIND_LARGE_RUN => unsafe { unmap_run_unless_withheld(block) },
         crate::memory::block_pool::BLOCK_KIND_BUFFER => {
             // A buffer-arena chunk carries no metadata, so its size lives
             // with its owner and only `buffer_free_longlived_payload` has

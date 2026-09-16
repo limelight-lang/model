@@ -564,8 +564,9 @@ versions live in `docs/history/`, marked at the top.
   payload's free arrives through `buffer_arena::buffer_free_longlived_payload`,
   which reads a retained block under the pointer, leaves the bytes where
   they are — former arena memory has no free list — and reclaims the
-  block instead. That call defers no reuse: it returns the block straight
-  to the pool, which is the gap `PLAN.md` S38.3 owns.
+  block instead. Under a foreign holder of the thread's token the block's
+  return waits at the pool's entry for the trace's end
+  (`cycle::deferred_slot_reuse`, "A foreign holder of the token").
 - The safepoint bracket a batched run pays: lowering emits
   `ll_gc_checkpoint_ack` before the run, `ll_release_batch` per
   reference, and `ll_gc_checkpoint` after it (decision 2026-07-28;

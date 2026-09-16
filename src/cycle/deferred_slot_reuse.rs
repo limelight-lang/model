@@ -20,7 +20,7 @@
 //!
 //! Every attempted return goes through `memory::stdapi::ll_free`. That entry
 //! point first refuses the queue window and then calls
-//! [`defer_reuse_if_tracing`] for this one. Closing a trace gives its withheld
+//! [`withhold_under_a_trace_or_make_returns`] for this one. Closing a trace gives its withheld
 //! returns back through the same entry point, so an entry still standing keeps
 //! the slot withheld without a second withholding. Conversely, retiring an
 //! entry while the trace still runs reaches this stack. The two windows can
@@ -293,7 +293,7 @@ impl WithheldReturns {
     /// `disposition` ([`Disposition`]).
     ///
     /// Called with the window closed, so a return that reaches
-    /// [`defer_reuse_if_tracing`] again is not withheld a second time and
+    /// [`withhold_under_a_trace_or_make_returns`] again is not withheld a second time and
     /// proceeds physically. The pop itself reads
     /// no word of any block, only the dead slot's own link; what reads the
     /// block is the return behind it, `ll_free` posting onto the block's stack
@@ -756,19 +756,26 @@ impl Drop for ActiveTrace {
 /// slot, withholding the return for the window's close, and answer whether the
 /// return was refused.
 ///
-/// **False is a return the caller must make physically**, which is either a
-/// thread with no window open or a death in memory this collection never
-/// touched ([`classify`]).
+/// **False is a return the caller must make physically**, which is a thread
+/// with no window open and no foreign holder of its token, or a death in
+/// memory this collection never touched ([`classify`]). On the first of
+/// those the returns a foreign holder withheld earlier are made first
+/// ([`make_returns_withheld_under_a_foreign_trace`]): the free that finds
+/// the token free is one of the three places the owner makes them.
 ///
 /// Called only after the queue-entry window has refused the same return. A
 /// close that still finds `CANDIDATE_BIT` stops before here, because the
 /// queue entry itself keeps the slot withheld.
 ///
-/// With no window open the whole cost is one thread-local load and one branch.
-/// With one open, the block's own state is read — one load for a slotted or a
+/// With no window open the cost is one thread-local load, the token's
+/// reading — a fence and an acquire load through the record — and, with
+/// nothing withheld, three thread-local reads of empty heads. With a window
+/// open, the block's own state is read — one load for a slotted or a
 /// retained death, one for a large entity's row — and a withheld death then
 /// costs one write into the dying entity's own byte 8 and one store of the
-/// head, with no atomic, no allocator call and no pool call.
+/// head, with no allocator call and no pool call; the link store is a
+/// release store, priced in `dev/BENCHMARKS.md`, "S38.3 what a foreign
+/// holder costs the owner".
 ///
 /// # Safety
 /// `ptr` is a dead entity slot whose teardown has completed and which this call
@@ -778,7 +785,7 @@ impl Drop for ActiveTrace {
 /// writes the stack link into `ptr`'s byte 8, and a block base passed under
 /// any other kind would land it in the block's own header.
 #[inline]
-pub(crate) unsafe fn defer_reuse_if_tracing(ptr: *mut u8, kind: u32) -> bool {
+pub(crate) unsafe fn withhold_under_a_trace_or_make_returns(ptr: *mut u8, kind: u32) -> bool {
     let control = DEFERRED_RETURNS.with(Cell::get);
     if !control.is_null() {
         let window = unsafe { &*control };
@@ -860,6 +867,9 @@ unsafe fn set_chunk_link(chunk: *mut u8, next: *mut u8, capacity: usize) {
     };
 }
 
+/// Where a withheld block's link stands: the header word the pool links by.
+const BLOCK_LINK_OFFSET: usize = std::mem::offset_of!(BlockHeader, next);
+
 /// The next block a withheld block names, through the header word the pool
 /// links by (`memory::block_pool::BlockHeader::next`), which a block reaching
 /// its return is on no list through, and which a run keeps its `size` in —
@@ -870,7 +880,7 @@ unsafe fn set_chunk_link(chunk: *mut u8, next: *mut u8, capacity: usize) {
 #[inline]
 unsafe fn block_link(block: *mut u8) -> *mut u8 {
     unsafe {
-        (*(block.add(8) as *const std::sync::atomic::AtomicPtr<u8>))
+        (*(block.add(BLOCK_LINK_OFFSET) as *const std::sync::atomic::AtomicPtr<u8>))
             .load(std::sync::atomic::Ordering::Acquire)
     }
 }
@@ -882,7 +892,7 @@ unsafe fn block_link(block: *mut u8) -> *mut u8 {
 #[inline]
 unsafe fn set_block_link(block: *mut u8, next: *mut u8) {
     unsafe {
-        (*(block.add(8) as *const std::sync::atomic::AtomicPtr<u8>))
+        (*(block.add(BLOCK_LINK_OFFSET) as *const std::sync::atomic::AtomicPtr<u8>))
             .store(next, std::sync::atomic::Ordering::Release)
     };
 }
@@ -894,8 +904,9 @@ unsafe fn set_block_link(block: *mut u8, next: *mut u8) {
 /// (`rfc/model/gc/rc-cycle.md`, "The deferral's contract").
 #[inline]
 fn under_a_foreign_holder() -> bool {
-    // `try_with`, as the token's reader: the pool's `put` runs from a
-    // thread-local's drop on the exit path.
+    // `try_with`: the pool's `put` runs from a thread-local's drop on the
+    // exit path, and a `const` cell with no drop glue is never destroyed
+    // before it, so the fallback is the null it would read anyway.
     DEFERRED_RETURNS
         .try_with(Cell::get)
         .unwrap_or(std::ptr::null_mut())
@@ -963,7 +974,7 @@ pub(crate) unsafe fn withhold_block_under_a_foreign_trace(block: *mut u8) -> boo
 /// of this thread's, and nothing is drawn.
 ///
 /// # Safety
-/// As [`defer_reuse_if_tracing`], and this thread has no window of its own
+/// As [`withhold_under_a_trace_or_make_returns`], and this thread has no window of its own
 /// open.
 #[inline]
 unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8) {
@@ -1002,19 +1013,13 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
         if crate::cycle::token::held_by_a_foreign_holder() {
             // A holder arrived between two returns: what is left goes back
             // on the head, behind whatever the returns so far re-withheld.
-            WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
-                let mut last = taken;
-                loop {
-                    let next = unsafe { withheld_next(last) };
-                    if next.is_null() {
-                        break;
-                    }
-
-                    last = next;
-                }
-
-                unsafe { set_withheld_next(last, head.get()) };
-                head.set(taken);
+            WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| unsafe {
+                splice_behind_the_head(
+                    head,
+                    taken,
+                    |slot| withheld_next(slot),
+                    |last, next| set_withheld_next(last, next),
+                )
             });
             return;
         }
@@ -1033,20 +1038,16 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
     while !taken.is_null() {
         let (next, capacity) = unsafe { chunk_link(taken) };
         if crate::cycle::token::held_by_a_foreign_holder() {
-            CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
-                let mut last = taken;
-                loop {
-                    let (next, _) = unsafe { chunk_link(last) };
-                    if next.is_null() {
-                        break;
-                    }
-
-                    last = next;
-                }
-
-                let (_, last_capacity) = unsafe { chunk_link(last) };
-                unsafe { set_chunk_link(last, head.get(), last_capacity) };
-                head.set(taken);
+            CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| unsafe {
+                splice_behind_the_head(
+                    head,
+                    taken,
+                    |chunk| chunk_link(chunk).0,
+                    |last, next| {
+                        let (_, last_capacity) = chunk_link(last);
+                        set_chunk_link(last, next, last_capacity);
+                    },
+                )
             });
             return;
         }
@@ -1060,19 +1061,13 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
         BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
     while !taken.is_null() {
         if crate::cycle::token::held_by_a_foreign_holder() {
-            BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
-                let mut last = taken;
-                loop {
-                    let next = unsafe { block_link(last) };
-                    if next.is_null() {
-                        break;
-                    }
-
-                    last = next;
-                }
-
-                unsafe { set_block_link(last, head.get()) };
-                head.set(taken);
+            BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| unsafe {
+                splice_behind_the_head(
+                    head,
+                    taken,
+                    |block| block_link(block),
+                    |last, next| set_block_link(last, next),
+                )
             });
             return;
         }
@@ -1081,6 +1076,34 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
         taken = unsafe { block_link(block) };
         unsafe { crate::memory::stdapi::return_withheld_block(block) };
     }
+}
+
+/// Put a chain a drain took off `head` back on it, behind what the returns
+/// made so far re-withheld: the chain's last link, found through `next_of`,
+/// is pointed through `link` at what the head names now, and the head then
+/// names the chain.
+///
+/// # Safety
+/// `taken` is a chain this thread's drain took off `head`, threaded through
+/// the links `next_of` reads and `link` writes.
+unsafe fn splice_behind_the_head(
+    head: &Cell<*mut u8>,
+    taken: *mut u8,
+    next_of: impl Fn(*mut u8) -> *mut u8,
+    link: impl Fn(*mut u8, *mut u8),
+) {
+    let mut last = taken;
+    loop {
+        let next = next_of(last);
+        if next.is_null() {
+            break;
+        }
+
+        last = next;
+    }
+
+    link(last, head.get());
+    head.set(taken);
 }
 
 /// How a death is withheld, or that it needs no withholding at all.
@@ -1127,7 +1150,7 @@ enum Withholding {
 /// holds every withheld return".
 ///
 /// # Safety
-/// As [`defer_reuse_if_tracing`].
+/// As [`withhold_under_a_trace_or_make_returns`].
 unsafe fn classify(ptr: *mut u8, kind: u32) -> Withholding {
     let block = BlockHeader::of_ptr(ptr) as *mut u8;
 
@@ -1203,7 +1226,7 @@ unsafe fn classify(ptr: *mut u8, kind: u32) -> Withholding {
 /// mark is the bit it is refused on").
 ///
 /// # Safety
-/// As [`defer_reuse_if_tracing`], and `control` is this thread's open window.
+/// As [`withhold_under_a_trace_or_make_returns`], and `control` is this thread's open window.
 unsafe fn withhold(control: &WindowControl, ptr: *mut u8, kind: u32) -> bool {
     if unsafe { classify(ptr, kind) } == Withholding::ReturnNow {
         return false;

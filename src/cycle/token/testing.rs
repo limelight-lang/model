@@ -1,8 +1,8 @@
 //! A token held from another thread, for the cases that need one: the
-//! stand-in for a collector tracing this mutator's graph, until the
-//! collector worker exists to take it itself (`rfc/model/gc/rc-cycle.md`,
-//! "Worker-to-owner handoff"). A collector thread that traces as well as
-//! holds is `cells::tests::what_a_collector_thread_reads`'.
+//! stand-in for a collector tracing this mutator's graph, which holds and
+//! traces nothing, where the collector thread of `cycle::worker` takes the
+//! token through the owner's record and traces under it. A collector thread
+//! that traces as well as holds is `cells::tests::what_a_collector_thread_reads`'.
 //!
 //! Two test trees hold a token this way — the token's own, and the entity
 //! allocation's slow path, which reaches the wait through a refusal — and a
@@ -15,9 +15,10 @@ use super::TraceToken;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// A token pointer handed to another thread. The pointee is the test
-/// thread's thread-local, and the guard that carries this joins the holder
-/// before the test thread returns, which is what keeps the pointer valid.
+/// A token pointer handed to another thread. The pointee is a line of the
+/// test thread's owner record, whose storage outlives the thread, and the
+/// guard that carries this joins the holder before the test thread returns,
+/// so the holder never outlives the case that reads its count.
 pub(crate) struct Handed(pub(crate) *const TraceToken);
 
 unsafe impl Send for Handed {}
@@ -44,7 +45,7 @@ pub(crate) fn wait_for_a_waiter(token: *const TraceToken, before: usize) {
 /// collector tracing this mutator's graph — until [`release`](Self::release)
 /// or the guard's drop. The drop releases the holder and joins it, on the
 /// unwind as well as on the return, so a failed assertion never leaves a
-/// thread writing into a freed thread-local.
+/// holder on the token of a thread that has gone on to its next case.
 ///
 /// With `until_waited` the holder lets go on its own once the owner has gone
 /// to wait on the token; without it, at `release`.

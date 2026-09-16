@@ -30,9 +30,12 @@
 //! 2026-08-29, `rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of
 //! the thread it claimed"). Eligibility is checked before the wait: a thread
 //! the gate refuses — one already collecting, inside a teardown, or inside a
-//! reset — never reaches the token (`crate::cycle::collect::may_collect`);
-//! the exit's own collection runs with the gate open and waits through the
-//! same take (`crate::cycle::collect::collect_before_exit`).
+//! reset — opens no window (`crate::cycle::collect::may_collect`), and of
+//! the three only the teardown refusal takes the token afterwards, for the
+//! retirement pass that rewrites the ring
+//! (`crate::cycle::collect::collect_under_pressure`); the exit's own
+//! collection runs with the gate open and waits through the same take
+//! (`crate::cycle::collect::collect_before_exit`).
 //!
 //! **Why per thread.** No thread names an entity in another thread's blocks —
 //! `thread_move` and `thread_clone` require the graph arriving in a thread to
@@ -89,11 +92,28 @@ impl TraceToken {
     ///
     /// The form a collector worker uses: one that finds the token held skips
     /// this owner until a later round rather than waiting for it.
+    ///
+    /// A take is followed by a `SeqCst` fence, paired with the one before
+    /// the owner's reading on its free path
+    /// (`crate::cycle::owner_record::OwnerRecord::held_by_another`): the
+    /// pair is what makes the owner's stores before that reading visible to
+    /// the trace this take starts. Without it the taker may read the graph
+    /// as it stood before the owner's last stores — an array's storage head
+    /// before its growth — and stride memory the owner freed after reading
+    /// the token free; the acquire on the swap alone orders nothing the
+    /// owner did before its load (`token/free_path_model.rs`, the loom
+    /// model that exhibits the execution).
     #[must_use]
     pub(crate) fn try_take(&self) -> bool {
-        self.held
+        let took = self
+            .held
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
+            .is_ok();
+        if took {
+            std::sync::atomic::fence(Ordering::SeqCst);
+        }
+
+        took
     }
 
     /// Take the token, waiting while a holder has it.
@@ -144,12 +164,14 @@ impl TraceToken {
     /// for a foreign trace (`crate::cycle::deferred_slot_reuse`), and both
     /// stale directions are safe there: a holder that let go just after the
     /// read costs one return withheld until the owner's next pop, and a
-    /// taker that arrived just after it starts a trace that never held the
-    /// address the owner is returning. The load is an acquire, paired with
-    /// [`release`](Self::release)'s store: a return the owner makes after
-    /// reading the token free then happens after every load of the trace
-    /// that held it, and the free-list link it writes into the dead entity
-    /// does not race the trace's load of that word.
+    /// taker that arrived just after it starts a trace that sees every store
+    /// the owner made before the read — the fence pair of
+    /// [`try_take`](Self::try_take) is what makes that so — and so never
+    /// holds the address the owner is returning. The load is an acquire,
+    /// paired with [`release`](Self::release)'s store: a return the owner
+    /// makes after reading the token free then happens after every load of
+    /// the trace that held it, and the free-list link it writes into the
+    /// dead entity does not race the trace's load of that word.
     pub(crate) fn is_held(&self) -> bool {
         self.held.load(Ordering::Acquire)
     }
@@ -169,23 +191,16 @@ impl TraceToken {
 /// The pointee is a line of the owner's record, and the record's storage
 /// outlives the thread (`crate::cycle::owner_record`), so the pointer stays
 /// valid after this thread exits; what a holder finds there after the exit's
-/// final claim is a token held for good. Null for a thread with no record.
+/// final claim is a token held until the record's next thread completes its
+/// initialisation and releases it. Null for a thread with no record.
 #[cfg(test)]
 pub(crate) fn this_thread_token() -> *const TraceToken {
-    let record = this_thread_token_record();
+    let record = crate::cycle::owner_record::this_thread_record();
     if record.is_null() {
         return std::ptr::null();
     }
 
     unsafe { &raw const (*record).token }
-}
-
-/// This thread's record, for a caller that wants the record's other words
-/// beside the token (`crate::cycle::collect`, the collecting word). Null for
-/// a thread with no record: one past its exit's release of it, the record
-/// being drawn at `ll_thread_init` for every started thread.
-pub(crate) fn this_thread_token_record() -> *mut crate::cycle::owner_record::OwnerRecord {
-    crate::cycle::owner_record::this_thread_record()
 }
 
 /// Whether a thread other than this one holds this thread's token now
@@ -205,9 +220,11 @@ pub(crate) fn held_by_a_foreign_holder() -> bool {
 /// under that claim (`crate::cycle::collect::collect_before_exit`), and each
 /// round's take must neither wait on the exit's own word nor let go of it.
 ///
-/// **A thread with no record holds nothing** and collects untokened, which
-/// excludes no one: a collector reaches a thread through its record, and
-/// this thread has none.
+/// **A thread with no record holds nothing.** Its collection is refused
+/// before any window opens (`crate::cycle::collect::CollectingThread`), and
+/// the one work it takes the guard around — the teardown refusal's
+/// retirement pass — runs untokened, which excludes no one: a collector
+/// reaches a thread through its record, and this thread has none.
 ///
 /// The drop releases on the unwind as well as on the return, so a panic
 /// inside a trace leaves no token held for a waiter to block on forever. Not
@@ -269,7 +286,8 @@ thread_local! {
 /// foreign claim, or null once its trace is over, and do nothing at all
 /// without `cfg(test)`.
 ///
-/// Called by `cycle::worker` around its trace, and by nothing else.
+/// Called by `cycle::worker` around its trace, and by the verdict ring's
+/// test collector (`cycle::queue::verdicts::testing`).
 #[inline]
 pub(crate) fn note_traced_owner(record: *mut crate::cycle::owner_record::OwnerRecord) {
     #[cfg(test)]
@@ -322,3 +340,9 @@ pub(crate) mod testing;
 
 #[cfg(test)]
 mod tests;
+
+// The loom model of the free path's reading against a take is not run by
+// the suite: it exists only under `--cfg loom`, where the dev-dependency
+// exists too. How to run it, and what it demonstrated, are in the file.
+#[cfg(loom)]
+mod free_path_model;

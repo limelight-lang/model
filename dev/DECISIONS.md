@@ -8,6 +8,71 @@ never edited or deleted.
 
 ---
 
+## 2026-09-16 — the free path's reading of the token is fenced against the take, and the accelerator question of 2026-09-15 is void
+
+**Decided (the model, on the Code Reviewer's finding at `PLAN.md` S38's
+close; the price is Edmond's to move, below).** The owner's reading of its
+token on the free path (`owner_record::OwnerRecord::held_by_another`, the
+one reading `deferred_slot_reuse` makes before a physical return) is
+preceded by a `SeqCst` fence, and a collector's successful take
+(`token::TraceToken::try_take`) is followed by one. The pair is the
+store-buffering fence: the owner's stores before its reading — an array's
+new storage head, an entity's republished cells — are visible to every load
+the taker makes after its take, so a take the reading missed traces the
+graph as it stands and never an address the owner freed after reading the
+token free.
+
+**Why.** The deferral's contract of 2026-09-15 ("a foreign holder of the
+token withholds every death, and the owner makes the returns") rested on
+`is_held`'s acquire load with a sentence it never proved: "a taker that
+arrived just after it starts a trace that never held the address the owner
+is returning". The acquire load pairs with the previous release of the
+token and orders nothing the owner stored before it against the taker;
+with the owner's storage store in its store buffer and its token load
+executed ahead of the drain — which x86 permits, no fence standing between
+them — a collector whose swap lands after that load reads the pre-growth
+head from `StorageHead::coherent`, strides the old storage while the owner
+frees and reuses it, and `resolve_edge_target` reads user bytes as a block
+kind. `token/free_path_model.rs` exhibits the execution under loom in the
+unfenced form and in each one-fence form, and only the pair holds.
+
+**Rejected.** The reading as a read-modify-write on the token word
+(`fetch_or(false, SeqCst)`) in place of the fence and the load: no cheaper
+on the i7-11700K (`dev/BENCHMARKS.md`, "the free path's fence against the
+take") and a write into the record's line on every free.
+
+**Cost, and what is Edmond's.** A fence per free that reaches the reading:
+2.5 to 3 ns on the slot free, 7 ns on the withheld slot's pop, which reads
+the token twice. The form that moves the whole price to the taker — an
+asymmetric barrier at the take, `membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED)`
+on Linux and `FlushProcessWriteBuffers` on Windows, a compiler fence alone
+on the owner's side — is target code the crate has none of and a system
+call per take, and whether the free path pays the fence or the take pays
+the call is his; the fence pair stands until he rules.
+
+**S38 closes on his ruling of 2026-09-16.** The question its S38.7 left him
+— whether the collector's reach of one concurrent pass per shortage was
+acceptable, or an arming ABI had to be specified first ("the worker relays
+the owner's shortage into its request", 2026-09-15) — was asked of the
+relay, which S49 deleted: the collector wakes on the owner's count of its
+own registrations and traces on the count it reads itself ("the collector's
+wake is a soft signal counted on the owner's line", 2026-09-16), so it
+works ahead of a shortage with no ABI, and Y12 clause 8's deferral on the
+collector's reading was ruled by Edmond on 2026-09-15. What survives of
+S38 is the token and its claim (`cycle::token`), the entry gate
+(`cycle::collect::may_collect`), the wait under a held token in
+`trace_and_harvest`, the collector's reader (`cells::AtomicCells`), the
+deferral under a foreign holder (`cycle::deferred_slot_reuse`, "A foreign
+holder of the token"), and the record, the ring and the worker as S49
+rebuilt them. The Code Reviewer's seventeen findings of 2026-09-16 over
+that code: the fence above; eleven comments describing the outbox form,
+a thread-local token, a lazily drawn record or a claim the code does not
+make, rewritten; three duplications folded (the drain's three splices into
+`splice_behind_the_head`, the run arm into `stdapi::unmap_run_unless_withheld`,
+`this_thread_token_record` into the record's own accessor), a hard-coded
+link offset replaced by `offset_of!`, and `defer_reuse_if_tracing` renamed
+`withhold_under_a_trace_or_make_returns` for the drain it also makes.
+
 ## 2026-09-16 — an entry point reached outside a thread's life ends the process, and the base block is the mark of a started thread
 
 **Decided (`PLAN.md` S50.2, the model's reading of Edmond's ruling

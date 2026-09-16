@@ -751,7 +751,9 @@ impl BlockPool {
         // whatever occupies it next, so the return waits for that trace's
         // end (`cycle::deferred_slot_reuse`, "A foreign holder of the
         // token"). Ahead of the count and the restamp: a withheld block
-        // is still out, and still its kind.
+        // is still out, under the kind it arrived with — a retained one
+        // arrives restamped free by `retained::release_emptied`, and a
+        // stale address into it then resolves to nothing tracked.
         if unsafe {
             crate::cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace(
                 block as *mut u8,

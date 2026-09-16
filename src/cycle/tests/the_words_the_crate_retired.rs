@@ -194,7 +194,11 @@ const RETIRED: [(&str, &str, Where); 93] = [
     ("TraceWindow", "ActiveTrace", Where::Anywhere),
     ("ACTIVE", "DEFERRED_RETURNS", Where::Anywhere),
     ("PARKED", "DEFERRED_RETURNS", Where::Anywhere),
-    ("park_if_active", "defer_reuse_if_tracing", Where::Anywhere),
+    (
+        "park_if_active",
+        "withhold_under_a_trace_or_make_returns",
+        Where::Anywhere,
+    ),
     ("parked_count", "deferred_slot_count", Where::Anywhere),
     // The hash table's collision defense
     // (`dev/PROJECT-TERMINOLOGY-AUDIT.md`, section 5). Scoped, because all
