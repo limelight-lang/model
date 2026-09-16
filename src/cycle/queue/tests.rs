@@ -8,6 +8,7 @@ use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{
     ACYCLIC_GATE, CANDIDATE_BIT, EntityKind, MemoryCategory, ll_release, mutator_flags,
 };
+use crate::ring::BLOCK_ENTRIES;
 
 /// A header the candidate gate admits, at count `holders`: a heap object
 /// with no clause of the gate against it, so a decrement that leaves a
@@ -121,8 +122,9 @@ fn reset() {
 mod an_arena_entity_leaves_no_entry;
 mod owner_retirement;
 mod the_base_block_a_thread_holds_for_its_life;
-mod the_batch_a_collection_detaches;
+mod the_batch_a_collection_reads;
 mod the_tokens_every_lane_holds;
+mod what_a_reader_behind_the_writer_takes;
 mod what_a_registration_writes;
 mod what_gc_owns;
 mod what_the_poll_owes_the_queue;

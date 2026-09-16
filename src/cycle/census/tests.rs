@@ -18,6 +18,11 @@ struct Collected {
     freed: usize,
     report: CollectionReport,
     memory: GcMemoryStats,
+    /// The same figures as the collection started, the peak lowered to
+    /// current: what a reading of the peak is taken against, since the
+    /// current figure holds the thread's own stock — its base block, its
+    /// record when this thread carved it, the ring's blocks.
+    before: GcMemoryStats,
 }
 
 /// The report of one collection over a built load, with the queue's spare
@@ -42,11 +47,13 @@ fn collect_once() -> Collected {
     reoffer_deferred_candidates();
     let _ = crate::cycle::row::take_edge_dispatches();
     gc_metadata::lower_thread_peak_to_current();
+    let before = gc_metadata::thread_stats();
     let freed = unsafe { ll_gc_collect_cycles() };
     Collected {
         freed,
         report: take(),
         memory: gc_metadata::thread_stats(),
+        before,
     }
 }
 
@@ -246,6 +253,7 @@ fn a_registered_ring_under_a_keeper_reads_as_constructed() {
                 freed,
                 report,
                 memory,
+                before,
             } = collect_once();
             assert_eq!(freed, 0);
             let scan = report.scan.clone().expect("the scan ended");
@@ -272,9 +280,10 @@ fn a_registered_ring_under_a_keeper_reads_as_constructed() {
                 "{context}: no block drawn past what stands"
             );
             assert_eq!(
-                memory.peak_bytes_in_use(),
-                1056 + 2 * crate::cycle::stack::SEGMENT_BYTES + 64,
-                "{context}: the rows, two segments and the control line at the peak"
+                memory.peak_bytes_in_use() - before.current_bytes_in_use(),
+                1056 + 2 * crate::cycle::stack::SEGMENT_BYTES + BLOCK_PAYLOAD,
+                "{context}: the rows, two segments and the deferred lane's block \
+                 over what the thread held"
             );
             assert_eq!(scan.roots, members, "{context}: every member is a root");
             assert_eq!(scan.density.slotted.blocks, 1, "{context}: one block");

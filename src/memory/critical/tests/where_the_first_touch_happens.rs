@@ -138,7 +138,6 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue
         ("BLOCK_BUDGET", false),
         ("CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue
-        ("COLLECTING", false),
         ("COLLECTION_ARMED", false),
         ("COUNTS", false),               // test-only const Cell, no drop glue
         ("COUNT_PRESSURE_ROOTS", false), // test-only const Cell, no drop glue

@@ -21,11 +21,7 @@ fn a_non_final_decrement_puts_the_entity_in_this_thread_s_queue() {
     assert!(unsafe { !release(entity) });
 
     assert_eq!(candidate_count(), 1);
-    assert_eq!(
-        write_segment_entry(0),
-        entity,
-        "the entry names the entity itself"
-    );
+    assert_eq!(entry_at(0), entity, "the entry names the entity itself");
     assert_ne!(
         unsafe { mutator_flags(entity) } & CANDIDATE_BIT,
         0,

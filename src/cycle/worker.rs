@@ -2,7 +2,7 @@
 //! token by compare-and-swap, and release it. The batch it will make under
 //! that claim — the entries taken from the owner's ring behind its writer,
 //! traced through `cells::AtomicCells`, the verdicts posted to the owner's
-//! verdict ring — is `PLAN.md` S49's, built over the ring S49.3 lays down
+//! verdict ring — is `PLAN.md` S49.5's, built over `crate::ring`
 //! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"; `rfc/dev/DECISIONS.md`,
 //! "the candidate queue is read behind its writer, and the collector's
 //! verdicts come back by a second ring"). Until then a round over the records

@@ -7,6 +7,39 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-16 — a peak read against an absolute figure passed on what the free list happened to hold
+
+**What happened.** `cycle::census::tests::a_registered_ring_under_a_keeper_reads_as_constructed`
+asserted the thread's high-water bytes in use at `1056 + 2 * SEGMENT_BYTES + 64`
+— the rows, two stack segments and the base block's control line. The
+thread's current figure also holds the 256 bytes of its owner record when
+the registry carved that record fresh rather than popping a released one, so
+the assertion held only while some other case's thread had exited first and
+left a record on the free list. Run alone on the pre-step tree it failed by
+256; under the whole suite it passed on every recorded run. S49.3 met it
+because the ring's block is charged whole from its link, which moved the
+figure by a block and made the case read.
+
+**Why it was possible.** A reading of the peak is a reading of the current
+figure plus what the collection added, and the case wrote the sum as one
+constant, so the current figure's dependence on the thread's history was
+invisible in the number. `lower_thread_peak_to_current` lowers the peak to
+whatever the current is; it does not make the current zero.
+
+**Why it was not caught earlier.** The suite runs its cases in parallel and
+threads exit in it constantly, so the free list is never empty when this
+case's thread takes its record; the one arm that carves is the one no run of
+the gate reaches. A single-case run — the form a reader uses to reproduce a
+failure — is the form that would have shown it, and nothing ran the case that
+way until a step changed the figure it read.
+
+**What changed.** The case reads the current figure after lowering the peak
+and asserts the difference, which is the collection's own. The lesson is
+the one `dev/WORKFLOW.md`'s "state is taken from the instrument" already
+states for numbers from journals, applied to a number a fixture computes: a
+figure that includes the thread's history is asserted as a difference from
+a reading taken beside it, never as a constant.
+
 ## 2026-09-14 — the driver's two paths diverged where no test laid them side by side
 
 **What happened.** S36's stage-close review read `cycle::collect`'s two

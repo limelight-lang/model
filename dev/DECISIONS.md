@@ -8,6 +8,53 @@ never edited or deleted.
 
 ---
 
+## 2026-09-16 — the candidate queue is a ring read in place, and a queue block is charged whole from its link
+
+**Decided (`PLAN.md` S49.3, on Edmond's ruling in `rfc/dev/DECISIONS.md`,
+"the candidate queue is read behind its writer, and the collector's
+verdicts come back by a second ring"):** the active lane is a ring of pool
+blocks in `crate::ring`'s form, its two block pointers on the owner
+record's lines; a registration is two plain stores (the entry, then `tail`
+by a release store); the in-line collection reads every entry from the
+front to the tail as its batch, a count over entries that stay where they
+are, and its close compacts the ring in place, so `detach_candidates`,
+`merge_candidates`, the batch's head/fill form and `compaction::finish`'s
+two-input pass go; the deferred lane is a `ring::Chain` of the same blocks,
+filled out of the spare cells at a close and spliced into the ring after
+the tail block at the epoch's turn, no copy and no block drawn; the
+`COLLECTING` thread-local is the record's collecting word, raised before the
+owner takes its token and cleared by a release store that is the close's
+last; the retirement pass inside a teardown with the gate closed takes the
+token before it rewrites the ring.
+
+**The ledger's rule for a queue block changes with it:** a block is charged
+its whole payload when it is linked into the ring or the deferred lane and
+discharged when it leaves, so an emptied block in the circle stays charged;
+the write segment's fill residue and its high-water mark go, and only the
+trace arena's bump residue remains (`memory::gc_metadata`). Rejected: a
+per-entry charge, which would put the ledger on the registration path; a
+charge per consumed block only, which would need the reader to write the
+ledger.
+
+**Two further choices, small and mine:** a mark an unwound close left on an
+entry is overwritten by the next close's reading rather than asserted
+against, because an unwind in a test's close was seen leaving marks the
+next collection then met; and a retirement pass that meets a marked entry
+(a close that chose no disposition) keeps it in the ring with the mark taken
+off, the deferral being the close's decision and not the retirement's.
+
+**Cost:** the registration path reads a second thread-local — the record's,
+beside the base block's — and the tail block's control line, so its fast
+path is 22 instructions against the chain form's 13 by the release
+disassembly (`objdump` over `libll_model.a`, 2026-09-16), still two stores;
+caching the record in the base block's control line would take the 8 bytes
+the line no longer has. A block the deferred lane fills comes from a spare
+cell each time and joins the circle at the re-offer, so a ring that defers
+and re-offers grows by one block per collection until the poll's shrink
+(`PLAN.md` S49.6) unlinks the surplus. Y12 clause 3's "a full segment
+behind the write position" bound is gone: every count reads
+`(tail − front) mod cap` per block.
+
 ## 2026-09-15 — `ll_thread_init` is called once, and a refusal closes the thread
 
 **Ruled by Edmond:** `ll_thread_init` is an initialisation, not an "ensure":

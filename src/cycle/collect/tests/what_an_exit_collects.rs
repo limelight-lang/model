@@ -20,7 +20,7 @@ use crate::cycle::collect::{
     EXIT_ROUNDS, Ending, ExitEnding, collect_before_exit, take_exit_residue,
 };
 use crate::cycle::queue::{
-    candidate_count, defer_candidates, deferred_count, detach_candidates, overflow_len,
+    candidate_count, defer_candidates, deferred_count, overflow_len, read_batch,
     release_queue_segments,
 };
 use crate::cycle::token::testing::HeldByACollector;
@@ -190,7 +190,7 @@ fn a_ring_in_the_deferred_lane_is_collected_by_the_exit() {
     let class = node_class("ExitDeferredRingNode", counting_destructor as *const ());
     let mut arena = Arena::new();
     let _members = unsafe { ring(&mut arena, [class, class, class]) };
-    defer_candidates(detach_candidates(), crate::cycle::epoch::commits());
+    defer_candidates(read_batch(), crate::cycle::epoch::commits());
     assert_eq!(deferred_count(), 3, "the ring's registrations are deferred");
     assert_eq!(candidate_count(), 0);
 

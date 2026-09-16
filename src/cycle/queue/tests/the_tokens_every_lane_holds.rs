@@ -1,8 +1,8 @@
 //! The walk over every lane, checked against the two counters the module
 //! already has.
 //!
-//! `candidate_count` walks the chain and `overflow_len` reads the buffer, and
-//! neither can say which entity a record names. The rule the batch's
+//! `candidate_count` reads the ring's indices and `overflow_len` the buffer's
+//! count, and neither can say which entity a record names. The rule the batch's
 //! membership rests on is about entities: one `CANDIDATE_BIT` to one record,
 //! and no record in two
 //! lanes. `collect_lane_tokens` is what can state it, so it is calibrated here
@@ -10,7 +10,9 @@
 
 use super::*;
 
-/// The calibration: a chain of two segments and a filled overflow buffer,
+use crate::test_support::allocation_probe;
+
+/// The calibration: a ring of two blocks and a filled overflow buffer,
 /// against the counters and against the entities the fixture registered.
 #[test]
 fn the_walk_answers_what_both_lanes_hold() {
@@ -22,11 +24,10 @@ fn the_walk_answers_what_both_lanes_hold() {
     let first_entity = &raw mut first;
     assert!(unsafe { !release(first_entity) });
 
-    // Filling the head and registering once more puts a full segment behind
-    // the write position, which is the case the walk's per-segment bound
-    // exists for: the head is read to its fill and the segment behind it to
-    // capacity.
-    fill_write_segment(first_entity);
+    // Filling the tail block and registering once more puts a second block
+    // in the circle, so the walk crosses a block boundary: each block is
+    // read from its own front to its own tail.
+    fill_tail_block(first_entity);
     let mut second = candidate(2);
     let second_entity = &raw mut second;
     assert!(unsafe { !release(second_entity) });
@@ -51,22 +52,23 @@ fn the_walk_answers_what_both_lanes_hold() {
     );
     assert_eq!(
         tokens.len(),
-        SEGMENT_CAPACITY + 2,
-        "one full segment, the entry that grew the chain, and the overflowed one"
+        BLOCK_ENTRIES + 2,
+        "one full block, the entry that grew the circle, and the overflowed one"
     );
+    assert_eq!(tokens[0], first_entity, "the front block comes first");
     assert_eq!(
-        tokens[0], second_entity,
-        "the newest segment comes first, and its first entry is the one the growth carried"
+        tokens[BLOCK_ENTRIES], second_entity,
+        "the second block follows it, and its first entry is the one the growth carried"
     );
     assert_eq!(
         tokens[tokens.len() - 1],
         overflowed_entity,
-        "the overflow buffer comes after the chain"
+        "the overflow buffer comes after the ring"
     );
     assert_eq!(
         tokens.iter().filter(|&&t| t == second_entity).count(),
         1,
-        "the entity that grew the chain holds one record"
+        "the entity that grew the circle holds one record"
     );
     assert_eq!(
         tokens.iter().filter(|&&t| t == overflowed_entity).count(),
@@ -75,7 +77,7 @@ fn the_walk_answers_what_both_lanes_hold() {
     );
     assert_eq!(
         tokens.iter().filter(|&&t| t == first_entity).count(),
-        SEGMENT_CAPACITY,
+        BLOCK_ENTRIES,
         "the first entity's own record and the fixture's filler, which is that same pointer"
     );
 
@@ -110,13 +112,14 @@ fn an_empty_queue_answers_nothing() {
     reset();
 }
 
-/// An unwind inside the deferral's own pass leaves both lanes where the
-/// deferral would have left them: the active chain it lifted is back in the
-/// write cells, the batch stands in the deferred lane, and the overflow count
-/// it zeroed is restored. Without the guard the lifted chain is in no cell at
-/// all, and every record in it carries a candidate bit no lane names.
+/// An unwind inside the deferral's own pass leaves every lane whole: the
+/// record the pass had moved stands in the deferred lane, the records it had
+/// not reached stand in the ring, and the overflow buffer holds what it held.
+/// Without the pass finishing itself on the unwind the ring's indices would
+/// stand where the pass stopped, and every record behind them would carry a
+/// candidate bit no lane names.
 #[test]
-fn an_unwind_inside_the_deferral_puts_the_active_lane_back() {
+fn an_unwind_inside_the_deferral_keeps_every_lane_whole() {
     let _g = test_guard();
     reset();
     assert!(refill_spares());
@@ -124,10 +127,11 @@ fn an_unwind_inside_the_deferral_puts_the_active_lane_back() {
     let mut deferred = candidate(2);
     let deferred_entity = &raw mut deferred;
     assert!(unsafe { !release(deferred_entity) });
-    let batch = detach_candidates();
+    let batch = read_batch();
 
-    // Two records in the active lane against one in the batch, so that a lane
-    // holding the wrong chain answers a different count rather than the same.
+    // Two records behind the batch against one in it, so that a lane
+    // holding the wrong records answers a different count rather than the
+    // same.
     let mut active = candidate(2);
     let active_entity = &raw mut active;
     assert!(unsafe { !release(active_entity) });
@@ -138,17 +142,23 @@ fn an_unwind_inside_the_deferral_puts_the_active_lane_back() {
     let mut overflowed = candidate(2);
     let overflowed_entity = &raw mut overflowed;
     unsafe { append_to_overflow(state, overflowed_entity) };
-    assert_eq!((candidate_count(), overflow_len()), (2, 1));
+    assert_eq!((candidate_count(), overflow_len()), (3, 1));
 
-    let _injection = compaction::inject(0);
+    // Raised after the batch's one record joined the deferred lane, before
+    // the pass reached the two behind it.
+    let _injection = compaction::inject(3);
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| defer_candidates(batch, 0)))
             .is_err()
     );
 
-    assert_eq!(candidate_count(), 2, "the lifted active chain came back");
+    assert_eq!(
+        candidate_count(),
+        2,
+        "the records behind the batch stand in the ring"
+    );
     assert_eq!(deferred_count(), 1, "the batch stands in the deferred lane");
-    assert_eq!(overflow_len(), 1, "and the overflow count with it");
+    assert_eq!(overflow_len(), 1, "and the overflow buffer keeps its entry");
     let mut tokens = Vec::new();
     collect_lane_tokens(&mut tokens);
     tokens.sort_unstable();
@@ -175,7 +185,7 @@ fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
     let mut first = candidate(2);
     let first_entity = &raw mut first;
     assert!(unsafe { !release(first_entity) });
-    let first_batch = detach_candidates();
+    let first_batch = read_batch();
     // The count is the caller's: it stands for the commit the reading that
     // found this batch live saw, and zero is as good as any other for a case
     // whose probes are full-width.
@@ -186,7 +196,7 @@ fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
     let mut second = candidate(2);
     let second_entity = &raw mut second;
     assert!(unsafe { !release(second_entity) });
-    let second_batch = detach_candidates();
+    let second_batch = read_batch();
     defer_candidates(second_batch, 0);
     assert_eq!(candidate_count(), 0);
     assert_eq!(deferred_count(), 2);
@@ -236,7 +246,10 @@ fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
     let mut third = candidate(2);
     let third_entity = &raw mut third;
     assert!(unsafe { !release(third_entity) });
-    defer_candidates(detach_candidates(), u64::MAX);
+    // The lane's block went into the circle with the re-offer, so the
+    // deferral takes a fresh one from a cell.
+    assert!(refill_spares());
+    defer_candidates(read_batch(), u64::MAX);
     assert_eq!(
         deferred_count(),
         3,
@@ -251,13 +264,13 @@ fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
     reset();
 }
 
-/// A deferred lane of more than one segment, which is the merge arm the
-/// one-record cases never reach: the lane's head is full, so the batch's own
-/// head becomes the chain head instead of being copied into the room ahead of
-/// it. The chain's length is what `deferred_count` walks and what the queue's
-/// release has to discharge, and neither is exercised by a lane of one entry.
+/// A deferred lane of more than one block, which a lane of one record never
+/// reaches: the lane's last block is full, so the deferral takes a second
+/// spare for the rest. The lane's length is what `deferred_count` answers
+/// and what the queue's release has to discharge, and the re-offer splices
+/// every block of it into the circle.
 #[test]
-fn a_deferred_lane_of_two_segments_comes_back_whole() {
+fn a_deferred_lane_of_two_blocks_is_spliced_back_whole() {
     let _g = test_guard();
     reset();
     assert!(refill_spares());
@@ -265,36 +278,47 @@ fn a_deferred_lane_of_two_segments_comes_back_whole() {
     let mut filler = candidate(2);
     let filler_entity = &raw mut filler;
     assert!(unsafe { !release(filler_entity) });
-    fill_write_segment(filler_entity);
+    fill_tail_block(filler_entity);
     let mut grew = candidate(2);
     let grew_entity = &raw mut grew;
     assert!(unsafe { !release(grew_entity) });
     assert_eq!(segment_count(), 2);
 
-    defer_candidates(detach_candidates(), 0);
-    assert_eq!(candidate_count(), 0);
-    assert_eq!(deferred_count(), SEGMENT_CAPACITY + 1);
-
-    // The second deferral meets a full deferred head, so its own head is the
-    // one that survives as the chain's. The cells are refilled first: the
-    // growth above spent them, and a registration with no segment to write
-    // into lands in the overflow buffer, which is not the lane this case is
-    // about.
+    // The deferral fills its blocks from the spare cells, which the growth
+    // above spent: refilled first, so that the lane can take every record
+    // rather than leaving the rest in the ring.
     assert!(refill_spares());
+    defer_candidates(read_batch(), 0);
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(deferred_count(), BLOCK_ENTRIES + 1);
+    assert_eq!(
+        deferred_segment_count(),
+        2,
+        "a full block and one with the rest"
+    );
+    assert_eq!(
+        segment_count(),
+        2,
+        "the ring's two blocks stay in the circle, empty"
+    );
+
+    // A later record goes into the ring's emptied tail block, and the second
+    // deferral appends it to the lane's last block, which has room.
     let mut later = candidate(2);
     let later_entity = &raw mut later;
     assert!(unsafe { !release(later_entity) });
     assert_eq!(
         overflow_len(),
         0,
-        "the record is in a segment, not the buffer"
+        "the record is in a block, not the buffer"
     );
-    defer_candidates(detach_candidates(), 0);
-    assert_eq!(deferred_count(), SEGMENT_CAPACITY + 2);
+    defer_candidates(read_batch(), 0);
+    assert_eq!(deferred_count(), BLOCK_ENTRIES + 2);
+    assert_eq!(deferred_segment_count(), 2);
 
     let mut tokens = Vec::new();
     collect_lane_tokens(&mut tokens);
-    assert_eq!(tokens.len(), SEGMENT_CAPACITY + 2);
+    assert_eq!(tokens.len(), BLOCK_ENTRIES + 2);
     assert_eq!(
         tokens
             .iter()
@@ -312,9 +336,95 @@ fn a_deferred_lane_of_two_segments_comes_back_whole() {
     assert_eq!(deferred_count(), 0);
     assert_eq!(
         candidate_count(),
-        SEGMENT_CAPACITY + 2,
-        "every record of both segments came back"
+        BLOCK_ENTRIES + 2,
+        "every record of both blocks came back"
     );
+    assert_eq!(segment_count(), 4, "the lane's blocks joined the circle");
+
+    reset();
+}
+
+/// The re-offer is a splice and draws nothing: at a poll with both cells
+/// empty and the reserve drained, a deferred lane of three blocks is linked
+/// into the circle after the tail block and read after what stood there,
+/// with no allocation and no pool request.
+#[test]
+fn a_reoffer_at_a_poll_with_nothing_to_draw_splices_the_lane_in() {
+    let _g = test_guard();
+    reset();
+
+    // Two deferrals build a lane of three blocks: the first fills a block
+    // and starts a second, the second fills that one and starts a third.
+    // Two locals rather than an array: indexing an array takes a `&mut` of
+    // the whole of it, which retags away the pointer the earlier round
+    // registered (`dev/WORKFLOW.md`, Miri).
+    // Every registered header outlives the case: the second deferral's
+    // sweep reads the first's records through their entries.
+    let mut first_filler = candidate(2);
+    let mut second_filler = candidate(2);
+    let mut first_grew = candidate(2);
+    let mut second_grew = candidate(2);
+    let fillers = [&raw mut first_filler, &raw mut second_filler];
+    let grew = [&raw mut first_grew, &raw mut second_grew];
+    for (round, &filler_entity) in fillers.iter().enumerate() {
+        assert!(refill_spares());
+        assert!(unsafe { !release(filler_entity) });
+        fill_tail_block(filler_entity);
+        assert!(unsafe { !release(grew[round]) });
+        // The lane's blocks come from the cells too.
+        assert!(refill_spares());
+        defer_candidates(read_batch(), 0);
+        assert_eq!(candidate_count(), 0);
+        assert_eq!(deferred_count(), (round + 1) * (BLOCK_ENTRIES + 1));
+    }
+    assert_eq!(deferred_segment_count(), 3);
+    assert_eq!(segment_count(), 2, "the ring keeps its two consumed blocks");
+
+    // One record ahead of the splice, to read the order against.
+    let mut ahead = candidate(2);
+    let ahead_entity = &raw mut ahead;
+    assert!(unsafe { !release(ahead_entity) });
+
+    // Nothing to draw from: the cells spent by hand, the reserve drained.
+    let state = owner_state();
+    let owner_state = unsafe { owner_state_ref(state) };
+    loop {
+        let spare = take_spare(owner_state);
+        if spare.is_null() {
+            break;
+        }
+        crate::memory::gc_metadata::release(spare);
+    }
+    crate::memory::critical::drain_for_test();
+    assert_eq!(spare_count(), 0);
+
+    let _ = allocation_probe::take_allocations();
+    assert!(reoffer_deferred_if_epoch_moved(u64::MAX));
+    assert_eq!(
+        allocation_probe::take_allocations(),
+        (0, 0),
+        "the splice neither allocates nor asks the pool"
+    );
+    assert_eq!(deferred_count(), 0);
+    assert_eq!(candidate_count(), 2 * (BLOCK_ENTRIES + 1) + 1);
+    assert_eq!(segment_count(), 5, "the three blocks joined the two");
+
+    let mut tokens = Vec::new();
+    collect_lane_tokens(&mut tokens);
+    assert_eq!(
+        tokens[0], ahead_entity,
+        "what stood in the ring is read first"
+    );
+    for filler_entity in fillers {
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|&&entry| entry == filler_entity)
+                .count(),
+            BLOCK_ENTRIES,
+            "and the lane's records follow it whole"
+        );
+    }
 
     reset();
 }
@@ -331,7 +441,7 @@ fn a_deferred_decrement_neither_duplicates_its_token_nor_loses_an_active_one() {
     let mut deferred = candidate(3);
     let deferred_entity = &raw mut deferred;
     assert!(unsafe { !release(deferred_entity) });
-    defer_candidates(detach_candidates(), 0);
+    defer_candidates(read_batch(), 0);
     assert_eq!(deferred_count(), 1);
 
     assert!(unsafe { !release(deferred_entity) });
@@ -367,9 +477,9 @@ fn a_deferred_decrement_neither_duplicates_its_token_nor_loses_an_active_one() {
 }
 
 /// A record naming an entity whose death is complete gives its slot back on
-/// the way into the deferred lane. Without the sweep the slot would be
-/// withheld until the turnover, because retirement reads the active lane and
-/// the deferred one is offered to nothing until then
+/// the way into the deferred lane rather than being deferred: the retirement
+/// outranks the mark. Without that the slot would be withheld until the
+/// turnover, the deferred lane being offered to nothing until then
 /// (`rfc/model/gc/cycle/questions.md`, Y12 clause 8).
 #[test]
 fn a_deferral_retires_the_record_of_a_completed_death() {
@@ -390,7 +500,7 @@ fn a_deferral_retires_the_record_of_a_completed_death() {
     unsafe { dismantle_candidate(dead) };
     assert_eq!(candidate_count(), 2);
 
-    defer_candidates(detach_candidates(), 0);
+    defer_candidates(read_batch(), 0);
     assert_eq!(
         deferred_count(),
         1,

@@ -23,7 +23,7 @@ fn the_base_block_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     // constant agrees with whatever the constant becomes.
     assert_eq!(size_of::<OwnerCycleState>(), 64);
     assert_eq!(align_of::<OwnerCycleState>(), 64);
-    assert_eq!(SEGMENT_CAPACITY, 8_160);
+    assert_eq!(BLOCK_ENTRIES, 8_135);
     assert_eq!(OVERFLOW_CAPACITY, 8_152);
     assert_eq!(POLL_STRIDE, 4_076);
 
@@ -42,7 +42,7 @@ fn the_base_block_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
 }
 
 #[test]
-fn a_spare_stays_one_accounted_segment_when_it_becomes_live() {
+fn a_spare_stays_one_accounted_block_when_it_joins_the_ring() {
     let _g = test_guard();
     reset();
     assert!(refill_spares());
@@ -55,9 +55,9 @@ fn a_spare_stays_one_accounted_segment_when_it_becomes_live() {
     assert_eq!(
         thread_stats().current_blocks(),
         before,
-        "spare to write segment is a state transition, not a second acquisition"
+        "spare to ring block is a state transition, not a second acquisition"
     );
-    assert_eq!(kind_of(write_segment()), BLOCK_KIND_GC_METADATA);
+    assert_eq!(kind_of(tail_block()), BLOCK_KIND_GC_METADATA);
 
     reset();
 }
@@ -137,15 +137,15 @@ fn the_entity_row_dispatch_never_enters_gc_metadata() {
 }
 
 /// Bytes in use inside the blocks the queue owns. Three quanta and no others:
-/// the base block's control line, an overflow-buffer entry, and a segment that
-/// has left the write position full. A spare and the live segment's own fill
-/// are reservation.
+/// the base block's control line, an overflow-buffer entry, and a block in
+/// the ring or the deferred lane, charged whole at the link. A spare is
+/// reservation; a block's fill moves no figure.
 fn in_use() -> usize {
     thread_stats().current_bytes_in_use()
 }
 
 #[test]
-fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
+fn a_spare_is_reservation_and_a_block_in_the_ring_is_the_payload_it_holds() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the cells start full");
@@ -157,40 +157,48 @@ fn a_spare_is_reservation_and_a_full_segment_is_the_payload_it_holds() {
     assert!(unsafe { !release(first_entity) });
     assert_eq!(
         in_use(),
-        before,
-        "a segment in the write position is reservation, however full"
+        before + BLOCK_PAYLOAD,
+        "the block the first registration links in is charged whole"
     );
 
     // The ordinary write, which is the path the whole design exists to
-    // keep clear: three registrations into the segment that now exists.
+    // keep clear: three registrations into the block that now exists.
     let mut ordinary = [candidate(2), candidate(2), candidate(2)];
     for header in &mut ordinary {
         assert!(unsafe { !release(&raw mut *header) });
     }
-    assert_eq!(in_use(), before, "an ordinary enrolment charges nothing");
+    assert_eq!(
+        in_use(),
+        before + BLOCK_PAYLOAD,
+        "an ordinary registration charges nothing"
+    );
     assert_eq!(
         crate::memory::gc_metadata::thread_stats().peak_bytes_in_use(),
-        before,
+        before + BLOCK_PAYLOAD,
         "and reaches the high-water figure no more than the current one, \
          which a balanced charge and discharge on that path would"
     );
 
-    fill_write_segment(first_entity);
-    assert_eq!(in_use(), before, "the fill alone publishes nothing");
+    fill_tail_block(first_entity);
+    assert_eq!(
+        in_use(),
+        before + BLOCK_PAYLOAD,
+        "the fill alone publishes nothing"
+    );
 
     let mut second = candidate(2);
     assert!(unsafe { !release(&raw mut second) });
     assert_eq!(
         in_use(),
-        before + BLOCK_PAYLOAD,
-        "the segment that left the write position is published whole"
+        before + 2 * BLOCK_PAYLOAD,
+        "the second block is charged whole as it is linked in"
     );
 
     reset();
     assert_eq!(
         in_use(),
         before,
-        "the release gives every published byte back"
+        "the release gives every charged byte back"
     );
 }
 
@@ -264,41 +272,45 @@ fn an_entry_leaving_the_overflow_buffer_gives_its_pointer_back() {
     assert_eq!(overflow_len(), 0, "a spare cell took all three");
     assert_eq!(
         in_use(),
-        before,
-        "the candidates left the overflow buffer, and the segment they went into is \
-         reservation until it is full"
+        before + BLOCK_PAYLOAD,
+        "the candidates left the overflow buffer, and the block they went into \
+         is charged whole"
     );
 
     reset();
 }
 
 #[test]
-fn the_live_segments_fill_reaches_the_high_water_figure_at_the_drain() {
+fn a_consumed_block_stays_charged_until_it_leaves_the_circle() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the first registration takes a spare");
     crate::memory::gc_metadata::lower_thread_peak_to_current();
     let before = crate::memory::gc_metadata::thread_stats();
 
-    // Three entries and not a full segment: what the drain has to enter is
-    // the fill, and a capacity would be satisfied by a constant.
-    let mut candidates = [candidate(2), candidate(2), candidate(2)];
-    for header in &mut candidates {
-        assert!(unsafe { !release(&raw mut *header) });
-    }
+    let class = candidate_class("ChargedBlockCandidate");
+    let mut arena = Arena::new();
+    let entity = unsafe { allocated_candidate(&mut arena, class, 2) };
+    assert!(unsafe { !release(entity) });
+    assert_eq!(in_use(), before.current_bytes_in_use() + BLOCK_PAYLOAD);
+
+    // The entry is retired and the block is empty, and it is still the
+    // ring's: the charge stays with the circle rather than with the fill.
+    unsafe { dismantle_candidate(entity) };
+    unsafe { retire_candidates() };
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(segment_count(), 1, "the emptied block stays in the circle");
     assert_eq!(
         in_use(),
-        before.current_bytes_in_use(),
-        "nothing charges while the segment stands in the write position"
+        before.current_bytes_in_use() + BLOCK_PAYLOAD,
+        "an empty block in the circle is charged as a full one"
     );
 
-    // The thread never grows the queue, so no transition has charged the
-    // fill. The segment release is the one that ends it.
     reset();
+    assert_eq!(in_use(), before.current_bytes_in_use());
     assert_eq!(
         crate::memory::gc_metadata::thread_stats().peak_bytes_in_use(),
-        before.current_bytes_in_use() + 3 * size_of::<*mut RcHeader>(),
-        "the fill of a thread that never grew the queue is in the high-water figure"
+        before.current_bytes_in_use() + BLOCK_PAYLOAD,
+        "the high-water figure is the block, and no fill stands beside it"
     );
-    assert_eq!(in_use(), before.current_bytes_in_use());
 }

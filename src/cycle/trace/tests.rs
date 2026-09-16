@@ -157,7 +157,7 @@ fn every_root_marks_before_any_root_scans() {
 
     // The fix: both phases over the whole batch, in that order.
     let mut active = ActiveTrace::open().expect("the workspace is warm");
-    active.detach_candidates();
+    active.read_candidates();
     let outcome = {
         let (arena, batch) = active.rows_and_roots();
         let mut order = Vec::new();
@@ -207,7 +207,7 @@ fn a_refusal_in_the_mark_abandons_the_whole_trace() {
     let (alpha, beta) = (rings.alpha, rings.beta);
 
     let mut active = ActiveTrace::open().expect("the workspace is warm");
-    active.detach_candidates();
+    active.read_candidates();
 
     // The arena is emptied to its last byte first, so the refusal lands on the
     // first row array the first root asks for rather than somewhere inside the

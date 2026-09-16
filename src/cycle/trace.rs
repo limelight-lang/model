@@ -32,7 +32,7 @@
 use crate::cells::CellReader;
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::mark::{MarkResult, mark};
-use crate::cycle::queue::InFlightBatch;
+use crate::cycle::queue::Batch;
 use crate::cycle::scan::{ScanResult, scan};
 
 /// What a trace over a whole batch answered.
@@ -90,7 +90,7 @@ pub(crate) const ALL_ROOTS: usize = usize::MAX;
 /// may read an entity's cells through `R`.
 pub(crate) unsafe fn trace_batch<R: CellReader>(
     arena: &mut TraceScratchArena,
-    batch: &InFlightBatch,
+    batch: &Batch,
     roots: usize,
 ) -> (TraceOutcome, usize) {
     let mut traced = 0;

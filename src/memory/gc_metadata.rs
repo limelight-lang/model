@@ -4,8 +4,8 @@
 //! A pool block does not become GC memory merely because its kind keeps the
 //! entity walker out. Ownership begins here, where the block is stamped and
 //! counted, and ends here before it returns to the pool or the critical
-//! reserve. Moving a queue segment from a spare cell to the write position
-//! changes no ownership and therefore crosses no function in this module.
+//! reserve. Linking a spare block into the candidate ring changes no
+//! ownership and therefore crosses no function in this module.
 //!
 //! What the count answers is "how much memory does collection hold", and the
 //! block kind is what separates that memory from a request arena's or an
@@ -16,17 +16,18 @@
 //! Beside the blocks, one pair of logical figures: the bytes a structure has
 //! taken into use inside them. A block is reserved whole and used in part, so
 //! the block count alone cannot say whether collection is holding memory it
-//! needs. The charge lands at a structural transition — a queue segment
-//! leaving the write position, an overflow-buffer append, a queue-base control
-//! line, a trace-scratch block leaving the bump — never per grant, which is
-//! what keeps the candidate-registration path and the free path free of it.
-//! Two residues follow from that and are granularity rather than error: the
-//! write segment's own fill and the block under the trace scratch arena's
-//! bump. Each is entered in the
-//! high-water figure by the transition that ends it, and by a mark rather than
-//! a charge, the bytes standing there being released in the same breath — so
-//! that figure is exact for one thread and can miss a maximum two threads
-//! stood in together.
+//! needs. The charge lands at a structural transition — a block linked into
+//! the candidate ring or the deferred lane, charged whole, an overflow-buffer
+//! append, a queue-base control line, a trace-scratch block leaving the bump
+//! — never per grant, which is what keeps the candidate-registration path and
+//! the free path free of it. One residue follows from that and is granularity
+//! rather than error: the block under the trace scratch arena's bump. It is
+//! entered in the high-water figure by the transition that ends it, and by a
+//! mark rather than a charge, the bytes standing there being released in the
+//! same breath — so that figure is exact for one thread and can miss a
+//! maximum two threads stood in together. A ring block's fill moves no
+//! figure: the block is charged whole from its link to its unlink, empty or
+//! full, which is what it holds of the pool either way.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -178,9 +179,9 @@ pub fn stats() -> GcMemoryStats {
 
 /// Take `bytes` into use inside blocks this module already owns.
 ///
-/// The caller charges at a transition that has one inverse — a segment leaving
-/// the write position, an overflow-buffer append, a queue-base control line, a
-/// trace-scratch block leaving the bump — and never per grant
+/// The caller charges at a transition that has one inverse — a block linked
+/// into the candidate ring, an overflow-buffer append, a queue-base control
+/// line, a trace-scratch block leaving the bump — and never per grant
 /// (`dev/DECISIONS.md`, "the logical charge lands at a structural transition,
 /// not at a grant").
 pub(crate) fn charge(bytes: usize) {

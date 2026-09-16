@@ -193,7 +193,7 @@ fn collect_and_kill(fixture: Fixture) -> DeathReading {
 
     let blocks_before = gc_metadata::thread_stats().current_blocks();
     let mut active = ActiveTrace::open().expect("the pool funded the trace window");
-    active.detach_candidates();
+    active.read_candidates();
 
     let (trace_arena, batch) = active.rows_and_roots();
     assert_eq!(

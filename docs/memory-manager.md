@@ -315,7 +315,7 @@ that stack through the same `ll_free`, so whichever window closes last performs
 the physical return.
 
 `ActiveTrace` owns the `TraceScratchArena`, and the close's order is: sweep the
-rows and record that they are gone, restore any detached candidate chain, take
+rows and record that they are gone, dispose of the batch in place, take
 the window down, make the returns, and only then reset the arena, which rewinds
 the bump over the thread's workspace and gives back every block above it. The
 returns come before the reset so that a panic in the hand-back still finds them
@@ -335,23 +335,17 @@ and returns the slot through `ll_free`. Live and unfinished registrations
 survive. The retained occupancy count includes registered dead survivors until
 this return spends their count.
 
-Queue combination does not run the retirement compactor. An empty active lane
-takes the detached head/fill pair directly. With two lanes, the merge copies
-only `min(SEGMENT_CAPACITY - active_fill, batch_fill)` records from the end of
-the detached partial head into the active partial head, then splices the full
-tails. Taking records from the end leaves any detached remainder at the front,
-ready to become the sole partial output head. It reads no entity header and
-does no full record pass.
-
-Retirement saves both input head/fill bounds, packs surviving entries into the
-existing segments and reverses the occupied prefix so only the output head can
-be partial. Overflow is compacted in place. No block is drawn; surplus segments
-replenish spare cells and then return to the critical reserve. Only output
-interior segments remain payload-charged. A fixed cleanup frame owns both
-partial bounds, the read/write cursors, reversed links and any pending slot
-until publication, including during unwind between those transitions. Its
-publish phase makes the queue visible and advances the phase before either
-ledger update, so unwind cannot repeat a completed discharge.
+A collection takes nothing out of the candidate ring: it reads every entry
+from the front block to the tail as its batch, and its close compacts the
+ring in place (`cycle::queue::compaction`). Surviving entries are packed from
+the front block's front in their order, every block's `tail` and the tail
+block are lowered, and the emptied blocks stay in the circle for the writer's
+next round; the overflow buffer is compacted in place by the same pass, and a
+record the close marked goes to the deferred lane out of a spare cell. No
+block is drawn. Every block of the ring and of the deferred lane stays
+payload-charged from its link to its unlink. The ring's pass, the chain's
+and the overflow buffer's each finish themselves on an unwind, keeping every
+entry not yet answered for, so no boundary of the pass loses a record.
 
 The free path reaches no allocator at all: the window's own memory is one
 64-byte control line at the head of the workspace the arena already holds, and
@@ -672,16 +666,15 @@ Candidate-queue and collection-workspace blocks cross one manager boundary,
 block is: one current and one high-water block counter change at this
 boundary, and reservation figures are derived from the 64 KiB block count. A
 split by use within collection is not kept (`dev/DECISIONS.md`, "GC memory is
-counted once, and the block kind is the split"). Moving a queue segment from a
-spare cell to the write position is consequently no allocation and no second
-charge.
+counted once, and the block kind is the split"). Linking a spare block into
+the candidate ring is consequently no allocation and no second block count.
 
 Beside the blocks, one pair of logical figures — current and high-water bytes
 in use inside them — answers how much of the reservation is working memory.
-The charge lands at a structural transition and never per grant: a queue
-segment leaving the write position charges its whole payload, an
-overflow-buffer append charges one pointer, the queue's base block charges its
-64-byte control line, and a block leaving the trace scratch arena's bump
+The charge lands at a structural transition and never per grant: a block
+linked into the candidate ring or the deferred lane charges its whole payload,
+an overflow-buffer append charges one pointer, the queue's base block charges
+its 64-byte control line, and a block leaving the trace scratch arena's bump
 charges what it consumed — the workspace included, which stays in use until the
 reset rewinds over it. **The collection workspace's fixed region is charged
 nowhere**: the withheld returns' control line is memory the thread holds
@@ -691,20 +684,20 @@ crossing is what it consumed of what its bump may grant
 withheld returns themselves are charged nowhere either, standing in entities
 the ledger already counts. Each
 charge has one inverse, so the figure is exact at every instant except for
-two named residues — the write segment's own fill, at most 65,280 bytes per
-thread, and the block under the arena's bump, at most 65,280 bytes per
-collection in flight. Both
-are entered in the high-water figure by the transition that ends them,
-and by a mark rather than a charge, so a collection's own high-water figure is
-exact even when its current one lags.
+one named residue — the block under the arena's bump, at most 65,280 bytes per
+collection in flight. It is entered in the high-water figure by the transition
+that ends it, and by a mark rather than a charge, so a collection's own
+high-water figure is exact even when its current one lags. A candidate ring
+block is charged whole from its link to its unlink, so its fill is no
+residue.
 
 The queue's base block is held for one thread life. Its payload begins with one
 64-byte, cache-line-aligned `OwnerCycleState`; TLS contains only the non-owning
 pointer to that state, and that state carries the address of the second block a
 thread holds for its life, the collection workspace. The remaining 65,216 bytes are the bounded overflow
-buffer, 8,152 pointers, so the runtime bulk-loop poll stride is derived as 4,076
-rather than retaining the ordinary segment's 8,160-entry assumption. Ordinary
-queue segments use the full payload. Pool and critical-reserve handoffs restamp
+buffer, 8,152 pointers, so the runtime bulk-loop poll stride is derived as
+4,076. A ring block holds 8,135 entries after its three control lines
+(`ring::BLOCK_ENTRIES`). Pool and critical-reserve handoffs restamp
 the block and end GC accounting exactly once; the kind stamp makes a return of
 a block collection never owned a hard invariant failure rather than a counter
 underflow.
@@ -741,8 +734,8 @@ The **candidate queue's growth** is the other, and it reaches this reserve
 on a different condition: the queue's two spare cells are both empty,
 which means the poll's own refill through the ordinary allocation path was
 already refused. The draw is one block, and it puts the runtime in reserve mode.
-Its segments come back through `give_back` like the collection's, which
-is why thread exit releases the queue's segments before this reserve
+Its blocks come back through `give_back` like the collection's, which
+is why thread exit releases the queue's blocks before this reserve
 (`memory::heap::ll_thread_exit`); the workspace and the base block go back
 inside that same release, the workspace straight to the pool and the base block
 through `give_back`. **This reserve refusing does not refuse the

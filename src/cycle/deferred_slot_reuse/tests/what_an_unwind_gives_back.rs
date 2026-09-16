@@ -88,10 +88,10 @@ fn a_window_dropped_before_its_rows_are_gone_abandons_what_it_withheld() {
 /// withheld: the rows that would make a return a reuse are gone by then, so
 /// the drop's own pass gives every stacked slot back.
 ///
-/// Staged rather than provoked: the disposition of the batch is a merge into
-/// whatever the lane holds and has no refusal of its own
-/// (`queue::merge_candidates`), so the only unwind between the sweep and the
-/// returns is an injected one ([`inject_close_unwind`]).
+/// Staged rather than provoked: a close that chose no disposition leaves the
+/// batch in the ring and has no refusal of its own
+/// (`queue::dispose_candidates`), so the only unwind between the sweep and
+/// the returns is an injected one ([`inject_close_unwind`]).
 #[test]
 fn an_unwind_out_of_the_close_returns_what_was_withheld() {
     const CLASS: usize = ENTITY_SIZE * 8;
@@ -106,10 +106,10 @@ fn an_unwind_out_of_the_close_returns_what_was_withheld() {
     let block = block_of(victim);
 
     let mut window = ActiveTrace::open().expect("the pool funds the trace window");
-    // Detached and empty, which is all the case needs of it: the disposition
+    // Read and empty, which is all the case needs of it: the disposition
     // refuses on neither arm, so a registered root would decide nothing here
     // and would leave a withheld slot behind the case.
-    window.detach_candidates();
+    window.read_candidates();
     unsafe { ensure_row(window.arena(), victim, 1) };
 
     let occupied_before = unsafe { crate::memory::heap::block_occupancy(block) };

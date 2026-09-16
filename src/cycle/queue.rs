@@ -5,79 +5,69 @@
 //! clause of it is normative here. What this module builds is the
 //! **owner's side** of that contract: the write, the growth and the
 //! funding. The read side belongs to whoever holds the trace token:
-//! `cycle::mark` traces from one root, and the collection that draws
-//! those roots out of this queue is `cycle::collect`. A collector thread will
-//! read the ring behind this owner's writer without a detach
+//! `cycle::mark` traces from one root, and the collection that reads those
+//! roots out of this queue is `cycle::collect`. A collector thread reads
+//! the ring behind this owner's writer without a detach
 //! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
-//! and the collector's verdicts come back by a second ring"); that form is
-//! `PLAN.md` S49's, and until it lands the in-line collection is the only
+//! and the collector's verdicts come back by a second ring"); its batch is
+//! `PLAN.md` S49.5's, and until it lands the in-line collection is the only
 //! reader.
 //!
 //! # The three storage paths
 //!
 //! A candidate is written through exactly one of them, tried in order:
 //!
-//! 1. the write segment, while it has room;
-//! 2. a segment taken from a spare cell, or from the critical reserve
-//!    with both cells empty, which then becomes the write segment;
+//! 1. the tail block of the ring, while it has room, or the next block of
+//!    the circle when it is consumed;
+//! 2. a block taken from a spare cell, or from the critical reserve
+//!    with both cells empty, which is linked into the circle after the tail;
 //! 3. the base block's bounded overflow buffer, which cannot refuse.
 //!
 //! # The shape
 //!
 //! One queue per thread, and its writer is the thread that owns it
 //! (Y12 clause 1), so the write is uncontended by construction and needs
-//! no read-modify-write. An entry is one pointer to an entity header.
-//! Slots are sixteen-byte aligned in every size class
+//! no read-modify-write. An entry is one pointer to an entity header, stored
+//! as its address. Slots are sixteen-byte aligned in every size class
 //! (`memory::heap::SIZE_CLASSES`), so an entry's low four bits are free and
-//! carry the marks a reader writes over an entry it does not own. **Bit 0 is
+//! carry the marks a reading writes over an entry it read. **Bit 0 is
 //! the close's**, which is where it says a root belongs to the deferred lane
-//! ([`DEFERRED_MARK`]); bits 1 to 3 are unused. The mark is written over a
-//! detached batch and read once, and it does not survive the pass that
-//! disposes of it: every walk that hands an entry out as an address masks it
+//! ([`DEFERRED_MARK`]); bits 1 to 3 are unused. The mark is written over the
+//! entries a collection read and read once, by the pass that disposes of
+//! them: every walk that hands an entry out as an address masks it
 //! ([`ENTRY_MARK_BITS`]).
 //!
-//! A **segment is one 64 KiB pool block**, which is the only unit both
-//! allocation paths dispense (`rfc/model/gc/cycle/questions.md`, Y12
-//! clause 3), and the queue is a chain of them threaded through
-//! [`BlockHeader::next`] — the same use the shadow arena makes of that
-//! field, and the reason it exists.
+//! **The active lane is a ring R of the form `crate::ring` builds**: 64 KiB
+//! pool blocks linked in a circle, each carrying its own `front` and `tail`
+//! on separate lines, so that a reader can stand behind the writer without
+//! a detach and neither touches the other's index. R's two block pointers
+//! stand in the owner's record ([`OwnerRecord::candidate_ring`]) — the front
+//! block on the collector's line and the tail block on the owner's — and
+//! the blocks themselves are pool blocks, the only unit both allocation
+//! paths dispense (`rfc/model/gc/cycle/questions.md`, Y12 clause 3). A
+//! consumed block is not returned: the writer reaches it again around the
+//! circle. Every count of what the ring holds is `(tail − front) mod cap`
+//! summed over its blocks, and no block's contents are bounded by anything
+//! but its own two indices.
 //!
-//! ```text
-//! write ──next──▶ full ──next──▶ full ──next──▶ null
-//!  │               │
-//!  │               └─ 8160 entries, by construction: a segment leaves
-//!  │                  the write position only when it is full
-//!  └─ `write_len` entries, held in the base block's control line rather
-//!     than in this block
-//! ```
-//!
-//! **A chain's head carries its fill beside the chain rather than inside the
-//! block, and that is the only bound on any segment's contents.** Three cells
-//! hold such a fill — the active chain's [`OwnerCycleState::write_len`], the
-//! deferred lane's `deferred_len` and the base block's `overflow_len` — and
-//! the rule below is the same for each. While
-//! the owner is the only one moving segments, a full segment is the only
-//! one that leaves the write position, so every segment behind the head
-//! holds exactly [`SEGMENT_CAPACITY`] entries and the chain needs no
-//! per-segment length. **That is a property of a single mover**, and the
-//! owner is the one mover: no thread but the owner writes the head, the fill
-//! or a segment's link. The ring S49 builds replaces this bound with a
-//! `front` and a `tail` per block, which is what lets a reader stand behind
-//! the writer without a detach.
+//! **The deferred lane is a chain of the same blocks** ([`ring::Chain`]),
+//! filled by the owner alone at a collection's close and re-offered at the
+//! epoch's turn by a splice into R after the tail block, with no copy and
+//! no block drawn ([`reoffer_deferred_candidates`]).
 //!
 //! # Why the growth path allocates nothing
 //!
 //! Candidate registration sits on the release path, so the write may not
-//! allocate, lock or copy (Y12 clause 3). Growth is therefore a pointer
-//! swap into a segment somebody else took from the pool: the thread
-//! holds **two spares** in cells it fills at thread init and at every
-//! safepoint poll, both through the ordinary allocation path. With both
-//! cells empty the growth draws the critical reserve
-//! (`memory::critical`), which is the draw clause 6 funds. **Reserve mode
-//! itself is not built here** — clause 6 asks that the runtime stay in it
-//! until every queued root has been walked, and nothing in this crate
-//! carries such a state, the poll refilling the reserve unconditionally
-//! at the next safepoint. What exists is the draw and the arming.
+//! allocate, lock or copy (Y12 clause 3). Growth is therefore a link of a
+//! block somebody else took from the pool: the thread holds **two spares**
+//! in cells it fills at thread init and at every safepoint poll, both
+//! through the ordinary allocation path. With both cells empty the growth
+//! draws the critical reserve (`memory::critical`), which is the draw
+//! clause 6 funds. **Reserve mode itself is not built here** — clause 6 asks
+//! that the runtime stay in it until every queued root has been walked, and
+//! nothing in this crate carries such a state, the poll refilling the
+//! reserve unconditionally at the next safepoint. What exists is the draw
+//! and the arming.
 //!
 //! # Why a registration cannot fail
 //!
@@ -121,18 +111,18 @@
 //! from the refusal to the first lawful instant.
 //!
 //! After the base block's one 64-byte control line it holds 8,152
-//! entries, eight fewer than an ordinary segment. The between-polls
-//! guarantee is therefore derived from that smaller capacity, not
-//! borrowed from the segment shape. It quantifies over the loops the compiler
+//! entries — seventeen more than a ring block, whose three control lines
+//! cost it more. The between-polls guarantee is derived from the buffer's
+//! own capacity and borrows nothing from the block shape. It quantifies over the loops the compiler
 //! emits and over the one runtime loop that carries a poll of its own
 //! ([`POLL_STRIDE`]), so filling the overflow buffer takes sustained pool
 //! refusal rather than a long run.
 //!
-//! The write segment is a cell too: a thread holds none until its first
-//! registration, which finds no room by construction and takes the growth
-//! path. So a thread that registers no candidate holds its base block and
-//! two spare segments rather than three segments, and the empty-queue
-//! case needs no arm of its own.
+//! The ring holds no block until the thread's first registration, which
+//! finds no room by construction and takes the growth path. So a thread
+//! that registers no candidate holds its base block and two spare blocks
+//! rather than three blocks, and the empty-queue case needs no arm of its
+//! own.
 //!
 //! # The other block a thread holds for its whole life
 //!
@@ -152,15 +142,27 @@
 //! full-width epoch against the deferred lane's mirror and re-offers that lane
 //! where it moved; and, armed, fires a collection. A reserve draw, an
 //! overflow append, or a due deferred re-offer arms it.
-use std::cell::Cell;
+//!
+//! # What the in-line collection does with the ring
+//!
+//! It reads every entry from the front block to the tail as its batch
+//! ([`read_batch`]) — the collecting word in the record keeps the collector
+//! out for the collection's whole length — traces, and at its close
+//! **compacts the ring in place** ([`compaction`]): an entry it disposed of
+//! is dropped, every other entry is kept in order, and the blocks' `tail`
+//! indices and the tail block are lowered, every one of them the owner's
+//! own words on its own thread. Nothing is taken out, so nothing is merged
+//! back; a registration the collection's own destructors make lands at the
+//! tail, behind the batch, and the compaction keeps it. The overflow buffer
+//! is compacted by the same pass and never traced: its entries are the next
+//! collection's, once the poll has drained them.
+use std::cell::{Cell, UnsafeCell};
 
+use crate::cycle::owner_record::{self, OwnerRecord};
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
 use crate::memory::gc_metadata;
 use crate::refcount::RcHeader;
-
-/// Entries one segment holds. Every segment but the write segment holds
-/// exactly this many, which is what lets the chain carry no length.
-pub(crate) const SEGMENT_CAPACITY: usize = BLOCK_PAYLOAD / size_of::<*mut RcHeader>();
+use crate::ring::{self, Chain, Quiescent, Writer};
 
 /// Entries the overflow buffer holds, after the base block's
 /// manager-owned control line.
@@ -183,11 +185,11 @@ pub(crate) const OVERFLOW_CAPACITY: usize =
 /// "a runtime loop carries the poll contract it broke").
 pub(crate) const POLL_STRIDE: usize = OVERFLOW_CAPACITY / 2;
 
-/// Spare segments a thread keeps ahead of the next growth.
+/// Spare blocks a thread keeps ahead of the next growth.
 ///
 /// Two, which covers the two consumptions one interval between polls can
-/// hold: one overflow, and the first registration after an in-line
-/// collection's detach, which finds the write position empty
+/// hold: one overflow of the tail block, and the growth of the deferred
+/// lane at a collection's close, which takes a spare per block it fills
 /// (`rfc/model/gc/cycle/questions.md`, Y12 clause 3). Beyond the two the
 /// critical reserve answers, which is what it is for.
 pub(crate) const SPARE_SEGMENTS: usize = 2;
@@ -199,35 +201,30 @@ pub(crate) const SPARE_SEGMENTS: usize = 2;
 /// having one writer by contract and no path that re-enters it. Nothing
 /// here has drop glue, so thread exit frees it by hand
 /// ([`release_queue_segments`]) rather than through a destructor whose order is
-/// unspecified (`memory::heap::ll_thread_exit`).
+/// unspecified (`memory::heap::ll_thread_exit`). R's own two words are not
+/// here: they stand in the owner's record, where a collector reaches them
+/// (`crate::cycle::owner_record`).
 #[repr(C, align(64))]
 struct OwnerCycleState {
-    /// The segment being written, or null before the first registration.
-    /// The rest of the chain hangs off its [`BlockHeader::next`].
-    write_segment: Cell<*mut BlockHeader>,
-    /// The deferred lane's head. Its entries are still registered candidates, but a later
-    /// turnover rather than a decrement offers them to a trace again.
-    deferred_segment: Cell<*mut BlockHeader>,
     /// This thread's collection workspace, in three states: null before the
     /// thread's first collection, the block's address while the workspace is
     /// idle, and that address with [`WORKSPACE_LENT`] set while an arena is
     /// bumping in it ([`lend_workspace_base`]).
     workspace_base: Cell<*mut BlockHeader>,
-    /// Segments taken ahead of the next growth, `spare_count` of them valid.
+    /// Blocks taken ahead of the next growth, `spare_count` of them valid.
     spares: [Cell<*mut BlockHeader>; SPARE_SEGMENTS],
     /// Full-width commit count as it stood when the deferred lane last became
     /// nonempty or was re-offered. Read against the poll's own count, which is
     /// what tells a turnover from a commit ([`reoffer_deferred_if_epoch_moved`]).
     turnover_mirror: Cell<u64>,
-    /// Entries written into [`OwnerCycleState::write_segment`]. Meaningless
-    /// when null. A segment cannot contain more than 8,160 entries.
-    write_len: Cell<u16>,
-    /// Entries in [`OwnerCycleState::deferred_segment`]. Meaningless when null.
-    deferred_len: Cell<u16>,
-    /// Entries in the base block no allocation path could fund a segment
+    /// The deferred lane: candidates a later turnover rather than a decrement
+    /// offers to a trace again. Written and read by the owner alone, at a
+    /// collection's close and at the re-offer.
+    deferred: UnsafeCell<Chain>,
+    /// Entries in the base block no allocation path could fund a block
     /// for, written oldest first, which is the order every walk of the buffer
     /// reads them in. [`drain_overflow`] empties it from the other end, so
-    /// that a drain the write segment leaves no room for costs no move; what
+    /// that a drain the ring leaves no room for costs no move; what
     /// it leaves behind is the oldest prefix, and nothing about a candidate
     /// depends on its age. The tier that cannot refuse, so that a
     /// candidate registration cannot fail (`rfc/dev/DECISIONS.md`, "an
@@ -245,21 +242,26 @@ thread_local! {
 const _: () = assert!(size_of::<OwnerCycleState>() == 64);
 const _: () = assert!(align_of::<OwnerCycleState>() == 64);
 const _: () = assert!(POLL_STRIDE * 2 <= OVERFLOW_CAPACITY);
-const _: () = assert!(SEGMENT_CAPACITY > OVERFLOW_CAPACITY);
+const _: () = assert!(ring::BLOCK_ENTRIES > OVERFLOW_CAPACITY / 2);
 
 impl OwnerCycleState {
     const fn new() -> Self {
         Self {
-            write_segment: Cell::new(std::ptr::null_mut()),
-            deferred_segment: Cell::new(std::ptr::null_mut()),
             workspace_base: Cell::new(std::ptr::null_mut()),
             spares: [const { Cell::new(std::ptr::null_mut()) }; SPARE_SEGMENTS],
             turnover_mirror: Cell::new(0),
-            write_len: Cell::new(0),
-            deferred_len: Cell::new(0),
+            deferred: UnsafeCell::new(Chain::empty()),
             spare_count: Cell::new(0),
             overflow_len: Cell::new(0),
         }
+    }
+
+    /// The deferred lane, for the owner's own thread alone.
+    #[allow(clippy::mut_from_ref)]
+    fn deferred(&self) -> &mut Chain {
+        // The owner is the one thread that reaches this cell, and no caller
+        // holds one borrow across a call that takes another.
+        unsafe { &mut *self.deferred.get() }
     }
 }
 
@@ -278,13 +280,6 @@ fn queue_base_of(state: *mut OwnerCycleState) -> *mut BlockHeader {
     BlockHeader::of_ptr(state as *const u8)
 }
 
-/// Where an ordinary segment's entries begin. The base block has a separate
-/// address calculation because its first cache line is owner control.
-#[inline]
-fn segment_entries(segment: *mut BlockHeader) -> *mut *mut RcHeader {
-    BlockHeader::payload_start(segment) as *mut *mut RcHeader
-}
-
 /// Where the base block's overflow buffer begins, one control line past its
 /// payload.
 ///
@@ -298,7 +293,29 @@ fn overflow_entries(state: *mut OwnerCycleState) -> *mut *mut RcHeader {
 
 #[inline]
 fn stored_len(len: usize) -> u16 {
-    u16::try_from(len).expect("a queue segment and the overflow buffer fit in u16")
+    u16::try_from(len).expect("the overflow buffer fits in u16")
+}
+
+/// This thread's record, which every thread with a base block has: the
+/// record is drawn beside the block on both paths that draw one.
+#[inline]
+fn this_thread_record_ref<'a>() -> &'a OwnerRecord {
+    let record = owner_record::this_thread_record();
+    debug_assert!(!record.is_null(), "a thread with a base block has a record");
+    unsafe { &*record }
+}
+
+/// The ring's entry for `entity`: its address, with the provenance exposed
+/// so that [`entry_entity`] can give it back.
+#[inline]
+fn entity_entry(entity: *mut RcHeader) -> usize {
+    entity.expose_provenance()
+}
+
+/// The entity a ring entry names, its mark taken off.
+#[inline]
+fn entry_entity(entry: usize) -> *mut RcHeader {
+    std::ptr::with_exposed_provenance_mut(entry & !ENTRY_MARK_BITS)
 }
 
 /// Put an entity in this thread's queue.
@@ -327,8 +344,8 @@ pub(crate) unsafe fn register_candidate(entity: *mut RcHeader) {
     unsafe { append_entry(state, entity) };
 }
 
-/// Write one entry into the lane of the thread `state` belongs to, growing the
-/// chain where the write segment is full or absent.
+/// Write one entry into the ring of the thread `state` belongs to, growing the
+/// circle where the tail block is full and the next block is the reader's.
 ///
 /// The entry alone: no flag is read and none is written, so an entity already
 /// carrying its bit is written exactly as the live one [`register_candidate`]
@@ -340,88 +357,69 @@ pub(crate) unsafe fn register_candidate(entity: *mut RcHeader) {
 /// past the control line through it).
 unsafe fn append_entry(state: *mut OwnerCycleState, entity: *mut RcHeader) {
     let owner_state = unsafe { owner_state_ref(state) };
-    let write_segment = owner_state.write_segment.get();
-    let write_len = owner_state.write_len.get();
-
-    if write_segment.is_null() || usize::from(write_len) == SEGMENT_CAPACITY {
-        unsafe { append_with_new_segment(state, entity) };
-        return;
-    }
-
-    unsafe {
-        segment_entries(write_segment)
-            .add(usize::from(write_len))
-            .write(entity)
-    };
-    owner_state.write_len.set(write_len + 1);
-}
-
-/// The growth path: put a fresh segment in the write position and write
-/// the entry into it.
-///
-/// The full segment stays reachable through the fresh one's
-/// [`BlockHeader::next`], so growth links and never copies. No allocation
-/// path funding one writes the entry to the overflow buffer, which is why
-/// this answers nothing either.
-unsafe fn append_with_new_segment(state: *mut OwnerCycleState, entity: *mut RcHeader) {
-    // `register_candidate` established the base block before reaching here.
-    // Drawing it at the first refusal would be too late: every other
-    // allocation path would already have found the pool empty.
-    let owner_state = unsafe { owner_state_ref(state) };
-    let full = owner_state.write_segment.get();
-
-    let fresh = match take_spare(owner_state) {
-        s if !s.is_null() => s,
-        _ => {
-            // Both cells empty, so the reserve — the draw clause 6
-            // funds. It is a fixed-array pop on any thread that has
-            // touched `memory::critical` before, which `ll_thread_init`
-            // arranges for every thread it runs on. A thread that never
-            // ran it reaches that first touch from here, and on glibc the
-            // registration it performs kills the process when it cannot
-            // allocate 32 bytes — which is the abort this same thread
-            // already takes one step earlier, at its base block
-            // (`dev/DECISIONS.md`, "what the first touch of a
-            // thread-local with drop glue may cost").
-            let block = gc_metadata::adopt(crate::memory::critical::draw());
-            if !block.is_null() {
-                // A draw is pressure, and pressure is what asks for a
-                // collection. Armed here rather than beside the refusal
-                // below so that the two paths arm independently: the
-                // criterion names them separately and a later tier
-                // between them would lose one silently.
-                crate::gc::arm();
-            }
-
-            block
-        }
-    };
-
-    if fresh.is_null() {
+    // `register_candidate` established the base block before reaching here,
+    // and the record beside it. Drawing either at the first refusal would be
+    // too late: every other allocation path would already have found the
+    // pool empty.
+    let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
+    if writer
+        .push(entity_entry(entity), || fresh_block(owner_state))
+        .is_err()
+    {
         unsafe { append_to_overflow(state, entity) };
         // The overflow append arms on its own: the refill the poll
         // performs is unconditional, so what the arming buys here is the
         // fire, not the cells.
         crate::gc::arm();
-        return;
+    }
+}
+
+/// The growth path's block: a spare, or the critical reserve with both
+/// cells empty, or null when neither has one. A block this answers is
+/// charged as the ring's from here.
+fn fresh_block(owner_state: &OwnerCycleState) -> *mut BlockHeader {
+    let mut block = take_spare(owner_state);
+    if block.is_null() {
+        // Both cells empty, so the reserve — the draw clause 6
+        // funds. It is a fixed-array pop on any thread that has
+        // touched `memory::critical` before, which `ll_thread_init`
+        // arranges for every thread it runs on. A thread that never
+        // ran it reaches that first touch from here, and on glibc the
+        // registration it performs kills the process when it cannot
+        // allocate 32 bytes — which is the abort this same thread
+        // already takes one step earlier, at its base block
+        // (`dev/DECISIONS.md`, "what the first touch of a
+        // thread-local with drop glue may cost").
+        block = gc_metadata::adopt(crate::memory::critical::draw());
+        if !block.is_null() {
+            // A draw is pressure, and pressure is what asks for a
+            // collection. Armed here rather than beside the refusal
+            // in `append_entry` so that the two paths arm independently: the
+            // criterion names them separately and a later tier
+            // between them would lose one silently.
+            crate::gc::arm();
+        }
     }
 
-    unsafe { (*fresh).next = full };
-    if !full.is_null() {
-        // The segment leaving the write position holds its whole payload,
-        // and from this instant that payload is in use. The assertion
-        // pins the premise rather than trusting it:
-        // `release_queue_segments` discharges a
-        // payload for every segment behind the head, so a part-filled one
-        // there would discharge bytes nothing charged. The invariant is
-        // the single mover's, and the owner is the one mover (module doc).
-        debug_assert_eq!(usize::from(owner_state.write_len.get()), SEGMENT_CAPACITY);
-        gc_metadata::charge(BLOCK_PAYLOAD);
+    if !block.is_null() {
+        charge_block();
     }
 
-    unsafe { segment_entries(fresh).write(entity) };
-    owner_state.write_segment.set(fresh);
-    owner_state.write_len.set(1);
+    block
+}
+
+/// Enter one block into the ledger as the queue's: a block in R or in the
+/// deferred lane is charged whole, at the transition that links it in, and
+/// discharged at the one that takes it out ([`discharge_block`]). A spare
+/// is a reservation and carries no charge (`memory::gc_metadata`).
+#[inline]
+fn charge_block() {
+    gc_metadata::charge(BLOCK_PAYLOAD);
+}
+
+#[inline]
+fn discharge_block() {
+    gc_metadata::discharge(BLOCK_PAYLOAD);
 }
 
 /// The tier below the reserve: store the entry where nothing can refuse
@@ -541,12 +539,10 @@ fn ensure_queue_base_or_abort() -> *mut OwnerCycleState {
     // initialisation. The registry's lock is the one lock on the
     // registration path, paid once per such thread
     // (`crate::cycle::owner_record`, "When a thread takes its record").
-    match crate::cycle::owner_record::draw_thread_record() {
-        crate::cycle::owner_record::RecordDraw::Drawn => unsafe {
-            crate::cycle::owner_record::make_thread_record_claimable()
-        },
-        crate::cycle::owner_record::RecordDraw::Present => {}
-        crate::cycle::owner_record::RecordDraw::AllocationFailed => std::process::abort(),
+    match owner_record::draw_thread_record() {
+        owner_record::RecordDraw::Drawn => unsafe { owner_record::make_thread_record_claimable() },
+        owner_record::RecordDraw::Present => {}
+        owner_record::RecordDraw::AllocationFailed => std::process::abort(),
     }
 
     state
@@ -674,7 +670,7 @@ pub(crate) fn warm_workspace_base() {
 /// at its next registration and hold two, and one stripped of its workspace
 /// would draw a second at its next collection.
 ///
-/// The base block goes back the way the segments do, through
+/// The base block goes back the way the ring's blocks do, through
 /// `gc_metadata::release_to_critical`, so a reserve below capacity is refilled
 /// before the pool sees anything. The workspace does not: the reason is at the
 /// line that releases it.
@@ -685,12 +681,13 @@ pub(crate) fn release_queue_base() {
     }
 
     let owner_state = unsafe { owner_state_ref(state) };
+    let record = owner_record::this_thread_record();
     assert!(
-        owner_state.write_segment.get().is_null(),
-        "release follows segment release"
+        record.is_null() || !unsafe { Quiescent::new((*record).candidate_ring()) }.has_blocks(),
+        "release follows the ring's release"
     );
     assert!(
-        owner_state.deferred_segment.get().is_null(),
+        owner_state.deferred().is_empty(),
         "release follows deferred-lane release"
     );
     assert_eq!(
@@ -755,9 +752,12 @@ pub(crate) fn drain_overflow() {
     }
     let owner_state = unsafe { owner_state_ref(state) };
     while owner_state.overflow_len.get() > 0 {
-        let write_segment = owner_state.write_segment.get();
+        // Room is a tail block with a free slot, or a spare to link in after
+        // a full one; the writer's own move into a consumed block of the
+        // circle is room this reading does not see, and costs one more round
+        // through the buffer at the next poll.
         let has_room =
-            !write_segment.is_null() && usize::from(owner_state.write_len.get()) < SEGMENT_CAPACITY;
+            unsafe { Writer::new(this_thread_record_ref().candidate_ring()) }.tail_block_has_room();
         if !has_room && owner_state.spare_count.get() == 0 {
             break;
         }
@@ -772,7 +772,7 @@ pub(crate) fn drain_overflow() {
         };
         owner_state.overflow_len.set(overflow_len);
         // Per entry rather than once for the run: the re-registration below
-        // can fill a segment and charge its payload, and a discharge held to
+        // can link a block and charge its payload, and a discharge held to
         // the end would leave the overflow buffer's bytes standing over
         // entries it no longer holds — a high-water figure counting the same
         // memory twice.
@@ -781,36 +781,29 @@ pub(crate) fn drain_overflow() {
     }
 }
 
-/// The candidate chain one collection took out of the active lane.
+/// The entries one in-line collection read out of R: the first `len` from
+/// the front, which is every entry the ring held when the collection read
+/// it ([`read_batch`]).
 ///
-/// Two words: the head segment and the entries it holds. Everything behind the
-/// head hangs off [`BlockHeader::next`], as it did in the lane this came out
-/// of, so a batch of any length is these two words and no copy.
-///
-/// **A batch that is dropped instead of merged back strands every root in it**
-/// —
-/// each one carrying `CANDIDATE_BIT` with no record behind it, which
-/// [`crate::refcount::CANDIDATE_GATE_MASK`] then refuses to register again for
-/// the life of the process (`rfc/model/gc/cycle/questions.md`, Y6). The drop
-/// below is what says so, and it is the reason this type has one.
-#[must_use = "a batch that is not merged back strands every root in it"]
-pub(crate) struct InFlightBatch {
-    head: *mut BlockHeader,
-    /// Entries in [`InFlightBatch::head`]. Meaningless when the head is null.
-    fill: usize,
+/// A count and not a chain: the entries stay where they are, a registration
+/// the collection's own destructors make lands behind them, and the
+/// close's compaction is what disposes of them
+/// ([`dispose_candidates`]). A batch dropped without a disposition leaves
+/// every root registered, since nothing was taken out.
+#[derive(Debug)]
+pub(crate) struct Batch {
+    len: usize,
 }
 
-impl InFlightBatch {
+impl Batch {
     /// Whether the batch holds no root at all, which is a collection that
     /// found an empty queue.
     pub(crate) fn is_empty(&self) -> bool {
-        self.head.is_null()
+        self.len == 0
     }
 
-    /// Take every root in the batch in [`walk_chain`]'s order — the head
-    /// segment first and, inside each segment, the oldest entry first — and
-    /// stop at the first `visit` that answers false. **False** when it stopped
-    /// early.
+    /// Take every root in the batch, oldest first, and stop at the first
+    /// `visit` that answers false. **False** when it stopped early.
     ///
     /// A root may name an entity that has since been torn down: the entry is
     /// what keeps that slot out of the allocator's hands, and nothing retires
@@ -818,19 +811,60 @@ impl InFlightBatch {
     /// reader is what applies the zero-count rule, which for the trace is
     /// `crate::cycle::mark`'s.
     pub(crate) fn walk_roots(&self, mut visit: impl FnMut(*mut RcHeader) -> bool) -> bool {
-        walk_chain(self.head, self.fill, |entry| {
-            visit(entry.map_addr(|address| address & !ENTRY_MARK_BITS))
-        })
+        let Some(ring) = candidate_ring() else {
+            return true;
+        };
+
+        let mut left = self.len;
+        let mut stopped = false;
+        ring.walk(|entry| {
+            if left == 0 {
+                return false;
+            }
+
+            left -= 1;
+            stopped = !visit(entry_entity(entry));
+            !stopped
+        });
+        !stopped
+    }
+
+    /// Mark every entry whose root `deferrable` answers true for, and answer
+    /// how many were marked.
+    ///
+    /// The entity handed to the predicate carries no mark, and a mark already
+    /// standing on an entry is overwritten rather than kept: it is one an
+    /// unwound close left behind, and this close's reading is the one that
+    /// decides.
+    pub(crate) fn mark_for_deferral(
+        &mut self,
+        mut deferrable: impl FnMut(*mut RcHeader) -> bool,
+    ) -> usize {
+        let Some(ring) = candidate_ring() else {
+            return 0;
+        };
+
+        let mut marked = 0;
+        ring.map_prefix_in_place(self.len, |entry| {
+            let entity = entry & !ENTRY_MARK_BITS;
+            if deferrable(entry_entity(entry)) {
+                marked += 1;
+                entity | DEFERRED_MARK
+            } else {
+                entity
+            }
+        });
+        marked
     }
 }
 
-/// The bit a close's disposition reads off a batch entry: the root it names
+/// The bit a close's disposition reads off an entry: the root it names
 /// belongs to the deferred lane rather than to the active one.
 ///
-/// Bit 0 of the stored pointer, which an entity header never carries: the
+/// Bit 0 of the stored address, which an entity header never carries: the
 /// smallest size class is sixteen bytes, so the low four bits are clear and
 /// the module doc's ledger says which of them belongs to whom. It is written
-/// by [`InFlightBatch::mark_for_deferral`] after the commit and read once, by
+/// by [`Batch::mark_for_deferral`] after the commit and read once, by
 /// the pass that disposes of the batch; every path that hands an entry to
 /// anything else masks it off first (`crate::cycle::queue::compaction`).
 pub(crate) const DEFERRED_MARK: usize = 1;
@@ -842,236 +876,67 @@ pub(crate) const DEFERRED_MARK: usize = 1;
 /// into one.
 pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK;
 
-impl InFlightBatch {
-    /// Mark every entry whose root `deferrable` answers true for, and answer
-    /// how many were marked.
-    ///
-    /// The walk is [`walk_chain`]'s, open-coded because this one needs the
-    /// address of the entry and not its value, and it rests on the same rule:
-    /// the head carries the fill and every segment behind it is full. The
-    /// entity handed to the predicate carries no mark — a batch is marked
-    /// once, by the close of the collection that traced it, which the
-    /// assertion below holds.
-    pub(crate) fn mark_for_deferral(
-        &mut self,
-        mut deferrable: impl FnMut(*mut RcHeader) -> bool,
-    ) -> usize {
-        let mut marked = 0;
-        let mut segment = self.head;
-        let mut bound = self.fill;
-        while !segment.is_null() {
-            for index in 0..bound {
-                let slot = unsafe { segment_entries(segment).add(index) };
-                let entry = unsafe { slot.read() };
-                debug_assert_eq!(
-                    entry.addr() & DEFERRED_MARK,
-                    0,
-                    "a batch entry was marked twice"
-                );
-                if deferrable(entry.map_addr(|address| address & !ENTRY_MARK_BITS)) {
-                    unsafe { slot.write(entry.map_addr(|address| address | DEFERRED_MARK)) };
-                    marked += 1;
-                }
-            }
+/// The owner's handle over R while no reader runs, or `None` for a thread
+/// with no record — one that never registered.
+///
+/// The exclusion is the caller's: the collecting word in the record keeps a
+/// collector out for an in-line collection's whole length, and the token
+/// does for a retirement outside one (`crate::cycle::collect`).
+fn candidate_ring<'a>() -> Option<Quiescent<'a>> {
+    let record = owner_record::this_thread_record();
+    if record.is_null() {
+        return None;
+    }
 
-            segment = unsafe { (*segment).next };
-            bound = SEGMENT_CAPACITY;
-        }
+    Some(unsafe { Quiescent::new((*record).candidate_ring()) })
+}
 
-        marked
+/// Read this thread's ring as one collection's batch: every entry from the
+/// front to the tail, counted and left where it is.
+///
+/// **It draws nothing and cannot be refused.** Nothing is taken out, so the
+/// next registration finds the tail where the writer left it, and a
+/// collection that reaches this line has all the memory its roots cost
+/// (`dev/DECISIONS.md`, "the detach of a candidate chain draws no segment"
+/// states the requirement this form meets by construction).
+///
+/// **The overflow buffer stays out of the batch.** Its entries are the next
+/// collection's: the poll drains it into the ring before it fires, so on the
+/// ordinary path it is empty here, and on the pressure path what it holds
+/// keeps its bits and its records where they are.
+///
+/// An empty batch is the answer for a thread that has registered nothing,
+/// and for one with no queue state at all.
+pub(crate) fn read_batch() -> Batch {
+    Batch {
+        len: candidate_ring().map_or(0, |ring| ring.count()),
     }
 }
 
-impl Drop for InFlightBatch {
-    fn drop(&mut self) {
-        // Silent while another panic is unwinding. This one would be the
-        // second, and a panic inside a panic ends the process without the first
-        // one's message — which is the message that says what actually went
-        // wrong, this drop's own being a consequence of it.
-        if std::thread::panicking() {
-            return;
-        }
-
-        assert!(
-            self.head.is_null(),
-            "a detached candidate batch was dropped instead of merged back"
-        );
-    }
-}
-
-/// Every entry of a chain whose head holds `fill` entries, head segment
-/// first, stopping at the first `visit` that answers false. **False** when it
-/// stopped early.
-///
-/// How a chain is bounded, and the walk every reader of more than one entry
-/// goes through: the head holds the fill stored beside it, every segment behind
-/// the head holds [`SEGMENT_CAPACITY`], and that holds because a segment leaves
-/// the write position only when it is full.
-///
-/// Eight others rest on the same rule, and the list is what a change of the
-/// rule would sweep. `candidate_count` and `deferred_count` count by it,
-/// deliberately without this walk, so that the two readings cross-check;
-/// [`release_queue_segments`] discharges one payload per segment behind the
-/// head, once for each chain; [`append_with_new_segment`] carries a
-/// `debug_assert` of it at the growth; `write_segment_entry` reads one entry of
-/// the head alone, bounded by the same fill; and `compaction::Compaction::bound`
-/// answers [`SEGMENT_CAPACITY`] for every segment that is not one of its two
-/// input heads. [`InFlightBatch::mark_for_deferral`] open-codes this walk,
-/// needing the address of an entry rather than its value; and
-/// `compaction::Compaction::append_to_deferred_lane` writes the rule from the
-/// other side, linking a fresh head ahead of one it has just filled.
-fn walk_chain(
-    head: *mut BlockHeader,
-    fill: usize,
-    mut visit: impl FnMut(*mut RcHeader) -> bool,
-) -> bool {
-    let mut segment = head;
-    let mut bound = fill;
-    while !segment.is_null() {
-        for index in 0..bound {
-            if !visit(unsafe { segment_entries(segment).add(index).read() }) {
-                return false;
-            }
-        }
-
-        segment = unsafe { (*segment).next };
-        bound = SEGMENT_CAPACITY;
-    }
-
-    true
-}
-
-/// Take this thread's whole candidate chain out of the active lane, for one
-/// collection to trace.
-///
-/// **It draws nothing and cannot be refused.** The lane is left with no write
-/// segment, which is the state it holds before a thread's first registration:
-/// the next registration finds no room by construction, takes the growth path,
-/// and is funded by the spare cells the poll fills. Swapping a fresh segment in
-/// here instead would put a pool request on the front of every collection, and
-/// on the path a collection starts from an allocation failure it would take a
-/// block from the tier the trace's own rows need
-/// (`dev/DECISIONS.md`, "the detach of a candidate chain draws no segment").
-///
-/// **The overflow buffer stays where it is.** Its entries are the next trace's:
-/// the poll drains it into the lane before it fires, so on the ordinary path it
-/// is empty here, and on the pressure path what it holds keeps its bits and its
-/// records where they are.
-///
-/// An empty batch is the answer for a thread that has registered nothing, and
-/// for one with no queue state at all.
-///
-/// **Nothing in this module knows a batch is out.** [`release_queue_segments`]
-/// finds an empty write position and gives back none of the batch's segments,
-/// and [`release_queue_base`]'s own assertion passes. What stands between that
-/// and a thread exit is the trace window the batch travels with:
-/// `cycle::deferred_slot_reuse::dispose_thread_state` refuses an exit inside
-/// one, and `memory::heap::ll_thread_exit` calls it before it releases the
-/// queue.
-pub(crate) fn detach_candidates() -> InFlightBatch {
-    let state = owner_state();
-    if state.is_null() {
-        return InFlightBatch {
-            head: std::ptr::null_mut(),
-            fill: 0,
-        };
-    }
-
-    let owner_state = unsafe { owner_state_ref(state) };
-    InFlightBatch {
-        head: owner_state.write_segment.replace(std::ptr::null_mut()),
-        fill: usize::from(owner_state.write_len.replace(0)),
-    }
-}
-
-/// Combine a detached batch and the active lane without drawing memory.
-///
-/// With no active lane this is the original two-word publication. With two
-/// lanes, only their partial heads need moving: fill the active head from the
-/// batch head, splice the full tails, and, where the two heads do not fit in
-/// one segment, publish the compacted remainder as the new head. Thus the work
-/// is bounded by the records in the two partial heads rather than by the whole
-/// queue. No entity header is read and no registration is retired.
-pub(crate) fn merge_candidates(mut batch: InFlightBatch) {
-    let batch_head = batch.head;
-    if batch_head.is_null() {
-        return;
-    }
-
-    let state = owner_state();
-    assert!(
-        !state.is_null(),
-        "the queue base block left with a batch out"
-    );
-    let owner_state = unsafe { owner_state_ref(state) };
-    let active_head = owner_state.write_segment.get();
-    if active_head.is_null() {
-        owner_state.write_segment.set(batch_head);
-        owner_state.write_len.set(stored_len(batch.fill));
-        batch.head = std::ptr::null_mut();
-        return;
-    }
-
-    let active_fill = usize::from(owner_state.write_len.get());
-    let copied = (SEGMENT_CAPACITY - active_fill).min(batch.fill);
-    let copied_from = batch.fill - copied;
-    for index in 0..copied {
-        let entry = unsafe { segment_entries(batch_head).add(copied_from + index).read() };
-        unsafe {
-            segment_entries(active_head)
-                .add(active_fill + index)
-                .write(entry)
-        };
-    }
-    note_queue_work(0, copied, copied);
-
-    let mut active_tail = active_head;
-    while !unsafe { (*active_tail).next }.is_null() {
-        active_tail = unsafe { (*active_tail).next };
-    }
-    let batch_tail = unsafe { (*batch_head).next };
-    unsafe { (*active_tail).next = batch_tail };
-
-    if copied == batch.fill {
-        owner_state.write_len.set(stored_len(active_fill + copied));
-        unsafe { (*batch_head).next = std::ptr::null_mut() };
-        batch.head = std::ptr::null_mut();
-        return_surplus_segment(owner_state, batch_head);
-        return;
-    }
-
-    // The records copied above came from the end, so the remainder already
-    // occupies the batch head's prefix and needs no second move.
-    let remaining = copied_from;
-    unsafe { (*batch_head).next = active_head };
-    owner_state.write_segment.set(batch_head);
-    owner_state.write_len.set(stored_len(remaining));
-    batch.head = std::ptr::null_mut();
-    gc_metadata::charge(BLOCK_PAYLOAD);
-}
-
-/// Dispose of a traced batch entry by entry: a record whose entity completed
-/// its death is retired, a record [`InFlightBatch::mark_for_deferral`] marked
-/// goes to the deferred lane, and every other record joins the active one.
+/// Dispose of a traced batch at the close: an entry whose entity completed
+/// its death is retired, an entry [`Batch::mark_for_deferral`] marked
+/// goes to the deferred lane, and every other entry stays in the ring, in
+/// order.
 ///
 /// `at_commits` is the process's commit count as the reading that decided the
 /// marks saw it, and it is recorded only where the deferred lane goes from
 /// empty to occupied — the oldest deferred record is what decides when the
 /// owner owes a re-offer, as it is for [`defer_candidates`].
 ///
-/// **A marked record joins the active lane when the deferred one cannot take
-/// it.** The lane's head grows by a spare segment, and both cells can stand
-/// empty — step 4's own registrations draw them. The record is then offered to
-/// the next collection instead of waiting for the turnover, which costs recall
-/// on that root and nothing else: the one destination that cannot refuse is
-/// the one the fallback names, so no token is ever in no lane
-/// (`rfc/model/gc/cycle/questions.md`, Y12 clause 8).
-pub(crate) fn dispose_candidates(batch: InFlightBatch, at_commits: u64) {
-    compaction::finish(batch, true, Some(at_commits));
+/// **A marked entry stays in the ring when the deferred lane cannot take
+/// it.** The lane grows by a spare block per block it fills, and both cells
+/// can stand empty — step 4's own registrations draw them. The root is then
+/// offered to the next collection instead of waiting for the turnover, which
+/// costs recall on that root and nothing else: the one destination that
+/// cannot refuse is the one the fallback names, so no token is ever in no
+/// lane (`rfc/model/gc/cycle/questions.md`, Y12 clause 8).
+pub(crate) fn dispose_candidates(batch: Batch, at_commits: u64) {
+    drop(batch);
+    compaction::compact(Some(at_commits), false);
 }
 
-/// Move a traced batch into this owner's deferred lane, sweeping out the
-/// records whose entities completed their deaths on the way.
+/// Move a traced batch whole into this owner's deferred lane, sweeping out of
+/// that lane the records whose entities completed their deaths on the way.
 ///
 /// `at_commits` is the process's commit count as the reading that found the
 /// component live saw it, and the caller takes it at that instant rather than
@@ -1081,91 +946,43 @@ pub(crate) fn dispose_candidates(batch: InFlightBatch, at_commits: u64) {
 /// only when the lane goes from empty to occupied — the oldest deferred record
 /// is what decides when the owner owes a re-offer.
 ///
-/// The active lane is saved while the existing deferred chain receives `batch`
-/// through the retirement pass, so a record naming an entity that is already
-/// dead in place gives its slot back here instead of holding it for an epoch
-/// (`rfc/model/gc/cycle/questions.md`, Y12 clause 8, "may sweep its own
-/// deferred-candidate buffer for zero-count entities first"). The overflow
-/// buffer belongs to the active lane and is withheld from the pass for the
-/// same reason the active chain is: nothing that was not traced may be
-/// deferred.
-pub(crate) fn defer_candidates(batch: InFlightBatch, at_commits: u64) {
+/// The deferred lane is swept before it receives the batch, so a record
+/// naming an entity that is already dead in place gives its slot back here
+/// instead of holding it for an epoch (`rfc/model/gc/cycle/questions.md`,
+/// Y12 clause 8, "may sweep its own deferred-candidate buffer for zero-count
+/// entities first"). The entries behind the batch and the overflow buffer are
+/// kept by the same pass and not deferred: nothing that was not traced may
+/// be.
+pub(crate) fn defer_candidates(mut batch: Batch, at_commits: u64) {
     if batch.is_empty() {
         return;
     }
 
-    let state = owner_state();
-    assert!(!state.is_null(), "a batch outlived its queue base");
-    let owner_state = unsafe { owner_state_ref(state) };
-
-    let _lifted = LiftedActiveLane {
-        state,
-        head: owner_state.write_segment.replace(std::ptr::null_mut()),
-        fill: owner_state.write_len.replace(0),
-        overflow_fill: owner_state.overflow_len.replace(0),
-    };
-    let deferred_head = owner_state.deferred_segment.replace(std::ptr::null_mut());
-    let deferred_fill = owner_state.deferred_len.replace(0);
-
-    if deferred_head.is_null() {
-        owner_state.turnover_mirror.set(at_commits);
-    }
-
-    owner_state.write_segment.set(deferred_head);
-    owner_state.write_len.set(deferred_fill);
-    compaction::finish(batch, true, None);
-}
-
-/// The active lane while the deferral borrows the write cells for the deferred
-/// one, put back where it belongs when this goes out of scope.
-///
-/// **The restore runs on the unwind as well as on the return**, which is what
-/// makes it a guard rather than three lines after the call.
-/// [`compaction::finish`] is built so that a panic inside it still finishes its
-/// pass (`Compaction::drop`), so the write cells hold the merged deferred lane
-/// on both paths and the swap below is the same one; without the guard an
-/// unwind would leave the lifted chain in no cell at all, every record in it
-/// carrying a candidate bit no lane names, which is the permanent miss of
-/// `rfc/model/gc/cycle/questions.md`, Y6.
-struct LiftedActiveLane {
-    state: *mut OwnerCycleState,
-    head: *mut BlockHeader,
-    fill: u16,
-    overflow_fill: u16,
-}
-
-impl Drop for LiftedActiveLane {
-    fn drop(&mut self) {
-        let owner_state = unsafe { owner_state_ref(self.state) };
-        owner_state
-            .deferred_segment
-            .set(owner_state.write_segment.replace(self.head));
-        owner_state
-            .deferred_len
-            .set(owner_state.write_len.replace(self.fill));
-        owner_state.overflow_len.set(self.overflow_fill);
-    }
+    batch.mark_for_deferral(|_| true);
+    compaction::compact(Some(at_commits), true);
 }
 
 /// Re-offer every deferred record: at an owner poll whose epoch moved, and
 /// before each round of the exit's collection, which is the thread's last
 /// turnover (`crate::cycle::collect::collect_before_exit`).
 ///
-/// The caller owns the epoch comparison. This transition itself is the same
-/// allocation-free bounded merge as a trace restore and leaves no record in
-/// the deferred lane. A reader that wants the count moved takes
-/// `deferred_count` before the call: nothing is counted here.
+/// The caller owns the epoch comparison. The move is a splice of the lane's
+/// blocks into R after the tail block, with no copy and no block drawn
+/// (`crate::ring::Writer::splice_after_tail`); it leaves no record in the
+/// deferred lane. A reader that wants the count moved takes
+/// [`deferred_count`] before the call: nothing is counted here.
 pub(crate) fn reoffer_deferred_candidates() {
     let state = owner_state();
     if state.is_null() {
         return;
     }
     let owner_state = unsafe { owner_state_ref(state) };
-    let batch = InFlightBatch {
-        head: owner_state.deferred_segment.replace(std::ptr::null_mut()),
-        fill: usize::from(owner_state.deferred_len.replace(0)),
+    let Some((first, last)) = owner_state.deferred().take() else {
+        return;
     };
-    merge_candidates(batch);
+
+    let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
+    unsafe { writer.splice_after_tail(first, last) };
 }
 
 /// Re-offer the deferred lane exactly once after `commits` stands in a later
@@ -1185,7 +1002,7 @@ pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
         return false;
     }
     let owner_state = unsafe { owner_state_ref(state) };
-    if owner_state.deferred_segment.get().is_null()
+    if owner_state.deferred().is_empty()
         || crate::cycle::epoch::turnovers_of(owner_state.turnover_mirror.get())
             == crate::cycle::epoch::turnovers_of(commits)
     {
@@ -1197,35 +1014,38 @@ pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
     true
 }
 
-/// Retire completed deaths at the owner's exact reading, and compact the lane
-/// and overflow without drawing memory. A live or unfinished death stays
-/// registered. Surplus segments replenish the spare cells, then the reserve.
+/// Retire completed deaths at the owner's exact reading, compacting the ring
+/// and the overflow buffer in place without drawing memory. A live or
+/// unfinished death stays registered, in order.
 ///
 /// # Safety
-/// No membership or shadow reader can still name an entry being retired, and
-/// no arena reset is open. Every entry still names its own held allocation.
+/// No membership or shadow reader can still name an entry being retired, no
+/// arena reset is open, and no collector reads R: the caller holds the
+/// token, or the collecting word excludes the collector. Every entry still
+/// names its own held allocation.
 pub(crate) unsafe fn retire_candidates() {
-    compaction::finish(detach_candidates(), true, None);
+    compaction::compact(None, false);
 }
 
 mod compaction;
 
-fn return_surplus_segment(owner_state: &OwnerCycleState, segment: *mut BlockHeader) {
+/// Put a block the queue no longer holds where the next growth finds it: a
+/// spare cell, or the critical reserve with both cells full.
+fn return_surplus_block(owner_state: &OwnerCycleState, block: *mut BlockHeader) {
     let spare_count = owner_state.spare_count.get();
     if usize::from(spare_count) < SPARE_SEGMENTS {
-        owner_state.spares[usize::from(spare_count)].set(segment);
+        owner_state.spares[usize::from(spare_count)].set(block);
         owner_state.spare_count.set(spare_count + 1);
     } else {
-        gc_metadata::release_to_critical(segment);
+        gc_metadata::release_to_critical(block);
     }
 }
 
 #[cfg(test)]
 /// Work whose cost changes when retirement moves within a collection.
 ///
-/// A record pass begins only when every chain and overflow record is eligible
-/// for inspection. Partial-head reconciliation is counted by the individual
-/// reads and writes and does not claim a whole pass.
+/// A record pass is one compaction over the ring and the overflow buffer;
+/// the reads and the writes are per entry.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct QueueWork {
     pub(crate) record_passes: usize,
@@ -1323,13 +1143,14 @@ pub(crate) fn refill_spares() -> bool {
     true
 }
 
-/// Give every segment and every spare back, and leave the queue empty.
+/// Give every block of the ring, of the deferred lane and of the spare cells
+/// back, and leave the queue empty.
 ///
 /// Thread exit calls it in production and the tests call it to start
 /// from a known queue: the queue holds pool blocks, and a dying thread
 /// must not take them with it.
 ///
-/// **The entries go with the segments — the overflow buffer's and the
+/// **The entries go with the blocks — the overflow buffer's and the
 /// deferred lane's too — and their entities keep the candidate bit, which is
 /// a permanent miss and not a deferral.** A block
 /// with live occupants is handed to the abandoned list and adopted by
@@ -1353,51 +1174,16 @@ pub(crate) fn release_queue_segments() {
         return;
     }
     let owner_state = unsafe { owner_state_ref(state) };
-    let mut segment = owner_state.write_segment.replace(std::ptr::null_mut());
-    let write_len = owner_state.write_len.replace(0);
 
-    // The candidate write charges nothing, so a chain head's fill is a residue
-    // the ledger carries, and this is the transition that ends it — once here
-    // for the active chain and once below for the deferred one. It goes to the
-    // high-water figure alone: the bytes are
-    // being released in the same breath, and a charge would show another
-    // thread a current figure holding a segment that is already gone.
-    gc_metadata::mark_peak(usize::from(write_len) * size_of::<*mut RcHeader>());
-
-    // The head is the write segment, whose fill was never published; every
-    // segment behind it left that position full and carries its payload.
-    let mut left_the_write_position = false;
-    while !segment.is_null() {
-        let next = unsafe { (*segment).next };
-        unsafe { (*segment).next = std::ptr::null_mut() };
-        if left_the_write_position {
-            gc_metadata::discharge(BLOCK_PAYLOAD);
-        }
-
-        left_the_write_position = true;
-        gc_metadata::release_to_critical(segment);
-        segment = next;
+    let give_back = |block: *mut BlockHeader| {
+        discharge_block();
+        gc_metadata::release_to_critical(block);
+    };
+    if let Some(ring) = candidate_ring() {
+        ring.dismantle(give_back);
     }
 
-    // The deferred lane has the same physical shape as the active one, but its
-    // head has an independent fill bound. The exit's collection re-offers the
-    // lane before it gets here; what stands in it now was read live by that
-    // collection's last round.
-    let mut deferred = owner_state.deferred_segment.replace(std::ptr::null_mut());
-    let deferred_len = owner_state.deferred_len.replace(0);
-    gc_metadata::mark_peak(usize::from(deferred_len) * size_of::<*mut RcHeader>());
-    let mut deferred_left_head = false;
-    while !deferred.is_null() {
-        let next = unsafe { (*deferred).next };
-        unsafe { (*deferred).next = std::ptr::null_mut() };
-        if deferred_left_head {
-            gc_metadata::discharge(BLOCK_PAYLOAD);
-        }
-
-        deferred_left_head = true;
-        gc_metadata::release_to_critical(deferred);
-        deferred = next;
-    }
+    owner_state.deferred().dismantle(give_back);
 
     let spare_count = owner_state.spare_count.replace(0);
     for cell in &owner_state.spares[..usize::from(spare_count)] {
@@ -1406,9 +1192,8 @@ pub(crate) fn release_queue_segments() {
     }
 
     // The overflow buffer empties by its count, which is the only bound on
-    // the base block's contents exactly as `write_len` is the only bound on
-    // the write segment's. The base block itself stays: it belongs to the
-    // thread's life rather than to the queue's contents, and
+    // the base block's contents. The base block itself stays: it belongs to
+    // the thread's life rather than to the queue's contents, and
     // [`release_queue_base`] is what ends that life.
     let overflow_len = owner_state.overflow_len.replace(0);
     gc_metadata::discharge(usize::from(overflow_len) * size_of::<*mut RcHeader>());
@@ -1424,9 +1209,9 @@ pub(crate) fn overflow_len() -> usize {
     }
 }
 
-/// Registrations this thread holds across its three lanes — the active
-/// chain, the deferred lane and the overflow buffer — by the fills and the
-/// chain lengths, with no entry read.
+/// Registrations this thread holds across its three lanes — the ring, the
+/// deferred lane and the overflow buffer — by the indices and the counts,
+/// with no entry read.
 ///
 /// What the exit reports as its residue
 /// (`crate::cycle::collect::collect_before_exit`), and what a round of that
@@ -1438,56 +1223,29 @@ pub(crate) fn registered_count() -> usize {
         return 0;
     }
     let owner_state = unsafe { owner_state_ref(state) };
-    chain_entries(owner_state.write_segment.get(), owner_state.write_len.get())
-        + chain_entries(
-            owner_state.deferred_segment.get(),
-            owner_state.deferred_len.get(),
-        )
+    candidate_ring().map_or(0, |ring| ring.count())
+        + owner_state.deferred().len()
         + usize::from(owner_state.overflow_len.get())
 }
 
-/// Entries a chain holds, from its head's fill and the full segments behind
-/// it, with no entry read.
-///
-/// Its own arithmetic rather than a count of what [`walk_chain`] yields: this
-/// is the instrument `collect_lane_tokens` is calibrated against, and two
-/// readings that share a computation cross-check nothing.
-fn chain_entries(head: *mut BlockHeader, head_fill: u16) -> usize {
-    if head.is_null() {
-        return 0;
-    }
-
-    let mut count = usize::from(head_fill);
-    let mut segment = unsafe { (*head).next };
-    while !segment.is_null() {
-        count += SEGMENT_CAPACITY;
-        segment = unsafe { (*segment).next };
-    }
-
-    count
-}
-
-/// Entries this thread's queue holds, walking the chain.
+/// Entries this thread's ring holds, by its indices.
 #[cfg(test)]
 pub(crate) fn candidate_count() -> usize {
-    let state = owner_state();
-    if state.is_null() {
+    if owner_state().is_null() {
         return 0;
     }
-    let owner_state = unsafe { owner_state_ref(state) };
-    chain_entries(owner_state.write_segment.get(), owner_state.write_len.get())
+
+    candidate_ring().map_or(0, |ring| ring.count())
 }
 
 /// Every candidate token this thread's queue holds, appended to `out`: the
-/// active chain in [`walk_chain`]'s order, then the deferred lane in the same
-/// order, then the overflow buffer oldest entry first.
+/// ring from its front, then the deferred lane oldest first, then the
+/// overflow buffer oldest entry first.
 ///
-/// [`candidate_count`] answers the active chain alone, and a count of one lane
+/// [`candidate_count`] answers the ring alone, and a count of one lane
 /// can state neither half of the rule this exists for — a `CANDIDATE_BIT`
 /// standing over no record anywhere, and one entity holding a record in two
-/// lanes at once. The batch a collection detaches is a fourth lane, held in
-/// the collection's own frame rather than here, so a caller holding one
-/// appends it itself.
+/// lanes at once.
 ///
 /// **What comes back says nothing about which lane a token is in**, the three
 /// being concatenated. A caller that asserts residence pairs this with
@@ -1505,45 +1263,41 @@ pub(crate) fn collect_lane_tokens(out: &mut Vec<*mut RcHeader>) {
     }
 
     let owner_state = unsafe { owner_state_ref(state) };
-    walk_chain(
-        owner_state.write_segment.get(),
-        usize::from(owner_state.write_len.get()),
-        |entry| {
-            out.push(entry);
+    if let Some(ring) = candidate_ring() {
+        ring.walk(|entry| {
+            out.push(entry_entity(entry));
             true
-        },
-    );
+        });
+    }
 
-    walk_chain(
-        owner_state.deferred_segment.get(),
-        usize::from(owner_state.deferred_len.get()),
-        |entry| {
-            out.push(entry);
-            true
-        },
-    );
+    owner_state
+        .deferred()
+        .walk(|entry| out.push(entry_entity(entry)));
 
     for index in 0..usize::from(owner_state.overflow_len.get()) {
         out.push(unsafe { overflow_entries(state).add(index).read() });
     }
 }
 
-/// Segments this thread's queue holds.
+/// Blocks in this thread's ring.
 #[cfg(test)]
 pub(crate) fn segment_count() -> usize {
+    if owner_state().is_null() {
+        return 0;
+    }
+
+    candidate_ring().map_or(0, |ring| ring.block_count())
+}
+
+/// Blocks in this thread's deferred lane.
+#[cfg(test)]
+pub(crate) fn deferred_segment_count() -> usize {
     let state = owner_state();
     if state.is_null() {
         return 0;
     }
-    let owner_state = unsafe { owner_state_ref(state) };
-    let mut count = 0;
-    let mut segment = owner_state.write_segment.get();
-    while !segment.is_null() {
-        count += 1;
-        segment = unsafe { (*segment).next };
-    }
 
-    count
+    unsafe { owner_state_ref(state) }.deferred().block_count()
 }
 
 /// Spares this thread holds.
@@ -1575,10 +1329,9 @@ pub(crate) fn deferred_turnover_mirror() -> u64 {
     unsafe { owner_state_ref(state) }.turnover_mirror.get()
 }
 
-/// Records standing in this thread's deferred lane, by the chain's rule: the
-/// head holds `deferred_len` and every segment behind it is full. Read by the
-/// census and by the `bench-loads` hook before a re-offer, which is what
-/// keeps the count out of the re-offer itself.
+/// Records standing in this thread's deferred lane. Read by the census and
+/// by the `bench-loads` hook before a re-offer, which is what keeps the count
+/// out of the re-offer itself.
 #[cfg(any(test, feature = "bench-loads"))]
 pub(crate) fn deferred_count() -> usize {
     let state = owner_state();
@@ -1586,18 +1339,7 @@ pub(crate) fn deferred_count() -> usize {
         return 0;
     }
 
-    let owner_state = unsafe { owner_state_ref(state) };
-    let head = owner_state.deferred_segment.get();
-    if head.is_null() {
-        return 0;
-    }
-    let mut count = usize::from(owner_state.deferred_len.get());
-    let mut segment = unsafe { (*head).next };
-    while !segment.is_null() {
-        count += SEGMENT_CAPACITY;
-        segment = unsafe { (*segment).next };
-    }
-    count
+    unsafe { owner_state_ref(state) }.deferred().len()
 }
 
 /// This thread's base block, or null when it holds none. One block, out of
@@ -1629,53 +1371,55 @@ pub(crate) fn workspace_base() -> *mut BlockHeader {
     unsafe { owner_state_ref(state) }.workspace_base.get()
 }
 
+/// The block of R this thread registers into, or null before the first
+/// registration.
 #[cfg(test)]
-pub(crate) fn write_segment() -> *mut BlockHeader {
-    let state = owner_state();
-    if state.is_null() {
-        std::ptr::null_mut()
-    } else {
-        unsafe { owner_state_ref(state) }.write_segment.get()
+pub(crate) fn tail_block() -> *mut BlockHeader {
+    let record = owner_record::this_thread_record();
+    if record.is_null() {
+        return std::ptr::null_mut();
     }
+
+    unsafe { (*record).candidate_ring() }
+        .tail_block
+        .load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Fill the write segment to capacity with `filler`, so the next
-/// registration grows the queue.
+/// Fill the tail block to capacity with `filler`, so the next
+/// registration moves the writer to another block.
 ///
-/// The shorthand exists because the honest way to reach the growth path is
+/// The shorthand exists because the honest way to reach the block change is
 /// 8160 releases, which is a fixture rather than a test: the branch it
 /// reaches is three lines and the entries before it prove nothing about
-/// them. **It writes the entries rather than only the count**, because
-/// the count is what bounds a segment's contents and a test that lied
+/// them. **It writes the entries rather than only the index**, because
+/// the index is what bounds a block's contents and a test that lied
 /// about it would hand a reader applying the zero-count rule 8159 recycled
 /// words to dereference.
 #[cfg(test)]
-pub(crate) fn fill_write_segment(filler: *mut RcHeader) {
-    let state = owner_state();
-    assert!(!state.is_null(), "no queue base block");
-    let owner_state = unsafe { owner_state_ref(state) };
-    let write_segment = owner_state.write_segment.get();
-    assert!(!write_segment.is_null(), "no write segment to fill");
-    for index in usize::from(owner_state.write_len.get())..SEGMENT_CAPACITY {
-        unsafe { segment_entries(write_segment).add(index).write(filler) };
-    }
-
-    owner_state.write_len.set(stored_len(SEGMENT_CAPACITY));
+pub(crate) fn fill_tail_block(filler: *mut RcHeader) {
+    assert!(!owner_state().is_null(), "no queue base block");
+    let ring = candidate_ring().expect("a thread with a base block has a record");
+    assert!(ring.has_blocks(), "no tail block to fill");
+    ring.fill_tail_block(entity_entry(filler));
 }
 
-/// The nth entry of the write segment, counting from the oldest.
+/// The nth entry of the ring, counting from the front.
 #[cfg(test)]
-pub(crate) fn write_segment_entry(index: usize) -> *mut RcHeader {
-    let state = owner_state();
-    assert!(!state.is_null(), "no queue base block");
-    let owner_state = unsafe { owner_state_ref(state) };
-    let write_segment = owner_state.write_segment.get();
-    assert!(!write_segment.is_null(), "no write segment");
-    assert!(
-        index < usize::from(owner_state.write_len.get()),
-        "entry {index} is past the fill"
-    );
-    unsafe { segment_entries(write_segment).add(index).read() }
+pub(crate) fn entry_at(index: usize) -> *mut RcHeader {
+    assert!(!owner_state().is_null(), "no queue base block");
+    let ring = candidate_ring().expect("a thread with a base block has a record");
+    let mut found = None;
+    let mut position = 0;
+    ring.walk(|entry| {
+        if position == index {
+            found = Some(entry_entity(entry));
+            return false;
+        }
+
+        position += 1;
+        true
+    });
+    found.unwrap_or_else(|| panic!("entry {index} is past the ring's count"))
 }
 
 #[cfg(test)]

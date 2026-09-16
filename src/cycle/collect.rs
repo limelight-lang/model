@@ -62,19 +62,6 @@ use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch};
 use crate::cycle::validation::ValidationResult;
 use crate::journal::kinds::journal_event;
 
-thread_local! {
-    /// Whether a collection is running on this thread, from the window's
-    /// opening to the last deferred drop.
-    ///
-    /// Per thread because a collection is: the window, the workspace and the
-    /// candidate lane it reads are all this thread's, and another thread
-    /// collecting its own graph is no reason to refuse this one.
-    ///
-    /// `Cell<bool>` has no drop glue, which is the rule for anything a thread
-    /// exit can reach (`memory::heap::ll_thread_exit`).
-    static COLLECTING: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Why this thread may not run a collection now, in the order the gate reads
 /// its inputs: `Teardown` is answered only when neither other input is
 /// closed, which is what lets the pressure path act on it alone.
@@ -86,6 +73,11 @@ enum GateClosed {
     Reset,
     /// A teardown is in flight on this thread (`crate::object::teardown_depth`).
     Teardown,
+    /// The thread has no record for the collecting word to stand in and the
+    /// registry could not carve one: answered by [`CollectingThread::take`]
+    /// alone, never by [`gate`], since a thread without a record has
+    /// registered nothing and its exit has nothing to wait for.
+    NoRecord,
 }
 
 /// The entry gate, read from this thread's own state and nothing else — a
@@ -96,7 +88,7 @@ enum GateClosed {
 /// an open gate.
 #[inline]
 fn gate() -> Option<GateClosed> {
-    if COLLECTING.with(Cell::get) {
+    if is_collecting() {
         return Some(GateClosed::Collecting);
     }
 
@@ -115,6 +107,22 @@ fn gate() -> Option<GateClosed> {
 #[inline]
 pub(crate) fn may_collect() -> bool {
     gate().is_none()
+}
+
+/// Whether a collection is running on this thread: the collecting word of
+/// its record, from the window's opening to the last deferred drop. A thread
+/// with no record is collecting nothing.
+///
+/// Per thread because a collection is: the window, the workspace and the
+/// ring it reads are all this thread's, and another thread collecting its own
+/// graph is no reason to refuse this one. The word stands in the record
+/// rather than in a thread-local because a collector thread reads it too —
+/// it is what keeps the collector out of the ring for the collection's whole
+/// length (`crate::cycle::owner_record`, the collecting word).
+#[inline]
+fn is_collecting() -> bool {
+    let record = crate::cycle::owner_record::this_thread_record();
+    !record.is_null() && unsafe { (*record).is_collecting() }
 }
 
 /// The right to run one collection on this thread, taken for as long as one
@@ -141,6 +149,8 @@ pub(crate) fn may_collect() -> bool {
 /// closed, the returns made, the batch merged, the workspace given back — and
 /// that memory is lost for the life of the process.
 struct CollectingThread {
+    /// This thread's record, whose collecting word this guard holds up.
+    record: *mut crate::cycle::owner_record::OwnerRecord,
     /// Whether this guard's drop still owes the owner retirement pass.
     ///
     /// A collection off the poll retires inside its own close — the pass that
@@ -166,8 +176,19 @@ impl CollectingThread {
             return Err(closed);
         }
 
-        COLLECTING.with(|collecting| collecting.set(true));
+        // The word is raised before the token is taken, which is the order
+        // the collector's exclusion rests on: its claim of the token after
+        // the owner's release at the scan's end reads the word set. A thread
+        // with no record yet is given one here as `HeldToken::take` would
+        // give it two lines later.
+        let record = crate::cycle::token::this_thread_token_record();
+        if record.is_null() {
+            return Err(GateClosed::NoRecord);
+        }
+
+        unsafe { (*record).set_collecting() };
         Ok(Self {
+            record,
             retire_on_drop: Cell::new(true),
         })
     }
@@ -223,13 +244,16 @@ pub(crate) fn count_pressure_roots(enabled: bool) {
 
 impl Drop for CollectingThread {
     fn drop(&mut self) {
-        struct LowerGate;
+        struct LowerGate(*mut crate::cycle::owner_record::OwnerRecord);
         impl Drop for LowerGate {
             fn drop(&mut self) {
-                COLLECTING.with(|collecting| collecting.set(false));
+                // The close's last store, and a release: what publishes the
+                // compaction's entries and indices to a collector that reads
+                // the word clear (`crate::cycle::owner_record`).
+                unsafe { (*self.0).clear_collecting() };
             }
         }
-        let _lower_gate = LowerGate;
+        let _lower_gate = LowerGate(self.record);
         // This guard outlives every trace window, membership and scratch arena
         // of either collection path, including their unwind cleanup. Keep the
         // collecting gate held until the final slot returns have finished.
@@ -386,8 +410,8 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
     }
 }
 
-/// The prologue both paths share: open the window, detach the lane, and
-/// trace the first `roots` roots of it. Answers the window, still open with
+/// The prologue both paths share: open the window, read the ring as the
+/// batch, and trace the first `roots` roots of it. Answers the window, still open with
 /// its rows and its batch, and how many roots the trace read.
 ///
 /// The token is the caller's: the poll path releases it at the scan's end and
@@ -400,7 +424,7 @@ unsafe fn open_and_trace(roots: usize) -> Result<(ActiveTrace, usize), TraceRefu
         return Err(TraceRefusal::NoWorkspace);
     };
 
-    window.detach_candidates();
+    window.read_candidates();
     let (arena, batch) = window.rows_and_roots();
     if batch.is_empty() {
         return Err(TraceRefusal::EmptyLane);
@@ -415,7 +439,7 @@ unsafe fn open_and_trace(roots: usize) -> Result<(ActiveTrace, usize), TraceRefu
 }
 
 /// Why [`open_and_trace`] answered no window. Each leaves the heap as it was
-/// and every root registered: the window's drop merges the batch back.
+/// and every root registered: nothing left the ring.
 enum TraceRefusal {
     /// The thread's workspace could not be had, on its first collection.
     NoWorkspace,
@@ -681,8 +705,14 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             // `DEAD_IN_PLACE` until the free at the end of its frame
             // (`crate::cycle::queue::retire_candidates`). The other two
             // refusals own their retirement: a running collection retires at
-            // its close, and a reset forbids one.
+            // its close, and a reset forbids one. The pass rewrites the ring
+            // with no collecting word raised, so it takes the token the way
+            // a collection does and waits out a collector's batch
+            // (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind
+            // its writer, and the collector's verdicts come back by a second
+            // ring", "Who reads R").
             if closed == GateClosed::Teardown {
+                let _token = HeldToken::take();
                 unsafe { crate::cycle::queue::retire_candidates() };
             }
 
@@ -874,11 +904,11 @@ enum Traced {
 /// the roots the trace read to produce it.
 ///
 /// The count travels with the list because the bound that produced it is the
-/// caller's next decision, and the batch it was taken from is gone by then —
-/// the close merged it back into the lane.
+/// caller's next decision; the batch stands in the ring until the round's
+/// disposition or its retirement pass reads it.
 struct HarvestedMembers {
     members: Option<crate::cycle::members::StandingMembers>,
-    batch: Option<crate::cycle::queue::InFlightBatch>,
+    batch: Option<crate::cycle::queue::Batch>,
     roots_traced: usize,
 }
 
@@ -898,10 +928,11 @@ impl HarvestedMembers {
         self.members.take().expect("a harvested list commits once")
     }
 
-    /// Merge the batch back into the active lane: the disposition of every
-    /// round but one, and what the drop does for a round that never chose.
+    /// Leave the batch in the ring for the retirement pass: the disposition
+    /// of every round but one, and what a round that never chose does by
+    /// doing nothing.
     fn restore_batch(&mut self) {
-        crate::cycle::queue::merge_candidates(self.take_batch());
+        drop(self.take_batch());
     }
 
     /// Send the batch to the deferred lane, to wait out the epoch of the
@@ -910,16 +941,8 @@ impl HarvestedMembers {
         crate::cycle::queue::defer_candidates(self.take_batch(), at_commits);
     }
 
-    fn take_batch(&mut self) -> crate::cycle::queue::InFlightBatch {
+    fn take_batch(&mut self) -> crate::cycle::queue::Batch {
         self.batch.take().expect("a harvested batch disposes once")
-    }
-}
-
-impl Drop for HarvestedMembers {
-    fn drop(&mut self) {
-        if let Some(batch) = self.batch.take() {
-            crate::cycle::queue::merge_candidates(batch);
-        }
     }
 }
 

@@ -8,8 +8,9 @@
 //! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
 //! and the collector's verdicts come back by a second ring"). The lines are
 //! split by who writes them, so a registration's store and a batch's load
-//! never share a line. Nothing reads the two ring lines until the rings
-//! are built (`PLAN.md` S49.3 and S49.4).
+//! never share a line. R's two words are read by `crate::cycle::queue`
+//! through `crate::ring`; P's are read by nothing until P is built
+//! (`PLAN.md` S49.4).
 //!
 //! # When a thread takes its record
 //!
@@ -119,13 +120,13 @@ pub(crate) struct OwnerRecord {
 
 /// The line the collector writes: where it reads R from, where it posts
 /// verdicts into P, and how many roots it takes per batch. Loaded by the
-/// owner only where the ring's rules say so (`PLAN.md` S49.3, the writer's
+/// owner only where the ring's rules say so (`crate::ring`, the writer's
 /// read of the front block on a full tail block).
-// Loaded by nothing outside the tests until S49.3 and S49.4 build the rings.
+// P's words are loaded by nothing outside the tests until S49.4 builds P.
 #[cfg_attr(not(test), allow(dead_code))]
 #[repr(C, align(64))]
 struct ReaderLine {
-    /// The block of R the collector reads from; null until S49.3 builds R.
+    /// The block of R the collector reads from (`crate::ring::Slots`).
     r_front_block: AtomicPtr<BlockHeader>,
     /// The block of P the collector posts into; null until S49.4 builds P.
     p_tail_block: AtomicPtr<BlockHeader>,
@@ -135,17 +136,29 @@ struct ReaderLine {
     batch: AtomicUsize,
 }
 
-/// The line the owner writes: where it registers into R, and where it
-/// reads verdicts from P.
-// Loaded by nothing outside the tests until S49.3 and S49.4 build the rings.
+/// The line the owner writes: where it registers into R, where it reads
+/// verdicts from P, and whether it is collecting in line.
+// P's word is loaded by nothing outside the tests until S49.4 builds P.
 #[cfg_attr(not(test), allow(dead_code))]
 #[repr(C, align(64))]
 struct WriterLine {
-    /// The block of R the owner registers into; null until S49.3 builds R.
+    /// The block of R the owner registers into (`crate::ring::Slots`).
     r_tail_block: AtomicPtr<BlockHeader>,
     /// The block of P the owner reads verdicts from; null until S49.4
     /// builds P.
     p_front_block: AtomicPtr<BlockHeader>,
+    /// Whether an in-line collection is running on the owner, from before
+    /// its take of the token to the last store of its close. The owner's
+    /// gate against a second collection on its own thread, and what keeps a
+    /// collector out of R for the collection's whole length rather than for
+    /// its trace: the collector reads it with acquire after its own claim of
+    /// the token and, finding it set, releases and skips. The clear is a
+    /// release store and the close's last, so a collector that reads it
+    /// clear reads the compaction's entries and indices behind it
+    /// (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its
+    /// writer, and the collector's verdicts come back by a second ring", "Who
+    /// reads R").
+    collecting: AtomicBool,
 }
 
 /// A line nobody writes yet.
@@ -178,6 +191,7 @@ impl WriterLine {
         Self {
             r_tail_block: AtomicPtr::new(std::ptr::null_mut()),
             p_front_block: AtomicPtr::new(std::ptr::null_mut()),
+            collecting: AtomicBool::new(false),
         }
     }
 
@@ -187,6 +201,7 @@ impl WriterLine {
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         self.p_front_block
             .store(std::ptr::null_mut(), Ordering::Relaxed);
+        self.collecting.store(false, Ordering::Relaxed);
     }
 }
 
@@ -255,6 +270,37 @@ impl OwnerRecord {
     #[inline]
     pub(crate) fn held_by_another(&self) -> bool {
         self.token.is_held() && !self.owner_holds.load(Ordering::Relaxed)
+    }
+
+    /// R's two words: the front block on the reader's line, the tail block
+    /// on the writer's.
+    #[inline]
+    pub(crate) fn candidate_ring(&self) -> crate::ring::Slots<'_> {
+        crate::ring::Slots {
+            front_block: &self.reader.r_front_block,
+            tail_block: &self.writer.r_tail_block,
+        }
+    }
+
+    /// Whether the owner is collecting in line, as the owner reads it:
+    /// relaxed, the word being the owner's own on that side.
+    #[inline]
+    pub(crate) fn is_collecting(&self) -> bool {
+        self.writer.collecting.load(Ordering::Relaxed)
+    }
+
+    /// Raise the collecting word, before the owner takes its token: the take
+    /// is what orders the word before a collector's next claim.
+    #[inline]
+    pub(crate) fn set_collecting(&self) {
+        self.writer.collecting.store(true, Ordering::Relaxed);
+    }
+
+    /// Clear the collecting word: the close's last store, and a release, so
+    /// that a collector reading it clear reads everything the close wrote.
+    #[inline]
+    pub(crate) fn clear_collecting(&self) {
+        self.writer.collecting.store(false, Ordering::Release);
     }
 }
 
@@ -568,24 +614,21 @@ pub(crate) fn refuse_record_draws(refuse: bool) {
 }
 
 /// Write into `record`'s reader and writer lines, for a case that reads
-/// whether a re-take empties them.
+/// whether a re-take empties them: P's two words and the batch size. R's
+/// two words are left alone, because the thread's exit reads its ring
+/// through them and a scribbled pointer would be followed; they are nulled
+/// by the ring's dismantle before the record goes back, which is what the
+/// reset repeats. The collecting word is left alone too: set, it is the
+/// owner's gate, and the exit would wait behind it.
 #[cfg(test)]
 pub(crate) fn scribble_lines_for_test(record: *mut OwnerRecord) {
     let scribble = std::ptr::dangling_mut::<BlockHeader>();
     unsafe {
         (*record)
             .reader
-            .r_front_block
-            .store(scribble, Ordering::Relaxed);
-        (*record)
-            .reader
             .p_tail_block
             .store(scribble, Ordering::Relaxed);
         (*record).reader.batch.store(7, Ordering::Relaxed);
-        (*record)
-            .writer
-            .r_tail_block
-            .store(scribble, Ordering::Relaxed);
         (*record)
             .writer
             .p_front_block
@@ -603,6 +646,7 @@ pub(crate) fn lines_are_empty(record: *mut OwnerRecord) -> bool {
         && reader.batch.load(Ordering::Relaxed) == 0
         && writer.r_tail_block.load(Ordering::Relaxed).is_null()
         && writer.p_front_block.load(Ordering::Relaxed).is_null()
+        && !writer.collecting.load(Ordering::Relaxed)
 }
 
 /// How many records this thread has taken out of the registry so far.

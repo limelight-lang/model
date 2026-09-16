@@ -540,10 +540,9 @@ fn a_block_adopted_after_a_slot_of_it_was_stacked_returns_each_slot_once() {
 /// which is what lets a collection that ran out of memory give its withheld
 /// returns back.
 ///
-/// The abort is staged the way a collection gives up — a batch detached and
+/// The abort is staged the way a collection gives up — a batch read and
 /// never disposed of, rows standing over the block — so the drop runs its
-/// whole order, the batch's merge included (`queue::merge_candidates`), rather
-/// than the bare close the success case makes.
+/// whole order rather than the bare close the success case makes.
 #[test]
 fn an_aborted_window_returns_its_withheld_slots() {
     let _guard = test_guard();
@@ -558,7 +557,7 @@ fn an_aborted_window_returns_its_withheld_slots() {
     let block = block_of(victim);
 
     let mut window = ActiveTrace::open().expect("the pool funds the trace window");
-    window.detach_candidates();
+    window.read_candidates();
     unsafe { ensure_row(window.arena(), victim, 1) };
 
     let occupied_before = unsafe { crate::memory::heap::block_occupancy(block) };
@@ -609,7 +608,7 @@ fn an_aborted_window_returns_a_withheld_retained_survivor() {
     let (_arena, [holder], [survivor], block) = unsafe { retained_survivors::<1>() };
 
     let mut window = ActiveTrace::open().expect("the pool funds the trace window");
-    window.detach_candidates();
+    window.read_candidates();
     unsafe { ensure_row(window.arena(), survivor, 1) };
     unsafe { ensure_row(window.arena(), holder as *mut RcHeader, 1) };
 
@@ -660,7 +659,7 @@ fn an_aborted_window_returns_a_withheld_large_entity() {
     let block = BlockHeader::of_ptr(entity as *const u8);
 
     let mut window = ActiveTrace::open().expect("the pool funds the trace window");
-    window.detach_candidates();
+    window.read_candidates();
     unsafe { ensure_row(window.arena(), entity, 0) };
 
     unsafe { crate::memory::stdapi::ll_free(entity as *mut u8) };

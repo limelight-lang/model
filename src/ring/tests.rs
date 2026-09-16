@@ -587,3 +587,50 @@ fn a_chains_dismantle_gives_every_block_back() {
     assert!(chain.is_empty());
     assert_eq!(chain.len(), 0);
 }
+
+/// The pack rewrites the writer's copy of `front`: a reader had advanced
+/// `front` past the copy the writer last refreshed, the pack fills the block
+/// from the new `front`, and without the rewrite the writer's full test
+/// would never fire again — the next pushes would run through `front` and
+/// the block would read empty with every packed entry lost.
+#[test]
+fn a_pack_over_a_front_the_reader_moved_keeps_the_writers_full_test_sound() {
+    let _g = test_guard();
+    let words = Words::new();
+    let writer = unsafe { Writer::new(words.slots()) };
+    let reader = unsafe { Reader::new(words.slots()) };
+
+    // A full first block, the writer's copy of its `front` refreshed at 0
+    // when the block change found it full; then five taken from it and
+    // four written into the second block.
+    for entry in 0..BLOCK_ENTRIES + 4 {
+        assert_eq!(writer.push(entry, fresh), Ok(()));
+    }
+    let mut out = [0; 5];
+    assert_eq!(reader.take(&mut out), 5);
+
+    // Everything kept: the pack fills the first block from `front` at 5 up
+    // to one slot short of it.
+    let quiet = unsafe { Quiescent::new(words.slots()) };
+    quiet.rewrite(Some);
+    assert_eq!(quiet.count(), BLOCK_ENTRIES - 1);
+
+    // Two pushes: the first takes the last free slot, the second must find
+    // the block full and move into the emptied second block.
+    assert_eq!(writer.push(7_000_001, none), Ok(()));
+    assert_eq!(writer.push(7_000_002, none), Ok(()));
+    assert_eq!(
+        quiet.count(),
+        BLOCK_ENTRIES + 1,
+        "no packed entry was written over"
+    );
+    let mut all = vec![0; BLOCK_ENTRIES + 1];
+    assert_eq!(reader.take(&mut all), BLOCK_ENTRIES + 1);
+    assert_eq!(
+        all[0], 5,
+        "the packed entries come out from where the reader stood"
+    );
+    assert_eq!(all[BLOCK_ENTRIES - 1], 7_000_001);
+    assert_eq!(all[BLOCK_ENTRIES], 7_000_002);
+    words.dismantle();
+}

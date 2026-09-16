@@ -183,7 +183,7 @@ struct Reading {
 /// be a number about a trace that did not happen.
 fn collect() -> Reading {
     let mut active = ActiveTrace::open().expect("the pool funded the trace window");
-    active.detach_candidates();
+    active.read_candidates();
 
     // Zeroed here rather than at the case's start: opening the window
     // and detaching the chain dispatch over nothing, but a fixture built
@@ -464,7 +464,7 @@ fn the_density_and_edge_readings_draw_nothing_and_move_no_ledger_figure() {
         // priced is the reading, and a collection's own draws are the
         // census's subject (`crate::cycle::census`).
         let mut active = ActiveTrace::open().expect("the pool funded the trace window");
-        active.detach_candidates();
+        active.read_candidates();
         let (arena, batch) = active.rows_and_roots();
         assert_eq!(
             unsafe { trace_batch::<PlainCells>(arena, batch, ALL_ROOTS).0 },

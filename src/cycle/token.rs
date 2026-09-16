@@ -19,8 +19,8 @@
 //! whether a foreign holder may take the token over rows that teardown is
 //! still reading is a ruling nobody has made (`rfc/model/gc/rc-cycle.md`,
 //! "Concurrency", the readership paragraph). The collector thread's batch
-//! is `PLAN.md` S49.5's, and the collecting word S49.3 moves into the record
-//! is what keeps it off an in-line collection's rows
+//! is `PLAN.md` S49.5's, and the record's collecting word is what keeps it
+//! off an in-line collection's rows
 //! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
 //! and the collector's verdicts come back by a second ring").
 //!
@@ -174,9 +174,22 @@ impl TraceToken {
 /// record's block, which the next call asks again for.
 #[cfg(test)]
 pub(crate) fn this_thread_token() -> *const TraceToken {
-    let (record, taken) = crate::cycle::owner_record::ensure_thread_record();
+    let record = this_thread_token_record();
     if record.is_null() {
         return std::ptr::null();
+    }
+
+    unsafe { &raw const (*record).token }
+}
+
+/// This thread's record with its token claimable, drawing the record if the
+/// thread has none yet; null when none can be drawn. The record
+/// [`this_thread_token`] reads its token off, for a caller that wants the
+/// record's other words too (`crate::cycle::collect`, the collecting word).
+pub(crate) fn this_thread_token_record() -> *mut crate::cycle::owner_record::OwnerRecord {
+    let (record, taken) = crate::cycle::owner_record::ensure_thread_record();
+    if record.is_null() {
+        return record;
     }
 
     if taken {
@@ -186,7 +199,7 @@ pub(crate) fn this_thread_token() -> *const TraceToken {
         unsafe { (*record).token.release() };
     }
 
-    unsafe { &raw const (*record).token }
+    record
 }
 
 /// Whether a thread other than this one holds this thread's token now

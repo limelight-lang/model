@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-15 · Active: S37, S38, S40, S49 and S50 (opened 2026-09-15 on Edmond's ruling that `ll_thread_init` is called once). S49 opened the same night on Edmond's ruling that restores his read-behind queue, and replaces the outbox form S38.5–S38.7 built. S38.0 and S38.3 closed on
+Updated: 2026-09-16 · Active: S37, S38, S40, S49 and S50 (opened 2026-09-15 on Edmond's ruling that `ll_thread_init` is called once). S49 opened the same night on Edmond's ruling that restores his read-behind queue, and replaces the outbox form S38.5–S38.7 built. S38.0 and S38.3 closed on
 2026-09-15 — the collector's reader with its fence, and the owner's returns
 withheld under a foreign holder of its token; the worker, unblocked the same
 evening by `rfc` S8.7, is S38.5 through S38.7 — the record, the offer and the
@@ -1135,7 +1135,23 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         one exception; the exit releases the record after the last
         registration its rounds can make; nothing reads the new lines yet
       tier: T2 · role: Critic
-- [ ] S49.3 The ring: blocks in a circle, the reader's API, the in-line reader, the compaction, the splice   *(after S49.2)*
+- [x] S49.3 The ring: blocks in a circle, the reader's API, the in-line reader, the compaction, the splice   *(closed 2026-09-16)*
+      handoff: `cycle::queue` registers through `ring::Writer` over the
+        record's two words; `Batch` is a count over entries that stay in
+        place, `compaction::compact` packs the ring, the overflow buffer
+        and (on a deferral) the chain in place through `ring::Packing` and
+        `Chain::retain`, each finishing itself on an unwind; the deferred
+        lane is a `ring::Chain` spliced back by `Writer::splice_after_tail`;
+        the collecting word is the record's (`collect::is_collecting`); the
+        queue block is charged whole from its link (`dev/DECISIONS.md`,
+        2026-09-16). Gate green in every configuration; Miri green over
+        `ring::tests`, `cycle::queue::tests` less the three block-scale
+        shapes (each over an hour under Miri; the small shapes reach the
+        same branches), `cycle::owner_record::tests`,
+        `what_an_exit_collects` and `what_the_close_and_the_abort_return`.
+        The registration's fast path is two plain stores as before, 22
+        instructions against 13 (release disassembly): the record's
+        thread-local and the tail block's line are the extra loads.
       done: a queue segment is a block of moodycamel's `ReaderWriterQueue`
         form — `front` and `tail` on separate lines with the local copies,
         indices wrapping at the capacity with one spare slot, `next` the
@@ -1174,6 +1190,19 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         assumed a full segment behind the write position reads `(tail −
         front) mod cap` instead
       tier: T2 · role: Critic
+      Critic 2026-09-16: the pack rewrote the reader's `local_tail` and not
+        the writer's `local_front`, so after a reader had advanced `front`
+        two registrations ran through it and the block read empty — every
+        packed root lost with its bit standing. Accepted: `set_tail`
+        rewrites the writer's copy, pinned by
+        `a_pack_over_a_front_the_reader_moved_keeps_the_writers_full_test_sound`
+        (seen failing without the store). `drain_overflow` read the tail
+        block through `Quiescent` with no exclusion; the room reading moved
+        to `Writer`. "A root read live with nothing proposed" reads two ways
+        — deferred on the poll path, kept on the pressure path — which is
+        the code's and S37.6's; the sentence is the loose one. Unpinned and
+        left for S49.5, where the second thread exists: that the collecting
+        word's clear follows the compaction's stores.
 - [ ] S49.4 The verdict ring and the owner's disposition   *(after S49.3)*
       done: P is one block per thread of the same form with the roles
         swapped, drawn with the record, never grown; a stand-in collector on

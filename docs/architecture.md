@@ -122,7 +122,7 @@ gc --> cycle_collect : collect / poll
 gc --> reserve : refill at poll
 gc --> critical : refill at poll
 gc --> cycle_queue : refill + drain overflow
-cycle_collect --> cycle_queue : detach / merge / retire
+cycle_collect --> cycle_queue : read / compact in place
 cycle_collect --> cycle_rows : trace window + scratch
 cycle_collect --> cycle_trace
 cycle_collect --> cycle_validate
@@ -382,7 +382,7 @@ participant reclamation
 mutator -> gc : ll_gc_collect_cycles / armed poll
 gc -> driver : collect_off_the_poll
 driver -> arena : open trace window over\nresident workspace
-driver -> queue : detach candidate lane
+driver -> queue : read the ring as the batch
 queue --> driver : roots
 driver -> trace : mark every root, then scan every root
 trace -> trace : shadow counts -> live /\npotentially unreachable rows
@@ -395,7 +395,7 @@ else live / refused / resurrected
   finalization --> queue : candidates remain registered
 end
 driver -> arena : close after commit
-arena -> queue : sweep rows; return deferred slots;\nmerge detached records
+arena -> queue : sweep rows; return deferred slots;\ncompact the ring in place
 driver -> queue : retire completed candidate deaths
 note over mutator, reclamation : the ordinary path keeps rows through teardown;\nthe pressure path harvests a bounded member list\nand returns trace blocks first
 @enduml

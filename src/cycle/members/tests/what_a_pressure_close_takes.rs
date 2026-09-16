@@ -219,7 +219,7 @@ fn a_harvest_that_unwinds_gives_up_its_records_and_still_sweeps() {
     let (alpha, beta) = (rings.alpha, rings.beta);
 
     let mut active = ActiveTrace::open().expect("the guard drew this thread's workspace");
-    active.detach_candidates();
+    active.read_candidates();
     let outcome = {
         let (arena, batch) = active.rows_and_roots();
         unsafe { trace_batch::<PlainCells>(arena, batch, ALL_ROOTS).0 }

@@ -93,7 +93,7 @@ fn tear_down(rings: TwoRings) {
 /// returns.
 fn trace_and_close(capacity: Option<u32>) -> bool {
     let mut active = ActiveTrace::open().expect("the guard drew this thread's workspace");
-    active.detach_candidates();
+    active.read_candidates();
     let outcome = {
         let (arena, batch) = active.rows_and_roots();
         unsafe { trace_batch::<PlainCells>(arena, batch, ALL_ROOTS).0 }

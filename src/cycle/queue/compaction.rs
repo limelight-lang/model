@@ -1,9 +1,23 @@
-//! Bounded, allocation-free combination and owner retirement.
+//! The owner's retirement pass in ring form: one in-place compaction of R,
+//! the overflow buffer and, when asked, the deferred lane, drawing nothing.
 //!
-//! The input links remain intact while entries move towards their front.
-//! Both original partial heads keep their own bounds. Once no reader remains,
-//! the occupied prefix is reversed, making its last partial segment the head.
-//! The fixed cleanup frame owns every cursor and pending return across unwind.
+//! An entry whose entity completed its death in place is retired — its slot
+//! goes back through `ll_free` — and an entry the close marked goes to the
+//! deferred lane when a spare block can be had for it; every other entry is
+//! kept in order, packed from the front, and the blocks' `tail` indices and
+//! the tail block are lowered by the ring's own quiet pass
+//! (`crate::ring::Quiescent::rewrite`). Nothing is merged back, because
+//! nothing was taken out (`rfc/dev/DECISIONS.md`, "the candidate queue is
+//! read behind its writer, and the collector's verdicts come back by a
+//! second ring", "The in-line collection over R").
+//!
+//! **An unwind inside the pass leaves every lane whole.** The ring's pass
+//! and the chain's finish themselves on the unwind, keeping every entry not
+//! yet answered for; the overflow pass is a frame of its own with the same
+//! drop. An entry whose free raised is the one exception: its slot is
+//! half-returned and cannot be retried, so its entry is dropped as
+//! `ll_free`'s (`dev/DECISIONS.md`, "corrupt queue entries remain outside
+//! the cleanup recovery contract").
 
 use super::*;
 
@@ -14,402 +28,224 @@ use super::*;
 /// its slot belongs to the retirement whatever the mark says.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Destination {
-    /// The in-place output, which is the active lane and cannot refuse.
-    Active,
-    /// The deferred lane, if a segment can be had for it.
+    /// The lane the entry stands in, which cannot refuse.
+    Keep,
+    /// The deferred lane, if a block can be had for it.
     Deferred,
     /// `ll_free`, which returns the slot the record was withholding.
     Free,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Phase {
-    Records,
-    Overflow,
-    Reverse,
-    Publish,
-    ReturnSegments,
-    Done,
-}
-
-struct Compaction {
-    state: *mut OwnerCycleState,
-    partial_heads: [*mut BlockHeader; 2],
-    bounds: [usize; 2],
-    read: *mut BlockHeader,
-    read_index: usize,
-    write: *mut BlockHeader,
-    write_fill: usize,
-    head: *mut BlockHeader,
-    kept_segments: usize,
-    charged_segments: usize,
-    overflow_read: usize,
-    overflow_write: usize,
-    overflow_bound: usize,
-    pending: *mut RcHeader,
-    /// Where [`Compaction::pending`] goes, or [`Destination::Active`] when the
-    /// frame holds none.
-    pending_to: Destination,
-    /// The commit count a lane going from empty to occupied records, or `None`
-    /// where this pass defers nothing.
-    deferred_at: Option<u64>,
-    /// Deferred heads this pass made interior, which the ledger charges once
-    /// at [`Phase::Publish`] rather than at each append.
-    deferred_heads: usize,
-    reversed_head: *mut BlockHeader,
-    surplus: *mut BlockHeader,
-    retire: bool,
-    phase: Phase,
-}
-
-/// Combine the active lane and `batch` into one chain, retiring what died and
-/// sending what the close marked to the deferred lane.
+/// Compact this thread's queue in place: retire every completed death, move
+/// every marked entry the deferred lane can take, keep the rest in order.
 ///
 /// `deferred_at` is the commit count a deferred lane going from empty to
 /// occupied records, and `None` where this pass has no marks to read — every
-/// caller but the close's own ([`crate::cycle::queue::dispose_candidates`]).
-/// A pass given `None` over a marked batch would put a marked root in the
-/// active lane, which is the fallback rather than a defect, and the mark comes
-/// off either way.
-pub(super) fn finish(mut batch: InFlightBatch, retire: bool, deferred_at: Option<u64>) {
+/// caller but the close's own ([`crate::cycle::queue::dispose_candidates`]
+/// and [`crate::cycle::queue::defer_candidates`]). A pass given `None` over a
+/// marked entry keeps it in the ring with its mark taken off, which is the
+/// fallback rather than a defect.
+///
+/// `sweep_deferred` asks for the deferred lane's own entries to be read for
+/// completed deaths too, ahead of the ring's marked entries joining it.
+pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool) {
     let state = owner_state();
     if state.is_null() {
-        assert!(
-            batch.is_empty(),
-            "the queue base block left with a batch out"
-        );
         return;
     }
     let owner_state = unsafe { owner_state_ref(state) };
-    let active = owner_state.write_segment.get();
-    if !retire && active.is_null() {
-        owner_state.write_segment.set(batch.head);
-        owner_state.write_len.set(stored_len(batch.fill));
-        batch.head = std::ptr::null_mut();
-        return;
-    }
-    let mut pass = Compaction {
-        state,
-        partial_heads: [active, batch.head],
-        bounds: [usize::from(owner_state.write_len.get()), batch.fill],
-        read: active,
-        read_index: 0,
-        write: active,
-        write_fill: 0,
-        head: active,
-        kept_segments: 0,
-        charged_segments: 0,
-        overflow_read: 0,
-        overflow_write: 0,
-        overflow_bound: usize::from(owner_state.overflow_len.get()),
-        pending: std::ptr::null_mut(),
-        pending_to: Destination::Active,
-        deferred_at,
-        deferred_heads: 0,
-        reversed_head: std::ptr::null_mut(),
-        surplus: std::ptr::null_mut(),
-        retire,
-        phase: Phase::Records,
-    };
-
-    // No fallible operation separates acquisition from joining the chains.
-    // The frame owns both original bounds before either head becomes interior.
-    for head in pass.partial_heads {
-        let mut segment = head;
-        while !segment.is_null() {
-            if segment != head {
-                pass.charged_segments += 1;
-            }
-            segment = unsafe { (*segment).next };
-        }
-    }
-    if active.is_null() {
-        pass.head = batch.head;
-    } else {
-        let mut tail = active;
-        while !unsafe { (*tail).next }.is_null() {
-            tail = unsafe { (*tail).next };
-        }
-        unsafe { (*tail).next = batch.head };
-    }
-    pass.read = pass.head;
-    pass.write = pass.head;
-    batch.head = std::ptr::null_mut();
-    owner_state.write_segment.set(std::ptr::null_mut());
-    owner_state.write_len.set(0);
-    // The temporary queue is private until publication, and the overflow
-    // bounds are owned here too.
-    owner_state.overflow_len.set(0);
     note_queue_work(1, 0, 0);
-    gc_metadata::mark_peak((pass.bounds[0] + pass.bounds[1]) * size_of::<*mut RcHeader>());
     checkpoint(0);
-    pass.run(true);
-}
 
-impl Compaction {
-    fn bound(&self) -> usize {
-        for index in 0..2 {
-            if self.read == self.partial_heads[index] {
-                return self.bounds[index];
-            }
-        }
-        SEGMENT_CAPACITY
+    if sweep_deferred {
+        owner_state.deferred().retain(
+            |entry| {
+                note_queue_work(0, 1, 0);
+                let entity = entry_entity(entry);
+                if !completed_death(entity) {
+                    return true;
+                }
+
+                free(entity);
+                false
+            },
+            |block| {
+                discharge_block();
+                return_surplus_block(owner_state, block);
+            },
+        );
     }
 
-    fn run(&mut self, inject: bool) {
-        while self.phase != Phase::Done {
-            if !self.pending.is_null() {
-                if self.pending_to == Destination::Deferred && !self.append_to_deferred_lane() {
-                    // Both spare cells were empty. The record takes the one
-                    // destination that cannot refuse, and its root is offered
-                    // to the next collection rather than to the turnover.
-                    self.pending_to = Destination::Active;
-                }
+    let mut lane_was_empty = owner_state.deferred().is_empty();
+    if let Some(ring) = candidate_ring() {
+        let mut pass = ring.packing();
+        while let Some(entry) = pass.read() {
+            note_queue_work(0, 1, 0);
+            let marked = entry & DEFERRED_MARK != 0;
+            let entity = entry_entity(entry);
+            let destination = if completed_death(entity) {
+                Destination::Free
+            } else if marked && deferred_at.is_some() {
+                Destination::Deferred
+            } else {
+                Destination::Keep
+            };
+            // Before the disposition acts: an unwind here keeps the entry
+            // as it stood, mark and all.
+            checkpoint(1);
 
-                if self.pending_to == Destination::Deferred {
-                    self.pending = std::ptr::null_mut();
-                    self.pending_to = Destination::Active;
-                    if inject {
-                        checkpoint(9);
-                    }
-                    continue;
+            match destination {
+                Destination::Free => {
+                    pass.discard();
+                    free(entity);
                 }
+                Destination::Deferred => {
+                    // Out of the ring before it is in the lane, so that no
+                    // unwind between the two finds it in both. The block
+                    // comes from a spare cell and never from the reserve: a
+                    // block the deferred lane keeps is one the reserve does
+                    // not get back, and a draw inside this pass would be a
+                    // request under the pressure that can have started it
+                    // (`rfc/model/gc/cycle/questions.md`, Y12 clause 8).
+                    pass.discard();
+                    let pushed = owner_state.deferred().push(entity_entry(entity), || {
+                        let block = take_spare(owner_state);
+                        if !block.is_null() {
+                            charge_block();
+                        }
+                        block
+                    });
+                    note_queue_work(0, 0, 1);
+                    if pushed.is_err() {
+                        // Both cells empty: the root stays in the ring and
+                        // is offered to the next collection rather than to
+                        // the turnover.
+                        pass.write(entity_entry(entity));
+                        continue;
+                    }
 
-                if self.pending_to == Destination::Free {
-                    // No checkpoint lies inside ll_free. The pointer remains
-                    // owned here through the pre-return checkpoints, including
-                    // the interval after its two slot bits have been cleared.
-                    unsafe {
-                        crate::refcount::update_header_flags(self.pending, |flags| {
-                            flags
-                                & !(crate::refcount::CANDIDATE_BIT | crate::refcount::DEAD_IN_PLACE)
-                        });
+                    if lane_was_empty {
+                        // The oldest deferred record is what the re-offer's
+                        // mirror is about, so the count is taken where the
+                        // lane starts.
+                        if let Some(at_commits) = deferred_at {
+                            owner_state.turnover_mirror.set(at_commits);
+                        }
+                        lane_was_empty = false;
                     }
-                    if inject {
-                        checkpoint(2);
-                    }
-                    // Ownership crosses to ll_free at this call. A panic
-                    // inside the allocator cannot be retried: it may already
-                    // have returned the slot or unmapped the whole run.
-                    let entity = self.pending;
-                    self.pending = std::ptr::null_mut();
-                    unsafe { crate::memory::stdapi::ll_free(entity.cast()) };
-                } else if self.phase == Phase::Records {
-                    if self.write_fill == SEGMENT_CAPACITY {
-                        self.write = unsafe { (*self.write).next };
-                        self.write_fill = 0;
-                    }
-                    if self.write_fill == 0 {
-                        self.kept_segments += 1;
-                    }
-                    unsafe {
-                        segment_entries(self.write)
-                            .add(self.write_fill)
-                            .write(self.pending)
-                    };
-                    note_queue_work(0, 0, 1);
-                    self.write_fill += 1;
-                } else {
-                    unsafe {
-                        overflow_entries(self.state)
-                            .add(self.overflow_write)
-                            .write(self.pending);
-                    }
-                    note_queue_work(0, 0, 1);
-                    self.overflow_write += 1;
-                }
-                self.pending = std::ptr::null_mut();
-                self.pending_to = Destination::Active;
-                if inject {
                     checkpoint(3);
                 }
+                Destination::Keep => {
+                    note_queue_work(0, 0, 1);
+                    pass.write(entity_entry(entity));
+                }
+            }
+        }
+    }
+
+    checkpoint(4);
+    OverflowPass::open(state).run();
+    checkpoint(6);
+}
+
+/// Whether `entity`'s death completed in place, which is the one state a
+/// retirement acts on: a zero count whose teardown has not ended is left
+/// registered (`crate::refcount::SlotStateReading`).
+fn completed_death(entity: *mut RcHeader) -> bool {
+    matches!(
+        unsafe { crate::refcount::slot_state_with_flags(entity) },
+        crate::refcount::SlotStateReading::DeadInPlace { .. }
+    )
+}
+
+/// Return the slot a retired entry was withholding.
+///
+/// The two slot bits come off first, and the pointer stays this frame's
+/// through the checkpoint between the two: an unwind there frees on the
+/// way out, since the entry is already dropped from its lane. Ownership
+/// crosses to `ll_free` at the call, and a panic inside the allocator cannot
+/// be retried — it may already have returned the slot or unmapped the whole
+/// run.
+fn free(entity: *mut RcHeader) {
+    struct PendingFree(*mut RcHeader);
+    impl Drop for PendingFree {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { crate::memory::stdapi::ll_free(self.0.cast()) };
+            }
+        }
+    }
+
+    unsafe {
+        crate::refcount::update_header_flags(entity, |flags| {
+            flags & !(crate::refcount::CANDIDATE_BIT | crate::refcount::DEAD_IN_PLACE)
+        });
+    }
+    let mut pending = PendingFree(entity);
+    checkpoint(2);
+    let entity = std::mem::replace(&mut pending.0, std::ptr::null_mut());
+    unsafe { crate::memory::stdapi::ll_free(entity.cast()) };
+}
+
+/// The overflow buffer's pass: retire completed deaths and pack the rest
+/// from the buffer's start. The drop finishes it, so an unwind out of a free
+/// leaves the buffer packed and its count right.
+struct OverflowPass {
+    state: *mut OwnerCycleState,
+    read: usize,
+    write: usize,
+    bound: usize,
+}
+
+impl OverflowPass {
+    fn open(state: *mut OwnerCycleState) -> Self {
+        let owner_state = unsafe { owner_state_ref(state) };
+        Self {
+            state,
+            read: 0,
+            write: 0,
+            bound: usize::from(owner_state.overflow_len.get()),
+        }
+    }
+
+    fn run(&mut self) {
+        while self.read < self.bound {
+            let entity = unsafe { overflow_entries(self.state).add(self.read).read() };
+            self.read += 1;
+            note_queue_work(0, 1, 0);
+            if completed_death(entity) {
+                free(entity);
                 continue;
             }
 
-            match self.phase {
-                Phase::Records if !self.read.is_null() => {
-                    if self.read_index == self.bound() {
-                        self.read = unsafe { (*self.read).next };
-                        self.read_index = 0;
-                        continue;
-                    }
-                    let entry = unsafe { segment_entries(self.read).add(self.read_index).read() };
-                    self.read_index += 1;
-                    note_queue_work(0, 1, 0);
-                    self.stage_entry(entry);
-                    if inject {
-                        checkpoint(1);
-                    }
-                }
-                Phase::Records => self.phase = Phase::Overflow,
-                Phase::Overflow if self.overflow_read < self.overflow_bound => {
-                    let entry =
-                        unsafe { overflow_entries(self.state).add(self.overflow_read).read() };
-                    self.overflow_read += 1;
-                    note_queue_work(0, 1, 0);
-                    self.stage_entry(entry);
-                    if inject {
-                        checkpoint(1);
-                    }
-                }
-                Phase::Overflow => {
-                    if self.kept_segments == 0 {
-                        self.surplus = self.head;
-                        self.head = std::ptr::null_mut();
-                    } else {
-                        self.surplus = unsafe { (*self.write).next };
-                        unsafe { (*self.write).next = std::ptr::null_mut() };
-                    }
-                    self.phase = Phase::Reverse;
-                    if inject {
-                        checkpoint(4);
-                    }
-                }
-                Phase::Reverse if !self.head.is_null() => {
-                    let segment = self.head;
-                    self.head = unsafe { (*segment).next };
-                    unsafe { (*segment).next = self.reversed_head };
-                    self.reversed_head = segment;
-                    if inject {
-                        checkpoint(5);
-                    }
-                }
-                Phase::Reverse => self.phase = Phase::Publish,
-                Phase::Publish => {
-                    // Nothing below may be repeated by this frame's drop. The
-                    // queue is visible before the ledger updates, so a corrupt
-                    // ledger reports once without losing the chain on unwind.
-                    self.phase = Phase::ReturnSegments;
-                    let owner_state = unsafe { owner_state_ref(self.state) };
-                    owner_state.write_segment.set(self.reversed_head);
-                    owner_state.write_len.set(stored_len(self.write_fill));
-                    owner_state
-                        .overflow_len
-                        .set(stored_len(self.overflow_write));
-                    self.reversed_head = std::ptr::null_mut();
-
-                    // Each original interior was charged once; neither input
-                    // head was charged. The output charges every kept segment
-                    // except its final head, including exact-capacity output.
-                    let charged_after = self.kept_segments.saturating_sub(1) + self.deferred_heads;
-                    if charged_after < self.charged_segments {
-                        gc_metadata::discharge(
-                            (self.charged_segments - charged_after) * BLOCK_PAYLOAD,
-                        );
-                    } else {
-                        gc_metadata::charge(
-                            (charged_after - self.charged_segments) * BLOCK_PAYLOAD,
-                        );
-                    }
-                    if inject {
-                        checkpoint(8);
-                    }
-                    gc_metadata::discharge(
-                        (self.overflow_bound - self.overflow_write) * size_of::<*mut RcHeader>(),
-                    );
-                    if inject {
-                        checkpoint(6);
-                    }
-                }
-                Phase::ReturnSegments if !self.surplus.is_null() => {
-                    let segment = self.surplus;
-                    self.surplus = unsafe { (*segment).next };
-                    unsafe { (*segment).next = std::ptr::null_mut() };
-                    let owner_state = unsafe { owner_state_ref(self.state) };
-                    let count = owner_state.spare_count.get();
-                    if usize::from(count) < SPARE_SEGMENTS {
-                        owner_state.spares[usize::from(count)].set(segment);
-                        owner_state.spare_count.set(count + 1);
-                    } else {
-                        gc_metadata::release_to_critical(segment);
-                    }
-                    if inject {
-                        checkpoint(7);
-                    }
-                }
-                Phase::ReturnSegments => self.phase = Phase::Done,
-                Phase::Done => {}
-            }
+            self.keep(entity);
+            checkpoint(5);
         }
     }
 
-    /// Take one entry off the input and decide where it goes.
-    ///
-    /// **The marks come off here and the one that decides travels in the
-    /// frame**, so nothing below this line reads a tagged pointer: the header
-    /// the slot state is read through, the entry written into either lane,
-    /// and the pointer handed to `ll_free` are all the entity's own address
-    /// (`crate::cycle::queue::DEFERRED_MARK`; a collector thread's
-    /// `PROPOSED_MARK` was read by the trace and decides nothing here).
-    fn stage_entry(&mut self, entry: *mut RcHeader) {
-        let marked = entry.addr() & DEFERRED_MARK != 0;
-        let entity = entry.map_addr(|address| address & !ENTRY_MARK_BITS);
-        self.pending = entity;
-        self.pending_to = if self.retire
-            && matches!(
-                unsafe { crate::refcount::slot_state_with_flags(entity) },
-                crate::refcount::SlotStateReading::DeadInPlace { .. }
-            ) {
-            Destination::Free
-        } else if marked {
-            Destination::Deferred
-        } else {
-            Destination::Active
-        };
-    }
-
-    /// Append the pending entry to the deferred lane, or answer **false**
-    /// where no segment can be had for it and the active lane takes it
-    /// instead.
-    ///
-    /// The head grows by one spare and the old head becomes interior, which
-    /// keeps the invariant every reader of a lane rests on: the head carries
-    /// the fill and every segment behind it is full. The reserve is not drawn
-    /// here — a segment the deferred lane keeps is one the reserve does not
-    /// get back, and a draw inside this frame's re-run would be the second
-    /// panic the cleanup contract excludes (`rfc/model/gc/cycle/questions.md`,
-    /// Y12 clause 8).
-    fn append_to_deferred_lane(&mut self) -> bool {
-        let owner_state = unsafe { owner_state_ref(self.state) };
-        let mut head = owner_state.deferred_segment.get();
-        let mut fill = usize::from(owner_state.deferred_len.get());
-        if head.is_null() || fill == SEGMENT_CAPACITY {
-            let fresh = take_spare(owner_state);
-            if fresh.is_null() {
-                return false;
-            }
-
-            if head.is_null() {
-                // The oldest deferred record is what the re-offer's mirror is
-                // about, so the count is taken where the lane starts.
-                if let Some(at_commits) = self.deferred_at {
-                    owner_state.turnover_mirror.set(at_commits);
-                }
-            } else {
-                self.deferred_heads += 1;
-            }
-
-            unsafe { (*fresh).next = head };
-            head = fresh;
-            fill = 0;
-            owner_state.deferred_segment.set(head);
-        }
-
-        unsafe { segment_entries(head).add(fill).write(self.pending) };
+    fn keep(&mut self, entity: *mut RcHeader) {
+        unsafe { overflow_entries(self.state).add(self.write).write(entity) };
         note_queue_work(0, 0, 1);
-        owner_state.deferred_len.set(stored_len(fill + 1));
-        true
+        self.write += 1;
     }
 }
 
-impl Drop for Compaction {
+impl Drop for OverflowPass {
     fn drop(&mut self) {
-        // A valid queue makes this continuation non-panicking: the ledger
-        // phase has advanced already, and ownership crosses to `ll_free`
-        // before that call. What a corrupt one costs, and why the second panic
-        // is not caught, is `dev/DECISIONS.md`, "corrupt queue entries remain
-        // outside the cleanup recovery contract".
-        self.run(false);
+        // The unwind's case, and a no-op on the return: what was not read is
+        // kept.
+        while self.read < self.bound {
+            let entity = unsafe { overflow_entries(self.state).add(self.read).read() };
+            self.read += 1;
+            self.keep(entity);
+        }
+
+        let owner_state = unsafe { owner_state_ref(self.state) };
+        owner_state.overflow_len.set(stored_len(self.write));
+        // The entries that left took their pointers with them; the ledger
+        // follows in one step rather than per free, the bytes being
+        // released in the same breath.
+        gc_metadata::discharge((self.bound - self.write) * size_of::<*mut RcHeader>());
     }
 }
 
@@ -418,6 +254,12 @@ thread_local! {
     static FAIL_AT: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
+/// A point the pass passes through, where a case may raise an unwind
+/// ([`inject`]): 0 before anything moves, 1 after an entry of the ring is
+/// read and before its disposition acts, 2 between a retired entry's flag
+/// clear and its free, 3 after an entry joined the deferred lane, 4 between
+/// the ring's pass and the overflow buffer's, 5 after an overflow entry is
+/// kept, 6 after everything.
 #[inline]
 fn checkpoint(_point: usize) {
     #[cfg(test)]
@@ -433,6 +275,11 @@ fn checkpoint(_point: usize) {
     }
 }
 
+/// The last checkpoint a case can name.
+#[cfg(test)]
+pub(super) const LAST_CHECKPOINT: usize = 6;
+
+/// Arm one unwind at `point` for this thread's next pass.
 #[cfg(test)]
 pub(super) fn inject(point: usize) -> Injection {
     FAIL_AT.with(|slot| slot.set(Some(point)));

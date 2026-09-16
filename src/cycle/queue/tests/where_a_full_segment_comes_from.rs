@@ -1,20 +1,20 @@
-//! Growth: where the segment comes from when the live one is full, and
+//! Growth: where the block comes from when the tail block is full, and
 //! what the registering thread pays for it.
 //!
 //! Y12 clause 3 gives the path three properties and this module holds it
 //! to each: the write never allocates, never locks and never copies; the
-//! spare comes from a cell somebody else filled; and a growth the cells
-//! cannot serve draws the critical reserve rather than dropping the
-//! root.
+//! block comes from a cell somebody else filled, or from the circle itself
+//! once a block has been consumed; and a growth the cells cannot serve
+//! draws the critical reserve rather than dropping the root.
 
 use super::*;
 
 use crate::test_support::allocation_probe;
 
-/// The growth itself: the full segment stays in the chain and every
+/// The growth itself: the full block stays in the circle and every
 /// entry before it is still counted.
 #[test]
-fn an_overflow_links_a_second_segment_and_keeps_the_first() {
+fn a_full_tail_block_links_a_second_block_and_keeps_the_first() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the cells start full");
@@ -24,21 +24,21 @@ fn an_overflow_links_a_second_segment_and_keeps_the_first() {
     assert!(unsafe { !release(first_entity) });
     assert_eq!(segment_count(), 1);
 
-    fill_write_segment(first_entity);
+    fill_tail_block(first_entity);
     let mut second = candidate(2);
     let second_entity = &raw mut second;
     assert!(unsafe { !release(second_entity) });
 
-    assert_eq!(segment_count(), 2, "the full segment is still in the chain");
+    assert_eq!(segment_count(), 2, "the full block is still in the circle");
     assert_eq!(
         candidate_count(),
-        SEGMENT_CAPACITY + 1,
-        "the full segment's entry count is kept, not dropped"
+        BLOCK_ENTRIES + 1,
+        "the full block's entry count is kept, not dropped"
     );
     assert_eq!(
-        write_segment_entry(0),
+        entry_at(BLOCK_ENTRIES),
         second_entity,
-        "the fresh segment starts with the entry the growth carried"
+        "the fresh block starts with the entry the growth carried"
     );
 
     reset();
@@ -54,9 +54,9 @@ fn neither_the_write_nor_the_overflow_allocates_or_asks_the_pool() {
     reset();
     assert!(refill_spares(), "the cells are stocked ahead of the path");
 
-    // The thread's first release is itself a growth, the write segment
-    // being a cell: it is bracketed for what it is, and the ordinary
-    // write is bracketed after it, against a segment that now exists.
+    // The thread's first release is itself a growth, the ring holding no
+    // block before it: it is bracketed for what it is, and the ordinary
+    // write is bracketed after it, against a block that now exists.
     let mut opening = candidate(2);
     let opening_entity = &raw mut opening;
     let _ = allocation_probe::take_allocations();
@@ -73,21 +73,21 @@ fn neither_the_write_nor_the_overflow_allocates_or_asks_the_pool() {
     assert_eq!(
         allocation_probe::take_allocations(),
         (0, 0),
-        "and a registration with room is a store into the write segment"
+        "and a registration with room is a store into the tail block"
     );
-    assert_eq!(segment_count(), 1, "no segment was added for it");
+    assert_eq!(segment_count(), 1, "no block was added for it");
 
-    fill_write_segment(opening_entity);
+    fill_tail_block(opening_entity);
     let mut on_a_full_segment = candidate(2);
     let _ = allocation_probe::take_allocations();
     assert!(unsafe { !release(&raw mut on_a_full_segment) });
     assert_eq!(
         allocation_probe::take_allocations(),
         (0, 0),
-        "and neither does the growth that follows a full segment"
+        "and neither does the growth that follows a full block"
     );
-    // Two cells, not one: the write segment is a cell too, so the opening
-    // release above was itself a growth.
+    // Two cells, not one: the ring's first block is a cell too, so the
+    // opening release above was itself a growth.
     assert_eq!(spare_count(), SPARE_SEGMENTS - 2);
 
     reset();
@@ -126,8 +126,14 @@ fn a_growth_with_no_spare_draws_the_reserve_and_arms_the_poll() {
     assert!(!crate::gc::is_armed(), "the poll disarmed it");
     assert_eq!(
         spare_count(),
-        SPARE_SEGMENTS,
-        "and refilled the cells behind it"
+        SPARE_SEGMENTS - 1,
+        "and refilled the cells behind it, one of which the close spent on \
+         the deferred lane"
+    );
+    assert_eq!(
+        deferred_count(),
+        1,
+        "the root was read reachable and deferred"
     );
 
     unsafe { dismantle_candidate(first) };
@@ -232,7 +238,7 @@ fn a_drain_with_no_room_leaves_the_overflow_buffer_alone() {
     assert_eq!(
         overflow_len(),
         1,
-        "and it stays: no cell and no write segment to move it into"
+        "and it stays: no cell and no tail block to move it into"
     );
 
     reset();
@@ -286,6 +292,54 @@ fn a_bulk_release_polls_on_its_own_backedge() {
     for &entity in &entities {
         unsafe { dismantle_candidate(entity) };
     }
+
+    reset();
+}
+
+/// A consumed block is the writer's again around the circle: once a
+/// compaction has emptied the block after the tail block, the next growth
+/// moves into it and takes no spare and no reserve block.
+#[test]
+fn a_consumed_block_is_written_again_without_a_spare() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares(), "the cells start full");
+
+    let mut first = candidate(2);
+    let first_entity = &raw mut first;
+    assert!(unsafe { !release(first_entity) });
+    fill_tail_block(first_entity);
+    let mut second = candidate(2);
+    assert!(unsafe { !release(&raw mut second) });
+    assert_eq!(segment_count(), 2, "two blocks in the circle");
+    assert_eq!(spare_count(), SPARE_SEGMENTS - 2);
+
+    // A deferral of everything empties both blocks and leaves them in the
+    // circle, the tail block back at the front.
+    assert!(refill_spares(), "the lane's blocks come from the cells");
+    defer_candidates(read_batch(), 0);
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(deferred_count(), BLOCK_ENTRIES + 1);
+    assert_eq!(segment_count(), 2, "an emptied block stays in the circle");
+
+    // Fill the tail block again: the growth that follows finds the second
+    // block consumed and moves into it, asking no cell for a block.
+    assert!(refill_spares());
+    let mut third = candidate(2);
+    let third_entity = &raw mut third;
+    assert!(unsafe { !release(third_entity) });
+    fill_tail_block(third_entity);
+    let mut fourth = candidate(2);
+    let fourth_entity = &raw mut fourth;
+    assert!(unsafe { !release(fourth_entity) });
+    assert_eq!(
+        segment_count(),
+        2,
+        "no block was added: the circle had one to spare"
+    );
+    assert_eq!(spare_count(), SPARE_SEGMENTS, "and no cell was asked");
+    assert_eq!(candidate_count(), BLOCK_ENTRIES + 1);
+    assert_eq!(entry_at(BLOCK_ENTRIES), fourth_entity);
 
     reset();
 }

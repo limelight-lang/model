@@ -66,7 +66,7 @@ fn a_drain_returns_every_segment_and_every_spare() {
     let mut first = candidate(2);
     let first_entity = &raw mut first;
     assert!(unsafe { !release(first_entity) });
-    fill_write_segment(first_entity);
+    fill_tail_block(first_entity);
     let mut second = candidate(2);
     assert!(unsafe { !release(&raw mut second) });
 
