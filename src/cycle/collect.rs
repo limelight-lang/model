@@ -721,7 +721,10 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             // read as dead and took out of R returns through no other.
             if closed == GateClosed::Teardown {
                 let _token = HeldToken::take();
-                unsafe { crate::cycle::queue::retire_candidates() };
+                unsafe {
+                    crate::cycle::queue::retire_candidates();
+                    make_withheld_returns_before_the_retry();
+                }
             }
 
             // Armed on every refusal, because a refusal at depth says nothing
@@ -845,7 +848,22 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
         break;
     }
 
+    // Under a token of this thread's own, so that a collector's transient
+    // claim cannot stop the loop: the returns a foreign holder left this
+    // thread withholding are what the retry after this call allocates from.
+    let _token = HeldToken::take();
+    unsafe { make_withheld_returns_before_the_retry() };
     freed
+}
+
+/// The returns a foreign holder left this thread withholding, made ahead of
+/// the pressure path's allocation retry
+/// (`crate::cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace`).
+///
+/// # Safety
+/// The calling thread holds its own token and has no window open.
+unsafe fn make_withheld_returns_before_the_retry() {
+    unsafe { crate::cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace() };
 }
 
 /// One trace of the pressure path: open the window, take the batch, trace the

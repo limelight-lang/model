@@ -182,9 +182,7 @@ pub(crate) struct OutsideCells {
     /// another thread"). That the storage it strides is not freed under
     /// it is the trace window's contract, not the walk's
     /// (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the
-    /// token"). Read by [`AtomicCells`] alone, and with it by nothing
-    /// outside the tests until S49.5.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// token"). Read by [`AtomicCells`] alone.
     pub walk_concurrent: unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)),
     /// Empty the outside cells and collect their former occupants,
     /// without dropping them. Not [`empty_cell`], which writes a whole
@@ -387,13 +385,10 @@ pub(crate) struct PlainCells;
 /// which may yield nothing for a storage the mutator is moving
 /// ([`OutsideCells::walk_concurrent`]).
 ///
-/// Its production caller will be `cycle::worker::serve`, the collector
-/// thread's trace of the batch it takes from the owner's ring
-/// (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"), which `PLAN.md`
-/// S49.5 builds; until then only the tests read through it, and the trace on
-/// another thread with the owner running beside it is
-/// `cells::tests::what_a_collector_thread_reads`'.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Its production caller is `cycle::worker::serve`, the collector thread's
+/// trace of the batch it takes from the owner's ring
+/// (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"); the pairing a
+/// race would show on is `cells::tests::what_a_collector_thread_reads`.
 pub(crate) struct AtomicCells;
 
 impl CellReader for AtomicCells {

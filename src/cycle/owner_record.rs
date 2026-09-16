@@ -139,8 +139,8 @@ struct ReaderLine {
     p_tail_block: AtomicPtr<BlockHeader>,
     /// Roots the collector takes from this owner per batch, halved on a
     /// batch that met its budget and doubled back on a completed one
-    /// (`PLAN.md` S49.5); zero until then.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// (`crate::cycle::worker`); zero before the first batch, which reads
+    /// it as the starting size.
     batch: AtomicUsize,
 }
 
@@ -296,6 +296,26 @@ impl OwnerRecord {
             front_block: &self.writer.p_front_block,
             tail_block: &self.reader.p_tail_block,
         }
+    }
+
+    /// The collector's batch size for this owner, its own word: zero before
+    /// the first batch.
+    #[inline]
+    pub(crate) fn batch_size(&self) -> usize {
+        self.reader.batch.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub(crate) fn set_batch_size(&self, roots: usize) {
+        self.reader.batch.store(roots, Ordering::Relaxed);
+    }
+
+    /// Whether the owner is collecting in line, as a collector reads it after
+    /// its claim of the token: acquire, so that a clear reading carries the
+    /// close's stores.
+    #[inline]
+    pub(crate) fn is_collecting_as_collector(&self) -> bool {
+        self.writer.collecting.load(Ordering::Acquire)
     }
 
     /// Whether the owner is collecting in line, as the owner reads it:

@@ -8,6 +8,40 @@ never edited or deleted.
 
 ---
 
+## 2026-09-16 — the collector's batch is bounded by three unmeasured figures, and a live root it cannot place reads live
+
+**Context.** `PLAN.md` S49.5 built the collector's batch in `cycle::worker`
+on the ruling's form (`rfc/dev/DECISIONS.md`, "the candidate queue is read
+behind its writer, and the collector's verdicts come back by a second
+ring", "The collector's batch"). The ruling names a starting batch size K,
+a block budget B and a bound on K without sizing them.
+
+**Decision.** K starts at 64 roots, is bounded at 1,024 — under a block's
+capacity, and a copy of at most a quarter of the workspace's bump, so the
+trace's rows do not begin by growing — and halves only on a batch that met
+its budget, a pool refusal saying nothing about the batch's size; B is
+eight blocks above the collector's workspace, and the arena refuses the
+ninth growth as it refuses a pool refusal. None of the three is measured;
+each is a bound the rfc asks for, and a measurement against a corpus is
+S37.5's kind of work. A live root the trace could not place — an entity of
+a retained block that placed no survivor list — reads live, as the trace
+reads an edge it cannot place; posted unwalked it would be written back
+into R by every close and re-posted by every round, an in-line collection
+per poll for the life of the process. The collector reads whether an
+owner has work, and opens its own workspace, before it claims: an owner
+with nothing to take pays no window under which its deaths are withheld.
+The collector's arena draws its own thread's critical reserve on a pool
+refusal, as any arena does; whether a collector thread may spend a reserve
+at all is a question no ruling answers.
+
+**Rejected.** Posting the colors an incomplete trace did reach: sound only
+for a scan-phase refusal, which no case stages, and the crate's rule for a
+trace that gave up is that no color is a verdict. Halving K on any
+incomplete batch: under pressure every round's growth is refused and K
+would fall to one in six rounds for a reason unrelated to the batch.
+
+---
+
 ## 2026-09-16 — the owner writes the slots of P it has read, and a batch is both rings
 
 **Context.** `PLAN.md` S49.4 built the verdict ring P (`rfc/dev/DECISIONS.md`,

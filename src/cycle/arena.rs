@@ -309,6 +309,15 @@ pub(crate) struct TraceScratchArena {
     /// arena does not record *which*: a block is a block, and the count
     /// is what restores the reserve's size.
     from_reserve: usize,
+    /// Blocks the bump has drawn above the workspace, and the most it may
+    /// draw: a growth that would pass the budget is refused as a refused
+    /// allocation is, which is how the collector's batch is bounded by
+    /// blocks rather than by roots ([`TraceScratchArena::budget_blocks`]).
+    drawn: usize,
+    block_budget: usize,
+    /// Whether a growth was refused by the budget rather than by the pool:
+    /// what tells a batch that met its budget from one the pool refused.
+    budget_met: bool,
     /// The bump cursor into the newest block, and the bytes left in it.
     cursor: *mut u8,
     left: usize,
@@ -388,6 +397,9 @@ impl TraceScratchArena {
             base: LentWorkspace { block: base },
             blocks: std::ptr::null_mut(),
             from_reserve: 0,
+            drawn: 0,
+            block_budget: usize::MAX,
+            budget_met: false,
             cursor: unsafe { payload.add(WORKSPACE_PREFIX_BYTES) },
             left: WORKSPACE_BUMP_BYTES,
             open_capacity: WORKSPACE_BUMP_BYTES,
@@ -760,6 +772,8 @@ impl TraceScratchArena {
         }
 
         self.from_reserve = 0;
+        self.drawn = 0;
+        self.budget_met = false;
     }
 
     /// Null the shadow-row pointer of every block this collection
@@ -1067,6 +1081,11 @@ impl TraceScratchArena {
     /// searched its older blocks for a fit would be a free list, and the
     /// arena's whole life is one collection.
     fn grow(&mut self) -> bool {
+        if self.drawn == self.block_budget {
+            self.budget_met = true;
+            return false;
+        }
+
         let mut block = gc_metadata::acquire();
         let mut funding = Funding::Pool;
         if block.is_null() {
@@ -1091,10 +1110,27 @@ impl TraceScratchArena {
 
         unsafe { (&raw mut (*block).next).write(self.blocks) };
         self.blocks = block;
+        self.drawn += 1;
         self.cursor = BlockHeader::payload_start(block);
         self.left = BLOCK_PAYLOAD;
         self.open_capacity = BLOCK_PAYLOAD;
         true
+    }
+
+    /// Bound the blocks this arena may draw above the workspace at `blocks`:
+    /// the growth that would pass it answers as a refused allocation does,
+    /// so a trace under the budget ends with `AllocationFailed` where an
+    /// unbounded one would have drawn. The collector's batch runs under one,
+    /// so that what an owner waits for is bounded by memory rather than by
+    /// the closure of a root (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner
+    /// handoff", the block budget B). Blocks already drawn count.
+    pub(crate) fn budget_blocks(&mut self, blocks: usize) {
+        self.block_budget = blocks;
+    }
+
+    /// Whether a growth since the last reset was refused by the budget.
+    pub(crate) fn met_its_budget(&self) -> bool {
+        self.budget_met
     }
 
     /// The newest array of the touched list, or null while no block has

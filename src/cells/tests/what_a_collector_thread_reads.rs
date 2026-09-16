@@ -4,7 +4,7 @@
 //! ends, and a store beside the trace read whole.
 //!
 //! The thread here is the stand-in for the collector worker, whose own
-//! batch over the owner's ring is `PLAN.md` S49.5's
+//! batch over the owner's ring is `crate::cycle::worker`'s
 //! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"): it takes the
 //! owner's token, opens a workspace of its own and runs the two phases
 //! through `AtomicCells`. What it may not do is free anything the owner

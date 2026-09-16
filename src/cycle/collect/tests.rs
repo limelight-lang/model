@@ -11,7 +11,7 @@
 use super::*;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::members::MEMBER_CAPACITY;
-use crate::cycle::testing::ring;
+use crate::cycle::testing::{long_ring, ring};
 use crate::gc::{ll_gc_collect_cycles, ll_gc_maybe_collect};
 use crate::memory::arena::Arena;
 use crate::memory::block_pool::{force_oom, test_guard};
@@ -60,39 +60,6 @@ fn node_class(name: &str, destructor: *const ()) -> *const Class {
         .prop("next", true)
         .destructor(destructor)
         .build()
-}
-
-/// A ring of `MEMBERS` objects of `class`, hand-built because the shared
-/// fixture takes its size at compile time and these cases need one the
-/// harvest region cannot hold ([`ring`], and `crate::cycle::testing`).
-///
-/// Every creation reference is spent, so the ring is held by its own edges and
-/// every member comes back registered as a candidate — the state a root of a
-/// real collection is in.
-///
-/// # Safety
-/// As [`ring`]: a quiescent heap under `memory::block_pool::test_guard`, and
-/// `class` carries one Box property at `prop_offset(0)`.
-unsafe fn long_ring(arena: &mut Arena, class: *const Class, members: usize) -> Vec<*mut Object> {
-    let mut context = LLContext { arena: &mut *arena };
-    let ring: Vec<*mut Object> = (0..members)
-        .map(|_| unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) })
-        .collect();
-
-    unsafe {
-        for (index, &member) in ring.iter().enumerate() {
-            store_prop(arena, member, prop_offset(0), ring[(index + 1) % members]);
-        }
-
-        for &member in &ring {
-            assert!(
-                !ll_release(member as *mut RcHeader),
-                "an edge of the ring holds this member"
-            );
-        }
-    }
-
-    ring
 }
 
 /// One live candidate root: the holder is an external reference, so trial

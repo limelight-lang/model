@@ -4,7 +4,7 @@
 //! interval, a round that reaches the records beyond the caller's and claims
 //! nothing of a record on the free list, and a panicking round that hands
 //! the word back for the next birth. What a round does for an owner — the
-//! batch over the ring behind its writer — is S49.5's to pin.
+//! batch over the ring behind its writer — is `the_batch`'s.
 
 use super::*;
 use crate::cycle::testing::Sent;
@@ -58,6 +58,15 @@ fn a_birth_is_one_thread_whose_rounds_claim_and_release_the_record() {
     testing::permit_births(true);
     let _end = RetireOnDrop;
     let _ = testing::take_spawns();
+    // A round claims only an owner with work: one garbage ring in R, which
+    // the batch takes and the case collects at its end.
+    crate::cycle::queue::verdicts::discard_standing_verdicts();
+    crate::cycle::queue::release_queue_segments();
+    let class = crate::class::ClassBuilder::new("BirthRingNode")
+        .prop("next", true)
+        .build();
+    let mut arena = crate::memory::arena::Arena::new();
+    let _ring = unsafe { crate::cycle::testing::ring(&mut arena, [class, class]) };
     let _ = testing::take_owners_served();
 
     ensure_thread();
@@ -82,6 +91,12 @@ fn a_birth_is_one_thread_whose_rounds_claim_and_release_the_record() {
 
     testing::retire();
     assert_eq!(testing::thread_state(), ThreadState::Unborn);
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_collect_cycles() },
+        2,
+        "the ring the batch proposed is collected out of P"
+    );
+    crate::cycle::queue::release_queue_segments();
 }
 
 #[test]
@@ -185,3 +200,5 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
     ));
     assert_eq!(testing::take_spawns(), 2);
 }
+
+mod the_batch;

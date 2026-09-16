@@ -1,12 +1,49 @@
 //! The collector thread, and what it does for one owner: claim the owner's
-//! token by compare-and-swap, and release it. The batch it will make under
-//! that claim — the entries taken from the owner's ring behind its writer,
-//! traced through `cells::AtomicCells`, the verdicts posted to the owner's
-//! verdict ring — is `PLAN.md` S49.5's, built over `crate::ring`
-//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"; `rfc/dev/DECISIONS.md`,
-//! "the candidate queue is read behind its writer, and the collector's
-//! verdicts come back by a second ring"). Until then a round over the records
-//! serves nothing.
+//! token by compare-and-swap, take a batch of the owner's candidates from
+//! behind its writer, trace them on a copy through `cells::AtomicCells`
+//! under a block budget, post one verdict per root into the owner's verdict
+//! ring P in R's order, advance R past them, and release
+//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff";
+//! `rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
+//! and the collector's verdicts come back by a second ring", "The
+//! collector's batch"). What the owner does with the verdicts is
+//! `crate::cycle::queue::verdicts`.
+//!
+//! # The batch
+//!
+//! Before any claim the collector reads whether the owner has work — R's
+//! unread count, off the reader's own words, and P's room — and opens its
+//! own workspace: an owner with nothing to take pays no foreign-holder
+//! window, under which every one of its deaths is withheld. Then it claims
+//! the token and reads the owner's collecting word with acquire: set, the
+//! owner is collecting in line and the collector releases and skips — the
+//! two orders both resolve, a claim made first being waited out by the
+//! owner's take, one made second seeing the word. It peeks up to K entries
+//! from R's front through the reader's pair without consuming them, K
+//! clamped to P's room and to what R holds, and copies them into its
+//! workspace. It marks and scans each root through `cells::AtomicCells` on
+//! an arena bounded to [`TRACE_BLOCK_BUDGET`] blocks; a root at count zero
+//! is marked by nothing. Then it posts one verdict per entry, in R's order:
+//! *proposed* for a row read potentially unreachable, *read live* for one
+//! read live and for a live root the trace could not place — an external
+//! live reference, by the trace's own rule for an edge it cannot place —
+//! *zero-count* for a count read zero, and *unwalked* for every root of a
+//! batch whose trace met the budget or a refused allocation: no color of
+//! such a trace is a verdict, so the whole batch is handed to the owner's
+//! exact trace rather than a prefix of it (`rfc/model/gc/rc-cycle.md`,
+//! "Worker-to-owner handoff", amended 2026-09-16 to the whole batch). R's
+//! front advances past the batch only after every verdict is posted, by
+//! one guard that runs from the unwind as well, so that no entry is
+//! consumed without a verdict and none twice. The arena is reset before the
+//! token goes, since its rows stand over the owner's blocks.
+//!
+//! K starts at [`INITIAL_BATCH`], halves after a batch that met the budget
+//! — the budget alone, a pool refusal saying nothing about the batch's size
+//! — and doubles back after a completed one, up to [`BATCH_BOUND`]: under a
+//! block's capacity, so a batch spans at most two blocks of R, and small
+//! enough that the copy leaves the workspace to the rows. What an owner
+//! waits for when it needs its token is one batch's trace, bounded by the
+//! blocks rather than by the roots.
 //!
 //! # The thread, and the round over the records
 //!
@@ -31,16 +68,52 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::cells::AtomicCells;
+use crate::cycle::arena::TraceScratchArena;
+use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::owner_record::{self, OwnerRecord};
+use crate::cycle::queue::verdicts::{Verdict, VerdictWriter};
+use crate::cycle::row::{EdgeTarget, resolve_edge_target};
+use crate::cycle::scan::{ScanResult, scan};
+use crate::cycle::shadow::{self, Color};
+use crate::refcount::RcHeader;
+use crate::ring::{BLOCK_ENTRIES, Reader};
 
 /// What one round over one owner did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Served {
     /// The owner, or another collector, holds the token.
     TokenHeld,
-    /// The token was claimed and released with nothing served under it.
+    /// The token was claimed and released at once: the owner is collecting
+    /// in line.
+    OwnerCollecting,
+    /// Nothing to take, read before any claim: R read empty, P had no room,
+    /// or the collector's workspace was refused. No claim was made.
     Idle,
+    /// A batch was made: this many roots taken from R, each with a verdict
+    /// posted into P, and whether their trace completed.
+    Batch { roots: usize, complete: bool },
 }
+
+/// Roots a batch takes from an owner the collector has not served before.
+/// Not a measured figure: the rfc names no start, and the size adapts from
+/// here by the batch's outcome.
+const INITIAL_BATCH: usize = 64;
+
+/// The most roots a batch takes: under a block's capacity, so that the peek
+/// spans at most two blocks of R, and a copy of at most a quarter of the
+/// workspace's bump, so that the rows of the trace do not start by growing.
+const BATCH_BOUND: usize = 1024;
+
+const _: () = assert!(BATCH_BOUND < BLOCK_ENTRIES);
+const _: () =
+    assert!(BATCH_BOUND * size_of::<usize>() * 4 <= crate::cycle::arena::WORKSPACE_BUMP_BYTES);
+
+/// Blocks a batch's trace may draw above the collector's workspace before it
+/// ends with its roots unwalked. Not a measured figure: what it bounds is
+/// the owner's wait for its token, and the rfc names the bound and not its
+/// size.
+const TRACE_BLOCK_BUDGET: usize = 8;
 
 /// The pause between two rounds over the records.
 const ROUND_INTERVAL: Duration = Duration::from_millis(10);
@@ -204,8 +277,8 @@ fn round() {
 }
 
 /// Serve `record`'s owner once: claim its token by compare-and-swap, held
-/// being a skip, and release it. Nothing is read or written of the owner's
-/// under the claim until S49.5 builds the batch.
+/// being a skip; skip an owner collecting in line; otherwise make one batch
+/// (module doc) and release.
 ///
 /// Runs on a collector thread, which holds a base block of its own for the
 /// workspace the batch's trace opens (`crate::memory::heap::ll_thread_init`).
@@ -214,8 +287,25 @@ fn round() {
 /// `record` is a record of the registry's, and the calling thread is not its
 /// owner.
 pub(crate) unsafe fn serve(record: *mut OwnerRecord) -> Served {
-    let token = unsafe { &(*record).token };
-    if !token.try_take() {
+    let owner = unsafe { &*record };
+    // Work first, and the collector's own memory, before any claim: the
+    // unread count is the reader's own words, P's room the writer's, and
+    // the workspace this thread's.
+    let unread = unsafe { Reader::new(owner.candidate_ring()) }.unread();
+    let room = unsafe { VerdictWriter::open(owner) }.room();
+    let take = unread.min(room).min(match owner.batch_size() {
+        0 => INITIAL_BATCH,
+        size => size,
+    });
+    if take == 0 {
+        return Served::Idle;
+    }
+
+    let Some(mut arena) = TraceScratchArena::open() else {
+        return Served::Idle;
+    };
+
+    if !owner.token.try_take() {
         return Served::TokenHeld;
     }
 
@@ -228,9 +318,140 @@ pub(crate) unsafe fn serve(record: *mut OwnerRecord) -> Served {
             self.0.release();
         }
     }
-    let _held = ReleaseOnDrop(token);
+    let _held = ReleaseOnDrop(&owner.token);
     crate::cycle::token::note_traced_owner(record);
-    Served::Idle
+    if owner.is_collecting_as_collector() {
+        return Served::OwnerCollecting;
+    }
+
+    unsafe { batch(owner, &mut arena, take) }
+}
+
+/// One batch over `owner`, under its token, of at most `take` entries, on
+/// `arena` — the collector's own memory, reset before the token goes
+/// (module doc).
+///
+/// # Safety
+/// The calling thread holds `owner`'s token and `owner` is not collecting
+/// in line.
+unsafe fn batch(owner: &OwnerRecord, arena: &mut TraceScratchArena, take: usize) -> Served {
+    let verdicts = unsafe { VerdictWriter::open(owner) };
+    #[cfg(not(test))]
+    let budget = TRACE_BLOCK_BUDGET;
+    #[cfg(test)]
+    let budget = testing::budget_for_this_batch().unwrap_or(TRACE_BLOCK_BUDGET);
+    arena.budget_blocks(budget);
+    // Within the workspace by the bound on K, so this draws nothing.
+    let copy = arena.alloc(take * size_of::<usize>()) as *mut usize;
+    debug_assert!(!copy.is_null(), "the copy fits the workspace");
+    if copy.is_null() {
+        return Served::Idle;
+    }
+
+    // The entries copied out of R, which stay in R until the advance.
+    let out = unsafe { std::slice::from_raw_parts_mut(copy, take) };
+    let reader = unsafe { Reader::new(owner.candidate_ring()) };
+    let peeked = reader.peek(out);
+    let roots = &out[..peeked.len()];
+    if roots.is_empty() {
+        return Served::Idle;
+    }
+
+    let complete = unsafe { trace(arena, roots) };
+    for &entry in roots {
+        let root = crate::cycle::queue::entry_root(entry);
+        let verdict = if complete {
+            unsafe { verdict_for(root) }
+        } else {
+            Verdict::Unwalked
+        };
+        verdicts
+            .post(root, verdict)
+            .expect("the batch was clamped to P's room");
+    }
+
+    // Every verdict is posted: from here the advance is owed, and the guard
+    // makes it from the unwind as well.
+    struct AdvanceOnDrop<'a>(&'a Reader<'a>, crate::ring::Peeked);
+    impl Drop for AdvanceOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.commit(self.1);
+        }
+    }
+    let advance = AdvanceOnDrop(&reader, peeked);
+    #[cfg(test)]
+    testing::between_the_post_and_the_advance();
+    drop(advance);
+
+    let met_budget = arena.met_its_budget();
+    arena.reset();
+    let size = match owner.batch_size() {
+        0 => INITIAL_BATCH,
+        size => size,
+    };
+    if complete {
+        owner.set_batch_size((size * 2).min(BATCH_BOUND));
+    } else if met_budget {
+        owner.set_batch_size((size / 2).max(1));
+    }
+
+    Served::Batch {
+        roots: roots.len(),
+        complete,
+    }
+}
+
+/// Mark every root of `roots`, then scan every one: true when both phases
+/// completed, false when either met the budget or a refused allocation — at
+/// which point no color is a verdict.
+///
+/// # Safety
+/// As [`mark`] through `AtomicCells`: the calling thread holds the owner's
+/// token, and every root is an entry of the owner's R.
+unsafe fn trace(arena: &mut TraceScratchArena, roots: &[usize]) -> bool {
+    for &entry in roots {
+        let root = crate::cycle::queue::entry_root(entry);
+        if unsafe { mark::<AtomicCells>(arena, root) } != MarkResult::Complete {
+            return false;
+        }
+    }
+
+    for &entry in roots {
+        let root = crate::cycle::queue::entry_root(entry);
+        if unsafe { scan::<AtomicCells>(arena, root) } != ScanResult::Complete {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// The verdict a completed trace supports for `root`: a count read zero is
+/// [`Verdict::ZeroCount`] before any row is read, a row read potentially
+/// unreachable is [`Verdict::Proposed`], and a row read live is
+/// [`Verdict::ReadLive`] — as is a live root with no met row, one the trace
+/// could not place, which the trace's own rule reads as an external live
+/// reference and which the owner's trace would place no better; an
+/// *unwalked* verdict would send it round P and R at every poll.
+///
+/// # Safety
+/// The trace over `root` completed on this thread and its rows still stand.
+unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
+    if unsafe { crate::refcount::slot_state(root) } != crate::refcount::SlotState::Live {
+        return Verdict::ZeroCount;
+    }
+
+    let EdgeTarget::Tracked(key) = (unsafe { resolve_edge_target(root) }) else {
+        return Verdict::ReadLive;
+    };
+
+    match unsafe { crate::cycle::arena::find_initialized_row(key) } {
+        Some(row) => match shadow::color(unsafe { *row }) {
+            Color::PotentiallyUnreachable => Verdict::Proposed,
+            _ => Verdict::ReadLive,
+        },
+        None => Verdict::ReadLive,
+    }
 }
 
 #[cfg(test)]

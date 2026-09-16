@@ -88,8 +88,59 @@ pub(crate) fn take_records_visited() -> usize {
 static OWNERS_SERVED: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn note_served(served: super::Served) {
-    if served == super::Served::Idle {
+    if matches!(
+        served,
+        super::Served::OwnerCollecting | super::Served::Batch { .. }
+    ) {
         OWNERS_SERVED.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// The block budget the next batch traces under, for the case that reads
+/// what a batch that meets it posts; `usize::MAX` for the module's own.
+static NEXT_BATCH_BUDGET: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+pub(crate) fn budget_the_next_batch(blocks: usize) {
+    NEXT_BATCH_BUDGET.store(blocks, Ordering::Relaxed);
+}
+
+pub(crate) fn budget_for_this_batch() -> Option<usize> {
+    match NEXT_BATCH_BUDGET.swap(usize::MAX, Ordering::Relaxed) {
+        usize::MAX => None,
+        blocks => Some(blocks),
+    }
+}
+
+/// Whether the next batch panics between its last post and its advance, for
+/// the case that reads what the advance's guard does from the unwind.
+static PANIC_BEFORE_THE_ADVANCE: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn panic_before_the_next_advance() {
+    PANIC_BEFORE_THE_ADVANCE.store(true, Ordering::Relaxed);
+}
+
+/// A channel the next batch waits on between its last post and its
+/// advance, for the case that registers while a batch stands peeked in R
+/// and posted in P; the case sends to let it go.
+static WAIT_BEFORE_THE_ADVANCE: Mutex<Option<std::sync::mpsc::Receiver<()>>> = Mutex::new(None);
+
+pub(crate) fn make_the_next_batch_wait_before_its_advance(until: std::sync::mpsc::Receiver<()>) {
+    *WAIT_BEFORE_THE_ADVANCE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(until);
+}
+
+pub(crate) fn between_the_post_and_the_advance() {
+    if PANIC_BEFORE_THE_ADVANCE.swap(false, Ordering::Relaxed) {
+        panic!("a batch panicked between its post and its advance, by the case's request");
+    }
+
+    let waiting = WAIT_BEFORE_THE_ADVANCE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(until) = waiting {
+        let _ = until.recv();
     }
 }
 

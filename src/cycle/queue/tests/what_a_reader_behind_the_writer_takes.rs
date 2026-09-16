@@ -4,11 +4,11 @@
 //! in order, across the writer's block change.
 //!
 //! The reader is `crate::ring::Reader` over the record's two words, which is
-//! what the collector's batch reads through (`PLAN.md` S49.5); nothing here
-//! holds the token, since a reader that only reads R needs the token for its
-//! trace and not for the ring (`rfc/dev/DECISIONS.md`, "the candidate queue
-//! is read behind its writer, and the collector's verdicts come back by a
-//! second ring", "Who reads R").
+//! what the collector's batch reads through (`crate::cycle::worker`);
+//! nothing here holds the token, since a reader that only reads R needs the
+//! token for its trace and not for the ring (`rfc/dev/DECISIONS.md`, "the
+//! candidate queue is read behind its writer, and the collector's verdicts
+//! come back by a second ring", "Who reads R").
 
 use super::*;
 

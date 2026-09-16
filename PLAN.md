@@ -1142,74 +1142,54 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         as a `ring::Chain` spliced back; gate and Miri green (the three
         block-scale shapes of `owner_retirement` skipped, each over an hour).
 - [x] S49.4 The verdict ring and the owner's disposition   *(closed 2026-09-16)*
-      handoff: `src/cycle/queue/verdicts.rs` — P's entry encoding (verdict in
-        bits 0–1, the close's deferral mark in bit 2, a null address for an
-        entry answered for), `VerdictWriter` (room and post), the poll's
-        `dispose_prefix_at_the_poll`; `Batch { len, verdicts }` walks P's
-        proposed and unwalked roots ahead of R's, `compaction::dispose_verdicts`
-        disposes of the batch's prefix of P at the close and advances P by
-        `Reader::advance`, and without a prefix retires P's completed deaths
-        in place; P's block is drawn in `owner_record::ensure_thread_record`
-        ahead of the record and goes back in `release_thread_record`; the
-        exit's rounds measure progress by `registered_by_lane`. Stand-in
-        collector: `verdicts/testing.rs`, `post_batch`. Gate green in every
-        configuration; Miri green over `ring::tests` (52, 246 s on Miri's
-        clock) and, on the closing tree, the verdicts, record, batch, small
-        retirement and exit cases (43, 246 s); the design record is
-        `dev/DECISIONS.md`, 2026-09-16, "the owner writes the slots of P it
-        has read". Five mutations against the
-        closing form, each seen red, and five against the first form.
-      done: as written, with two readings: the teardown retirement retires
-        the completed deaths standing anywhere in P in place rather than a
-        prefix (the rfc text amended the same day, marked as the model's
-        amendment), and a P root deferred at a collection's close records
-        the close's reading count rather than the poll's.
+      handoff: `src/cycle/queue/verdicts.rs` — P's encoding, the poll's
+        prefix reading, the close's disposition in `compaction::dispose_verdicts`;
+        `Batch { len, verdicts }` traces P's roots from P's slots; two Critic
+        rounds folded, the design record `dev/DECISIONS.md`, 2026-09-16, "the
+        owner writes the slots of P it has read"; commit `33856dd`.
+- [x] S49.5 The collector's batch   *(closed 2026-09-16)*
+      handoff: `src/cycle/worker.rs` — `serve` reads work and room and opens
+        the collector's workspace before any claim, claims, skips an owner
+        collecting in line, `batch` peeks up to K entries (K clamped to P's
+        room and R's count, bounded by `BATCH_BOUND` = 1024 so the copy sits
+        in the workspace), traces through `AtomicCells` on an arena under
+        `TRACE_BLOCK_BUDGET` = 8 blocks (`arena.budget_blocks`), posts one
+        verdict per root, advances by `AdvanceOnDrop`; `verdict_for` reads
+        the slot's state and the row's color, a live root with no row is read
+        live. K halves only on a budget met (`arena.met_its_budget`).
+        `collect_under_pressure` makes the withheld returns under its own
+        token before the retry. Cases: `worker/tests/the_batch.rs` (six);
+        the poll's prefix re-reads a death before a deferral. TSan silent
+        over `what_a_collector_thread_reads` and the six cases; Miri green
+        over the cases the diff's `unsafe` lines select (see the closing
+        commit). Four mutations red; the fourth — colors of an incomplete
+        trace posted — stays green: a scan-phase refusal is staged by no
+        case, and the rfc sentence was amended to the code's whole-batch
+        reading.
+      done: as written, with the advance's pin read as a panic between the
+        last post and the advance (a panic between `commit`'s own stores is
+        inside the guard's drop and aborts, so it cannot be pinned).
       tier: T2 · role: Critic
-      Critic 2026-09-16 round 1: the reading wrote every proposed root into
-        R at once — up to a block's worth of registrations inside the poll,
-        past the overflow buffer's abort bound, and on the pressure path into
-        the buffer no collection reads. Accepted, rewritten to the ruling's
-        form: the roots stay in P as the batch's, traced from its slots, and
-        the close disposes of the prefix. The write-back also put roots on
-        R's tail for the collector to retake (accepted, same rewrite);
-        `ensure_thread_record` published the record across P's draw, which
-        `debug-journal` re-enters (accepted: the block is drawn first and the
-        thread-local re-read); stale sentences (fixed). The poll's pop of
-        withheld returns ahead of P's reading: refused — the pop runs at
-        every poll, the reading behind the gate; a free withheld during the
-        reading returns one poll later, bounded.
-      Critic 2026-09-16 round 2: `Batch::is_empty` read P's non-root entries
-        as nothing, so an exit whose P held only roots read live leaked them
-        with the thread. Accepted: a batch is empty only with both rings
-        empty, and the exit's progress is measured by lane
-        (`a_batch_of_verdicts_without_a_root_is_disposed_of_by_the_close`).
-        R-then-P starved the collector's shortlist under a bounded pressure
-        round. Accepted: P's roots first. The rfc's three sentences the code
-        no longer matched: amended in place, marked. No unwind harness for
-        P's pass: checkpoint 7 before the advance, and the free's own point
-        2, pinned by `an_unwind_inside_ps_pass_leaves_no_entry_answered_for_twice`.
-        Named and left priced: a close whose validation refuses the whole
-        batch writes every P root back into R, up to a block's worth, funded
-        as the ruling says — the overflow buffer's margin above a block is
-        17 entries.
-- [ ] S49.5 The collector's batch   *(after S49.4)*
-      done: `worker::serve` opens the collector's workspace, takes the
-        owner's token by compare-and-swap, reads the collecting word with
-        acquire and releases on it, checks P's room and clamps K to it —
-        K under a block's capacity, a batch over at most two blocks — takes
-        the entries through the reader's API, traces the copy through
-        `cells::AtomicCells` under a block budget B, posts the verdicts to P
-        in R's order, advances by the per-block counts under one guard —
-        from the unwind as well, pinned by a panic between the stores — and
-        releases; a batch that meets B or a refused allocation posts its
-        roots unwalked and halves the owner's K, a completed one doubles it
-        back; the pressure path makes the withheld returns under its own
-        token before its allocation retry; the case's mutator registers
-        throughout the batch on its own thread and the owner's next
-        collection finds no entry consumed twice; Miri green over the cases
-        the diff's `unsafe` lines select, and ThreadSanitizer run over a case
-        whose mutator publishes no header during the batch
-      tier: T2 · role: Critic
+      Critic 2026-09-16: `Unwalked` for a live root the trace could not
+        place looped it through P and R at every poll for the life of the
+        process (a retained block with no survivor list). Accepted: such a
+        root reads live, the trace's own rule for an edge it cannot place;
+        rfc amended. The claim was made before the work test and the
+        workspace, so an idle owner paid a foreign-holder window each round.
+        Accepted: both before the CAS, `Idle` claims nothing. The copy was
+        sized by K past the workspace. Accepted: K bounded to 1024 and the
+        take clamped to R's count. The poll deferred a `ReadLive` root
+        without re-reading its death, parking a dead slot in a lane no
+        retirement sweeps. Accepted. K halved on a pool refusal. Accepted:
+        the budget alone. The concurrent case did not force its
+        interleaving. Accepted: the batch waits between post and advance
+        while the second half registers. The K-bound assertion observed the
+        test's own arithmetic. Accepted. The rfc's "before the root" against
+        the code's whole batch: amended in place, marked. Named and left: a
+        component past B whose owner-side trace the pool refuses circles P
+        and R under pressure, arming a collection each round; the
+        collector's arena draws its own thread's critical reserve, which no
+        ruling addresses.
 - [ ] S49.6 The poll's shrink   *(after S49.5)*
       done: the poll unlinks the empty block after R's tail block into a
         spare cell or the reserve's return path, never the front block,

@@ -240,6 +240,43 @@ pub(crate) unsafe fn ring<const MEMBERS: usize>(
     members
 }
 
+/// A ring of `members` objects of `class`, sized at run time where [`ring`]
+/// takes its size at compile time: for a case that needs one a harvest
+/// region or a trace budget cannot hold.
+///
+/// Every creation reference is spent, so the ring is held by its own edges and
+/// every member comes back registered as a candidate — the state a root of a
+/// real collection is in.
+///
+/// # Safety
+/// As [`ring`]: a quiescent heap under `memory::block_pool::test_guard`, and
+/// `class` carries one Box property at `prop_offset(0)`.
+pub(crate) unsafe fn long_ring(
+    arena: &mut Arena,
+    class: *const Class,
+    members: usize,
+) -> Vec<*mut Object> {
+    let mut context = LLContext { arena: &mut *arena };
+    let ring: Vec<*mut Object> = (0..members)
+        .map(|_| unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) })
+        .collect();
+
+    unsafe {
+        for (index, &member) in ring.iter().enumerate() {
+            store_prop(arena, member, prop_offset(0), ring[(index + 1) % members]);
+        }
+
+        for &member in &ring {
+            assert!(
+                !ll_release(member as *mut RcHeader),
+                "an edge of the ring holds this member"
+            );
+        }
+    }
+
+    ring
+}
+
 /// A [`ring`] the trace has read as potentially unreachable, with the scratch
 /// arena reset behind it — the state an exact validation is asked about.
 ///

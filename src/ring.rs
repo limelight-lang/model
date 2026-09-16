@@ -461,8 +461,8 @@ impl<'a> Reader<'a> {
 
     /// Take up to `out.len()` entries from the front, oldest first, and
     /// answer how many were taken. Zero is the ring read empty.
-    // The collector's batch reads through the peek/commit pair (`PLAN.md`
-    // S49.5), and the tests drive the consuming read until then.
+    // The collector's batch reads through the peek/commit pair, and the
+    // tests are the consuming read's only driver.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn take(&self, out: &mut [usize]) -> usize {
         let mut front_block = self.0.front_block.load(Ordering::Acquire);

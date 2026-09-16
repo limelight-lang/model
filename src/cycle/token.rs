@@ -19,8 +19,8 @@
 //! whether a foreign holder may take the token over rows that teardown is
 //! still reading is a ruling nobody has made (`rfc/model/gc/rc-cycle.md`,
 //! "Concurrency", the readership paragraph). The collector thread's batch
-//! is `PLAN.md` S49.5's, and the record's collecting word is what keeps it
-//! off an in-line collection's rows
+//! is `crate::cycle::worker`'s, and the record's collecting word is what
+//! keeps it off an in-line collection's rows
 //! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
 //! and the collector's verdicts come back by a second ring").
 //!

@@ -3,7 +3,7 @@
 //! entries from the front of the owner's R clamped to P's room, post one
 //! verdict per entry in R's order, and advance R's front past exactly them
 //! through the reader's peek/commit pair. What the real batch adds is the
-//! trace between the take and the post (`PLAN.md` S49.5).
+//! trace between the take and the post (`crate::cycle::worker`).
 
 use super::*;
 
@@ -58,4 +58,19 @@ pub(crate) unsafe fn post_batch(
 
     reader.commit(peeked);
     Posted::Batch(peeked.len())
+}
+
+/// Post `count` entries naming no entity into this thread's own P, for a
+/// case that wants P short of room: the owner's reading skips them as
+/// entries already answered for. Only while no collector runs, since the
+/// owner is not P's producer.
+pub(crate) unsafe fn fill_for_test(count: usize) {
+    let record = owner_record::this_thread_record();
+    assert!(!record.is_null(), "this thread has a record");
+    let writer = unsafe { VerdictWriter::open(&*record) };
+    for _ in 0..count {
+        writer
+            .post(std::ptr::null_mut(), Verdict::Proposed)
+            .expect("P has the room the case counted");
+    }
 }

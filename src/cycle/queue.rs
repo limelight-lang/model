@@ -10,8 +10,8 @@
 //! the ring behind this owner's writer without a detach
 //! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
 //! and the collector's verdicts come back by a second ring"); its batch is
-//! `PLAN.md` S49.5's, and until it lands the in-line collection is the only
-//! reader.
+//! `crate::cycle::worker`'s, under the token, and the in-line collection is
+//! the same reader on the owner's own thread.
 //!
 //! # The three storage paths
 //!
@@ -329,6 +329,13 @@ fn entity_entry(entity: *mut RcHeader) -> usize {
 #[inline]
 fn entry_entity(entry: usize) -> *mut RcHeader {
     std::ptr::with_exposed_provenance_mut(entry & !ENTRY_MARK_BITS)
+}
+
+/// The entity an entry of R names, for the collector's batch, which reads
+/// R's entries as the owner's walk does (`crate::cycle::worker`).
+#[inline]
+pub(crate) fn entry_root(entry: usize) -> *mut RcHeader {
+    entry_entity(entry)
 }
 
 /// Put an entity in this thread's queue.

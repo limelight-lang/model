@@ -976,7 +976,8 @@ unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8) {
 /// Make the returns withheld under a foreign holder, once the token is free.
 ///
 /// Called by the owner and by nobody else — a free that finds the token
-/// free, the safepoint poll, and the exit after its wait for the holder —
+/// free, the safepoint poll, the pressure path under its own token ahead of
+/// its allocation retry, and the exit after its wait for the holder —
 /// because the slots are the owner's and the physical return is its heap's.
 /// Nothing is made while the token is held: a holder that arrived after the
 /// release keeps every return standing, and a pop that finds the token taken

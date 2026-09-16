@@ -144,13 +144,9 @@ pub(super) fn is_batch_root(entry: usize) -> bool {
 }
 
 /// The collector's handle over one owner's P: how much room it has, and the
-/// post of one verdict.
-///
-/// The batch that posts through it is `PLAN.md` S49.5's; a stand-in on a
-/// test thread drives it until then.
+/// post of one verdict (`crate::cycle::worker`, the batch).
 pub(crate) struct VerdictWriter<'a>(ring::Writer<'a>);
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl<'a> VerdictWriter<'a> {
     /// The writer over `record`'s P.
     ///
@@ -247,7 +243,7 @@ pub(crate) fn dispose_prefix_at_the_poll(at_commits: u64) -> PrefixReading {
                 reading.proposal_stands = true;
                 return reading;
             }
-            Verdict::ReadLive => {
+            Verdict::ReadLive if !compaction::completed_death(entity) => {
                 if defer_entry(owner_state, entity, Some(at_commits)).is_err() {
                     reading.proposal_stands = true;
                     return reading;
@@ -255,7 +251,10 @@ pub(crate) fn dispose_prefix_at_the_poll(at_commits: u64) -> PrefixReading {
 
                 reading.deferred += 1;
             }
-            Verdict::ZeroCount => {
+            // A root read live whose death has since completed is a
+            // completed death, whatever the verdict: retired, as the close
+            // retires it, rather than left in a lane no retirement sweeps.
+            Verdict::ReadLive | Verdict::ZeroCount => {
                 if compaction::completed_death(entity) {
                     // P advances before the free: a free that raises has
                     // half-returned the slot and cannot be retried, so its
