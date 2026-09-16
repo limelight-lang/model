@@ -409,9 +409,6 @@ impl<'a> Writer<'a> {
     /// while the reader runs, since the reader never walks past the tail
     /// block. Its emptiness is read with acquire, after the reader's release
     /// of its last read there.
-    // The poll's shrink is its caller (`PLAN.md` S49.6); the tests drive it
-    // until then.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn unlink_after_tail(&self) -> *mut BlockHeader {
         let tail = self.0.tail_block.load(Ordering::Relaxed);
         if tail.is_null() {
@@ -676,10 +673,35 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// Whether an entry stands unread, by loads of the front block alone:
+    /// its span, and whether it is the tail block — a front block that is
+    /// not the tail block has an entry ahead of it, since the front block
+    /// moves only into a block that was written into and the tail block
+    /// only after a write. No link is followed, which is what lets a reader
+    /// ask this without the token while the owner packs the ring and
+    /// unlinks its surplus: the pack moves the tail block back, the unlink
+    /// takes a block past it out of the circle and nulls that block's link,
+    /// and a walk of the chain from a stale tail would read the link of a
+    /// block that has left. A true read against a pack in flight can be
+    /// stale; the peek under the token is what decides.
+    pub(crate) fn has_unread(&self) -> bool {
+        let front_block = self.0.front_block.load(Ordering::Acquire);
+        if front_block.is_null() {
+            return false;
+        }
+
+        let b = ring(front_block);
+        let front = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
+        let tail = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
+        front != tail || front_block != self.0.tail_block.load(Ordering::Acquire)
+    }
+
     /// Entries not yet taken, as of the tail the reader sees now: the front
-    /// block's span and every block's between it and the tail block.
-    // The collector's round reads it (`PLAN.md` S49.7); the tests drive it
-    // until then.
+    /// block's span and every block's between it and the tail block. A walk
+    /// of the chain, so for the token holder or the owner, whose exclusion
+    /// keeps the tail block from moving back and the blocks past it in the
+    /// circle; a reader without the token asks [`Reader::has_unread`].
+    // The owner's readings of P in tests and the ring's own tests drive it.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn unread(&self) -> usize {
         let front_block = self.0.front_block.load(Ordering::Acquire);

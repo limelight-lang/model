@@ -571,6 +571,48 @@ fn the_spare_block_after_the_tail_is_unlinked_and_never_the_front_block() {
     words.dismantle();
 }
 
+/// The work test a reader without the token asks follows no link: it reads
+/// the front block's span and whether that block is the tail block, and
+/// nothing else, so an emptied front block with a block ahead reads as work
+/// while its link is nulled under it — the state a pack and an unlink of
+/// the block past the tail leave for a walker holding a stale tail.
+#[test]
+fn the_work_test_reads_the_front_block_alone() {
+    let _g = test_guard();
+    let words = Words::new();
+    let writer = unsafe { Writer::new(words.slots()) };
+    let reader = unsafe { Reader::new(words.slots()) };
+    assert!(!reader.has_unread(), "no block");
+
+    for entry in 0..BLOCK_ENTRIES + 1 {
+        assert_eq!(writer.push(entry, fresh), Ok(()));
+    }
+    let mut out = vec![0; BLOCK_ENTRIES];
+    assert_eq!(reader.take(&mut out), BLOCK_ENTRIES);
+    let front = words.front_block.load(Ordering::Relaxed);
+    assert_ne!(
+        front,
+        words.tail_block.load(Ordering::Relaxed),
+        "the reader stands in the emptied first block"
+    );
+
+    // Cut the link the walk would follow; a work test that followed it
+    // would read null and dereference it.
+    let next = unsafe {
+        (*ring(front))
+            .link
+            .next
+            .swap(std::ptr::null_mut(), Ordering::Relaxed)
+    };
+    assert!(reader.has_unread(), "an entry stands past the front block");
+    unsafe { (*ring(front)).link.next.store(next, Ordering::Relaxed) };
+
+    assert_eq!(reader.take(&mut out[..1]), 1);
+    assert!(!reader.has_unread(), "the ring is read out");
+    assert_eq!(reader.unread(), 0);
+    words.dismantle();
+}
+
 #[test]
 fn a_chains_dismantle_gives_every_block_back() {
     let _g = test_guard();

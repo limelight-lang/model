@@ -1148,66 +1148,43 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         rounds folded, the design record `dev/DECISIONS.md`, 2026-09-16, "the
         owner writes the slots of P it has read"; commit `33856dd`.
 - [x] S49.5 The collector's batch   *(closed 2026-09-16)*
-      handoff: `src/cycle/worker.rs` — `serve` reads work and room and opens
-        the collector's workspace before any claim, claims, skips an owner
-        collecting in line, `batch` peeks up to K entries (K clamped to P's
-        room and R's count, bounded by `BATCH_BOUND` = 1024 so the copy sits
-        in the workspace), traces through `AtomicCells` on an arena under
-        `TRACE_BLOCK_BUDGET` = 8 blocks (`arena.budget_blocks`), posts one
-        verdict per root, advances by `AdvanceOnDrop`; `verdict_for` reads
-        the slot's state and the row's color, a live root with no row is read
-        live. K halves only on a budget met (`arena.met_its_budget`).
-        `collect_under_pressure` makes the withheld returns under its own
-        token before the retry. Cases: `worker/tests/the_batch.rs` (six);
-        the poll's prefix re-reads a death before a deferral. TSan silent
-        over `what_a_collector_thread_reads` and the six cases; Miri green
-        over the cases the diff's `unsafe` lines select (see the closing
-        commit). Four mutations red; the fourth — colors of an incomplete
-        trace posted — stays green: a scan-phase refusal is staged by no
-        case, and the rfc sentence was amended to the code's whole-batch
-        reading.
-      done: as written, with the advance's pin read as a panic between the
-        last post and the advance (a panic between `commit`'s own stores is
-        inside the guard's drop and aborts, so it cannot be pinned).
-      tier: T2 · role: Critic
-      Critic 2026-09-16: `Unwalked` for a live root the trace could not
-        place looped it through P and R at every poll for the life of the
-        process (a retained block with no survivor list). Accepted: such a
-        root reads live, the trace's own rule for an edge it cannot place;
-        rfc amended. The claim was made before the work test and the
-        workspace, so an idle owner paid a foreign-holder window each round.
-        Accepted: both before the CAS, `Idle` claims nothing. The copy was
-        sized by K past the workspace. Accepted: K bounded to 1024 and the
-        take clamped to R's count. The poll deferred a `ReadLive` root
-        without re-reading its death, parking a dead slot in a lane no
-        retirement sweeps. Accepted. K halved on a pool refusal. Accepted:
-        the budget alone. The concurrent case did not force its
-        interleaving. Accepted: the batch waits between post and advance
-        while the second half registers. The K-bound assertion observed the
-        test's own arithmetic. Accepted. The rfc's "before the root" against
-        the code's whole batch: amended in place, marked. Named and left: a
-        component past B whose owner-side trace the pool refuses circles P
-        and R under pressure, arming a collection each round; the
-        collector's arena draws its own thread's critical reserve, which no
-        ruling addresses.
-      Critic 2026-09-16 (two, on Edmond's doubt about a P that never
-        grows): both answer that growth is not needed — P binds only for an
-        owner absent from open-gate polls over 80 ms with a backlog past one
-        block, and what it costs is one in-line walk at the return poll,
-        while a grown P would break the poll's deferral stock (two spare
-        cells) and put the collector's pre-claim reading over memory the
-        shrink returns. One defect of this step found on the way, fixed:
-        the pre-claim room reading stored `local_front` into P's block under
-        no claim; it reads by loads alone now and the clamp is re-read under
-        the token. Named for Edmond: the exit returns P's block while a
-        collector may be reading it before its claim (once per exit); and
-        the ruling's "one in-line collection over the proposed roots" admits
-        a narrower reading than the code's whole-R batch.
-- [ ] S49.6 The poll's shrink   *(after S49.5)*
+      handoff: `src/cycle/worker.rs` — `serve` (work and room by loads before
+        any claim, then the claim, an owner collecting in line skipped),
+        `batch` (K clamped to P's room and R's count, `BATCH_BOUND` 1024,
+        `TRACE_BLOCK_BUDGET` 8, one verdict per root, `AdvanceOnDrop`),
+        `verdict_for`; cases `worker/tests/the_batch.rs`; two Critic rounds
+        folded, the record `dev/DECISIONS.md`, 2026-09-16, "the collector's
+        batch is bounded by three unmeasured figures"; commits `3353283`,
+        `2edf2a6`. Named and left: a component past B whose owner-side trace
+        the pool refuses circles P and R under pressure; the collector's
+        arena draws its own thread's critical reserve; the exit returns P's
+        block while a collector may read it pre-claim (for Edmond).
+- [x] S49.6 The poll's shrink   *(closed 2026-09-16)*
       done: the poll unlinks the empty block after R's tail block into a
         spare cell or the reserve's return path, never the front block,
         pinned by a case whose ring grew under a burst and shrank after it
       tier: T2 · role: Critic
+      Critic 2026-09-16: the collector's pre-claim idle test walked R's chain
+        to a stale tail, and the unlink nulls the link of a block such a walk
+        still holds. Accepted: the idle test reads the front block alone
+        (`ring::Reader::has_unread`), the walk is the token holder's. The
+        front-block case could not fail under the front check's deletion.
+        Accepted: rebuilt over an emptied front block, red as a SIGSEGV
+        under it. The discharge was pinned by nothing. Accepted: the ledger
+        read across the poll. Unlinking at every poll with full cells traded
+        the circle's free reuse for a pool put and get per fill. Accepted:
+        the unlink runs only where a cell is short. The `gc` row's duty
+        count. Fixed.
+      handoff: `cycle::queue::unlink_surplus_block`, first in
+        `refill_and_drain`, one block per poll, only into a short spare cell
+        (`dev/DECISIONS.md`, 2026-09-16, "the ring's surplus goes into a
+        short spare cell"); the collector's idle test is `Reader::has_unread`,
+        no link followed; cases `what_the_poll_owes_the_queue` (three) and
+        `ring::tests::the_work_test_reads_the_front_block_alone`, five
+        mutations red; gate green in every configuration, TSan silent over
+        the collector-reader and batch cases, Miri green over the poll's
+        six, the ring case, the batch cases minus the budget one, and the
+        collector-reader cases.
 - [ ] S49.7 The wake channel and the fallback timer   *(after S49.6)*
       done: the collector is born at the first pressure collection as today
         and parks with a timeout that is its fallback interval, adapted
@@ -1225,6 +1202,10 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         making no round through an interval set above the case's wait, read
         by a rounds probe; `gc.rs`'s sentence that puts every threshold
         outside the crate names the soft threshold as the runtime's own
+      note: the count the collector reads at or above the threshold is read
+        under the token, or off the front block alone — a walk of R's chain
+        before the claim follows the link of a block the poll's unlink has
+        taken out (`ring::Reader::has_unread` and `unread`, S49.6's Critic)
       tier: T2 · role: Critic
 - [ ] S49.8 Siblings   *(after S49.7)*
       done: each owner record names its collector; a collector with backlog

@@ -11,8 +11,9 @@
 //!
 //! # The batch
 //!
-//! Before any claim the collector reads whether the owner has work — R's
-//! unread count, off the reader's own words, and P's room — and opens its
+//! Before any claim the collector reads whether the owner has work — an
+//! entry standing in R, off the front block's words alone, and P's room —
+//! and opens its
 //! own workspace: an owner with nothing to take pays no foreign-holder
 //! window, under which every one of its deaths is withheld. Then it claims
 //! the token and reads the owner's collecting word with acquire: set, the
@@ -290,12 +291,14 @@ pub(crate) unsafe fn serve(record: *mut OwnerRecord) -> Served {
     let owner = unsafe { &*record };
     // Work first, and the collector's own memory, before any claim — by
     // loads alone, since nothing of the owner's may be written under no
-    // claim: the unread count off the reader's words, P's room off its
-    // index words, and the workspace this thread's. The figures are an
-    // idle test and not the clamp: the clamp is re-read under the token.
-    let unread = unsafe { Reader::new(owner.candidate_ring()) }.unread();
+    // claim, and off the front block alone, since the owner's pack and its
+    // poll's unlink move blocks past the tail block out of the circle under
+    // no claim either: whether R has an entry, P's room off its index words,
+    // and the workspace this thread's. The figures are an idle test and not
+    // the clamp: the clamp is re-read under the token.
+    let has_work = unsafe { Reader::new(owner.candidate_ring()) }.has_unread();
     let room = unsafe { VerdictWriter::open(owner) }.room_by_loads();
-    if unread == 0 || room == 0 {
+    if !has_work || room == 0 {
         return Served::Idle;
     }
 

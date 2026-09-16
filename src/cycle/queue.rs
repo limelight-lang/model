@@ -45,8 +45,9 @@
 //! block on the collector's line and the tail block on the owner's — and
 //! the blocks themselves are pool blocks, the only unit both allocation
 //! paths dispense (`rfc/model/gc/cycle/questions.md`, Y12 clause 3). A
-//! consumed block is not returned: the writer reaches it again around the
-//! circle. Every count of what the ring holds is `(tail − front) mod cap`
+//! consumed block stays in the circle for the writer to reach again, until
+//! a poll with a spare cell short finds it empty behind the tail block and
+//! unlinks it into the cell ([`refill_and_drain`]). Every count of what the ring holds is `(tail − front) mod cap`
 //! summed over its blocks, and no block's contents are bounded by anything
 //! but its own two indices.
 //!
@@ -134,8 +135,10 @@
 //!
 //! # What the poll does for this module
 //!
-//! Five things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
-//! It refills the spare cells, asking [`needs_spares`] — the count itself,
+//! Six things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
+//! Where a spare cell is short it unlinks the block a burst left empty
+//! behind R's tail block, one per poll, into the cell, so that the refill
+//! after it draws one block fewer; it refills the spare cells, asking [`needs_spares`] — the count itself,
 //! never a flag a draw sets, because a thread whose fill at init was refused
 //! has never drawn and would never be asked again. It then drains the overflow
 //! buffer into the queue, which is why the refill comes first; compares the
@@ -737,25 +740,58 @@ pub(crate) fn release_queue_base() {
     gc_metadata::release_to_critical(queue_base_of(state));
 }
 
-/// Refill the spare cells where they are short, then drain the overflow
-/// buffer into the room the refill made.
+/// Refill the spare cells where they are short — from the block R has to
+/// spare first, then from the pool — and drain the overflow buffer into the
+/// room the refill made.
 ///
 /// The sequence the safepoint poll and the exit's collection share, in the
 /// one order that works: a drain with no room writes the entries straight
-/// back (`rfc/model/gc/cycle/questions.md`, Y12 clause 3). The refill runs
-/// only when the cells are short, which is what asks for it — a count rather
-/// than a flag, so a thread whose fill at init was refused is still asked
-/// ([`needs_spares`]). The poll replenishes the critical reserve before this,
-/// so that a growth with both cells empty has its path open again; the exit
-/// does not, because its own end drains that reserve a few calls later and a
-/// growth it cannot fund goes to the overflow buffer, which the next round
-/// drains.
+/// back (`rfc/model/gc/cycle/questions.md`, Y12 clause 3), and the unlink
+/// goes before the refill so that a block the circle no longer needs fills
+/// a cell before the pool is asked for one. Both run only when the cells
+/// are short, which is what asks for them — a count rather than a flag, so
+/// a thread whose fill at init was refused is still asked ([`needs_spares`]).
+/// The poll replenishes the critical reserve before this, so that a growth
+/// with both cells empty has its path open again; the exit does not,
+/// because its own end drains that reserve a few calls later and a growth
+/// it cannot fund goes to the overflow buffer, which the next round drains.
 pub(crate) fn refill_and_drain() {
+    unlink_surplus_block();
     if needs_spares() {
         let _ = refill_spares();
     }
 
     drain_overflow();
+}
+
+/// Take the empty block after R's tail block out of the circle, where there
+/// is one and a spare cell is short, and put it in the cell.
+///
+/// Only into a short cell: with both cells full the block would go to the
+/// pool and the next growth draw it back, one put and one get per fill
+/// where the circle's own reuse costs nothing, so a circle a burst grew
+/// keeps its consumed blocks while the cells are full and gives one back at
+/// each poll that finds a cell spent. The one block the owner may take out
+/// while a collector reads the ring, since a reader under the token never
+/// walks past the tail block (`crate::ring::Writer::unlink_after_tail`,
+/// which answers null for the front block and for a block with an entry
+/// standing in it). One block per call: a circle a burst grew by several
+/// blocks gives them back over as many polls, and the poll's price stays
+/// one link per call.
+fn unlink_surplus_block() {
+    let state = owner_state();
+    if state.is_null() || !needs_spares() {
+        return;
+    }
+
+    let block =
+        unsafe { Writer::new(this_thread_record_ref().candidate_ring()) }.unlink_after_tail();
+    if block.is_null() {
+        return;
+    }
+
+    discharge_block();
+    return_surplus_block(unsafe { owner_state_ref(state) }, block);
 }
 
 /// Move overflow entries back into the queue, as far as the room a poll

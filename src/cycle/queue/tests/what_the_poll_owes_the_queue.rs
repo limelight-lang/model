@@ -1,8 +1,10 @@
-//! The two duties the safepoint poll has towards the queue: refilling
-//! the spare cells, and firing the collection a reserve draw or an
-//! overflow append asked for.
+//! The three duties the safepoint poll has towards the queue: unlinking
+//! the block a burst left empty behind R's tail block, refilling the spare
+//! cells, and firing the collection a reserve draw or an overflow append
+//! asked for.
 //!
-//! Both are asked as counts rather than remembered as flags. The cells
+//! The first two are asked as counts rather than remembered as flags. The
+//! surplus is read off the ring's own words, and the cells
 //! are asked with [`needs_spares`], because a thread whose fill at init was
 //! refused has never drawn and a "drawn" flag would leave it unasked for
 //! the rest of its life (`memory::reserve`, `is_drawn`). The arming is a
@@ -10,6 +12,156 @@
 //! state, and every path into that event sets it.
 
 use super::*;
+
+use crate::cycle::testing::Sent;
+use crate::ring::Reader;
+
+/// Grow R to two blocks by a burst of registrations over `headers`, one
+/// past a block's worth, and have a reader on another thread take `take`
+/// of them. Taking every one leaves the writer in the second block with the
+/// first empty behind it; taking exactly a block's worth leaves the reader
+/// standing in an emptied front block, since the front block moves only
+/// when a read finds it empty.
+fn burst_read_behind_by_another_thread(headers: &mut [RcHeader], take: usize) {
+    assert_eq!(headers.len(), BLOCK_ENTRIES + 1);
+    for header in headers.iter_mut() {
+        assert!(unsafe { !release(&raw mut *header) });
+    }
+    assert_eq!(segment_count(), 2, "the burst grew the circle");
+
+    assert_eq!(take_on_another_thread(take), take);
+    assert_eq!(candidate_count(), headers.len() - take);
+    assert_eq!(
+        segment_count(),
+        2,
+        "and both blocks are still in the circle"
+    );
+}
+
+/// Take `count` entries from this thread's R on another thread, as the
+/// collector would, in reads no longer than the count so that the reader
+/// never runs a block dry beyond the last entry asked for.
+fn take_on_another_thread(count: usize) -> usize {
+    let record = Sent(owner_record::this_thread_record());
+    let reader = std::thread::spawn(move || {
+        let record: &'static OwnerRecord = unsafe { &*record.into_inner() };
+        let reader = unsafe { Reader::new(record.candidate_ring()) };
+        let mut out = [0; 64];
+        let mut taken = 0;
+        while taken < count {
+            let ask = out.len().min(count - taken);
+            let now = reader.take(&mut out[..ask]);
+            taken += now;
+            if now == 0 {
+                std::thread::yield_now();
+            }
+        }
+        taken
+    });
+    reader.join().expect("the reader finished")
+}
+
+/// A circle a burst grew shrinks at the poll after the reader has passed
+/// the surplus and a cell is short: the empty block behind the tail block
+/// goes into the cell and off the ledger, so the refill draws one block
+/// fewer; the block the writer stands in stays, and a second poll finds
+/// nothing to unlink.
+#[test]
+fn the_poll_unlinks_the_block_a_burst_left_empty_behind_the_tail() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut headers: Box<[RcHeader]> = (0..BLOCK_ENTRIES + 1).map(|_| candidate(2)).collect();
+    burst_read_behind_by_another_thread(&mut headers, BLOCK_ENTRIES + 1);
+    assert_eq!(
+        spare_count(),
+        0,
+        "the first block and the growth spent both cells"
+    );
+
+    assert!(crate::memory::critical::replenish());
+    let before = crate::memory::block_pool::BlockPool::global().blocks_out();
+    let charged = crate::memory::gc_metadata::thread_stats().current_bytes_in_use();
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    assert_eq!(segment_count(), 1, "the empty block left the circle");
+    assert_eq!(spare_count(), SPARE_SEGMENTS, "and went into a spent cell");
+    assert_eq!(
+        crate::memory::block_pool::BlockPool::global().blocks_out(),
+        before + 1,
+        "one draw for two empty cells: the unlinked block took the other"
+    );
+    assert_eq!(
+        crate::memory::gc_metadata::thread_stats().current_bytes_in_use(),
+        charged - BLOCK_PAYLOAD,
+        "a cell is a reservation, and carries no charge"
+    );
+
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    assert_eq!(segment_count(), 1, "the block the writer stands in stays");
+
+    let mut late = candidate(2);
+    assert!(unsafe { !release(&raw mut late) });
+    assert_eq!(
+        candidate_count(),
+        1,
+        "the one block still takes a registration"
+    );
+    assert_eq!(segment_count(), 1);
+
+    reset();
+}
+
+/// With both cells full the circle keeps its consumed block: the writer
+/// reaches it again for nothing, where an unlink would send it to the pool
+/// and the next growth draw it back.
+#[test]
+fn a_poll_with_full_cells_leaves_the_circle_alone() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut headers: Box<[RcHeader]> = (0..BLOCK_ENTRIES + 1).map(|_| candidate(2)).collect();
+    burst_read_behind_by_another_thread(&mut headers, BLOCK_ENTRIES + 1);
+    assert!(refill_spares(), "both cells full again before the poll");
+    assert!(crate::memory::critical::replenish());
+    let before = crate::memory::block_pool::BlockPool::global().blocks_out();
+
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    assert_eq!(segment_count(), 2, "nothing asked for the block");
+    assert_eq!(spare_count(), SPARE_SEGMENTS);
+    assert_eq!(
+        crate::memory::block_pool::BlockPool::global().blocks_out(),
+        before,
+        "and the pool saw nothing"
+    );
+
+    reset();
+}
+
+/// The front block is never unlinked, even empty: a reader that took
+/// exactly the first block's worth stands in it, and the block after the
+/// tail block is that front block. The poll leaves it, and the reader's
+/// next take moves out of it into the block that holds the rest.
+#[test]
+fn the_poll_never_unlinks_the_front_block() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut headers: Box<[RcHeader]> = (0..BLOCK_ENTRIES + 1).map(|_| candidate(2)).collect();
+    burst_read_behind_by_another_thread(&mut headers, BLOCK_ENTRIES);
+    assert_eq!(
+        spare_count(),
+        0,
+        "a cell is short, so the poll would unlink"
+    );
+
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    assert_eq!(segment_count(), 2, "the emptied front block stays");
+    assert_eq!(candidate_count(), 1, "and the one entry past it stands");
+    assert_eq!(take_on_another_thread(1), 1, "the reader moves into it");
+    assert_eq!(candidate_count(), 0);
+
+    reset();
+}
 
 /// The cells are short after a spend, and the poll fills them.
 #[test]

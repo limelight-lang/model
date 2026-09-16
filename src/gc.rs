@@ -165,8 +165,9 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // And the candidate queue's spare cells, which is the same protocol
     // one layer up: the growth path may not allocate, so somebody else
     // takes the segment it swaps in, and this is where that somebody
-    // stands; then the overflow buffer drains into the room the refill
-    // made. The exit's collection runs the same two before each of its
+    // stands — a block the ring has to spare behind its tail block fills a
+    // short cell first; then the overflow buffer drains into the room the refill
+    // made. The exit's collection runs the same three before each of its
     // rounds (`crate::cycle::queue::refill_and_drain`).
     crate::cycle::queue::refill_and_drain();
 

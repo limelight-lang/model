@@ -8,6 +8,47 @@ never edited or deleted.
 
 ---
 
+## 2026-09-16 — the ring's surplus goes into a short spare cell, and a reader without the token reads the front block alone
+
+**Context.** `PLAN.md` S49.6 built the poll's shrink of R: the empty block
+after the tail block, which the reader has passed, leaves the circle
+(`rfc/model/gc/rc-cycle.md`, "the owner shrinks a circle, when it chooses,
+by unlinking the empty block after its tail block"). The rfc leaves the
+choice of moment to the owner, and the first form unlinked at every poll,
+sending the block to the critical reserve's return path when both spare
+cells were full.
+
+**Decision.** The poll unlinks one block, and only when a spare cell is
+short, so that the block always lands in a cell and never in the pool
+(`cycle::queue::unlink_surplus_block`). A circle a burst grew keeps its
+consumed blocks while the cells are full and gives one back at each poll
+that finds a cell spent — by a growth, or by the deferred lane's fill at a
+close.
+
+**Why.** With full cells the surplus would go to the pool and the next
+fill of the tail block would take a cell, which the poll after it refills
+from the pool: one put and one get per fill under a sustained burst, where
+the circle's own reuse of a consumed block costs nothing. Unlinking into a
+short cell keeps that reuse and still shrinks a ring that grew, one block
+per draw the thread would otherwise have made (Critic, 2026-09-16). What it
+costs: a thread whose cells stay full keeps a circle a burst grew until a
+cell is spent, and no bound on that is set here.
+
+**A second finding of the same round moved the collector's idle test.** The
+collector read R's unread count before its claim by a walk of the chain
+from the front block to a snapshot of the tail block. The owner's in-place
+pack moves the tail block back and leaves the blocks past it in the circle,
+which the walk survived; the unlink now takes such a block out and nulls
+its link, so a walker holding a stale tail reads the link of a block that
+has left and follows null. The idle test reads the front block alone —
+its span, and whether it is the tail block, which is the rfc's own trigger
+("a front block that is not empty") — through `ring::Reader::has_unread`;
+`Reader::unread`, the walk, is the token holder's, under whose claim the
+tail block cannot move back. A stale true costs one claim and a peek that
+finds nothing.
+
+---
+
 ## 2026-09-16 — the collector's batch is bounded by three unmeasured figures, and a live root it cannot place reads live
 
 **Context.** `PLAN.md` S49.5 built the collector's batch in `cycle::worker`
