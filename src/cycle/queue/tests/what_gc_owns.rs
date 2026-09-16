@@ -237,8 +237,9 @@ fn a_threads_base_block_is_in_use_from_its_draw_until_its_exit() {
         assert!(crate::memory::heap::ll_thread_init());
         assert_eq!(
             in_use(),
-            size_of::<OwnerCycleState>(),
-            "the control line is working memory; the spares behind it are not"
+            size_of::<OwnerCycleState>() + BLOCK_PAYLOAD,
+            "the control line and P's block are working memory; the spares \
+             behind them are not"
         );
     })
     .join()

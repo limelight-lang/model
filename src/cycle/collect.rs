@@ -410,9 +410,12 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
     }
 }
 
-/// The prologue both paths share: open the window, read the ring as the
-/// batch, and trace the first `roots` roots of it. Answers the window, still open with
-/// its rows and its batch, and how many roots the trace read.
+/// The prologue both paths share: open the window, read the two rings as
+/// the batch — R's entries, and the proposed and unwalked roots standing in
+/// P, so that a proposal never stands through a collection short of memory
+/// (`crate::cycle::queue::verdicts`) — and trace the first `roots` roots of
+/// it. Answers the window, still open with its rows and its batch, and how
+/// many roots the trace read.
 ///
 /// The token is the caller's: the poll path releases it at the scan's end and
 /// the pressure path holds it through the harvest, and neither takes it here.
@@ -574,7 +577,10 @@ pub(crate) const EXIT_ROUNDS: usize = 8;
 pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
     let claim = HeldToken::take();
     let mut freed = 0;
-    let mut registered = crate::cycle::queue::registered_count();
+    // By lane and not as one sum: a round that defers a verdict's root moves
+    // it from P to the deferred lane, which the next round re-offers and
+    // traces, and the sum would read that as no progress.
+    let mut registered = crate::cycle::queue::registered_by_lane();
     let mut ending = ExitEnding::RoundCap;
     for _ in 0..EXIT_ROUNDS {
         crate::cycle::queue::refill_and_drain();
@@ -582,7 +588,7 @@ pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
 
         let round = unsafe { collection_off_the_poll() };
         freed += round.freed;
-        let standing = crate::cycle::queue::registered_count();
+        let standing = crate::cycle::queue::registered_by_lane();
         let progressed = round.ending.ran_destructors() || standing != registered;
         registered = standing;
         if !progressed {
@@ -606,7 +612,7 @@ pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
 
     let residue = ExitResidue {
         freed,
-        registered,
+        registered: registered.iter().sum(),
         ending,
     };
     journal_event!(
@@ -710,7 +716,9 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             // a collection does and waits out a collector's batch
             // (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind
             // its writer, and the collector's verdicts come back by a second
-            // ring", "Who reads R").
+            // ring", "Who reads R"). The completed deaths the verdict ring
+            // names come back under the same pass: a slot the collector
+            // read as dead and took out of R returns through no other.
             if closed == GateClosed::Teardown {
                 let _token = HeldToken::take();
                 unsafe { crate::cycle::queue::retire_candidates() };

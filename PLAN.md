@@ -1136,91 +1136,62 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         registration its rounds can make; nothing reads the new lines yet
       tier: T2 · role: Critic
 - [x] S49.3 The ring: blocks in a circle, the reader's API, the in-line reader, the compaction, the splice   *(closed 2026-09-16)*
-      handoff: `cycle::queue` registers through `ring::Writer` over the
-        record's two words; `Batch` is a count over entries that stay in
-        place, `compaction::compact` packs the ring, the overflow buffer
-        and (on a deferral) the chain in place through `ring::Packing` and
-        `Chain::retain`, each finishing itself on an unwind; the deferred
-        lane is a `ring::Chain` spliced back by `Writer::splice_after_tail`;
-        the collecting word is the record's (`collect::is_collecting`); the
-        queue block is charged whole from its link (`dev/DECISIONS.md`,
-        2026-09-16). Gate green in every configuration; Miri green over
-        `ring::tests`, `cycle::queue::tests` less the three block-scale
-        shapes (each over an hour under Miri; the small shapes reach the
-        same branches), `cycle::owner_record::tests`,
-        `what_an_exit_collects` and `what_the_close_and_the_abort_return`.
-        The registration's fast path is two plain stores as before, 22
-        instructions against 13 (release disassembly): the record's
-        thread-local and the tail block's line are the extra loads.
-      done: a queue segment is a block of moodycamel's `ReaderWriterQueue`
-        form — `front` and `tail` on separate lines with the local copies,
-        indices wrapping at the capacity with one spare slot, `next` the
-        writer's, linked in a circle — and R's two block pointers stand in
-        the record; a registration stores the entry, then `tail + 1` by a
-        release store, and reads as two plain stores on the release path's
-        probe against the pre-step figure; a full tail block moves the writer
-        to the next block of the circle when it is not the front block and
-        otherwise takes a fresh block from the cells, the reserve and the
-        overflow buffer as today; the reader's API is one product of this
-        step — take up to K entries from the front, the double read of an
-        empty front block, the block advance with the link read first —
-        driven by a stand-in reader on a test thread while the case's thread
-        registers, no entry consumed twice, the second read pinned by a case
-        that fills and leaves the front block between the reader's two
-        reads; `COLLECTING` moves into the record as the collecting word,
-        set before the token is taken and cleared by a release store that is
-        the close's last; the in-line collection takes every entry from the
-        front block to the tail as its batch, traces, and at its close
-        compacts the ring in place — dropping what it disposed of, keeping in
-        order a refused or resurrected component, an uncompleted zero-count
-        entity, a root read live with nothing proposed and a root a refused
-        trace never walked, packed from the front block's `front`,
-        `tailBlock` on the last block with a kept entry, the local copies
-        rewritten in every block whose `tail` moved, the overflow phase kept
-        — which replaces `detach_candidates`, `merge_candidates`,
-        `dispose_candidates`, `defer_candidates`' lifted lane,
-        `retire_candidates`' whole-queue pass and `compaction::finish`'s
-        two-input form together, the pressure round and the closed-gate
-        teardown retirement compacting instead (the latter after taking the
-        token); the re-offer is a splice with no copy — the deferred lane's
-        blocks linked after the tail block and `tailBlock` moved to the last
-        of them — pinned by a case with three deferred blocks, empty cells
-        and an empty reserve at the poll, and arming the collection only
-        while the record names no living collector; every count that
-        assumed a full segment behind the write position reads `(tail −
-        front) mod cap` instead
+      handoff: `src/ring.rs` (Writer/Reader/Quiescent/Packing/Chain), the
+        registration through `Writer::push`, `Batch` as counts over entries
+        that stay in place, `compaction::compact` in place, the deferred lane
+        as a `ring::Chain` spliced back; gate and Miri green (the three
+        block-scale shapes of `owner_retirement` skipped, each over an hour).
+- [x] S49.4 The verdict ring and the owner's disposition   *(closed 2026-09-16)*
+      handoff: `src/cycle/queue/verdicts.rs` — P's entry encoding (verdict in
+        bits 0–1, the close's deferral mark in bit 2, a null address for an
+        entry answered for), `VerdictWriter` (room and post), the poll's
+        `dispose_prefix_at_the_poll`; `Batch { len, verdicts }` walks P's
+        proposed and unwalked roots ahead of R's, `compaction::dispose_verdicts`
+        disposes of the batch's prefix of P at the close and advances P by
+        `Reader::advance`, and without a prefix retires P's completed deaths
+        in place; P's block is drawn in `owner_record::ensure_thread_record`
+        ahead of the record and goes back in `release_thread_record`; the
+        exit's rounds measure progress by `registered_by_lane`. Stand-in
+        collector: `verdicts/testing.rs`, `post_batch`. Gate green in every
+        configuration; Miri green over `ring::tests` (52, 246 s on Miri's
+        clock) and, on the closing tree, the verdicts, record, batch, small
+        retirement and exit cases (43, 246 s); the design record is
+        `dev/DECISIONS.md`, 2026-09-16, "the owner writes the slots of P it
+        has read". Five mutations against the
+        closing form, each seen red, and five against the first form.
+      done: as written, with two readings: the teardown retirement retires
+        the completed deaths standing anywhere in P in place rather than a
+        prefix (the rfc text amended the same day, marked as the model's
+        amendment), and a P root deferred at a collection's close records
+        the close's reading count rather than the poll's.
       tier: T2 · role: Critic
-      Critic 2026-09-16: the pack rewrote the reader's `local_tail` and not
-        the writer's `local_front`, so after a reader had advanced `front`
-        two registrations ran through it and the block read empty — every
-        packed root lost with its bit standing. Accepted: `set_tail`
-        rewrites the writer's copy, pinned by
-        `a_pack_over_a_front_the_reader_moved_keeps_the_writers_full_test_sound`
-        (seen failing without the store). `drain_overflow` read the tail
-        block through `Quiescent` with no exclusion; the room reading moved
-        to `Writer`. "A root read live with nothing proposed" reads two ways
-        — deferred on the poll path, kept on the pressure path — which is
-        the code's and S37.6's; the sentence is the loose one. Unpinned and
-        left for S49.5, where the second thread exists: that the collecting
-        word's clear follows the compaction's stores.
-- [ ] S49.4 The verdict ring and the owner's disposition   *(after S49.3)*
-      done: P is one block per thread of the same form with the roles
-        swapped, drawn with the record, never grown; a stand-in collector on
-        a test thread clamps its batch to P's room, posts verdicts in R's
-        order and advances R's front by the count posted through the
-        reader's API; the open-gate poll and every in-line collection —
-        fire, pressure, exit — read P first: a proposed root and an unwalked
-        root join the batch of one in-line collection over them, validated
-        exactly and finalized; a root read live goes to the deferred lane
-        with the poll's commit count as its mirror; a zero-count verdict is
-        retired only on the entity's completed-free bit, re-read here; every
-        entry the reading cannot dispose of is written back into R as a
-        registration before P's `front` advances at the close — a
-        resurrection by a destructor that stores `$this` among the cases; a
-        closed-gate poll reads no verdict; the teardown retirement takes the
-        token and reads P's prefix up to the first verdict it cannot dispose
-        of
-      tier: T2 · role: Critic
+      Critic 2026-09-16 round 1: the reading wrote every proposed root into
+        R at once — up to a block's worth of registrations inside the poll,
+        past the overflow buffer's abort bound, and on the pressure path into
+        the buffer no collection reads. Accepted, rewritten to the ruling's
+        form: the roots stay in P as the batch's, traced from its slots, and
+        the close disposes of the prefix. The write-back also put roots on
+        R's tail for the collector to retake (accepted, same rewrite);
+        `ensure_thread_record` published the record across P's draw, which
+        `debug-journal` re-enters (accepted: the block is drawn first and the
+        thread-local re-read); stale sentences (fixed). The poll's pop of
+        withheld returns ahead of P's reading: refused — the pop runs at
+        every poll, the reading behind the gate; a free withheld during the
+        reading returns one poll later, bounded.
+      Critic 2026-09-16 round 2: `Batch::is_empty` read P's non-root entries
+        as nothing, so an exit whose P held only roots read live leaked them
+        with the thread. Accepted: a batch is empty only with both rings
+        empty, and the exit's progress is measured by lane
+        (`a_batch_of_verdicts_without_a_root_is_disposed_of_by_the_close`).
+        R-then-P starved the collector's shortlist under a bounded pressure
+        round. Accepted: P's roots first. The rfc's three sentences the code
+        no longer matched: amended in place, marked. No unwind harness for
+        P's pass: checkpoint 7 before the advance, and the free's own point
+        2, pinned by `an_unwind_inside_ps_pass_leaves_no_entry_answered_for_twice`.
+        Named and left priced: a close whose validation refuses the whole
+        batch writes every P root back into R, up to a block's worth, funded
+        as the ruling says — the overflow buffer's margin above a block is
+        17 entries.
 - [ ] S49.5 The collector's batch   *(after S49.4)*
       done: `worker::serve` opens the collector's workspace, takes the
         owner's token by compare-and-swap, reads the collecting word with

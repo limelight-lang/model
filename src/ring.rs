@@ -170,6 +170,28 @@ pub(crate) struct Slots<'a> {
     pub(crate) tail_block: &'a AtomicPtr<BlockHeader>,
 }
 
+impl Slots<'_> {
+    /// Make `block` the ring's one block, empty, linked to itself: the form
+    /// a ring that never grows is given at its birth, so that its writer
+    /// needs no fresh block and its reader finds a block to read.
+    ///
+    /// # Safety
+    /// The ring holds no block, no `Writer`, `Reader` or `Quiescent` over
+    /// these slots is in use, and `block` is a pool block nobody else uses.
+    pub(crate) unsafe fn install_single_block(&self, block: *mut BlockHeader) {
+        debug_assert!(
+            self.front_block.load(Ordering::Relaxed).is_null(),
+            "the ring holds no block"
+        );
+        unsafe {
+            init_block(block);
+            (*ring(block)).link.next.store(block, Ordering::Relaxed);
+        }
+        self.tail_block.store(block, Ordering::Release);
+        self.front_block.store(block, Ordering::Release);
+    }
+}
+
 /// What a push answers when the tail block is full and the caller's closure
 /// gave no block: the entry was not written.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -262,6 +284,30 @@ impl<'a> Writer<'a> {
         }
 
         next_tail != front
+    }
+
+    /// Entries the tail block takes before it is full, read the way a push
+    /// reads its room: the local copy of `front` first, the reader's word
+    /// only when the copy says the block is full. Zero for a ring with no
+    /// block. A writer that may not take a fresh block — P's, which never
+    /// grows — bounds what it writes by this before it writes.
+    pub(crate) fn room_in_tail_block(&self) -> usize {
+        let tail_block = self.0.tail_block.load(Ordering::Relaxed);
+        if tail_block.is_null() {
+            return 0;
+        }
+
+        let b = ring(tail_block);
+        let tail = unsafe { (*b).writer.tail.load(Ordering::Relaxed) };
+        let mut front = unsafe { *(*b).writer.local_front.get() };
+        let mut room = BLOCK_ENTRIES - span(front, tail);
+        if room == 0 {
+            front = unsafe { (*b).reader.front.load(Ordering::Acquire) };
+            unsafe { *(*b).writer.local_front.get() = front };
+            room = BLOCK_ENTRIES - span(front, tail);
+        }
+
+        room
     }
 
     /// Take a block from `fresh`, write `entry` as its first slot, and link
@@ -381,9 +427,6 @@ impl<'a> Writer<'a> {
 
 /// Entries a [`Reader::peek`] read and has not yet consumed: where they
 /// stand, so that [`Reader::commit`] can advance past exactly them.
-// The collector's batch is the reader's production caller (`PLAN.md`
-// S49.5); the tests drive it until then.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Peeked {
     /// The block the entries begin in, and how many of them it holds.
@@ -395,7 +438,6 @@ pub(crate) struct Peeked {
     in_second: usize,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl Peeked {
     /// Entries peeked.
     pub(crate) fn len(&self) -> usize {
@@ -403,13 +445,10 @@ impl Peeked {
     }
 }
 
-/// The one consumer's handle.
-// The collector's batch is the reader's production caller (`PLAN.md`
-// S49.5); the tests drive it until then.
-#[cfg_attr(not(test), allow(dead_code))]
+/// The one consumer's handle: the owner's over P, and the collector's over
+/// R.
 pub(crate) struct Reader<'a>(Slots<'a>);
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl<'a> Reader<'a> {
     /// The reader over `slots`.
     ///
@@ -422,6 +461,9 @@ impl<'a> Reader<'a> {
 
     /// Take up to `out.len()` entries from the front, oldest first, and
     /// answer how many were taken. Zero is the ring read empty.
+    // The collector's batch reads through the peek/commit pair (`PLAN.md`
+    // S49.5), and the tests drive the consuming read until then.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn take(&self, out: &mut [usize]) -> usize {
         let mut front_block = self.0.front_block.load(Ordering::Acquire);
         let mut taken = 0;
@@ -575,8 +617,52 @@ impl<'a> Reader<'a> {
         unsafe { (*s).reader.front.store(front, Ordering::Release) };
     }
 
+    /// Consume the first `count` entries without reading them: the front
+    /// moves past them block by block as [`Reader::take`] would move it,
+    /// and the block ahead of a drained one is entered on the same double
+    /// read. A caller that read the entries in place and answered for every
+    /// one of them advances this way.
+    ///
+    /// # Panics
+    /// In a debug build, when fewer than `count` entries stand.
+    pub(crate) fn advance(&self, mut count: usize) {
+        let mut front_block = self.0.front_block.load(Ordering::Acquire);
+        while count != 0 {
+            debug_assert!(!front_block.is_null(), "the entries stood");
+            let b = ring(front_block);
+            let front = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
+            let mut tail = unsafe { *(*b).reader.local_tail.get() };
+            if front == tail {
+                tail = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
+                unsafe { *(*b).reader.local_tail.get() = tail };
+            }
+
+            let here = span(front, tail).min(count);
+            if here != 0 {
+                let mut index = front;
+                for _ in 0..here {
+                    index = step(index);
+                }
+                unsafe { (*b).reader.front.store(index, Ordering::Release) };
+                count -= here;
+                continue;
+            }
+
+            debug_assert!(
+                front_block != self.0.tail_block.load(Ordering::Acquire),
+                "the entries stood"
+            );
+            let next = unsafe { (*b).link.next.load(Ordering::Acquire) };
+            self.0.front_block.store(next, Ordering::Release);
+            front_block = next;
+        }
+    }
+
     /// Entries not yet taken, as of the tail the reader sees now: the front
     /// block's span and every block's between it and the tail block.
+    // The collector's round reads it (`PLAN.md` S49.7); the tests drive it
+    // until then.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn unread(&self) -> usize {
         let front_block = self.0.front_block.load(Ordering::Acquire);
         if front_block.is_null() {
@@ -689,17 +775,18 @@ impl<'a> Quiescent<'a> {
         Packing::open(self)
     }
 
-    /// Rewrite the first `count` entries from the front in place, each to the
-    /// word `map` answers for it, moving nothing: the marks a reading writes
-    /// over the entries it read.
-    pub(crate) fn map_prefix_in_place(&self, count: usize, mut map: impl FnMut(usize) -> usize) {
+    /// Hand `rewrite` each of the first `count` entries from the front in
+    /// place, moving nothing: the marks a reading writes over the entries it
+    /// read, and the null an owner writes over one it has answered for. The
+    /// slot is the closure's for the call, so what it writes stands before
+    /// anything the closure does after the write.
+    pub(crate) fn map_prefix_in_place(&self, count: usize, mut rewrite: impl FnMut(&mut usize)) {
         let mut left = count;
         self.for_each_block_in_order(|b| {
             let mut index = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
             let tail = unsafe { (*b).writer.tail.load(Ordering::Relaxed) };
             while left != 0 && index != tail {
-                let slot = unsafe { (*b).slots[index].get() };
-                unsafe { *slot = map(*slot) };
+                rewrite(unsafe { &mut *(*b).slots[index].get() });
                 index = step(index);
                 left -= 1;
             }
@@ -967,7 +1054,7 @@ impl<'a> Quiescent<'a> {
 }
 
 /// A linear chain of blocks in ring form, filled by its owner alone and
-/// spliced into a ring whole ([`Quiescent::splice_after_tail`]). Every block
+/// spliced into a ring whole ([`Writer::splice_after_tail`]). Every block
 /// but the last is full, and the last holds at least one entry: an empty
 /// block would break the reader's rule that the block ahead of an emptied
 /// front block holds an entry.

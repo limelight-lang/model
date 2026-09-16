@@ -8,9 +8,17 @@
 //! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
 //! and the collector's verdicts come back by a second ring"). The lines are
 //! split by who writes them, so a registration's store and a batch's load
-//! never share a line. R's two words are read by `crate::cycle::queue`
-//! through `crate::ring`; P's are read by nothing until P is built
-//! (`PLAN.md` S49.4).
+//! never share a line. Both rings' words are read by `crate::cycle::queue`
+//! through `crate::ring`.
+//!
+//! # P's one block is drawn with the record
+//!
+//! The verdict ring P never grows: one pool block per thread, the owner's
+//! memory, drawn beside the record and installed in both of P's words
+//! before the record is the thread's, so that a collector's first post finds
+//! a block and never asks the owner for one, and given back with the record
+//! at the exit. Its refusal is the record's refusal. What P carries and how
+//! the owner reads it is `crate::cycle::queue::verdicts`.
 //!
 //! # When a thread takes its record
 //!
@@ -122,30 +130,27 @@ pub(crate) struct OwnerRecord {
 /// verdicts into P, and how many roots it takes per batch. Loaded by the
 /// owner only where the ring's rules say so (`crate::ring`, the writer's
 /// read of the front block on a full tail block).
-// P's words are loaded by nothing outside the tests until S49.4 builds P.
-#[cfg_attr(not(test), allow(dead_code))]
 #[repr(C, align(64))]
 struct ReaderLine {
     /// The block of R the collector reads from (`crate::ring::Slots`).
     r_front_block: AtomicPtr<BlockHeader>,
-    /// The block of P the collector posts into; null until S49.4 builds P.
+    /// The block of P the collector posts into: P's one block, the same
+    /// [`WriterLine::p_front_block`] names, for the thread's whole life.
     p_tail_block: AtomicPtr<BlockHeader>,
     /// Roots the collector takes from this owner per batch, halved on a
     /// batch that met its budget and doubled back on a completed one
     /// (`PLAN.md` S49.5); zero until then.
+    #[cfg_attr(not(test), allow(dead_code))]
     batch: AtomicUsize,
 }
 
 /// The line the owner writes: where it registers into R, where it reads
 /// verdicts from P, and whether it is collecting in line.
-// P's word is loaded by nothing outside the tests until S49.4 builds P.
-#[cfg_attr(not(test), allow(dead_code))]
 #[repr(C, align(64))]
 struct WriterLine {
     /// The block of R the owner registers into (`crate::ring::Slots`).
     r_tail_block: AtomicPtr<BlockHeader>,
-    /// The block of P the owner reads verdicts from; null until S49.4
-    /// builds P.
+    /// The block of P the owner reads verdicts from: P's one block.
     p_front_block: AtomicPtr<BlockHeader>,
     /// Whether an in-line collection is running on the owner, from before
     /// its take of the token to the last store of its close. The owner's
@@ -282,6 +287,17 @@ impl OwnerRecord {
         }
     }
 
+    /// P's two words: the front block on the writer's line, since the owner
+    /// is P's reader, and the tail block on the reader's, the collector being
+    /// its writer.
+    #[inline]
+    pub(crate) fn verdict_ring(&self) -> crate::ring::Slots<'_> {
+        crate::ring::Slots {
+            front_block: &self.writer.p_front_block,
+            tail_block: &self.reader.p_tail_block,
+        }
+    }
+
     /// Whether the owner is collecting in line, as the owner reads it:
     /// relaxed, the word being the owner's own on that side.
     #[inline]
@@ -339,9 +355,9 @@ pub(crate) fn this_thread_record() -> *mut OwnerRecord {
     OWNER_RECORD.with(Cell::get)
 }
 
-/// This thread's record, taking one from the registry if it has none yet.
-/// Null when the pool refuses the block a fresh record would stand in, and
-/// the next call asks again.
+/// This thread's record, taking one from the registry if it has none yet,
+/// with P's block drawn and installed. Null when the pool refuses the block
+/// a fresh record would stand in or P's block, and the next call asks again.
 ///
 /// The record comes out with its token held; the caller is the one that
 /// releases it, or keeps it as its own claim ([`crate::cycle::token::HeldToken`]).
@@ -360,13 +376,34 @@ pub(crate) fn ensure_thread_record() -> (*mut OwnerRecord, bool) {
         return (std::ptr::null_mut(), true);
     }
 
-    let record = take_record();
-    if !record.is_null() {
-        OWNER_RECORD.with(|cell| cell.set(record));
-        #[cfg(test)]
-        RECORDS_TAKEN.with(|count| count.set(count.get() + 1));
+    // P's block ahead of the record, so that no record is ever published
+    // with a draw still to make behind it. The thread-local is read again
+    // after the draw rather than trusted across it: under `debug-journal`
+    // the draw's first record site runs `ll_thread_init` on this thread,
+    // which takes a record of its own (`crate::cycle::queue`,
+    // `try_ensure_queue_base` carries the same re-entry).
+    let p_block = gc_metadata::acquire();
+    if p_block.is_null() {
+        return (std::ptr::null_mut(), true);
     }
 
+    let installed = this_thread_record();
+    if !installed.is_null() {
+        gc_metadata::release_to_critical(p_block);
+        return (installed, false);
+    }
+
+    let record = take_record();
+    if record.is_null() {
+        gc_metadata::release_to_critical(p_block);
+        return (record, true);
+    }
+
+    gc_metadata::charge(BLOCK_PAYLOAD);
+    unsafe { (*record).verdict_ring().install_single_block(p_block) };
+    OWNER_RECORD.with(|cell| cell.set(record));
+    #[cfg(test)]
+    RECORDS_TAKEN.with(|count| count.set(count.get() + 1));
     (record, true)
 }
 
@@ -443,13 +480,16 @@ pub(crate) unsafe fn owner_holds(record: *mut OwnerRecord) -> bool {
     unsafe { (*record).owner_holds.load(Ordering::Relaxed) }
 }
 
-/// Give this thread's record back to the registry, for the next thread.
+/// Give this thread's record back to the registry, for the next thread, and
+/// P's block back to the pool.
 ///
 /// The token stays held: the exit's final claim is what stands on it — or
 /// the initialisation's own hold, for a thread `ll_thread_init` refused
 /// after the draw — and the thread that takes the record next releases it
 /// when its own initialisation is complete. A thread that never had a
-/// record has nothing to give back.
+/// record has nothing to give back. A verdict still standing in P goes with
+/// the block: the exit's rounds read P to its end under the claim, so what
+/// stands here is what no round could dispose of.
 ///
 /// # Safety
 /// This thread holds its record's token and will not touch the record again.
@@ -458,6 +498,12 @@ pub(crate) unsafe fn release_thread_record() {
     if record.is_null() {
         return;
     }
+
+    // Under the held token, so no collector posts into the block as it goes.
+    unsafe { crate::ring::Quiescent::new((*record).verdict_ring()) }.dismantle(|block| {
+        gc_metadata::discharge(BLOCK_PAYLOAD);
+        gc_metadata::release_to_critical(block);
+    });
 
     debug_assert!(
         unsafe { (*record).token.is_held() },
@@ -613,40 +659,38 @@ pub(crate) fn refuse_record_draws(refuse: bool) {
     REFUSE_DRAWS.with(|cell| cell.set(refuse));
 }
 
-/// Write into `record`'s reader and writer lines, for a case that reads
-/// whether a re-take empties them: P's two words and the batch size. R's
-/// two words are left alone, because the thread's exit reads its ring
-/// through them and a scribbled pointer would be followed; they are nulled
-/// by the ring's dismantle before the record goes back, which is what the
-/// reset repeats. The collecting word is left alone too: set, it is the
-/// owner's gate, and the exit would wait behind it.
+/// Write into `record`'s reader line, for a case that reads whether a
+/// re-take empties it: the batch size, which is the one word of the two
+/// lines no exit reads. The four block words are left alone, because the
+/// exit reads both rings through them and a scribbled pointer would be
+/// followed; they are nulled by the rings' dismantle before the record goes
+/// back, which is what the reset repeats. The collecting word is left alone
+/// too: set, it is the owner's gate, and the exit would wait behind it.
 #[cfg(test)]
 pub(crate) fn scribble_lines_for_test(record: *mut OwnerRecord) {
-    let scribble = std::ptr::dangling_mut::<BlockHeader>();
-    unsafe {
-        (*record)
-            .reader
-            .p_tail_block
-            .store(scribble, Ordering::Relaxed);
-        (*record).reader.batch.store(7, Ordering::Relaxed);
-        (*record)
-            .writer
-            .p_front_block
-            .store(scribble, Ordering::Relaxed);
-    }
+    unsafe { (*record).reader.batch.store(7, Ordering::Relaxed) };
 }
 
-/// Whether `record`'s reader and writer lines hold nothing.
+/// Whether `record`'s reader and writer lines hold what a fresh life starts
+/// with: R's words and the batch size empty, the collecting word clear, and
+/// P's two words naming one block.
 #[cfg(test)]
-pub(crate) fn lines_are_empty(record: *mut OwnerRecord) -> bool {
+pub(crate) fn lines_are_fresh(record: *mut OwnerRecord) -> bool {
     let reader = unsafe { &(*record).reader };
     let writer = unsafe { &(*record).writer };
+    let p_block = reader.p_tail_block.load(Ordering::Relaxed);
     reader.r_front_block.load(Ordering::Relaxed).is_null()
-        && reader.p_tail_block.load(Ordering::Relaxed).is_null()
         && reader.batch.load(Ordering::Relaxed) == 0
         && writer.r_tail_block.load(Ordering::Relaxed).is_null()
-        && writer.p_front_block.load(Ordering::Relaxed).is_null()
         && !writer.collecting.load(Ordering::Relaxed)
+        && !p_block.is_null()
+        && writer.p_front_block.load(Ordering::Relaxed) == p_block
+}
+
+/// The block P stands in, or null for a record with none.
+#[cfg(test)]
+pub(crate) fn verdict_block(record: *mut OwnerRecord) -> *mut BlockHeader {
+    unsafe { (*record).reader.p_tail_block.load(Ordering::Relaxed) }
 }
 
 /// How many records this thread has taken out of the registry so far.

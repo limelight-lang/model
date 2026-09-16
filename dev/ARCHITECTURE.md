@@ -358,8 +358,10 @@ held by the reclamation arena; it retires again after their user code. Combining
 active candidate chains moves only records between their partial heads and
 splices full tails; retirement is the one whole-queue record pass. The design
 is `rfc/model/gc/rc-cycle.md`; the collector thread's round over one owner is
-`cycle::worker`, and the verdicts it will post are read at the owner's poll
-(`PLAN.md` S49.4).
+`cycle::worker`, and the verdicts it posts into the owner's ring P are read
+by the owner into every in-line collection's batch and, as a prefix, at its
+open-gate poll (`cycle::queue::verdicts`); the batch that posts them is
+`PLAN.md` S49.5's.
 
 ## Cross-module invariants
 
@@ -428,7 +430,8 @@ write them. Each is load-bearing for at least two modules.
    (`rfc/model/gc/rc-cycle.md`). The in-line collection retires completed
    candidate deaths after membership and shadow readers end; the collector
    thread's verdicts are a shortlist the owner disposes of at its poll
-   (`cycle::worker`; `PLAN.md` S49.4). Collections run from the poll, explicit fire and
+   and into every in-line collection's batch, re-reading the entity
+   before it retires anything (`cycle::queue::verdicts`). Collections run from the poll, explicit fire and
    allocation refusal (`cycle::collect`).
 10. **Arm vs fire**: nothing collects mid-mutation. A collection fires
     only at a clean point, and the crate has three of them: the ABI's

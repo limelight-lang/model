@@ -344,33 +344,43 @@ fn an_unregistered_thread_draws_its_record_at_its_first_registration() {
 }
 
 /// A record off the free list is reset in place: its reader's and writer's
-/// lines are empty for the next thread, and the token word is the one the
-/// exit left rather than a rewritten one.
+/// lines are the next thread's own — R's words empty, P's naming the block
+/// drawn for that life — and the token word is the one the exit left rather
+/// than a rewritten one.
 #[test]
-fn a_retaken_record_starts_with_empty_lines() {
+fn a_retaken_record_starts_with_fresh_lines() {
     let _g = test_guard();
     let (token, record, release, thread) = a_started_thread();
+    let first_life_block = verdict_block(record);
+    assert!(
+        !first_life_block.is_null(),
+        "P's block came with the record"
+    );
     scribble_lines_for_test(record);
     pin_for_test(record, true);
     drop(release);
     thread.join().expect("the thread exited");
     assert!(unsafe { (*token).is_held() });
-    assert!(!lines_are_empty(record), "the scribble outlived the exit");
+    assert!(!lines_are_fresh(record), "the scribble outlived the exit");
+    assert!(
+        verdict_block(record).is_null(),
+        "P's block went back with the record"
+    );
 
     // The re-take is made on a fresh thread, which names the record it
     // takes: the list's top moves under the parallel harness, and the pin
     // keeps every other thread off this record until the reading is made.
     let sent = Sent(record);
-    let (retook_it, lines_empty) = std::thread::spawn(move || {
+    let (retook_it, lines_fresh) = std::thread::spawn(move || {
         let record = sent.into_inner();
         take_this_record_for_test(record);
         assert!(crate::memory::heap::ll_thread_init());
         let mine = this_thread_record();
-        (mine == record, lines_are_empty(mine))
+        (mine == record, lines_are_fresh(mine))
     })
     .join()
     .expect("the thread returned");
     assert!(retook_it, "the named record was the one taken");
-    assert!(lines_empty, "the re-take reset the lines in place");
+    assert!(lines_fresh, "the re-take reset the lines in place");
     pin_for_test(record, false);
 }

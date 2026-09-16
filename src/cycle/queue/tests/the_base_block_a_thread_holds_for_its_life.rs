@@ -302,8 +302,9 @@ fn a_thread_nothing_will_tear_down_is_not_funded() {
     assert!(stats().current_blocks() <= blocks_before + registry_blocks);
     assert_eq!(
         drawn_there.peak_blocks(),
-        1 + SPARE_SEGMENTS + registry_blocks,
-        "the base block and both spare segments were drawn, and the registry's block if it carved one"
+        2 + SPARE_SEGMENTS + registry_blocks,
+        "the base block, P's block and both spare segments were drawn, and \
+         the registry's block if it carved one"
     );
     assert_eq!(
         drawn_there.current_blocks(),

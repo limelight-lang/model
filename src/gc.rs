@@ -41,7 +41,7 @@ thread_local! {
 
 /// Arm this thread for a collection at its next clean point.
 ///
-/// Three callers arm, none of which can collect where it stands. The
+/// Four callers arm, none of which can collect where it stands. The
 /// candidate queue, when a spare cell runs out of room — a reserve draw, or a
 /// refusal at both allocation paths — because `ll_release` holds no frame
 /// (`crate::cycle::queue`). The pressure collection, at every ending that
@@ -49,7 +49,10 @@ thread_local! {
 /// stands behind it is garbage the poll has to read
 /// (`crate::cycle::collect::collect_under_pressure`). And the poll itself,
 /// when the epoch has turned over and the deferred lane is re-offered, so
-/// that the same safepoint traces the re-offered roots. The arming is how the
+/// that the same safepoint traces the re-offered roots, and again when its
+/// reading of the verdict ring stopped at a proposed or unwalked root, which
+/// the collection it fires reads into its batch
+/// (`crate::cycle::queue::verdicts`). The arming is how the
 /// poll hears about any of them (`rfc/model/gc/strategies.md`, "Collection
 /// requests and triggers").
 pub(crate) fn arm() {
@@ -189,6 +192,17 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // and the runtime enforces it").
     if !crate::cycle::collect::may_collect() {
         return 0;
+    }
+
+    // The collector's verdicts, read behind the gate so that a closed-gate
+    // poll reads none: P's prefix of completed deaths and roots read live is
+    // disposed of here, and the first proposed or unwalked root arms the
+    // collection this same poll fires, which reads it into its batch
+    // (`crate::cycle::queue::verdicts`).
+    if crate::cycle::queue::verdicts::dispose_prefix_at_the_poll(crate::cycle::epoch::commits())
+        .proposal_stands
+    {
+        arm();
     }
 
     if !take_arming() {

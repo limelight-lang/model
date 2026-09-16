@@ -1,5 +1,7 @@
 //! The owner's retirement pass in ring form: one in-place compaction of R,
-//! the overflow buffer and, when asked, the deferred lane, drawing nothing.
+//! the overflow buffer and, when asked, the deferred lane, drawing nothing;
+//! and over P, the disposition of a batch's prefix of verdicts or the
+//! in-place retirement of the completed deaths standing anywhere in it.
 //!
 //! An entry whose entity completed its death in place is retired — its slot
 //! goes back through `ll_free` — and an entry the close marked goes to the
@@ -48,7 +50,11 @@ enum Destination {
 ///
 /// `sweep_deferred` asks for the deferred lane's own entries to be read for
 /// completed deaths too, ahead of the ring's marked entries joining it.
-pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool) {
+///
+/// `verdicts` is the batch's prefix of P, disposed of whole and advanced
+/// past ([`dispose_verdicts`]); `None` retires P's completed deaths in
+/// place and advances nothing.
+pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: Option<usize>) {
     let state = owner_state();
     if state.is_null() {
         return;
@@ -76,7 +82,6 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool) {
         );
     }
 
-    let mut lane_was_empty = owner_state.deferred().is_empty();
     if let Some(ring) = candidate_ring() {
         let mut pass = ring.packing();
         while let Some(entry) = pass.read() {
@@ -101,22 +106,11 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool) {
                 }
                 Destination::Deferred => {
                     // Out of the ring before it is in the lane, so that no
-                    // unwind between the two finds it in both. The block
-                    // comes from a spare cell and never from the reserve: a
-                    // block the deferred lane keeps is one the reserve does
-                    // not get back, and a draw inside this pass would be a
-                    // request under the pressure that can have started it
-                    // (`rfc/model/gc/cycle/questions.md`, Y12 clause 8).
+                    // unwind between the two finds it in both.
                     pass.discard();
-                    let pushed = owner_state.deferred().push(entity_entry(entity), || {
-                        let block = take_spare(owner_state);
-                        if !block.is_null() {
-                            charge_block();
-                        }
-                        block
-                    });
+                    let deferred = defer_entry(owner_state, entity, deferred_at);
                     note_queue_work(0, 0, 1);
-                    if pushed.is_err() {
+                    if deferred.is_err() {
                         // Both cells empty: the root stays in the ring and
                         // is offered to the next collection rather than to
                         // the turnover.
@@ -124,15 +118,6 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool) {
                         continue;
                     }
 
-                    if lane_was_empty {
-                        // The oldest deferred record is what the re-offer's
-                        // mirror is about, so the count is taken where the
-                        // lane starts.
-                        if let Some(at_commits) = deferred_at {
-                            owner_state.turnover_mirror.set(at_commits);
-                        }
-                        lane_was_empty = false;
-                    }
                     checkpoint(3);
                 }
                 Destination::Keep => {
@@ -146,12 +131,79 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool) {
     checkpoint(4);
     OverflowPass::open(state).run();
     checkpoint(6);
+    dispose_verdicts(state, verdicts, deferred_at);
+}
+
+/// The pass over P. With `prefix` the batch's count of P's entries, dispose
+/// of each of them: a completed death is retired, a root marked or read live
+/// goes to the deferred lane, and everything else — a component refused or
+/// resurrected, a resurrected zero count, a root the lane had no block
+/// for — is written back into R as a registration, before P's front
+/// advances past the whole prefix. Without a prefix, every completed death
+/// standing in P is retired in place, its entry nulled, and P's front stays.
+///
+/// The writes into P's slots are the owner's under its exclusion of the
+/// collector (`crate::cycle::queue::verdicts`, "Who writes P's slots"). An
+/// entry is nulled as soon as it is answered for, so an unwind out of a
+/// free or a write-back leaves no entry that a later reading would answer
+/// for twice; the advance is the pass's last act, and a prefix an unwind
+/// left unadvanced is read again by the next batch, its disposed entries
+/// skipped.
+fn dispose_verdicts(state: *mut OwnerCycleState, prefix: Option<usize>, deferred_at: Option<u64>) {
+    let Some(ring) = verdicts::verdict_ring() else {
+        return;
+    };
+    let owner_state = unsafe { owner_state_ref(state) };
+    let count = prefix.unwrap_or_else(|| ring.count());
+    ring.map_prefix_in_place(count, |slot| {
+        let entry = *slot;
+        if verdicts::is_disposed(entry) {
+            return;
+        }
+
+        note_queue_work(0, 1, 0);
+        let entity = verdicts::verdict_entity(entry);
+        if completed_death(entity) {
+            // Nulled before the free, as the ring's pass discards before
+            // it frees.
+            *slot = 0;
+            free(entity);
+            return;
+        }
+
+        if prefix.is_none() {
+            return;
+        }
+
+        let verdict = verdicts::entry_verdict(entry);
+        let deferrable = verdict == verdicts::Verdict::ReadLive
+            || (verdicts::is_batch_root(entry) && entry & verdicts::VERDICT_DEFER_MARK != 0);
+        // Nulled before the move, so that no unwind between the two finds
+        // the entity in P and in a lane.
+        *slot = 0;
+        if deferrable && defer_entry(owner_state, entity, deferred_at).is_ok() {
+            note_queue_work(0, 0, 1);
+            return;
+        }
+
+        // Written back into R as a registration is, its candidate bit
+        // still set (`rfc/model/gc/rc-cycle.md`, "The mutator's
+        // disposition").
+        unsafe { append_entry(state, entity) };
+        note_queue_work(0, 0, 1);
+    });
+
+    if prefix.is_some() {
+        checkpoint(7);
+        let record = owner_record::this_thread_record();
+        unsafe { ring::Reader::new((*record).verdict_ring()) }.advance(count);
+    }
 }
 
 /// Whether `entity`'s death completed in place, which is the one state a
 /// retirement acts on: a zero count whose teardown has not ended is left
 /// registered (`crate::refcount::SlotStateReading`).
-fn completed_death(entity: *mut RcHeader) -> bool {
+pub(super) fn completed_death(entity: *mut RcHeader) -> bool {
     matches!(
         unsafe { crate::refcount::slot_state_with_flags(entity) },
         crate::refcount::SlotStateReading::DeadInPlace { .. }
@@ -166,7 +218,7 @@ fn completed_death(entity: *mut RcHeader) -> bool {
 /// crosses to `ll_free` at the call, and a panic inside the allocator cannot
 /// be retried — it may already have returned the slot or unmapped the whole
 /// run.
-fn free(entity: *mut RcHeader) {
+pub(super) fn free(entity: *mut RcHeader) {
     struct PendingFree(*mut RcHeader);
     impl Drop for PendingFree {
         fn drop(&mut self) {
@@ -259,7 +311,9 @@ thread_local! {
 /// read and before its disposition acts, 2 between a retired entry's flag
 /// clear and its free, 3 after an entry joined the deferred lane, 4 between
 /// the ring's pass and the overflow buffer's, 5 after an overflow entry is
-/// kept, 6 after everything.
+/// kept, 6 after the overflow buffer's pass and before P's, 7 after every
+/// entry of P's prefix is answered for and before the advance. A free that
+/// raises inside P's pass is point 2, the same as inside the ring's.
 #[inline]
 fn checkpoint(_point: usize) {
     #[cfg(test)]
@@ -275,9 +329,14 @@ fn checkpoint(_point: usize) {
     }
 }
 
-/// The last checkpoint a case can name.
+/// The last checkpoint of the passes over R and the overflow buffer; the
+/// one after it is P's ([`VERDICT_ADVANCE_CHECKPOINT`]).
 #[cfg(test)]
 pub(super) const LAST_CHECKPOINT: usize = 6;
+
+/// The checkpoint before P's advance.
+#[cfg(test)]
+pub(super) const VERDICT_ADVANCE_CHECKPOINT: usize = 7;
 
 /// Arm one unwind at `point` for this thread's next pass.
 #[cfg(test)]

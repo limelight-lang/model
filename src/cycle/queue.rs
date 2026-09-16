@@ -134,28 +134,41 @@
 //!
 //! # What the poll does for this module
 //!
-//! Four things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
+//! Five things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
 //! It refills the spare cells, asking [`needs_spares`] — the count itself,
 //! never a flag a draw sets, because a thread whose fill at init was refused
 //! has never drawn and would never be asked again. It then drains the overflow
 //! buffer into the queue, which is why the refill comes first; compares the
 //! full-width epoch against the deferred lane's mirror and re-offers that lane
-//! where it moved; and, armed, fires a collection. A reserve draw, an
-//! overflow append, or a due deferred re-offer arms it.
+//! where it moved; behind an open gate, disposes of the prefix of P up to
+//! the first proposed root ([`verdicts`]); and, armed, fires a collection.
+//! A reserve draw, an overflow append, a due deferred re-offer, or a
+//! proposal standing in P arms it.
 //!
-//! # What the in-line collection does with the ring
+//! # The second ring, P
 //!
-//! It reads every entry from the front block to the tail as its batch
-//! ([`read_batch`]) — the collecting word in the record keeps the collector
-//! out for the collection's whole length — traces, and at its close
-//! **compacts the ring in place** ([`compaction`]): an entry it disposed of
-//! is dropped, every other entry is kept in order, and the blocks' `tail`
-//! indices and the tail block are lowered, every one of them the owner's
-//! own words on its own thread. Nothing is taken out, so nothing is merged
-//! back; a registration the collection's own destructors make lands at the
-//! tail, behind the batch, and the compaction keeps it. The overflow buffer
-//! is compacted by the same pass and never traced: its entries are the next
-//! collection's, once the poll has drained them.
+//! The collector's verdicts about the roots it took from R come back by a
+//! ring of the same form with the roles swapped, one block per thread,
+//! drawn with the record and never grown. The owner alone reads it: a
+//! collection's batch is R's entries and the proposed roots standing in P
+//! ([`Batch`]), and every reduction of state a verdict leads to is made on
+//! the owner's own re-reading, at the close or at the poll ([`verdicts`]).
+//!
+//! # What the in-line collection does with the rings
+//!
+//! It reads every entry from the front block to the tail, and every root
+//! standing in P, as its batch ([`read_batch`]) — the collecting word in
+//! the record keeps the collector out for the collection's whole length —
+//! traces, and at its close **compacts the ring in place** ([`compaction`]):
+//! an entry it disposed of is dropped, every other entry is kept in order,
+//! and the blocks' `tail` indices and the tail block are lowered, every one
+//! of them the owner's own words on its own thread. Nothing is taken out, so
+//! nothing is merged back; a registration the collection's own destructors
+//! make lands at the tail, behind the batch, and the compaction keeps it.
+//! The batch's prefix of P is disposed of by the same pass and P's front
+//! advanced past it. The overflow buffer is compacted by the same pass and
+//! never traced: its entries are the next collection's, once the poll has
+//! drained them.
 use std::cell::{Cell, UnsafeCell};
 
 use crate::cycle::owner_record::{self, OwnerRecord};
@@ -781,29 +794,40 @@ pub(crate) fn drain_overflow() {
     }
 }
 
-/// The entries one in-line collection read out of R: the first `len` from
-/// the front, which is every entry the ring held when the collection read
-/// it ([`read_batch`]).
+/// The entries one in-line collection read as its roots: the first `len` of
+/// R from its front, which is every entry the ring held when the collection
+/// read it, and the first `verdicts` of P, of which the proposed and the
+/// unwalked are roots ([`read_batch`]).
 ///
-/// A count and not a chain: the entries stay where they are, a registration
-/// the collection's own destructors make lands behind them, and the
-/// close's compaction is what disposes of them
-/// ([`dispose_candidates`]). A batch dropped without a disposition leaves
-/// every root registered, since nothing was taken out.
+/// Counts and not a chain: the entries stay where they are, a registration
+/// the collection's own destructors make lands behind them in R, a verdict
+/// the collector posts lands behind them in P, and the close's compaction
+/// is what disposes of them ([`dispose_candidates`]). A batch dropped
+/// without a disposition leaves every root registered, since nothing was
+/// taken out of either ring.
 #[derive(Debug)]
 pub(crate) struct Batch {
     len: usize,
+    verdicts: usize,
 }
 
 impl Batch {
-    /// Whether the batch holds no root at all, which is a collection that
-    /// found an empty queue.
+    /// Whether the batch holds nothing for a collection to do: no entry of
+    /// R and no entry of P. A batch of verdicts without a root among them is
+    /// not empty — its collection proposes nothing and its close is what
+    /// defers, retires and writes back those verdicts and advances P past
+    /// them; and so is one of entries already answered for, whose close is
+    /// the advance.
     pub(crate) fn is_empty(&self) -> bool {
-        self.len == 0
+        self.len == 0 && self.verdicts == 0
     }
 
-    /// Take every root in the batch, oldest first, and stop at the first
-    /// `visit` that answers false. **False** when it stopped early.
+    /// Take every root in the batch, oldest first — P's, which were R's
+    /// front before the collector took them, then R's — and stop at the
+    /// first `visit` that answers false. **False** when it stopped early.
+    /// The order is what a bounded trace reads: the collector's shortlist
+    /// ahead of the roots nobody has read (`rfc/model/gc/rc-cycle.md`,
+    /// "In-line collection is the same reader").
     ///
     /// A root may name an entity that has since been torn down: the entry is
     /// what keeps that slot out of the allocator's hands, and nothing retires
@@ -811,12 +835,22 @@ impl Batch {
     /// reader is what applies the zero-count rule, which for the trace is
     /// `crate::cycle::mark`'s.
     pub(crate) fn walk_roots(&self, mut visit: impl FnMut(*mut RcHeader) -> bool) -> bool {
+        let mut stopped = false;
+        self.walk_verdicts(|entry| {
+            if verdicts::is_batch_root(entry) {
+                stopped = !visit(verdicts::verdict_entity(entry));
+            }
+            !stopped
+        });
+        if stopped {
+            return false;
+        }
+
         let Some(ring) = candidate_ring() else {
             return true;
         };
 
         let mut left = self.len;
-        let mut stopped = false;
         ring.walk(|entry| {
             if left == 0 {
                 return false;
@@ -829,13 +863,32 @@ impl Batch {
         !stopped
     }
 
-    /// Mark every entry whose root `deferrable` answers true for, and answer
-    /// how many were marked.
+    /// `visit` over the batch's first `verdicts` entries of P as they stand,
+    /// disposed ones included, stopping at the first false.
+    fn walk_verdicts(&self, mut visit: impl FnMut(usize) -> bool) {
+        let Some(ring) = verdicts::verdict_ring() else {
+            return;
+        };
+
+        let mut left = self.verdicts;
+        ring.walk(|entry| {
+            if left == 0 {
+                return false;
+            }
+
+            left -= 1;
+            visit(entry)
+        });
+    }
+
+    /// Mark every root whose entity `deferrable` answers true for, in both
+    /// rings, and answer how many were marked.
     ///
     /// The entity handed to the predicate carries no mark, and a mark already
     /// standing on an entry is overwritten rather than kept: it is one an
     /// unwound close left behind, and this close's reading is the one that
-    /// decides.
+    /// decides. P's entries that are not roots — read live, zero-count,
+    /// disposed — are not asked and not marked.
     pub(crate) fn mark_for_deferral(
         &mut self,
         mut deferrable: impl FnMut(*mut RcHeader) -> bool,
@@ -845,15 +898,29 @@ impl Batch {
         };
 
         let mut marked = 0;
-        ring.map_prefix_in_place(self.len, |entry| {
-            let entity = entry & !ENTRY_MARK_BITS;
-            if deferrable(entry_entity(entry)) {
+        ring.map_prefix_in_place(self.len, |slot| {
+            let entity = *slot & !ENTRY_MARK_BITS;
+            *slot = if deferrable(entry_entity(*slot)) {
                 marked += 1;
                 entity | DEFERRED_MARK
             } else {
                 entity
-            }
+            };
         });
+        if let Some(ring) = verdicts::verdict_ring() {
+            ring.map_prefix_in_place(self.verdicts, |slot| {
+                let entry = *slot;
+                let unmarked = entry & !verdicts::VERDICT_DEFER_MARK;
+                *slot = if verdicts::is_batch_root(entry)
+                    && deferrable(verdicts::verdict_entity(entry))
+                {
+                    marked += 1;
+                    unmarked | verdicts::VERDICT_DEFER_MARK
+                } else {
+                    unmarked
+                };
+            });
+        }
         marked
     }
 }
@@ -891,8 +958,10 @@ fn candidate_ring<'a>() -> Option<Quiescent<'a>> {
     Some(unsafe { Quiescent::new((*record).candidate_ring()) })
 }
 
-/// Read this thread's ring as one collection's batch: every entry from the
-/// front to the tail, counted and left where it is.
+/// Read this thread's two rings as one collection's batch: every entry of R
+/// from the front to the tail, and every entry of P the collector has
+/// posted, counted and left where they are. The caller holds the token or
+/// the collecting word, so P is quiescent under the reading.
 ///
 /// **It draws nothing and cannot be refused.** Nothing is taken out, so the
 /// next registration finds the tail where the writer left it, and a
@@ -910,13 +979,16 @@ fn candidate_ring<'a>() -> Option<Quiescent<'a>> {
 pub(crate) fn read_batch() -> Batch {
     Batch {
         len: candidate_ring().map_or(0, |ring| ring.count()),
+        verdicts: verdicts::verdict_ring().map_or(0, |ring| ring.count()),
     }
 }
 
 /// Dispose of a traced batch at the close: an entry whose entity completed
 /// its death is retired, an entry [`Batch::mark_for_deferral`] marked
-/// goes to the deferred lane, and every other entry stays in the ring, in
-/// order.
+/// goes to the deferred lane, and every other entry of R stays in the ring,
+/// in order; the batch's entries of P are disposed of the same way, the
+/// ones the close cannot dispose of written back into R, and P's front
+/// advances past all of them ([`verdicts`]).
 ///
 /// `at_commits` is the process's commit count as the reading that decided the
 /// marks saw it, and it is recorded only where the deferred lane goes from
@@ -931,8 +1003,7 @@ pub(crate) fn read_batch() -> Batch {
 /// cannot refuse is the one the fallback names, so no token is ever in no
 /// lane (`rfc/model/gc/cycle/questions.md`, Y12 clause 8).
 pub(crate) fn dispose_candidates(batch: Batch, at_commits: u64) {
-    drop(batch);
-    compaction::compact(Some(at_commits), false);
+    compaction::compact(Some(at_commits), false, Some(batch.verdicts));
 }
 
 /// Move a traced batch whole into this owner's deferred lane, sweeping out of
@@ -959,7 +1030,7 @@ pub(crate) fn defer_candidates(mut batch: Batch, at_commits: u64) {
     }
 
     batch.mark_for_deferral(|_| true);
-    compaction::compact(Some(at_commits), true);
+    compaction::compact(Some(at_commits), true, Some(batch.verdicts));
 }
 
 /// Re-offer every deferred record: at an owner poll whose epoch moved, and
@@ -1015,19 +1086,54 @@ pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
 }
 
 /// Retire completed deaths at the owner's exact reading, compacting the ring
-/// and the overflow buffer in place without drawing memory. A live or
-/// unfinished death stays registered, in order.
+/// and the overflow buffer in place without drawing memory, and retiring
+/// in place — the entry nulled, P's front unmoved — every completed death
+/// a verdict of P names. A live or unfinished death stays registered, in
+/// order.
 ///
 /// # Safety
 /// No membership or shadow reader can still name an entry being retired, no
-/// arena reset is open, and no collector reads R: the caller holds the
-/// token, or the collecting word excludes the collector. Every entry still
-/// names its own held allocation.
+/// arena reset is open, and no collector reads R or writes P: the caller
+/// holds the token, or the collecting word excludes the collector. Every
+/// entry still names its own held allocation.
 pub(crate) unsafe fn retire_candidates() {
-    compaction::compact(None, false);
+    compaction::compact(None, false, None);
 }
 
 mod compaction;
+pub(crate) mod verdicts;
+
+/// Put `entity` in the deferred lane, taking a block from a spare cell when
+/// the lane's last block is full or there is none; [`ring::NoBlock`] with
+/// both cells empty, and the entity is nowhere.
+///
+/// The block comes from a spare cell and never from the reserve: a block the
+/// deferred lane keeps is one the reserve does not get back, and a draw at
+/// a collection's close would be a request under the pressure that can have
+/// started it (`rfc/model/gc/cycle/questions.md`, Y12 clause 8). `at_commits`
+/// is recorded as the turnover mirror only where the lane goes from empty to
+/// occupied — the oldest deferred record is what decides when the owner owes
+/// a re-offer — and `None` records nothing.
+fn defer_entry(
+    owner_state: &OwnerCycleState,
+    entity: *mut RcHeader,
+    at_commits: Option<u64>,
+) -> Result<(), ring::NoBlock> {
+    let lane_was_empty = owner_state.deferred().is_empty();
+    owner_state.deferred().push(entity_entry(entity), || {
+        let block = take_spare(owner_state);
+        if !block.is_null() {
+            charge_block();
+        }
+        block
+    })?;
+
+    if lane_was_empty && let Some(at_commits) = at_commits {
+        owner_state.turnover_mirror.set(at_commits);
+    }
+
+    Ok(())
+}
 
 /// Put a block the queue no longer holds where the next growth finds it: a
 /// spare cell, or the critical reserve with both cells full.
@@ -1209,23 +1315,42 @@ pub(crate) fn overflow_len() -> usize {
     }
 }
 
-/// Registrations this thread holds across its three lanes — the ring, the
-/// deferred lane and the overflow buffer — by the indices and the counts,
-/// with no entry read.
+/// Registrations this thread holds by lane — the ring, the deferred lane,
+/// the overflow buffer, and the verdicts standing in P — by the indices and
+/// the counts; P's entries are read for the null of a disposed one and
+/// dereferenced no more than any other entry.
 ///
-/// What the exit reports as its residue
-/// (`crate::cycle::collect::collect_before_exit`), and what a round of that
-/// collection is measured against: a retirement lowers it, a deferral does
-/// not.
-pub(crate) fn registered_count() -> usize {
+/// What the exit reports as its residue, summed, and what a round of that
+/// collection is measured against by lane
+/// (`crate::cycle::collect::collect_before_exit`): a retirement lowers a
+/// count, and a deferral moves a root from one lane to another and leaves
+/// the sum where it was, which the next round's re-offer makes progress.
+pub(crate) fn registered_by_lane() -> [usize; 4] {
     let state = owner_state();
     if state.is_null() {
-        return 0;
+        return [0; 4];
     }
     let owner_state = unsafe { owner_state_ref(state) };
-    candidate_ring().map_or(0, |ring| ring.count())
-        + owner_state.deferred().len()
-        + usize::from(owner_state.overflow_len.get())
+    [
+        candidate_ring().map_or(0, |ring| ring.count()),
+        owner_state.deferred().len(),
+        usize::from(owner_state.overflow_len.get()),
+        standing_verdict_count(),
+    ]
+}
+
+/// Entries of P the owner has not answered for, by a walk of its slots:
+/// registrations in transit, which the exit's residue counts and a round of
+/// its collection moves.
+fn standing_verdict_count() -> usize {
+    let mut count = 0;
+    if let Some(ring) = verdicts::verdict_ring() {
+        ring.walk(|entry| {
+            count += usize::from(!verdicts::is_disposed(entry));
+            true
+        });
+    }
+    count
 }
 
 /// Entries this thread's ring holds, by its indices.
@@ -1240,7 +1365,7 @@ pub(crate) fn candidate_count() -> usize {
 
 /// Every candidate token this thread's queue holds, appended to `out`: the
 /// ring from its front, then the deferred lane oldest first, then the
-/// overflow buffer oldest entry first.
+/// overflow buffer oldest entry first, then the verdicts standing in P.
 ///
 /// [`candidate_count`] answers the ring alone, and a count of one lane
 /// can state neither half of the rule this exists for — a `CANDIDATE_BIT`
@@ -1276,6 +1401,15 @@ pub(crate) fn collect_lane_tokens(out: &mut Vec<*mut RcHeader>) {
 
     for index in 0..usize::from(owner_state.overflow_len.get()) {
         out.push(unsafe { overflow_entries(state).add(index).read() });
+    }
+
+    if let Some(ring) = verdicts::verdict_ring() {
+        ring.walk(|entry| {
+            if !verdicts::is_disposed(entry) {
+                out.push(verdicts::verdict_entity(entry));
+            }
+            true
+        });
     }
 }
 

@@ -8,6 +8,68 @@ never edited or deleted.
 
 ---
 
+## 2026-09-16 — the owner writes the slots of P it has read, and a batch is both rings
+
+**Context.** `PLAN.md` S49.4 built the verdict ring P (`rfc/dev/DECISIONS.md`,
+"the candidate queue is read behind its writer, and the collector's verdicts
+come back by a second ring", "The ring P and the verdicts"). The ruling puts
+every reduction of state on the owner and says that every in-line collection
+"reads P into its batch first", that P's `front` advances at the close by the
+whole reading, and that what the reading cannot dispose of is written back
+into R as a registration.
+
+**Decision.** A collection's batch is R's entries and the entries standing in
+P, and P's proposed and unwalked roots are traced from P's own slots: no
+entry of R is written for a root the collector proposed. The owner writes
+into the slots of P it has read and not yet advanced past — the close's
+deferral mark in bit 2, and a null address over an entry it has answered
+for — under its token or its collecting word, which keep the collector out
+of P altogether; the collector's next write into such a slot follows the
+owner's advance of `front` through the ring's own release/acquire pair.
+The close disposes of the batch's whole prefix of P — a completed death
+retired, a root read live or marked deferred, everything else written back
+into R — and advances; a retirement outside a close (a teardown's, the
+pressure path's between rounds) retires the completed deaths standing
+anywhere in P in place and advances nothing; the open-gate poll disposes of
+P's prefix through the reader's peek/commit pair up to the first proposed
+or unwalked root, which arms the collection this poll fires. The exit's
+rounds measure their progress by lane rather than by the summed count.
+
+**Why.** The first form wrote every proposed root into R at the reading.
+The Critic showed the cost: a full P is a block's worth of registrations
+made inside one poll, which exceeds the overflow buffer's abort bound
+(`POLL_STRIDE` is half the buffer, a block is more), and on the pressure
+path with no spare and no reserve those roots landed in the buffer, which
+no collection reads — the garbage the allocation needed, unreachable by the
+collection started for it. Reading the roots from P costs no registration
+at all. The in-place writes are what make "the whole prefix" disposable
+without an entry being answered for twice: an unwind out of a free or a
+write-back leaves the entry null, and a prefix left unadvanced is read
+again with its answered entries skipped. The teardown retirement was ruled
+as a prefix reading because the owner was not to write P's slots; with the
+writes, every death the collector read is returned, which is what the
+prefix reading was for. The exit measures by lane because a deferral moves
+a root from P to the deferred lane and leaves the sum where it was, and
+the next round's re-offer is what traces it — a sum read that as no
+progress and the exit ended with the roots in P.
+
+**Rejected.** Writing the proposed roots into R only as far as R's tail
+block and the spare cells allow and leaving the rest in P: bounds the
+registration but keeps two paths for one root. Advancing P per entry at the
+close: a root written back and still in P for an unwind between the two.
+The rfc's prefix form for the teardown retirement: strictly less than the
+in-place one, for a reason the in-place writes remove.
+
+**Price.** A close whose validation refuses the whole batch — every member
+read live from outside, or a teardown refused — writes every P root of the
+batch back into R, up to a block's worth, funded as a registration (the
+ruling's own clause); the overflow buffer's margin above one block is 17
+entries. The nulled entries a pressure round leaves in P cost the collector
+room until the next poll or close advances past them, bounded by the poll
+interval; a P full of them is a smaller batch, never a lost verdict.
+
+---
+
 ## 2026-09-16 — the candidate queue is a ring read in place, and a queue block is charged whole from its link
 
 **Decided (`PLAN.md` S49.3, on Edmond's ruling in `rfc/dev/DECISIONS.md`,
