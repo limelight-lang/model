@@ -158,9 +158,15 @@ impl<'a> VerdictWriter<'a> {
     }
 
     /// Verdicts P takes before it is full, which is what a batch is clamped
-    /// to before its roots are taken from R.
+    /// to before its roots are taken from R. Under the token.
     pub(crate) fn room(&self) -> usize {
         self.0.room_in_tail_block()
+    }
+
+    /// The same room by loads alone, for the idle test the collector makes
+    /// ahead of its claim: no store into P's block under no claim.
+    pub(crate) fn room_by_loads(&self) -> usize {
+        self.0.room_in_tail_block_by_loads()
     }
 
     /// Post `verdict` about `entity`. [`NoBlock`] is a full P, which a batch

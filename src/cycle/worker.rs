@@ -288,16 +288,14 @@ fn round() {
 /// owner.
 pub(crate) unsafe fn serve(record: *mut OwnerRecord) -> Served {
     let owner = unsafe { &*record };
-    // Work first, and the collector's own memory, before any claim: the
-    // unread count is the reader's own words, P's room the writer's, and
-    // the workspace this thread's.
+    // Work first, and the collector's own memory, before any claim — by
+    // loads alone, since nothing of the owner's may be written under no
+    // claim: the unread count off the reader's words, P's room off its
+    // index words, and the workspace this thread's. The figures are an
+    // idle test and not the clamp: the clamp is re-read under the token.
     let unread = unsafe { Reader::new(owner.candidate_ring()) }.unread();
-    let room = unsafe { VerdictWriter::open(owner) }.room();
-    let take = unread.min(room).min(match owner.batch_size() {
-        0 => INITIAL_BATCH,
-        size => size,
-    });
-    if take == 0 {
+    let room = unsafe { VerdictWriter::open(owner) }.room_by_loads();
+    if unread == 0 || room == 0 {
         return Served::Idle;
     }
 
@@ -324,18 +322,26 @@ pub(crate) unsafe fn serve(record: *mut OwnerRecord) -> Served {
         return Served::OwnerCollecting;
     }
 
-    unsafe { batch(owner, &mut arena, take) }
+    unsafe { batch(owner, &mut arena) }
 }
 
-/// One batch over `owner`, under its token, of at most `take` entries, on
-/// `arena` — the collector's own memory, reset before the token goes
-/// (module doc).
+/// One batch over `owner`, under its token, on `arena` — the collector's own
+/// memory, reset before the token goes (module doc).
 ///
 /// # Safety
 /// The calling thread holds `owner`'s token and `owner` is not collecting
 /// in line.
-unsafe fn batch(owner: &OwnerRecord, arena: &mut TraceScratchArena, take: usize) -> Served {
+unsafe fn batch(owner: &OwnerRecord, arena: &mut TraceScratchArena) -> Served {
     let verdicts = unsafe { VerdictWriter::open(owner) };
+    // The clamp, under the token: P's room cannot move under it, R's count
+    // can only grow.
+    let take = verdicts.room().min(match owner.batch_size() {
+        0 => INITIAL_BATCH,
+        size => size,
+    });
+    if take == 0 {
+        return Served::Idle;
+    }
     #[cfg(not(test))]
     let budget = TRACE_BLOCK_BUDGET;
     #[cfg(test)]

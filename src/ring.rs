@@ -310,6 +310,24 @@ impl<'a> Writer<'a> {
         room
     }
 
+    /// The room [`Writer::room_in_tail_block`] answers, read by loads alone:
+    /// the reader's `front` with acquire and the writer's `tail`, the local
+    /// copy neither read nor written. For a producer that reads room before
+    /// it holds the exclusion its writes need — the collector's idle test
+    /// ahead of its claim — where a store into the block's writer line would
+    /// race the owner's own reading of it.
+    pub(crate) fn room_in_tail_block_by_loads(&self) -> usize {
+        let tail_block = self.0.tail_block.load(Ordering::Acquire);
+        if tail_block.is_null() {
+            return 0;
+        }
+
+        let b = ring(tail_block);
+        let front = unsafe { (*b).reader.front.load(Ordering::Acquire) };
+        let tail = unsafe { (*b).writer.tail.load(Ordering::Relaxed) };
+        BLOCK_ENTRIES - span(front, tail)
+    }
+
     /// Take a block from `fresh`, write `entry` as its first slot, and link
     /// it in after `after` — or, with `after` null, as the ring's first
     /// block, publishing both words.

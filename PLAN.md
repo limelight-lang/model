@@ -1190,6 +1190,19 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         and R under pressure, arming a collection each round; the
         collector's arena draws its own thread's critical reserve, which no
         ruling addresses.
+      Critic 2026-09-16 (two, on Edmond's doubt about a P that never
+        grows): both answer that growth is not needed — P binds only for an
+        owner absent from open-gate polls over 80 ms with a backlog past one
+        block, and what it costs is one in-line walk at the return poll,
+        while a grown P would break the poll's deferral stock (two spare
+        cells) and put the collector's pre-claim reading over memory the
+        shrink returns. One defect of this step found on the way, fixed:
+        the pre-claim room reading stored `local_front` into P's block under
+        no claim; it reads by loads alone now and the clamp is re-read under
+        the token. Named for Edmond: the exit returns P's block while a
+        collector may be reading it before its claim (once per exit); and
+        the ruling's "one in-line collection over the proposed roots" admits
+        a narrower reading than the code's whole-R batch.
 - [ ] S49.6 The poll's shrink   *(after S49.5)*
       done: the poll unlinks the empty block after R's tail block into a
         spare cell or the reserve's return path, never the front block,
