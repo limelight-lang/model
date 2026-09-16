@@ -185,7 +185,7 @@ list (`cycle::deferred_slot_reuse`), the per-thread trace token (`cycle::token`:
 by compare-and-swap around the trace and released after its last row read,
 before the first destructor, with a mutex an owner waits on when a
 collector holds it, standing in a record the process keeps past the thread,
-`cycle::owner_record`), and the two rings `PLAN.md` S49 lays beside it: the
+`cycle::owner_record`), and the two rings beside it: the
 candidate ring a collector reads behind the owner's writer, and the verdict
 ring the owner reads at its poll (`rfc/dev/DECISIONS.md`, "the candidate
 queue is read behind its writer, and the collector's verdicts come back by
