@@ -8,6 +8,89 @@ never edited or deleted.
 
 ---
 
+## 2026-09-16 — an entry point reached outside a thread's life ends the process, and the base block is the mark of a started thread
+
+**Decided (`PLAN.md` S50.2, the model's reading of Edmond's ruling
+"`ll_thread_init` is called once, and a refusal closes the thread").** The
+lazy initialisations are gone: `stdapi::ll_alloc_init`,
+`heap::entity_alloc_init`, the same draw inside `ll_entity_reserve`, the
+journal's `ll_thread_init` inside its ring open, the queue's
+`ensure_queue_base_or_abort`, and the record draw `HeldToken::take` and
+`this_thread_token_record` made for a thread with none. `ll_thread_init`
+draws the base block and the record once per life of a thread; a second
+call on a started thread is refused by a `debug_assert` — which, inside an
+`extern "C"` function, ends the process rather than unwinding — and answers
+`true` in release without touching anything. An allocation path that finds
+no heap asks whether the thread holds a base block: with one, the thread
+started and its heap was refused, and the answer is null as before; without
+one, the entry point ends the process with a reason on stderr naming the
+entry point and the state — `ll_thread_init never started`, or `past its
+ll_thread_exit`, told apart by the exit phase — through
+`heap::abort_outside_thread_life`. A candidate registration with no base
+block ends the process the same way, and so do the two paths that read no
+heap slot — `ll_alloc`'s large path and `large_entity::alloc` — through
+`heap::require_thread_started`, so the answer is the entry point's and not
+the size's (Critic, 2026-09-16).
+
+**Two entry points are exempt, and the exemption is the decision:** a
+record site and a free. The journal cannot apply the predicate, because a
+life's first record is raised from inside `draw_queue_base`'s own block
+draw, before the base block is published — so the ring open keeps asking
+the exit guard alone, takes its block by the large route with the check
+left out (`stdapi::alloc_outside_the_heap`, the route's one such caller),
+and a thread nobody started that reaches a record site under
+`debug-journal` gets a ring the guard retires. A free consults
+the block's owner and not the freeing thread's state, and a thread past its
+exit may still free from a destructor of another library's thread-local,
+so `ll_free` on a thread with no heap posts to the owner as before. The
+contract is enforced at allocation and registration; a record and a free on
+a thread outside its life are served. The arena's doors ask nothing either
+(Code Reviewer, 2026-09-16): an `Arena` is the caller's object and not a
+thread's, its small door bumps without reading thread state, and its large
+door goes to `large_entity::alloc` — which therefore carries no check of its
+own; `entity_alloc` asks at its large branch, so the two doors of the
+thread's heap answer alike.
+
+**Why the base block and not the TLS heap slot:** a started thread whose
+heap the OS refused has no slot and is served (its allocations answer null,
+its releases register), while the base block is drawn before any refusal
+`ll_thread_init` tolerates and held to the exit's last act, so its presence
+and the thread's life coincide.
+
+**Why an abort rather than a null:** every entry point that reaches it
+answers null for an exhaustion, and there is no second channel; a null
+here would be read as memory running out on a thread that does not exist.
+
+**What the ruling retires with the lazy paths:** the mimalloc-parity
+argument for self-initialising `ll_malloc` (`benches/RESULTS.md`, "Read
+this first: how to compare against a rival, and how not to"), which put the per-thread init test into the
+larson shim's cost and called removing it a fair comparison — the shim
+carries that test again, and the parity is the embedder's; the re-read of a
+thread-local across a block draw in `draw_queue_base`, `draw_thread_record`
+and `refill_spares`, which guarded against the journal's first record
+running `ll_thread_init` from inside the draw, a re-entry no path makes
+now; and the "thread the runtime never registered" as a population, whose
+three cases went with it while the claim they carried about the reserves'
+first touch stands in `thread_init_touches_both_reserves_before_anything_can_release`.
+
+**Two things the Critic's round changed beside the large paths:** the
+reason names three states, `ll_thread_init never started`, `inside its
+ll_thread_exit, past its base block's return` and `past its ll_thread_exit`,
+so a label cannot read the exit's last acts as a thread never started; and
+the life's phase is set to `Live` and its journal reopened before the heap
+is built, so a second life whose heap the OS refuses is a life that frees
+and journals — a pre-existing gap, unpinned: no seam refuses the
+`ThreadHeaps` allocation or the slot's store on demand.
+
+**Cost:** the test fixture starts the harness thread once and a test that
+ends the thread's life leaves the next to start another
+(`block_pool::test_guard`); five tests that registered a candidate without
+the fixture take it now, and four benches start their thread. Unverified by
+build: the larson shim, whose `larson.cpp` is not vendored — its header
+passes `g++ -fsyntax-only`.
+
+---
+
 ## 2026-09-16 — the poll's signal is a block filled, and the registration path counts nothing
 
 **Ruled by Edmond**, superseding the count of the entry below ("the

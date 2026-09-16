@@ -102,13 +102,17 @@ fn an_exit_under_a_held_token_waits_for_the_release_and_then_collects() {
         let _members = unsafe { ring(&mut arena, [class, class, class]) };
         drop(arena);
 
-        let waits_before = unsafe { (*this_thread_token()).waits() };
+        // The token is read through one pointer taken before the exit: the
+        // record's storage outlives the thread, while the thread's cell
+        // naming it does not.
+        let token = this_thread_token();
+        let waits_before = unsafe { (*token).waits() };
         // Released by the holder itself, once the count says this thread is
         // waiting; the guard joins it on the way out either way.
-        let _held = HeldByACollector::take(this_thread_token(), true);
+        let _held = HeldByACollector::take(token, true);
         ll_thread_exit();
         (
-            unsafe { (*this_thread_token()).waits() } - waits_before,
+            unsafe { (*token).waits() } - waits_before,
             take_exit_residue().expect("the exit ran its collection"),
         )
     })

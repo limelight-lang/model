@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-16 · Active: S37, S38, S40 and S50 (opened 2026-09-15 on Edmond's ruling that `ll_thread_init` is called once). **S49 closed and was deleted on 2026-09-16**: the candidate ring read behind its writer, the verdict ring, the collector's batch, its wakes and timer, and the sibling collectors, on Edmond's ruling that restored his read-behind queue over the outbox form S38.5–S38.7 built; its rulings are in `dev/DECISIONS.md` under 2026-09-16, its one trap in `dev/POSTMORTEM.md`, and what it named and left is in the backlog ("What S49 named and left"). S38.0 and S38.3 closed on
+Updated: 2026-09-16 · Active: S37, S38 and S40. **S50 closed and was deleted on 2026-09-16**: `ll_thread_init` is called once per thread life, the lazy self-initialising paths are gone, and an allocation or a candidate registration on a thread nobody started ends the process with a named reason; its record is `dev/DECISIONS.md`, "an entry point reached outside a thread's life ends the process, and the base block is the mark of a started thread", its trap `dev/POSTMORTEM.md`, "a reason printed before an abort is captured by the harness"; the Critic's and the Code Reviewer's rounds are folded into that entry. **S49 closed and was deleted on 2026-09-16**: the candidate ring read behind its writer, the verdict ring, the collector's batch, its wakes and timer, and the sibling collectors, on Edmond's ruling that restored his read-behind queue over the outbox form S38.5–S38.7 built; its rulings are in `dev/DECISIONS.md` under 2026-09-16, its one trap in `dev/POSTMORTEM.md`, and what it named and left is in the backlog ("What S49 named and left"). S38.0 and S38.3 closed on
 2026-09-15 — the collector's reader with its fence, and the owner's returns
 withheld under a foreign holder of its token; the worker, unblocked the same
 evening by `rfc` S8.7, is S38.5 through S38.7 — the record, the offer and the
@@ -1073,43 +1073,6 @@ window there is.
         `PostedUntraced` arm from a trace the rows refused (only the
         workspace refusal is pinned), the STARTING exclusion.
 
-## S50 — `ll_thread_init` is called once, and a refusal closes the thread
-
-Goal: `ll_thread_init` is the one initialisation a thread gets, made once by
-whoever starts the thread; a refusal is a thread that never starts, and no
-path inside the crate calls it for a thread that skipped it. Edmond's ruling
-of 2026-09-15 (`dev/DECISIONS.md`, "`ll_thread_init` is called once, and a
-refusal closes the thread"), given when the rollback of a repeated init was
-found returning a live thread's queue.
-
-Done when: the three self-initialising calls — `stdapi::ll_alloc_init`,
-`heap::entity_alloc_init` and the journal's ring open — are gone; a second
-`ll_thread_init` on a started thread is refused by a `debug_assert` and
-answers true in release without touching anything; a thread that reaches an
-allocation, a registration or a record site without its init is handled the
-one way S50.1 decides; `cycle::queue`'s "thread the runtime never registered"
-paragraph and `ensure_queue_base_or_abort` go with the lazy draw; the cases
-that drove the lazy paths go with them and the contract is re-pinned.
-
-- [x] S50.1 Decide what an uninitialised thread gets at its first allocation or registration: an abort, or a null from the allocator with the registration refused   *(closed 2026-09-16)*
-      done: Edmond's answer recorded in `dev/DECISIONS.md` under the ruling
-        above; the question was put on 2026-09-15 and he said to go on
-      handoff: Edmond, 2026-09-16: `ll_thread_init` is called first, and a
-        thread without it does not start — no such thread exists for the
-        crate to serve. S50.2 reads that as an abort with a named reason at
-        each entry point, the state being impossible by contract; that
-        reading is the model's and is named in S50.2's `done:`.
-      tier: T1 · role: — (Edmond decides)
-- [ ] S50.2 Remove the lazy calls and pin the once-only contract   *(after S50.1)*
-      done: the three call sites and `ensure_queue_base_or_abort` are gone;
-        `ll_thread_init` refuses a second call under `debug_assert`; an
-        entry point reached on a thread with no init ends the process with
-        a named reason (S50.1: no such thread exists for the crate to
-        serve), pinned by a case per entry point; `a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring`
-        and the unregistered-thread cases are rewritten or deleted with the
-        mechanism; `ll_thread_init`'s doc says once
-      tier: T2 · role: Critic
-
 ## S40 — Measure the trace's density and decide the row form
 
 Goal: the readings the row form is decided on, and the decision.
@@ -1726,6 +1689,12 @@ deleted with its steps; the decisions it leaves are in `dev/DECISIONS.md`
 (2026-08-17 and 2026-08-18), the traps in `dev/POSTMORTEM.md` and the map
 in `dev/INDEX.md`. What it did not do is below.
 
+- [ ] **What S50 left unpinned, 2026-09-16.** A second life whose `ThreadHeaps`
+  allocation or slot store the OS refuses is set `Live` and its journal
+  reopened before the heap is built (`heap::ll_thread_init`), so it frees and
+  journals as a life; no seam refuses either on demand, so no case reads it.
+  The seam is a test-only fault on the `ThreadHeaps` allocation, in the form
+  `FORCE_GUARD_UNARMED` takes for the guard.
 - [ ] **What S49 named and left, 2026-09-16.** A component past the
   collector's block budget whose owner-side trace the pool refuses circles
   P and R under pressure, arming a collection each round (Critic, S49.5); the

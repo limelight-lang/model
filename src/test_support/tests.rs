@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 /// The calls whose test Miri's isolation refuses: the four file readings this
 /// crate uses, `fs::read` beside them, and the two halves of running a child
 /// process.
-const REACHES_OUTSIDE: [&str; 7] = [
+const REACHES_OUTSIDE: [&str; 8] = [
     "read_dir",
     "read_to_string",
     "File::open",
@@ -39,6 +39,7 @@ const REACHES_OUTSIDE: [&str; 7] = [
     "current_exe",
     "Command::new",
     "process::Command",
+    "a_child_run_ends_by_abort_saying",
 ];
 
 /// What an ignored test's attributes carry, in both the one-line spelling and

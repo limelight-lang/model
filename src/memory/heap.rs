@@ -1801,7 +1801,9 @@ mod tls {
 /// from a destructor of the exit's own sequence, it returns and the exit in
 /// progress ends the thread.
 ///
-/// Idempotent, and safe to call on a thread that never allocated.
+/// Idempotent, and safe to call on a thread never started, which has
+/// nothing to give back: the exit asks nothing of the thread's life, as the
+/// free does not.
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_thread_exit() {
     // Re-entered from a destructor the sequence below is running — step 1's
@@ -1841,7 +1843,7 @@ pub extern "C" fn ll_thread_exit() {
     // backwards: `ll_thread_init` registers `EXIT_GUARD` last of the four
     // `thread_local!`s this crate gives drop glue — the pool's thread
     // cache at the first `BlockPool::get`, which is
-    // `queue::initialize_queue_base`'s,
+    // `queue::draw_queue_base`'s,
     // then the barrier reserve, then the critical reserve, then the guard
     // at `thread_exit_will_run`. On glibc, which destroys in reverse
     // registration order, this guard therefore runs first of the four and
@@ -2037,26 +2039,36 @@ impl Drop for ExitGuard {
     }
 }
 
-/// Eagerly create this thread's heap. Must be called once per thread
-/// before any allocation on it — the hot path (`with_thread_heap`)
-/// trusts this and does not check. Idempotent.
+/// Start this thread in the runtime: the one initialisation a thread gets,
+/// made once per life of the thread by whoever starts it — a worker's
+/// startup hook, never a check on every `malloc` — before its first
+/// allocation, registration or record. Limelight owns its own worker
+/// threads (see module doc), so the call is always available to the
+/// embedder, unlike a libc `malloc` replacement, which cannot demand one.
+/// **Nothing in the crate calls it for a thread that skipped it**: an
+/// allocation or a candidate registration reached on such a thread ends the
+/// process with a named reason ([`abort_outside_thread_life`]), the state
+/// being impossible under this contract; a record site and a free are served
+/// (`dev/DECISIONS.md`, "an entry point reached outside a thread's life ends
+/// the process, and the base block is the mark of a started thread", the two
+/// exemptions).
 ///
-/// This is the deliberate split: initialization is a cold, explicit,
-/// one-time call (like a worker thread's startup hook), not a check
-/// repeated on every `malloc`/`free`. Limelight owns its own worker
-/// threads (see module doc), so this is always satisfiable — unlike a
-/// libc `malloc` replacement, which cannot demand callers opt in first.
+/// **A second call on a started thread is a broken embedding**: refused by a
+/// `debug_assert`, and answered `true` in release without touching anything.
+/// A thread's life ends at [`ll_thread_exit`], and a pool thread that runs
+/// init and exit per task starts a new life with each init.
 ///
 /// Also installs the TLS guard that returns this thread's blocks when it
 /// exits, so [`ll_thread_exit`] need not be called by hand.
 ///
 /// **Answers whether the thread started**, and `false` is a refusal the
 /// caller must act on: the task does not run on this thread, and the
-/// process lives. Only one stock can produce it — the candidate queue's
-/// base block, which carries the guarantee that a release can never lose a
+/// process lives. Two stocks can produce it. The candidate queue's base
+/// block, which carries the guarantee that a release can never lose a
 /// cycle root and is the one stock no later poll can make good
 /// (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued", which
-/// is that block).
+/// is that block); and the owner record drawn beside it, which is what a
+/// collector reaches the thread through (`crate::cycle::owner_record`).
 /// A thread whose *heap* the OS refuses still answers `true`: it is
 /// registered, it releases entities allocated elsewhere, and its own
 /// allocations report null, which is the state this module already
@@ -2080,21 +2092,25 @@ pub extern "C" fn ll_thread_init() -> bool {
     // thread through is drawn beside it under the same rule; its token stays
     // held until the end of this function, so no collector claims a thread
     // that is still being built (`crate::cycle::owner_record`).
-    let had_base_block = crate::cycle::queue::queue_base_present();
-    if !crate::cycle::queue::initialize_queue_base() {
+    // The base block is the mark of a started thread: drawn here and held
+    // until the exit, so its presence is a second call on a started thread.
+    let started = crate::cycle::queue::queue_base_present();
+    debug_assert!(
+        !started,
+        "ll_thread_init is called once per life of a thread, and this thread has started"
+    );
+    if started {
+        return true;
+    }
+
+    if !crate::cycle::queue::draw_queue_base() {
         return false;
     }
 
-    let record = crate::cycle::owner_record::draw_thread_record();
-    if record == crate::cycle::owner_record::RecordDraw::AllocationFailed {
-        // A base block this call drew goes back; one it found is the
-        // started thread's, and stays.
-        if !had_base_block {
-            crate::cycle::queue::release_queue_base();
-        }
+    if !crate::cycle::owner_record::draw_thread_record() {
+        crate::cycle::queue::release_queue_base();
         return false;
     }
-    let drew_record = record == crate::cycle::owner_record::RecordDraw::Drawn;
 
     // The three reserves first, and **before** the heap allocation below,
     // which returns early when the OS refuses it. A thread that comes out
@@ -2123,91 +2139,132 @@ pub extern "C" fn ll_thread_init() -> bool {
         crate::cycle::queue::release_queue_segments();
         crate::cycle::queue::release_queue_base();
         // Under the initialisation's own hold, which is never released for
-        // a thread that never starts; a record this call found is the
-        // started thread's, and stays.
-        if drew_record {
-            unsafe { crate::cycle::owner_record::release_thread_record() };
-        }
+        // a thread that never starts.
+        unsafe { crate::cycle::owner_record::release_thread_record() };
         crate::memory::reserve::drain();
         crate::memory::critical::drain();
         return false;
     }
 
-    if tls::get_raw().is_null() {
-        // Not `Box::new`: its failure mode is `handle_alloc_error`, which
-        // aborts — an abort nobody chose and no caller can see coming.
-        // A refusal leaves the slot null, which is a state the whole
-        // module already models (`thread_heap` documents it), so every
-        // allocation path reports null instead of the process dying.
-        let layout = std::alloc::Layout::new::<ThreadHeaps>();
-        let heap = unsafe { std::alloc::alloc(layout) } as *mut ThreadHeaps;
-        if heap.is_null() {
-            // A heapless thread is a started one, and it registers
-            // candidates: its record is made claimable as a funded thread's
-            // is, or its own first collection would wait on the hold this
-            // function took.
-            if drew_record {
-                unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
-            }
-            return true;
-        }
+    // The life's phase and its journal, before the heap: a life whose heap
+    // the OS refuses is a life all the same, and it frees and journals as
+    // one. A pool thread running init and exit per task enters here once
+    // per life and journals into a ring of a new identity rather than
+    // reopening the one it retired. Two conditions guard it. The exit
+    // guard, because the guard is what retires the ring, and a ring opened
+    // on a thread whose retirement nothing will run stays on the live list
+    // for the life of the process. And no exit in progress, because a
+    // heap rebuilt inside an exit is that exit repairing itself rather
+    // than a new life: lowering the phase there would tell
+    // `thread_may_free` that this thread may free again, inside the
+    // sequence that is disposing what such a free would reach
+    // (`dev/DECISIONS.md`, "the journal is complete to the exit's
+    // last act and honest past it").
+    if !thread_exit_running() && exit_guard_armed() {
+        EXIT_PHASE.with(|phase| phase.set(ExitPhase::Live));
+        crate::journal::reopen_thread();
+    }
 
-        unsafe {
-            heap.write(ThreadHeaps {
-                raw: Heap::new(),
-                entity: Heap::new_entity(),
-            })
-        };
+    // After the reopen, so a pool thread's second life records its
+    // start in the ring of that life rather than in the one it
+    // retired.
+    journal_event!(crate::journal::kinds::KIND_THREAD_START, 0, 0, 0);
 
-        // The slot stores the pair's address as `*mut Heap`: with
-        // `repr(C)` and `raw` first, that IS the raw heap's address.
-        if !tls::set(heap as *mut Heap) {
-            // No TLS slot to hold it: hand the memory straight back and
-            // leave the thread heapless, which the allocation paths
-            // already report as null.
-            unsafe { std::ptr::drop_in_place(heap) };
-            unsafe { std::alloc::dealloc(heap as *mut u8, layout) };
-            if drew_record {
-                unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
-            }
-            return true;
-        }
+    // The slot is empty here: the exit clears it, and this function alone
+    // fills it.
+    debug_assert!(
+        tls::get_raw().is_null(),
+        "a thread's heap is built once per life"
+    );
+    // Not `Box::new`: its failure mode is `handle_alloc_error`, which
+    // aborts — an abort nobody chose and no caller can see coming.
+    // A refusal leaves the slot null, which is a state the whole
+    // module already models (`thread_heap` documents it), so every
+    // allocation path reports null instead of the process dying.
+    let layout = std::alloc::Layout::new::<ThreadHeaps>();
+    let heap = unsafe { std::alloc::alloc(layout) } as *mut ThreadHeaps;
+    if heap.is_null() {
+        // A heapless thread is a started one, and it registers
+        // candidates: its record is made claimable as a funded thread's
+        // is, or its own first collection would wait on the hold this
+        // function took.
+        unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
+        return true;
+    }
 
-        // Failing to arm the guard is the right outcome: the thread is
-        // already exiting, and its blocks are reclaimed by the teardown in
-        // progress.
-        // The branch below is entered once per *life* of a thread, so a
-        // pool thread running init and exit per task enters it again and
-        // journals into a ring of a new identity rather than reopening the
-        // one it retired. Two conditions guard it. The exit guard, because
-        // the guard is what retires the ring, and a ring opened on a
-        // thread whose retirement nothing will run stays on the live list
-        // for the life of the process. And no exit in progress, because a
-        // heap rebuilt inside an exit is that exit repairing itself rather
-        // than a new life: lowering the phase there would tell
-        // `thread_may_free` that this thread may free again, inside the
-        // sequence that is disposing what such a free would reach
-        // (`dev/DECISIONS.md`, "the journal is complete to the exit's
-        // last act and honest past it").
-        if !thread_exit_running() && exit_guard_armed() {
-            EXIT_PHASE.with(|phase| phase.set(ExitPhase::Live));
-            crate::journal::reopen_thread();
-        }
+    unsafe {
+        heap.write(ThreadHeaps {
+            raw: Heap::new(),
+            entity: Heap::new_entity(),
+        })
+    };
 
-        // After the reopen, so a pool thread's second life records its
-        // start in the ring of that life rather than in the one it
-        // retired.
-        journal_event!(crate::journal::kinds::KIND_THREAD_START, 0, 0, 0);
+    // The slot stores the pair's address as `*mut Heap`: with
+    // `repr(C)` and `raw` first, that IS the raw heap's address.
+    if !tls::set(heap as *mut Heap) {
+        // No TLS slot to hold it: hand the memory straight back and
+        // leave the thread heapless, which the allocation paths
+        // already report as null.
+        unsafe { std::ptr::drop_in_place(heap) };
+        unsafe { std::alloc::dealloc(heap as *mut u8, layout) };
+        unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
+        return true;
     }
 
     // The record drawn beside the base block is made claimable here, where
     // nothing of this thread's initialisation is left
     // (`crate::cycle::owner_record`).
-    if drew_record {
-        unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
-    }
+    unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
 
     true
+}
+
+/// End the process from an entry point reached outside a thread's life: on a
+/// thread [`ll_thread_init`] never started, inside its [`ll_thread_exit`]
+/// past the base block's return, or past that exit. `entry` names the entry
+/// point in the reason written to stderr, and the phase names the state.
+///
+/// No such thread exists for the crate to serve (`dev/DECISIONS.md`,
+/// "`ll_thread_init` is called once, and a refusal closes the thread"), and
+/// there is no caller to report to: the entry points that reach here answer
+/// null for an exhaustion, and a null here would be read as one.
+///
+/// The reason is written with `&str` arguments to an unbuffered stream, so
+/// the write allocates nothing; keep it so, because this function stands on
+/// `ll_alloc`'s path and an allocation here would reach it again once
+/// `ll_alloc` is the global allocator.
+#[cold]
+#[inline(never)]
+pub(crate) fn abort_outside_thread_life(entry: &str) -> ! {
+    let when = match EXIT_PHASE.with(|phase| phase.get()) {
+        ExitPhase::Live => "ll_thread_init never started",
+        ExitPhase::Exiting => "inside its ll_thread_exit, past its base block's return",
+        ExitPhase::Exited => "past its ll_thread_exit",
+    };
+    eprintln!("ll-model: {entry} on a thread {when}");
+    std::process::abort()
+}
+
+/// End the process unless this thread holds its base block — the mark of a
+/// started thread — for an entry point that reads no heap slot and so has
+/// no null to ask ([`abort_outside_thread_life`] with `entry` as the name).
+#[inline]
+pub(crate) fn require_thread_started(entry: &str) {
+    if !crate::cycle::queue::queue_base_present() {
+        abort_outside_thread_life(entry);
+    }
+}
+
+/// The answer of an allocation path that found no heap on this thread: null
+/// on a started thread whose heap the OS refused at its init, and the
+/// process's end on a thread outside its life ([`abort_outside_thread_life`]),
+/// the base block being what tells the two apart. `entry` is the entry
+/// point's name for the reason.
+#[cold]
+#[inline(never)]
+pub(crate) fn heapless_allocation(entry: &str) -> *mut u8 {
+    require_thread_started(entry);
+    std::ptr::null_mut()
 }
 
 /// Where a thread stands with respect to its own teardown.
@@ -2299,9 +2356,8 @@ pub(crate) fn thread_exit_pending() -> bool {
 /// Whether this thread is inside its own [`ll_thread_exit`].
 ///
 /// What is built here is disposed by the steps still to run, so a caller
-/// needs neither the guard nor an initialisation of its own — and must
-/// not reach for either, since `ll_thread_init` in the middle of an exit
-/// rebuilds the heap the exit has torn down.
+/// needs no guard of its own; and `ll_thread_init` is not called here,
+/// since it would rebuild the heap the exit has torn down.
 pub(crate) fn thread_exit_running() -> bool {
     EXIT_PHASE.with(|phase| phase.get()) == ExitPhase::Exiting
 }
@@ -2369,16 +2425,16 @@ pub(crate) fn take_refused_entity_refills() -> [usize; NUM_CLASSES] {
     REFUSED_ENTITY_REFILLS.with(|refused| refused.replace([0; NUM_CLASSES]))
 }
 
-/// This thread's raw heap, or null if it has never allocated.
-///
-/// The null case is what lets `ll_malloc`/`ll_c_free` self-initialise on a
-/// cold branch instead of making every caller wrap them in an init check.
+/// This thread's raw heap, or null: on a thread whose init the OS refused a
+/// heap, and on a thread outside its life — never started, or past its exit.
+/// A free reads null as "not this thread's block"; an allocation path reads
+/// it through [`heapless_allocation`], which tells the two apart.
 #[inline]
 pub fn thread_heap() -> *mut Heap {
     tls::get_raw()
 }
 
-/// This thread's entity heap, or null if it has never allocated. One
+/// This thread's entity heap, or null where [`thread_heap`] is. One
 /// field offset past the TLS read — the pair is `repr(C)`.
 #[inline]
 pub fn thread_entity_heap() -> *mut Heap {
@@ -2390,8 +2446,8 @@ pub fn thread_entity_heap() -> *mut Heap {
     unsafe { &raw mut (*p).entity }
 }
 
-/// Allocate a GC entity of `size` bytes from this thread's entity heap.
-/// Self-initialising like `ll_alloc`. A size past the largest size class
+/// Allocate a GC entity of `size` bytes from this thread's entity heap, on
+/// a thread [`ll_thread_init`] started. A size past the largest size class
 /// takes a block-aligned allocation of its own instead
 /// (`memory::large_entity`), because a packed slot that large would take
 /// a whole block and leave the entity-block population the walk
@@ -2432,7 +2488,7 @@ unsafe fn entity_alloc_once(size: usize) -> *mut u8 {
     if size <= MAX_SMALL {
         let h = thread_entity_heap();
         if h.is_null() {
-            unsafe { entity_alloc_init(size) }
+            heapless_allocation("entity_alloc")
         } else {
             unsafe { (*h).alloc(size) }
         }
@@ -2441,7 +2497,9 @@ unsafe fn entity_alloc_once(size: usize) -> *mut u8 {
         // under one is invisible to both enumerators and freed without
         // the entity assertions. Past the largest size class an entity
         // takes a block-aligned allocation of its own
-        // (`rfc/model/memory/large-entities.md`).
+        // (`rfc/model/memory/large-entities.md`) — a path that reads no
+        // heap slot, so the thread's life is asked of the base block here.
+        require_thread_started("entity_alloc");
         crate::memory::large_entity::alloc(size)
     }
 }
@@ -2511,21 +2569,11 @@ pub unsafe extern "C" fn ll_entity_reserve(
     contiguous_len: *mut usize,
 ) -> usize {
     let h = thread_entity_heap();
-    let h = if h.is_null() {
-        // Not read here, for the reason `stdapi::ll_alloc_init` gives:
-        // this is the self-initialising path and it reports a refusal as
-        // a null heap, which the line below reads.
-        let _ = ll_thread_init();
-        let h = thread_entity_heap();
-        if h.is_null() {
-            unsafe { *contiguous_len = 0 };
-            return 0;
-        }
-
-        h
-    } else {
-        h
-    };
+    if h.is_null() {
+        require_thread_started("ll_entity_reserve");
+        unsafe { *contiguous_len = 0 };
+        return 0;
+    }
 
     let out = unsafe { std::slice::from_raw_parts_mut(out_cells, count) };
     let (n, contiguous) = unsafe { (*h).reserve_cells(size, count, out) };
@@ -2559,23 +2607,6 @@ pub unsafe extern "C" fn ll_entity_cells_return(cells: *const *mut u8, count: us
         // unpublished one (`memory::stdapi::free_unpublished`).
         unsafe { crate::memory::stdapi::free_unpublished(*cells.add(i)) };
     }
-}
-
-/// Cold tail: first entity allocation on this thread.
-///
-/// # Safety
-/// As [`entity_alloc`].
-#[cold]
-#[inline(never)]
-unsafe fn entity_alloc_init(size: usize) -> *mut u8 {
-    // Not read here, for the reason `stdapi::ll_alloc_init` gives.
-    let _ = ll_thread_init();
-    let h = thread_entity_heap();
-    if h.is_null() {
-        return std::ptr::null_mut();
-    }
-
-    unsafe { (*h).alloc(size) }
 }
 
 /// Null the shadow-row pointer of a block that can carry rows, which

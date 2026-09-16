@@ -88,19 +88,14 @@
 //! fills, and its refusal is a thread that never starts
 //! (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued",
 //! which is this block). The invariant every later tier rests on comes
-//! out of that coupling: every registered thread has a base block,
-//! because a thread whose base block was refused is a thread the runtime
-//! never registered.
+//! out of that coupling: every started thread has a base block, because a
+//! thread whose base block was refused is a thread that never started.
 //!
-//! Entity work also reaches threads the runtime never registered —
-//! self-initialising allocation, a releaser-only FFI consumer — and such
-//! a thread draws its base block at its first registration instead,
-//! through the ordinary allocation path, and its owner record beside it
-//! through the registry's lock — the one lock the registration path takes,
-//! once per such thread, and clause 3's one exception
-//! ([`ensure_queue_base_or_abort`]). Either draw refusing aborts, which is
-//! the funded class's last resort reached one step earlier than the
-//! overflow buffer's own bound below.
+//! A registration on a thread with no base block is a thread `ll_thread_init`
+//! never started, or one past its exit, and it ends the process with a named
+//! reason ([`register_candidate`]): no such thread exists for the crate to
+//! serve (`dev/DECISIONS.md`, "`ll_thread_init` is called once, and a
+//! refusal closes the thread").
 //!
 //! The overflow buffer is emptied at the next safepoint poll, which is
 //! also where the thread does what the ruling asks: collect, or wait for
@@ -312,7 +307,7 @@ fn queue_base_of(state: *mut OwnerCycleState) -> *mut BlockHeader {
 ///
 /// Every entry this answers is outside the control line, so `state` must
 /// carry the provenance of the whole base block — the form
-/// [`try_ensure_queue_base`] produces and [`OWNER_STATE`] holds.
+/// [`draw_queue_base`] produces and [`OWNER_STATE`] holds.
 #[inline]
 fn overflow_entries(state: *mut OwnerCycleState) -> *mut *mut RcHeader {
     unsafe { (state as *mut u8).add(size_of::<OwnerCycleState>()) as *mut *mut RcHeader }
@@ -370,9 +365,13 @@ pub(crate) fn entry_root(entry: usize) -> *mut RcHeader {
 /// `entity` points to a live heap entity beginning with `RcHeader`, and
 /// stays live at least until this thread's next safepoint.
 pub(crate) unsafe fn register_candidate(entity: *mut RcHeader) {
-    let mut state = owner_state();
+    let state = owner_state();
     if state.is_null() {
-        state = ensure_queue_base_or_abort();
+        // Nothing to report it through and no continuation that keeps the
+        // root: `CANDIDATE_BIT` is set before this call and nothing unsets
+        // it, so a registration that returned without an entry would be
+        // Y6's permanent miss with the bit left standing.
+        crate::memory::heap::abort_outside_thread_life("register_candidate");
     }
 
     unsafe { append_entry(state, entity) };
@@ -535,108 +534,37 @@ unsafe fn append_to_overflow(state: *mut OwnerCycleState, entity: *mut RcHeader)
     gc_metadata::charge(size_of::<*mut RcHeader>());
 }
 
-/// Give this thread a base block, or answer null when the manager refuses.
-/// The returned pointer is the control plane inside that block.
-fn try_ensure_queue_base() -> *mut OwnerCycleState {
-    let present = owner_state();
-    if !present.is_null() {
-        return present;
-    }
-
-    let block = gc_metadata::acquire();
-    if block.is_null() {
-        return std::ptr::null_mut();
-    }
-
-    // **The TLS pointer is read again rather than trusted across the draw.**
-    // `BlockPool::get` raises a record, and a thread's first record runs
-    // `ll_thread_init` from inside the journal (`journal::mod`, "A thread
-    // can reach a record site without ever having initialised the
-    // runtime") — which comes back here and installs a base block of its own.
-    // Writing over it would strand that block for the life of the
-    // process, one per registered thread. The two memory reserves are
-    // safe from the same re-entry for a reason this cell does not have:
-    // their `RefCell` is borrowed across the draw, so the inner call
-    // refuses and returns.
-    let installed = owner_state();
-    if !installed.is_null() {
-        gc_metadata::release_to_critical(block);
-        return installed;
-    }
-
-    let state = BlockHeader::payload_start(block) as *mut OwnerCycleState;
-    unsafe { state.write(OwnerCycleState::new()) };
-    // Publish last: any re-entry after this point must see fully initialised
-    // control and will use this exact base block.
-    OWNER_STATE.with(|cell| cell.set(state));
-    // One charge per base block: the re-entrant frame above finds a block
-    // already published, gives its own block back and returns without
-    // reaching this line.
-    gc_metadata::charge(size_of::<OwnerCycleState>());
-    state
-}
-
-/// Draw the base block of a thread the runtime never registered, and abort
-/// when it cannot be drawn.
-///
-/// Two refusals answer the same way, because there is no continuation
-/// from here that keeps the root: [`crate::refcount::CANDIDATE_BIT`] is set
-/// before this call and nothing unsets it, so a registration that returned
-/// without an entry would be Y6's permanent miss with the bit left
-/// standing. The abort is the funded class's last resort, reached one step
-/// earlier than [`append_to_overflow`]'s own
-/// (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued", which is
-/// this base block).
-///
-/// **Asking whether the exit will run is also what arms it**
-/// (`crate::memory::heap::thread_exit_will_run`), which is what this
-/// thread needs: nothing else has registered a guard for it, and without
-/// one the base block would be a block the process never sees again. The
-/// registration is a TLS destructor, and its first touch on this
-/// platform can end the process rather than report — the same edge
-/// [`crate::memory::critical::draw`] meets, and the
-/// same one this call is about to take anyway (`dev/DECISIONS.md`, "what
-/// the first touch of a thread-local with drop glue may cost").
-fn ensure_queue_base_or_abort() -> *mut OwnerCycleState {
-    if !crate::memory::heap::thread_exit_will_run() {
-        // Past `ll_thread_exit`, with nothing left to run another: the
-        // base block would go back to no one.
-        std::process::abort();
-    }
-
-    let state = try_ensure_queue_base();
-    if state.is_null() {
-        std::process::abort();
-    }
-
-    // The record beside the base block, as `ll_thread_init` draws it, and
-    // claimable at once, this draw being the whole of the thread's
-    // initialisation. The registry's lock is the one lock on the
-    // registration path, paid once per such thread
-    // (`crate::cycle::owner_record`, "When a thread takes its record").
-    match owner_record::draw_thread_record() {
-        owner_record::RecordDraw::Drawn => unsafe { owner_record::make_thread_record_claimable() },
-        owner_record::RecordDraw::Present => {}
-        owner_record::RecordDraw::AllocationFailed => std::process::abort(),
-    }
-
-    state
-}
-
-/// Whether this thread holds a base block now.
-pub(crate) fn queue_base_present() -> bool {
-    !owner_state().is_null()
-}
-
-/// Ensure this thread has a base block, and report whether it has one.
+/// Draw this thread's base block, and report whether it has one: the one
+/// draw of it in a thread's life, made by `ll_thread_init` before its
+/// best-effort fills, on a thread that holds none.
 ///
 /// `false` is the thread that never starts: the base block is the one stock
 /// a later poll cannot make good, because the guarantee it carries — that a
 /// candidate registration cannot fail — would be suspended between birth and
-/// that poll. [`crate::memory::heap::ll_thread_init`] calls it before its
-/// best-effort fills and reports the refusal to its own caller.
-pub(crate) fn initialize_queue_base() -> bool {
-    !try_ensure_queue_base().is_null()
+/// that poll. [`crate::memory::heap::ll_thread_init`] reports the refusal to
+/// its own caller.
+pub(crate) fn draw_queue_base() -> bool {
+    debug_assert!(
+        owner_state().is_null(),
+        "the base block is drawn once per life of a thread"
+    );
+    let block = gc_metadata::acquire();
+    if block.is_null() {
+        return false;
+    }
+
+    let state = BlockHeader::payload_start(block) as *mut OwnerCycleState;
+    unsafe { state.write(OwnerCycleState::new()) };
+    // Publish last: a reader after this point sees fully initialised control.
+    OWNER_STATE.with(|cell| cell.set(state));
+    gc_metadata::charge(size_of::<OwnerCycleState>());
+    true
+}
+
+/// Whether this thread holds a base block now: the mark of a started thread,
+/// drawn at its init and held to its exit.
+pub(crate) fn queue_base_present() -> bool {
+    !owner_state().is_null()
 }
 
 /// Set in [`OwnerCycleState::workspace_base`] while an arena holds the block.
@@ -646,9 +574,8 @@ const WORKSPACE_LENT: usize = 1;
 /// Hand this thread's collection workspace to an opening arena, drawing it on
 /// the thread's first collection.
 ///
-/// **Null on two conditions**: the pool refused the draw, and a thread the
-/// runtime never registered, which holds no state for this cell to live in.
-/// What the caller does with null is [`crate::cycle::arena`]'s.
+/// **Null when the pool refused the draw**, and what the caller does with
+/// null is [`crate::cycle::arena`]'s.
 ///
 /// The block is the thread's from here until [`release_queue_base`], and the
 /// caller borrows it rather than owning it (`dev/DECISIONS.md`, "the workspace
@@ -677,10 +604,6 @@ pub(crate) fn lend_workspace_base() -> *mut BlockHeader {
         "a thread bumps one collection workspace at a time"
     );
 
-    // The draw needs no re-read of the cell across it, unlike the base block's
-    // in `try_ensure_queue_base`: the re-entry that guard exists for is a
-    // thread's first journal record running `ll_thread_init`, and a thread
-    // that already has its control line has recorded already.
     let base = if installed.is_null() {
         gc_metadata::acquire()
     } else {
@@ -1068,7 +991,7 @@ pub(crate) unsafe fn give_back_candidate_ring_left_by_an_exit(record: *mut Owner
 }
 
 /// The owner's handle over R while no reader runs, or `None` for a thread
-/// with no record — one that never registered.
+/// with no record — one past its exit's release of it.
 ///
 /// The exclusion is the caller's: the collecting word in the record keeps a
 /// collector out for an in-line collection's whole length, and the token
@@ -1362,18 +1285,7 @@ pub(crate) fn refill_spares() -> bool {
             return false;
         }
 
-        // The count is read again after the draw, and a full pair
-        // sends the block straight back: the record `BlockPool::get`
-        // raises can run `ll_thread_init` on this thread, and that
-        // call fills these same cells, so an index taken before the
-        // draw would be past the end of the array
-        // ([`try_ensure_queue_base`] carries the same re-entry and why).
         let spare_count = owner_state.spare_count.get();
-        if usize::from(spare_count) == SPARE_SEGMENTS {
-            gc_metadata::release_to_critical(block);
-            return true;
-        }
-
         owner_state.spares[usize::from(spare_count)].set(block);
         owner_state.spare_count.set(spare_count + 1);
     }

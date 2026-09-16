@@ -170,11 +170,19 @@ fn append_in_heap(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    hashing,
-    create_and_hash,
-    append_in_arena,
-    append_in_heap
-);
+fn strings(c: &mut Criterion) {
+    // Criterion runs every arm on this thread, and the runtime serves a
+    // thread once `ll_thread_init` has started it.
+    assert!(
+        ll_model::memory::heap::ll_thread_init(),
+        "the runtime started the bench thread"
+    );
+
+    hashing(c);
+    create_and_hash(c);
+    append_in_arena(c);
+    append_in_heap(c);
+}
+
+criterion_group!(benches, strings);
 criterion_main!(benches);

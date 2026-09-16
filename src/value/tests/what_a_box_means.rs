@@ -53,6 +53,7 @@ fn the_one_word_tests_answer_by_tag() {
 
 #[test]
 fn entity_boxes_count_scalars_do_not() {
+    let _g = crate::memory::block_pool::test_guard();
     let mut e = RcHeader::new(MemoryCategory::GcHeap, 0);
     let v = Value::entity(Tag::Object, &mut e);
     assert!(v.is_pointer());

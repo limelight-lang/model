@@ -162,16 +162,14 @@ impl TraceToken {
 }
 
 /// The token of the calling thread, as a pointer a case standing in for a
-/// collector holds from another thread, drawing this thread's record if it
-/// has none yet. The collector thread itself reaches a token through the
+/// collector holds from another thread. The collector thread itself reaches a token through the
 /// record a round hands it (`crate::cycle::worker`), and no production path
 /// takes the pointer.
 ///
 /// The pointee is a line of the owner's record, and the record's storage
 /// outlives the thread (`crate::cycle::owner_record`), so the pointer stays
 /// valid after this thread exits; what a holder finds there after the exit's
-/// final claim is a token held for good. Null when the pool refused the
-/// record's block, which the next call asks again for.
+/// final claim is a token held for good. Null for a thread with no record.
 #[cfg(test)]
 pub(crate) fn this_thread_token() -> *const TraceToken {
     let record = this_thread_token_record();
@@ -182,24 +180,12 @@ pub(crate) fn this_thread_token() -> *const TraceToken {
     unsafe { &raw const (*record).token }
 }
 
-/// This thread's record with its token claimable, drawing the record if the
-/// thread has none yet; null when none can be drawn. The record
-/// `this_thread_token` reads its token off, for a caller that wants the
-/// record's other words too (`crate::cycle::collect`, the collecting word).
+/// This thread's record, for a caller that wants the record's other words
+/// beside the token (`crate::cycle::collect`, the collecting word). Null for
+/// a thread with no record: one past its exit's release of it, the record
+/// being drawn at `ll_thread_init` for every started thread.
 pub(crate) fn this_thread_token_record() -> *mut crate::cycle::owner_record::OwnerRecord {
-    let (record, taken) = crate::cycle::owner_record::ensure_thread_record();
-    if record.is_null() {
-        return record;
-    }
-
-    if taken {
-        // A record drawn outside `ll_thread_init` — a thread the runtime never
-        // registered, or a test thread asking for its token first — is made
-        // claimable here, the draw having been its initialisation.
-        unsafe { (*record).token.release() };
-    }
-
-    record
+    crate::cycle::owner_record::this_thread_record()
 }
 
 /// Whether a thread other than this one holds this thread's token now
@@ -219,9 +205,9 @@ pub(crate) fn held_by_a_foreign_holder() -> bool {
 /// under that claim (`crate::cycle::collect::collect_before_exit`), and each
 /// round's take must neither wait on the exit's own word nor let go of it.
 ///
-/// **A thread whose record the pool refused holds nothing** and collects
-/// untokened, which excludes no one: a collector reaches a thread through
-/// its record, and this thread has none. The next take asks the pool again.
+/// **A thread with no record holds nothing** and collects untokened, which
+/// excludes no one: a collector reaches a thread through its record, and
+/// this thread has none.
 ///
 /// The drop releases on the unwind as well as on the return, so a panic
 /// inside a trace leaves no token held for a waiter to block on forever. Not
@@ -238,18 +224,13 @@ pub(crate) struct HeldToken {
 impl HeldToken {
     /// Take this thread's token, waiting while a collector holds it.
     pub(crate) fn take() -> Self {
-        let (record, taken) = crate::cycle::owner_record::ensure_thread_record();
+        let record = crate::cycle::owner_record::this_thread_record();
         let releases = if record.is_null() {
             std::ptr::null_mut()
         } else if unsafe { crate::cycle::owner_record::owner_holds(record) } {
             std::ptr::null_mut()
         } else {
-            // A record this instant drawn comes with its token held, and
-            // that hold is this take.
-            if !taken {
-                unsafe { (*record).token.take() };
-            }
-
+            unsafe { (*record).token.take() };
             unsafe { crate::cycle::owner_record::note_owner_holds(record, true) };
             record
         };

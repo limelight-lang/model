@@ -7,6 +7,35 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-16 — a reason printed before an abort is captured by the harness, so the abort reads as silent
+
+**What happened.** Removing the lazy initialisations (`PLAN.md` S50.2) made
+an allocation on a thread nobody started end the process with a reason on
+stderr. The suite then died by `SIGABRT` with nothing on the terminal, and
+an enumeration that ran every test in its own process and grepped its
+output for the reason found only the tests that panicked; four tests that
+reached the abort passed the grep, because each printed its reason and was
+never seen to.
+
+**Why it was possible.** The test harness captures `eprintln!` per test
+thread and threads spawned from it, and prints the capture only for a test
+that fails. A process that aborts prints nothing, so the reason goes with
+it; a process instrumented to print and return instead of aborting passes,
+and the capture is discarded with the pass.
+
+**Why it was not caught.** The enumeration script asserted on the text of
+the output, which is the one thing capture hides, and not on the exit
+status, which it cannot.
+
+**What changed.** The script reads the exit status of each isolated run and
+prints the reason only from a run that failed, under `--nocapture`; the
+child-process cases that pin the aborts pass `--nocapture` to the child for
+the same reason, and read the reason from the child's stderr beside the
+signal. The rule: a check on an abort reads the status, and the text only
+after it.
+
+---
+
 ## 2026-09-16 — a hand-back that cleared its flags to zero left a free-list record open to the next reading
 
 **What happened.** `owner_record::hand_back_reading` cleared `R_LEFT` and

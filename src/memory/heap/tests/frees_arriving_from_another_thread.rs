@@ -35,7 +35,6 @@ fn cross_thread_free_is_correct() {
 
     // Consumer (this thread): verify each value survived, then free
     // cross-thread (posts to the producer's remote stack).
-    assert!(ll_thread_init(), "the runtime started this thread");
     let mut count = 0u64;
     for _ in 0..N {
         let p = rx.recv().unwrap() as *mut u8;
@@ -106,7 +105,6 @@ fn many_threads_freeing_into_one_owner_lose_no_slots() {
     // This thread owns the blocks. Hand slots out round-robin so all
     // four freers contend on the same block, and keep churning so the
     // drain path runs while their pushes are arriving.
-    assert!(ll_thread_init(), "the runtime started this thread");
     unsafe {
         with_thread_heap(|h| {
             for i in 0..(FREERS * PER) {

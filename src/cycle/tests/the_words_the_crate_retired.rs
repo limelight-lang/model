@@ -92,13 +92,13 @@ const RETIRED: [(&str, &str, Where); 93] = [
     ("clear_enrolled", "clear_candidate_bit", Where::Anywhere),
     // The queue's base block, its overflow buffer and its spare segments.
     ("floor_of", "queue_base_of", Where::Anywhere),
-    ("draw_floor", "try_ensure_queue_base", Where::Anywhere),
-    (
-        "draw_floor_or_abort",
-        "ensure_queue_base_or_abort",
-        Where::Anywhere,
-    ),
-    ("take_floor", "initialize_queue_base", Where::Anywhere),
+    ("draw_floor", "draw_queue_base", Where::Anywhere),
+    // The lazy draw and its abort are gone with the thread it served
+    // (`dev/DECISIONS.md`, "`ll_thread_init` is called once, and a refusal
+    // closes the thread"); a registration with no base block ends the
+    // process from `register_candidate`.
+    ("draw_floor_or_abort", "register_candidate", Where::Anywhere),
+    ("take_floor", "draw_queue_base", Where::Anywhere),
     ("release_floor", "release_queue_base", Where::Anywhere),
     ("grow_and_write", "append_with_new_segment", Where::Anywhere),
     ("is_short", "needs_spares", Where::Anywhere),

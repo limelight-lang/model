@@ -38,6 +38,7 @@ fn a_byte_store_at_offset_six_misses_the_counter() {
 /// the flags half passes through untouched.
 #[test]
 fn retain_and_release_leave_the_flags_half_alone() {
+    let _g = crate::memory::block_pool::test_guard();
     let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
     h.flags |= FOREIGN_MARK;
 

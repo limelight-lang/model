@@ -3,15 +3,12 @@
 //!
 //! What the ruling asks of this module is a coupling rather than a
 //! structure (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is
-//! allocator-issued", which is the base block): every registered thread has
+//! allocator-issued", which is the base block): every started thread has
 //! one, because a thread whose base block was refused never started. So the
-//! cases here are the draw, the refusal that ends a thread, the draw a thread
-//! the runtime never registered makes for itself, and the return.
-//!
-//! **The three aborts have no test**, and neither has the abort the overflow
-//! buffer takes when it is full, which predates them: nothing in this crate
-//! ends a process and comes back to report it. What is tested instead is every
-//! path that reaches them.
+//! cases here are the draw, the refusal that ends a thread, the return, and
+//! the end of the process a registration on a thread never started reaches,
+//! read from a child process. The abort the overflow buffer takes when it
+//! is full is `what_gc_owns`'s, read the same way.
 
 use super::*;
 
@@ -55,7 +52,7 @@ fn the_base_block_is_one_stamped_block_out_of_the_pool() {
         "the release gave back the base block and the workspace"
     );
 
-    assert!(initialize_queue_base(), "and the thread takes another");
+    assert!(draw_queue_base(), "and the thread takes another");
     assert_eq!(
         pool.blocks_out() + 1,
         with,
@@ -124,84 +121,40 @@ fn a_refused_base_block_is_a_thread_that_never_starts() {
     assert_eq!(stats().current_blocks(), base_blocks_before);
 }
 
-/// A thread the runtime never registered draws its base block at its first
-/// registration, and the exit guard that draw armed gives it back.
-///
-/// This is the population the ruling names: self-initialising allocation and
-/// releaser-only FFI consumers, which reach entity work without ever calling
-/// `ll_thread_init`. Its first release finds no live segment, no spare and an
-/// untouched reserve, so it lands in the overflow buffer — which is the tier
-/// that needs the base block to exist at all.
-///
-/// **The `debug-journal` build cannot hold an unregistered thread**, so there
-/// the case does not exist rather than failing. The first record site this
-/// thread reaches is the one `BlockPool::get` raises inside the lazy draw
-/// itself, and a thread's first record runs `ll_thread_init` from within the
-/// journal (`journal::mod`, "A thread can reach a record site without ever
-/// having initialised the runtime"). That init fills the spare cells, so the
-/// entry lands in a segment rather than in the overflow buffer: the thread is
-/// registered with the runtime by the time the candidate registration
-/// finishes, which is the one thing
-/// this test needs it not to be.
+/// A registration on a thread with no base block — one `ll_thread_init`
+/// never started — ends the process with a reason naming it: the candidate
+/// bit is set before the registration and nothing unsets it, so a
+/// registration that returned without an entry would be a permanent miss,
+/// and there is no frame to report through.
 #[test]
 #[cfg_attr(
-    feature = "debug-journal",
-    ignore = "the journal registers every thread at its first record site"
+    miri,
+    ignore = "spawns a child process, which Miri's isolation forbids"
 )]
-fn an_unregistered_thread_draws_its_base_block_at_its_first_registration() {
-    let _g = test_guard();
-    let pool = BlockPool::global();
-    let before = pool.blocks_out();
+fn a_registration_on_a_thread_never_started_ends_the_process() {
+    const CHILD: &str = "LL_REGISTRATION_NEVER_STARTED_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        std::thread::spawn(|| {
+            assert!(queue_base().is_null(), "nothing has run on this thread yet");
+            let mut header = candidate(2);
+            let entity = &raw mut header;
+            unsafe { release(entity) }
+        })
+        .join()
+        .unwrap();
+        return;
+    }
 
-    let (had_base_block, kind, overflow_len, queued) = std::thread::spawn(|| {
-        assert!(queue_base().is_null(), "nothing has run on this thread yet");
-
-        let mut header = candidate(2);
-        let entity = &raw mut header;
-        assert!(unsafe { !release(entity) });
-
-        let drawn = queue_base();
-        let readings = (
-            !drawn.is_null(),
-            kind_of(drawn),
-            overflow_len(),
-            candidate_count(),
-        );
-        // The entry names a header on this stack, and the exit the draw
-        // armed collects the lane: the entry goes back unread first.
-        crate::cycle::queue::release_queue_segments();
-        readings
-    })
-    .join()
-    .unwrap();
-
-    assert!(
-        had_base_block,
-        "the registration drew one rather than aborting"
-    );
-    assert_eq!(kind, BLOCK_KIND_GC_METADATA);
-    assert_eq!(
-        overflow_len, 1,
-        "no path could fund a segment, so the entry went to the buffer"
-    );
-    assert_eq!(queued, 0, "so nothing reached the queue itself");
-    assert_eq!(
-        pool.blocks_out(),
-        before,
-        "and the exit the draw armed gave the base block back"
+    crate::test_support::a_child_run_ends_by_abort_saying(
+        "cycle::queue::tests::the_base_block_a_thread_holds_for_its_life::a_registration_on_a_thread_never_started_ends_the_process",
+        CHILD,
+        "ll-model: register_candidate on a thread ll_thread_init never started",
     );
 }
 
-/// A thread's whole life gives every block back, and the draw that
-/// re-enters itself gives back the second one.
-///
-/// The re-entry is the `debug-journal` build's: `BlockPool::get` raises a
-/// record, a thread's first record runs `ll_thread_init` from inside the
-/// journal, and that call reaches the base block draw the outer one is still
-/// inside. Without the cell being read again after the draw, the outer
-/// call writes over the inner call's block and strands it for the life of
-/// the process — one per registered thread, in the build turned on to
-/// investigate memory.
+/// A thread's whole life gives every block back: the base block and the
+/// spares `ll_thread_init` draws, and under `debug-journal` the ring the
+/// first record inside those draws opens.
 ///
 /// **The bound is one-sided, and that is what makes it stable.** A leak
 /// can only put the counter above it; the traffic this test does not

@@ -444,31 +444,21 @@ fn ring_for_writing() -> *mut Ring {
     // would allocate a second ring and re-enter the registry's lock,
     // which is not reentrant.
     ALLOCATING.with(|cell| cell.set(true));
-    // A thread inside its own exit needs neither of the two calls below.
-    // Its retirement is the step still to run, so nothing has to be armed
-    // for it — and `ll_thread_init` there would rebuild the heap that
-    // exit has just torn down and tell every later caller the thread may
-    // free again. A record raised by a `__destruct` body in step 1 is the
-    // death of a *finishing* thread, which is the hypothesis this journal
-    // was built for, so it gets its ring.
+    // A thread inside its own exit needs no guard asked for below: its
+    // retirement is the step still to run. A record raised by a
+    // `__destruct` body in step 1 is the death of a *finishing* thread,
+    // which is the hypothesis this journal was built for, so it gets its
+    // ring.
     if !crate::memory::heap::thread_exit_running() {
-        // A thread can reach a record site without ever having
-        // initialised the runtime: the ring is larger than a heap slot,
-        // so its allocation takes the large path and touches no thread
-        // heap. Without this the exit guard is never registered.
-        // Idempotent, and inside the guard because it allocates. Its
-        // answer is not this call's business: a refused base block is a
-        // thread the runtime will not run entity work on, and the abort that
-        // enforces that belongs to candidate registration
-        // (`cycle::queue::ensure_queue_base_or_abort`). What this call needs
-        // from it is the guard, which the next line asks for directly.
-        let _ = crate::memory::heap::ll_thread_init();
         // No ring is opened on a thread whose retirement is not
         // guaranteed. A ring opened where the guard cannot be armed —
         // TLS teardown has destroyed the slot — is retired by nothing and
         // stays on the live list for the life of the process, where every
         // later window reads it as a live thread doing nothing: a
-        // standing false *none*, and a leak with it.
+        // standing false *none*, and a leak with it. Asking is also the
+        // arming, and the ask is made here rather than left to
+        // `ll_thread_init`, because a thread's first record is raised from
+        // inside that call's own block draws, before it arms the guard.
         if !crate::memory::heap::thread_exit_will_run() {
             close_this_thread();
             ALLOCATING.with(|cell| cell.set(false));
@@ -557,7 +547,10 @@ fn free_rings(rings: Vec<*mut Ring>) {
 /// where it can be drawn without a second lock.
 fn allocate_ring() -> *mut Ring {
     let bytes = size_of::<Ring>();
-    let memory = unsafe { crate::memory::stdapi::ll_malloc(bytes) };
+    // The large route without the thread-life check: a life's first record
+    // is raised from inside `ll_thread_init`'s own block draw, before the
+    // base block that check reads is published.
+    let memory = unsafe { crate::memory::stdapi::alloc_outside_the_heap(bytes, 16) };
     if memory.is_null() {
         return std::ptr::null_mut();
     }
@@ -614,18 +607,18 @@ fn retire_ring(ring: *mut Ring) {
 
 /// Let a thread that closed its journal at a previous exit journal again.
 ///
-/// Called from `heap::ll_thread_init`, and only where that function
-/// decides the thread has no runtime state yet — a pool thread running
-/// `init`/`exit` per task is a sequence of thread lives on one OS thread,
-/// and without this its second life journals nothing at all while looking
-/// exactly like a thread that did nothing.
+/// Called from `heap::ll_thread_init`, once per life of a thread — a pool
+/// thread running `init`/`exit` per task is a sequence of thread lives on
+/// one OS thread, and without this its second life journals nothing at all
+/// while looking exactly like a thread that did nothing.
 ///
 /// Both sentinels reopen: never journaling is final for the life it
 /// happened in, and a new life on the same OS thread is a new thread by
 /// everything else this module counts. A cell holding a live ring is left
-/// alone — `ll_thread_init` is idempotent, and reopening a thread that
-/// already has one would strand the ring on the live list and start a
-/// second under a second identity.
+/// alone — the life's first record is raised from inside the init's own
+/// block draws, before this call, and reopening a thread that already has
+/// its ring would strand the ring on the live list and start a second
+/// under a second identity.
 pub fn reopen_thread() {
     RING.with(|cell| {
         let ring = cell.get();

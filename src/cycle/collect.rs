@@ -179,8 +179,8 @@ impl CollectingThread {
         // The word is raised before the token is taken, which is the order
         // the collector's exclusion rests on: its claim of the token after
         // the owner's release at the scan's end reads the word set. A thread
-        // with no record yet is given one here as `HeldToken::take` would
-        // give it two lines later.
+        // with no record — one past its exit's release of it — does not
+        // collect.
         let record = crate::cycle::token::this_thread_token_record();
         if record.is_null() {
             return Err(GateClosed::NoRecord);

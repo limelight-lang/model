@@ -45,7 +45,10 @@ Also fixed while chasing this: mimalloc-bench reached mimalloc via
 both calls in an init check that ran on every malloc *and* every free.
 `ll_malloc`/`ll_c_free` now self-initialise on a cold branch, exactly as
 `mi_malloc` does (`test rcx,rcx; je _mi_malloc_generic`), and the shim is a
-direct `#define` like mimalloc's.
+direct `#define` like mimalloc's. (Superseded on 2026-09-16: the cold branch
+ends the process on a thread `ll_thread_init` never started, and the shim
+carries the per-thread init on its malloc side again — `dev/DECISIONS.md`,
+"`ll_thread_init` is called once, and a refusal closes the thread".)
 
 ## alloc_40b_x500_write_then_reclaim
 

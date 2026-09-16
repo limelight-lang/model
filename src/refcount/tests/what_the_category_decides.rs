@@ -10,6 +10,7 @@ use super::*;
 
 #[test]
 fn heap_entity_counts_and_dies() {
+    let _g = crate::memory::block_pool::test_guard();
     let mut header = RcHeader::new(MemoryCategory::GcHeap, 0);
     retain(&mut header);
     assert_eq!(header.refcount, 2);

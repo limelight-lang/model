@@ -58,12 +58,12 @@
 //! aborts, because it has the same shape as they do.
 //!
 //! The per-thread half is where a refusal can end something. The queue's base
-//! block is drawn twice: at thread init, where a refusal is a thread that
+//! block is drawn once, at thread init, where a refusal is a thread that
 //! never starts (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is
-//! allocator-issued", which is that block), and at the first registration of a
-//! thread the runtime never registered, where the same refusal aborts because
-//! there is no caller left to report it to. Past both stands the overflow
-//! buffer's own bound, which aborts when it fills. The window over withheld
+//! allocator-issued", which is that block); a registration on a thread with
+//! no base block ends the process, there being no caller left to report to.
+//! Past both stands the overflow buffer's own bound, which aborts when it
+//! fills. The window over withheld
 //! returns draws nothing at all: a death it withholds is held in the dying
 //! entity's own memory, and one no row of the collection names is returned at
 //! once ([`deferred_slot_reuse`], `classify`). Thread exit waits for a

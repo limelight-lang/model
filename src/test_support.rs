@@ -123,3 +123,42 @@ pub(crate) unsafe fn store_prop(
         assert!(ref_store(arena, holder as *mut RcHeader, slot, old, new));
     }
 }
+
+/// Run the test `case` — its full path — again in a child process with the
+/// environment variable `marker` set, and assert that the child ended by
+/// `SIGABRT` with `reason` on its stderr.
+///
+/// The signal is asserted rather than a failure: a panic in the child's
+/// fixture would satisfy an unsuccessful exit, and the entry points this
+/// serves end the process with no frame to report through. The reason is
+/// asserted beside it, because an abort is what every last resort in the
+/// crate answers with and only the reason says which one was reached. The
+/// child's own count is read too: `--exact` with a name the harness cannot
+/// match runs nothing and exits zero.
+pub(crate) fn a_child_run_ends_by_abort_saying(case: &str, marker: &str, reason: &str) {
+    use std::os::unix::process::ExitStatusExt;
+
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", case, "--nocapture"])
+        .env(marker, "1")
+        .output()
+        .expect("the test binary runs the case as its own child");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+        "the child ran this case rather than none"
+    );
+    // Spelled out because the crate takes no `libc` dependency; 6 on every
+    // unix this crate builds for.
+    const SIGABRT: i32 = 6;
+    assert_eq!(
+        output.status.signal(),
+        Some(SIGABRT),
+        "the child did not abort; status {:?}",
+        output.status
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(reason),
+        "the child aborted for another reason than {reason:?}:\n{stderr}"
+    );
+}

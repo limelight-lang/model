@@ -55,54 +55,6 @@ fn thread_init_touches_both_reserves_before_anything_can_release() {
     );
 }
 
-/// The population that keeps a first touch on the release path is the
-/// thread the runtime never registered, and what this pins is that the
-/// path is taken at all.
-///
-/// **It does not pin the first touch, and it cannot**: the probe below
-/// fills the reserve before the release so that there is a block to
-/// spend, and that fill is itself a touch of the same thread-local. The
-/// registration is unobservable from inside the process in any case — the
-/// failing case has already killed it — so what carries that half is the
-/// disassembly recorded in `dev/DECISIONS.md`, "what the first touch of a
-/// thread-local with drop glue may cost", and what carries this half is
-/// the drawn block.
-#[test]
-#[cfg_attr(
-    feature = "debug-journal",
-    ignore = "the journal registers every thread at its first record site"
-)]
-fn an_unregistered_thread_reaches_the_reserve_from_its_release_path() {
-    let _g = test_guard();
-
-    let (before, after) = std::thread::spawn(|| {
-        let untouched = blocks_held();
-        assert!(replenish(), "the pool fills it for the release to spend");
-
-        let mut header = crate::refcount::RcHeader::new(
-            crate::refcount::MemoryCategory::GcHeap,
-            crate::refcount::EntityKind::Object.to_flags(),
-        );
-        unsafe { crate::refcount::ll_retain(&raw mut header) };
-        assert!(!unsafe { crate::refcount::ll_release(&raw mut header) });
-
-        let spent = blocks_held();
-        crate::cycle::queue::release_queue_segments();
-        drain_for_test();
-        (untouched, spent)
-    })
-    .join()
-    .unwrap();
-
-    assert_eq!(before, 0, "nothing had filled the reserve on that thread");
-    assert_eq!(
-        after,
-        CRITICAL_BLOCKS - 1,
-        "and the release path spent one, so it reaches this module on a \
-         thread the runtime never registered"
-    );
-}
-
 /// Every `thread_local!` in the crate, by name, against a list.
 ///
 /// **A convention held by a list, and it is written as one**: nothing

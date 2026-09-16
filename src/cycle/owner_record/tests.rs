@@ -5,8 +5,7 @@
 //! the free path, which withholds under the second and not the first. The
 //! record is four lines — the token's, the reader's, the writer's and a
 //! spare — drawn at `ll_thread_init` beside the base block, so that its
-//! refusal is a thread that never starts, and by an unregistered thread at
-//! its first registration.
+//! refusal is a thread that never starts.
 
 use super::*;
 use crate::cycle::testing::Sent;
@@ -297,53 +296,6 @@ fn a_refused_record_is_a_thread_that_never_starts() {
         drawn_there.current_blocks(),
         0,
         "nothing of the GC metadata the init drew stayed with the thread"
-    );
-}
-
-/// A thread the runtime never registered takes its record at its first
-/// registration, through the registry's lock: the one lock on that path,
-/// paid once per thread.
-///
-/// Not under `debug-journal`, for the reason the base block's case gives
-/// (`crate::cycle::queue::tests::the_base_block_a_thread_holds_for_its_life`).
-#[test]
-#[cfg_attr(
-    feature = "debug-journal",
-    ignore = "the journal registers every thread at its first record site"
-)]
-fn an_unregistered_thread_draws_its_record_at_its_first_registration() {
-    let _g = test_guard();
-    let (drawn, claimable) = std::thread::spawn(|| {
-        assert!(this_thread_record().is_null(), "nothing has run here yet");
-        // A header the candidate gate admits at count two, as the queue's
-        // own cases build one: the registration dereferences no entry.
-        let mut header = crate::refcount::RcHeader::new(
-            crate::refcount::MemoryCategory::GcHeap,
-            crate::refcount::EntityKind::Object.to_flags(),
-        );
-        unsafe { crate::refcount::ll_retain(&raw mut header) };
-        assert!(unsafe { !crate::refcount::ll_release(&raw mut header) });
-
-        let record = this_thread_record();
-        let readings = (
-            !record.is_null(),
-            !record.is_null() && unsafe { (*record).token.try_take() },
-        );
-        if readings.1 {
-            unsafe { (*record).token.release() };
-        }
-        crate::cycle::queue::release_queue_segments();
-        readings
-    })
-    .join()
-    .expect("the thread returned");
-    assert!(
-        drawn,
-        "the registration drew the record with the base block"
-    );
-    assert!(
-        claimable,
-        "and made it claimable, the draw being its initialisation"
     );
 }
 

@@ -29,14 +29,12 @@
 //! that never starts, as the base block's is
 //! ([`draw_thread_record`]). The token stays held until the initialisation
 //! is complete ([`make_thread_record_claimable`]), so a collector claims no
-//! half-built thread. A thread the runtime never registered takes its
-//! record at its first candidate registration, through the registry's
-//! lock, beside the base block that path draws for it
-//! (`crate::cycle::queue`, the base block's draw for an unregistered
-//! thread); that lock is the one exception to the registration path's ban
-//! on locking, paid once per thread. The exit releases the record last of
-//! the collector's structures, after the queue whose registrations its
-//! rounds could still make (`crate::memory::heap::ll_thread_exit`).
+//! half-built thread. Every thread that registers a candidate has its
+//! record before it does, because no thread registers one before its init
+//! (`crate::cycle::queue`, a registration with no base block). The exit
+//! releases the record last of the collector's structures, after the queue
+//! whose registrations its rounds could still make
+//! (`crate::memory::heap::ll_thread_exit`).
 //!
 //! # Why the storage outlives the thread
 //!
@@ -77,15 +75,13 @@
 //! record goes to the free list held, and the taker releases it
 //! ([`make_thread_record_claimable`]). Until that claim — through the static
 //! blocks' teardown, the exit's first step — the token is free and a claim
-//! succeeds, which is what the claim's wait is for. A thread that never
-//! exits — one the runtime never registered, taking its record at its first
-//! collection — keeps its record claimable for the life of the process.
+//! succeeds, which is what the claim's wait is for.
 //!
 //! **The exit draws no record.** A thread that reaches its exit without one
 //! is reached by no collector, so its claim is empty, and a record taken by
 //! one of the exit's rounds would be released by that round's guard and go
 //! to the free list free — a record a collector could then claim with nobody
-//! in it. [`ensure_thread_record`] answers null while the exit runs.
+//! in it. [`draw_thread_record`] refuses while the exit runs.
 //!
 //! # The owner's own claim, told from a foreign one
 //!
@@ -501,49 +497,42 @@ pub(crate) fn this_thread_record() -> *mut OwnerRecord {
     OWNER_RECORD.with(Cell::get)
 }
 
-/// This thread's record, taking one from the registry if it has none yet,
-/// with P's block drawn and installed. Null when the pool refuses the block
-/// a fresh record would stand in or P's block, and the next call asks again.
+/// Draw this thread's record from the registry, with P's block drawn and
+/// installed and the token held as the owner's own claim: the one draw of
+/// it in a thread's life, made by `ll_thread_init` beside the base block,
+/// on a thread that holds none.
 ///
-/// The record comes out with its token held; the caller is the one that
-/// releases it, or keeps it as its own claim ([`crate::cycle::token::HeldToken`]).
-/// The second of the pair says whether the token was just taken, so the
-/// caller can tell a record it already lived in from one it has this
-/// instant. Every thread
-/// that registers a candidate has a record before it does, so a caller on
-/// a production path finds one present; the take here is the test's, whose
-/// thread asks for its token before anything else.
-pub(crate) fn ensure_thread_record() -> (*mut OwnerRecord, bool) {
-    let present = this_thread_record();
-    if !present.is_null() {
-        return (present, false);
-    }
-
+/// `false` when the pool refuses the block a fresh record would stand in or
+/// P's block, which the caller treats as it treats a refused base block; and
+/// while the thread's own exit runs, which draws no record (module doc, "The
+/// exit draws no record").
+///
+/// The hold is noted as the owner's, because the rest of the initialisation
+/// runs under it and a rollback's returns go through the free path, which
+/// withholds under a foreign holder and not under the owner
+/// ([`OwnerRecord::owner_holds`]). The caller releases the hold
+/// ([`make_thread_record_claimable`]) or gives the record back
+/// ([`release_thread_record`]).
+pub(crate) fn draw_thread_record() -> bool {
+    debug_assert!(
+        this_thread_record().is_null(),
+        "the record is drawn once per life of a thread"
+    );
     if crate::memory::heap::thread_exit_running() {
-        return (std::ptr::null_mut(), true);
+        return false;
     }
 
     // P's block ahead of the record, so that no record is ever published
-    // with a draw still to make behind it. The thread-local is read again
-    // after the draw rather than trusted across it: under `debug-journal`
-    // the draw's first record site runs `ll_thread_init` on this thread,
-    // which takes a record of its own (`crate::cycle::queue`,
-    // `try_ensure_queue_base` carries the same re-entry).
+    // with a draw still to make behind it.
     let p_block = gc_metadata::acquire();
     if p_block.is_null() {
-        return (std::ptr::null_mut(), true);
-    }
-
-    let installed = this_thread_record();
-    if !installed.is_null() {
-        gc_metadata::release_to_critical(p_block);
-        return (installed, false);
+        return false;
     }
 
     let record = take_record();
     if record.is_null() {
         gc_metadata::release_to_critical(p_block);
-        return (record, true);
+        return false;
     }
 
     gc_metadata::charge(BLOCK_PAYLOAD);
@@ -551,41 +540,8 @@ pub(crate) fn ensure_thread_record() -> (*mut OwnerRecord, bool) {
     OWNER_RECORD.with(|cell| cell.set(record));
     #[cfg(test)]
     RECORDS_TAKEN.with(|count| count.set(count.get() + 1));
-    (record, true)
-}
-
-/// What [`draw_thread_record`] did.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum RecordDraw {
-    /// The thread had a record already, and keeps it as it was: an
-    /// initialisation run again on a started thread owes it nothing.
-    Present,
-    /// This call took one, with its token held; the caller releases the
-    /// hold ([`make_thread_record_claimable`]) or gives the record back
-    /// ([`release_thread_record`]).
-    Drawn,
-    /// The registry could not carve one, which the caller treats as it
-    /// treats a refused base block.
-    AllocationFailed,
-}
-
-/// Give this thread a record, with its token held as the owner's own claim:
-/// the draw `ll_thread_init` makes beside the base block, and the one a
-/// thread the runtime never registered makes at its first registration.
-///
-/// The hold is noted as the owner's, because the rest of the initialisation
-/// runs under it and its returns — a rollback's, a re-entered draw's — go
-/// through the free path, which withholds under a foreign holder and not
-/// under the owner ([`OwnerRecord::owner_holds`]).
-pub(crate) fn draw_thread_record() -> RecordDraw {
-    match ensure_thread_record() {
-        (record, _) if record.is_null() => RecordDraw::AllocationFailed,
-        (record, true) => {
-            unsafe { note_owner_holds(record, true) };
-            RecordDraw::Drawn
-        }
-        (_, false) => RecordDraw::Present,
-    }
+    unsafe { note_owner_holds(record, true) };
+    true
 }
 
 /// Make this thread's record claimable: the release of the hold
@@ -594,7 +550,7 @@ pub(crate) fn draw_thread_record() -> RecordDraw {
 ///
 /// # Safety
 /// This thread's record was drawn by this thread's initialisation
-/// ([`RecordDraw::Drawn`]) and nothing has released it since.
+/// ([`draw_thread_record`]) and nothing has released it since.
 pub(crate) unsafe fn make_thread_record_claimable() {
     let record = this_thread_record();
     debug_assert!(
@@ -928,9 +884,7 @@ thread_local! {
     static TAKE_THIS: Cell<*mut OwnerRecord> = const { Cell::new(std::ptr::null_mut()) };
     /// Whether this thread's draws answer null, for a case that reads what
     /// a refused record costs. Every draw while it stands, rather than the
-    /// next one: under `debug-journal` the base block's draw runs a second
-    /// `ll_thread_init` from inside the journal, whose own draw would spend
-    /// a one-shot refusal before the case's init reached its.
+    /// next one, so the case's own init is the draw that meets it.
     static REFUSE_DRAWS: Cell<bool> = const { Cell::new(false) };
 }
 

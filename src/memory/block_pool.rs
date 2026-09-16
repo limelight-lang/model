@@ -923,19 +923,23 @@ impl BlockPool {
 pub(crate) fn test_guard() -> TestGuard {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     // Tests are just another embedder of the C ABI's explicit-init
-    // contract (see `heap::ll_thread_init`); idempotent per thread, so
-    // folding it into the shared test fixture beats patching every test
-    // that happens to allocate a `GcHeap`/`LongLived` object.
+    // contract (see `heap::ll_thread_init`): the harness thread is started
+    // once, by the first test it runs, and a test that ended its life by
+    // `ll_thread_exit` leaves the next test to start another. Folding that
+    // into the shared fixture beats patching every test that happens to
+    // allocate a `GcHeap`/`LongLived` object.
     //
     // Lock first, initialize second. Init takes blocks — the heap's own,
     // and the barrier reserve's — so doing it before the lock lets a
     // thread queued on the lock move the global block count under the
     // test that is currently running and counting.
     let guard = TestGuard(LOCK.lock().unwrap_or_else(|e| e.into_inner()));
-    assert!(
-        crate::memory::heap::ll_thread_init(),
-        "the runtime started this thread"
-    );
+    if !crate::cycle::queue::queue_base_present() {
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
+    }
     // The ring too, and for the same reason as the init above: it is a
     // block, so the record that allocates it draws one out of this
     // thread's cache, and a test that names a block cannot have that

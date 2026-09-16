@@ -118,23 +118,15 @@ pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
     // when `size > MAX_SMALL`, which `size <= MAX_SMALL` already decides.
     // Asking twice cost a second CLASS_LUT lookup on every malloc.
     if size <= MAX_SMALL && align <= 16 {
-        // Self-initialising, via a cold branch on a null heap pointer.
-        //
-        // `ll_thread_init` remains the documented contract and is still the
-        // right thing for an embedder to call; this is what makes skipping it
-        // merely slower-once rather than undefined. It also makes the C ABI
-        // callable exactly the way mimalloc's is, which matters for measuring
-        // honestly: `mi_malloc` does this identical check inline
-        // (`test rcx,rcx; je _mi_malloc_generic`) and self-initialises. Making
-        // callers wrap us in an init check instead does not remove the cost —
-        // it moves it into their wrapper and out of our number. That is not a
-        // saving, it is a rigged comparison, and it was one: mimalloc-bench's
-        // shim reaches mimalloc with `#define CUSTOM_MALLOC mi_malloc` while
-        // ours went through a wrapper testing a `thread_local` on every malloc
-        // *and* every free.
+        // One branch on the heap pointer, the way `mi_malloc` tests its own
+        // (`test rcx,rcx; je _mi_malloc_generic`), so the C ABI is measured
+        // against mimalloc's on the same terms. The cold side answers null
+        // on a started thread whose heap the OS refused, and ends the process
+        // on a thread `ll_thread_init` never started
+        // (`heap::heapless_allocation`).
         let h = crate::memory::heap::thread_heap();
         if h.is_null() {
-            return unsafe { ll_alloc_init(size) };
+            return crate::memory::heap::heapless_allocation("ll_alloc");
         }
 
         return unsafe { (*h).alloc(size) };
@@ -143,32 +135,30 @@ pub unsafe fn ll_alloc(size: usize, align: usize) -> *mut u8 {
     unsafe { ll_alloc_large(size, align) }
 }
 
-/// Cold tail: first allocation on this thread — build its heap, then retry.
-///
-/// # Safety
-/// Standard allocator contract.
-#[cold]
-#[inline(never)]
-unsafe fn ll_alloc_init(size: usize) -> *mut u8 {
-    // The status is not read here: this is the self-initialising path,
-    // whose contract is a null allocation on any refusal — which the heap
-    // read below reports, for a refused base block as for a refused heap.
-    let _ = crate::memory::heap::ll_thread_init();
-    // Building the heap can itself be refused, and then there is no heap
-    // to allocate from — report it the same way as any other exhaustion.
-    let h = crate::memory::heap::thread_heap();
-    if h.is_null() {
-        return std::ptr::null_mut();
-    }
-
-    unsafe { (*h).alloc(size) }
-}
-
 /// # Safety
 /// Standard allocator contract.
 #[cold]
 #[inline(never)]
 unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
+    // The same question the small path asks of the heap slot, asked here of
+    // the base block directly, this path reading no heap: a thread outside
+    // its life is served by no size (`heap::require_thread_started`).
+    crate::memory::heap::require_thread_started("ll_alloc");
+    unsafe { alloc_outside_the_heap(size, align) }
+}
+
+/// The large route with no question asked of the thread's life: a pooled
+/// block for a size within one payload, a run of its own above it, null on
+/// an alignment past `MAX_ALIGN` or on refusal. It is [`ll_alloc_large`]
+/// less the check, for the one caller that runs before the base block is
+/// published — the journal's ring, opened by the first record a life
+/// raises, which is raised from inside `ll_thread_init`'s own block draw
+/// (`dev/DECISIONS.md`, "an entry point reached outside a thread's life ends
+/// the process, and the base block is the mark of a started thread").
+///
+/// # Safety
+/// Standard allocator contract.
+pub(crate) unsafe fn alloc_outside_the_heap(size: usize, align: usize) -> *mut u8 {
     if align > MAX_ALIGN {
         return std::ptr::null_mut();
     }
@@ -178,7 +168,7 @@ unsafe fn ll_alloc_large(size: usize, align: usize) -> *mut u8 {
     // request — small or large — through the pooled block path below, whose
     // payload sits at `+256` (256-aligned), so any alignment up to
     // `MAX_ALIGN` is satisfied. This also avoids touching the thread heap,
-    // which may be null on a thread that never called `ll_thread_init`.
+    // which is null on a thread whose init the OS refused one.
 
     if size <= BLOCK_PAYLOAD {
         // One pooled block holds the object; payload at +256.
@@ -470,8 +460,12 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         let h = crate::memory::heap::thread_heap();
         if h.is_null() {
             // No heap on this thread means we cannot be the block's owner, so
-            // this is by definition a cross-thread free. Post it and go — no
-            // reason to build a heap for a thread that has never allocated.
+            // this is by definition a cross-thread free. Post it and go: a
+            // free on a thread with no heap — one whose heap was refused, or
+            // one outside its life — is one of the two entry points the
+            // thread-life check exempts (`dev/DECISIONS.md`, "an entry point
+            // reached outside a thread's life ends the process, and the base
+            // block is the mark of a started thread").
             return unsafe { crate::memory::heap::free_foreign(ptr) };
         }
 

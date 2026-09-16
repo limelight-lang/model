@@ -208,6 +208,12 @@ fn bulk(c: &mut Criterion, cls: *const Class) {
 }
 
 fn benches(c: &mut Criterion) {
+    // Criterion runs every arm on this thread, and the runtime serves a
+    // thread once `ll_thread_init` has started it.
+    assert!(
+        ll_model::memory::heap::ll_thread_init(),
+        "the runtime started the bench thread"
+    );
     let cls = class();
     create_release_die(c, cls);
     batch_plain(c, cls);

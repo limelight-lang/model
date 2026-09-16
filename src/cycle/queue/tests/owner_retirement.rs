@@ -288,6 +288,7 @@ fn an_unwind_in_final_retirement_lowers_the_collection_gate() {
 /// (`PLAN.md` S37.6, and the Critic round of 2026-09-10 that named the hole).
 #[test]
 fn a_deferring_pass_survives_an_unwind_at_each_of_its_boundaries() {
+    let _g = test_guard();
     for fault in 0..=compaction::LAST_CHECKPOINT {
         reset();
         let mut arena = Arena::new();

@@ -404,6 +404,12 @@ fn lookup(c: &mut Criterion, ctx: *mut LLContext, arena: *mut Arena) {
 }
 
 fn value(c: &mut Criterion) {
+    // Criterion runs every arm on this thread, and the runtime serves a
+    // thread once `ll_thread_init` has started it.
+    assert!(
+        ll_model::memory::heap::ll_thread_init(),
+        "the runtime started the bench thread"
+    );
     let mut arena = Arena::new();
     let arena_ptr: *mut Arena = &mut arena;
     let mut context = LLContext { arena: arena_ptr };

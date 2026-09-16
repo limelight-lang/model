@@ -351,6 +351,12 @@ fn category_barrier_arena_into_heap(c: &mut Criterion, ctx: *mut LLContext, aren
 }
 
 fn barrier(c: &mut Criterion) {
+    // Criterion runs every arm on this thread, and the runtime serves a
+    // thread once `ll_thread_init` has started it.
+    assert!(
+        ll_model::memory::heap::ll_thread_init(),
+        "the runtime started the bench thread"
+    );
     // One arena and one context for every arm: criterion runs them
     // serially, and every arm resets the arena between its own regions,
     // so no arm inherits another's state.

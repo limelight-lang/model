@@ -27,6 +27,7 @@ fn admissions_for(flags: u32) -> usize {
 
 #[test]
 fn each_clause_of_the_gate_rejects_on_its_own() {
+    let _g = crate::memory::block_pool::test_guard();
     let admitting = EntityKind::Object.to_flags();
     assert_eq!(
         admissions_for(admitting),

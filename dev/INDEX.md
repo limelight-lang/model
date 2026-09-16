@@ -664,7 +664,9 @@ versions live in `docs/history/`, marked at the top.
   `src/test_support/tests.rs` holds the one rule that is about the suite
   rather than about a module: a test reading a file or spawning a process
   carries `#[cfg_attr(miri, ignore = "…")]`, without which Miri stops at it
-  and runs nothing after it (`dev/WORKFLOW.md`, "Tests").
+  and runs nothing after it (`dev/WORKFLOW.md`, "Tests"). An abort is pinned
+  by a child run of the same case, `test_support::a_child_run_ends_by_abort_saying`,
+  which reads the child's signal and the reason on its stderr.
   The two `loom` models are outside this layout
   and stay so: each is a hand-written copy of a protocol rather than a
   group of tests over a module, and each is compiled only under

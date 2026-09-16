@@ -40,9 +40,10 @@ head of each probe.
   curl -sL https://raw.githubusercontent.com/daanx/mimalloc-bench/master/bench/larson/larson.cpp -o bench-external/larson/larson.cpp
   ```
 - **`ll_malloc_shim.h`** / **`mi_malloc_shim.h`** — point larson's
-  `CUSTOM_MALLOC`/`CUSTOM_FREE` hook at our `ll_malloc`/`ll_c_free` (with
-  a native per-thread `ll_thread_init()` call, since larson spawns raw
-  OS threads our runtime doesn't know about) or at `mi_malloc`/`mi_free`.
+  `CUSTOM_MALLOC`/`CUSTOM_FREE` hook at our `ll_malloc`/`ll_c_free` (behind
+  a per-thread `ll_thread_init()` call on the malloc side, since larson
+  spawns raw OS threads with no start hook and the runtime serves a thread
+  only once that call has started it) or at `mi_malloc`/`mi_free`.
   Standard invocation: `larson.exe 5 8 1000 5000 100 4141 <nthreads>`.
 - **`isolate_path.cpp`** — isolates per-call path overhead (TLS, FFI
   boundary, algorithm) from workload shape: fixed size, immediate
