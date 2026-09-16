@@ -184,7 +184,7 @@ pub(crate) fn this_thread_token() -> *const TraceToken {
 
 /// This thread's record with its token claimable, drawing the record if the
 /// thread has none yet; null when none can be drawn. The record
-/// [`this_thread_token`] reads its token off, for a caller that wants the
+/// `this_thread_token` reads its token off, for a caller that wants the
 /// record's other words too (`crate::cycle::collect`, the collecting word).
 pub(crate) fn this_thread_token_record() -> *mut crate::cycle::owner_record::OwnerRecord {
     let (record, taken) = crate::cycle::owner_record::ensure_thread_record();

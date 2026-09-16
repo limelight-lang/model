@@ -9,9 +9,9 @@
 //! `dev/DECISIONS.md`, "what the old collectors left behind is deleted, and
 //! what is kept is named".
 //!
-//! **The four symbols survive the deletion because three of the module's
-//! four duties are not the collector's** (a fifth, the collector cap, is the
-//! embedder's dial over the collector threads and joined on 2026-09-16). The checkpoint pair is the
+//! **Four of the five symbols survive the deletion because three of the
+//! module's four duties are not the collector's**; the fifth, the collector
+//! cap, is the embedder's dial over the collector threads. The checkpoint pair is the
 //! configuration-independent lowering surface: generated code brackets a
 //! run of batched releases with them in every build, so the pair is
 //! exported whether or not it does anything (`object.rs`,
@@ -171,10 +171,9 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // And the candidate queue's spare cells, which is the same protocol
     // one layer up: the growth path may not allocate, so somebody else
     // takes the segment it swaps in, and this is where that somebody
-    // stands — a block the ring has to spare behind its tail block fills a
-    // short cell first; then the overflow buffer drains into the room the refill
-    // made. The exit's collection runs the same three before each of its
-    // rounds (`crate::cycle::queue::refill_and_drain`).
+    // stands; then the overflow buffer drains into the room the refill
+    // made. The exit's collection runs the same before each of its rounds
+    // (`crate::cycle::queue::refill_and_drain`).
     crate::cycle::queue::refill_and_drain();
 
     // And the returns a foreign trace left this thread withholding, made

@@ -2,8 +2,8 @@
 //! so a byte a collector puts at +6 survives every hot-path operation
 //! and every flags update.
 //!
-//! Nothing writes the flags half from another thread yet — the collector
-//! that will is S38's — so what these tests pin is the separation the
+//! The collector thread reads the header through `cells::AtomicCells` and
+//! writes nothing of it, so what these tests pin is the separation the
 //! mutator owes, which outlives the collector that first asked for it:
 //! `rc-walk`'s epoch stamp is where the marker below comes from. The
 //! commit's own writer of that byte is

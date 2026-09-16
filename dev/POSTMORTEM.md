@@ -7,6 +7,44 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-16 — a hand-back that cleared its flags to zero left a free-list record open to the next reading
+
+**What happened.** `owner_record::hand_back_reading` cleared `R_LEFT` and
+`P_LEFT` after returning the rings an exit had left to the reading, and
+cleared them to zero. `RETURNING` — the flag that keeps a record on the
+free list out of a collector's pre-claim reading — is set only by the
+exit's own return path, and an exit whose both returns found the reading
+in place never took that path. The record went to the free list with a
+hold word of zero, and `take_for_reading` succeeded on it. A reading
+against a record the registry could hand out at the same instant: the
+registry's `blocks_are_the_owners` check and its `reading.store(0)` are two
+steps, and a take between them is overwritten, so the collector would read
+P's index words under a fresh thread's install. The step's own case
+(`an_owner_exiting_under_the_reading_leaves_its_blocks_to_the_hand_back`)
+built exactly this state and asserted `registry_lists_free` without asking
+whether the record refused a reading. Found by the stage's Code Reviewer
+on 2026-09-16, before any run reached it; the fix sets `RETURNING` in the
+hand-back's closing store whenever a ring was left.
+
+**Root cause.** The flag stood for "an exit's return happened", and the
+hand-back is a second path an exit's return happens on. The Critic of
+S49.9 named the class — "a reading held a free-list record off the
+registry" — and the fix covered the path it named (the returning flag on
+the exit's clear path) and not the path the flag's own contract implied.
+
+**Why it was not caught.** The case that constructs the state asserts the
+list's shape and the blocks' return, which are what the step's `done:`
+names; the invariant the flag exists for — no reading of a free-list
+record — was asserted by no case, because every case that reads it starts
+from a record its exit returned itself. Mutation testing cannot find an
+assertion that was never written.
+
+**Rule.** A flag whose contract is "state S holds" is set by every path
+that enters S, and a case per such path asserts the reader the flag keeps
+out. Related: "a flag standing for a count absorbs" (memory).
+
+---
+
 ## 2026-09-16 — a peak read against an absolute figure passed on what the free list happened to hold
 
 **What happened.** `cycle::census::tests::a_registered_ring_under_a_keeper_reads_as_constructed`

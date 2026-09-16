@@ -643,6 +643,36 @@ fn a_chains_dismantle_gives_every_block_back() {
     assert_eq!(chain.len(), 0);
 }
 
+/// A retain whose `keep` unwinds leaves the chain whole on the pack's
+/// terms: the entry in `keep`'s hands is kept as it stood, and so is every
+/// entry behind it; what `keep` had dropped before stays dropped.
+#[test]
+fn a_retain_that_unwinds_keeps_the_entry_in_hand() {
+    let _g = test_guard();
+    let mut chain = Chain::empty();
+    for entry in 0..10 {
+        assert_eq!(chain.push(entry, fresh), Ok(()));
+    }
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        chain.retain(
+            |entry| match entry {
+                0 | 1 => false,
+                5 => panic!("keep unwinds with entry 5 in hand"),
+                _ => true,
+            },
+            gc_metadata::release,
+        );
+    }));
+    assert!(outcome.is_err());
+
+    let mut kept = Vec::new();
+    chain.walk(|entry| kept.push(entry));
+    assert_eq!(kept, [2, 3, 4, 5, 6, 7, 8, 9]);
+    assert_eq!(chain.len(), 8);
+    chain.dismantle(gc_metadata::release);
+}
+
 /// The pack rewrites the writer's copy of `front`: a reader had advanced
 /// `front` past the copy the writer last refreshed, the pack fills the block
 /// from the new `front`, and without the rewrite the writer's full test

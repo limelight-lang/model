@@ -475,10 +475,10 @@ impl<'a> Reader<'a> {
     }
 
     /// Take up to `out.len()` entries from the front, oldest first, and
-    /// answer how many were taken. Zero is the ring read empty.
-    // The collector's batch reads through the peek/commit pair, and the
-    // tests are the consuming read's only driver.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// answer how many were taken. Zero is the ring read empty. The
+    /// consuming read the tests drive; the collector's batch reads through
+    /// the peek/commit pair.
+    #[cfg(test)]
     pub(crate) fn take(&self, out: &mut [usize]) -> usize {
         let mut front_block = self.0.front_block.load(Ordering::Acquire);
         let mut taken = 0;
@@ -551,9 +551,12 @@ impl<'a> Reader<'a> {
         }
 
         // The front block is read to its tail. Whether a block is ahead is
-        // read off the tail block after that reading, then the front block's
-        // tail again ([`Reader::take`] says why); a block ahead holds an
-        // entry, and its link is read before anything moves.
+        // read off the tail block *after* that reading, then the front
+        // block's tail again: the writer can fill this block and move on
+        // between the two, and a reader that read the tail block first would
+        // skip a filled block. A block ahead holds an entry, since the tail
+        // block moves only after a write into it, and its link is read before
+        // anything moves.
         #[cfg(test)]
         testing::between_the_reads();
         if front_block == self.0.tail_block.load(Ordering::Acquire) {
@@ -633,7 +636,7 @@ impl<'a> Reader<'a> {
     }
 
     /// Consume the first `count` entries without reading them: the front
-    /// moves past them block by block as [`Reader::take`] would move it,
+    /// moves past them block by block as a consuming read would move it,
     /// and the block ahead of a drained one is entered on the same double
     /// read. A caller that read the entries in place and answered for every
     /// one of them advances this way.
@@ -705,8 +708,7 @@ impl<'a> Reader<'a> {
     /// of the chain, so for the token holder or the owner, whose exclusion
     /// keeps the tail block from moving back and the blocks past it in the
     /// circle; a reader without the token asks [`Reader::has_at_least`].
-    // The owner's readings of P in tests and the ring's own tests drive it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn unread(&self) -> usize {
         let front_block = self.0.front_block.load(Ordering::Acquire);
         if front_block.is_null() {
@@ -739,7 +741,8 @@ impl<'a> Quiescent<'a> {
     ///
     /// # Safety
     /// No [`Reader`] over these slots runs while this handle is in use, and
-    /// the calling thread is the ring's one producer.
+    /// the calling thread is the ring's one producer, or no producer exists
+    /// — the owner has exited and left the ring to the caller.
     pub(crate) unsafe fn new(slots: Slots<'a>) -> Self {
         Self(slots)
     }
@@ -1173,9 +1176,9 @@ impl Chain {
     /// drop the rest; a block left with no entry leaves the chain through
     /// `give_back`, so that the chain keeps its rule of no empty block.
     ///
-    /// **An unwind out of `keep` leaves the chain whole**, on the terms of
-    /// [`Quiescent::rewrite`]: the entry in `keep`'s hands is dropped and
-    /// every entry behind it is kept.
+    /// **An unwind out of `keep` leaves the chain whole**, on [`Packing`]'s
+    /// terms: the entry in `keep`'s hands is kept as it stood, and so is
+    /// every entry behind it.
     pub(crate) fn retain(
         &mut self,
         mut keep: impl FnMut(usize) -> bool,
@@ -1185,6 +1188,8 @@ impl Chain {
         while let Some(entry) = pass.read() {
             if keep(entry) {
                 pass.write(entry);
+            } else {
+                pass.discard();
             }
         }
     }
@@ -1250,6 +1255,9 @@ struct Retaining<'a, G: FnMut(*mut BlockHeader)> {
     read_tail: usize,
     write: usize,
     previous: *mut BlockHeader,
+    /// The entry in hand, and whether the caller has still to answer for it.
+    in_hand: usize,
+    holding: bool,
 }
 
 impl<'a, G: FnMut(*mut BlockHeader)> Retaining<'a, G> {
@@ -1264,6 +1272,8 @@ impl<'a, G: FnMut(*mut BlockHeader)> Retaining<'a, G> {
             read_tail: 0,
             write: 0,
             previous: std::ptr::null_mut(),
+            in_hand: 0,
+            holding: false,
         };
         pass.enter_block();
         pass
@@ -1280,9 +1290,15 @@ impl<'a, G: FnMut(*mut BlockHeader)> Retaining<'a, G> {
         };
     }
 
-    /// The next entry, or `None` past the last block. Leaving a block
+    /// The next entry in hand, or `None` past the last block; an entry still
+    /// in hand from the last read is kept as it stood. Leaving a block
     /// closes it ([`Retaining::close_block`]).
     fn read(&mut self) -> Option<usize> {
+        if self.holding {
+            let kept = self.in_hand;
+            self.write(kept);
+        }
+
         loop {
             if self.block.is_null() {
                 return None;
@@ -1291,6 +1307,8 @@ impl<'a, G: FnMut(*mut BlockHeader)> Retaining<'a, G> {
             if self.read != self.read_tail {
                 let entry = unsafe { *(*ring(self.block)).slots[self.read].get() };
                 self.read += 1;
+                self.in_hand = entry;
+                self.holding = true;
                 return Some(entry);
             }
 
@@ -1301,10 +1319,17 @@ impl<'a, G: FnMut(*mut BlockHeader)> Retaining<'a, G> {
         }
     }
 
+    /// Keep `kept` in the entry in hand's place, answering for it.
     fn write(&mut self, kept: usize) {
         unsafe { *(*ring(self.block)).slots[self.write].get() = kept };
         self.chain.entries += 1;
         self.write += 1;
+        self.holding = false;
+    }
+
+    /// Drop the entry in hand, answering for it.
+    fn discard(&mut self) {
+        self.holding = false;
     }
 
     /// Close the block in hand at the write cursor: its tail is what was

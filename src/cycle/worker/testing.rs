@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 
-use super::{ALIVE, COLLECTORS, ELDER, MAX_COLLECTORS, STARTING, UNBORN};
+use super::{ALIVE, COLLECTORS, ELDER, ENDING, MAX_COLLECTORS, STARTING, UNBORN};
 use crate::cycle::owner_record::OwnerRecord;
 
 /// Whether [`super::ensure_thread`] may spawn.
@@ -38,6 +38,7 @@ pub(crate) enum ThreadState {
     Unborn,
     Starting,
     Alive,
+    Ending,
 }
 
 /// Where the elder stands.
@@ -51,6 +52,7 @@ pub(crate) fn collector_state(index: usize) -> ThreadState {
         UNBORN => ThreadState::Unborn,
         STARTING => ThreadState::Starting,
         ALIVE => ThreadState::Alive,
+        ENDING => ThreadState::Ending,
         other => unreachable!("the thread word holds {other}"),
     }
 }
@@ -297,8 +299,9 @@ pub(crate) fn retiring() -> bool {
 
 /// End every collector thread and wait for it: the flag, a wake out of its
 /// wait, the join. A thread whose birth was refused is joined the same way.
-/// Closes the births again, lifts the confinement and restores the cap as
-/// well, so the next case starts from the state the binary started in.
+/// Closes the births again, lifts the confinement, restores the cap, the
+/// threshold and the wait, forgets the last refused birth and zeroes the
+/// rounds; a one-shot hook a case armed and never reached stays armed.
 pub(crate) fn retire() {
     permit_births(false);
     RETIRING.store(true, Ordering::Relaxed);

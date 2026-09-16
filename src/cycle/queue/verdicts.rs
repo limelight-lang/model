@@ -53,10 +53,12 @@
 //! it retires the completed deaths and defers the roots read live from the
 //! front, and stops at the first proposed or unwalked root, which arms the
 //! collection this same poll fires — the collection is what reads it. A
-//! closed-gate poll reads no verdict, as it fires nothing. Nothing the poll
-//! does writes a root into R, so a full P costs the poll no registration
-//! it never budgeted for; what stands behind the first proposal waits for
-//! the collection, which reads the whole prefix.
+//! closed-gate poll reads no verdict, as it fires nothing. The poll writes
+//! into R only for a zero-count verdict the re-reading refuted
+//! ([`PrefixReading::kept`]), through the registration path with its
+//! growth and its arming; every other disposition writes nothing into R.
+//! What stands behind the first proposal waits for the collection, which
+//! reads the whole prefix.
 //!
 //! **A retirement outside a collection** — inside a teardown, and between
 //! the pressure path's rounds — retires the completed deaths standing

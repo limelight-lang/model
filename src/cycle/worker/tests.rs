@@ -1,5 +1,5 @@
 //! The collector thread's life: its birth at the first pressure collection,
-//! one thread per process however often it is asked, a refused base block
+//! one elder however often it is asked, a refused base block
 //! as a birth retried after the interval, a round that reaches the records
 //! beyond the caller's and claims nothing of a record on the free list, a
 //! panicking round that hands the word back for the next birth; and its

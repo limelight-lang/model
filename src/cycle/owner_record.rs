@@ -6,20 +6,21 @@
 //! note of who holds it; the reader's line, the collector's words of the
 //! two rings; the writer's line, the owner's words of them and the counts
 //! behind its signal to the collector; and the hold line, the word under
-//! which a collector reads the rings' blocks before its claim (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its
-//! writer, and the collector's verdicts come back by a second ring"). The
-//! lines are split by who writes them, so a registration's store and a
-//! batch's load never share a line. Both rings' words are read by
-//! `crate::cycle::queue` through `crate::ring`.
+//! which a collector reads the rings' blocks before its claim and the word
+//! that names the owner's collector (`rfc/dev/DECISIONS.md`, "the candidate
+//! queue is read behind its writer, and the collector's verdicts come back
+//! by a second ring"). The first three lines are each written by one
+//! party, so a registration's store and a batch's load never share a line;
+//! the hold line is the one two parties write. Both rings' words are read
+//! by `crate::cycle::queue` through `crate::ring`.
 //!
 //! # P's one block is drawn with the record
 //!
-//! The verdict ring P never grows: one pool block per thread, the owner's
-//! memory, drawn beside the record and installed in both of P's words
-//! before the record is the thread's, so that a collector's first post finds
-//! a block and never asks the owner for one, and given back with the record
-//! at the exit. Its refusal is the record's refusal. What P carries and how
-//! the owner reads it is `crate::cycle::queue::verdicts`.
+//! P's one block is drawn beside the record and installed in both of P's
+//! words before the record is the thread's, and given back with the record
+//! at the exit; its refusal is the record's refusal. Why P is one block,
+//! what it carries and how the owner reads it is
+//! `crate::cycle::queue::verdicts`.
 //!
 //! # When a thread takes its record
 //!
@@ -68,7 +69,7 @@
 //! thread that took it has finished its initialisation — noted as the
 //! owner's own claim, so the free path withholds nothing under it — and
 //! again from the exit's final claim until the next thread's initialisation
-//! ends. A worker's
+//! ends. A collector's
 //! claim is a compare-and-swap from free, so it fails on a record nobody has
 //! taken yet, on one an exit has released, and on one whose next thread is
 //! not yet ready — without a liveness word of its own, which would have to be
@@ -83,7 +84,7 @@
 //! **The exit draws no record.** A thread that reaches its exit without one
 //! is reached by no collector, so its claim is empty, and a record taken by
 //! one of the exit's rounds would be released by that round's guard and go
-//! to the free list free — a record a worker could then claim with nobody
+//! to the free list free — a record a collector could then claim with nobody
 //! in it. [`ensure_thread_record`] answers null while the exit runs.
 //!
 //! # The owner's own claim, told from a foreign one
@@ -98,7 +99,7 @@
 //! because no reader needed it (`rfc/dev/DECISIONS.md`, "the trace token
 //! covers the trace alone, and the accelerator hands off by buffer swap");
 //! the exit's held claim is the reader that does, and its note is the
-//! owner's rather than the word's, so a worker still reads one bit.
+//! owner's rather than the word's, so a collector still reads one bit.
 //!
 //! The collector thread that makes the round, and the round itself, are
 //! `crate::cycle::worker`; the round reaches every record through
@@ -112,8 +113,9 @@ use crate::cycle::token::TraceToken;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
 use crate::memory::gc_metadata;
 
-/// One mutator thread's record: four 64-byte lines, each written by one
-/// party, so that the worker's loads of one owner touch nothing of
+/// One mutator thread's record: four 64-byte lines — the token's, the
+/// reader's and the writer's each written by one party, the hold line
+/// shared — so that the collector's loads of one owner touch nothing of
 /// another's and nothing the owner's registration stores into.
 #[repr(C, align(64))]
 pub(crate) struct OwnerRecord {
@@ -199,7 +201,7 @@ struct WriterLine {
     freeing_dispositions: AtomicU32,
 }
 
-/// The line the collector and the exit share, each by compare-and-swap.
+/// The line the collector, the exit and the registry share.
 #[repr(C, align(64))]
 struct HoldLine {
     /// [`READING`] while a collector reads the rings' blocks before its
@@ -209,7 +211,9 @@ struct HoldLine {
     /// the record out again, so that no reading begins against a ring the
     /// exit is returning. Zero is a record whose blocks are the owner's
     /// alone; the registry hands out a record with nothing but
-    /// `RETURNING` set, and clears it.
+    /// `RETURNING` set, and clears it. The collector's take is a
+    /// compare-and-swap, the exit's leave one too; the hand-back and the
+    /// registry store.
     reading: AtomicU8,
     /// The collector thread this owner is named to, as a slot index of
     /// `crate::cycle::worker`'s: zero is the elder, and a fresh record's.
@@ -545,8 +549,9 @@ pub(crate) fn this_thread_record() -> *mut OwnerRecord {
 ///
 /// The record comes out with its token held; the caller is the one that
 /// releases it, or keeps it as its own claim ([`crate::cycle::token::HeldToken`]).
-/// Whether the token was just taken is `taken`, so the caller can tell a
-/// record it already lived in from one it has this instant. Every thread
+/// The second of the pair says whether the token was just taken, so the
+/// caller can tell a record it already lived in from one it has this
+/// instant. Every thread
 /// that registers a candidate has a record before it does, so a caller on
 /// a production path finds one present; the take here is the test's, whose
 /// thread asks for its token before anything else.
@@ -740,7 +745,11 @@ pub(crate) unsafe fn take_for_reading(record: *mut OwnerRecord) -> bool {
 /// exit left to it meanwhile: R's through the queue's give-back, P's here.
 /// Clearing the hold before the returns is what keeps an exit from leaving
 /// more once they begin; the flags go last, so the registry hands the
-/// record out only after its blocks are gone.
+/// record out only after its blocks are gone. A ring left is a ring an exit
+/// returned through this hand-back, so the word ends [`RETURNING`] as it
+/// would after the exit's own return: the record is on the free list, or
+/// on its way there, and refuses the next reading until the registry hands
+/// it out.
 ///
 /// # Safety
 /// The calling thread took the hold and has finished reading.
@@ -756,7 +765,13 @@ pub(crate) unsafe fn hand_back_reading(record: *mut OwnerRecord) {
         unsafe { give_back_verdict_ring(record) };
     }
 
-    hold.fetch_and(!(R_LEFT | P_LEFT), Ordering::Release);
+    if left & (R_LEFT | P_LEFT) == 0 {
+        return;
+    }
+
+    let _ = hold.fetch_update(Ordering::Release, Ordering::Relaxed, |state| {
+        Some((state & !(R_LEFT | P_LEFT)) | RETURNING)
+    });
 }
 
 /// The exit's question at a ring's return: whether a collector holds the
@@ -842,7 +857,7 @@ fn take_record() -> *mut OwnerRecord {
 
     let released = first_free_record(&mut registry);
     if !released.is_null() {
-        // In place rather than a fresh `taken()`: a worker's pointer to the
+        // In place rather than a fresh `taken()`: a collector's pointer to the
         // token outlives the last life, and the word it will compare must be
         // the held one the exit left rather than a rewritten one.
         unsafe {
@@ -884,32 +899,11 @@ fn take_record() -> *mut OwnerRecord {
 
 /// Unlink and answer the first record of the free list whose blocks are the
 /// owner's, or null: a record a collector is reading, or holds blocks of
-/// that an exit left, stays on the list until its hand-back.
-#[cfg(not(test))]
+/// that an exit left, stays on the list until its hand-back. In the test
+/// build a case's pin and its named record narrow the walk further
+/// (`skipped_by_a_case`).
 fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
-    let mut link: *mut *mut OwnerRecord = &raw mut registry.free;
-    loop {
-        let record = unsafe { *link };
-        if record.is_null() || blocks_are_the_owners(record) {
-            if !record.is_null() {
-                unsafe { *link = (*record).free_link.get() };
-            }
-            return record;
-        }
-
-        link = unsafe { (*record).free_link.as_ptr() };
-    }
-}
-
-/// Unlink and answer the first record of the free list a taker may have, or
-/// null: every record on the list but a pinned one — or the one record the
-/// taking thread named with [`take_this_record_for_test`], pinned or not,
-/// so that a case can read what a re-take of one record does while other
-/// cases' threads move the list's top. A record whose blocks a collector
-/// holds, or holds left blocks of, is skipped whether named or not, as the
-/// production form skips it.
-#[cfg(test)]
-fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
+    #[cfg(test)]
     let wanted = TAKE_THIS.with(|cell| cell.replace(std::ptr::null_mut()));
     let mut link: *mut *mut OwnerRecord = &raw mut registry.free;
     loop {
@@ -918,12 +912,10 @@ fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
             return record;
         }
 
-        let skipped = !blocks_are_the_owners(record)
-            || if wanted.is_null() {
-                unsafe { (*record).pinned.load(Ordering::Relaxed) }
-            } else {
-                record != wanted
-            };
+        #[cfg(test)]
+        let skipped = !blocks_are_the_owners(record) || skipped_by_a_case(record, wanted);
+        #[cfg(not(test))]
+        let skipped = !blocks_are_the_owners(record);
         if skipped {
             link = unsafe { (*record).free_link.as_ptr() };
             continue;
@@ -931,6 +923,20 @@ fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
 
         unsafe { *link = (*record).free_link.get() };
         return record;
+    }
+}
+
+/// Whether a case keeps `record` on the free list: every pinned record is
+/// skipped, unless the taking thread named `wanted` with
+/// [`take_this_record_for_test`], in which case every record but `wanted`
+/// is — so that a case can read what a re-take of one record does while
+/// other cases' threads move the list's top.
+#[cfg(test)]
+fn skipped_by_a_case(record: *mut OwnerRecord, wanted: *mut OwnerRecord) -> bool {
+    if wanted.is_null() {
+        unsafe { (*record).pinned.load(Ordering::Relaxed) }
+    } else {
+        record != wanted
     }
 }
 

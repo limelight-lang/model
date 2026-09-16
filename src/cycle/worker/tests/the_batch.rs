@@ -13,9 +13,7 @@ use crate::class::{Class, ClassBuilder};
 use crate::cycle::queue::verdicts::{
     Verdict, discard_standing_verdicts, standing_verdicts, verdict_count,
 };
-use crate::cycle::queue::{
-    candidate_count, collect_lane_tokens, deferred_count, refill_spares, release_queue_segments,
-};
+use crate::cycle::queue::{candidate_count, collect_lane_tokens, deferred_count, refill_spares};
 use crate::cycle::testing::{Sent, ring};
 use crate::gc::ll_gc_maybe_collect;
 use crate::memory::arena::Arena;
@@ -24,16 +22,6 @@ use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain};
 use crate::ring::BLOCK_ENTRIES;
 use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// Empty every lane and P, so that a case starts from a known queue on a
-/// harness thread another case used.
-fn reset() {
-    discard_standing_verdicts();
-    release_queue_segments();
-    crate::memory::critical::drain_for_test();
-    crate::gc::disarm();
-    assert!(refill_spares(), "the pool served both spares");
-}
 
 /// One serve of this thread's record on a thread of its own, joined.
 fn served_by_a_collector() -> Served {
@@ -123,7 +111,7 @@ fn verdicts() -> Vec<Verdict> {
 #[test]
 fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
     let _g = test_guard();
-    reset();
+    reset_lanes();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
     let node = node_class("BatchNode");
     let mut arena = Arena::new();
@@ -186,7 +174,7 @@ fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
         release_keeper(keeper_a);
         release_keeper(keeper_b);
     }
-    reset();
+    reset_lanes();
 }
 
 /// This thread's record's batch size.
@@ -197,7 +185,7 @@ fn record_batch_size() -> usize {
 #[test]
 fn a_batch_is_clamped_to_ps_room_and_to_k() {
     let _g = test_guard();
-    reset();
+    reset_lanes();
     let node = node_class("ClampNode");
     let mut arena = Arena::new();
     let keepers: Vec<*mut Object> = (0..INITIAL_BATCH + 3)
@@ -270,13 +258,13 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
     for keeper in keepers {
         unsafe { release_keeper(keeper) };
     }
-    reset();
+    reset_lanes();
 }
 
 #[test]
 fn a_batch_that_meets_its_budget_posts_every_root_unwalked_and_halves_k() {
     let _g = test_guard();
-    reset();
+    reset_lanes();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
     let node = node_class("BudgetNode");
     let mut arena = Arena::new();
@@ -314,13 +302,13 @@ fn a_batch_that_meets_its_budget_posts_every_root_unwalked_and_halves_k() {
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2 + members.len());
     assert_eq!(verdict_count(), 0);
     unsafe { release_keeper(keeper) };
-    reset();
+    reset_lanes();
 }
 
 #[test]
 fn the_advance_follows_the_last_post_from_the_unwind_as_well() {
     let _g = test_guard();
-    reset();
+    reset_lanes();
     let node = node_class("UnwindNode");
     let mut arena = Arena::new();
     let (_, keeper_a) = unsafe { kept_root(&mut arena, node, "UnwindKeeperA") };
@@ -357,13 +345,13 @@ fn the_advance_follows_the_last_post_from_the_unwind_as_well() {
         release_keeper(keeper_a);
         release_keeper(keeper_b);
     }
-    reset();
+    reset_lanes();
 }
 
 #[test]
 fn an_owner_collecting_in_line_is_skipped() {
     let _g = test_guard();
-    reset();
+    reset_lanes();
     let node = node_class("SkipNode");
     let mut arena = Arena::new();
     let (_, keeper) = unsafe { kept_root(&mut arena, node, "SkipKeeper") };
@@ -385,13 +373,13 @@ fn an_owner_collecting_in_line_is_skipped() {
 
     discard_standing_verdicts();
     unsafe { release_keeper(keeper) };
-    reset();
+    reset_lanes();
 }
 
 #[test]
 fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none() {
     let _g = test_guard();
-    reset();
+    reset_lanes();
     let node = node_class("ThroughoutNode");
     let mut arena = Arena::new();
     // Every object is built before the batches start, so the collector's
@@ -497,5 +485,5 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
             ll_object_die(object);
         }
     }
-    reset();
+    reset_lanes();
 }

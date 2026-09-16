@@ -8,11 +8,11 @@
 //! while the owner mutates them, and without the annotation that race
 //! is undefined behaviour.
 //!
-//! That reader does not exist until S38 builds it (`PLAN.md`): the
-//! annotation is kept across the gap rather than taken out and put
-//! back. `rc-cycle` collects in-line on the owning thread and adds the
-//! collector thread as an accelerator over the same headers
-//! (`rfc/model/gc/rc-cycle.md`, "Decision summary" and "Concurrency").
+//! That reader is the collector thread's trace (`crate::cycle::worker`,
+//! through `cells::AtomicCells`). `rc-cycle` collects in-line on the
+//! owning thread and adds the collector thread as an accelerator over the
+//! same headers (`rfc/model/gc/rc-cycle.md`, "Decision summary" and
+//! "Concurrency").
 //!
 //! **The region above bit 15 is the collector's own**, and byte 6 of it
 //! carries the maturation stamp: the epoch at 16-17, the age at 18-19,

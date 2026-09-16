@@ -307,7 +307,7 @@ thread_local! {
 }
 
 /// A point the pass passes through, where a case may raise an unwind
-/// ([`inject`]): 0 before anything moves, 1 after an entry of the ring is
+/// (`inject`): 0 before anything moves, 1 after an entry of the ring is
 /// read and before its disposition acts, 2 between a retired entry's flag
 /// clear and its free, 3 after an entry joined the deferred lane, 4 between
 /// the ring's pass and the overflow buffer's, 5 after an overflow entry is

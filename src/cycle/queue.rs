@@ -46,10 +46,9 @@
 //! the blocks themselves are pool blocks, the only unit both allocation
 //! paths dispense (`rfc/model/gc/cycle/questions.md`, Y12 clause 3). A
 //! consumed block stays in the circle for the writer to reach again, until
-//! a poll with a spare cell short finds it empty behind the tail block and
-//! unlinks it into the cell ([`refill_and_drain`]). Every count of what the ring holds is `(tail − front) mod cap`
-//! summed over its blocks, and no block's contents are bounded by anything
-//! but its own two indices.
+//! a poll unlinks it ([`unlink_surplus_block`]). Every count of what the
+//! ring holds is `(tail − front) mod cap` summed over its blocks, and no
+//! block's contents are bounded by anything but its own two indices.
 //!
 //! **The deferred lane is a chain of the same blocks** ([`ring::Chain`]),
 //! filled by the owner alone at a collection's close and re-offered at the
@@ -138,13 +137,14 @@
 //! Seven things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
 //! Where a spare cell is short it unlinks the block a burst left empty
 //! behind R's tail block, one per poll, into the cell, so that the refill
-//! after it draws one block fewer; it refills the spare cells, asking [`needs_spares`] — the count itself,
-//! never a flag a draw sets, because a thread whose fill at init was refused
-//! has never drawn and would never be asked again. It then drains the overflow
-//! buffer into the queue, which is why the refill comes first; compares the
-//! full-width epoch against the deferred lane's mirror and re-offers that lane
-//! where it moved; behind an open gate, disposes of the prefix of P up to
-//! the first proposed root ([`verdicts`]); armed, fires a collection; and
+//! after it draws one block fewer; it refills the spare cells, asking
+//! [`needs_spares`] — the count itself, never a flag a draw sets, because a
+//! thread whose fill at init was refused has never drawn and would never be
+//! asked again. It then drains the overflow buffer into the queue, which is
+//! why the refill comes first; compares the full-width epoch against the
+//! deferred lane's mirror and re-offers that lane where it moved; behind an
+//! open gate, disposes of the prefix of P up to the first proposed root
+//! ([`verdicts`]); armed, fires a collection; and
 //! last, behind the same gate, signals the collector when this thread's own
 //! count of its registrations has reached the threshold
 //! ([`signal_the_collector_if_due`]) — after the fire, whose reading of R
@@ -154,11 +154,11 @@
 //! # The second ring, P
 //!
 //! The collector's verdicts about the roots it took from R come back by a
-//! ring of the same form with the roles swapped, one block per thread,
-//! drawn with the record and never grown. The owner alone reads it: a
-//! collection's batch is R's entries and the proposed roots standing in P
-//! ([`Batch`]), and every reduction of state a verdict leads to is made on
-//! the owner's own re-reading, at the close or at the poll ([`verdicts`]).
+//! ring of the same form with the roles swapped ([`verdicts`], which owns
+//! P's contract). The owner alone reads it: a collection's batch is R's
+//! entries and the proposed roots standing in P ([`Batch`]), and every
+//! reduction of state a verdict leads to is made on the owner's own
+//! re-reading, at the close or at the poll.
 //!
 //! # What the in-line collection does with the rings
 //!
@@ -410,11 +410,9 @@ unsafe fn append_entry(state: *mut OwnerCycleState, entity: *mut RcHeader) {
 /// the count again if the signal was received: the poll's soft signal,
 /// which starts a round and decides nothing about it
 /// (`rfc/model/gc/rc-cycle.md`, "Signals"). The count is the owner's own,
-/// of its own writes, and the wake goes to the collector the record names;
-/// a signal sent while that slot has no thread leaves the count standing,
-/// so every later poll signals again until a thread is there to receive it
-/// — the elder's round names the owners of an ended sibling to itself. A
-/// thread with no record has registered nothing.
+/// of its own writes, and the wake goes to the collector the record names
+/// (`crate::cycle::worker::wake` says what a lost one costs). A thread with
+/// no record has registered nothing.
 pub(crate) fn signal_the_collector_if_due() {
     let record = owner_record::this_thread_record();
     if record.is_null() {
@@ -786,8 +784,8 @@ pub(crate) fn release_queue_base() {
 /// back (`rfc/model/gc/cycle/questions.md`, Y12 clause 3), and the unlink
 /// goes before the refill so that a block the circle no longer needs fills
 /// a cell before the pool is asked for one. Both run only when the cells
-/// are short, which is what asks for them — a count rather than a flag, so
-/// a thread whose fill at init was refused is still asked ([`needs_spares`]).
+/// are short — a count rather than a flag, so a thread whose fill at init
+/// was refused is still asked ([`needs_spares`]).
 /// The poll replenishes the critical reserve before this, so that a growth
 /// with both cells empty has its path open again; the exit does not,
 /// because its own end drains that reserve a few calls later and a growth
@@ -804,9 +802,9 @@ pub(crate) fn refill_and_drain() {
 /// Take the empty block after R's tail block out of the circle, where there
 /// is one and a spare cell is short, and put it in the cell.
 ///
-/// Only into a short cell: with both cells full the block would go to the
-/// pool and the next growth draw it back, one put and one get per fill
-/// where the circle's own reuse costs nothing, so a circle a burst grew
+/// Only into a short cell (`dev/DECISIONS.md`, "the ring's surplus goes
+/// into a short spare cell"): with both cells full the block would go to
+/// the pool and the next growth draw it back, so a circle a burst grew
 /// keeps its consumed blocks while the cells are full and gives one back at
 /// each poll that finds a cell spent. The one block the owner may take out
 /// while a collector reads the ring, since a reader under the token never
@@ -1153,7 +1151,7 @@ pub(crate) fn defer_candidates(mut batch: Batch, at_commits: u64) {
 /// blocks into R after the tail block, with no copy and no block drawn
 /// (`crate::ring::Writer::splice_after_tail`); it leaves no record in the
 /// deferred lane. A reader that wants the count moved takes
-/// [`deferred_count`] before the call: nothing is counted here.
+/// `deferred_count` before the call: nothing is counted here.
 pub(crate) fn reoffer_deferred_candidates() {
     let state = owner_state();
     if state.is_null() {

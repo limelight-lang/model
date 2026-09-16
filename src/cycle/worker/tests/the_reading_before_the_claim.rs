@@ -131,6 +131,10 @@ fn an_owner_exiting_under_the_reading_leaves_its_blocks_to_the_hand_back() {
     );
     assert_eq!(blocks_left_in(record), 0, "and the record names none");
     assert!(owner_record::registry_lists_free(record));
+    assert!(
+        !unsafe { owner_record::take_for_reading(record) },
+        "a record whose rings the hand-back returned is on the free list and refuses a reading"
+    );
     thread.join().expect("the owner finished");
     owner_record::pin_for_test(record, false);
 }

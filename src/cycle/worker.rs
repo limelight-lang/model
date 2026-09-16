@@ -11,11 +11,11 @@
 //!
 //! # The batch
 //!
-//! Before any claim the collector reads whether the owner has work — an
-//! entry standing in R, off the front block's words alone, and P's room —
-//! and opens its
-//! own workspace: an owner with nothing to take pays no foreign-holder
-//! window, under which every one of its deaths is withheld. Then it claims
+//! Before any claim the collector reads whether the owner has work — R at
+//! the threshold, off the front block's words alone, and P's room — and
+//! opens its own workspace: an owner with nothing to take pays no
+//! foreign-holder window, under which every one of its deaths is withheld.
+//! Then it claims
 //! the token and reads the owner's collecting word with acquire: set, the
 //! owner is collecting in line and the collector releases and skips — the
 //! two orders both resolve, a claim made first being waited out by the
@@ -24,15 +24,13 @@
 //! clamped to P's room and to what R holds, and copies them into its
 //! workspace. It marks and scans each root through `cells::AtomicCells` on
 //! an arena bounded to [`TRACE_BLOCK_BUDGET`] blocks; a root at count zero
-//! is marked by nothing. Then it posts one verdict per entry, in R's order:
-//! *proposed* for a row read potentially unreachable, *read live* for one
-//! read live and for a live root the trace could not place — an external
-//! live reference, by the trace's own rule for an edge it cannot place —
-//! *zero-count* for a count read zero, and *unwalked* for every root of a
-//! batch whose trace met the budget or a refused allocation: no color of
-//! such a trace is a verdict, so the whole batch is handed to the owner's
-//! exact trace rather than a prefix of it (`rfc/model/gc/rc-cycle.md`,
-//! "Worker-to-owner handoff", amended 2026-09-16 to the whole batch). R's
+//! is marked by nothing. Then it posts one verdict per entry, in R's order
+//! — *proposed*, *read live*, *zero-count* ([`verdict_for`]) — or *unwalked*
+//! for every root of a batch whose trace met the budget or a refused
+//! allocation: no color of such a trace is a verdict, so the whole batch is
+//! handed to the owner's exact trace rather than a prefix of it
+//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff", amended
+//! 2026-09-16 to the whole batch). R's
 //! front advances past the batch only after every verdict is posted, by
 //! one guard that runs from the unwind as well, so that no entry is
 //! consumed without a verdict and none twice. The arena is reset before the
@@ -80,10 +78,9 @@
 //! ([`OwnerRecord::take_freeing_disposition_note`]); held after a round
 //! that read an owner at the threshold and could not serve it; doubled
 //! after a round that read no owner at the threshold, so that a process
-//! with nothing to screen costs a wake a second. A wake sent while the
-//! slot has no thread is lost, and the poll's count stands for the next
-//! poll to send again; one sent during a round ends the wait that follows
-//! it.
+//! with nothing to screen costs a wake a second. What a wake with no
+//! thread to receive it costs is [`wake`]'s; one sent during a round ends
+//! the wait that follows it.
 //!
 //! # Siblings
 //!
@@ -97,22 +94,23 @@
 //! a sibling relieves — for [`BACKLOG_ROUNDS_TO_BIRTH`] rounds in a row
 //! births a sibling into the first empty slot under the embedder's cap
 //! ([`set_collector_cap`]), the elder's slot included, through the elder's
-//! own birth path with its retry interval, names every second of those
-//! backlogged owners to it and wakes it. An owner's poll wakes the
-//! collector its word names. The elder ends a sibling that made no batch
-//! and saw no work for [`IDLE_ROUNDS_TO_END`] rounds in a row, and one above
-//! a lowered cap, by a word the sibling reads before its next round, and
-//! only in a round of its own with no backlog, so that it does not end
-//! what it is about to birth back; the owners of a slot with no thread —
-//! ended, refused at its birth, or unwound — are named back to the elder by
-//! its next round, and a signal sent to that slot meanwhile is lost with
-//! its count standing. The word says whose an owner is between rounds; that
+//! own birth path with its retry interval, and names every second of those
+//! backlogged owners to it; the sibling's first round runs at its birth. An
+//! owner's poll wakes the collector its word names. The elder ends a
+//! sibling that made no batch and saw no work for [`IDLE_ROUNDS_TO_END`]
+//! rounds in a row, and one above a lowered cap, by its state word, which
+//! the sibling reads before its next round, and only in a round of its own
+//! with no backlog, so that it does not end what it is about to birth back;
+//! the owners of a slot with no thread — ended, refused at its birth, or
+//! unwound — are named back to the elder by its next round, and a signal
+//! sent to that slot meanwhile is lost with its count standing. The word
+//! says whose an owner is between rounds; that
 //! one collector reads a ring at any instant is the token's, and a reclaim
 //! landing beside a slot's rebirth resolves at the token like any two
 //! claims.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::thread::Thread;
 use std::time::{Duration, Instant};
 
@@ -135,9 +133,10 @@ pub(crate) enum Served {
     /// The token was claimed and released at once: the owner is collecting
     /// in line.
     OwnerCollecting,
-    /// Nothing to take, read before any claim: R read below the threshold,
-    /// P had no room, or the collector's workspace was refused. No claim
-    /// was made.
+    /// Nothing was taken: before any claim — R below the threshold, P
+    /// without room, the workspace refused, the record under another
+    /// collector's reading — or under the claim, when the peek came up
+    /// empty.
     Idle,
     /// A batch was made: this many roots taken from R, each with a verdict
     /// posted into P, whether their trace completed, and whether R still
@@ -179,8 +178,8 @@ pub(crate) const SOFT_THRESHOLD: usize = INITIAL_BATCH;
 
 const _: () = assert!(SOFT_THRESHOLD <= BATCH_BOUND);
 
-/// The fallback timer's minimum: the wait after a round that read a freeing
-/// disposition. Not a measured figure.
+/// The fallback timer's minimum: the wait after a round that made a batch or
+/// read a freeing disposition. Not a measured figure.
 const FALLBACK_INTERVAL_MIN: Duration = Duration::from_millis(10);
 
 /// The fallback timer's maximum, reached by doubling after empty rounds.
@@ -195,7 +194,7 @@ const FALLBACK_INTERVAL_MAX: Duration = Duration::from_secs(1);
 const BIRTH_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// When the last birth was refused — a spawn the operating system refused,
-/// or a base block the pool refused — or `None`. One for every collector.
+/// or a base block the pool refused — or `None`. Shared by every slot.
 static REFUSED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Collector threads the process can hold at once; the embedder's cap is at
@@ -225,8 +224,9 @@ const BACKLOG_ROUNDS_TO_BIRTH: usize = 2;
 /// many, every second of which goes to the sibling.
 const BACKLOGGED_REMEMBERED: usize = 16;
 
-/// Rounds in a row a sibling makes no batch before the elder ends it. Not a
-/// measured figure: the rfc says several.
+/// Rounds in a row a sibling makes no batch and reads no owner at the
+/// threshold before the elder ends it. Not a measured figure: the rfc says
+/// several.
 const IDLE_ROUNDS_TO_END: usize = 8;
 
 /// The names the collector threads are spawned under, by slot.
@@ -242,21 +242,20 @@ const THREAD_NAMES: [&str; MAX_COLLECTORS] = [
 ];
 
 /// One collector slot: where its thread stands, the handle a wake reaches it
-/// through, and the two words the elder reads and writes of a sibling.
+/// through, and the count the elder reads of a sibling.
 struct Collector {
     /// [`UNBORN`], [`STARTING`] from the spawn until its `ll_thread_init`
-    /// answered, [`ALIVE`] from a started init until the thread ends.
+    /// answered, [`ALIVE`] from a started init until the thread ends, and
+    /// [`ENDING`] from the elder's word to end a sibling until it does.
     state: AtomicU8,
     /// The handle a wake ends the thread's wait through, published by the
     /// thread once its init is through and cleared as it ends; `None` is a
     /// wake lost.
     handle: Mutex<Option<Thread>>,
-    /// Rounds in a row this collector made no batch, its own count, read by
-    /// the elder to end an idle sibling.
+    /// Rounds in a row this collector made no batch and read no owner at
+    /// the threshold, its own count, read by the elder to end an idle
+    /// sibling.
     idle_rounds: AtomicUsize,
-    /// Set by the elder to end a sibling; the sibling reads it before every
-    /// round and exits.
-    ending: AtomicBool,
 }
 
 impl Collector {
@@ -265,7 +264,6 @@ impl Collector {
             state: AtomicU8::new(UNBORN),
             handle: Mutex::new(None),
             idle_rounds: AtomicUsize::new(0),
-            ending: AtomicBool::new(false),
         }
     }
 }
@@ -275,6 +273,7 @@ static COLLECTORS: [Collector; MAX_COLLECTORS] = [const { Collector::unborn() };
 const UNBORN: u8 = 0;
 const STARTING: u8 = 1;
 const ALIVE: u8 = 2;
+const ENDING: u8 = 3;
 
 /// Set the embedder's cap on collector threads: `cap` clamped to one and
 /// [`MAX_COLLECTORS`]. Siblings above a lowered cap end as idle ones do, at
@@ -294,10 +293,10 @@ fn collector_cap() -> usize {
 /// interval. The pressure path calls it after its collection, so that the
 /// thread's draws compete with no rows of the caller's own.
 ///
-/// The spawn allocates through the global allocator — the thread's name and
-/// the handle's shared state — on a path the ruling that no runtime path may
-/// end the process on an allocation the manager could have refused forbids
-/// it; `PLAN.md`'s backlog carries the debt.
+/// The spawn allocates through the global allocator — the thread's name, the
+/// handle's shared state — which the ruling that no runtime path may abort
+/// on an allocation forbids; the debt is `PLAN.md`, backlog, "The collector
+/// thread's spawn allocates through the global allocator".
 pub(crate) fn ensure_thread() {
     ensure_collector(ELDER);
 }
@@ -323,7 +322,6 @@ fn ensure_collector(index: usize) -> bool {
         return false;
     }
 
-    collector.ending.store(false, Ordering::Relaxed);
     collector.idle_rounds.store(0, Ordering::Relaxed);
     match std::thread::Builder::new()
         .name(THREAD_NAMES[index].into())
@@ -365,7 +363,11 @@ fn note_refused_birth() {
 /// any thread; an owner's poll makes it at [`SOFT_THRESHOLD`] registrations,
 /// to the collector its record names, and a pressure collection at each of
 /// its endings, to the elder. False is a wake lost: before the thread's
-/// birth, between its spawn and its init, and after its end.
+/// birth, between its spawn and its init, and after its end. A lost wake
+/// costs nothing but the round it did not start: the poll leaves its count
+/// standing and sends again at its next poll
+/// ([`OwnerRecord::restart_signal_count`]), and a sibling's first round runs
+/// at its birth.
 pub(crate) fn wake(index: usize) -> bool {
     let collector = COLLECTORS[index]
         .handle
@@ -434,17 +436,13 @@ fn thread_body(index: usize) {
     collector.state.store(ALIVE, Ordering::Release);
     let mut interval = FALLBACK_INTERVAL_MIN;
     let mut backlog_rounds = 0;
-    while !retiring() && !collector.ending.load(Ordering::Relaxed) {
-        #[cfg(not(test))]
-        let threshold = SOFT_THRESHOLD;
-        #[cfg(test)]
-        let threshold = testing::threshold_for_rounds().unwrap_or(SOFT_THRESHOLD);
+    while !retiring() && collector.state.load(Ordering::Relaxed) == ALIVE {
         let Round {
             made_a_batch,
             saw_work,
             read_a_freeing_disposition,
             backlogged,
-        } = round(index, threshold);
+        } = round(index, threshold_for_rounds());
         interval = if made_a_batch || read_a_freeing_disposition {
             FALLBACK_INTERVAL_MIN
         } else if saw_work {
@@ -453,9 +451,6 @@ fn thread_body(index: usize) {
             (interval * 2).min(FALLBACK_INTERVAL_MAX)
         };
 
-        // A backlog this collector cannot drain alone goes half to a
-        // sibling; an idle sibling is ended by the elder, and its owners
-        // come back to the elder at its next round (module doc).
         backlog_rounds = if backlogged.len() >= 2 {
             backlog_rounds + 1
         } else {
@@ -465,7 +460,6 @@ fn thread_body(index: usize) {
             backlog_rounds = 0;
             if let Some(sibling) = birth_a_sibling(index) {
                 hand_over_half(&backlogged, sibling);
-                let _ = wake(sibling);
             }
         }
 
@@ -478,7 +472,7 @@ fn thread_body(index: usize) {
             collector.idle_rounds.load(Ordering::Relaxed) + 1
         };
         collector.idle_rounds.store(idle, Ordering::Relaxed);
-        if index == ELDER && backlogged.is_empty() {
+        if index == ELDER && backlogged.len() < 2 {
             end_idle_siblings();
         }
 
@@ -496,7 +490,8 @@ fn thread_body(index: usize) {
 /// the elder's slot included — an elder that unwound is reborn by the
 /// first backlogged sibling rather than by the next memory shortage —
 /// through the same path as the elder's birth, retry interval included;
-/// the slot it took, or `None` for no slot or a refused spawn.
+/// the slot it took, or `None` for no slot or a refused spawn. The
+/// sibling's first round runs at its birth, so no wake is owed.
 fn birth_a_sibling(from: usize) -> Option<usize> {
     (0..collector_cap())
         .filter(|&slot| slot != from)
@@ -525,7 +520,14 @@ fn end_idle_siblings() {
         }
 
         if slot >= cap || collector.idle_rounds.load(Ordering::Relaxed) >= IDLE_ROUNDS_TO_END {
-            collector.ending.store(true, Ordering::Relaxed);
+            // From alive alone: a slot that ended or unwound meanwhile is
+            // left as it is, for a birth to take.
+            let _ = collector.state.compare_exchange(
+                ALIVE,
+                ENDING,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
             let _ = wake(slot);
         }
     }
@@ -547,6 +549,27 @@ fn reclaims(index: usize, record: &OwnerRecord) -> bool {
     }
 
     false
+}
+
+/// The threshold the rounds serve at: the module's own, or a case's.
+fn threshold_for_rounds() -> usize {
+    #[cfg(test)]
+    if let Some(threshold) = testing::threshold_for_rounds() {
+        return threshold;
+    }
+
+    SOFT_THRESHOLD
+}
+
+/// The block budget the next batch traces under: the module's own, or a
+/// case's.
+fn budget_for_this_batch() -> usize {
+    #[cfg(test)]
+    if let Some(budget) = testing::budget_for_this_batch() {
+        return budget;
+    }
+
+    TRACE_BLOCK_BUDGET
 }
 
 /// Clear the last refusal, so that a case's birth is not held by the
@@ -596,10 +619,6 @@ impl Backlogged {
 
     fn len(&self) -> usize {
         self.len
-    }
-
-    fn is_empty(&self) -> bool {
-        self.len == 0
     }
 
     fn iter(&self) -> impl Iterator<Item = &*mut OwnerRecord> {
@@ -680,15 +699,14 @@ pub(crate) unsafe fn serve(record: *mut OwnerRecord, threshold: usize) -> Served
     let owner = unsafe { &*record };
     // Work first, and the collector's own memory, before any claim — by
     // loads alone, since nothing of the owner's may be written under no
-    // claim, and off the front block alone, since the owner's pack and its
-    // poll's unlink move blocks past the tail block out of the circle under
-    // no claim either: whether R holds the threshold, P's room off its index
-    // words, and the workspace this thread's. The figures are an idle test
-    // and not the clamp: the clamp is re-read under the token. The blocks
-    // read are held for the reading, since an owner exiting meanwhile
-    // returns them (`crate::cycle::owner_record`, "The blocks a collector
-    // reads before its claim are held"); a record another reading holds is
-    // idle to this round.
+    // claim, and off the front block alone (`Reader::has_at_least` says
+    // why): whether R holds the threshold, P's room off its index words,
+    // and the workspace this thread's. The figures are an idle test and not
+    // the clamp: the clamp is re-read under the token. The blocks read are
+    // held for the reading, since an owner exiting meanwhile returns them
+    // (`crate::cycle::owner_record`, "The blocks a collector reads before
+    // its claim are held"); a record another reading holds is idle to this
+    // round.
     if !unsafe { owner_record::take_for_reading(record) } {
         return Served::Idle;
     }
@@ -750,24 +768,20 @@ unsafe fn batch(owner: &OwnerRecord, arena: &mut TraceScratchArena, threshold: u
     let verdicts = unsafe { VerdictWriter::open(owner) };
     // The clamp, under the token: P's room cannot move under it, R's count
     // can only grow.
-    let take = verdicts.room().min(match owner.batch_size() {
+    let size = match owner.batch_size() {
         0 => INITIAL_BATCH,
         size => size,
-    });
+    };
+    let take = verdicts.room().min(size);
     if take == 0 {
         return Served::Idle;
     }
-    #[cfg(not(test))]
-    let budget = TRACE_BLOCK_BUDGET;
-    #[cfg(test)]
-    let budget = testing::budget_for_this_batch().unwrap_or(TRACE_BLOCK_BUDGET);
-    arena.budget_blocks(budget);
-    // Within the workspace by the bound on K, so this draws nothing.
+    arena.budget_blocks(budget_for_this_batch());
     let copy = arena.alloc(take * size_of::<usize>()) as *mut usize;
-    debug_assert!(!copy.is_null(), "the copy fits the workspace");
-    if copy.is_null() {
-        return Served::Idle;
-    }
+    assert!(
+        !copy.is_null(),
+        "the copy fits the workspace by the bound on K"
+    );
 
     // The entries copied out of R, which stay in R until the advance.
     let out = unsafe { std::slice::from_raw_parts_mut(copy, take) };
@@ -807,10 +821,6 @@ unsafe fn batch(owner: &OwnerRecord, arena: &mut TraceScratchArena, threshold: u
 
     let met_budget = arena.met_its_budget();
     arena.reset();
-    let size = match owner.batch_size() {
-        0 => INITIAL_BATCH,
-        size => size,
-    };
     if complete {
         owner.set_batch_size((size * 2).min(BATCH_BOUND));
     } else if met_budget {

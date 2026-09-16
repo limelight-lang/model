@@ -1097,6 +1097,29 @@ entry whose death completed and keeps one whose destructor resurrected it;
 the mutator's registration is two plain stores on the probe; and `src/`
 carries no outbox, no offer, no pickup walk-back and no request relay.
 
+Code Reviewer 2026-09-16: one defect (a hand-back that returned a left ring
+  cleared the hold word to zero, so a free-list record admitted the next
+  reading; fixed with `RETURNING` in the closing store, pinned in the exit
+  case, `dev/POSTMORTEM.md`); `Chain::retain` dropped the entry in `keep`'s
+  hands on an unwind where `Packing` keeps it (fixed, a red case); four
+  broken intra-doc links from S49.3 and three docs that said the collector
+  thread did not exist (fixed); the timer's maximum doc claimed to bound a
+  ring below the threshold (rewritten); a wake after a spawn that no handle
+  received (dropped); `ENDING` in the state word; the P contract, the wake
+  rule, the unlink rule, the no-link rule and the verdict rule each given
+  one owner and cited elsewhere; `Reader::take` and `unread` test-only;
+  `first_free_record` one walk. Left as named costs: `thread_body`'s four
+  policies in one loop, the `in_round` hook inside `round`.
+
+Before deletion (23.1.2a and 23.9): the stage's `Done when` names "two plain
+  stores on the probe" — no probe exists, and the registration is three
+  plain stores since S49.7's count; Edmond decides whether the criterion
+  moves. Debts with no owner yet, carried to the backlog on 2026-09-16: a
+  component past B the pool refuses circles P and R under pressure; the
+  collector's arena draws its own thread's critical reserve; a ring a burst
+  grew keeps its blocks until a cell is spent; the rfc's "one in-line
+  collection over the proposed roots" against the crate's whole-R batch.
+
 - [x] S49.1 Delete the outbox form with its cases   *(closed 2026-09-15)*
       done: `offer_lane`, `reclaim_offer`, `take_proposal`, `merge_proposal`,
         `PROPOSED_MARK`, the outbox and inbox words, the request word, the
@@ -1963,6 +1986,17 @@ deleted with its steps; the decisions it leaves are in `dev/DECISIONS.md`
 (2026-08-17 and 2026-08-18), the traps in `dev/POSTMORTEM.md` and the map
 in `dev/INDEX.md`. What it did not do is below.
 
+- [ ] **What S49 named and left, 2026-09-16.** A component past the
+  collector's block budget whose owner-side trace the pool refuses circles
+  P and R under pressure, arming a collection each round (Critic, S49.5); the
+  collector's arena draws its own thread's critical reserve on a pool
+  refusal, and no ruling says whether a collector thread may spend a
+  reserve; a ring a burst grew while both spare cells were full keeps its
+  blocks until a cell is spent, with no bound (`dev/DECISIONS.md`, "the
+  ring's surplus goes into a short spare cell"); the rfc's "one in-line
+  collection over the proposed roots" admits a narrower batch than the
+  whole of R the crate traces at every fire (`rfc/dev/DECISIONS.md`, "P
+  stays one block"), a reading named for Edmond and not put to him.
 - [ ] **A gate flake, measured 2026-09-03 and pre-existing.** The case that
   reached the gate is fixed and measured; five cases that cannot take the
   same fix are named below and stay open.
