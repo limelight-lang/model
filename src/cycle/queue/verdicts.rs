@@ -190,6 +190,16 @@ pub(super) fn verdict_ring<'a>() -> Option<Quiescent<'a>> {
     Some(unsafe { Quiescent::new((*record).verdict_ring()) })
 }
 
+/// Note on this thread's record that a disposition at its poll freed
+/// something ([`OwnerRecord::note_freeing_disposition`]); nothing for a
+/// thread with no record, which holds no verdict.
+pub(crate) fn note_freeing_disposition() {
+    let record = owner_record::this_thread_record();
+    if !record.is_null() {
+        unsafe { &*record }.note_freeing_disposition();
+    }
+}
+
 /// What the poll's reading of P's prefix did, by count.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) struct PrefixReading {

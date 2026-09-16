@@ -128,7 +128,12 @@ pub extern "C" fn ll_gc_reoffer_deferred() -> usize {
 /// boundary, allocation slow path, request end (`rfc/model/gc/strategies.md`,
 /// §2 and the arm/fire split). The arming *policy* — which signals, which
 /// thresholds — is the compiler's decision, outside this crate; the runtime
-/// records the arming and collects here, where the graph is clean.
+/// records the arming and collects here, where the graph is clean. The one
+/// threshold the runtime owns is the collector thread's soft threshold,
+/// which arms nothing: it is the count of this thread's registrations at
+/// which the poll wakes the collector, and the count of an owner's ring at
+/// which the collector's round takes a batch (`crate::cycle::worker`,
+/// `SOFT_THRESHOLD`).
 ///
 /// The reserve refills and queue maintenance below happen whether or not the
 /// fire does, an unarmed poll being the ordinary case and the maintenance
@@ -200,14 +205,10 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // disposed of here, and the first proposed or unwalked root arms the
     // collection this same poll fires, which reads it into its batch
     // (`crate::cycle::queue::verdicts`).
-    if crate::cycle::queue::verdicts::dispose_prefix_at_the_poll(crate::cycle::epoch::commits())
-        .proposal_stands
-    {
+    let reading =
+        crate::cycle::queue::verdicts::dispose_prefix_at_the_poll(crate::cycle::epoch::commits());
+    if reading.proposal_stands {
         arm();
-    }
-
-    if !take_arming() {
-        return 0;
     }
 
     // Armed, so fire. The disarm happens whether or not the fire collects
@@ -215,7 +216,26 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // stayed armed past a fire would fire at every poll for the rest of its
     // life. The gate above is the one refusal that keeps the arming, and it
     // is the one where no fire happened.
-    unsafe { ll_gc_collect_cycles() }
+    let freed = if take_arming() {
+        unsafe { ll_gc_collect_cycles() }
+    } else {
+        0
+    };
+
+    // What the disposition freed — a death retired out of P, or an entity
+    // the collection a proposal armed reclaimed — is the collector's timer's
+    // to read: a note on this thread's record, and no arming
+    // (`crate::cycle::worker`, "The thread, and the round over the records").
+    if reading.retired > 0 || (reading.proposal_stands && freed > 0) {
+        crate::cycle::queue::verdicts::note_freeing_disposition();
+    }
+
+    // The soft signal, last: a fire above read R whole and started the
+    // count again, so a signal sent here is for entries still in R, and the
+    // round it starts meets no collection of this thread's at the token. A
+    // wake, and no arming.
+    crate::cycle::queue::signal_the_collector_if_due();
+    freed
 }
 
 /// ABI: serve the collector's checkpoint now. The compiler emits it once

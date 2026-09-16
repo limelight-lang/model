@@ -1,10 +1,15 @@
-//! The collector thread's life, driven by a case in place of the pressure
-//! path: its birth through `ensure_thread`, one thread per process however
-//! often it is asked, a refused base block as a birth retried after the
-//! interval, a round that reaches the records beyond the caller's and claims
-//! nothing of a record on the free list, and a panicking round that hands
-//! the word back for the next birth. What a round does for an owner — the
-//! batch over the ring behind its writer — is `the_batch`'s.
+//! The collector thread's life: its birth at the first pressure collection,
+//! one thread per process however often it is asked, a refused base block
+//! as a birth retried after the interval, a round that reaches the records
+//! beyond the caller's and claims nothing of a record on the free list, a
+//! panicking round that hands the word back for the next birth; and its
+//! wakes — a wake that finds every count below the threshold makes a round
+//! and no batch, an owner's poll signals at the threshold of its own
+//! registrations and not before, and the fallback timer lengthens after
+//! empty rounds, holds over work it could not take, and comes back to its
+//! minimum on a batch and on a freeing disposition. What
+//! a round does for an owner — the batch over the ring behind its writer —
+//! is `the_batch`'s.
 
 use super::*;
 use crate::cycle::testing::Sent;
@@ -49,8 +54,35 @@ fn wait_until(mut reached: impl FnMut() -> bool, within: std::time::Duration) ->
 
 const A_BIRTH: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The threshold a case's serve reads at: one entry, the ring of a case
+/// holding a few.
+const ANY_ENTRY: usize = 1;
+
+/// Empty every lane and P, so that a case starts from a known queue on a
+/// harness thread another case used.
+fn reset_lanes() {
+    crate::cycle::queue::verdicts::discard_standing_verdicts();
+    crate::cycle::queue::release_queue_segments();
+    crate::memory::critical::drain_for_test();
+    crate::gc::disarm();
+    // Both spares, so that the first ring's block is no reserve draw, which
+    // would arm the poll a case reads as a signal.
+    assert!(
+        crate::cycle::queue::refill_spares(),
+        "the pool served both spares"
+    );
+}
+
+/// A class of one counted Box property, which [`crate::cycle::testing::ring`]
+/// links members through.
+fn node_class(name: &str) -> *const crate::class::Class {
+    crate::class::ClassBuilder::new(name)
+        .prop("next", true)
+        .build()
+}
+
 #[test]
-fn a_birth_is_one_thread_whose_rounds_claim_and_release_the_record() {
+fn the_first_pressure_collection_births_one_thread_whose_rounds_claim_and_release_the_record() {
     let _g = test_guard();
     let record = record();
     assert_eq!(testing::thread_state(), ThreadState::Unborn);
@@ -58,32 +90,31 @@ fn a_birth_is_one_thread_whose_rounds_claim_and_release_the_record() {
     testing::permit_births(true);
     let _end = RetireOnDrop;
     let _ = testing::take_spawns();
-    // A round claims only an owner with work: one garbage ring in R, which
-    // the batch takes and the case collects at its end.
-    crate::cycle::queue::verdicts::discard_standing_verdicts();
-    crate::cycle::queue::release_queue_segments();
-    let class = crate::class::ClassBuilder::new("BirthRingNode")
-        .prop("next", true)
-        .build();
-    let mut arena = crate::memory::arena::Arena::new();
-    let _ring = unsafe { crate::cycle::testing::ring(&mut arena, [class, class]) };
+    reset_lanes();
     let _ = testing::take_owners_served();
+    testing::serve_rounds_at(ANY_ENTRY);
 
-    ensure_thread();
+    // An empty lane: the collection has nothing to do, and births at its
+    // end.
+    unsafe { crate::cycle::collect::collect_under_pressure() };
     assert!(
         wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
-        "the call birthed the thread"
+        "the first pressure collection birthed the thread"
     );
-    ensure_thread();
+    unsafe { crate::cycle::collect::collect_under_pressure() };
     assert_eq!(
         testing::thread_state(),
         ThreadState::Alive,
-        "a second call births no second thread"
+        "a second pressure collection births no second thread"
     );
     assert_eq!(testing::take_spawns(), 1);
 
-    // A round claims this record's token and releases it: the count moves
+    // A round claims only an owner with work: one garbage ring in R, which
+    // the batch takes and the case collects at its end. The count moves
     // after the serve returns, which is after the release.
+    let class = node_class("BirthRingNode");
+    let mut arena = crate::memory::arena::Arena::new();
+    let _ring = unsafe { crate::cycle::testing::ring(&mut arena, [class, class]) };
     assert!(
         wait_until(|| testing::take_owners_served() >= 1, A_BIRTH),
         "a round claimed and released this thread's record"
@@ -96,6 +127,248 @@ fn a_birth_is_one_thread_whose_rounds_claim_and_release_the_record() {
         2,
         "the ring the batch proposed is collected out of P"
     );
+    crate::cycle::queue::release_queue_segments();
+}
+
+/// Birth the thread with its rounds confined to this record and its wait
+/// between rounds pinned at `wait`, and wait for its first round to be
+/// over: from here a round happens on a wake alone.
+fn born_waiting_for(record: *mut OwnerRecord, wait: std::time::Duration) {
+    testing::confine_rounds_to(record);
+    testing::wait_between_rounds_for(Some(wait));
+    testing::permit_births(true);
+    let _ = testing::take_spawns();
+    let _ = testing::take_rounds();
+    ensure_thread();
+    assert!(
+        wait_until(|| testing::take_rounds() >= 1, A_BIRTH),
+        "the thread was born and made its first round"
+    );
+    let _ = testing::take_owners_served();
+}
+
+/// Wake the thread and wait for the round the wake starts.
+fn wake_for_a_round() {
+    let _ = testing::take_rounds();
+    wake();
+    assert!(
+        wait_until(|| testing::take_rounds() >= 1, A_BIRTH),
+        "the wake started a round"
+    );
+}
+
+/// Longer than any wait a case makes on the thread, so that a round inside
+/// the case is a wake's and never the timer's.
+const PAST_THE_CASE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The wait a case gives an unsignalled thread to make a round it must not.
+const A_ROUNDS_ABSENCE: std::time::Duration = std::time::Duration::from_millis(200);
+
+#[test]
+fn a_wake_whose_counts_are_below_the_threshold_makes_a_round_and_no_batch() {
+    let _g = test_guard();
+    let record = record();
+    let _end = RetireOnDrop;
+    reset_lanes();
+    born_waiting_for(record, PAST_THE_CASE);
+
+    // One ring of two, below the threshold: the wake's round reads the
+    // count and takes nothing.
+    let class = node_class("BelowThresholdNode");
+    let mut arena = crate::memory::arena::Arena::new();
+    let _small = unsafe { crate::cycle::testing::ring(&mut arena, [class, class]) };
+    wake_for_a_round();
+    assert_eq!(
+        testing::take_owners_served(),
+        0,
+        "no batch below the threshold"
+    );
+    assert_eq!(crate::cycle::queue::verdicts::verdict_count(), 0);
+
+    // The count decides and not the wake: at the threshold the same wake's
+    // round makes a batch over every root.
+    let members =
+        unsafe { crate::cycle::testing::long_ring(&mut arena, class, SOFT_THRESHOLD - 2) };
+    wake_for_a_round();
+    assert_eq!(testing::take_owners_served(), 1, "a batch at the threshold");
+    assert_eq!(
+        crate::cycle::queue::verdicts::verdict_count(),
+        SOFT_THRESHOLD,
+        "one verdict per root"
+    );
+
+    testing::retire();
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_collect_cycles() },
+        SOFT_THRESHOLD,
+        "both rings are collected out of P"
+    );
+    drop(members);
+    crate::cycle::queue::release_queue_segments();
+}
+
+#[test]
+fn a_poll_signals_at_the_threshold_of_its_own_registrations_and_not_before() {
+    let _g = test_guard();
+    let record = record();
+    let _end = RetireOnDrop;
+    reset_lanes();
+    born_waiting_for(record, PAST_THE_CASE);
+    let owner = unsafe { &*record };
+    owner.restart_signal_count();
+
+    // Below the threshold the poll signals nothing: no round through a wait
+    // the pinned wait outlasts.
+    let class = node_class("SignalNode");
+    let mut arena = crate::memory::arena::Arena::new();
+    let _small = unsafe { crate::cycle::testing::ring(&mut arena, [class, class]) };
+    assert_eq!(owner.registrations_since_signal(), 2);
+    let _ = testing::take_rounds();
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0, "unarmed");
+    assert_eq!(
+        owner.registrations_since_signal(),
+        2,
+        "a poll below the threshold keeps the count"
+    );
+    std::thread::sleep(A_ROUNDS_ABSENCE);
+    assert_eq!(
+        testing::take_rounds(),
+        0,
+        "an unsignalled thread made no round"
+    );
+
+    // At the threshold the poll signals, the count starts again, and the
+    // round the signal starts serves the owner.
+    let members =
+        unsafe { crate::cycle::testing::long_ring(&mut arena, class, SOFT_THRESHOLD - 2) };
+    assert_eq!(owner.registrations_since_signal(), SOFT_THRESHOLD);
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_maybe_collect() },
+        0,
+        "the poll is a signal and not a fire"
+    );
+    assert_eq!(
+        owner.registrations_since_signal(),
+        0,
+        "the signal starts the count again"
+    );
+    assert!(
+        wait_until(|| testing::take_rounds() >= 1, A_BIRTH),
+        "the signal started a round"
+    );
+    assert!(
+        wait_until(|| testing::take_owners_served() >= 1, A_BIRTH),
+        "the round served the owner"
+    );
+
+    testing::retire();
+    assert_eq!(unsafe { crate::gc::ll_gc_collect_cycles() }, SOFT_THRESHOLD);
+    drop(members);
+    crate::cycle::queue::release_queue_segments();
+}
+
+#[test]
+fn a_signal_nobody_received_leaves_the_count_standing() {
+    let _g = test_guard();
+    let record = record();
+    assert_eq!(testing::thread_state(), ThreadState::Unborn);
+    reset_lanes();
+    let owner = unsafe { &*record };
+    owner.restart_signal_count();
+
+    let class = node_class("UnreceivedSignalNode");
+    let mut arena = crate::memory::arena::Arena::new();
+    let members = unsafe { crate::cycle::testing::long_ring(&mut arena, class, SOFT_THRESHOLD) };
+    assert_eq!(owner.registrations_since_signal(), SOFT_THRESHOLD);
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0, "unarmed");
+    assert_eq!(
+        owner.registrations_since_signal(),
+        SOFT_THRESHOLD,
+        "no thread received the signal, so the next poll sends it again"
+    );
+
+    // The in-line collection's reading of R consumes the writes the count
+    // stands for.
+    assert_eq!(unsafe { crate::gc::ll_gc_collect_cycles() }, SOFT_THRESHOLD);
+    assert_eq!(owner.registrations_since_signal(), 0);
+    drop(members);
+    crate::cycle::queue::release_queue_segments();
+}
+
+#[test]
+fn the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_disposition() {
+    let _g = test_guard();
+    let record = record();
+    let _end = RetireOnDrop;
+    reset_lanes();
+    born_waiting_for(record, PAST_THE_CASE);
+    assert_eq!(
+        testing::timer_interval(),
+        FALLBACK_INTERVAL_MIN * 2,
+        "the first round was empty and doubled the minimum"
+    );
+
+    // Empty rounds double the interval up to the maximum and no further.
+    let mut interval = testing::timer_interval();
+    while interval < FALLBACK_INTERVAL_MAX {
+        wake_for_a_round();
+        let next = testing::timer_interval();
+        assert_eq!(next, (interval * 2).min(FALLBACK_INTERVAL_MAX));
+        interval = next;
+    }
+    wake_for_a_round();
+    assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MAX);
+
+    // A round with a batch returns the interval to the minimum, so that a
+    // backlog above the threshold drains at a batch per minimum; the empty
+    // round after it doubles again.
+    let class = node_class("TimerNode");
+    let mut arena = crate::memory::arena::Arena::new();
+    let members = unsafe { crate::cycle::testing::long_ring(&mut arena, class, SOFT_THRESHOLD) };
+    wake_for_a_round();
+    assert_eq!(testing::take_owners_served(), 1);
+    assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN);
+    wake_for_a_round();
+    assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN * 2);
+
+    // A round that reads an owner at the threshold and cannot serve it — the
+    // owner holding its own token — holds the interval; released, the next
+    // round's batch returns it to the minimum.
+    let second = unsafe { crate::cycle::testing::long_ring(&mut arena, class, SOFT_THRESHOLD) };
+    let holding = crate::cycle::token::HeldToken::take();
+    wake_for_a_round();
+    assert_eq!(testing::take_owners_served(), 0, "the token was held");
+    assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN * 2);
+    drop(holding);
+    wake_for_a_round();
+    assert_eq!(testing::take_owners_served(), 1);
+    assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN);
+    wake_for_a_round();
+    assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN * 2);
+
+    // The owner's poll disposes of the proposal, the collection it fires
+    // frees the ring, and the note the poll leaves brings the next round's
+    // interval back to its minimum; the round after that is empty again.
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_maybe_collect() },
+        2 * SOFT_THRESHOLD,
+        "the poll's collection freed both rings"
+    );
+    assert_eq!(
+        unsafe { &*record }.registrations_since_signal(),
+        0,
+        "the fire's reading of R started the count again"
+    );
+    std::thread::sleep(A_ROUNDS_ABSENCE);
+    assert_eq!(testing::take_rounds(), 0, "so the poll sent no wake");
+    wake_for_a_round();
+    assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN);
+    wake_for_a_round();
+    assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN * 2);
+
+    testing::retire();
+    drop(members);
+    drop(second);
     crate::cycle::queue::release_queue_segments();
 }
 
@@ -161,7 +434,7 @@ fn a_round_reaches_a_record_beyond_the_callers_and_leaves_a_free_one_alone() {
     testing::confine_rounds_to(free);
     let _ = testing::take_records_visited();
     let _ = testing::take_owners_served();
-    round();
+    round(ANY_ENTRY);
     assert!(
         testing::take_records_visited() >= 1,
         "the walk reached past the caller's record"

@@ -1,6 +1,8 @@
 //! The switches a case sets on the collector thread: whether
 //! [`super::ensure_thread`] may birth one, which record its rounds visit,
-//! whether its base block is refused, and how it is ended.
+//! the threshold its rounds serve at, how long it waits between rounds, whether its base
+//! block is refused, and how it is ended; and the probes that count its
+//! rounds and what they served.
 //!
 //! Every switch is process-wide, so a case that sets one holds the memory
 //! tests' guard, and births are forbidden again before the case ends.
@@ -82,6 +84,61 @@ pub(crate) fn in_round(record: *mut OwnerRecord) -> bool {
 /// Records the rounds reached since the last call, and zero the count.
 pub(crate) fn take_records_visited() -> usize {
     RECORDS_VISITED.swap(0, Ordering::Relaxed)
+}
+
+/// The threshold the thread's rounds serve at, or zero for the module's
+/// own: a case whose ring holds a few entries serves them at one.
+static ROUNDS_THRESHOLD: AtomicUsize = AtomicUsize::new(0);
+
+/// Serve the thread's rounds at `entries`, or at the module's own for zero.
+pub(crate) fn serve_rounds_at(entries: usize) {
+    ROUNDS_THRESHOLD.store(entries, Ordering::Relaxed);
+}
+
+pub(crate) fn threshold_for_rounds() -> Option<usize> {
+    match ROUNDS_THRESHOLD.load(Ordering::Relaxed) {
+        0 => None,
+        entries => Some(entries),
+    }
+}
+
+/// The wait after every round, in milliseconds, or zero for the timer's
+/// own: a case that reads what a wake does sets it above its own wait.
+static WAIT_MILLIS: AtomicUsize = AtomicUsize::new(0);
+
+/// Wait `interval` after every round, or the timer's own for `None`.
+pub(crate) fn wait_between_rounds_for(interval: Option<std::time::Duration>) {
+    WAIT_MILLIS.store(
+        interval.map_or(0, |interval| interval.as_millis() as usize),
+        Ordering::Relaxed,
+    );
+}
+
+pub(crate) fn interval_for_this_wait() -> Option<std::time::Duration> {
+    match WAIT_MILLIS.load(Ordering::Relaxed) {
+        0 => None,
+        millis => Some(std::time::Duration::from_millis(millis as u64)),
+    }
+}
+
+/// Rounds the thread made since a case last asked, and the interval the
+/// timer holds after the last of them, in milliseconds.
+static ROUNDS: AtomicUsize = AtomicUsize::new(0);
+static TIMER_MILLIS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn note_round(interval: std::time::Duration) {
+    TIMER_MILLIS.store(interval.as_millis() as usize, Ordering::Relaxed);
+    ROUNDS.fetch_add(1, Ordering::Release);
+}
+
+/// Rounds made since the last call, and zero the count.
+pub(crate) fn take_rounds() -> usize {
+    ROUNDS.swap(0, Ordering::Acquire)
+}
+
+/// The fallback interval as the timer holds it after the last round.
+pub(crate) fn timer_interval() -> std::time::Duration {
+    std::time::Duration::from_millis(TIMER_MILLIS.load(Ordering::Relaxed) as u64)
 }
 
 /// Owners the rounds claimed and released since a case last asked.
@@ -226,4 +283,7 @@ pub(crate) fn retire() {
 
     RETIRING.store(false, Ordering::Relaxed);
     confine_rounds_to(std::ptr::null_mut());
+    serve_rounds_at(0);
+    wait_between_rounds_for(None);
+    let _ = take_rounds();
 }

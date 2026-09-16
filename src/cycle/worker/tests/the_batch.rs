@@ -43,7 +43,7 @@ fn served_by_a_collector() -> Served {
             crate::memory::heap::ll_thread_init(),
             "the pool served the collector thread"
         );
-        unsafe { serve(sent.into_inner()) }
+        unsafe { serve(sent.into_inner(), ANY_ENTRY) }
     })
     .join()
     .expect("the collector finished")
@@ -326,7 +326,9 @@ fn the_advance_follows_the_last_post_from_the_unwind_as_well() {
     let outcome = std::thread::spawn(move || {
         assert!(crate::memory::heap::ll_thread_init());
         let record = sent.into_inner();
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { serve(record) }))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            serve(record, ANY_ENTRY)
+        }))
     })
     .join()
     .expect("the collector thread returned");
@@ -419,7 +421,7 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
         let record = sent.into_inner();
         let mut batches = 0;
         loop {
-            if let Served::Batch { .. } = unsafe { serve(record) } {
+            if let Served::Batch { .. } = unsafe { serve(record, ANY_ENTRY) } {
                 batches += 1;
             }
             if stopped.try_recv().is_ok() {

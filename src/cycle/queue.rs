@@ -135,7 +135,7 @@
 //!
 //! # What the poll does for this module
 //!
-//! Six things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
+//! Seven things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
 //! Where a spare cell is short it unlinks the block a burst left empty
 //! behind R's tail block, one per poll, into the cell, so that the refill
 //! after it draws one block fewer; it refills the spare cells, asking [`needs_spares`] — the count itself,
@@ -144,9 +144,12 @@
 //! buffer into the queue, which is why the refill comes first; compares the
 //! full-width epoch against the deferred lane's mirror and re-offers that lane
 //! where it moved; behind an open gate, disposes of the prefix of P up to
-//! the first proposed root ([`verdicts`]); and, armed, fires a collection.
-//! A reserve draw, an overflow append, a due deferred re-offer, or a
-//! proposal standing in P arms it.
+//! the first proposed root ([`verdicts`]); armed, fires a collection; and
+//! last, behind the same gate, signals the collector when this thread's own
+//! count of its registrations has reached the threshold
+//! ([`signal_the_collector_if_due`]) — after the fire, whose reading of R
+//! starts the count again. A reserve draw, an overflow append, a due
+//! deferred re-offer, or a proposal standing in P arms it.
 //!
 //! # The second ring, P
 //!
@@ -384,7 +387,8 @@ unsafe fn append_entry(state: *mut OwnerCycleState, entity: *mut RcHeader) {
     // and the record beside it. Drawing either at the first refusal would be
     // too late: every other allocation path would already have found the
     // pool empty.
-    let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
+    let record = this_thread_record_ref();
+    let writer = unsafe { Writer::new(record.candidate_ring()) };
     if writer
         .push(entity_entry(entity), || fresh_block(owner_state))
         .is_err()
@@ -394,6 +398,30 @@ unsafe fn append_entry(state: *mut OwnerCycleState, entity: *mut RcHeader) {
         // performs is unconditional, so what the arming buys here is the
         // fire, not the cells.
         crate::gc::arm();
+    }
+
+    // Counted through either path: an overflow entry reaches R at the
+    // poll's drain, before the poll reads the count.
+    record.note_registration();
+}
+
+/// Signal the collector if this thread has registered
+/// `worker::SOFT_THRESHOLD` entries since its count last started, and start
+/// the count again if the signal was received: the poll's soft signal,
+/// which starts a round and decides nothing about it
+/// (`rfc/model/gc/rc-cycle.md`, "Signals"). The count is the owner's own,
+/// of its own writes; a signal sent while the process has no collector
+/// leaves it standing, so every later poll signals again until a thread is
+/// there to receive it. A thread with no record has registered nothing.
+pub(crate) fn signal_the_collector_if_due() {
+    let record = owner_record::this_thread_record();
+    if record.is_null() {
+        return;
+    }
+
+    let record = unsafe { &*record };
+    if record.signal_is_due(crate::cycle::worker::SOFT_THRESHOLD) && crate::cycle::worker::wake() {
+        record.restart_signal_count();
     }
 }
 
@@ -1049,6 +1077,14 @@ fn candidate_ring<'a>() -> Option<Quiescent<'a>> {
 /// An empty batch is the answer for a thread that has registered nothing,
 /// and for one with no queue state at all.
 pub(crate) fn read_batch() -> Batch {
+    // The reading consumes the writes the signal count stands for: a signal
+    // sent for them would find R read out, and a collision with this
+    // collection at the token.
+    let record = owner_record::this_thread_record();
+    if !record.is_null() {
+        unsafe { &*record }.restart_signal_count();
+    }
+
     Batch {
         len: candidate_ring().map_or(0, |ring| ring.count()),
         verdicts: verdicts::verdict_ring().map_or(0, |ring| ring.count()),

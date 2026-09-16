@@ -692,6 +692,9 @@ pub(crate) fn take_exit_residue() -> Option<ExitResidue> {
 /// after the standing membership ends, before another bounded round and before
 /// this function returns to the allocation retry.
 ///
+/// **Every ending asks for the collector thread** — its birth where the
+/// process has none, and a wake ([`ask_for_the_collector_thread`]).
+///
 /// # Safety
 /// As [`collect_off_the_poll`], and the caller holds no allocation in flight
 /// that the destructors below could reach.
@@ -734,6 +737,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             // refused is answered memory-exhausted either way, and the arming
             // is the one thing this call can leave for the poll.
             crate::gc::arm();
+            ask_for_the_collector_thread();
             return 0;
         }
     };
@@ -851,9 +855,26 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     // Under a token of this thread's own, so that a collector's transient
     // claim cannot stop the loop: the returns a foreign holder left this
     // thread withholding are what the retry after this call allocates from.
-    let _token = HeldToken::take();
-    unsafe { make_withheld_returns_before_the_retry() };
+    {
+        let _token = HeldToken::take();
+        unsafe { make_withheld_returns_before_the_retry() };
+    }
+
+    ask_for_the_collector_thread();
     freed
+}
+
+/// Birth the collector thread if the process has none, and wake it: the
+/// pressure path is the one fire point the runtime owns, and a shortage is
+/// the second of the three wakes (`crate::cycle::worker`, "The thread, and
+/// the round over the records"). Called at every ending of a pressure
+/// collection, the refused ones included, after the collection so that the
+/// thread's draws compete with no rows of this one's; the wake is a soft
+/// signal, and the round it starts reads every owner's count itself.
+fn ask_for_the_collector_thread() {
+    crate::cycle::worker::ensure_thread();
+    // A wake lost here is a thread just born, whose first round is at once.
+    let _ = crate::cycle::worker::wake();
 }
 
 /// The returns a foreign holder left this thread withholding, made ahead of

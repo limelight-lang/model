@@ -1222,12 +1222,12 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         the three cases, the batch cases and the collector-reader cases, Miri
         green over the three cases, the batch cases minus the budget one,
         the record's tests and the exit's drain case.
-- [ ] S49.7 The wake channel and the fallback timer   *(after S49.9)*
+- [x] S49.7 The wake channel and the fallback timer   *(closed 2026-09-16)*
       done: the collector is born at the first pressure collection as today
-        and parks with a timeout that is its fallback interval, adapted
+        and waits with a timeout that is its fallback interval, adapted
         between two named bounds — lengthened after an empty round,
         shortened when an owner's poll wrote that its last disposition freed
-        something — and unparked by a mutator's soft signal, its poll having
+        something — and woken by a mutator's soft signal, its poll having
         registered N entries since its last signal, counted by its own writes
         and reading no word of the reader's, and by its pressure path; a
         wake only starts a round, and the round takes a batch from an owner
@@ -1239,11 +1239,38 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         making no round through an interval set above the case's wait, read
         by a rounds probe; `gc.rs`'s sentence that puts every threshold
         outside the crate names the soft threshold as the runtime's own
-      note: the count the collector reads at or above the threshold is read
-        under the token, or off the front block alone — a walk of R's chain
-        before the claim follows the link of a block the poll's unlink has
-        taken out (`ring::Reader::has_unread` and `unread`, S49.6's Critic)
       tier: T2 · role: Critic
+      Critic 2026-09-16: the signal stood before the poll's fire and no
+        in-line collection restarted the count, so every signal in the
+        steady state met the owner's own collection at the token. Accepted:
+        the signal is the poll's last act and `read_batch` restarts the
+        count. A batch held the interval, so a backlog above the threshold
+        drained at one batch per up to a second. Accepted: a batch returns
+        the interval to the minimum. The maximum's doc claimed to bound a
+        ring below the threshold, which no round serves. Accepted: rewritten,
+        and a round that saw work it could not take holds the interval. A
+        wake with no thread spent the count, so a dead collector lost every
+        later signal. Accepted: the count stands until a wake is received;
+        rebirth stays on the pressure path. Two cases asserted an
+        interleaving. Accepted: the signal order makes both deterministic,
+        and the absence of a stray round is asserted. The rfc's "note" and
+        "last disposition" wording. Accepted: the rfc amended in place to the
+        count; "any disposition since the last round" is the crate's
+        reading, recorded.
+      handoff: `worker::wake` (`Thread::unpark` on a published handle, false
+        when none), `SOFT_THRESHOLD` 64 for both the signal and the round,
+        `FALLBACK_INTERVAL_MIN`/`MAX` 10 ms/1 s, `Round` for the timer;
+        `OwnerRecord::note_registration`/`signal_is_due`/`restart_signal_count`
+        and the freeing-disposition pair; `queue::signal_the_collector_if_due`
+        last in the poll; `collect::ask_for_the_collector_thread` at every
+        pressure ending; `ring::Reader::has_at_least` replaces `has_unread`.
+        Cases `worker/tests.rs` (five new or rewritten), twelve mutations
+        red; the record `dev/DECISIONS.md`, 2026-09-16, "the collector's
+        wake is a soft signal counted on the owner's line"; rfc's batch and
+        Signals paragraphs amended in place. Gate green in every
+        configuration, TSan silent over the worker and collector-reader
+        cases, Miri green over the five cases, one batch case and the ring
+        case (2 m 10 s).
 - [ ] S49.8 Siblings   *(after S49.7)*
       done: each owner record names its collector; a collector with backlog
         after two consecutive rounds births a sibling — through the same

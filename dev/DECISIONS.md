@@ -8,6 +8,70 @@ never edited or deleted.
 
 ---
 
+## 2026-09-16 — the collector's wake is a soft signal counted on the owner's line, and its timer adapts between two unmeasured bounds
+
+**Context.** `PLAN.md` S49.7 built the wakes of `cycle::worker` on Edmond's
+ruling that a wake starts a round and decides nothing, the round reading
+each owner's count itself (`rfc/dev/DECISIONS.md`, "the collector traces on
+the count it reads itself"; `rfc/model/gc/rc-cycle.md`, "Signals"). The rfc
+names the mutator's N, the collector's threshold, and the timer's two
+bounds without sizing them, and says the mutator's poll "sets a note on its
+record" beside the wake.
+
+**Decision.** The threshold and N are one figure, `SOFT_THRESHOLD`, 64 —
+`INITIAL_BATCH`, so that a signalled owner's first batch is full — because
+a signal sent below the threshold finds no batch and one sent above it is
+late. The owner counts its own writes in a word on its writer's line, a
+load and a store per registration into a line the registration already
+loads, and its poll wakes the collector at the count and zeroes it; no note
+is written, since under the ruling a note would decide nothing and the
+count the round reads is the owner's ring. The count the round reads is
+`ring::Reader::has_at_least`, off the front block alone (S49.6's rule): a
+front block that is not the tail block answers true at any threshold, as
+the rfc's "`frontBlock ≠ tailBlock`" clause has it, though it proves one
+entry and not the threshold's worth. The timer holds the thread between
+rounds for 10 ms to 1 s: the minimum after a round that made a batch, so
+that a backlog above the threshold drains at a batch per minimum, and after
+one that read an owner's note that a disposition of P at its poll freed
+something since the collector's last round — a death retired out of P, or
+an entity the collection a proposal armed reclaimed — held after a round
+that read an owner at the threshold and could not serve it, doubled after
+a round that read no owner at the threshold. The owner counts the freeing
+dispositions up on its line and the collector keeps its own copy of the
+count on its line, so that neither writes into the other's. The wake is
+`Thread::unpark` on a handle the thread publishes after its init, under a
+mutex the poll takes once per `SOFT_THRESHOLD` registrations; a wake with
+no handle is lost and the count stands, so the next poll signals again, and
+a wake sent during a round ends the wait after it. The poll signals last,
+after its fire, and every in-line collection's reading of R starts the
+count again, so that a signal is sent for entries still in R and the round
+it starts meets no collection of the owner's at the token. The pressure
+collection births the thread and wakes it at every ending; a thread that
+ended is reborn there and nowhere else. An owner below the threshold is
+served by no round: what the timer covers is a signal that bought no batch
+and an owner at the threshold that reaches no poll. None of the four
+figures is measured.
+
+**Rejected.** Counting the mutator's registrations at the poll from the
+writer's own index words, which costs the registration nothing: exact only
+while no block wraps and no pack lowers a tail between two polls, and a
+missed signal would then wait for the timer. A note the collector reads
+and clears on the owner's line: a read-modify-write per round into the
+line every registration loads. Rebirth from the poll: the poll is the path
+likeliest to be short of memory, and the spawn draws the global allocator.
+
+**Critic, 2026-09-16.** Four findings folded: the signal stood before the
+fire, so the steady state — a proposal armed at every poll — sent every
+signal into a collision with the owner's own collection at the token
+(moved after the fire, and the in-line reading restarts the count); a
+batch held the interval, so a backlog drained at one batch per up to a
+second (the minimum now); the maximum's doc said it bounded a ring below
+the threshold, which no round serves (rewritten); a wake with no thread
+spent the count (it stands). The rfc's batch paragraph and Signals were
+amended in place to the count and no note.
+
+---
+
 ## 2026-09-16 — the collector holds the rings' blocks for its pre-claim reading by a word in the record, and the exit's answer is always a store
 
 **Context.** `PLAN.md` S49.9 built Edmond's ruling that the collector takes

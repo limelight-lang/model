@@ -52,21 +52,42 @@
 //! startup (`dev/DECISIONS.md`, "the collector thread is born at the first
 //! pressure collection"): the pressure path is the one fire point the
 //! runtime owns, and a thread born there costs nothing to a process that
-//! never runs short. No production path births it until S49.7 wires the
-//! pressure path back to [`ensure_thread`] with the wake channel. It starts
+//! never runs short. The pressure collection asks for it at each of its
+//! endings (`crate::cycle::collect::collect_under_pressure`). It starts
 //! as any registered thread does, through `ll_thread_init`, whose base block
 //! draw can be refused; a refused base block is a thread that never started,
 //! and a call [`BIRTH_RETRY_INTERVAL`] or more after the refusal births
-//! again. A round walks every record the registry has carved ([`round`]).
-//! Between two rounds the thread sleeps for [`ROUND_INTERVAL`]. Nothing
-//! wakes the thread early, and nothing but a test ends it.
-
-// Dead in a build without tests until S49.7 gives the birth its caller; the
-// tests are the module's only driver until then.
-#![cfg_attr(not(test), allow(dead_code))]
+//! again. A round walks every record the registry has carved ([`round`])
+//! and serves each owner whose R holds [`SOFT_THRESHOLD`] entries or more,
+//! by the collector's own reading off the front block; nothing but a test
+//! ends the thread.
+//!
+//! **A wake starts a round and decides nothing else** (`rfc/dev/DECISIONS.md`,
+//! "the collector traces on the count it reads itself"; `rfc/model/gc/
+//! rc-cycle.md`, "Signals"). Between two rounds the thread waits on its
+//! fallback timer, and three things end the wait: an owner's poll, having
+//! counted [`SOFT_THRESHOLD`] registrations of its own since its last
+//! signal ([`wake`], through `crate::cycle::queue`); a pressure collection,
+//! at every ending; and the timer. The timer is what serves an owner whose
+//! signal bought no batch — its token held or it collecting in line at the
+//! round, P without room, the workspace refused — and an owner at the
+//! threshold that reaches no poll; an owner below the threshold is served
+//! by no round, its ring being its own collections'. The interval adapts
+//! between [`FALLBACK_INTERVAL_MIN`] and [`FALLBACK_INTERVAL_MAX`]: the
+//! minimum after a round that made a batch, so that a backlog above the
+//! threshold drains at a batch per minimum, and after one that read an
+//! owner's note that its disposition of P freed something
+//! ([`OwnerRecord::take_freeing_disposition_note`]); held after a round
+//! that read an owner at the threshold and could not serve it; doubled
+//! after a round that read no owner at the threshold, so that a process
+//! with nothing to screen costs a wake a second. A wake sent while the
+//! process has no thread is lost, and the poll's count stands for the next
+//! poll to send again; one sent during a round ends the wait that follows
+//! it.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::thread::Thread;
 use std::time::{Duration, Instant};
 
 use crate::cells::AtomicCells;
@@ -88,8 +109,9 @@ pub(crate) enum Served {
     /// The token was claimed and released at once: the owner is collecting
     /// in line.
     OwnerCollecting,
-    /// Nothing to take, read before any claim: R read empty, P had no room,
-    /// or the collector's workspace was refused. No claim was made.
+    /// Nothing to take, read before any claim: R read below the threshold,
+    /// P had no room, or the collector's workspace was refused. No claim
+    /// was made.
     Idle,
     /// A batch was made: this many roots taken from R, each with a verdict
     /// posted into P, and whether their trace completed.
@@ -116,8 +138,24 @@ const _: () =
 /// size.
 const TRACE_BLOCK_BUDGET: usize = 8;
 
-/// The pause between two rounds over the records.
-const ROUND_INTERVAL: Duration = Duration::from_millis(10);
+/// Entries an owner's R holds at or above which a round takes a batch from
+/// it, and the registrations an owner counts before its poll signals: the
+/// two are one figure so that a signal finds the count it was sent for. Not
+/// a measured figure: the rfc names the threshold as the runtime's own and
+/// not its size, and this one is [`INITIAL_BATCH`], so that a signalled
+/// owner's first batch is full.
+pub(crate) const SOFT_THRESHOLD: usize = INITIAL_BATCH;
+
+const _: () = assert!(SOFT_THRESHOLD <= BATCH_BOUND);
+
+/// The fallback timer's minimum: the wait after a round that read a freeing
+/// disposition. Not a measured figure.
+const FALLBACK_INTERVAL_MIN: Duration = Duration::from_millis(10);
+
+/// The fallback timer's maximum, reached by doubling after empty rounds.
+/// Not a measured figure: what it bounds is how long an owner at the
+/// threshold that reaches no poll waits for a round nobody signalled.
+const FALLBACK_INTERVAL_MAX: Duration = Duration::from_secs(1);
 
 /// How long after a refused birth the pressure path waits before it spawns
 /// again: a process that stays short of memory collects at every refused
@@ -131,6 +169,10 @@ static REFUSED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 /// The name the collector thread is spawned under.
 const THREAD_NAME: &str = "ll-collector";
 
+/// The handle a wake ends the thread's wait through, published by the thread
+/// once its init is through and cleared as it ends; `None` is a wake lost.
+static COLLECTOR: Mutex<Option<Thread>> = Mutex::new(None);
+
 /// Where the process's collector thread stands: [`UNBORN`], [`STARTING`]
 /// from the spawn until its `ll_thread_init` answered, [`ALIVE`] from a
 /// started init until the thread ends.
@@ -143,9 +185,8 @@ const ALIVE: u8 = 2;
 /// starting, or a birth was refused less than [`BIRTH_RETRY_INTERVAL`] ago.
 /// A spawn the operating system refuses, and a base block the pool refuses,
 /// each leave the process without a thread until a call after the interval.
-/// No production path calls it yet (S49.7 makes the pressure path its
-/// caller, after the collection so that the thread's draws compete with no
-/// rows of the caller's own).
+/// The pressure path calls it after its collection, so that the thread's
+/// draws compete with no rows of the caller's own.
 ///
 /// The spawn allocates through the global allocator — the thread's name and
 /// the handle's shared state — on a path the ruling that no runtime path may
@@ -200,15 +241,39 @@ fn note_refused_birth() {
     *refused_at = Some(Instant::now());
 }
 
+/// Wake the collector thread out of its wait, and answer whether the process
+/// had one to wake: a wake is a soft signal that starts a round, and a
+/// round reads every owner's count itself (module doc). Callable from any
+/// thread; an owner's poll makes it at [`SOFT_THRESHOLD`] registrations and
+/// a pressure collection at each of its endings. False is a wake lost:
+/// before the thread's birth, between its spawn and its init, and after
+/// its end.
+pub(crate) fn wake() -> bool {
+    let collector = COLLECTOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match collector.as_ref() {
+        Some(thread) => {
+            thread.unpark();
+            true
+        }
+        None => false,
+    }
+}
+
 /// The collector thread's life: its registration, its rounds, its exit.
 fn thread_body() {
     // The word goes back to unborn however this thread ends — a refused
     // base block, a test's retire, or a panic in a round that unwinds out of
     // here — so that a later birth can happen rather than read a thread
-    // that no longer exists.
+    // that no longer exists; the wake handle goes with it, so that a wake
+    // after the end is lost rather than sent to a thread that is not there.
     struct UnbornOnDrop;
     impl Drop for UnbornOnDrop {
         fn drop(&mut self) {
+            *COLLECTOR
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
             THREAD.store(UNBORN, Ordering::Release);
         }
     }
@@ -227,10 +292,33 @@ fn thread_body() {
         return;
     }
 
+    *COLLECTOR
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::thread::current());
     THREAD.store(ALIVE, Ordering::Release);
+    let mut interval = FALLBACK_INTERVAL_MIN;
     while !retiring() {
-        round();
-        std::thread::park_timeout(ROUND_INTERVAL);
+        #[cfg(not(test))]
+        let threshold = SOFT_THRESHOLD;
+        #[cfg(test)]
+        let threshold = testing::threshold_for_rounds().unwrap_or(SOFT_THRESHOLD);
+        let Round {
+            made_a_batch,
+            saw_work,
+            read_a_freeing_disposition,
+        } = round(threshold);
+        interval = if made_a_batch || read_a_freeing_disposition {
+            FALLBACK_INTERVAL_MIN
+        } else if saw_work {
+            interval
+        } else {
+            (interval * 2).min(FALLBACK_INTERVAL_MAX)
+        };
+        #[cfg(test)]
+        testing::note_round(interval);
+        #[cfg(test)]
+        let interval = testing::interval_for_this_wait().unwrap_or(interval);
+        std::thread::park_timeout(interval);
     }
 
     crate::memory::heap::ll_thread_exit();
@@ -255,10 +343,26 @@ fn retiring() -> bool {
 #[cfg(test)]
 use testing::retiring;
 
+/// What a round read across the records, for the timer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+struct Round {
+    /// Some owner was served a batch.
+    made_a_batch: bool,
+    /// Some owner read at the threshold was not served: its token held, or
+    /// it collecting in line.
+    saw_work: bool,
+    /// Some owner's poll noted a disposition that freed something since the
+    /// last round.
+    read_a_freeing_disposition: bool,
+}
+
 /// One round over the records: visit every record but the thread's own,
-/// which polls nothing, and serve each. What a serve does is [`serve`]'s.
-fn round() {
+/// which polls nothing, read each owner's note for the timer, and serve
+/// each whose R holds `threshold` entries or more. What a serve does is
+/// [`serve`]'s.
+fn round(threshold: usize) -> Round {
     let own = owner_record::this_thread_record();
+    let mut outcome = Round::default();
     owner_record::for_each_record(|record| {
         if record == own {
             return;
@@ -269,17 +373,31 @@ fn round() {
             return;
         }
 
-        let served = unsafe { serve(record) };
+        // The note is read whatever the serve answers: a free-list record
+        // has a count equal to the copy, and a record between threads
+        // answers one spurious shortening at most.
+        if unsafe { &*record }.take_freeing_disposition_note() {
+            outcome.read_a_freeing_disposition = true;
+        }
+
+        let served = unsafe { serve(record, threshold) };
+        match served {
+            Served::Batch { .. } => outcome.made_a_batch = true,
+            Served::TokenHeld | Served::OwnerCollecting => outcome.saw_work = true,
+            Served::Idle => {}
+        }
+
         #[cfg(test)]
         testing::note_served(served);
-        #[cfg(not(test))]
-        let _ = served;
     });
+    outcome
 }
 
 /// Serve `record`'s owner once: claim its token by compare-and-swap, held
 /// being a skip; skip an owner collecting in line; otherwise make one batch
-/// (module doc) and release.
+/// (module doc) and release. `threshold` is the count of R, read before
+/// any claim, below which the owner is idle to this serve; the round passes
+/// [`SOFT_THRESHOLD`].
 ///
 /// Runs on a collector thread, which holds a base block of its own for the
 /// workspace the batch's trace opens (`crate::memory::heap::ll_thread_init`).
@@ -287,19 +405,19 @@ fn round() {
 /// # Safety
 /// `record` is a record of the registry's, and the calling thread is not its
 /// owner.
-pub(crate) unsafe fn serve(record: *mut OwnerRecord) -> Served {
+pub(crate) unsafe fn serve(record: *mut OwnerRecord, threshold: usize) -> Served {
     let owner = unsafe { &*record };
     // Work first, and the collector's own memory, before any claim — by
     // loads alone, since nothing of the owner's may be written under no
     // claim, and off the front block alone, since the owner's pack and its
     // poll's unlink move blocks past the tail block out of the circle under
-    // no claim either: whether R has an entry, P's room off its index words,
-    // and the workspace this thread's. The figures are an idle test and not
-    // the clamp: the clamp is re-read under the token. The blocks read are
-    // held for the reading, since an owner exiting meanwhile returns them
-    // (`crate::cycle::owner_record`, "The blocks a collector reads before
-    // its claim are held"); a record another reading holds is idle to this
-    // round.
+    // no claim either: whether R holds the threshold, P's room off its index
+    // words, and the workspace this thread's. The figures are an idle test
+    // and not the clamp: the clamp is re-read under the token. The blocks
+    // read are held for the reading, since an owner exiting meanwhile
+    // returns them (`crate::cycle::owner_record`, "The blocks a collector
+    // reads before its claim are held"); a record another reading holds is
+    // idle to this round.
     if !unsafe { owner_record::take_for_reading(record) } {
         return Served::Idle;
     }
@@ -316,7 +434,7 @@ pub(crate) unsafe fn serve(record: *mut OwnerRecord) -> Served {
         let _reading = HandBackOnDrop(record);
         #[cfg(test)]
         testing::between_the_take_and_the_reading();
-        let has_work = unsafe { Reader::new(owner.candidate_ring()) }.has_unread();
+        let has_work = unsafe { Reader::new(owner.candidate_ring()) }.has_at_least(threshold);
         let room = unsafe { VerdictWriter::open(owner) }.room_by_loads();
         (has_work, room)
     };

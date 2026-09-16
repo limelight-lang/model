@@ -4,9 +4,9 @@
 //! "the token stands in a record the process keeps, and the exit's claim on
 //! it is never released"). Four lines: the trace token with the owner's
 //! note of who holds it; the reader's line, the collector's words of the
-//! two rings; the writer's line, the owner's words of them; and the hold
-//! line, the word under which a collector reads the rings' blocks before its
-//! claim (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its
+//! two rings; the writer's line, the owner's words of them and the counts
+//! behind its signal to the collector; and the hold line, the word under
+//! which a collector reads the rings' blocks before its claim (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its
 //! writer, and the collector's verdicts come back by a second ring"). The
 //! lines are split by who writes them, so a registration's store and a
 //! batch's load never share a line. Both rings' words are read by
@@ -106,7 +106,7 @@
 
 use std::cell::Cell;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 
 use crate::cycle::token::TraceToken;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
@@ -158,6 +158,11 @@ struct ReaderLine {
     /// (`crate::cycle::worker`); zero before the first batch, which reads
     /// it as the starting size.
     batch: AtomicUsize,
+    /// The value of [`WriterLine::freeing_dispositions`] the collector last
+    /// read, its own copy, so that each party writes its own line: a
+    /// difference is a disposition that freed something since the last
+    /// round ([`OwnerRecord::note_freeing_disposition`]).
+    freeing_dispositions_seen: AtomicU32,
 }
 
 /// The line the owner writes: where it registers into R, where it reads
@@ -180,6 +185,18 @@ struct WriterLine {
     /// writer, and the collector's verdicts come back by a second ring", "Who
     /// reads R").
     collecting: AtomicBool,
+    /// Entries the owner registered since its count last started — at a
+    /// signal the collector received, or at an in-line collection's reading
+    /// of R: the owner's count of its own writes, so that its signal reads
+    /// no word of the reader's (`rfc/model/gc/rc-cycle.md`, "Signals").
+    /// Written and read by the owner alone, relaxed on both sides.
+    registrations: AtomicU32,
+    /// Dispositions of P at this owner's poll that freed something, counted
+    /// up by the owner and never cleared: the collector compares it with
+    /// its own copy to shorten its fallback interval
+    /// (`crate::cycle::worker`, "The thread, and the round over the
+    /// records").
+    freeing_dispositions: AtomicU32,
 }
 
 /// The line the collector and the exit share, each by compare-and-swap.
@@ -227,6 +244,7 @@ impl ReaderLine {
             r_front_block: AtomicPtr::new(std::ptr::null_mut()),
             p_tail_block: AtomicPtr::new(std::ptr::null_mut()),
             batch: AtomicUsize::new(0),
+            freeing_dispositions_seen: AtomicU32::new(0),
         }
     }
 
@@ -237,6 +255,7 @@ impl ReaderLine {
         self.p_tail_block
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         self.batch.store(0, Ordering::Relaxed);
+        self.freeing_dispositions_seen.store(0, Ordering::Relaxed);
     }
 }
 
@@ -246,6 +265,8 @@ impl WriterLine {
             r_tail_block: AtomicPtr::new(std::ptr::null_mut()),
             p_front_block: AtomicPtr::new(std::ptr::null_mut()),
             collecting: AtomicBool::new(false),
+            registrations: AtomicU32::new(0),
+            freeing_dispositions: AtomicU32::new(0),
         }
     }
 
@@ -256,6 +277,8 @@ impl WriterLine {
         self.p_front_block
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         self.collecting.store(false, Ordering::Relaxed);
+        self.registrations.store(0, Ordering::Relaxed);
+        self.freeing_dispositions.store(0, Ordering::Relaxed);
     }
 }
 
@@ -388,6 +411,72 @@ impl OwnerRecord {
     #[inline]
     pub(crate) fn clear_collecting(&self) {
         self.writer.collecting.store(false, Ordering::Release);
+    }
+
+    /// Count one registration of the owner's, on the owner's thread: a load
+    /// and a store of its own word, no read-modify-write.
+    #[inline]
+    pub(crate) fn note_registration(&self) {
+        let registrations = self.writer.registrations.load(Ordering::Relaxed);
+        self.writer
+            .registrations
+            .store(registrations.wrapping_add(1), Ordering::Relaxed);
+    }
+
+    /// Whether the owner has registered `signal_at` entries or more since
+    /// its count last started: the owner's poll asks it once per poll and
+    /// signals on true.
+    #[inline]
+    pub(crate) fn signal_is_due(&self, signal_at: usize) -> bool {
+        (self.writer.registrations.load(Ordering::Relaxed) as usize) >= signal_at
+    }
+
+    /// Start the count of the owner's registrations again, on the owner's
+    /// thread: at a signal that was delivered, and at an in-line collection's
+    /// reading of R, which consumes the writes the count stands for. A
+    /// signal nobody received leaves the count standing, so the next poll
+    /// signals again.
+    #[inline]
+    pub(crate) fn restart_signal_count(&self) {
+        self.writer.registrations.store(0, Ordering::Relaxed);
+    }
+
+    /// Registrations counted since the last signal, for a case.
+    #[cfg(test)]
+    pub(crate) fn registrations_since_signal(&self) -> usize {
+        self.writer.registrations.load(Ordering::Relaxed) as usize
+    }
+
+    /// Note, on the owner's thread, that a disposition of P at its poll
+    /// freed something: the collector's next round reads it and shortens
+    /// its fallback interval.
+    #[inline]
+    pub(crate) fn note_freeing_disposition(&self) {
+        let count = self.writer.freeing_dispositions.load(Ordering::Relaxed);
+        self.writer
+            .freeing_dispositions
+            .store(count.wrapping_add(1), Ordering::Relaxed);
+    }
+
+    /// Whether the owner noted a freeing disposition since the collector
+    /// last asked, on the collector's thread: the owner's count against the
+    /// collector's own copy, which this brings up to date.
+    #[inline]
+    pub(crate) fn take_freeing_disposition_note(&self) -> bool {
+        let count = self.writer.freeing_dispositions.load(Ordering::Relaxed);
+        if count
+            == self
+                .reader
+                .freeing_dispositions_seen
+                .load(Ordering::Relaxed)
+        {
+            return false;
+        }
+
+        self.reader
+            .freeing_dispositions_seen
+            .store(count, Ordering::Relaxed);
+        true
     }
 }
 

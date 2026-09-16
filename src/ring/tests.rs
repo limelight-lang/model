@@ -582,7 +582,7 @@ fn the_work_test_reads_the_front_block_alone() {
     let words = Words::new();
     let writer = unsafe { Writer::new(words.slots()) };
     let reader = unsafe { Reader::new(words.slots()) };
-    assert!(!reader.has_unread(), "no block");
+    assert!(!reader.has_at_least(1), "no block");
 
     for entry in 0..BLOCK_ENTRIES + 1 {
         assert_eq!(writer.push(entry, fresh), Ok(()));
@@ -604,12 +604,25 @@ fn the_work_test_reads_the_front_block_alone() {
             .next
             .swap(std::ptr::null_mut(), Ordering::Relaxed)
     };
-    assert!(reader.has_unread(), "an entry stands past the front block");
+    assert!(
+        reader.has_at_least(1),
+        "an entry stands past the front block"
+    );
+    assert!(
+        reader.has_at_least(BLOCK_ENTRIES),
+        "a front block that is not the tail block is at any threshold"
+    );
     unsafe { (*ring(front)).link.next.store(next, Ordering::Relaxed) };
 
+    // In the tail block the threshold is the block's span.
     assert_eq!(reader.take(&mut out[..1]), 1);
-    assert!(!reader.has_unread(), "the ring is read out");
+    assert!(!reader.has_at_least(1), "the ring is read out");
     assert_eq!(reader.unread(), 0);
+    for entry in 0..3 {
+        assert_eq!(writer.push(entry, none), Ok(()));
+    }
+    assert!(reader.has_at_least(3));
+    assert!(!reader.has_at_least(4));
     words.dismantle();
 }
 
