@@ -1263,15 +1263,21 @@ one way S50.1 decides; `cycle::queue`'s "thread the runtime never registered"
 paragraph and `ensure_queue_base_or_abort` go with the lazy draw; the cases
 that drove the lazy paths go with them and the contract is re-pinned.
 
-- [ ] S50.1 Decide what an uninitialised thread gets at its first allocation or registration: an abort, or a null from the allocator with the registration refused
+- [x] S50.1 Decide what an uninitialised thread gets at its first allocation or registration: an abort, or a null from the allocator with the registration refused   *(closed 2026-09-16)*
       done: Edmond's answer recorded in `dev/DECISIONS.md` under the ruling
         above; the question was put on 2026-09-15 and he said to go on
+      handoff: Edmond, 2026-09-16: `ll_thread_init` is called first, and a
+        thread without it does not start — no such thread exists for the
+        crate to serve. S50.2 reads that as an abort with a named reason at
+        each entry point, the state being impossible by contract; that
+        reading is the model's and is named in S50.2's `done:`.
       tier: T1 · role: — (Edmond decides)
 - [ ] S50.2 Remove the lazy calls and pin the once-only contract   *(after S50.1)*
       done: the three call sites and `ensure_queue_base_or_abort` are gone;
-        `ll_thread_init` refuses a second call under `debug_assert`; the
-        uninitialised thread's arm is what S50.1 chose, pinned by a case per
-        entry point; `a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring`
+        `ll_thread_init` refuses a second call under `debug_assert`; an
+        entry point reached on a thread with no init ends the process with
+        a named reason (S50.1: no such thread exists for the crate to
+        serve), pinned by a case per entry point; `a_thread_that_cannot_arm_its_exit_guard_is_given_no_ring`
         and the unregistered-thread cases are rewritten or deleted with the
         mechanism; `ll_thread_init`'s doc says once
       tier: T2 · role: Critic

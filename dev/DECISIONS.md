@@ -125,9 +125,16 @@ thread closes. The crate's three lazy calls of it — `stdapi::ll_alloc_init`,
 `heap::entity_alloc_init`, the journal's ring open — and the notion of a
 thread the runtime never registered are wrong by this ruling; `PLAN.md` S50
 removes them. Found when a repeated init's rollback was seen returning a
-live thread's queue. What an uninitialised thread gets at its first
-allocation — an abort or a null — is S50.1's, put to Edmond and not yet
-answered.
+live thread's queue.
+
+**Ruled by Edmond, 2026-09-16 (S50.1):** `ll_thread_init` is called first;
+if it is not, the thread does not start. There is no thread that reaches
+an allocation or a registration without its init, so the crate serves no
+such thread: the lazy draws go, and an entry point reached on a thread
+with no init is a broken embedding, not a state with an answer of its own.
+How S50.2 makes that executable — the entry points end the process with
+a named reason rather than answer null, the state being impossible by
+contract — is the model's reading of the ruling, recorded in that step.
 
 ## 2026-09-15 — the owner record is four lines, drawn beside the base block, and its refusal is a thread that never starts
 
