@@ -4,12 +4,13 @@
 //! "the token stands in a record the process keeps, and the exit's claim on
 //! it is never released"). Four lines: the trace token with the owner's
 //! note of who holds it; the reader's line, the collector's words of the
-//! two rings; the writer's line, the owner's words of them; and a spare
-//! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
-//! and the collector's verdicts come back by a second ring"). The lines are
-//! split by who writes them, so a registration's store and a batch's load
-//! never share a line. Both rings' words are read by `crate::cycle::queue`
-//! through `crate::ring`.
+//! two rings; the writer's line, the owner's words of them; and the hold
+//! line, the word under which a collector reads the rings' blocks before its
+//! claim (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its
+//! writer, and the collector's verdicts come back by a second ring"). The
+//! lines are split by who writes them, so a registration's store and a
+//! batch's load never share a line. Both rings' words are read by
+//! `crate::cycle::queue` through `crate::ring`.
 //!
 //! # P's one block is drawn with the record
 //!
@@ -46,6 +47,20 @@
 //! in a chain of GC-metadata blocks the process never returns, and a record
 //! a thread has finished with goes to a free list for the next thread rather
 //! than back to the pool.
+//!
+//! # The blocks a collector reads before its claim are held
+//!
+//! The idle test reads past the record into the rings' blocks — R's front
+//! block and P's one block — and those the exit does return. So the
+//! collector takes them to itself for the reading, the way the memory
+//! manager moves a block between owners (`rfc/dev/DECISIONS.md`, "the
+//! collector takes P's block to itself for the reading it makes before its
+//! claim"): it sets the record's hold word ([`take_for_reading`]), reads,
+//! and clears it ([`hand_back_reading`]). An exit that reaches a ring's
+//! return under the hold leaves that ring to the holder, noting which
+//! ([`leave_to_holder_if_held`]), and the hand-back returns what was left;
+//! the registry hands out no record whose hold word is not clear, so a
+//! re-taken record never installs a block over one still held or left.
 //!
 //! # The token is what says whether a record is anyone's
 //!
@@ -91,7 +106,7 @@
 
 use std::cell::Cell;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 
 use crate::cycle::token::TraceToken;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
@@ -122,8 +137,9 @@ pub(crate) struct OwnerRecord {
     reader: ReaderLine,
     /// The owner's words of the two rings.
     writer: WriterLine,
-    /// Room for what the two lines above outgrow.
-    spare: SpareLine,
+    /// The collector's hold over the rings' blocks for its pre-claim reading,
+    /// and the exit's note of what it left to that hold.
+    hold: HoldLine,
 }
 
 /// The line the collector writes: where it reads R from, where it posts
@@ -166,10 +182,43 @@ struct WriterLine {
     collecting: AtomicBool,
 }
 
-/// A line nobody writes yet.
+/// The line the collector and the exit share, each by compare-and-swap.
 #[repr(C, align(64))]
-struct SpareLine {
-    _room: [u8; 64],
+struct HoldLine {
+    /// [`READING`] while a collector reads the rings' blocks before its
+    /// claim; [`R_LEFT`] and [`P_LEFT`] while a ring's blocks an exit found
+    /// held wait for the hand-back to return them; [`RETURNING`] from the
+    /// exit's first return of a ring nobody held until the registry hands
+    /// the record out again, so that no reading begins against a ring the
+    /// exit is returning. Zero is a record whose blocks are the owner's
+    /// alone; the registry hands out a record with nothing but
+    /// `RETURNING` set, and clears it.
+    reading: AtomicU8,
+}
+
+/// A collector is reading the rings' blocks under no claim.
+const READING: u8 = 1;
+/// The exit left R's blocks in the record for the reading's hand-back.
+const R_LEFT: u8 = 2;
+/// The exit left P's block in the record for the reading's hand-back.
+const P_LEFT: u8 = 4;
+/// The exit is returning, or has returned, a ring nobody held.
+const RETURNING: u8 = 8;
+
+/// Which ring an exit leaves to a collector's hold.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Ring {
+    Candidates,
+    Verdicts,
+}
+
+impl Ring {
+    const fn left_flag(self) -> u8 {
+        match self {
+            Ring::Candidates => R_LEFT,
+            Ring::Verdicts => P_LEFT,
+        }
+    }
 }
 
 impl ReaderLine {
@@ -217,7 +266,7 @@ unsafe impl Sync for OwnerRecord {}
 const _: () = assert!(size_of::<OwnerRecord>() == 256);
 const _: () = assert!(std::mem::offset_of!(OwnerRecord, reader) == 64);
 const _: () = assert!(std::mem::offset_of!(OwnerRecord, writer) == 128);
-const _: () = assert!(std::mem::offset_of!(OwnerRecord, spare) == 192);
+const _: () = assert!(std::mem::offset_of!(OwnerRecord, hold) == 192);
 const _: () = assert!(
     !std::mem::needs_drop::<OwnerRecord>(),
     "a record is written in place and never dropped"
@@ -266,7 +315,9 @@ impl OwnerRecord {
             pinned: AtomicBool::new(false),
             reader: ReaderLine::empty(),
             writer: WriterLine::empty(),
-            spare: SpareLine { _room: [0; 64] },
+            hold: HoldLine {
+                reading: AtomicU8::new(0),
+            },
         }
     }
 
@@ -519,11 +570,12 @@ pub(crate) unsafe fn release_thread_record() {
         return;
     }
 
-    // Under the held token, so no collector posts into the block as it goes.
-    unsafe { crate::ring::Quiescent::new((*record).verdict_ring()) }.dismantle(|block| {
-        gc_metadata::discharge(BLOCK_PAYLOAD);
-        gc_metadata::release_to_critical(block);
-    });
+    // Under the held token, so no collector posts into the block as it
+    // goes; a collector reading it before its claim keeps it until its
+    // hand-back.
+    if !unsafe { leave_to_holder_if_held(record, Ring::Verdicts) } {
+        unsafe { give_back_verdict_ring(record) };
+    }
 
     debug_assert!(
         unsafe { (*record).token.is_held() },
@@ -541,6 +593,125 @@ pub(crate) unsafe fn release_thread_record() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     unsafe { (*record).free_link.set(registry.free) };
     registry.free = record;
+}
+
+/// Return P's block, whichever thread does it: the exit, or the collector
+/// whose hold the exit found.
+///
+/// # Safety
+/// No collector posts into P: the caller holds the record's token, or the
+/// exit left P to the caller's hold.
+unsafe fn give_back_verdict_ring(record: *mut OwnerRecord) {
+    unsafe { crate::ring::Quiescent::new((*record).verdict_ring()) }.dismantle(|block| {
+        gc_metadata::discharge(BLOCK_PAYLOAD);
+        gc_metadata::release_to_critical(block);
+    });
+}
+
+/// Take `record`'s rings' blocks for a reading under no claim: true with the
+/// hold set, false where a collector already holds them, an exit has left
+/// blocks for one, or an exit has begun returning them — in which case the
+/// caller reads nothing of them. A record on the free list is never taken:
+/// its exit's returns set [`RETURNING`], which the registry clears when it
+/// hands the record out.
+///
+/// # Safety
+/// `record` is a record of the registry's.
+pub(crate) unsafe fn take_for_reading(record: *mut OwnerRecord) -> bool {
+    unsafe { &(*record).hold.reading }
+        .compare_exchange(0, READING, Ordering::AcqRel, Ordering::Relaxed)
+        .is_ok()
+}
+
+/// End the reading [`take_for_reading`] began, and return the blocks an
+/// exit left to it meanwhile: R's through the queue's give-back, P's here.
+/// Clearing the hold before the returns is what keeps an exit from leaving
+/// more once they begin; the flags go last, so the registry hands the
+/// record out only after its blocks are gone.
+///
+/// # Safety
+/// The calling thread took the hold and has finished reading.
+pub(crate) unsafe fn hand_back_reading(record: *mut OwnerRecord) {
+    let hold = unsafe { &(*record).hold.reading };
+    let left = hold.fetch_and(!READING, Ordering::AcqRel);
+    debug_assert!(left & READING != 0, "a hand-back ends a reading");
+    if left & R_LEFT != 0 {
+        unsafe { crate::cycle::queue::give_back_candidate_ring_left_by_an_exit(record) };
+    }
+
+    if left & P_LEFT != 0 {
+        unsafe { give_back_verdict_ring(record) };
+    }
+
+    hold.fetch_and(!(R_LEFT | P_LEFT), Ordering::Release);
+}
+
+/// The exit's question at a ring's return: whether a collector holds the
+/// rings' blocks for a reading, in which case `ring`'s blocks stay in the
+/// record for the hand-back and this answers true. Both answers are a
+/// store into the hold word — the leave sets the ring's flag, the return
+/// sets [`RETURNING`] — so that a reading and the exit's decision are
+/// ordered one way or the other: a reading that begins after a return's
+/// store fails its take, and a return that follows a reading's take sees
+/// it and leaves.
+///
+/// # Safety
+/// `record` is this thread's record, and the exit will not touch `ring`'s
+/// blocks again where this answers true.
+pub(crate) unsafe fn leave_to_holder_if_held(record: *mut OwnerRecord, ring: Ring) -> bool {
+    let hold = unsafe { &(*record).hold.reading };
+    let mut state = hold.load(Ordering::Acquire);
+    #[cfg(test)]
+    at_the_exits_hold_check();
+    loop {
+        let held = state & READING != 0;
+        let next = if held {
+            state | ring.left_flag()
+        } else {
+            state | RETURNING
+        };
+        match hold.compare_exchange_weak(state, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return held,
+            Err(now) => state = now,
+        }
+    }
+}
+
+/// What an exit runs between its load of the hold word and its store, for
+/// the case whose collector takes the blocks in that window; on the exiting
+/// thread, once.
+#[cfg(test)]
+static AT_THE_EXITS_HOLD_CHECK: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn at_the_next_exits_hold_check(act: Box<dyn FnOnce() + Send>) {
+    *AT_THE_EXITS_HOLD_CHECK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(act);
+}
+
+#[cfg(test)]
+fn at_the_exits_hold_check() {
+    let act = AT_THE_EXITS_HOLD_CHECK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(act) = act {
+        act();
+    }
+}
+
+/// Whether an exit left `ring`'s blocks in `record` for a collector's
+/// hand-back.
+pub(crate) fn ring_left_to_a_holder(record: *mut OwnerRecord, ring: Ring) -> bool {
+    unsafe { &(*record).hold.reading }.load(Ordering::Acquire) & ring.left_flag() != 0
+}
+
+/// Whether no reading holds `record`'s blocks and no exit left any: what
+/// the registry requires of a record it hands out. [`RETURNING`] alone is
+/// the state an exit leaves a record in, and the take clears it.
+fn blocks_are_the_owners(record: *mut OwnerRecord) -> bool {
+    unsafe { &(*record).hold.reading }.load(Ordering::Acquire) & (READING | R_LEFT | P_LEFT) == 0
 }
 
 /// Take a record out of the registry: a released one first, then one carved
@@ -566,6 +737,9 @@ fn take_record() -> *mut OwnerRecord {
             (*released).free_link.set(std::ptr::null_mut());
             (*released).reader.reset();
             (*released).writer.reset();
+            // Last, with release: the next reading's take is what sees the
+            // lines above as reset.
+            (*released).hold.reading.store(0, Ordering::Release);
         }
         return released;
     }
@@ -594,22 +768,32 @@ fn take_record() -> *mut OwnerRecord {
     record
 }
 
-/// Unlink and answer the first record of the free list, or null.
+/// Unlink and answer the first record of the free list whose blocks are the
+/// owner's, or null: a record a collector is reading, or holds blocks of
+/// that an exit left, stays on the list until its hand-back.
 #[cfg(not(test))]
 fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
-    let record = registry.free;
-    if !record.is_null() {
-        registry.free = unsafe { (*record).free_link.get() };
-    }
+    let mut link: *mut *mut OwnerRecord = &raw mut registry.free;
+    loop {
+        let record = unsafe { *link };
+        if record.is_null() || blocks_are_the_owners(record) {
+            if !record.is_null() {
+                unsafe { *link = (*record).free_link.get() };
+            }
+            return record;
+        }
 
-    record
+        link = unsafe { (*record).free_link.as_ptr() };
+    }
 }
 
 /// Unlink and answer the first record of the free list a taker may have, or
 /// null: every record on the list but a pinned one — or the one record the
 /// taking thread named with [`take_this_record_for_test`], pinned or not,
 /// so that a case can read what a re-take of one record does while other
-/// cases' threads move the list's top.
+/// cases' threads move the list's top. A record whose blocks a collector
+/// holds, or holds left blocks of, is skipped whether named or not, as the
+/// production form skips it.
 #[cfg(test)]
 fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
     let wanted = TAKE_THIS.with(|cell| cell.replace(std::ptr::null_mut()));
@@ -620,11 +804,12 @@ fn first_free_record(registry: &mut Registry) -> *mut OwnerRecord {
             return record;
         }
 
-        let skipped = if wanted.is_null() {
-            unsafe { (*record).pinned.load(Ordering::Relaxed) }
-        } else {
-            record != wanted
-        };
+        let skipped = !blocks_are_the_owners(record)
+            || if wanted.is_null() {
+                unsafe { (*record).pinned.load(Ordering::Relaxed) }
+            } else {
+                record != wanted
+            };
         if skipped {
             link = unsafe { (*record).free_link.as_ptr() };
             continue;

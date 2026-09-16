@@ -8,6 +8,42 @@ never edited or deleted.
 
 ---
 
+## 2026-09-16 — the collector holds the rings' blocks for its pre-claim reading by a word in the record, and the exit's answer is always a store
+
+**Context.** `PLAN.md` S49.9 built Edmond's ruling that the collector takes
+P's block to itself for the reading it makes before its claim
+(`rfc/dev/DECISIONS.md`, "the collector takes P's block to itself for the
+reading it makes before its claim"). The reading covers R's front block as
+well, which the exit returns through the queue before the record.
+
+**Decision.** The record's fourth line is a hold word
+(`cycle::owner_record::HoldLine`). The collector sets it by
+compare-and-swap from zero around its two pre-claim loads and clears it on
+a guard that runs from the unwind. The exit, at R's return and at P's,
+makes one store either way: with the hold set it sets the ring's left flag
+and skips the ring's dismantle; with it clear it sets a returning flag and
+dismantles. The hand-back returns whatever the exit left and clears the
+flags last; the registry hands out no record with a hold or a left ring
+standing, and clears the returning flag when it hands one out. The leave
+runs on the exit path alone; a running thread emptying its queue dismantles
+R itself.
+
+**Why the exit's clear answer is a store too (Critic, 2026-09-16).** With a
+plain load on the clear path a reading that takes between the exit's load
+and its return is invisible to the exit, which returns the block under the
+reading — the window the ruling closes, left open on one side. Two stores
+on one word are totally ordered: a take after the return's store fails, a
+return after the take sees it. The case
+`a_take_between_the_exits_load_and_its_store_is_still_left_the_blocks`
+holds the exit between its load and its store and is red under the plain
+load. **Rejected:** the exit spinning until a reading ends — the ruling
+names a transfer, not a wait. **Cost:** the returns of a left ring run on
+the collector's thread and through its reserve; the exiting thread's
+ledger figure ends over-charged by the blocks it left, the collector's
+under, in the per-thread test reading only.
+
+---
+
 ## 2026-09-16 — the ring's surplus goes into a short spare cell, and a reader without the token reads the front block alone
 
 **Context.** `PLAN.md` S49.6 built the poll's shrink of R: the empty block

@@ -1185,7 +1185,44 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         the collector-reader and batch cases, Miri green over the poll's
         six, the ring case, the batch cases minus the budget one, and the
         collector-reader cases.
-- [ ] S49.7 The wake channel and the fallback timer   *(after S49.6)*
+- [x] S49.9 The collector's pre-claim reading holds the blocks it reads   *(closed 2026-09-16)*
+      done: the idle test reads P's index words and R's front block's only
+        while the collector holds those blocks, taken to itself the way the
+        memory manager moves a block between owners (Edmond, 2026-09-16,
+        `rfc/dev/DECISIONS.md`, "the collector takes P's block to itself for
+        the reading it makes before its claim"); an exit that finds a block
+        held leaves its return to the holder, which makes it at the
+        hand-back, so no block the collector reads reaches the pool under
+        the reading; a re-taken record installs no block over one still
+        held; pinned by a case whose owner exits between the take and the
+        reading and whose blocks reach the pool exactly once, after the
+        hand-back, and by a case whose collector reads a re-taken record
+      tier: T2 · role: Critic
+      Critic 2026-09-16: the exit's "nobody holds" answer was a plain load,
+        so a take between that load and the return was invisible to the
+        exit, which returned the block under the reading. Accepted: both
+        answers store into the word (a returning flag on the clear path),
+        with a case that holds the exit between its load and its store, red
+        under the plain load. The base block's release asserted the ring
+        empty before it read the flag, which a concurrent hand-back could
+        fail. Accepted: the flag is read first. A running thread's queue
+        reset could leave a live R to a hand-back. Accepted: the leave runs
+        on the exit path alone. A reading held a free-list record off the
+        registry. Accepted: the take is refused on a returned record by the
+        returning flag; the registry skips on a hold or a left ring. The
+        owner's arena dropped beside the case's pool reading. Accepted.
+      handoff: `cycle::owner_record::HoldLine` and `take_for_reading` /
+        `hand_back_reading` / `leave_to_holder_if_held`; `worker::serve`
+        reads under the hold with a drop guard; the exit's two leaves in
+        `queue::release_queue_segments` and `owner_record::release_thread_record`;
+        cases `worker/tests/the_reading_before_the_claim.rs` (three), four
+        mutations red; the record `dev/DECISIONS.md`, 2026-09-16, "the
+        collector holds the rings' blocks for its pre-claim reading"; rfc
+        amended in place. Gate green in every configuration, TSan silent over
+        the three cases, the batch cases and the collector-reader cases, Miri
+        green over the three cases, the batch cases minus the budget one,
+        the record's tests and the exit's drain case.
+- [ ] S49.7 The wake channel and the fallback timer   *(after S49.9)*
       done: the collector is born at the first pressure collection as today
         and parks with a timeout that is its fallback interval, adapted
         between two named bounds — lengthened after an empty round,

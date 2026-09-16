@@ -144,6 +144,27 @@ pub(crate) fn between_the_post_and_the_advance() {
     }
 }
 
+/// What the next pre-claim reading runs between its take of the owner's
+/// blocks and its loads of them, for the case whose owner exits in that
+/// window; the closure runs on the collector's thread, once.
+static AT_THE_NEXT_READING: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
+
+pub(crate) fn at_the_next_reading(act: Box<dyn FnOnce() + Send>) {
+    *AT_THE_NEXT_READING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(act);
+}
+
+pub(crate) fn between_the_take_and_the_reading() {
+    let act = AT_THE_NEXT_READING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(act) = act {
+        act();
+    }
+}
+
 /// Owners the rounds claimed since the last call, and zero the count.
 pub(crate) fn take_owners_served() -> usize {
     OWNERS_SERVED.swap(0, Ordering::Relaxed)

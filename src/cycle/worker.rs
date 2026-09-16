@@ -295,9 +295,31 @@ pub(crate) unsafe fn serve(record: *mut OwnerRecord) -> Served {
     // poll's unlink move blocks past the tail block out of the circle under
     // no claim either: whether R has an entry, P's room off its index words,
     // and the workspace this thread's. The figures are an idle test and not
-    // the clamp: the clamp is re-read under the token.
-    let has_work = unsafe { Reader::new(owner.candidate_ring()) }.has_unread();
-    let room = unsafe { VerdictWriter::open(owner) }.room_by_loads();
+    // the clamp: the clamp is re-read under the token. The blocks read are
+    // held for the reading, since an owner exiting meanwhile returns them
+    // (`crate::cycle::owner_record`, "The blocks a collector reads before
+    // its claim are held"); a record another reading holds is idle to this
+    // round.
+    if !unsafe { owner_record::take_for_reading(record) } {
+        return Served::Idle;
+    }
+
+    // Handed back on the unwind too: a hold left standing keeps the record
+    // off the registry's free list and its blocks out of the pool for good.
+    struct HandBackOnDrop(*mut OwnerRecord);
+    impl Drop for HandBackOnDrop {
+        fn drop(&mut self) {
+            unsafe { owner_record::hand_back_reading(self.0) };
+        }
+    }
+    let (has_work, room) = {
+        let _reading = HandBackOnDrop(record);
+        #[cfg(test)]
+        testing::between_the_take_and_the_reading();
+        let has_work = unsafe { Reader::new(owner.candidate_ring()) }.has_unread();
+        let room = unsafe { VerdictWriter::open(owner) }.room_by_loads();
+        (has_work, room)
+    };
     if !has_work || room == 0 {
         return Served::Idle;
     }

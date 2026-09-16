@@ -253,7 +253,11 @@ fn a_record_is_four_lines_and_a_block_holds_255() {
         128,
         "the owner's words are the third"
     );
-    assert_eq!(std::mem::offset_of!(OwnerRecord, spare), 192);
+    assert_eq!(
+        std::mem::offset_of!(OwnerRecord, hold),
+        192,
+        "the hold word the collector and the exit share is the fourth"
+    );
     assert_eq!(RECORDS_PER_BLOCK, 255);
 }
 

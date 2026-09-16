@@ -705,9 +705,14 @@ pub(crate) fn release_queue_base() {
 
     let owner_state = unsafe { owner_state_ref(state) };
     let record = owner_record::this_thread_record();
+    // The flag first: a hand-back running beside this nulls the words
+    // before it clears the flag, so a flag read clear orders the null store
+    // before the front block's load.
     assert!(
-        record.is_null() || !unsafe { Quiescent::new((*record).candidate_ring()) }.has_blocks(),
-        "release follows the ring's release"
+        record.is_null()
+            || owner_record::ring_left_to_a_holder(record, owner_record::Ring::Candidates)
+            || !unsafe { Quiescent::new((*record).candidate_ring()) }.has_blocks(),
+        "release follows the ring's release, or the ring was left to a collector's hold"
     );
     assert!(
         owner_state.deferred().is_empty(),
@@ -985,6 +990,30 @@ pub(crate) const DEFERRED_MARK: usize = 1;
 /// boundary, and a mask over bits nothing writes would fold two such headers
 /// into one.
 pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK;
+
+/// Give every block of `record`'s R back and leave its two words null,
+/// whichever thread does it: the exit, or the collector whose hold the exit
+/// found.
+///
+/// # Safety
+/// No reader and no writer runs over R: the caller is the exiting owner
+/// under its claim, or the exit left R to the caller's hold and the owner is
+/// gone.
+unsafe fn give_back_candidate_ring(record: *mut OwnerRecord) {
+    unsafe { Quiescent::new((*record).candidate_ring()) }.dismantle(|block| {
+        discharge_block();
+        gc_metadata::release_to_critical(block);
+    });
+}
+
+/// Return the R an exit left in `record` for a collector's hold
+/// ([`crate::cycle::owner_record::hand_back_reading`]).
+///
+/// # Safety
+/// The calling thread holds the record's reading and the exit left R to it.
+pub(crate) unsafe fn give_back_candidate_ring_left_by_an_exit(record: *mut OwnerRecord) {
+    unsafe { give_back_candidate_ring(record) };
+}
 
 /// The owner's handle over R while no reader runs, or `None` for a thread
 /// with no record — one that never registered.
@@ -1324,15 +1353,27 @@ pub(crate) fn release_queue_segments() {
     }
     let owner_state = unsafe { owner_state_ref(state) };
 
-    let give_back = |block: *mut BlockHeader| {
-        discharge_block();
-        gc_metadata::release_to_critical(block);
-    };
-    if let Some(ring) = candidate_ring() {
-        ring.dismantle(give_back);
+    // At the exit, R's blocks stay in the record for a collector reading
+    // them before its claim, which returns them at its hand-back
+    // (`crate::cycle::owner_record`, "The blocks a collector reads before
+    // its claim are held"); the lane and the cells are the owner's alone. A
+    // running thread emptying its queue — a test's reset — dismantles R
+    // itself, and a collector reading it meanwhile is the case's to keep
+    // away.
+    let record = owner_record::this_thread_record();
+    if !record.is_null()
+        && !(crate::memory::heap::thread_exit_running()
+            && unsafe {
+                owner_record::leave_to_holder_if_held(record, owner_record::Ring::Candidates)
+            })
+    {
+        unsafe { give_back_candidate_ring(record) };
     }
 
-    owner_state.deferred().dismantle(give_back);
+    owner_state.deferred().dismantle(|block| {
+        discharge_block();
+        gc_metadata::release_to_critical(block);
+    });
 
     let spare_count = owner_state.spare_count.replace(0);
     for cell in &owner_state.spares[..usize::from(spare_count)] {
