@@ -8,6 +8,62 @@ never edited or deleted.
 
 ---
 
+## 2026-09-16 — siblings are slots under an embedder's cap, an owner is named by a word, and the elder takes back what a dead slot held
+
+**Context.** `PLAN.md` S49.8 built the several collectors the rfc names
+(`rfc/model/gc/rc-cycle.md`, "Signals": a collector with a backlog after
+two rounds births a sibling and hands it half its owners, ends one idle for
+several rounds, each owner named to one collector by a word in its record).
+The rfc sizes neither the idle count nor the cap, and says nothing of a
+sibling whose birth was refused or that unwound.
+
+**Decision.** Collectors are `MAX_COLLECTORS` (8) static slots, the elder
+at slot 0 — the one the pressure path births and every fresh record is
+named to; the embedder's cap is `ll_gc_set_collector_cap`, one to eight,
+default 4, unmeasured. The owner's word is a byte on the record's hold
+line, the line the two parties already share by compare-and-swap, since a
+handover is the one store a collector makes into a record it does not read
+for; the registry zeroes it at hand-out. A backlog is two or more owners
+still at the threshold after their batches, read off the front block under
+the token that the batch already holds, so the reading costs no second
+hold: one owner is read by one collector at a time, so a backlog of one is
+nothing a sibling relieves. Two such rounds in a row birth a sibling
+through the elder's `ensure_collector` path — one refusal interval for all
+slots, and the elder's slot a candidate, so an elder that unwound is reborn
+by the first backlogged sibling — and the birther names every second of
+those backlogged owners (the first sixteen remembered) to the new slot
+before waking it. The elder alone ends: a sibling with no batch and no
+work seen for eight rounds in a row, unmeasured, or one above a lowered
+cap, by an ending word the sibling reads before its next round, and only
+in a round of its own that read no backlog. A record named to a slot with
+no thread — ended, refused at its birth, or unwound — is named back to the
+elder by the elder's next round, which serves it in the same pass; a slot
+between its spawn and its init keeps its owners, so a handover made before
+the sibling's init is not undone. A signal to a dead slot is lost with its
+count standing, as any lost wake is, and the poll after the reclaim reaches
+the elder. The word decides whose an owner is between rounds; that one
+collector reads a ring at any instant is the token's rule, and a reclaim
+that lands beside a slot's rebirth resolves at the token.
+
+**Rejected.** A per-owner note the birther reads to pick the busiest owners
+for the handover: the round already holds the backlogged owners in hand.
+Ending a sibling by rewriting its owners first and the word second: the
+owners would be read by the elder while the sibling still rounds over them.
+
+**Critic, 2026-09-16.** Folded: the birth read one owner's depth, so a
+single busy thread birthed siblings that idled out and were reborn every
+few seconds for the life of its backlog (two backlogged owners now, and the
+handover moves those owners and not every second record of the registry);
+a round that saw work counted as idle, ending a sibling whose owner
+collected in line (work resets the count); the elder ended what it would
+birth back (no ending in a backlog round); a dead elder was reborn by
+nothing but a shortage (a sibling births into slot 0); the handover case
+asserted the registry's walk order and a wake against a running birth
+round (the handover's population is the backlogged set, and the case waits
+for the birth round). The "one reader per ring" claim is the token's, not
+the word's, and is stated so.
+---
+
 ## 2026-09-16 — the collector's wake is a soft signal counted on the owner's line, and its timer adapts between two unmeasured bounds
 
 **Context.** `PLAN.md` S49.7 built the wakes of `cycle::worker` on Edmond's

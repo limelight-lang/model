@@ -874,7 +874,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
 fn ask_for_the_collector_thread() {
     crate::cycle::worker::ensure_thread();
     // A wake lost here is a thread just born, whose first round is at once.
-    let _ = crate::cycle::worker::wake();
+    let _ = crate::cycle::worker::wake(crate::cycle::worker::ELDER);
 }
 
 /// The returns a foreign holder left this thread withholding, made ahead of

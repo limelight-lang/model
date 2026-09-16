@@ -10,7 +10,8 @@
 //! what is kept is named".
 //!
 //! **The four symbols survive the deletion because three of the module's
-//! four duties are not the collector's.** The checkpoint pair is the
+//! four duties are not the collector's** (a fifth, the collector cap, is the
+//! embedder's dial over the collector threads and joined on 2026-09-16). The checkpoint pair is the
 //! configuration-independent lowering surface: generated code brackets a
 //! run of batched releases with them in every build, so the pair is
 //! exported whether or not it does anything (`object.rs`,
@@ -236,6 +237,18 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // wake, and no arming.
     crate::cycle::queue::signal_the_collector_if_due();
     freed
+}
+
+/// ABI: cap the collector threads the process may hold, from one to
+/// `cycle::worker::MAX_COLLECTORS`, `cap` clamped into that range. The
+/// embedder's one dial over the collectors: the runtime births siblings up
+/// to it on its own reading of the backlog and ends them when idle
+/// (`crate::cycle::worker`, "Siblings"). Without a call the cap is the
+/// crate's default. Callable at any time from any thread; a lowered cap
+/// ends the siblings above it at the elder's next round.
+#[unsafe(no_mangle)]
+pub extern "C" fn ll_gc_set_collector_cap(cap: usize) {
+    crate::cycle::worker::set_collector_cap(cap);
 }
 
 /// ABI: serve the collector's checkpoint now. The compiler emits it once

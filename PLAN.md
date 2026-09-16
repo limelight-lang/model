@@ -1271,7 +1271,7 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         configuration, TSan silent over the worker and collector-reader
         cases, Miri green over the five cases, one batch case and the ring
         case (2 m 10 s).
-- [ ] S49.8 Siblings   *(after S49.7)*
+- [x] S49.8 Siblings   *(closed 2026-09-16)*
       done: each owner record names its collector; a collector with backlog
         after two consecutive rounds births a sibling — through the same
         `ensure_thread` path, retry interval included — hands it half of its
@@ -1282,6 +1282,33 @@ carries no outbox, no offer, no pickup walk-back and no request relay.
         lost until the next poll; cases for the birth, the handover, the end
         and the lost wake
       tier: T2 · role: Critic
+      Critic 2026-09-16: the birth read one owner's ring depth, so a single
+        busy thread birthed siblings that idled out and were reborn every
+        few seconds for the life of its backlog, and the handover renamed
+        every second record of the registry, free-list and collector
+        records included. Accepted: a backlog is two or more owners at the
+        threshold after their batches, and the handover moves every second
+        of those. A round that saw work counted as idle. Accepted: work
+        resets the count. The elder ended what it would birth back.
+        Accepted: no ending in a round with a backlog. A dead elder was
+        reborn by nothing but a shortage. Accepted: a backlogged sibling
+        births into slot 0. The handover case asserted the walk's parity
+        and a wake against a running birth round. Accepted: the population
+        is the backlogged set, and the case waits for the birth round. "One
+        reader per ring" is the token's rule, not the word's. Accepted,
+        stated so.
+      handoff: `worker::COLLECTORS` (eight slots, `ELDER` 0), `ensure_collector`,
+        `birth_a_sibling`, `hand_over_half`, `end_idle_siblings`, `reclaims`,
+        `wake(index)`, `Served::Batch::backlog`, `BACKLOG_ROUNDS_TO_BIRTH` 2,
+        `IDLE_ROUNDS_TO_END` 8, cap default 4 through `ll_gc_set_collector_cap`
+        (a fifth ABI symbol in `gc.rs`); `OwnerRecord::collector` on the hold
+        line, zeroed at hand-out. Cases `worker/tests/the_siblings.rs`
+        (three), nine mutations red; the record `dev/DECISIONS.md`,
+        2026-09-16, "siblings are slots under an embedder's cap". Gate green
+        in every configuration, TSan silent over the 24 worker and
+        collector-reader cases, Miri green over the three sibling cases
+        (4 m 35 s), a clamp case and the birth case. The tests' wait is
+        900 s under Miri.
 
 ## S50 — `ll_thread_init` is called once, and a refusal closes the thread
 

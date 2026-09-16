@@ -52,7 +52,10 @@ fn wait_until(mut reached: impl FnMut() -> bool, within: std::time::Duration) ->
     }
 }
 
-const A_BIRTH: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a case waits for a birth or a round: under Miri a round over
+/// a few hundred roots takes minutes of wall, so the wait is minutes too.
+const A_BIRTH: std::time::Duration =
+    std::time::Duration::from_secs(if cfg!(miri) { 900 } else { 10 });
 
 /// The threshold a case's serve reads at: one entry, the ring of a case
 /// holding a few.
@@ -150,7 +153,7 @@ fn born_waiting_for(record: *mut OwnerRecord, wait: std::time::Duration) {
 /// Wake the thread and wait for the round the wake starts.
 fn wake_for_a_round() {
     let _ = testing::take_rounds();
-    wake();
+    assert!(wake(ELDER), "the elder received the wake");
     assert!(
         wait_until(|| testing::take_rounds() >= 1, A_BIRTH),
         "the wake started a round"
@@ -434,7 +437,7 @@ fn a_round_reaches_a_record_beyond_the_callers_and_leaves_a_free_one_alone() {
     testing::confine_rounds_to(free);
     let _ = testing::take_records_visited();
     let _ = testing::take_owners_served();
-    round(ANY_ENTRY);
+    round(ELDER, ANY_ENTRY);
     assert!(
         testing::take_records_visited() >= 1,
         "the walk reached past the caller's record"
@@ -476,3 +479,4 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
 
 mod the_batch;
 mod the_reading_before_the_claim;
+mod the_siblings;

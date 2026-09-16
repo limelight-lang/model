@@ -144,7 +144,8 @@ fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
         served_by_a_collector(),
         Served::Batch {
             roots: 5,
-            complete: true
+            complete: true,
+            backlog: false,
         }
     );
     assert_eq!(candidate_count(), 0, "R's front moved past the batch");
@@ -209,7 +210,8 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
         served_by_a_collector(),
         Served::Batch {
             roots: INITIAL_BATCH,
-            complete: true
+            complete: true,
+            backlog: true,
         }
     );
     assert_eq!(candidate_count(), 3);
@@ -230,7 +232,8 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
         served_by_a_collector(),
         Served::Batch {
             roots: room_left,
-            complete: true
+            complete: true,
+            backlog: true,
         }
     );
     assert_eq!(candidate_count(), 1);
@@ -252,7 +255,8 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
         served_by_a_collector(),
         Served::Batch {
             roots: 1,
-            complete: true
+            complete: true,
+            backlog: false,
         }
     );
     assert_eq!(
@@ -290,7 +294,8 @@ fn a_batch_that_meets_its_budget_posts_every_root_unwalked_and_halves_k() {
         served_by_a_collector(),
         Served::Batch {
             roots: 16,
-            complete: false
+            complete: false,
+            backlog: true,
         }
     );
     let posted = verdicts();
@@ -373,7 +378,8 @@ fn an_owner_collecting_in_line_is_skipped() {
         served_by_a_collector(),
         Served::Batch {
             roots: 1,
-            complete: true
+            complete: true,
+            backlog: false,
         }
     );
 

@@ -48,7 +48,7 @@
 //!
 //! # The thread, and the round over the records
 //!
-//! One collector thread per process, born by [`ensure_thread`] and never at
+//! The elder collector thread is born by [`ensure_thread`] and never at
 //! startup (`dev/DECISIONS.md`, "the collector thread is born at the first
 //! pressure collection"): the pressure path is the one fire point the
 //! runtime owns, and a thread born there costs nothing to a process that
@@ -81,12 +81,38 @@
 //! that read an owner at the threshold and could not serve it; doubled
 //! after a round that read no owner at the threshold, so that a process
 //! with nothing to screen costs a wake a second. A wake sent while the
-//! process has no thread is lost, and the poll's count stands for the next
+//! slot has no thread is lost, and the poll's count stands for the next
 //! poll to send again; one sent during a round ends the wait that follows
 //! it.
+//!
+//! # Siblings
+//!
+//! Several collectors divide the owners, each owner named to one collector
+//! by a word in its record ([`OwnerRecord::collector`]); two collectors
+//! never read one owner's ring. The elder, slot [`ELDER`], is the one the
+//! pressure path births and every fresh record is named to. A collector
+//! that served a backlog — two or more owners still at the threshold after
+//! their batches, read off the front block under the token, since one
+//! owner is read by one collector at a time and a backlog of one is nothing
+//! a sibling relieves — for [`BACKLOG_ROUNDS_TO_BIRTH`] rounds in a row
+//! births a sibling into the first empty slot under the embedder's cap
+//! ([`set_collector_cap`]), the elder's slot included, through the elder's
+//! own birth path with its retry interval, names every second of those
+//! backlogged owners to it and wakes it. An owner's poll wakes the
+//! collector its word names. The elder ends a sibling that made no batch
+//! and saw no work for [`IDLE_ROUNDS_TO_END`] rounds in a row, and one above
+//! a lowered cap, by a word the sibling reads before its next round, and
+//! only in a round of its own with no backlog, so that it does not end
+//! what it is about to birth back; the owners of a slot with no thread —
+//! ended, refused at its birth, or unwound — are named back to the elder by
+//! its next round, and a signal sent to that slot meanwhile is lost with
+//! its count standing. The word says whose an owner is between rounds; that
+//! one collector reads a ring at any instant is the token's, and a reclaim
+//! landing beside a slot's rebirth resolves at the token like any two
+//! claims.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::thread::Thread;
 use std::time::{Duration, Instant};
 
@@ -114,8 +140,13 @@ pub(crate) enum Served {
     /// was made.
     Idle,
     /// A batch was made: this many roots taken from R, each with a verdict
-    /// posted into P, and whether their trace completed.
-    Batch { roots: usize, complete: bool },
+    /// posted into P, whether their trace completed, and whether R still
+    /// read at the threshold behind it, off the front block under the token.
+    Batch {
+        roots: usize,
+        complete: bool,
+        backlog: bool,
+    },
 }
 
 /// Roots a batch takes from an owner the collector has not served before.
@@ -160,68 +191,155 @@ const FALLBACK_INTERVAL_MAX: Duration = Duration::from_secs(1);
 /// How long after a refused birth the pressure path waits before it spawns
 /// again: a process that stays short of memory collects at every refused
 /// allocation, and without the wait it would spawn a thread per refusal.
+/// A sibling's birth waits the same interval after a refused one.
 const BIRTH_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// When the last birth was refused — a spawn the operating system refused,
-/// or a base block the pool refused — or `None`.
+/// or a base block the pool refused — or `None`. One for every collector.
 static REFUSED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// The name the collector thread is spawned under.
-const THREAD_NAME: &str = "ll-collector";
+/// Collector threads the process can hold at once; the embedder's cap is at
+/// most this. The slot index is what an owner's record names its collector
+/// by ([`OwnerRecord::collector`]).
+pub(crate) const MAX_COLLECTORS: usize = 8;
 
-/// The handle a wake ends the thread's wait through, published by the thread
-/// once its init is through and cleared as it ends; `None` is a wake lost.
-static COLLECTOR: Mutex<Option<Thread>> = Mutex::new(None);
+/// The elder's slot: the collector the pressure path births, that every
+/// fresh record is named to, and that ends idle siblings.
+pub(crate) const ELDER: usize = 0;
 
-/// Where the process's collector thread stands: [`UNBORN`], [`STARTING`]
-/// from the spawn until its `ll_thread_init` answered, [`ALIVE`] from a
-/// started init until the thread ends.
-static THREAD: AtomicU8 = AtomicU8::new(UNBORN);
+/// Collectors the process may hold until the embedder sets its own cap
+/// ([`set_collector_cap`]). Not a measured figure.
+const DEFAULT_COLLECTOR_CAP: usize = 4;
+
+/// The embedder's cap on collector threads, one to [`MAX_COLLECTORS`].
+static COLLECTOR_CAP: AtomicUsize = AtomicUsize::new(DEFAULT_COLLECTOR_CAP);
+
+/// Rounds in a row a collector serves a backlog — two or more owners of its
+/// own reading at the threshold after their batches, since one owner is
+/// read by one collector at a time and a backlog of one is no reason to
+/// birth — before it births a sibling. Not a measured figure; two is the
+/// rfc's.
+const BACKLOG_ROUNDS_TO_BIRTH: usize = 2;
+
+/// Owners a round remembers as backlogged, for the handover: the first this
+/// many, every second of which goes to the sibling.
+const BACKLOGGED_REMEMBERED: usize = 16;
+
+/// Rounds in a row a sibling makes no batch before the elder ends it. Not a
+/// measured figure: the rfc says several.
+const IDLE_ROUNDS_TO_END: usize = 8;
+
+/// The names the collector threads are spawned under, by slot.
+const THREAD_NAMES: [&str; MAX_COLLECTORS] = [
+    "ll-collector",
+    "ll-collector-1",
+    "ll-collector-2",
+    "ll-collector-3",
+    "ll-collector-4",
+    "ll-collector-5",
+    "ll-collector-6",
+    "ll-collector-7",
+];
+
+/// One collector slot: where its thread stands, the handle a wake reaches it
+/// through, and the two words the elder reads and writes of a sibling.
+struct Collector {
+    /// [`UNBORN`], [`STARTING`] from the spawn until its `ll_thread_init`
+    /// answered, [`ALIVE`] from a started init until the thread ends.
+    state: AtomicU8,
+    /// The handle a wake ends the thread's wait through, published by the
+    /// thread once its init is through and cleared as it ends; `None` is a
+    /// wake lost.
+    handle: Mutex<Option<Thread>>,
+    /// Rounds in a row this collector made no batch, its own count, read by
+    /// the elder to end an idle sibling.
+    idle_rounds: AtomicUsize,
+    /// Set by the elder to end a sibling; the sibling reads it before every
+    /// round and exits.
+    ending: AtomicBool,
+}
+
+impl Collector {
+    const fn unborn() -> Self {
+        Self {
+            state: AtomicU8::new(UNBORN),
+            handle: Mutex::new(None),
+            idle_rounds: AtomicUsize::new(0),
+            ending: AtomicBool::new(false),
+        }
+    }
+}
+
+static COLLECTORS: [Collector; MAX_COLLECTORS] = [const { Collector::unborn() }; MAX_COLLECTORS];
+
 const UNBORN: u8 = 0;
 const STARTING: u8 = 1;
 const ALIVE: u8 = 2;
 
-/// Start the collector thread unless the process has one already, one is
-/// starting, or a birth was refused less than [`BIRTH_RETRY_INTERVAL`] ago.
-/// A spawn the operating system refuses, and a base block the pool refuses,
-/// each leave the process without a thread until a call after the interval.
-/// The pressure path calls it after its collection, so that the thread's
-/// draws compete with no rows of the caller's own.
+/// Set the embedder's cap on collector threads: `cap` clamped to one and
+/// [`MAX_COLLECTORS`]. Siblings above a lowered cap end as idle ones do, at
+/// the elder's hand; a cap of one is a process with the elder alone.
+pub(crate) fn set_collector_cap(cap: usize) {
+    COLLECTOR_CAP.store(cap.clamp(1, MAX_COLLECTORS), Ordering::Relaxed);
+}
+
+fn collector_cap() -> usize {
+    COLLECTOR_CAP.load(Ordering::Relaxed)
+}
+
+/// Start the elder collector thread unless the process has one already, one
+/// is starting, or a birth was refused less than [`BIRTH_RETRY_INTERVAL`]
+/// ago. A spawn the operating system refuses, and a base block the pool
+/// refuses, each leave the process without a thread until a call after the
+/// interval. The pressure path calls it after its collection, so that the
+/// thread's draws compete with no rows of the caller's own.
 ///
 /// The spawn allocates through the global allocator — the thread's name and
 /// the handle's shared state — on a path the ruling that no runtime path may
 /// end the process on an allocation the manager could have refused forbids
 /// it; `PLAN.md`'s backlog carries the debt.
 pub(crate) fn ensure_thread() {
+    ensure_collector(ELDER);
+}
+
+/// Start the collector of slot `index` unless it stands or is starting, or a
+/// birth was refused inside the interval; true when this call spawned it.
+fn ensure_collector(index: usize) -> bool {
     #[cfg(test)]
     if !testing::births_permitted() {
-        return;
+        return false;
     }
 
+    let collector = &COLLECTORS[index];
     // The load before the exchange keeps every pressure collection after the
     // birth off a read-modify-write of the word.
-    if THREAD.load(Ordering::Relaxed) != UNBORN
+    if collector.state.load(Ordering::Relaxed) != UNBORN
         || birth_refused_recently()
-        || THREAD
+        || collector
+            .state
             .compare_exchange(UNBORN, STARTING, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
     {
-        return;
+        return false;
     }
 
+    collector.ending.store(false, Ordering::Relaxed);
+    collector.idle_rounds.store(0, Ordering::Relaxed);
     match std::thread::Builder::new()
-        .name(THREAD_NAME.into())
-        .spawn(thread_body)
+        .name(THREAD_NAMES[index].into())
+        .spawn(move || thread_body(index))
     {
         Ok(handle) => {
             #[cfg(test)]
             testing::keep_handle(handle);
             #[cfg(not(test))]
             drop(handle);
+            true
         }
         Err(_) => {
             note_refused_birth();
-            THREAD.store(UNBORN, Ordering::Release);
+            collector.state.store(UNBORN, Ordering::Release);
+            false
         }
     }
 }
@@ -241,15 +359,16 @@ fn note_refused_birth() {
     *refused_at = Some(Instant::now());
 }
 
-/// Wake the collector thread out of its wait, and answer whether the process
-/// had one to wake: a wake is a soft signal that starts a round, and a
-/// round reads every owner's count itself (module doc). Callable from any
-/// thread; an owner's poll makes it at [`SOFT_THRESHOLD`] registrations and
-/// a pressure collection at each of its endings. False is a wake lost:
-/// before the thread's birth, between its spawn and its init, and after
-/// its end.
-pub(crate) fn wake() -> bool {
-    let collector = COLLECTOR
+/// Wake the collector of slot `index` out of its wait, and answer whether
+/// the process had one to wake: a wake is a soft signal that starts a round,
+/// and a round reads every owner's count itself (module doc). Callable from
+/// any thread; an owner's poll makes it at [`SOFT_THRESHOLD`] registrations,
+/// to the collector its record names, and a pressure collection at each of
+/// its endings, to the elder. False is a wake lost: before the thread's
+/// birth, between its spawn and its init, and after its end.
+pub(crate) fn wake(index: usize) -> bool {
+    let collector = COLLECTORS[index]
+        .handle
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     match collector.as_ref() {
@@ -261,23 +380,38 @@ pub(crate) fn wake() -> bool {
     }
 }
 
+/// Whether slot `index` holds a thread that has started and not ended.
+fn is_alive(index: usize) -> bool {
+    COLLECTORS[index].state.load(Ordering::Acquire) == ALIVE
+}
+
+/// Whether slot `index` holds no thread at all: none born, one ended, or
+/// one whose birth was refused. A slot between its spawn and its init is
+/// neither.
+fn has_no_thread(index: usize) -> bool {
+    COLLECTORS[index].state.load(Ordering::Acquire) == UNBORN
+}
+
 /// The collector thread's life: its registration, its rounds, its exit.
-fn thread_body() {
+fn thread_body(index: usize) {
     // The word goes back to unborn however this thread ends — a refused
-    // base block, a test's retire, or a panic in a round that unwinds out of
-    // here — so that a later birth can happen rather than read a thread
-    // that no longer exists; the wake handle goes with it, so that a wake
-    // after the end is lost rather than sent to a thread that is not there.
-    struct UnbornOnDrop;
+    // base block, a test's retire, the elder's end, or a panic in a round
+    // that unwinds out of here — so that a later birth can happen rather
+    // than read a thread that no longer exists; the wake handle goes with
+    // it, so that a wake after the end is lost rather than sent to a thread
+    // that is not there.
+    struct UnbornOnDrop(usize);
     impl Drop for UnbornOnDrop {
         fn drop(&mut self) {
-            *COLLECTOR
+            let collector = &COLLECTORS[self.0];
+            *collector
+                .handle
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-            THREAD.store(UNBORN, Ordering::Release);
+            collector.state.store(UNBORN, Ordering::Release);
         }
     }
-    let _unborn = UnbornOnDrop;
+    let _unborn = UnbornOnDrop(index);
 
     let started = {
         #[cfg(test)]
@@ -292,12 +426,15 @@ fn thread_body() {
         return;
     }
 
-    *COLLECTOR
+    let collector = &COLLECTORS[index];
+    *collector
+        .handle
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::thread::current());
-    THREAD.store(ALIVE, Ordering::Release);
+    collector.state.store(ALIVE, Ordering::Release);
     let mut interval = FALLBACK_INTERVAL_MIN;
-    while !retiring() {
+    let mut backlog_rounds = 0;
+    while !retiring() && !collector.ending.load(Ordering::Relaxed) {
         #[cfg(not(test))]
         let threshold = SOFT_THRESHOLD;
         #[cfg(test)]
@@ -306,7 +443,8 @@ fn thread_body() {
             made_a_batch,
             saw_work,
             read_a_freeing_disposition,
-        } = round(threshold);
+            backlogged,
+        } = round(index, threshold);
         interval = if made_a_batch || read_a_freeing_disposition {
             FALLBACK_INTERVAL_MIN
         } else if saw_work {
@@ -314,14 +452,101 @@ fn thread_body() {
         } else {
             (interval * 2).min(FALLBACK_INTERVAL_MAX)
         };
+
+        // A backlog this collector cannot drain alone goes half to a
+        // sibling; an idle sibling is ended by the elder, and its owners
+        // come back to the elder at its next round (module doc).
+        backlog_rounds = if backlogged.len() >= 2 {
+            backlog_rounds + 1
+        } else {
+            0
+        };
+        if backlog_rounds >= BACKLOG_ROUNDS_TO_BIRTH {
+            backlog_rounds = 0;
+            if let Some(sibling) = birth_a_sibling(index) {
+                hand_over_half(&backlogged, sibling);
+                let _ = wake(sibling);
+            }
+        }
+
+        // An owner at the threshold this round could not serve is work and
+        // not idleness, so a sibling whose owner collects in line for a
+        // while is not ended for it.
+        let idle = if made_a_batch || saw_work {
+            0
+        } else {
+            collector.idle_rounds.load(Ordering::Relaxed) + 1
+        };
+        collector.idle_rounds.store(idle, Ordering::Relaxed);
+        if index == ELDER && backlogged.is_empty() {
+            end_idle_siblings();
+        }
+
         #[cfg(test)]
-        testing::note_round(interval);
+        testing::note_round(index, interval);
         #[cfg(test)]
         let interval = testing::interval_for_this_wait().unwrap_or(interval);
         std::thread::park_timeout(interval);
     }
 
     crate::memory::heap::ll_thread_exit();
+}
+
+/// Birth a sibling in the first empty slot under the cap other than `from`,
+/// the elder's slot included — an elder that unwound is reborn by the
+/// first backlogged sibling rather than by the next memory shortage —
+/// through the same path as the elder's birth, retry interval included;
+/// the slot it took, or `None` for no slot or a refused spawn.
+fn birth_a_sibling(from: usize) -> Option<usize> {
+    (0..collector_cap())
+        .filter(|&slot| slot != from)
+        .find(|&slot| ensure_collector(slot))
+}
+
+/// Name every second of `backlogged` to `to`: the handover the sibling's
+/// first rounds read, made over the owners the round read at the threshold
+/// after their batches and no other, so that what moves is work.
+fn hand_over_half(backlogged: &Backlogged, to: usize) {
+    for record in backlogged.iter().skip(1).step_by(2) {
+        unsafe { &**record }.name_to_collector(to);
+    }
+}
+
+/// End every sibling that made no batch and saw no work for
+/// [`IDLE_ROUNDS_TO_END`] rounds, and every one above the cap: the elder's,
+/// once per round in which it read no backlog of its own — a sibling is not
+/// ended while the elder would birth one back. The owners of an ended
+/// sibling are the elder's again at its next round ([`reclaims`]).
+fn end_idle_siblings() {
+    let cap = collector_cap();
+    for (slot, collector) in COLLECTORS.iter().enumerate().skip(1) {
+        if !is_alive(slot) {
+            continue;
+        }
+
+        if slot >= cap || collector.idle_rounds.load(Ordering::Relaxed) >= IDLE_ROUNDS_TO_END {
+            collector.ending.store(true, Ordering::Relaxed);
+            let _ = wake(slot);
+        }
+    }
+}
+
+/// Whether the round of `index` serves `record`: an owner named to it, and
+/// for the elder also an owner named to a slot with no living thread — a
+/// sibling ended, refused at its birth, or unwound — which it takes back by
+/// rewriting the word.
+fn reclaims(index: usize, record: &OwnerRecord) -> bool {
+    let named = record.collector();
+    if named == index {
+        return true;
+    }
+
+    if index == ELDER && has_no_thread(named) {
+        record.name_to_collector(ELDER);
+        return true;
+    }
+
+    false
 }
 
 /// Clear the last refusal, so that a case's birth is not held by the
@@ -343,8 +568,47 @@ fn retiring() -> bool {
 #[cfg(test)]
 use testing::retiring;
 
-/// What a round read across the records, for the timer.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+/// The owners a round read at the threshold after their batches, the first
+/// [`BACKLOGGED_REMEMBERED`] of them, in a fixed array on the round's frame.
+#[derive(Debug)]
+struct Backlogged {
+    records: [*mut OwnerRecord; BACKLOGGED_REMEMBERED],
+    len: usize,
+}
+
+impl Default for Backlogged {
+    fn default() -> Self {
+        Self {
+            records: [std::ptr::null_mut(); BACKLOGGED_REMEMBERED],
+            len: 0,
+        }
+    }
+}
+
+impl Backlogged {
+    /// Remember `record`, or drop it once the array is full.
+    fn push(&mut self, record: *mut OwnerRecord) {
+        if self.len < BACKLOGGED_REMEMBERED {
+            self.records[self.len] = record;
+            self.len += 1;
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &*mut OwnerRecord> {
+        self.records[..self.len].iter()
+    }
+}
+
+/// What a round read across the records, for the timer and the siblings.
+#[derive(Debug, Default)]
 struct Round {
     /// Some owner was served a batch.
     made_a_batch: bool,
@@ -354,17 +618,19 @@ struct Round {
     /// Some owner's poll noted a disposition that freed something since the
     /// last round.
     read_a_freeing_disposition: bool,
+    /// The owners still at the threshold after their batches.
+    backlogged: Backlogged,
 }
 
-/// One round over the records: visit every record but the thread's own,
-/// which polls nothing, read each owner's note for the timer, and serve
-/// each whose R holds `threshold` entries or more. What a serve does is
-/// [`serve`]'s.
-fn round(threshold: usize) -> Round {
+/// One round of the collector of slot `index` over the records: visit every
+/// record named to it but the thread's own, which polls nothing, read each
+/// owner's note for the timer, and serve each whose R holds `threshold`
+/// entries or more. What a serve does is [`serve`]'s.
+fn round(index: usize, threshold: usize) -> Round {
     let own = owner_record::this_thread_record();
     let mut outcome = Round::default();
     owner_record::for_each_record(|record| {
-        if record == own {
+        if record == own || !reclaims(index, unsafe { &*record }) {
             return;
         }
 
@@ -382,7 +648,12 @@ fn round(threshold: usize) -> Round {
 
         let served = unsafe { serve(record, threshold) };
         match served {
-            Served::Batch { .. } => outcome.made_a_batch = true,
+            Served::Batch { backlog, .. } => {
+                outcome.made_a_batch = true;
+                if backlog {
+                    outcome.backlogged.push(record);
+                }
+            }
             Served::TokenHeld | Served::OwnerCollecting => outcome.saw_work = true,
             Served::Idle => {}
         }
@@ -465,16 +736,17 @@ pub(crate) unsafe fn serve(record: *mut OwnerRecord, threshold: usize) -> Served
         return Served::OwnerCollecting;
     }
 
-    unsafe { batch(owner, &mut arena) }
+    unsafe { batch(owner, &mut arena, threshold) }
 }
 
 /// One batch over `owner`, under its token, on `arena` — the collector's own
-/// memory, reset before the token goes (module doc).
+/// memory, reset before the token goes (module doc); `threshold` is what
+/// the batch's backlog reading is against.
 ///
 /// # Safety
 /// The calling thread holds `owner`'s token and `owner` is not collecting
 /// in line.
-unsafe fn batch(owner: &OwnerRecord, arena: &mut TraceScratchArena) -> Served {
+unsafe fn batch(owner: &OwnerRecord, arena: &mut TraceScratchArena, threshold: usize) -> Served {
     let verdicts = unsafe { VerdictWriter::open(owner) };
     // The clamp, under the token: P's room cannot move under it, R's count
     // can only grow.
@@ -531,6 +803,7 @@ unsafe fn batch(owner: &OwnerRecord, arena: &mut TraceScratchArena) -> Served {
     #[cfg(test)]
     testing::between_the_post_and_the_advance();
     drop(advance);
+    let backlog = reader.has_at_least(threshold);
 
     let met_budget = arena.met_its_budget();
     arena.reset();
@@ -547,6 +820,7 @@ unsafe fn batch(owner: &OwnerRecord, arena: &mut TraceScratchArena) -> Served {
     Served::Batch {
         roots: roots.len(),
         complete,
+        backlog,
     }
 }
 

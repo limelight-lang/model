@@ -410,9 +410,11 @@ unsafe fn append_entry(state: *mut OwnerCycleState, entity: *mut RcHeader) {
 /// the count again if the signal was received: the poll's soft signal,
 /// which starts a round and decides nothing about it
 /// (`rfc/model/gc/rc-cycle.md`, "Signals"). The count is the owner's own,
-/// of its own writes; a signal sent while the process has no collector
-/// leaves it standing, so every later poll signals again until a thread is
-/// there to receive it. A thread with no record has registered nothing.
+/// of its own writes, and the wake goes to the collector the record names;
+/// a signal sent while that slot has no thread leaves the count standing,
+/// so every later poll signals again until a thread is there to receive it
+/// — the elder's round names the owners of an ended sibling to itself. A
+/// thread with no record has registered nothing.
 pub(crate) fn signal_the_collector_if_due() {
     let record = owner_record::this_thread_record();
     if record.is_null() {
@@ -420,7 +422,9 @@ pub(crate) fn signal_the_collector_if_due() {
     }
 
     let record = unsafe { &*record };
-    if record.signal_is_due(crate::cycle::worker::SOFT_THRESHOLD) && crate::cycle::worker::wake() {
+    if record.signal_is_due(crate::cycle::worker::SOFT_THRESHOLD)
+        && crate::cycle::worker::wake(record.collector())
+    {
         record.restart_signal_count();
     }
 }

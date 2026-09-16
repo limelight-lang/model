@@ -211,6 +211,13 @@ struct HoldLine {
     /// alone; the registry hands out a record with nothing but
     /// `RETURNING` set, and clears it.
     reading: AtomicU8,
+    /// The collector thread this owner is named to, as a slot index of
+    /// `crate::cycle::worker`'s: zero is the elder, and a fresh record's.
+    /// Written by a collector at a handover and read by the owner's poll,
+    /// which wakes the collector it names, and by every collector's round,
+    /// which serves the owners named to it. On this line because it is the
+    /// one word a collector writes into a record it does not read for.
+    collector: AtomicU8,
 }
 
 /// A collector is reading the rings' blocks under no claim.
@@ -340,8 +347,25 @@ impl OwnerRecord {
             writer: WriterLine::empty(),
             hold: HoldLine {
                 reading: AtomicU8::new(0),
+                collector: AtomicU8::new(0),
             },
         }
+    }
+
+    /// The collector this owner is named to (`crate::cycle::worker`).
+    #[inline]
+    pub(crate) fn collector(&self) -> usize {
+        usize::from(self.hold.collector.load(Ordering::Relaxed))
+    }
+
+    /// Name this owner to `collector`, on a collector's thread; the owner's
+    /// next poll wakes the one named.
+    #[inline]
+    pub(crate) fn name_to_collector(&self, collector: usize) {
+        self.hold.collector.store(
+            u8::try_from(collector).expect("a collector slot index"),
+            Ordering::Relaxed,
+        );
     }
 
     /// Whether a thread other than the owner holds the token now: a reading,
@@ -826,6 +850,7 @@ fn take_record() -> *mut OwnerRecord {
             (*released).free_link.set(std::ptr::null_mut());
             (*released).reader.reset();
             (*released).writer.reset();
+            (*released).hold.collector.store(0, Ordering::Relaxed);
             // Last, with release: the next reading's take is what sees the
             // lines above as reset.
             (*released).hold.reading.store(0, Ordering::Release);

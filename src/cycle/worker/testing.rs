@@ -15,21 +15,22 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 
-use super::{ALIVE, STARTING, THREAD, UNBORN};
+use super::{ALIVE, COLLECTORS, ELDER, MAX_COLLECTORS, STARTING, UNBORN};
 use crate::cycle::owner_record::OwnerRecord;
 
 /// Whether [`super::ensure_thread`] may spawn.
 static BIRTHS_PERMITTED: AtomicBool = AtomicBool::new(false);
-/// The one record a round serves and asks, or null for every record.
-static CONFINED: AtomicPtr<OwnerRecord> = AtomicPtr::new(std::ptr::null_mut());
+/// The records a round serves and asks, null slots unused; all null is every
+/// record.
+static CONFINED: [AtomicPtr<OwnerRecord>; 4] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 4];
 /// Records the rounds have reached since a case last asked, confined or not.
 static RECORDS_VISITED: AtomicUsize = AtomicUsize::new(0);
 /// Whether the next birth's `ll_thread_init` runs under a zero block budget.
 static REFUSE_NEXT_BASE_BLOCK: AtomicBool = AtomicBool::new(false);
 /// Whether the thread was asked to end.
 static RETIRING: AtomicBool = AtomicBool::new(false);
-/// The handle of the last thread spawned, for the join.
-static HANDLE: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+/// The handles of the threads spawned, for the join.
+static HANDLES: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 
 /// Where the thread stands, for a case that waits on its birth.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -39,8 +40,14 @@ pub(crate) enum ThreadState {
     Alive,
 }
 
+/// Where the elder stands.
 pub(crate) fn thread_state() -> ThreadState {
-    match THREAD.load(Ordering::Acquire) {
+    collector_state(ELDER)
+}
+
+/// Where the collector of slot `index` stands.
+pub(crate) fn collector_state(index: usize) -> ThreadState {
+    match COLLECTORS[index].state.load(Ordering::Acquire) {
         UNBORN => ThreadState::Unborn,
         STARTING => ThreadState::Starting,
         ALIVE => ThreadState::Alive,
@@ -59,7 +66,19 @@ pub(crate) fn births_permitted() -> bool {
 
 /// Confine the rounds to `record`; null lifts the confinement.
 pub(crate) fn confine_rounds_to(record: *mut OwnerRecord) {
-    CONFINED.store(record, Ordering::Relaxed);
+    confine_rounds_to_records(&[record]);
+}
+
+/// Confine the rounds to `records`, up to four; an empty list lifts the
+/// confinement.
+pub(crate) fn confine_rounds_to_records(records: &[*mut OwnerRecord]) {
+    assert!(records.len() <= CONFINED.len());
+    for (slot, cell) in CONFINED.iter().enumerate() {
+        cell.store(
+            records.get(slot).copied().unwrap_or(std::ptr::null_mut()),
+            Ordering::Relaxed,
+        );
+    }
 }
 
 /// Whether the next visit of a round panics, for the case that reads what a
@@ -77,8 +96,12 @@ pub(crate) fn in_round(record: *mut OwnerRecord) -> bool {
         panic!("a round panicked at a visit, by the case's request");
     }
 
-    let confined = CONFINED.load(Ordering::Relaxed);
-    confined.is_null() || confined == record
+    let confined: Vec<*mut OwnerRecord> = CONFINED
+        .iter()
+        .map(|cell| cell.load(Ordering::Relaxed))
+        .filter(|record| !record.is_null())
+        .collect();
+    confined.is_empty() || confined.contains(&record)
 }
 
 /// Records the rounds reached since the last call, and zero the count.
@@ -121,22 +144,34 @@ pub(crate) fn interval_for_this_wait() -> Option<std::time::Duration> {
     }
 }
 
-/// Rounds the thread made since a case last asked, and the interval the
-/// timer holds after the last of them, in milliseconds.
-static ROUNDS: AtomicUsize = AtomicUsize::new(0);
+/// Rounds each collector made since a case last asked, and the interval the
+/// elder's timer holds after the last of its rounds, in milliseconds.
+static ROUNDS: [AtomicUsize; MAX_COLLECTORS] = [const { AtomicUsize::new(0) }; MAX_COLLECTORS];
 static TIMER_MILLIS: AtomicUsize = AtomicUsize::new(0);
 
-pub(crate) fn note_round(interval: std::time::Duration) {
-    TIMER_MILLIS.store(interval.as_millis() as usize, Ordering::Relaxed);
-    ROUNDS.fetch_add(1, Ordering::Release);
+pub(crate) fn note_round(index: usize, interval: std::time::Duration) {
+    if index == ELDER {
+        TIMER_MILLIS.store(interval.as_millis() as usize, Ordering::Relaxed);
+    }
+
+    ROUNDS[index].fetch_add(1, Ordering::Release);
 }
 
-/// Rounds made since the last call, and zero the count.
+/// Rounds every collector made since the last call, and zero the counts.
 pub(crate) fn take_rounds() -> usize {
-    ROUNDS.swap(0, Ordering::Acquire)
+    ROUNDS
+        .iter()
+        .map(|rounds| rounds.swap(0, Ordering::Acquire))
+        .sum()
 }
 
-/// The fallback interval as the timer holds it after the last round.
+/// Rounds the collector of slot `index` made since the last call, and zero
+/// its count.
+pub(crate) fn take_rounds_of(index: usize) -> usize {
+    ROUNDS[index].swap(0, Ordering::Acquire)
+}
+
+/// The fallback interval as the elder's timer holds it after its last round.
 pub(crate) fn timer_interval() -> std::time::Duration {
     std::time::Duration::from_millis(TIMER_MILLIS.load(Ordering::Relaxed) as u64)
 }
@@ -245,10 +280,10 @@ static SPAWNS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn keep_handle(handle: JoinHandle<()>) {
     SPAWNS.fetch_add(1, Ordering::Relaxed);
-    let mut kept = HANDLE
+    HANDLES
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *kept = Some(handle);
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(handle);
 }
 
 /// Threads spawned since the last call, and zero the count.
@@ -260,18 +295,19 @@ pub(crate) fn retiring() -> bool {
     RETIRING.load(Ordering::Relaxed)
 }
 
-/// End the thread and wait for it: the flag, a wake out of its pause, the
-/// join. A thread whose birth was refused is joined the same way. Closes the
-/// births again and lifts the confinement as well, so the next case starts
-/// from the state the binary started in.
+/// End every collector thread and wait for it: the flag, a wake out of its
+/// wait, the join. A thread whose birth was refused is joined the same way.
+/// Closes the births again, lifts the confinement and restores the cap as
+/// well, so the next case starts from the state the binary started in.
 pub(crate) fn retire() {
     permit_births(false);
     RETIRING.store(true, Ordering::Relaxed);
-    let handle = HANDLE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take();
-    if let Some(handle) = handle {
+    let handles = std::mem::take(
+        &mut *HANDLES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    for handle in handles {
         handle.thread().unpark();
         // A thread that panicked in a round is joined all the same: the case
         // that reads its word sees the panic there, and a panic raised inside
@@ -282,8 +318,9 @@ pub(crate) fn retire() {
     super::forget_refused_birth();
 
     RETIRING.store(false, Ordering::Relaxed);
-    confine_rounds_to(std::ptr::null_mut());
+    confine_rounds_to_records(&[]);
     serve_rounds_at(0);
     wait_between_rounds_for(None);
+    super::set_collector_cap(super::DEFAULT_COLLECTOR_CAP);
     let _ = take_rounds();
 }
