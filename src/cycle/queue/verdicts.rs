@@ -176,6 +176,7 @@ impl<'a> VerdictWriter<'a> {
     pub(crate) fn post(&self, entity: *mut RcHeader, verdict: Verdict) -> Result<(), NoBlock> {
         self.0
             .push(verdict_entry(entity, verdict), std::ptr::null_mut)
+            .map(|_| ())
     }
 }
 

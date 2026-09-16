@@ -211,28 +211,21 @@ fn a_wake_whose_counts_are_below_the_threshold_makes_a_round_and_no_batch() {
 }
 
 #[test]
-fn a_poll_signals_at_the_threshold_of_its_own_registrations_and_not_before() {
+fn a_poll_signals_once_a_registration_filled_a_block_and_not_before() {
     let _g = test_guard();
     let record = record();
     let _end = RetireOnDrop;
     reset_lanes();
     born_waiting_for(record, PAST_THE_CASE);
-    let owner = unsafe { &*record };
-    owner.restart_signal_count();
 
-    // Below the threshold the poll signals nothing: no round through a wait
+    // Entries inside the tail block signal nothing: no round through a wait
     // the pinned wait outlasts.
     let class = node_class("SignalNode");
     let mut arena = crate::memory::arena::Arena::new();
     let _small = unsafe { crate::cycle::testing::ring(&mut arena, [class, class]) };
-    assert_eq!(owner.registrations_since_signal(), 2);
+    assert!(!crate::cycle::queue::signal_is_due());
     let _ = testing::take_rounds();
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0, "unarmed");
-    assert_eq!(
-        owner.registrations_since_signal(),
-        2,
-        "a poll below the threshold keeps the count"
-    );
     std::thread::sleep(A_ROUNDS_ABSENCE);
     assert_eq!(
         testing::take_rounds(),
@@ -240,20 +233,24 @@ fn a_poll_signals_at_the_threshold_of_its_own_registrations_and_not_before() {
         "an unsignalled thread made no round"
     );
 
-    // At the threshold the poll signals, the count starts again, and the
-    // round the signal starts serves the owner.
-    let members =
-        unsafe { crate::cycle::testing::long_ring(&mut arena, class, SOFT_THRESHOLD - 2) };
-    assert_eq!(owner.registrations_since_signal(), SOFT_THRESHOLD);
+    // The registration that fills the tail block raises the flag; the poll
+    // signals, the flag goes down, and the round the signal starts serves
+    // the owner.
+    let members = unsafe {
+        crate::cycle::testing::long_ring(&mut arena, class, crate::ring::BLOCK_ENTRIES - 1)
+    };
+    assert!(
+        crate::cycle::queue::signal_is_due(),
+        "the registration that left the tail block raised the flag"
+    );
     assert_eq!(
         unsafe { crate::gc::ll_gc_maybe_collect() },
         0,
         "the poll is a signal and not a fire"
     );
-    assert_eq!(
-        owner.registrations_since_signal(),
-        0,
-        "the signal starts the count again"
+    assert!(
+        !crate::cycle::queue::signal_is_due(),
+        "the signal was received"
     );
     assert!(
         wait_until(|| testing::take_rounds() >= 1, A_BIRTH),
@@ -265,36 +262,35 @@ fn a_poll_signals_at_the_threshold_of_its_own_registrations_and_not_before() {
     );
 
     testing::retire();
-    assert_eq!(unsafe { crate::gc::ll_gc_collect_cycles() }, SOFT_THRESHOLD);
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_collect_cycles() },
+        crate::ring::BLOCK_ENTRIES + 1
+    );
     drop(members);
     crate::cycle::queue::release_queue_segments();
 }
 
 #[test]
-fn a_signal_nobody_received_leaves_the_count_standing() {
+fn a_signal_nobody_received_leaves_the_flag_standing() {
     let _g = test_guard();
-    let record = record();
+    let _record = record();
     assert_eq!(testing::thread_state(), ThreadState::Unborn);
     reset_lanes();
-    let owner = unsafe { &*record };
-    owner.restart_signal_count();
 
-    let class = node_class("UnreceivedSignalNode");
-    let mut arena = crate::memory::arena::Arena::new();
-    let members = unsafe { crate::cycle::testing::long_ring(&mut arena, class, SOFT_THRESHOLD) };
-    assert_eq!(owner.registrations_since_signal(), SOFT_THRESHOLD);
+    crate::cycle::queue::make_a_signal_due();
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0, "unarmed");
-    assert_eq!(
-        owner.registrations_since_signal(),
-        SOFT_THRESHOLD,
+    assert!(
+        crate::cycle::queue::signal_is_due(),
         "no thread received the signal, so the next poll sends it again"
     );
 
-    // The in-line collection's reading of R consumes the writes the count
-    // stands for.
-    assert_eq!(unsafe { crate::gc::ll_gc_collect_cycles() }, SOFT_THRESHOLD);
-    assert_eq!(owner.registrations_since_signal(), 0);
-    drop(members);
+    // The in-line collection's reading of R consumes what the flag stands
+    // for.
+    let class = node_class("UnreceivedSignalNode");
+    let mut arena = crate::memory::arena::Arena::new();
+    let _garbage = unsafe { crate::cycle::testing::ring(&mut arena, [class, class]) };
+    assert_eq!(unsafe { crate::gc::ll_gc_collect_cycles() }, 2);
+    assert!(!crate::cycle::queue::signal_is_due());
     crate::cycle::queue::release_queue_segments();
 }
 
@@ -357,10 +353,9 @@ fn the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_dis
         2 * SOFT_THRESHOLD,
         "the poll's collection freed both rings"
     );
-    assert_eq!(
-        unsafe { &*record }.registrations_since_signal(),
-        0,
-        "the fire's reading of R started the count again"
+    assert!(
+        !crate::cycle::queue::signal_is_due(),
+        "the fire's reading of R lowered the flag"
     );
     std::thread::sleep(A_ROUNDS_ABSENCE);
     assert_eq!(testing::take_rounds(), 0, "so the poll sent no wake");

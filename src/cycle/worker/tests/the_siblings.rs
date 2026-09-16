@@ -191,13 +191,8 @@ fn a_backlog_births_a_sibling_that_takes_half_the_owners_and_is_ended_when_idle(
     // no other. The roots are live, so the poll's disposition defers them
     // and fires nothing.
     let poll_on = |owner: *mut OwnerRecord| {
-        let sent = Sent(owner);
         let poll = move || unsafe {
-            let owner = &*sent.into_inner();
-            owner.restart_signal_count();
-            for _ in 0..SOFT_THRESHOLD {
-                owner.note_registration();
-            }
+            crate::cycle::queue::make_a_signal_due();
             crate::gc::ll_gc_maybe_collect()
         };
         if owner == record {
@@ -256,16 +251,20 @@ fn a_backlog_births_a_sibling_that_takes_half_the_owners_and_is_ended_when_idle(
     // reaches the elder.
     assert!(!wake(1));
     assert_eq!(poll_on(to_sibling), 0);
-    assert_eq!(
-        unsafe { &*to_sibling }.registrations_since_signal(),
-        SOFT_THRESHOLD
-    );
+    let signal_stands_on = |owner: *mut OwnerRecord| {
+        if owner == record {
+            crate::cycle::queue::signal_is_due()
+        } else {
+            other.run(|_| crate::cycle::queue::signal_is_due())
+        }
+    };
+    assert!(signal_stands_on(to_sibling), "lost, and the flag stands");
     assert!(wake(ELDER));
     wait_for_rounds_of(ELDER, 1);
     assert_eq!(unsafe { &*to_sibling }.collector(), ELDER);
     let _ = testing::take_rounds();
     assert_eq!(poll_on(to_sibling), 0);
-    assert_eq!(unsafe { &*to_sibling }.registrations_since_signal(), 0);
+    assert!(!signal_stands_on(to_sibling), "received by the elder");
     wait_for_rounds_of(ELDER, 1);
 
     testing::retire();

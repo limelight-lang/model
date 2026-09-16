@@ -1112,9 +1112,11 @@ Code Reviewer 2026-09-16: one defect (a hand-back that returned a left ring
   policies in one loop, the `in_round` hook inside `round`.
 
 Before deletion (23.1.2a and 23.9): the stage's `Done when` names "two plain
-  stores on the probe" — no probe exists, and the registration is three
-  plain stores since S49.7's count; Edmond decides whether the criterion
-  moves. Debts with no owner yet, carried to the backlog on 2026-09-16: a
+  stores on the probe" — Edmond, 2026-09-16: the signal is the block filled
+  at the growth point, no count on the registration path
+  (`dev/DECISIONS.md`, "the poll's signal is a block filled"); two stores
+  again, and no probe exists to read them on. Debts with no owner yet,
+  carried to the backlog on 2026-09-16: a
   component past B the pool refuses circles P and R under pressure; the
   collector's arena draws its own thread's critical reserve; a ring a burst
   grew keeps its blocks until a cell is spent; the rfc's "one in-line

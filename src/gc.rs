@@ -131,10 +131,10 @@ pub extern "C" fn ll_gc_reoffer_deferred() -> usize {
 /// thresholds — is the compiler's decision, outside this crate; the runtime
 /// records the arming and collects here, where the graph is clean. The one
 /// threshold the runtime owns is the collector thread's soft threshold,
-/// which arms nothing: it is the count of this thread's registrations at
-/// which the poll wakes the collector, and the count of an owner's ring at
-/// which the collector's round takes a batch (`crate::cycle::worker`,
-/// `SOFT_THRESHOLD`).
+/// which arms nothing: the count of an owner's ring at which the
+/// collector's round takes a batch (`crate::cycle::worker`,
+/// `SOFT_THRESHOLD`); the poll's wake to the collector is sent on a block of
+/// R filled, and decides nothing.
 ///
 /// The reserve refills and queue maintenance below happen whether or not the
 /// fire does, an unarmed poll being the ordinary case and the maintenance

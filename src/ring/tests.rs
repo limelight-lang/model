@@ -93,7 +93,7 @@ fn the_first_push_takes_a_block_and_a_refused_block_writes_nothing() {
     assert_eq!(writer.push(1, none), Err(NoBlock));
     assert!(words.front_block.load(Ordering::Relaxed).is_null());
 
-    assert_eq!(writer.push(1, fresh), Ok(()));
+    assert!(writer.push(1, fresh).is_ok());
     let block = words.front_block.load(Ordering::Relaxed);
     assert!(!block.is_null());
     assert_eq!(
@@ -116,12 +116,12 @@ fn entries_come_out_in_order_across_a_wrap_within_one_block() {
 
     // Push and take in lockstep past the block's end: the indices wrap and
     // the block never fills, so the first block serves the whole run.
-    assert_eq!(writer.push(0, fresh), Ok(()));
+    assert!(writer.push(0, fresh).is_ok());
     assert_eq!(reader.take(&mut out[..1]), 1);
     let mut next = 1;
     for _ in 0..(CAPACITY / 4 + 1) {
         for entry in next..next + 4 {
-            assert_eq!(writer.push(entry, none), Ok(()), "no growth is needed");
+            assert!(writer.push(entry, none).is_ok(), "no growth is needed");
         }
         assert_eq!(reader.take(&mut out[..4]), 4);
         assert_eq!(&out[..4], &[next, next + 1, next + 2, next + 3]);
@@ -143,7 +143,7 @@ fn a_peek_reads_without_consuming_and_a_commit_consumes_exactly_it() {
     // Two blocks: the peek crosses the block change without moving the
     // front block, and reads the same entries twice.
     for entry in 0..BLOCK_ENTRIES + 2 {
-        assert_eq!(writer.push(entry, fresh), Ok(()));
+        assert!(writer.push(entry, fresh).is_ok());
     }
     let mut all = vec![0; BLOCK_ENTRIES - 3];
     assert_eq!(reader.take(&mut all), BLOCK_ENTRIES - 3);
@@ -181,7 +181,7 @@ fn a_peek_reads_without_consuming_and_a_commit_consumes_exactly_it() {
 
     // A peek of a partial block, committed, leaves the rest.
     for entry in 10..14 {
-        assert_eq!(writer.push(entry, none), Ok(()));
+        assert!(writer.push(entry, none).is_ok());
     }
     let peeked = reader.peek(&mut out[..2]);
     assert_eq!(peeked.len(), 2);
@@ -203,7 +203,7 @@ fn a_rewrite_packs_across_blocks_and_over_a_wrapped_front_block() {
     // A front block whose entries wrap: read most of a block, then fill it
     // past its end and on into two more blocks.
     for entry in 0..BLOCK_ENTRIES - 5 {
-        assert_eq!(writer.push(entry, fresh), Ok(()));
+        assert!(writer.push(entry, fresh).is_ok());
     }
     assert_eq!(
         reader.take(&mut out[..BLOCK_ENTRIES - 10]),
@@ -211,7 +211,7 @@ fn a_rewrite_packs_across_blocks_and_over_a_wrapped_front_block() {
     );
     let total = 3 * BLOCK_ENTRIES;
     for entry in BLOCK_ENTRIES - 5..total {
-        assert_eq!(writer.push(entry, fresh), Ok(()));
+        assert!(writer.push(entry, fresh).is_ok());
     }
     assert_eq!(quiet.block_count(), 3);
     let unread: Vec<usize> = (BLOCK_ENTRIES - 10..total).collect();
@@ -243,7 +243,7 @@ fn a_rewrite_packs_across_blocks_and_over_a_wrapped_front_block() {
     // The writer goes on into the emptied blocks around the circle without
     // asking for a fresh one, and the reader follows.
     for entry in 0..BLOCK_ENTRIES + 1 {
-        assert_eq!(writer.push(entry, none), Ok(()));
+        assert!(writer.push(entry, none).is_ok());
     }
     let mut all = vec![0; BLOCK_ENTRIES + 1];
     assert_eq!(reader.take(&mut all), BLOCK_ENTRIES + 1);
@@ -257,7 +257,7 @@ fn a_full_block_moves_the_writer_to_a_fresh_block_and_the_reader_follows() {
     let words = Words::new();
     let writer = unsafe { Writer::new(words.slots()) };
     for entry in 0..BLOCK_ENTRIES {
-        assert_eq!(writer.push(entry, fresh), Ok(()));
+        assert!(writer.push(entry, fresh).is_ok());
     }
     assert_eq!(
         unsafe { Quiescent::new(words.slots()) }.block_count(),
@@ -269,7 +269,7 @@ fn a_full_block_moves_the_writer_to_a_fresh_block_and_the_reader_follows() {
         Err(NoBlock),
         "the full block asks for a fresh one, and the circle of one has no spare"
     );
-    assert_eq!(writer.push(BLOCK_ENTRIES, fresh), Ok(()));
+    assert!(writer.push(BLOCK_ENTRIES, fresh).is_ok());
     assert_eq!(unsafe { Quiescent::new(words.slots()) }.block_count(), 2);
     assert_eq!(
         unsafe { Reader::new(words.slots()) }.unread(),
@@ -302,7 +302,7 @@ fn a_consumed_block_is_the_writers_again_around_the_circle() {
     // Two blocks, the first read to its end and left: the reader moves on
     // only when it finds the block empty and another ahead.
     for entry in 0..BLOCK_ENTRIES + 1 {
-        assert_eq!(writer.push(entry, fresh), Ok(()));
+        assert!(writer.push(entry, fresh).is_ok());
     }
     let first = words.front_block.load(Ordering::Relaxed);
     let second = words.tail_block.load(Ordering::Relaxed);
@@ -314,7 +314,7 @@ fn a_consumed_block_is_the_writers_again_around_the_circle() {
     // Fill the second and one more: the writer moves on into the first,
     // which the reader has left, and no fresh block is asked for.
     for entry in 0..BLOCK_ENTRIES + 1 {
-        assert_eq!(writer.push(entry, none), Ok(()));
+        assert!(writer.push(entry, none).is_ok());
     }
     assert_eq!(words.tail_block.load(Ordering::Relaxed), first);
     assert_eq!(unsafe { Quiescent::new(words.slots()) }.block_count(), 2);
@@ -334,7 +334,7 @@ fn a_consumed_block_is_the_writers_again_around_the_circle() {
 fn fill_and_leave_the_front_block() {
     let writer = unsafe { Writer::new(SHARED.slots()) };
     for entry in 100..100 + BLOCK_ENTRIES + 1 {
-        assert_eq!(writer.push(entry, fresh), Ok(()));
+        assert!(writer.push(entry, fresh).is_ok());
     }
 }
 
@@ -346,7 +346,7 @@ fn a_block_filled_between_the_readers_two_readings_is_not_skipped() {
     let reader = unsafe { Reader::new(SHARED.slots()) };
     let mut out = vec![0; BLOCK_ENTRIES + 2];
 
-    assert_eq!(writer.push(1, fresh), Ok(()));
+    assert!(writer.push(1, fresh).is_ok());
     assert_eq!(reader.take(&mut out[..1]), 1);
     // The front block reads empty; between that reading and the tail block's
     // the hook fills it and moves the writer on. The reader must take the
@@ -369,7 +369,7 @@ fn a_reader_behind_a_writer_on_another_thread_takes_every_entry_once() {
     let producer = std::thread::spawn(|| {
         let writer = unsafe { Writer::new(SHARED.slots()) };
         for entry in 1..=ENTRIES {
-            assert_eq!(writer.push(entry, fresh), Ok(()));
+            assert!(writer.push(entry, fresh).is_ok());
             if entry % 97 == 0 {
                 std::thread::yield_now();
             }
@@ -404,7 +404,7 @@ fn the_quiet_pass_walks_counts_and_packs_what_it_keeps() {
 
     // Two blocks with a read prefix, so the front is not at zero.
     for entry in 0..BLOCK_ENTRIES + 10 {
-        assert_eq!(writer.push(entry, fresh), Ok(()));
+        assert!(writer.push(entry, fresh).is_ok());
     }
     assert_eq!(reader.take(&mut out), 3);
 
@@ -447,7 +447,7 @@ fn the_quiet_pass_walks_counts_and_packs_what_it_keeps() {
     // The reader reads what was packed, and the writer's next push goes
     // after it.
     let mut all = vec![0; kept.len() + 1];
-    assert_eq!(writer.push(999, none), Ok(()));
+    assert!(writer.push(999, none).is_ok());
     assert_eq!(reader.take(&mut all), kept.len() + 1);
     assert_eq!(&all[..kept.len()], &kept[..]);
     assert_eq!(all[kept.len()], 999);
@@ -466,8 +466,8 @@ fn a_chain_spliced_after_the_tail_is_read_after_what_stood_before_it() {
     let writer = unsafe { Writer::new(words.slots()) };
     let reader = unsafe { Reader::new(words.slots()) };
 
-    assert_eq!(writer.push(1, fresh), Ok(()));
-    assert_eq!(writer.push(2, none), Ok(()));
+    assert!(writer.push(1, fresh).is_ok());
+    assert!(writer.push(2, none).is_ok());
 
     // Three blocks in the chain: two full and one with a remainder.
     let mut chain = Chain::empty();
@@ -486,7 +486,7 @@ fn a_chain_spliced_after_the_tail_is_read_after_what_stood_before_it() {
     assert_eq!(quiet.count(), 2 + 2 * BLOCK_ENTRIES + 5);
 
     // After the splice the writer continues in the last spliced block.
-    assert_eq!(writer.push(7, none), Ok(()));
+    assert!(writer.push(7, none).is_ok());
 
     let mut out = vec![0; 2 * BLOCK_ENTRIES + 8];
     assert_eq!(reader.take(&mut out), 2 * BLOCK_ENTRIES + 8);
@@ -534,7 +534,7 @@ fn the_spare_block_after_the_tail_is_unlinked_and_never_the_front_block() {
 
     assert!(writer.unlink_after_tail().is_null(), "no block at all");
     for entry in 0..2 * BLOCK_ENTRIES + 1 {
-        assert_eq!(writer.push(entry, fresh), Ok(()));
+        assert!(writer.push(entry, fresh).is_ok());
     }
     assert_eq!(quiet.block_count(), 3);
     assert!(
@@ -584,9 +584,12 @@ fn the_work_test_reads_the_front_block_alone() {
     let reader = unsafe { Reader::new(words.slots()) };
     assert!(!reader.has_at_least(1), "no block");
 
-    for entry in 0..BLOCK_ENTRIES + 1 {
-        assert_eq!(writer.push(entry, fresh), Ok(()));
+    // The first block is found, not filled; the push that leaves a full
+    // tail block answers so.
+    for entry in 0..BLOCK_ENTRIES {
+        assert_eq!(writer.push(entry, fresh), Ok(Pushed::IntoTailBlock));
     }
+    assert_eq!(writer.push(BLOCK_ENTRIES, fresh), Ok(Pushed::IntoNextBlock));
     let mut out = vec![0; BLOCK_ENTRIES];
     assert_eq!(reader.take(&mut out), BLOCK_ENTRIES);
     let front = words.front_block.load(Ordering::Relaxed);
@@ -619,7 +622,7 @@ fn the_work_test_reads_the_front_block_alone() {
     assert!(!reader.has_at_least(1), "the ring is read out");
     assert_eq!(reader.unread(), 0);
     for entry in 0..3 {
-        assert_eq!(writer.push(entry, none), Ok(()));
+        assert!(writer.push(entry, none).is_ok());
     }
     assert!(reader.has_at_least(3));
     assert!(!reader.has_at_least(4));
@@ -689,7 +692,7 @@ fn a_pack_over_a_front_the_reader_moved_keeps_the_writers_full_test_sound() {
     // when the block change found it full; then five taken from it and
     // four written into the second block.
     for entry in 0..BLOCK_ENTRIES + 4 {
-        assert_eq!(writer.push(entry, fresh), Ok(()));
+        assert!(writer.push(entry, fresh).is_ok());
     }
     let mut out = [0; 5];
     assert_eq!(reader.take(&mut out), 5);
@@ -702,8 +705,8 @@ fn a_pack_over_a_front_the_reader_moved_keeps_the_writers_full_test_sound() {
 
     // Two pushes: the first takes the last free slot, the second must find
     // the block full and move into the emptied second block.
-    assert_eq!(writer.push(7_000_001, none), Ok(()));
-    assert_eq!(writer.push(7_000_002, none), Ok(()));
+    assert!(writer.push(7_000_001, none).is_ok());
+    assert!(writer.push(7_000_002, none).is_ok());
     assert_eq!(
         quiet.count(),
         BLOCK_ENTRIES + 1,

@@ -192,6 +192,16 @@ impl Slots<'_> {
     }
 }
 
+/// Where a push wrote: into the tail block it found (the ring's first block
+/// counts as found), or into the next block of the circle or a fresh one
+/// after filling it — the event a poll signals the collector on, one per
+/// block of entries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Pushed {
+    IntoTailBlock,
+    IntoNextBlock,
+}
+
 /// What a push answers when the tail block is full and the caller's closure
 /// gave no block: the entry was not written.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -214,12 +224,13 @@ impl<'a> Writer<'a> {
     /// tail block moves the writer to the next block of the circle when the
     /// reader is not in it, and otherwise to the block `fresh` answers, which
     /// is linked in after the tail. `fresh` answering null is [`NoBlock`],
-    /// and the entry is not written.
+    /// and the entry is not written. The answer says whether the push
+    /// left the tail block it found ([`Pushed`]).
     pub(crate) fn push(
         &self,
         entry: usize,
         fresh: impl FnOnce() -> *mut BlockHeader,
-    ) -> Result<(), NoBlock> {
+    ) -> Result<Pushed, NoBlock> {
         let tail_block = self.0.tail_block.load(Ordering::Relaxed);
         if tail_block.is_null() {
             return self.push_into_fresh(entry, fresh, std::ptr::null_mut());
@@ -239,7 +250,7 @@ impl<'a> Writer<'a> {
                 *(*b).slots[tail].get() = entry;
                 (*b).writer.tail.store(next_tail, Ordering::Release);
             }
-            return Ok(());
+            return Ok(Pushed::IntoTailBlock);
         }
 
         // The tail block is full. The next block of the circle is free when
@@ -257,7 +268,7 @@ impl<'a> Writer<'a> {
                 (*n).writer.tail.store(step(tail), Ordering::Release);
             }
             self.0.tail_block.store(next, Ordering::Release);
-            return Ok(());
+            return Ok(Pushed::IntoNextBlock);
         }
 
         self.push_into_fresh(entry, fresh, tail_block)
@@ -336,7 +347,7 @@ impl<'a> Writer<'a> {
         entry: usize,
         fresh: impl FnOnce() -> *mut BlockHeader,
         after: *mut BlockHeader,
-    ) -> Result<(), NoBlock> {
+    ) -> Result<Pushed, NoBlock> {
         let block = fresh();
         if block.is_null() {
             return Err(NoBlock);
@@ -358,7 +369,8 @@ impl<'a> Writer<'a> {
             unsafe { (*n).link.next.store(block, Ordering::Relaxed) };
             self.0.tail_block.store(block, Ordering::Release);
             self.0.front_block.store(block, Ordering::Release);
-            return Ok(());
+            // The ring's first block: no block was filled.
+            return Ok(Pushed::IntoTailBlock);
         }
 
         let a = ring(after);
@@ -371,7 +383,7 @@ impl<'a> Writer<'a> {
             (*a).link.next.store(block, Ordering::Release);
         }
         self.0.tail_block.store(block, Ordering::Release);
-        Ok(())
+        Ok(Pushed::IntoNextBlock)
     }
 
     /// Link the chain `first..=last` in after the tail block and make `last`

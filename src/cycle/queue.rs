@@ -145,10 +145,10 @@
 //! deferred lane's mirror and re-offers that lane where it moved; behind an
 //! open gate, disposes of the prefix of P up to the first proposed root
 //! ([`verdicts`]); armed, fires a collection; and
-//! last, behind the same gate, signals the collector when this thread's own
-//! count of its registrations has reached the threshold
+//! last, behind the same gate, signals the collector when a registration
+//! has filled a block of R since the last signal
 //! ([`signal_the_collector_if_due`]) — after the fire, whose reading of R
-//! starts the count again. A reserve draw, an overflow append, a due
+//! lowers the flag. A reserve draw, an overflow append, a due
 //! deferred re-offer, or a proposal standing in P arms it.
 //!
 //! # The second ring, P
@@ -250,6 +250,13 @@ struct OwnerCycleState {
     /// enrolment cannot fail").
     overflow_len: Cell<u16>,
     spare_count: Cell<u8>,
+    /// Whether a registration filled the tail block since the collector was
+    /// last signalled — a block of entries, the unit the poll's signal
+    /// stands for (`rfc/model/gc/rc-cycle.md`, "Signals"). Set on the
+    /// growth path, which is paid for already, and read by nothing on the
+    /// registration path; cleared by the poll when its wake was received,
+    /// and by an in-line collection's reading of R.
+    signal_due: Cell<bool>,
 }
 
 thread_local! {
@@ -272,6 +279,7 @@ impl OwnerCycleState {
             deferred: UnsafeCell::new(Chain::empty()),
             spare_count: Cell::new(0),
             overflow_len: Cell::new(0),
+            signal_due: Cell::new(false),
         }
     }
 
@@ -387,44 +395,58 @@ unsafe fn append_entry(state: *mut OwnerCycleState, entity: *mut RcHeader) {
     // and the record beside it. Drawing either at the first refusal would be
     // too late: every other allocation path would already have found the
     // pool empty.
-    let record = this_thread_record_ref();
-    let writer = unsafe { Writer::new(record.candidate_ring()) };
-    if writer
-        .push(entity_entry(entity), || fresh_block(owner_state))
-        .is_err()
-    {
-        unsafe { append_to_overflow(state, entity) };
-        // The overflow append arms on its own: the refill the poll
-        // performs is unconditional, so what the arming buys here is the
-        // fire, not the cells.
-        crate::gc::arm();
+    let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
+    match writer.push(entity_entry(entity), || fresh_block(owner_state)) {
+        Ok(ring::Pushed::IntoTailBlock) => {}
+        // A block of entries filled: the poll's signal to the collector, on
+        // the path that was slow already.
+        Ok(ring::Pushed::IntoNextBlock) => owner_state.signal_due.set(true),
+        Err(ring::NoBlock) => {
+            unsafe { append_to_overflow(state, entity) };
+            // The overflow append arms on its own: the refill the poll
+            // performs is unconditional, so what the arming buys here is the
+            // fire, not the cells.
+            crate::gc::arm();
+        }
     }
-
-    // Counted through either path: an overflow entry reaches R at the
-    // poll's drain, before the poll reads the count.
-    record.note_registration();
 }
 
-/// Signal the collector if this thread has registered
-/// `worker::SOFT_THRESHOLD` entries since its count last started, and start
-/// the count again if the signal was received: the poll's soft signal,
-/// which starts a round and decides nothing about it
-/// (`rfc/model/gc/rc-cycle.md`, "Signals"). The count is the owner's own,
-/// of its own writes, and the wake goes to the collector the record names
-/// (`crate::cycle::worker::wake` says what a lost one costs). A thread with
-/// no record has registered nothing.
+/// Signal the collector if a registration filled a block of R since the
+/// last signal was received: the poll's soft signal, which starts a round
+/// and decides nothing about it (`rfc/model/gc/rc-cycle.md`, "Signals").
+/// The wake goes to the collector the record names
+/// (`crate::cycle::worker::wake` says what a lost one costs; the flag
+/// stands until one is received). A thread with no base block has
+/// registered nothing.
 pub(crate) fn signal_the_collector_if_due() {
-    let record = owner_record::this_thread_record();
-    if record.is_null() {
+    let state = owner_state();
+    if state.is_null() {
         return;
     }
 
-    let record = unsafe { &*record };
-    if record.signal_is_due(crate::cycle::worker::SOFT_THRESHOLD)
-        && crate::cycle::worker::wake(record.collector())
-    {
-        record.restart_signal_count();
+    let owner_state = unsafe { owner_state_ref(state) };
+    if !owner_state.signal_due.get() {
+        return;
     }
+
+    if crate::cycle::worker::wake(this_thread_record_ref().collector()) {
+        owner_state.signal_due.set(false);
+    }
+}
+
+/// Raise the poll's signal flag as a filled block would, for a case.
+#[cfg(test)]
+pub(crate) fn make_a_signal_due() {
+    let state = owner_state();
+    assert!(!state.is_null(), "the case's thread has a base block");
+    unsafe { owner_state_ref(state) }.signal_due.set(true);
+}
+
+/// Whether the poll's signal flag stands, for a case.
+#[cfg(test)]
+pub(crate) fn signal_is_due() -> bool {
+    let state = owner_state();
+    !state.is_null() && unsafe { owner_state_ref(state) }.signal_due.get()
 }
 
 /// The growth path's block: a spare, or the critical reserve with both
@@ -1079,12 +1101,12 @@ fn candidate_ring<'a>() -> Option<Quiescent<'a>> {
 /// An empty batch is the answer for a thread that has registered nothing,
 /// and for one with no queue state at all.
 pub(crate) fn read_batch() -> Batch {
-    // The reading consumes the writes the signal count stands for: a signal
-    // sent for them would find R read out, and a collision with this
-    // collection at the token.
-    let record = owner_record::this_thread_record();
-    if !record.is_null() {
-        unsafe { &*record }.restart_signal_count();
+    // The reading consumes what the signal flag stands for: a signal sent
+    // for it would find R read out, and a collision with this collection at
+    // the token.
+    let state = owner_state();
+    if !state.is_null() {
+        unsafe { owner_state_ref(state) }.signal_due.set(false);
     }
 
     Batch {

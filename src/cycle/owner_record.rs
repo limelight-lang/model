@@ -4,8 +4,8 @@
 //! "the token stands in a record the process keeps, and the exit's claim on
 //! it is never released"). Four lines: the trace token with the owner's
 //! note of who holds it; the reader's line, the collector's words of the
-//! two rings; the writer's line, the owner's words of them and the counts
-//! behind its signal to the collector; and the hold line, the word under
+//! two rings; the writer's line, the owner's words of them and its count
+//! of freeing dispositions; and the hold line, the word under
 //! which a collector reads the rings' blocks before its claim and the word
 //! that names the owner's collector (`rfc/dev/DECISIONS.md`, "the candidate
 //! queue is read behind its writer, and the collector's verdicts come back
@@ -187,12 +187,6 @@ struct WriterLine {
     /// writer, and the collector's verdicts come back by a second ring", "Who
     /// reads R").
     collecting: AtomicBool,
-    /// Entries the owner registered since its count last started — at a
-    /// signal the collector received, or at an in-line collection's reading
-    /// of R: the owner's count of its own writes, so that its signal reads
-    /// no word of the reader's (`rfc/model/gc/rc-cycle.md`, "Signals").
-    /// Written and read by the owner alone, relaxed on both sides.
-    registrations: AtomicU32,
     /// Dispositions of P at this owner's poll that freed something, counted
     /// up by the owner and never cleared: the collector compares it with
     /// its own copy to shorten its fallback interval
@@ -276,7 +270,6 @@ impl WriterLine {
             r_tail_block: AtomicPtr::new(std::ptr::null_mut()),
             p_front_block: AtomicPtr::new(std::ptr::null_mut()),
             collecting: AtomicBool::new(false),
-            registrations: AtomicU32::new(0),
             freeing_dispositions: AtomicU32::new(0),
         }
     }
@@ -288,7 +281,6 @@ impl WriterLine {
         self.p_front_block
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         self.collecting.store(false, Ordering::Relaxed);
-        self.registrations.store(0, Ordering::Relaxed);
         self.freeing_dispositions.store(0, Ordering::Relaxed);
     }
 }
@@ -439,40 +431,6 @@ impl OwnerRecord {
     #[inline]
     pub(crate) fn clear_collecting(&self) {
         self.writer.collecting.store(false, Ordering::Release);
-    }
-
-    /// Count one registration of the owner's, on the owner's thread: a load
-    /// and a store of its own word, no read-modify-write.
-    #[inline]
-    pub(crate) fn note_registration(&self) {
-        let registrations = self.writer.registrations.load(Ordering::Relaxed);
-        self.writer
-            .registrations
-            .store(registrations.wrapping_add(1), Ordering::Relaxed);
-    }
-
-    /// Whether the owner has registered `signal_at` entries or more since
-    /// its count last started: the owner's poll asks it once per poll and
-    /// signals on true.
-    #[inline]
-    pub(crate) fn signal_is_due(&self, signal_at: usize) -> bool {
-        (self.writer.registrations.load(Ordering::Relaxed) as usize) >= signal_at
-    }
-
-    /// Start the count of the owner's registrations again, on the owner's
-    /// thread: at a signal that was delivered, and at an in-line collection's
-    /// reading of R, which consumes the writes the count stands for. A
-    /// signal nobody received leaves the count standing, so the next poll
-    /// signals again.
-    #[inline]
-    pub(crate) fn restart_signal_count(&self) {
-        self.writer.registrations.store(0, Ordering::Relaxed);
-    }
-
-    /// Registrations counted since the last signal, for a case.
-    #[cfg(test)]
-    pub(crate) fn registrations_since_signal(&self) -> usize {
-        self.writer.registrations.load(Ordering::Relaxed) as usize
     }
 
     /// Note, on the owner's thread, that a disposition of P at its poll

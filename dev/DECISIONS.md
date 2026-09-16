@@ -8,6 +8,27 @@ never edited or deleted.
 
 ---
 
+## 2026-09-16 — the poll's signal is a block filled, and the registration path counts nothing
+
+**Ruled by Edmond**, superseding the count of the entry below ("the
+collector's wake is a soft signal counted on the owner's line"): the
+registration pays for the growth point already — the tail block fills and
+the writer moves to the next block or takes a fresh one — and that point
+is the signal. A registration is two plain stores again; a block, 8,135
+entries, is the unit the wake stands for. `ring::Writer::push` answers
+where it wrote ([`Pushed`]), the first block counting as found and not
+filled; `append_entry` sets `OwnerCycleState::signal_due` on a block left,
+in the control line the growth path touches; the poll wakes the collector
+the record names and lowers the flag when the wake was received, and every
+in-line collection's reading of R lowers it too. `SOFT_THRESHOLD` stays
+the round's threshold for the timer's rounds and the pressure wake.
+**Rejected:** the count on the writer line, a load and a store per
+registration for a unit the block already gives. **Cost:** a signal at
+most once per block; an owner below a block's worth of entries is served
+by the timer's rounds and by no signal of its own.
+
+---
+
 ## 2026-09-16 — siblings are slots under an embedder's cap, an owner is named by a word, and the elder takes back what a dead slot held
 
 **Context.** `PLAN.md` S49.8 built the several collectors the rfc names

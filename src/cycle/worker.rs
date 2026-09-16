@@ -63,9 +63,9 @@
 //! **A wake starts a round and decides nothing else** (`rfc/dev/DECISIONS.md`,
 //! "the collector traces on the count it reads itself"; `rfc/model/gc/
 //! rc-cycle.md`, "Signals"). Between two rounds the thread waits on its
-//! fallback timer, and three things end the wait: an owner's poll, having
-//! counted [`SOFT_THRESHOLD`] registrations of its own since its last
-//! signal ([`wake`], through `crate::cycle::queue`); a pressure collection,
+//! fallback timer, and three things end the wait: an owner's poll, a
+//! registration having filled a block of its R since its last signal
+//! ([`wake`], through `crate::cycle::queue`); a pressure collection,
 //! at every ending; and the timer. The timer is what serves an owner whose
 //! signal bought no batch — its token held or it collecting in line at the
 //! round, P without room, the workspace refused — and an owner at the
@@ -169,11 +169,11 @@ const _: () =
 const TRACE_BLOCK_BUDGET: usize = 8;
 
 /// Entries an owner's R holds at or above which a round takes a batch from
-/// it, and the registrations an owner counts before its poll signals: the
-/// two are one figure so that a signal finds the count it was sent for. Not
-/// a measured figure: the rfc names the threshold as the runtime's own and
-/// not its size, and this one is [`INITIAL_BATCH`], so that a signalled
-/// owner's first batch is full.
+/// it. Not a measured figure: the rfc names the threshold as the runtime's
+/// own and not its size, and this one is [`INITIAL_BATCH`], so that an
+/// owner at the threshold gets a full first batch. The poll's signal is
+/// sent on a block filled, a coarser unit, and the timer's rounds read this
+/// one.
 pub(crate) const SOFT_THRESHOLD: usize = INITIAL_BATCH;
 
 const _: () = assert!(SOFT_THRESHOLD <= BATCH_BOUND);
@@ -364,10 +364,10 @@ fn note_refused_birth() {
 /// to the collector its record names, and a pressure collection at each of
 /// its endings, to the elder. False is a wake lost: before the thread's
 /// birth, between its spawn and its init, and after its end. A lost wake
-/// costs nothing but the round it did not start: the poll leaves its count
+/// costs nothing but the round it did not start: the poll leaves its flag
 /// standing and sends again at its next poll
-/// ([`OwnerRecord::restart_signal_count`]), and a sibling's first round runs
-/// at its birth.
+/// (`crate::cycle::queue::signal_the_collector_if_due`), and a sibling's
+/// first round runs at its birth.
 pub(crate) fn wake(index: usize) -> bool {
     let collector = COLLECTORS[index]
         .handle
