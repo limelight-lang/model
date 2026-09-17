@@ -1,6 +1,6 @@
 //! A held token blocks the collection of the thread it belongs to, and nothing
 //! else: that thread keeps allocating, storing and registering, another thread
-//! collects its own graph meanwhile, and the blocked collection runs once the
+//! collects its own candidates meanwhile, and the blocked collection runs once the
 //! holder releases. The mutator holds the token from its take through its
 //! close, destructors included, on both paths, and a thread that may not
 //! collect never waits for it.
@@ -64,7 +64,7 @@ fn a_held_token_blocks_this_thread_s_collection_alone_until_the_release() {
     assert_eq!(crate::cycle::queue::candidate_count(), 3);
 
     // Once this thread's collection is waiting, another thread collects its
-    // own graph over its own token — the second collector's trace of another
+    // own candidates over its own token — the second collector's trace of another
     // thread — and only then lets this one go.
     let token = Handed(this_thread_token());
     let elsewhere = std::thread::spawn(move || {

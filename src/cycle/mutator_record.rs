@@ -111,7 +111,8 @@ use crate::memory::gc_metadata;
 #[repr(C, align(64))]
 pub(crate) struct MutatorRecord {
     /// The trace token, taken by a collector thread around its trace of this
-    /// mutator's graph and by the mutator around its own.
+    /// mutator's candidates and the entities the trace reaches, and by the
+    /// mutator around its own.
     pub(crate) token: TraceToken,
     /// The next free record, meaningful while this one is on the registry's
     /// free list and written under its lock alone.

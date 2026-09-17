@@ -1,6 +1,6 @@
 //! A token held from another thread, for the cases that need one: the
-//! stand-in for a collector tracing this mutator's graph, which holds and
-//! traces nothing, where the collector thread of `cycle::worker` takes the
+//! stand-in for a collector tracing this mutator's candidates and the
+//! entities the trace reaches, which holds and traces nothing, where the collector thread of `cycle::worker` takes the
 //! token through the mutator's record and traces under it. A collector thread
 //! that traces as well as holds is `cells::tests::what_a_collector_thread_reads`'.
 //!
@@ -42,7 +42,8 @@ pub(crate) fn wait_for_a_waiter(token: *const TraceToken, before: usize) {
 }
 
 /// The calling thread's token, held from another thread — the stand-in for a
-/// collector tracing this mutator's graph — until [`release`](Self::release)
+/// collector tracing this mutator's candidates and the entities the trace
+/// reaches — until [`release`](Self::release)
 /// or the guard's drop. The drop releases the holder and joins it, on the
 /// unwind as well as on the return, so a failed assertion never leaves a
 /// holder on the token of a thread that has gone on to its next case.

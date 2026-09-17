@@ -258,8 +258,8 @@ fn a_population_past_the_harvest_region_is_collected_over_several_traces() {
 
 /// A harvest the sweep abandons — a row that named no entity — ends the
 /// pressure collection after one trace, armed. It is not an overflow: the
-/// disagreement stands in the graph, so every re-trace over fewer roots would
-/// meet it again and pay a full mark and scan for nothing.
+/// disagreement stands among the entities the trace reaches, so every
+/// re-trace over fewer roots would meet it again and pay a full mark and scan for nothing.
 #[test]
 fn an_abandoned_harvest_ends_the_pressure_path_after_one_trace() {
     let _g = test_guard();
@@ -294,7 +294,7 @@ fn an_abandoned_harvest_ends_the_pressure_path_after_one_trace() {
     );
     assert!(
         crate::gc::is_armed(),
-        "the poll's collection is what reads the graph next"
+        "the poll's collection is what reads the candidates next"
     );
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 0);
     for &member in &members {

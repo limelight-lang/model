@@ -145,7 +145,8 @@ pub(crate) mod shadow;
 // it stands on.
 pub(crate) mod stack;
 // The per-thread trace token: taken by [`collect`] around its trace,
-// waited for by a mutator whose graph a collector is tracing.
+// waited for by a mutator whose candidates, and the entities the trace
+// reaches, a collector is tracing.
 pub(crate) mod token;
 // The record the token stands in, with the words a collector thread's
 // handoff uses, in storage that outlives the thread.

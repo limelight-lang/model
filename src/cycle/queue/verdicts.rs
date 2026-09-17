@@ -16,7 +16,7 @@
 //!
 //! An entry is the entity's address with one of four verdicts in its low
 //! two bits ([`Verdict`]): the collector's reading of the root, made on a
-//! copy of the graph and under a budget, so none of the four is a fact the
+//! copy of the candidates and the entities the trace reaches, under a budget, so none of the four is a fact the
 //! mutator acts on without reading again. The mutator is the one party that
 //! changes state (`rfc/model/gc/rc-cycle.md`, "The mutator's disposition").
 //! Bit 2 is the mutator's: the mark a close writes over a root it read live

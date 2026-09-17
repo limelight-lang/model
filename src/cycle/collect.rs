@@ -117,7 +117,7 @@ pub(crate) fn may_collect() -> bool {
 ///
 /// Per thread because a collection is: the window, the workspace and the
 /// ring it reads are all this thread's, and another thread collecting its own
-/// graph is no reason to refuse this one. The word stands in the record
+/// candidates is no reason to refuse this one. The word stands in the record
 /// beside the mutator's other words of the rings, written and read by the
 /// mutator alone; what keeps a collector out of the ring for the
 /// collection's whole length is the token, held as `MUTATOR` through the
@@ -301,8 +301,8 @@ impl Drop for CollectingThread {
 /// **Zero is every answer short of a teardown**, and this entry does not
 /// distinguish them; [`collection_off_the_poll`] does, for the one caller that
 /// reports the difference. Before final mutator retirement, each
-/// refusal leaves the graph it was reading byte-identical and no live root
-/// loses its registration. The `CollectingThread` guard then removes completed
+/// refusal leaves the candidates and the entities the trace reached
+/// byte-identical and no live root loses its registration. The `CollectingThread` guard then removes completed
 /// deaths left by this or an earlier collection, so a zero answer does not
 /// promise that the candidate queue, its dead slots or their blocks remain
 /// byte-identical
@@ -710,7 +710,8 @@ pub(crate) fn take_exit_residue() -> Option<ExitResidue> {
 /// capacity never grows, a growth here being a request to the very path that
 /// refused, and a part of a set closed under its in-edges is not a set that can
 /// be torn down ([`crate::cycle::members`]). So an overflow halves the roots
-/// and traces again, on the same graph and with the same registrations; at one
+/// and traces again, over the same candidates and entities and with the same
+/// registrations; at one
 /// root still overflowing, the collection ends and arms the thread, that
 /// component being past what this path can hold and the poll's to collect. A
 /// harvest the sweep abandoned — a row that named no entity — is not an
@@ -851,8 +852,8 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             }
             HarvestEnding::Abandoned => {
                 // A row named no entity: a disagreement between an array and
-                // a retained block's survivor list, which every trace of this
-                // graph meets again. Halving would repeat the mark and scan
+                // a retained block's survivor list, which every trace of these
+                // candidates meets again. Halving would repeat the mark and scan
                 // log2(roots) times under the pressure that started this and
                 // end here anyway, so this ends at once; the poll's collection
                 // reads its rows as a membership and refuses the same reading

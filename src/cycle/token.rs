@@ -1,6 +1,6 @@
 //! The trace token: the per-mutator byte whose state says who may trace that
-//! mutator's graph — the arena, the block triples, the touched list — and
-//! read its candidate ring (`rfc/model/gc/rc-cycle.md`, "Concurrency";
+//! mutator's candidates and the entities the trace reaches — the arena, the
+//! block triples, the touched list — and read its candidate ring (`rfc/model/gc/rc-cycle.md`, "Concurrency";
 //! `rfc/dev/design/trace-token-handshake.md`, the ruled form).
 //!
 //! One byte per mutator thread, in the thread's record, whose storage
@@ -596,15 +596,16 @@ thread_local! {
     static HELD_AT_LAST_ROW_READ: std::cell::Cell<Option<bool>> =
         const { std::cell::Cell::new(None) };
 
-    /// The record of the mutator whose graph this thread is tracing as a
-    /// collector, null while it traces as a mutator: the token the probe
+    /// The record of the mutator whose candidates, and the entities the trace
+    /// reaches, this thread is tracing as a collector, null while it traces
+    /// as a mutator: the token the probe
     /// above reads is that mutator's rather than this thread's own.
     static TRACED_MUTATOR: std::cell::Cell<*mut crate::cycle::mutator_record::MutatorRecord> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
 }
 
-/// Name the mutator whose graph the calling collector thread traces under a
-/// foreign claim, or null once its trace is over, and do nothing at all
+/// Name the mutator whose candidates, and the entities the trace reaches,
+/// the calling collector thread traces under a foreign claim, or null once its trace is over, and do nothing at all
 /// without `cfg(test)`.
 ///
 /// Called by `cycle::worker` around its trace, and by the verdict ring's

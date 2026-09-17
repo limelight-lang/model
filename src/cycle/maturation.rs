@@ -75,7 +75,8 @@
 //! `reclamation`'s reservation to be refused: the component the commit
 //! confirmed is then kept whole for a later collection instead of being torn
 //! down. That is latency rather than a lost cycle — the registration stands
-//! and the next collection reaches the same graph
+//! and the next collection reaches the same candidates and the entities the
+//! trace reaches
 //! (`rfc/model/gc/rc-cycle.md`, "Cost model").
 //!
 //! A refused segment ends the descent where it stands. Every component the

@@ -20,8 +20,8 @@
 //! The mutator's word stands for the storage head an array republishes
 //! before it frees the old storage: the mutator stores it, reads the token
 //! free, and frees. A claimant whose claim lands after that reading traces
-//! the mutator's graph, and the graph it must see is the one with the new
-//! head; a stale head names the storage the mutator is freeing, and the
+//! the mutator's candidates and the entities the trace reaches, and the
+//! array it must see is the one with the new head; a stale head names the storage the mutator is freeing, and the
 //! trace strides memory the mutator reuses meanwhile.
 //!
 //! # What it demonstrated

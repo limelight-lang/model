@@ -98,7 +98,7 @@ pub(crate) enum HarvestEnding {
     Overflowed = 1,
     /// The sweep gave the set up: a row named no entity, or the walk did not
     /// reach its end. No bound on the roots cures it, so the driver ends the
-    /// collection rather than tracing the same graph again.
+    /// collection rather than tracing the same candidates again.
     Abandoned = 2,
 }
 
