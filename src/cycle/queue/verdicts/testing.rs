@@ -31,24 +31,31 @@ pub(crate) unsafe fn post_batch(
     mut verdict_for: impl FnMut(*mut RcHeader) -> Verdict,
 ) -> Posted {
     let record = unsafe { &*record };
-    if !record.token.try_claim(crate::cycle::worker::ELDER) {
+    if !record.token.claim_for_test(crate::cycle::worker::ELDER) {
         return Posted::TokenHeld;
     }
 
-    struct ReleaseOnDrop<'a>(&'a crate::cycle::token::TraceToken);
+    // Released to `POSTED` when the batch posted, as the collector's is.
+    struct ReleaseOnDrop<'a>(
+        &'a crate::cycle::token::TraceToken,
+        &'a std::cell::Cell<bool>,
+    );
     impl Drop for ReleaseOnDrop<'_> {
         fn drop(&mut self) {
             crate::cycle::token::note_traced_mutator(std::ptr::null_mut());
-            self.0.release_claim(crate::cycle::worker::ELDER, false);
+            self.0
+                .release_claim(crate::cycle::worker::ELDER, self.1.get());
         }
     }
-    let _held = ReleaseOnDrop(&record.token);
+    let posted = std::cell::Cell::new(false);
+    let _held = ReleaseOnDrop(&record.token, &posted);
     crate::cycle::token::note_traced_mutator(std::ptr::from_ref(record).cast_mut());
 
     let verdicts = unsafe { VerdictWriter::open(record) };
     let reader = unsafe { Reader::new(record.candidate_ring()) };
     let mut out = vec![0usize; k.min(verdicts.room())];
     let peeked = reader.peek(&mut out);
+    posted.set(peeked.len() > 0);
     for &entry in &out[..peeked.len()] {
         let entity = entry_entity(entry);
         verdicts

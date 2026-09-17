@@ -1135,7 +1135,20 @@ each closes on the tests the document names for it.
         claim is still its own swap `FREE → COLLECTOR|s` with the `SeqCst`
         fence pair of 2026-09-16, which the consent of S51.3 replaces
       tier: T2 · role: Critic
-- [ ] S51.2 The collector's request, wait and release   *(after S51.1)*
+- [x] S51.2 The collector's request, wait and release   *(after S51.1)*
+      closed 2026-09-17, in one commit with S51.3 and S51.4: the three are
+        unobservable apart — a request with no consent makes no batch, and
+        `POSTED` with no disposition on every ending loses the trigger. The
+        Critic's round over the three found the queue's growth still arming
+        the mutator (now the signal alone), a standing request read as work
+        every round after the first (now `Unanswered`), the explicit fire
+        spending an arming under a closed gate, and the deadline loop
+        waiting the whole bound on a refusal; all fixed before the commit.
+        The elder is born at the poll's first wake *and* at the pressure
+        path's endings (the design's "born at the poll's first wake" plus
+        the door that existed). W is `REQUEST_WAIT`, 2 ms, not a measured
+        figure; the harness uses 2 s so a loaded box does not read as a
+        silent mutator.
       done: `serve` requests by CAS `FREE → REQUESTED|s` and skips every
         other value, `POSTED` as neither batch nor work; waits with the
         deadline loop and bound W (a placeholder marked "not a measured
@@ -1146,7 +1159,8 @@ each closes on the tests the document names for it.
         its read-back; the elder is born at the poll's first wake, not at
         the pressure path; the timer reads the skip and the mutator's note
       tier: T2 · role: Critic
-- [ ] S51.3 The one reading, the consent and the arming   *(after S51.2)*
+- [x] S51.3 The one reading, the consent and the arming   *(after S51.2)*
+      closed 2026-09-17 with S51.2.
       done: one function of `cycle::token` reads the byte for the slot
         entry and the poll and nobody else; at `POSTED` it arms `Verdicts`
         and returns memory; at `REQUESTED|s` it consents, wakes s and
@@ -1162,7 +1176,9 @@ each closes on the tests the document names for it.
         ordering the mutator's stores instead, and the loom model gains the
         design's consent exhibits (E1–E4, the standing request)
       tier: T2 · role: Critic
-- [ ] S51.4 The collection over P   *(after S51.3)*
+- [x] S51.4 The collection over P   *(after S51.3)*
+      closed 2026-09-17 with S51.2; the four regression tests and four more
+        are `cycle/collect/tests/what_the_byte_arms.rs`.
       done: a `Verdicts` fire takes `POSTED → MUTATOR`, counts P's proposed
         and unwalked roots without writing, answers `EmptyLane` only on a
         zero count, traces and finalizes them, and disposes of P whole in

@@ -325,3 +325,40 @@ pub(crate) fn retire() {
     super::set_collector_cap(super::DEFAULT_COLLECTOR_CAP);
     let _ = take_rounds();
 }
+
+/// One [`super::serve`] of `record` on the calling thread with standing
+/// requests of its own, for a case whose collector thread serves once.
+///
+/// # Safety
+/// As [`super::serve`].
+pub(crate) unsafe fn serve_alone(record: *mut MutatorRecord) -> super::Served {
+    let mut standing = super::Standing::new(super::ELDER);
+    unsafe { super::serve(record, super::ELDER, 1, &mut standing) }
+}
+
+/// Wait for `collector` as the mutator does: reading its byte — consenting
+/// to a request, arming on `POSTED` — between yields, the way its poll and
+/// its slot frees would, until the thread finishes; then join it.
+pub(crate) fn consent_while<T>(collector: JoinHandle<T>) -> T {
+    while !collector.is_finished() {
+        crate::cycle::token::read_and_act_on_this_thread();
+        std::thread::yield_now();
+    }
+
+    collector.join().expect("the collector finished")
+}
+
+/// The request wait the serves use under the harness, in milliseconds:
+/// the crate's own bound is a placeholder sized for a running mutator, and
+/// a harness thread consenting between yields on a loaded box misses it,
+/// which would read as a silent mutator in a case about something else. A
+/// case about the bound itself sets its own ([`request_wait_for_tests`]).
+static REQUEST_WAIT_MILLIS: AtomicUsize = AtomicUsize::new(2_000);
+
+pub(crate) fn request_wait_for_tests(wait: std::time::Duration) {
+    REQUEST_WAIT_MILLIS.store(wait.as_millis() as usize, Ordering::Relaxed);
+}
+
+pub(crate) fn request_wait() -> std::time::Duration {
+    std::time::Duration::from_millis(REQUEST_WAIT_MILLIS.load(Ordering::Relaxed) as u64)
+}

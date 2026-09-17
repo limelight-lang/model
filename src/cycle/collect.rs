@@ -271,9 +271,22 @@ impl Drop for CollectingThread {
         // This guard outlives every trace window, membership and scratch arena
         // of either collection path, including their unwind cleanup. Keep the
         // collecting gate held until the final slot returns have finished.
+        // P is disposed of whole on every ending — a close that ran its own
+        // disposition owes no pass, and none runs — and
+        // the token's release to `FREE` after this never leaves a verdict
+        // behind (`crate::cycle::queue::retire_candidates_and_dispose_of_verdicts`).
         if self.retire_on_drop.get() {
-            unsafe { crate::cycle::queue::retire_candidates() };
+            unsafe {
+                crate::cycle::queue::retire_candidates_and_dispose_of_verdicts(
+                    crate::cycle::epoch::commits(),
+                )
+            };
         }
+
+        // An arming for P alone made before this collection is spent by it:
+        // P is empty behind the close, and a collection over it would open
+        // an empty window.
+        crate::gc::spend_an_arming_for_the_verdicts();
     }
 }
 
@@ -301,6 +314,28 @@ impl Drop for CollectingThread {
 /// (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 pub(crate) unsafe fn collect_off_the_poll() -> usize {
     unsafe { collection_off_the_poll() }.freed
+}
+
+/// The collection over P alone, which `POSTED` arms
+/// (`crate::gc::Arming::Verdicts`): the collector's proposed and unwalked
+/// roots, validated exactly and finalized as any batch is, with nothing of
+/// R read or traced, and P disposed of whole at the close. Returns entities
+/// reclaimed.
+///
+/// # Safety
+/// As [`collect_off_the_poll`].
+pub(crate) unsafe fn collect_over_the_verdicts() -> usize {
+    unsafe { collection(BatchForm::Verdicts) }.freed
+}
+
+/// What a collection off the poll reads as its batch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BatchForm {
+    /// R whole, with P's roots ahead in it: the explicit fire, the exit's
+    /// rounds, and an arming for R.
+    AllRoots,
+    /// P alone: the arming `POSTED` made.
+    Verdicts,
 }
 
 /// Where a collection off the poll ended. Every arm but the last is a zero
@@ -360,6 +395,14 @@ pub(crate) struct Collection {
 /// # Safety
 /// As [`collect_off_the_poll`].
 pub(crate) unsafe fn collection_off_the_poll() -> Collection {
+    unsafe { collection(BatchForm::AllRoots) }
+}
+
+/// [`collection_off_the_poll`] over `form`'s batch.
+///
+/// # Safety
+/// As [`collect_off_the_poll`].
+unsafe fn collection(form: BatchForm) -> Collection {
     let zero = |ending| Collection { freed: 0, ending };
     let Ok(_collecting) = CollectingThread::take() else {
         // Reached only by the explicit fire: the poll reads the gate before it
@@ -370,7 +413,7 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
         return zero(Ending::GateClosed);
     };
 
-    let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS) } {
+    let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS, form) } {
         Ok(traced) => traced,
         Err(TraceRefusal::NoWorkspace) => return zero(Ending::NoWorkspace),
         Err(TraceRefusal::EmptyLane) => return zero(Ending::EmptyLane),
@@ -427,12 +470,18 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
 ///
 /// # Safety
 /// As [`collect_off_the_poll`].
-unsafe fn open_and_trace(roots: usize) -> Result<(ActiveTrace, usize), TraceRefusal> {
+unsafe fn open_and_trace(
+    roots: usize,
+    form: BatchForm,
+) -> Result<(ActiveTrace, usize), TraceRefusal> {
     let Some(mut window) = ActiveTrace::open() else {
         return Err(TraceRefusal::NoWorkspace);
     };
 
-    window.read_candidates();
+    match form {
+        BatchForm::AllRoots => window.read_candidates(),
+        BatchForm::Verdicts => window.read_verdicts(),
+    }
     let (arena, batch) = window.rows_and_roots();
     if batch.is_empty() {
         return Err(TraceRefusal::EmptyLane);
@@ -906,7 +955,7 @@ unsafe fn make_withheld_returns_before_the_retry() {
 /// # Safety
 /// As [`collect_under_pressure`].
 unsafe fn trace_and_harvest(roots: usize) -> Traced {
-    let (mut window, roots_traced) = match unsafe { open_and_trace(roots) } {
+    let (mut window, roots_traced) = match unsafe { open_and_trace(roots, BatchForm::AllRoots) } {
         Ok(traced) => traced,
         Err(TraceRefusal::EmptyLane) => return Traced::Nothing,
         Err(TraceRefusal::NoWorkspace | TraceRefusal::AllocationFailed) => {

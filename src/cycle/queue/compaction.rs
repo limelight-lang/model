@@ -241,6 +241,11 @@ pub(super) fn free(entity: *mut RcHeader) {
     checkpoint(2);
     let entity = std::mem::replace(&mut pending.0, std::ptr::null_mut());
     unsafe { crate::memory::stdapi::ll_free(entity.cast()) };
+    let state = mutator_state();
+    if !state.is_null() {
+        let retired = &unsafe { mutator_state_ref(state) }.retired_by_the_close;
+        retired.set(retired.get().saturating_add(1));
+    }
 }
 
 /// The overflow buffer's pass: retire completed deaths and pack the rest

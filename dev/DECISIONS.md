@@ -8,6 +8,36 @@ never edited or deleted.
 
 ---
 
+## 2026-09-17 — the collector requests and the mutator consents, and the batch's release is the mutator's trigger
+
+**Ruled by Edmond** (`rfc/dev/DECISIONS.md`, "the collector's batch is the
+mutator's trigger, through the token byte"; `rfc/dev/design/trace-token-handshake.md`).
+The token is one byte of five states. The collector requests `FREE →
+REQUESTED|s` and waits `REQUEST_WAIT` (2 ms, not a measured figure) for the
+mutator's consent, made with a release swap by the one reading the slot
+free entry and the poll share; a mutator that did not answer is marked
+silent on the collector's line and its next request stands on the
+collector's frame, served at the two checkpoints. The batch's release
+writes `POSTED` when it posted, which that reading arms as the collection
+over P alone (`gc::Arming::Verdicts`); the collection disposes of P whole on
+every ending, in `CollectingThread`'s drop, and the close writes `FREE`.
+The elder is born at the poll's first wake as well as at a pressure
+collection's ending. **Why:** the poll's per-statement peek of P and the
+`SeqCst` fence pair of 2026-09-16 both existed because the collector's
+claim was its own; a consent the mutator makes orders its stores itself,
+and the byte it already reads carries the trigger. **Rejected:** a claim
+without consent kept as a fallback for a silent mutator — the standing
+request costs no wait and no fence; the close writing `POSTED` back on a
+refused ending — P is disposed of on every ending instead; removing the
+birth at the pressure path — kept, the poll's wake being the second door.
+**Cost:** one batch per mutator-collection; a completed death in R waits
+for the collector's batch and the mutator's collection over P to retire;
+the request's wait per served mutator; each unmeasured. The fence's 2.5–3 ns
+per free (`dev/BENCHMARKS.md`, "the free path's fence against the take") is
+gone.
+
+---
+
 ## 2026-09-16 — the free path's reading of the token is fenced against the take, and the accelerator question of 2026-09-15 is void
 
 **Decided (the model, on the Code Reviewer's finding at `PLAN.md` S38's

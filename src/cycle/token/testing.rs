@@ -64,7 +64,7 @@ impl HeldByACollector {
             let token = handed.token();
             let waits_before = unsafe { (*token).waits() };
             assert!(
-                unsafe { (*token).try_claim(crate::cycle::worker::ELDER) },
+                unsafe { (*token).claim_for_test(crate::cycle::worker::ELDER) },
                 "the mutator was not tracing"
             );
             held_sender.send(()).expect("the mutator waits for this");

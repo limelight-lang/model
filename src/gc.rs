@@ -26,44 +26,88 @@
 //! entry and reaches this module through no symbol.
 
 thread_local! {
-    /// Whether this thread owes a collection at its next clean point.
+    /// The collection this thread owes at its next clean point
+    /// ([`Arming`]), as its value.
     ///
     /// Per thread because what arms it is per thread: the candidate
     /// queue's growth, which is one thread's release path drawing on
-    /// one thread's reserve (`crate::cycle::queue`). A process-wide bit
+    /// one thread's reserve (`crate::cycle::queue`), and the byte the
+    /// collector wrote into this thread's record. A process-wide word
     /// would send every thread through a collection because one of them
     /// ran short, and would leave the thread that needs the memory
     /// waiting behind threads that do not.
     ///
-    /// `Cell<bool>` has no drop glue, which is the rule for anything a
+    /// `Cell<u8>` has no drop glue, which is the rule for anything a
     /// thread exit can reach (`memory::heap::ll_thread_exit`).
-    static COLLECTION_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static COLLECTION_ARMED: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
 }
 
-/// Arm this thread for a collection at its next clean point.
+/// The collection a thread is armed for, ordered so that two armings merge
+/// by the larger: a thread armed for R whole and for P collects once, over
+/// R whole, P's roots ahead in the batch (`crate::cycle::queue::Batch`).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(u8)]
+pub(crate) enum Arming {
+    /// No collection owed.
+    None = 0,
+    /// The collection over P: the collector's batch stands there, its
+    /// release having written `POSTED` into this thread's byte
+    /// (`crate::cycle::token::read_and_act_on_this_thread`).
+    Verdicts = 1,
+    /// The collection over R whole, with P disposed of in it.
+    AllRoots = 2,
+}
+
+impl Arming {
+    fn from_word(word: u8) -> Self {
+        match word {
+            0 => Self::None,
+            1 => Self::Verdicts,
+            _ => Self::AllRoots,
+        }
+    }
+}
+
+/// Arm this thread for a collection over R whole at its next clean point.
 ///
-/// Four callers arm, none of which can collect where it stands. The
-/// candidate queue, when a spare cell runs out of room — a reserve draw, or a
-/// refusal at both allocation paths — because `ll_release` holds no frame
-/// (`crate::cycle::queue`). The pressure collection, at every ending that
-/// leaves a prefix of the lane unread or that the gate refused, because what
-/// stands behind it is garbage the poll has to read
+/// Two callers arm, neither of which can collect where it stands. The
+/// pressure collection, at every ending that leaves a prefix of the lane
+/// unread or that the gate refused, because what stands behind it is
+/// garbage the poll has to read
 /// (`crate::cycle::collect::collect_under_pressure`). And the poll itself,
 /// when the epoch has turned over and the deferred lane is re-offered, so
-/// that the same safepoint traces the re-offered roots, and again when its
-/// reading of the verdict ring stopped at a proposed or unwalked root, which
-/// the collection it fires reads into its batch
-/// (`crate::cycle::queue::verdicts`). The arming is how the
+/// that the same safepoint traces the re-offered roots. The candidate
+/// queue's growth arms nothing: a block the manager refused raises the
+/// collector's signal (`crate::cycle::queue`). The third arming, for P
+/// alone, is the byte's ([`arm_for_the_verdicts`]). The arming is how the
 /// poll hears about any of them (`rfc/model/gc/strategies.md`, "Collection
 /// requests and triggers").
 pub(crate) fn arm() {
-    COLLECTION_ARMED.with(|armed| armed.set(true));
+    COLLECTION_ARMED.with(|armed| armed.set(Arming::AllRoots as u8));
 }
 
-/// Whether this thread was armed, and disarm it.
+/// Arm this thread for the collection over P, unless it is armed for more:
+/// the reading of `POSTED` on the free path and at the poll
+/// (`crate::cycle::token::read_and_act_on_this_thread`).
+pub(crate) fn arm_for_the_verdicts() {
+    COLLECTION_ARMED.with(|armed| armed.set(armed.get().max(Arming::Verdicts as u8)));
+}
+
+/// Lower an arming for P alone, keeping one for R whole: a collection just
+/// disposed of P whole, so a collection over P alone would open an empty
+/// window (`crate::cycle::collect::CollectingThread`).
+pub(crate) fn spend_an_arming_for_the_verdicts() {
+    COLLECTION_ARMED.with(|armed| {
+        if armed.get() == Arming::Verdicts as u8 {
+            armed.set(Arming::None as u8);
+        }
+    });
+}
+
+/// What this thread was armed for, and disarm it.
 #[inline]
-fn take_arming() -> bool {
-    COLLECTION_ARMED.with(|armed| armed.replace(false))
+fn take_arming() -> Arming {
+    Arming::from_word(COLLECTION_ARMED.with(|armed| armed.replace(0)))
 }
 
 /// Whether this thread is armed, without disarming it.
@@ -73,7 +117,13 @@ fn take_arming() -> bool {
 /// whether the arming happened or not.
 #[cfg(test)]
 pub(crate) fn is_armed() -> bool {
-    COLLECTION_ARMED.with(|armed| armed.get())
+    COLLECTION_ARMED.with(|armed| armed.get()) != 0
+}
+
+/// What this thread is armed for, without disarming it.
+#[cfg(test)]
+pub(crate) fn arming() -> Arming {
+    Arming::from_word(COLLECTION_ARMED.with(|armed| armed.get()))
 }
 
 /// Lower the flag, for a case whose subject is an arming.
@@ -103,6 +153,13 @@ pub(crate) fn disarm() {
 /// consistent (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
+    // A standing arming is spent where the fire can happen: the collection
+    // reads R whole and disposes of P whole, which is everything either
+    // arming asks for; a fire the gate refuses keeps it for the next poll.
+    if crate::cycle::collect::may_collect() {
+        let _ = take_arming();
+    }
+
     unsafe { crate::cycle::collect::collect_off_the_poll() }
 }
 
@@ -176,6 +233,12 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // (`crate::cycle::queue::refill_and_drain`).
     crate::cycle::queue::refill_and_drain();
 
+    // The byte, read by the one reading the slot free entry makes too, and
+    // before the gate: a request is consented to and `POSTED` arms whether
+    // or not this poll may fire, an arming made under a closed gate standing
+    // for the next clean poll (`crate::cycle::token`).
+    let reading = crate::cycle::token::read_and_act_on_this_thread();
+
     // And the returns a foreign trace left this thread withholding, made
     // here so that a thread which frees nothing after the holder let go
     // still gives them back at its next safepoint
@@ -200,33 +263,33 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         return 0;
     }
 
-    // The collector's verdicts, read behind the gate so that a closed-gate
-    // poll reads none: P's prefix of completed deaths and roots read live is
-    // disposed of here, and the first proposed or unwalked root arms the
-    // collection this same poll fires, which reads it into its batch
-    // (`crate::cycle::queue::verdicts`).
-    let reading =
-        crate::cycle::queue::verdicts::dispose_prefix_at_the_poll(crate::cycle::epoch::commits());
-    if reading.proposal_stands {
-        arm();
+    // An armed poll that read a collector tracing defers: the batch is the
+    // trace taken off this thread, and the collection its verdicts owe is
+    // fired one poll later, by `POSTED` at the next reading or by the arming
+    // kept here — the second refusal that keeps an arming
+    // (`rfc/dev/design/trace-token-handshake.md`, E9).
+    if reading == crate::cycle::token::Reading::Collector {
+        crate::cycle::queue::signal_the_collector_if_due();
+        return 0;
     }
 
-    // Armed, so fire. The disarm happens whether or not the fire collects
-    // anything, because an arming is an event and not a state: a thread that
-    // stayed armed past a fire would fire at every poll for the rest of its
-    // life. The gate above is the one refusal that keeps the arming, and it
-    // is the one where no fire happened.
-    let freed = if take_arming() {
-        unsafe { ll_gc_collect_cycles() }
-    } else {
-        0
+    // Armed, so fire, over what the arming names. The disarm happens whether
+    // or not the fire collects anything, because an arming is an event and
+    // not a state: a thread that stayed armed past a fire would fire at
+    // every poll for the rest of its life. The gate above is the one refusal
+    // that keeps the arming, and it is the one where no fire happened.
+    crate::cycle::queue::take_retired_by_the_close();
+    let freed = match take_arming() {
+        Arming::None => 0,
+        Arming::Verdicts => unsafe { crate::cycle::collect::collect_over_the_verdicts() },
+        Arming::AllRoots => unsafe { ll_gc_collect_cycles() },
     };
 
-    // What the disposition freed — a death retired out of P, or an entity
-    // the collection a proposal armed reclaimed — is the collector's timer's
-    // to read: a note on this thread's record, and no arming
+    // What the collection freed or retired — a death retired out of P, or an
+    // entity the collection a proposal armed reclaimed — is the collector's
+    // timer's to read: a note on this thread's record, and no arming
     // (`crate::cycle::worker`, "The thread, and the round over the records").
-    if reading.retired > 0 || (reading.proposal_stands && freed > 0) {
+    if freed > 0 || crate::cycle::queue::take_retired_by_the_close() > 0 {
         crate::cycle::queue::verdicts::note_freeing_disposition();
     }
 

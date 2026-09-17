@@ -48,6 +48,9 @@ fn wait_until(mut reached: impl FnMut() -> bool, within: std::time::Duration) ->
             return false;
         }
 
+        // As a mutator waits: its byte read between two sleeps, a request
+        // consented to, `POSTED` armed.
+        crate::cycle::token::read_and_act_on_this_thread();
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
@@ -65,6 +68,7 @@ const ANY_ENTRY: usize = 1;
 /// harness thread another case used.
 fn reset_lanes() {
     crate::cycle::queue::verdicts::discard_standing_verdicts();
+    unsafe { &*record() }.token.clear_posted_for_test();
     crate::cycle::queue::release_queue_segments();
     crate::memory::critical::drain_for_test();
     crate::gc::disarm();
@@ -436,7 +440,7 @@ fn a_round_reaches_a_record_beyond_the_callers_and_leaves_a_free_one_alone() {
     testing::confine_rounds_to(free);
     let _ = testing::take_records_visited();
     let _ = testing::take_mutators_served();
-    round(ELDER, ANY_ENTRY);
+    round(ELDER, ANY_ENTRY, &mut Standing::new(ELDER));
     assert!(
         testing::take_records_visited() >= 1,
         "the walk reached past the caller's record"

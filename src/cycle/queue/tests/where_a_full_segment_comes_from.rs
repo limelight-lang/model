@@ -93,11 +93,11 @@ fn neither_the_write_nor_the_overflow_allocates_or_asks_the_pool() {
     reset();
 }
 
-/// With both cells empty the reserve answers, and the poll is armed by
+/// With both cells empty the reserve answers, and the collector is signalled by
 /// the draw — which is how the cells get filled again and how a
 /// collection is asked for at all.
 #[test]
-fn a_growth_with_no_spare_draws_the_reserve_and_arms_the_poll() {
+fn a_growth_with_no_spare_draws_the_reserve_and_signals_the_collector() {
     let _g = test_guard();
     let class = candidate_class("ArmingCandidate");
     let mut arena = Arena::new();
@@ -114,27 +114,21 @@ fn a_growth_with_no_spare_draws_the_reserve_and_arms_the_poll() {
         "the first registration drew the reserve"
     );
     assert!(
-        crate::gc::is_armed(),
-        "a reserve draw is what asks for a collection"
+        crate::cycle::queue::signal_is_due(),
+        "a reserve draw is the manager's refusal, and the collector's to hear of"
     );
+    assert!(!crate::gc::is_armed(), "and no in-line collection");
 
-    // The poll disarms as it fires, and the collection behind the arming
-    // reads one root that no traced edge subtracts from, so it frees
-    // nothing and reports zero. What the pair of assertions reads is that
-    // the arming reached the poll and did not survive it.
+    // The poll fires nothing and refills the cells behind the draw; the
+    // root stays in R for the collector's batch.
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
-    assert!(!crate::gc::is_armed(), "the poll disarmed it");
     assert_eq!(
         spare_count(),
-        SPARE_SEGMENTS - 1,
-        "and refilled the cells behind it, one of which the close spent on \
-         the deferred lane"
+        SPARE_SEGMENTS,
+        "and refilled the cells behind it"
     );
-    assert_eq!(
-        deferred_count(),
-        1,
-        "the root was read reachable and deferred"
-    );
+    assert_eq!(candidate_count(), 1, "the root stands in R");
+    assert_eq!(deferred_count(), 0);
 
     unsafe { dismantle_candidate(first) };
     reset();
@@ -180,9 +174,10 @@ fn every_allocation_path_refused_puts_the_entry_in_the_overflow_buffer() {
         "the bit stays: an entry names this entity, in the overflow buffer"
     );
     assert!(
-        crate::gc::is_armed(),
-        "an overflow append asks for a collection"
+        crate::cycle::queue::signal_is_due(),
+        "an overflow append raises the collector's signal"
     );
+    assert!(!crate::gc::is_armed(), "and arms no collection");
 
     reset();
 }
@@ -202,17 +197,15 @@ fn the_poll_drains_the_overflow_buffer_into_the_queue() {
     unsafe { release(entity) };
     assert_eq!(overflow_len(), 1);
 
-    // The poll drains the buffer and then fires the collection the
-    // overflow armed, which frees nothing: the entry it traces names a
-    // root a reference of this case still holds.
+    // The poll drains the buffer and fires nothing: the overflow signalled
+    // the collector, whose batch is what reads the entry.
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
 
     assert_eq!(overflow_len(), 0, "the poll emptied it");
-    // Into the queue the refill made room in, and then out of its active lane
-    // again: the collection read this root live, and the close of a collection
-    // off the poll puts a live root in the deferred lane (`PLAN.md` S37.6).
-    assert_eq!(candidate_count(), 0);
-    assert_eq!(deferred_count(), 1);
+    // Into the queue the refill made room in, where it stays for the
+    // collector.
+    assert_eq!(candidate_count(), 1);
+    assert_eq!(deferred_count(), 0);
     let mut tokens = Vec::new();
     collect_lane_tokens(&mut tokens);
     assert_eq!(tokens, vec![entity], "and the entry still names the entity");
@@ -276,18 +269,10 @@ fn a_bulk_release_polls_on_its_own_backedge() {
         0,
         "the backedge poll refilled the cells and drained what had overflowed"
     );
-    // Every candidate is in the queue, and the lane it stands in is the close's
-    // to choose: the collection this poll ran read them all live, so the ones
-    // it had a spare segment for went to the deferred lane (`PLAN.md` S37.6).
-    assert_eq!(
-        candidate_count() + deferred_count(),
-        count,
-        "and every candidate is in the queue"
-    );
-    assert!(
-        deferred_count() > 0,
-        "the reading deferred what the spare cells had room for"
-    );
+    // Every candidate is in R: the backedge poll ran no collection, the
+    // growth having signalled the collector rather than armed one.
+    assert_eq!(candidate_count(), count, "and every candidate is in R");
+    assert_eq!(deferred_count(), 0);
 
     for &entity in &entities {
         unsafe { dismantle_candidate(entity) };

@@ -400,7 +400,7 @@ pub(crate) unsafe fn traced_from_a_collector_thread<T: Send + 'static>(
         let token = token.token();
         let root = root.into_inner();
         assert!(
-            unsafe { (*token).try_claim(crate::cycle::worker::ELDER) },
+            unsafe { (*token).claim_for_test(crate::cycle::worker::ELDER) },
             "the mutator was tracing"
         );
         held_sender.send(()).expect("the mutator waits for this");

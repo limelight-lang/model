@@ -252,6 +252,10 @@ struct MutatorCycleState {
     /// registration path; cleared by the poll when its wake was received,
     /// and by an in-line collection's reading of R.
     signal_due: Cell<bool>,
+    /// Completed deaths a compaction retired since the poll last asked: the
+    /// figure the poll's note to the collector's timer reads beside what a
+    /// collection freed ([`take_retired_by_the_close`]).
+    retired_by_the_close: Cell<u32>,
 }
 
 thread_local! {
@@ -275,6 +279,7 @@ impl MutatorCycleState {
             spare_count: Cell::new(0),
             overflow_len: Cell::new(0),
             signal_due: Cell::new(false),
+            retired_by_the_close: Cell::new(0),
         }
     }
 
@@ -402,10 +407,12 @@ unsafe fn append_entry(state: *mut MutatorCycleState, entity: *mut RcHeader) {
         Ok(ring::Pushed::IntoNextBlock) => mutator_state.signal_due.set(true),
         Err(ring::NoBlock) => {
             unsafe { append_to_overflow(state, entity) };
-            // The overflow append arms on its own: the refill the poll
-            // performs is unconditional, so what the arming buys here is the
-            // fire, not the cells.
-            crate::gc::arm();
+            // A block the manager refused is the collector's to hear of, as
+            // a block filled is: the signal, sent by the poll, and no
+            // collection of the mutator's own (Edmond, 2026-09-17,
+            // `rfc/dev/design/trace-token-handshake.md`, "The fourth
+            // round"). The refill the poll performs is unconditional.
+            mutator_state.signal_due.set(true);
         }
     }
 }
@@ -428,9 +435,29 @@ pub(crate) fn signal_the_collector_if_due() {
         return;
     }
 
-    if crate::cycle::worker::wake(this_thread_record_ref().collector()) {
+    let collector = this_thread_record_ref().collector();
+    if crate::cycle::worker::wake(collector) {
         mutator_state.signal_due.set(false);
+    } else if collector == crate::cycle::worker::ELDER {
+        // A wake with no thread to receive it births the elder: the poll
+        // has a frame and may allocate, and the collector is the one tracer
+        // of R (`crate::cycle::worker`, "The thread, and the round over the
+        // records"). The flag stands for the next poll's wake.
+        crate::cycle::worker::ensure_thread();
     }
+}
+
+/// Completed deaths the compactions on this thread retired since this last
+/// answered, which it leaves at zero.
+pub(crate) fn take_retired_by_the_close() -> usize {
+    let state = mutator_state();
+    if state.is_null() {
+        return 0;
+    }
+
+    unsafe { mutator_state_ref(state) }
+        .retired_by_the_close
+        .replace(0) as usize
 }
 
 /// Raise the poll's signal flag as a filled block would, for a case.
@@ -466,12 +493,13 @@ fn fresh_block(mutator_state: &MutatorCycleState) -> *mut BlockHeader {
         // thread-local with drop glue may cost").
         block = gc_metadata::adopt(crate::memory::critical::draw());
         if !block.is_null() {
-            // A draw is pressure, and pressure is what asks for a
-            // collection. Armed here rather than beside the refusal
-            // in `append_entry` so that the two paths arm independently: the
-            // criterion names them separately and a later tier
-            // between them would lose one silently.
-            crate::gc::arm();
+            // A draw is the manager's refusal one tier up, and the
+            // collector's to hear of by the poll's signal. Raised here
+            // rather than beside the refusal in `append_entry` so that the
+            // two paths signal independently: the criterion names them
+            // separately and a later tier between them would lose one
+            // silently.
+            mutator_state.signal_due.set(true);
         }
     }
 
@@ -1039,6 +1067,17 @@ pub(crate) fn read_batch() -> Batch {
     }
 }
 
+/// Read P alone as one collection's batch — every entry the collector has
+/// posted, counted and left where it is — and nothing of R: the collection
+/// `POSTED` fires (`crate::gc::Arming::Verdicts`). The signal flag stands,
+/// since R is not read.
+pub(crate) fn read_batch_of_verdicts() -> Batch {
+    Batch {
+        len: 0,
+        verdicts: verdicts::verdict_ring().map_or(0, |ring| ring.count()),
+    }
+}
+
 /// Dispose of a traced batch at the close: an entry whose entity completed
 /// its death is retired, an entry [`Batch::mark_for_deferral`] marked
 /// goes to the deferred lane, and every other entry of R stays in the ring,
@@ -1154,6 +1193,21 @@ pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
 /// moves. Every entry still names its own held allocation.
 pub(crate) unsafe fn retire_candidates() {
     compaction::compact(None, false, None);
+}
+
+/// [`retire_candidates`] over R, and over P the disposition of every entry
+/// standing in it followed by the advance of its front past them all: the
+/// close of a collection that ended before its own disposition, on every
+/// path, so that the token's release to `FREE` never leaves a verdict
+/// behind it (`rfc/dev/design/trace-token-handshake.md`, "The fourth
+/// round"). A root the collection never finalized goes back into R as a
+/// registration is; `at_commits` is the mirror a root read live records.
+///
+/// # Safety
+/// As [`retire_candidates`].
+pub(crate) unsafe fn retire_candidates_and_dispose_of_verdicts(at_commits: u64) {
+    let standing = verdicts::verdict_ring().map_or(0, |ring| ring.count());
+    compaction::compact(Some(at_commits), false, Some(standing));
 }
 
 mod compaction;

@@ -188,7 +188,7 @@ a collector for its batch, with a mutex an owner waits on when a collector
 holds it, standing in a record the process keeps past the thread,
 `cycle::mutator_record`), and the two rings beside it: the
 candidate ring a collector reads behind the owner's writer, and the verdict
-ring the owner reads at its poll (`rfc/dev/DECISIONS.md`, "the candidate
+ring the owner reads in the collection its byte, at `POSTED`, arms (`rfc/dev/DECISIONS.md`, "the candidate
 queue is read behind its writer, and the collector's verdicts come back by
 a second ring").
 

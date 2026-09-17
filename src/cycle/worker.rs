@@ -1,9 +1,11 @@
-//! The collector thread, and what it does for one mutator: claim the mutator's
-//! token by compare-and-swap, take a batch of the mutator's candidates from
-//! behind its writer, trace them on a copy through `cells::AtomicCells`
-//! under a block budget, post one verdict per root into the mutator's verdict
-//! ring P in R's order, advance R past them, and release
-//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff";
+//! The collector thread, and what it does for one mutator: request the
+//! mutator's token and wait for its consent, take a batch of the mutator's
+//! candidates from behind its writer, trace them on a copy through
+//! `cells::AtomicCells` under a block budget, post one verdict per root into
+//! the mutator's verdict ring P in R's order, advance R past them, and
+//! release — to `POSTED`, which tells the mutator to collect over P
+//! (`rfc/dev/design/trace-token-handshake.md`;
+//! `rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff";
 //! `rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
 //! and the collector's verdicts come back by a second ring", "The
 //! collector's batch"). What the mutator does with the verdicts is
@@ -15,10 +17,13 @@
 //! the threshold, off the front block's words alone, and P's room — and
 //! opens its own workspace: a mutator with nothing to take pays no
 //! foreign-holder window, under which every one of its deaths is withheld.
-//! Then it claims
+//! Then it requests
 //! the token by one swap from `FREE`, which fails on a mutator collecting in
-//! line — the mutator holds `MUTATOR` through its close — and on every
-//! other holder, and a failure is a skip. It peeks up to K entries
+//! line — the mutator holds `MUTATOR` through its close — on one that has
+//! not disposed of the last batch (`POSTED`) and on every other holder, a
+//! failure being a skip; and it waits for the mutator's consent, which the
+//! mutator gives at its next slot free or poll ([`serve`] says how long,
+//! and what a mutator that never answers costs). It peeks up to K entries
 //! from R's front through the reader's pair without consuming them, K
 //! clamped to P's room and to what R holds, and copies them into its
 //! workspace. It marks and scans each root through `cells::AtomicCells` on
@@ -46,11 +51,12 @@
 //! # The thread, and the round over the records
 //!
 //! The elder collector thread is born by [`ensure_thread`] and never at
-//! startup (`dev/DECISIONS.md`, "the collector thread is born at the first
-//! pressure collection"): the pressure path is the one fire point the
-//! runtime owns, and a thread born there costs nothing to a process that
-//! never runs short. The pressure collection asks for it at each of its
-//! endings (`crate::cycle::collect::collect_under_pressure`). It starts
+//! startup: at the first wake a mutator's poll would send it — a block of
+//! R filled, the poll having a frame that may allocate
+//! (`crate::cycle::queue::signal_the_collector_if_due`) — and at each
+//! ending of a pressure collection
+//! (`crate::cycle::collect::collect_under_pressure`), so that a process
+//! that never fills a block and never runs short holds no thread. It starts
 //! as any registered thread does, through `ll_thread_init`, whose base block
 //! draw can be refused; a refused base block is a thread that never started,
 //! and a call [`BIRTH_RETRY_INTERVAL`] or more after the refusal births
@@ -62,24 +68,28 @@
 //! **A wake starts a round and decides nothing else** (`rfc/dev/DECISIONS.md`,
 //! "the collector traces on the count it reads itself"; `rfc/model/gc/
 //! rc-cycle.md`, "Signals"). Between two rounds the thread waits on its
-//! fallback timer, and three things end the wait: a mutator's poll, a
+//! fallback timer, and four things end the wait: a mutator's poll, a
 //! registration having filled a block of its R since its last signal
-//! ([`wake`], through `crate::cycle::queue`); a pressure collection,
-//! at every ending; and the timer. The timer is what serves a mutator whose
-//! signal bought no batch — its token held or it collecting in line at the
-//! round, P without room, the workspace refused — and a mutator at the
-//! threshold that reaches no poll; a mutator below the threshold is served
-//! by no round, its ring being its own collections'. The interval adapts
-//! between [`FALLBACK_INTERVAL_MIN`] and [`FALLBACK_INTERVAL_MAX`]: the
-//! minimum after a round that made a batch, so that a backlog above the
-//! threshold drains at a batch per minimum, and after one that read a
-//! mutator's note that its disposition of P freed something
+//! ([`wake`], through `crate::cycle::queue`); a mutator's consent to a
+//! request this collector left standing; a pressure collection, at every
+//! ending; and the timer. The timer is what serves a mutator whose signal
+//! bought no batch — its token held or it collecting in line at the round,
+//! P without room, the workspace refused — and a mutator at the threshold
+//! that reaches no poll; a mutator below the threshold is served by no
+//! round. The interval adapts between [`FALLBACK_INTERVAL_MIN`] and
+//! [`FALLBACK_INTERVAL_MAX`]: the minimum after a round that made a batch,
+//! so that a backlog above the threshold drains at a batch per minimum,
+//! and after one that read a mutator's note that the collection its poll
+//! fired freed or retired something
 //! ([`MutatorRecord::take_freeing_disposition_note`]); held after a round
 //! that read a mutator at the threshold and could not serve it; doubled
-//! after a round that read no mutator at the threshold, so that a process
-//! with nothing to screen costs a wake a second. What a wake with no
-//! thread to receive it costs is [`wake`]'s; one sent during a round ends
-//! the wait that follows it.
+//! after a round that read no mutator at the threshold — a mutator at
+//! `POSTED` or one whose request stands unanswered is neither a batch nor
+//! work, and its note is the way back — so that a process with nothing to
+//! screen costs a wake a second. What a wake with no thread to receive it
+//! costs is [`wake`]'s; one sent during a round ends the wait that follows
+//! it, and a wait inside a round that consumed a wake is paid for by
+//! skipping the sleep after that round once.
 //!
 //! # Siblings
 //!
@@ -121,6 +131,7 @@ use crate::cycle::queue::verdicts::{Verdict, VerdictWriter};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::scan::{ScanResult, scan};
 use crate::cycle::shadow::{self, Color};
+use crate::cycle::token::Withdrawn;
 use crate::refcount::RcHeader;
 use crate::ring::{BLOCK_ENTRIES, Reader};
 
@@ -128,9 +139,17 @@ use crate::ring::{BLOCK_ENTRIES, Reader};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Served {
     /// The byte was not free: the mutator collects in line, another
-    /// collector holds or asks for it, or the mutator has not disposed of
-    /// the last batch's verdicts.
+    /// collector holds or asks for it, or the mutator refused the request.
     TokenHeld,
+    /// The mutator has not disposed of the last batch's verdicts: the byte
+    /// reads `POSTED`. Neither a batch nor work — nothing the collector can
+    /// do serves it — and the mutator's note of its disposition is what
+    /// brings the timer back.
+    Posted,
+    /// The request stands unanswered: the mutator reached no slot free and
+    /// no poll inside the wait, or was silent already. Neither a batch nor
+    /// work; the request is served at a checkpoint when the mutator answers.
+    Unanswered,
     /// Nothing was taken: before any claim — R below the threshold, P
     /// without room, the workspace refused, the record under another
     /// collector's reading — or under the claim, when the peek came up
@@ -175,6 +194,19 @@ const TRACE_BLOCK_BUDGET: usize = 8;
 pub(crate) const SOFT_THRESHOLD: usize = INITIAL_BATCH;
 
 const _: () = assert!(SOFT_THRESHOLD <= BATCH_BOUND);
+
+/// How long a collector waits for a mutator that answered its last request
+/// to consent to this one, before it withdraws. Not a measured figure: it
+/// lands above the tail of the interval between two polls or slot frees of
+/// a running mutator on the corpus, which bench measures
+/// (`rfc/dev/design/trace-token-handshake.md`, "Cost"); a mutator blocked
+/// past it is marked silent and its next request stands with no wait.
+const REQUEST_WAIT: Duration = Duration::from_millis(2);
+
+/// Requests to silent mutators a collector keeps standing at once, on its
+/// own frame; a silent mutator past the capacity is skipped that round. Not
+/// a measured figure.
+const STANDING_CAPACITY: usize = BACKLOGGED_REMEMBERED;
 
 /// The fallback timer's minimum: the wait after a round that made a batch or
 /// read a freeing disposition. Not a measured figure.
@@ -434,13 +466,16 @@ fn thread_body(index: usize) {
     collector.state.store(ALIVE, Ordering::Release);
     let mut interval = FALLBACK_INTERVAL_MIN;
     let mut backlog_rounds = 0;
+    // The requests this collector left standing on silent mutators, on this
+    // frame for the thread's life; the drop withdraws them.
+    let mut standing = Standing::new(index);
     while !retiring() && collector.state.load(Ordering::Relaxed) == ALIVE {
         let Round {
             made_a_batch,
             saw_work,
             read_a_freeing_disposition,
             backlogged,
-        } = round(index, threshold_for_rounds());
+        } = round(index, threshold_for_rounds(), &mut standing);
         interval = if made_a_batch || read_a_freeing_disposition {
             FALLBACK_INTERVAL_MIN
         } else if saw_work {
@@ -478,7 +513,13 @@ fn thread_body(index: usize) {
         testing::note_round(index, interval);
         #[cfg(test)]
         let interval = testing::interval_for_this_wait().unwrap_or(interval);
-        std::thread::park_timeout(interval);
+        // A wait inside a round that ended early with nothing served may
+        // have consumed a round-start wake, so the sleep after that round is
+        // skipped once (`rfc/dev/design/trace-token-handshake.md`, "The two
+        // sides", the collector).
+        if !standing.take_consumed_a_wake() {
+            std::thread::park_timeout(interval);
+        }
     }
 
     crate::memory::heap::ll_thread_exit();
@@ -643,7 +684,7 @@ struct Round {
 /// record named to it but the thread's own, which polls nothing, read each
 /// mutator's note for the timer, and serve each whose R holds `threshold`
 /// entries or more. What a serve does is [`serve`]'s.
-fn round(index: usize, threshold: usize) -> Round {
+fn round(index: usize, threshold: usize, standing: &mut Standing) -> Round {
     let own = mutator_record::this_thread_record();
     let mut outcome = Round::default();
     mutator_record::for_each_record(|record| {
@@ -663,7 +704,8 @@ fn round(index: usize, threshold: usize) -> Round {
             outcome.read_a_freeing_disposition = true;
         }
 
-        let served = unsafe { serve(record, index, threshold) };
+        let served = unsafe { serve(record, index, threshold, standing) };
+        outcome.made_a_batch |= standing.take_batches_served() > 0;
         match served {
             Served::Batch { backlog, .. } => {
                 outcome.made_a_batch = true;
@@ -672,7 +714,7 @@ fn round(index: usize, threshold: usize) -> Round {
                 }
             }
             Served::TokenHeld => outcome.saw_work = true,
-            Served::Idle => {}
+            Served::Idle | Served::Posted | Served::Unanswered => {}
         }
 
         #[cfg(test)]
@@ -681,24 +723,53 @@ fn round(index: usize, threshold: usize) -> Round {
     outcome
 }
 
-/// Serve `record`'s mutator once: claim its token by compare-and-swap, held
-/// being a skip; skip a mutator collecting in line; otherwise make one batch
-/// (module doc) and release. `threshold` is the count of R, read before
-/// any claim, below which the mutator is idle to this serve; the round passes
-/// [`SOFT_THRESHOLD`].
+/// Serve `record`'s mutator once: request its token, wait for the mutator's
+/// consent, make one batch (module doc) under the grant and release —
+/// to `POSTED` when the batch posted verdicts, which is what tells the
+/// mutator to collect, and to `FREE` when it posted nothing. `threshold`
+/// is the count of R, read before any request, below which the mutator is
+/// idle to this serve; the round passes [`SOFT_THRESHOLD`]. `slot` is the
+/// calling collector's, the name its request writes into the byte.
+///
+/// **The request is one swap `FREE → REQUESTED|slot`**, and every other
+/// value is a skip: `MUTATOR` a mutator collecting in line, `POSTED` one
+/// that has not disposed of the last batch, `REQUESTED` or `COLLECTOR`
+/// another collector's. A mutator that answered its last request is waited
+/// for up to [`REQUEST_WAIT`], in a loop on the byte alone — the wait's
+/// return is not an answer — and past the deadline the request is withdrawn, the
+/// withdrawal's read-back deciding what stood there meanwhile
+/// ([`crate::cycle::token::Withdrawn`]). A mutator that did not answer its
+/// last request is silent ([`MutatorRecord::is_silent`]): its request is
+/// made and left standing on the collector's frame, with no wait, and is
+/// served at a checkpoint ([`Standing::checkpoint`]) once the mutator
+/// answers — at its first slot free or poll after waking, at most one
+/// stranger's batch away — or withdrawn when the thread ends. The
+/// checkpoints are the two places the collector commits time: before every
+/// request, here, and after every return of the wait
+/// (`rfc/dev/design/trace-token-handshake.md`, "The two sides", the
+/// collector, and the second and third rounds).
 ///
 /// Runs on a collector thread, which holds a base block of its own for the
 /// workspace the batch's trace opens (`crate::memory::heap::ll_thread_init`).
 ///
-/// `slot` is the calling collector's, the name its claim writes into the
-/// byte.
-///
 /// # Safety
 /// `record` is a record of the registry's, and the calling thread is not its
 /// mutator.
-pub(crate) unsafe fn serve(record: *mut MutatorRecord, slot: usize, threshold: usize) -> Served {
+pub(crate) unsafe fn serve(
+    record: *mut MutatorRecord,
+    slot: usize,
+    threshold: usize,
+    standing: &mut Standing,
+) -> Served {
     let mutator = unsafe { &*record };
-    // Work first, and the collector's own memory, before any claim — by
+    // The checkpoint before the request: a silent mutator that consented
+    // since the last one is served ahead of any stranger.
+    let Some(mut arena) = TraceScratchArena::open() else {
+        return Served::Idle;
+    };
+    standing.checkpoint(&mut arena, threshold);
+
+    // Work first, and the collector's own memory, before any request — by
     // loads alone, since nothing of the mutator's may be written under no
     // claim, and off the front block alone (`Reader::has_at_least` says
     // why): whether R holds the threshold, P's room off its index words,
@@ -732,27 +803,252 @@ pub(crate) unsafe fn serve(record: *mut MutatorRecord, slot: usize, threshold: u
         return Served::Idle;
     }
 
-    let Some(mut arena) = TraceScratchArena::open() else {
-        return Served::Idle;
-    };
-
-    if !mutator.token.try_claim(slot) {
-        return Served::TokenHeld;
+    if let Err(seen) = mutator.token.request(slot) {
+        return if crate::cycle::token::state(seen) == crate::cycle::token::POSTED {
+            Served::Posted
+        } else if seen == crate::cycle::token::word(crate::cycle::token::REQUESTED, slot) {
+            // This collector's own request, still standing on a silent
+            // mutator: neither a batch nor work, round after round.
+            Served::Unanswered
+        } else {
+            Served::TokenHeld
+        };
     }
 
+    if mutator.is_silent() {
+        return if standing.push(record) {
+            Served::Unanswered
+        } else {
+            // Past the array's capacity the request is withdrawn at once,
+            // and the mutator skipped this round.
+            match mutator.token.withdraw(slot) {
+                Withdrawn::Granted => unsafe {
+                    serve_the_grant(mutator, slot, &mut arena, threshold)
+                },
+                Withdrawn::Withdrawn | Withdrawn::MovedOn => Served::Unanswered,
+                Withdrawn::TakenByTheMutator => Served::TokenHeld,
+            }
+        };
+    }
+
+    // Withdrawn on the unwind between the request and the grant: a request
+    // left standing by a collector that is gone would be consented to by a
+    // mutator that then withholds forever.
+    let mut request = WithdrawOnDrop {
+        token: &mutator.token,
+        slot,
+        standing: true,
+    };
+    let granted = crate::cycle::token::word(crate::cycle::token::COLLECTOR, slot);
+    let requested = crate::cycle::token::word(crate::cycle::token::REQUESTED, slot);
+    #[cfg(not(test))]
+    let wait = REQUEST_WAIT;
+    #[cfg(test)]
+    let wait = testing::request_wait();
+    let deadline = Instant::now() + wait;
+    loop {
+        let seen = mutator.token.read();
+        if seen == granted {
+            request.standing = false;
+            break;
+        }
+
+        // Anything but the standing request is an answer: the grant above,
+        // or a refusal or a life ended, which the withdrawal's read-back
+        // names without waiting out the bound.
+        let now = Instant::now();
+        if seen != requested || now >= deadline {
+            request.standing = false;
+            return match mutator.token.withdraw(slot) {
+                Withdrawn::Granted => unsafe {
+                    serve_the_grant(mutator, slot, &mut arena, threshold)
+                },
+                Withdrawn::Withdrawn => {
+                    mutator.note_silent(true);
+                    Served::Unanswered
+                }
+                Withdrawn::TakenByTheMutator => Served::TokenHeld,
+                Withdrawn::MovedOn => Served::Idle,
+            };
+        }
+
+        std::thread::park_timeout(deadline - now);
+        // A return before the deadline that was not the grant: the
+        // checkpoint, and if it served nothing the wake this wait may have
+        // consumed is remembered.
+        if Instant::now() < deadline
+            && mutator.token.read() != granted
+            && standing.checkpoint(&mut arena, threshold) == 0
+        {
+            standing.consumed_a_wake = true;
+        }
+    }
+
+    unsafe { serve_the_grant(mutator, slot, &mut arena, threshold) }
+}
+
+/// Serve a grant this collector holds: the batch under `COLLECTOR|slot`, the
+/// arena's reset, the release — to `POSTED` when the batch posted.
+///
+/// # Safety
+/// The calling collector holds `mutator`'s token as `COLLECTOR|slot`.
+unsafe fn serve_the_grant(
+    mutator: &MutatorRecord,
+    slot: usize,
+    arena: &mut TraceScratchArena,
+    threshold: usize,
+) -> Served {
     // Released on the unwind too: a collector that panicked under the claim
-    // would otherwise leave the mutator's exit waiting forever.
-    struct ReleaseOnDrop<'a>(&'a crate::cycle::token::TraceToken, usize);
+    // would otherwise leave the mutator's wait forever; the posted fact is
+    // set before the first post, so the unwind's release says what the
+    // return's would.
+    struct ReleaseOnDrop<'a> {
+        token: &'a crate::cycle::token::TraceToken,
+        slot: usize,
+        posted: std::cell::Cell<bool>,
+    }
     impl Drop for ReleaseOnDrop<'_> {
         fn drop(&mut self) {
             crate::cycle::token::note_traced_mutator(std::ptr::null_mut());
-            self.0.release_claim(self.1, false);
+            self.token.release_claim(self.slot, self.posted.get());
         }
     }
-    let _held = ReleaseOnDrop(&mutator.token, slot);
-    crate::cycle::token::note_traced_mutator(record);
+    let held = ReleaseOnDrop {
+        token: &mutator.token,
+        slot,
+        posted: std::cell::Cell::new(false),
+    };
+    crate::cycle::token::note_traced_mutator(std::ptr::from_ref(mutator).cast_mut());
+    mutator.note_silent(false);
 
-    unsafe { batch(mutator, &mut arena, threshold) }
+    unsafe { batch(mutator, arena, threshold, &held.posted) }
+}
+
+/// A request between its swap and its grant, withdrawn on the unwind.
+struct WithdrawOnDrop<'a> {
+    token: &'a crate::cycle::token::TraceToken,
+    slot: usize,
+    standing: bool,
+}
+
+impl Drop for WithdrawOnDrop<'_> {
+    fn drop(&mut self) {
+        if !self.standing {
+            return;
+        }
+
+        if self.token.withdraw(self.slot) == Withdrawn::Granted {
+            // A grant read back on the unwind is released with no batch.
+            self.token.release_claim(self.slot, false);
+        }
+    }
+}
+
+/// The requests a collector left standing on silent mutators: a fixed array
+/// on the collector thread's frame, read at the checkpoints and withdrawn
+/// when the thread ends. A standing request costs no wait; the consent
+/// wake cannot be lost, since the thread's wake token makes a wake sent
+/// mid-round end the next wait at once.
+pub(crate) struct Standing {
+    slot: usize,
+    entries: [*mut MutatorRecord; STANDING_CAPACITY],
+    len: usize,
+    /// Batches the checkpoints made since the round last asked.
+    batches_served: usize,
+    /// Whether a wait inside a round returned early and served nothing, so
+    /// that the sleep after the round is skipped once.
+    consumed_a_wake: bool,
+}
+
+impl Standing {
+    pub(crate) fn new(slot: usize) -> Self {
+        Self {
+            slot,
+            entries: [std::ptr::null_mut(); STANDING_CAPACITY],
+            len: 0,
+            batches_served: 0,
+            consumed_a_wake: false,
+        }
+    }
+
+    /// Keep `record`'s request standing; false past the capacity.
+    fn push(&mut self, record: *mut MutatorRecord) -> bool {
+        if self.len == STANDING_CAPACITY {
+            return false;
+        }
+
+        self.entries[self.len] = record;
+        self.len += 1;
+        true
+    }
+
+    /// Read every standing request once, one acquire load each, and serve
+    /// the ones consented to: `COLLECTOR|slot` is served now, `REQUESTED|slot`
+    /// left standing, and anything else — `MUTATOR`, `FREE`, another slot's
+    /// value — is a record moved on, whose entry is dropped. Answers how
+    /// many batches it made.
+    fn checkpoint(&mut self, arena: &mut TraceScratchArena, threshold: usize) -> usize {
+        let requested = crate::cycle::token::word(crate::cycle::token::REQUESTED, self.slot);
+        let granted = crate::cycle::token::word(crate::cycle::token::COLLECTOR, self.slot);
+        let mut served = 0;
+        let mut index = 0;
+        while index < self.len {
+            let record = self.entries[index];
+            let mutator = unsafe { &*record };
+            let seen = mutator.token.read();
+            if seen == requested {
+                index += 1;
+                continue;
+            }
+
+            self.remove(index);
+            if seen == granted {
+                let outcome = unsafe { serve_the_grant(mutator, self.slot, arena, threshold) };
+                #[cfg(test)]
+                testing::note_served(outcome);
+                if let Served::Batch { .. } = outcome {
+                    served += 1;
+                }
+            }
+        }
+
+        self.batches_served += served;
+        served
+    }
+
+    fn remove(&mut self, index: usize) {
+        self.len -= 1;
+        self.entries[index] = self.entries[self.len];
+        self.entries[self.len] = std::ptr::null_mut();
+    }
+
+    fn take_batches_served(&mut self) -> usize {
+        std::mem::replace(&mut self.batches_served, 0)
+    }
+
+    /// Batches the checkpoints made since the round last asked, left as
+    /// they are.
+    #[cfg(test)]
+    pub(crate) fn batches_served_for_test(&self) -> usize {
+        self.batches_served
+    }
+
+    fn take_consumed_a_wake(&mut self) -> bool {
+        std::mem::replace(&mut self.consumed_a_wake, false)
+    }
+}
+
+impl Drop for Standing {
+    /// The withdrawal of every standing request, at the thread's end: a
+    /// grant read back is released without a batch.
+    fn drop(&mut self) {
+        for &record in &self.entries[..self.len] {
+            let token = unsafe { &(*record).token };
+            if token.withdraw(self.slot) == Withdrawn::Granted {
+                token.release_claim(self.slot, false);
+            }
+        }
+    }
 }
 
 /// One batch over `mutator`, under its token, on `arena` — the collector's own
@@ -766,6 +1062,7 @@ unsafe fn batch(
     mutator: &MutatorRecord,
     arena: &mut TraceScratchArena,
     threshold: usize,
+    posted: &std::cell::Cell<bool>,
 ) -> Served {
     let verdicts = unsafe { VerdictWriter::open(mutator) };
     // The clamp, under the token: P's room cannot move under it, R's count
@@ -795,6 +1092,7 @@ unsafe fn batch(
     }
 
     let complete = unsafe { trace(arena, roots) };
+    posted.set(true);
     for &entry in roots {
         let root = crate::cycle::queue::entry_root(entry);
         let verdict = if complete {

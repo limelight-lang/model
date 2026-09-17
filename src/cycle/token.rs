@@ -21,12 +21,14 @@
 //! expects exactly zero. Every transition is a compare-and-swap that names
 //! the byte it expects, and a failed swap is acted on by the value it read
 //! back, never inferred; the two exceptions are the releases, stores over a
-//! value only their writer can change. The table is the byte's whole
-//! contract; of its writers, the collector's request and the mutator's
-//! consent are `cycle::worker`'s and the poll's reading's, and until they
-//! are built the one writer of `COLLECTOR` is the collector's own claim
-//! ([`try_claim`](TraceToken::try_claim)) and nothing writes `REQUESTED`
-//! outside a test.
+//! value only their writer can change. The collector never writes
+//! `COLLECTOR` itself: it requests ([`TraceToken::request`]) and the
+//! mutator consents ([`read_and_act_on_this_thread`]) with a release swap,
+//! which is what orders the mutator's stores before its reading against the
+//! collector's loads after its grant, with no fence on either side
+//! (`rfc/dev/design/trace-token-handshake.md`, E3; the loom model
+//! `token/free_path_model.rs` exhibits the fenced form a claim without a
+//! consent needed).
 //!
 //! **The mutator holds `MUTATOR` from its take through its close**, on the
 //! path off the poll and under pressure alike: exact validation, the
@@ -98,6 +100,38 @@ pub(crate) const fn word(state: u8, slot: usize) -> u8 {
     state | ((slot as u8) << SLOT_SHIFT)
 }
 
+/// What a collector's withdrawal of its request found.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Withdrawn {
+    /// The request stood and is taken back; the collector holds nothing.
+    Withdrawn,
+    /// The mutator consented meanwhile: the collector holds `COLLECTOR|s`
+    /// and serves the grant.
+    Granted,
+    /// The mutator took `MUTATOR` over the request: a refusal, and the
+    /// collector holds nothing.
+    TakenByTheMutator,
+    /// `FREE`, or a value naming another slot: the record moved on — a life
+    /// ended, a slot handed over — and the collector holds nothing.
+    MovedOn,
+}
+
+/// What the mutator's reading of its own byte found, after acting on it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Reading {
+    /// This thread has no record: no collector can reach it.
+    NoRecord,
+    /// `FREE`: return memory at once.
+    Free,
+    /// `POSTED`: the collector's last batch stands in P; this thread is
+    /// armed for the collection over it, and returns memory at once.
+    Posted,
+    /// `COLLECTOR|s`, found or just consented to: withhold every return.
+    Collector,
+    /// `MUTATOR`: this thread's own claim; its window decides.
+    Mutator,
+}
+
 /// Where a mutator's take found the byte.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TookFrom {
@@ -162,53 +196,65 @@ impl TraceToken {
 
     /// Whether a collector traces this thread now: the byte at `COLLECTOR`.
     ///
-    /// The mutator reads it on its free path to decide whether a return waits
-    /// for a foreign trace (`crate::cycle::deferred_slot_reuse`), and both
-    /// stale directions are safe there: a holder that let go just after the
-    /// read costs one return withheld until the mutator's next pop, and a
-    /// claim that landed just after it starts a trace that sees every store
-    /// the mutator made before the read, which is what the `SeqCst` fence
-    /// ahead of the load, paired with the one after
-    /// [`try_claim`](Self::try_claim)'s swap, is for (`dev/BENCHMARKS.md`,
-    /// "the free path's fence against the take"). The pair goes when a
-    /// claim is a consent the mutator makes with a release swap of its own
-    /// (`rfc/dev/design/trace-token-handshake.md`, E3).
+    /// The readers that never consent read it — the chunk gate, the block
+    /// gate, the remote reclaim, the drains' per-pop tests
+    /// (`crate::cycle::deferred_slot_reuse`) — and both stale directions
+    /// are safe there: a holder that let go just after the read costs one
+    /// return withheld until the mutator's next pop, and a request that
+    /// landed just after it is granted by nobody but this thread's own
+    /// consent, which comes after every store this thread made before it.
     #[inline]
     pub(crate) fn collector_is_tracing(&self) -> bool {
-        std::sync::atomic::fence(Ordering::SeqCst);
         state(self.read()) == COLLECTOR
     }
 
-    /// Claim the token for collector `slot` if it is free, and say whether
-    /// it was: one swap `FREE → COLLECTOR|slot`, and a skip on every other
-    /// value.
-    ///
-    /// A claim is followed by a `SeqCst` fence, paired with the one before
-    /// the mutator's reading on its free path
-    /// ([`collector_is_tracing`](Self::collector_is_tracing)): the pair is
-    /// what makes the mutator's stores before that reading visible to the
-    /// trace this claim starts. Without it the claimant may read the graph
-    /// as it stood before the mutator's last stores — an array's storage head
-    /// before its growth — and stride memory the mutator freed after reading
-    /// the token free; the acquire on the swap alone orders nothing the
-    /// mutator did before its load (`token/free_path_model.rs`, the loom
-    /// model that exhibits the execution).
-    #[must_use]
-    pub(crate) fn try_claim(&self, slot: usize) -> bool {
-        let claimed = self
-            .word
+    /// Ask, as collector `slot`, to trace: one swap `FREE → REQUESTED|slot`.
+    /// The byte the swap read back on a refusal, which the caller acts on:
+    /// `POSTED` is a mutator that has not disposed of the last batch, and
+    /// every other value a holder or another collector's request.
+    pub(crate) fn request(&self, slot: usize) -> Result<(), u8> {
+        self.word
             .compare_exchange(
                 FREE,
-                word(COLLECTOR, slot),
+                word(REQUESTED, slot),
                 Ordering::Acquire,
                 Ordering::Relaxed,
             )
-            .is_ok();
-        if claimed {
-            std::sync::atomic::fence(Ordering::SeqCst);
-        }
+            .map(|_| ())
+    }
 
-        claimed
+    /// Take back collector `slot`'s request: one swap `REQUESTED|slot →
+    /// FREE`, and on its failure the read-back decides
+    /// ([`Withdrawn`]). Relaxed on success: nothing was granted, so nothing
+    /// of the mutator's is read after it; acquire on failure, since a grant
+    /// read back here is served.
+    pub(crate) fn withdraw(&self, slot: usize) -> Withdrawn {
+        match self.word.compare_exchange(
+            word(REQUESTED, slot),
+            FREE,
+            Ordering::Relaxed,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Withdrawn::Withdrawn,
+            Err(seen) if seen == word(COLLECTOR, slot) => Withdrawn::Granted,
+            Err(seen) if state(seen) == MUTATOR => Withdrawn::TakenByTheMutator,
+            Err(_) => Withdrawn::MovedOn,
+        }
+    }
+
+    /// Consent, as the mutator, to the request `seen` reads: one swap
+    /// `REQUESTED|s → COLLECTOR|s`, a release, so that every store this
+    /// thread made before its reading is ordered before the collector's
+    /// loads after its grant; then the wake of s. `Err` is the byte the
+    /// swap read back instead, which the caller acts on.
+    pub(crate) fn consent(&self, seen: u8) -> Result<(), u8> {
+        debug_assert_eq!(state(seen), REQUESTED);
+        let granted = word(COLLECTOR, slot(seen));
+        self.word
+            .compare_exchange(seen, granted, Ordering::Release, Ordering::Acquire)
+            .map(|_| {
+                crate::cycle::worker::wake(slot(seen));
+            })
     }
 
     /// Release collector `slot`'s claim: one store — `POSTED` when the batch
@@ -242,6 +288,7 @@ impl TraceToken {
     /// re-read under the mutex, so a release between the read and the wait
     /// is not lost. `MUTATOR` is the caller's own claim, and the caller tells
     /// a nested take apart before calling ([`HeldToken::take`]).
+    #[cfg(test)]
     pub(crate) fn take(&self) -> TookFrom {
         self.take_unless(false)
             .expect("a take that holds at POSTED was not asked for")
@@ -333,6 +380,34 @@ impl TraceToken {
             .compare_exchange(FREE, requested, Ordering::Acquire, Ordering::Relaxed)
             .expect("a request lands on a free byte");
     }
+
+    /// Write `FREE` over `POSTED`: a case that batches again without a
+    /// collection between, standing in for the disposition it makes by
+    /// hand afterwards (`discard_standing_verdicts`). Nothing else writes
+    /// `FREE` over `POSTED`.
+    #[cfg(test)]
+    pub(crate) fn clear_posted_for_test(&self) {
+        let _ = self
+            .word
+            .compare_exchange(POSTED, FREE, Ordering::AcqRel, Ordering::Relaxed);
+    }
+
+    /// Claim `COLLECTOR|slot` over `FREE` in one swap, without a request or
+    /// a consent, and say whether it landed: a case standing in for a
+    /// collector on a mutator that is blocked in the case's own join, so
+    /// that no store of the mutator's races the stand-in's loads.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn claim_for_test(&self, slot: usize) -> bool {
+        self.word
+            .compare_exchange(
+                FREE,
+                word(COLLECTOR, slot),
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+    }
 }
 
 /// The token of the calling thread, as a pointer a case standing in for a
@@ -363,6 +438,44 @@ pub(crate) fn this_thread_token() -> *const TraceToken {
 pub(crate) fn collector_is_tracing_this_thread() -> bool {
     let record = crate::cycle::mutator_record::this_thread_record();
     !record.is_null() && unsafe { (*record).token.collector_is_tracing() }
+}
+
+/// The mutator's one reading of its byte, made by the slot free entry and
+/// by the poll and by nothing else: one acquire load, and the act the value
+/// asks for — at `REQUESTED|s` the consent and the wake, at `POSTED` the
+/// arming for the collection over P — then the answer the caller decides
+/// its return by ([`Reading`]). A swap that fails is acted on by the value
+/// it read back.
+///
+/// It arms and does not collect because its first caller has no frame:
+/// `ll_release` cannot raise and cannot run a destructor
+/// (`crate::gc::arm`). The byte is not written at `POSTED`, so every
+/// reading in the window arms again, an idempotent store into a
+/// thread-local, until the collection's take consumes the state.
+#[inline]
+pub(crate) fn read_and_act_on_this_thread() -> Reading {
+    let record = crate::cycle::mutator_record::this_thread_record();
+    if record.is_null() {
+        return Reading::NoRecord;
+    }
+
+    let token = unsafe { &(*record).token };
+    let mut seen = token.read();
+    loop {
+        match state(seen) {
+            FREE => return Reading::Free,
+            POSTED => {
+                crate::gc::arm_for_the_verdicts();
+                return Reading::Posted;
+            }
+            COLLECTOR => return Reading::Collector,
+            MUTATOR => return Reading::Mutator,
+            _ => match token.consent(seen) {
+                Ok(()) => return Reading::Collector,
+                Err(actual) => seen = actual,
+            },
+        }
+    }
 }
 
 /// The token of the calling thread, held from the call to the guard's drop:

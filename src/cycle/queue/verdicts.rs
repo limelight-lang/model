@@ -34,40 +34,43 @@
 //!
 //! # When the mutator reads P
 //!
-//! **Every in-line collection reads P into its batch** — the fire, the
-//! pressure path, the exit — so that a proposal never stands through a
-//! collection short of memory: the proposed and unwalked entries standing
-//! at the batch's reading are roots of that batch and are traced from P's
-//! slots, with no entry of R written for them
-//! (`crate::cycle::queue::Batch`). At the close the batch's prefix of P is
-//! disposed of ([`crate::cycle::queue::compaction`]): a root whose death
-//! completed is retired, a root read live — by the close's own reading or by
-//! the collector's — goes to the deferred lane, a zero-count verdict is
-//! retired only on the completed-free bit re-read there, and every entry
-//! the close cannot dispose of — a component refused or resurrected, a
-//! resurrected zero count, a root the deferred lane had no block for — is
-//! written back into R as a registration is, its candidate bit still set;
-//! then P's `front` advances by the whole prefix.
+//! **P is read by in-line collections alone, and no poll reads a verdict.**
+//! The collector's release after a batch that posted writes `POSTED` into
+//! the mutator's token byte, and the mutator's reading of it — on its slot
+//! free entry and at its poll — arms the collection over P
+//! (`crate::cycle::token::read_and_act_on_this_thread`,
+//! `crate::cycle::collect::collect_over_the_verdicts`): the proposed and
+//! unwalked entries standing at the batch's reading are its roots and are
+//! traced from P's slots, with no entry of R written for them and nothing
+//! of R read (`crate::cycle::queue::Batch`). The pressure path and the exit
+//! read P into their batch first, ahead of R, so that a proposal never
+//! stands through a collection short of memory. The invariant the byte
+//! carries: P holds an entry the mutator has not disposed of only while the
+//! byte reads `POSTED` or `MUTATOR`, so a byte at `FREE` promises an empty
+//! P (`rfc/dev/design/trace-token-handshake.md`, "The word").
 //!
-//! **The open-gate poll reads P's prefix** ([`dispose_prefix_at_the_poll`]):
-//! it retires the completed deaths and defers the roots read live from the
-//! front, and stops at the first proposed or unwalked root, which arms the
-//! collection this same poll fires — the collection is what reads it. A
-//! closed-gate poll reads no verdict, as it fires nothing. The poll writes
-//! into R only for a zero-count verdict the re-reading refuted
-//! ([`PrefixReading::kept`]), through the registration path with its
-//! growth and its arming; every other disposition writes nothing into R.
-//! What stands behind the first proposal waits for the collection, which
-//! reads the whole prefix.
+//! **At the close P is disposed of whole, on every ending of every path**
+//! ([`crate::cycle::queue::compaction`];
+//! `crate::cycle::queue::retire_candidates_and_dispose_of_verdicts`): a root
+//! whose death completed is retired, a root read live — by the close's own
+//! reading or by the collector's — goes to the deferred lane, a zero-count
+//! verdict is retired only on the completed-free bit re-read there, and
+//! every entry the close cannot dispose of — a component refused,
+//! resurrected or never traced, a resurrected zero count, a root the
+//! deferred lane had no block for — is written back into R as a
+//! registration is, its candidate bit still set; then P's `front` advances
+//! by the whole prefix, and the token's release to `FREE` follows.
 //!
 //! **A retirement outside a collection** — inside a teardown, and between
 //! the pressure path's rounds — retires the completed deaths standing
-//! anywhere in P in place, under the token, and advances nothing
-//! (`crate::cycle::queue::retire_candidates`).
+//! anywhere in P in place, under the token or under `POSTED`, and advances
+//! nothing (`crate::cycle::queue::retire_candidates`).
 
 use super::*;
 
-use crate::ring::{NoBlock, Reader};
+use crate::ring::NoBlock;
+#[cfg(test)]
+use crate::ring::Reader;
 
 /// What the collector read about one root of R.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -193,108 +196,13 @@ pub(super) fn verdict_ring<'a>() -> Option<Quiescent<'a>> {
     Some(unsafe { Quiescent::new((*record).verdict_ring()) })
 }
 
-/// Note on this thread's record that a disposition at its poll freed
-/// something ([`MutatorRecord::note_freeing_disposition`]); nothing for a
+/// Note on this thread's record that the collection its poll fired freed
+/// or retired something ([`MutatorRecord::note_freeing_disposition`]); nothing for a
 /// thread with no record, which holds no verdict.
 pub(crate) fn note_freeing_disposition() {
     let record = mutator_record::this_thread_record();
     if !record.is_null() {
         unsafe { &*record }.note_freeing_disposition();
-    }
-}
-
-/// What the poll's reading of P's prefix did, by count.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(crate) struct PrefixReading {
-    /// Completed deaths retired, their slots returned.
-    pub(crate) retired: usize,
-    /// Roots read live that went to the deferred lane.
-    pub(crate) deferred: usize,
-    /// Zero-count verdicts the re-reading refuted — a resurrection — and
-    /// written back into R.
-    pub(crate) kept: usize,
-    /// Whether the reading stopped at a proposed or unwalked root: the
-    /// collection the poll fires is what reads it.
-    pub(crate) proposal_stands: bool,
-}
-
-/// Read P from its front and dispose of each verdict up to the first root
-/// of a batch, advancing P past an entry only once the entry's disposition
-/// holds. `at_commits` is the poll's own commit count, the mirror a deferred
-/// root waits against. A root read live the deferred lane has no block for
-/// stops the reading as a proposal does: it stands for the collection,
-/// which writes back what it cannot dispose of, rather than being written
-/// into R here.
-///
-/// A thread with no record, or no base block, has registered nothing and
-/// holds no verdict; the reading is empty.
-pub(crate) fn dispose_prefix_at_the_poll(at_commits: u64) -> PrefixReading {
-    let mut reading = PrefixReading::default();
-    let state = mutator_state();
-    if state.is_null() {
-        return reading;
-    }
-
-    let mutator_state = unsafe { mutator_state_ref(state) };
-    let record = mutator_record::this_thread_record();
-    if record.is_null() {
-        return reading;
-    }
-
-    // The mutator is P's one consumer.
-    let reader = unsafe { Reader::new((*record).verdict_ring()) };
-    let mut one = [0usize; 1];
-    loop {
-        let peeked = reader.peek(&mut one);
-        if peeked.len() == 0 {
-            return reading;
-        }
-
-        let entry = one[0];
-        if is_disposed(entry) {
-            reader.commit(peeked);
-            continue;
-        }
-
-        let entity = verdict_entity(entry);
-        match entry_verdict(entry) {
-            Verdict::Proposed | Verdict::Unwalked => {
-                reading.proposal_stands = true;
-                return reading;
-            }
-            Verdict::ReadLive if !compaction::completed_death(entity) => {
-                if defer_entry(mutator_state, entity, Some(at_commits)).is_err() {
-                    reading.proposal_stands = true;
-                    return reading;
-                }
-
-                reading.deferred += 1;
-            }
-            // A root read live whose death has since completed is a
-            // completed death, whatever the verdict: retired, as the close
-            // retires it, rather than left in a lane no retirement sweeps.
-            Verdict::ReadLive | Verdict::ZeroCount => {
-                if compaction::completed_death(entity) {
-                    // P advances before the free: a free that raises has
-                    // half-returned the slot and cannot be retried, so its
-                    // entry is dropped as `ll_free`'s, the rule the
-                    // compaction keeps (`dev/DECISIONS.md`, "corrupt queue
-                    // entries remain outside the cleanup recovery
-                    // contract").
-                    reader.commit(peeked);
-                    compaction::free(entity);
-                    reading.retired += 1;
-                    continue;
-                }
-
-                // A count read zero that is not a completed death is a
-                // resurrection: registered again, its bit still set.
-                unsafe { append_entry(state, entity) };
-                reading.kept += 1;
-            }
-        }
-
-        reader.commit(peeked);
     }
 }
 
@@ -322,6 +230,9 @@ pub(crate) fn discard_standing_verdicts() {
 
     let reader = unsafe { Reader::new((*record).verdict_ring()) };
     reader.advance(reader.unread());
+    // The byte with it: a `POSTED` left standing over an empty P would make
+    // the next case's first reading arm a collection over nothing.
+    unsafe { &*record }.token.clear_posted_for_test();
 }
 
 /// Every verdict this thread's P holds and the mutator has not answered for,

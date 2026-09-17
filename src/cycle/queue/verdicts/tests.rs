@@ -169,8 +169,9 @@ fn p_is_one_block_drawn_with_the_record_and_clamps_the_batch_to_its_room() {
     );
     assert_eq!(
         stand_in_posts(1, |_| Verdict::Proposed),
-        Posted::Batch(0),
-        "a full P takes nothing, and P did not grow"
+        Posted::TokenHeld,
+        "a P not yet disposed of takes nothing: the byte reads POSTED, and a \
+         claim fails on it"
     );
     assert_eq!(
         mutator_record::verdict_block(record),
@@ -178,19 +179,17 @@ fn p_is_one_block_drawn_with_the_record_and_clamps_the_batch_to_its_room() {
         "the same block, for the thread's life"
     );
 
-    // The poll's reading stops at the first proposal and moves nothing: a
-    // full P of proposals costs the poll no registration, and the
-    // collection it arms is what reads them.
-    let reading = dispose_prefix_at_the_poll(crate::cycle::epoch::commits());
+    // The batch left `POSTED` on the byte, and the mutator's reading of it
+    // arms the collection over P and moves nothing: a full P of proposals
+    // costs the reading no registration, and the collection is what reads
+    // them.
     assert_eq!(
-        reading,
-        PrefixReading {
-            retired: 0,
-            deferred: 0,
-            kept: 0,
-            proposal_stands: true,
-        }
+        crate::cycle::token::read_and_act_on_this_thread(),
+        crate::cycle::token::Reading::Posted
     );
+    let arming = crate::gc::arming();
+    crate::gc::disarm();
+    assert_eq!(arming, crate::gc::Arming::Verdicts);
     assert_eq!(verdict_count(), BLOCK_ENTRIES, "P stands as it was");
     assert_eq!(candidate_count(), beyond, "and nothing was written into R");
     drop(headers);
@@ -233,41 +232,29 @@ fn verdicts_come_back_in_rs_order_and_r_s_front_moves_by_the_count_posted() {
         "each with the verdict posted about it"
     );
 
-    // A holder of the token keeps the stand-in out.
+    // No poll reads a verdict: the byte reads `POSTED` after the batch, and
+    // the mutator's reading of it arms the collection over P and moves
+    // nothing.
+    assert_eq!(
+        crate::cycle::token::state(unsafe { (*mutator_record::this_thread_record()).token.read() }),
+        crate::cycle::token::POSTED
+    );
+    assert_eq!(
+        crate::cycle::token::read_and_act_on_this_thread(),
+        crate::cycle::token::Reading::Posted
+    );
+    let arming = crate::gc::arming();
+    crate::gc::disarm();
+    assert_eq!(arming, crate::gc::Arming::Verdicts);
+    assert_eq!(standing_verdicts().len(), 4, "the reading moved nothing");
+
+    // A holder of the token keeps the stand-in out; its take consumes
+    // `POSTED`, and a bare guard's release writes `FREE` over a P this case
+    // discards itself.
     let claim = crate::cycle::token::HeldToken::take();
     assert_eq!(stand_in_posts(1, |_| Verdict::Proposed), Posted::TokenHeld);
     drop(claim);
-
-    // The poll's reading of the prefix: the first is deferred, the second
-    // names a header that is not dead in place — a count read zero that the
-    // re-reading refutes — so it is written back into R behind the fifth,
-    // and the third stops the reading for the collection.
-    assert!(refill_spares());
-    let reading = dispose_prefix_at_the_poll(7);
-    assert_eq!(
-        reading,
-        PrefixReading {
-            retired: 0,
-            deferred: 1,
-            kept: 1,
-            proposal_stands: true,
-        }
-    );
-    assert_eq!(candidate_count(), 2);
-    assert_eq!(deferred_count(), 1);
-    assert_eq!(
-        deferred_turnover_mirror(),
-        7,
-        "the caller's count is the mirror"
-    );
-    assert_eq!(
-        standing_verdicts()
-            .iter()
-            .map(|&(_, verdict)| verdict)
-            .collect::<Vec<_>>(),
-        verdicts[2..],
-        "P's front moved past the two disposed of"
-    );
+    discard_standing_verdicts();
     drop(headers);
     reset();
 }

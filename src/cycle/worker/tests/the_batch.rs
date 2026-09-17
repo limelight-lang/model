@@ -23,18 +23,21 @@ use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain};
 use crate::ring::BLOCK_ENTRIES;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// One serve of this thread's record on a thread of its own, joined.
+/// One serve of this thread's record on a thread of its own, this thread
+/// consenting at its byte meanwhile as its poll would, joined. A `POSTED`
+/// left by an earlier batch is cleared first: these cases batch again
+/// without the collection between that the byte asks for, and dispose of P
+/// by hand at their end.
 fn served_by_a_collector() -> Served {
+    unsafe { &*record() }.token.clear_posted_for_test();
     let sent = Sent(record());
-    std::thread::spawn(move || {
+    testing::consent_while(std::thread::spawn(move || {
         assert!(
             crate::memory::heap::ll_thread_init(),
             "the pool served the collector thread"
         );
-        unsafe { serve(sent.into_inner(), ELDER, ANY_ENTRY) }
-    })
-    .join()
-    .expect("the collector finished")
+        unsafe { testing::serve_alone(sent.into_inner()) }
+    }))
 }
 
 /// A class with one counted Box property at `prop_offset(0)`, which is what
@@ -316,15 +319,13 @@ fn the_advance_follows_the_last_post_from_the_unwind_as_well() {
 
     testing::panic_before_the_next_advance();
     let sent = Sent(record());
-    let outcome = std::thread::spawn(move || {
+    let outcome = testing::consent_while(std::thread::spawn(move || {
         assert!(crate::memory::heap::ll_thread_init());
         let record = sent.into_inner();
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            serve(record, ELDER, ANY_ENTRY)
+            testing::serve_alone(record)
         }))
-    })
-    .join()
-    .expect("the collector thread returned");
+    }));
     assert!(outcome.is_err(), "the batch panicked where the case asked");
     assert_eq!(
         candidate_count(),
@@ -417,7 +418,7 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
         let record = sent.into_inner();
         let mut batches = 0;
         loop {
-            if let Served::Batch { .. } = unsafe { serve(record, ELDER, ANY_ENTRY) } {
+            if let Served::Batch { .. } = unsafe { testing::serve_alone(record) } {
                 batches += 1;
             }
             if stopped.try_recv().is_ok() {
@@ -427,13 +428,15 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
         }
     });
 
-    // The batch stands waiting once its verdicts are in P.
+    // The batch stands waiting once its verdicts are in P; this thread
+    // consents to the request meanwhile, as its poll would.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while verdict_count() == 0 {
         assert!(
             std::time::Instant::now() < deadline,
             "the first batch posted"
         );
+        crate::cycle::token::read_and_act_on_this_thread();
         std::thread::yield_now();
     }
     let posted = verdict_count();
@@ -458,7 +461,15 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
 
     // The batches that follow take the rest; a last one after the last
     // registration, so that every root the collector could take is taken.
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // This thread consents to each request and clears the `POSTED` each
+    // batch leaves, standing in for the collections a mutator would run
+    // between them, which this case makes by hand at its end.
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(20);
+    while std::time::Instant::now() < until {
+        crate::cycle::token::read_and_act_on_this_thread();
+        unsafe { &*record() }.token.clear_posted_for_test();
+        std::thread::yield_now();
+    }
     stop.send(()).expect("the collector is looping");
     let batches = collector.join().expect("the collector finished");
     assert!(batches >= 2, "the waiting batch and at least one after it");

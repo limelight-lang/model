@@ -182,12 +182,12 @@ fn a_take_that_finds_the_token_held_returns_at_the_release() {
     use crate::cycle::token::{MUTATOR, TookFrom, state};
     let token = TraceToken::new_held();
     assert!(
-        !token.try_claim(crate::cycle::worker::ELDER),
+        !token.claim_for_test(crate::cycle::worker::ELDER),
         "claimed under the initialisation's hold"
     );
     token.release();
-    assert!(token.try_claim(crate::cycle::worker::ELDER));
-    assert!(!token.try_claim(1), "claimed twice");
+    assert!(token.claim_for_test(crate::cycle::worker::ELDER));
+    assert!(!token.claim_for_test(1), "claimed twice");
 
     std::thread::scope(|scope| {
         let waiter = scope.spawn(|| {
@@ -220,7 +220,7 @@ fn a_take_that_holds_at_posted_holds_after_a_wait_too() {
     use crate::cycle::token::{POSTED, state};
     let token = TraceToken::new_held();
     token.release();
-    assert!(token.try_claim(crate::cycle::worker::ELDER));
+    assert!(token.claim_for_test(crate::cycle::worker::ELDER));
 
     std::thread::scope(|scope| {
         let waiter = scope.spawn(|| token.take_unless(true));
@@ -242,17 +242,17 @@ fn a_take_consumes_posted_and_refuses_a_request() {
     let token = TraceToken::new_held();
     token.release();
 
-    assert!(token.try_claim(crate::cycle::worker::ELDER));
+    assert!(token.claim_for_test(crate::cycle::worker::ELDER));
     token.release_claim(crate::cycle::worker::ELDER, true);
     assert_eq!(token.take(), TookFrom::Posted);
     assert_eq!(state(token.read()), MUTATOR);
     token.release();
 
-    assert!(token.try_claim(crate::cycle::worker::ELDER));
+    assert!(token.claim_for_test(crate::cycle::worker::ELDER));
     token.release_claim(crate::cycle::worker::ELDER, false);
     token.request_for_test(word(REQUESTED, 5));
     assert!(
-        !token.try_claim(crate::cycle::worker::ELDER),
+        !token.claim_for_test(crate::cycle::worker::ELDER),
         "claimed over a request"
     );
     assert_eq!(token.take(), TookFrom::Free);

@@ -6,13 +6,16 @@
 //! token cannot run under `--cfg loom` — it stands in a record reached
 //! through a thread-local — so what is checked here is the ordering
 //! argument, on the assumption that the code implements it. Keep the two
-//! in step by hand: the claimant below is
-//! [`TraceToken::try_claim`](super::TraceToken::try_claim), its release
-//! [`TraceToken::release_claim`](super::TraceToken::release_claim), and the
-//! mutator is [`TraceToken::collector_is_tracing`](super::TraceToken::collector_is_tracing)
-//! read on the free path (`crate::cycle::deferred_slot_reuse`, "A foreign
-//! holder of the token") and [`TraceToken::take`](super::TraceToken::take)
-//! at a collection's start.
+//! in step by hand: the collector's request is
+//! [`TraceToken::request`](super::TraceToken::request), its withdrawal
+//! [`TraceToken::withdraw`](super::TraceToken::withdraw), its release
+//! [`TraceToken::release_claim`](super::TraceToken::release_claim); the
+//! mutator's reading and consent are
+//! [`read_and_act_on_this_thread`](super::read_and_act_on_this_thread) and
+//! [`TraceToken::consent`](super::TraceToken::consent), and its take
+//! [`TraceToken::take_unless`](super::TraceToken::take_unless). The fenced
+//! claimant of the first executions is the form the code had before the
+//! consent, kept as the exhibit of what the consent replaces.
 //!
 //! The mutator's word stands for the storage head an array republishes
 //! before it frees the old storage: the mutator stores it, reads the token
@@ -40,6 +43,13 @@
 //! collector's post into P precedes its release store, the mutator's take
 //! from `POSTED` is an acquire swap, and the mutator reads the post.
 //!
+//! The consent is what replaces the fences: the collector requests, the
+//! mutator's reading swaps `REQUESTED → COLLECTOR` with a release, and the
+//! collector's acquire load of the grant orders every store the mutator
+//! made before its reading ahead of the trace; a relaxed consent reads the
+//! old head again. A withdrawal that races the consent reads the grant
+//! back and serves it, so a request is never both withdrawn and granted.
+//!
 //! # Running it
 //!
 //! ```text
@@ -55,6 +65,7 @@ use loom::thread;
 
 const FREE: u8 = 0;
 const MUTATOR: u8 = 1;
+const REQUESTED: u8 = 2;
 const COLLECTOR: u8 = 3;
 const POSTED: u8 = 4;
 
@@ -191,4 +202,141 @@ fn a_take_from_posted_reads_the_batch_the_release_published() {
 #[should_panic(expected = "the collection read P from before the post")]
 fn a_relaxed_take_from_posted_reads_nothing_of_the_batch() {
     loom::model(|| posted_execution(Ordering::Relaxed));
+}
+
+/// The collector requests; the mutator republishes the head, reads the
+/// request and consents with `consent_ordering`; the collector reads the
+/// grant with acquire and then the head. The protocol's `Release` consent
+/// reads the new head; a `Relaxed` one can read the old.
+fn consent_execution(consent_ordering: Ordering) {
+    let shared = shared();
+
+    let collector = {
+        let shared = shared.clone();
+        thread::spawn(move || {
+            if shared
+                .word
+                .compare_exchange(FREE, REQUESTED, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                return None;
+            }
+
+            loop {
+                match shared.word.load(Ordering::Acquire) {
+                    COLLECTOR => return Some(shared.head.load(Ordering::Relaxed)),
+                    MUTATOR => return None,
+                    _ => thread::yield_now(),
+                }
+            }
+        })
+    };
+
+    shared.head.store(1, Ordering::Relaxed);
+    // The mutator's reading: a request is consented to, anything else is
+    // acted on as it stands; the take that follows refuses a request it
+    // did not consent to.
+    match shared.word.load(Ordering::Acquire) {
+        REQUESTED => {
+            let _ = shared.word.compare_exchange(
+                REQUESTED,
+                COLLECTOR,
+                consent_ordering,
+                Ordering::Acquire,
+            );
+        }
+        FREE => {
+            let _ =
+                shared
+                    .word
+                    .compare_exchange(FREE, MUTATOR, Ordering::Acquire, Ordering::Acquire);
+            let _ = shared.word.compare_exchange(
+                REQUESTED,
+                MUTATOR,
+                Ordering::Acquire,
+                Ordering::Acquire,
+            );
+        }
+        _ => {}
+    }
+
+    if collector.join().unwrap() == Some(0) {
+        panic!("a trace read the storage the mutator freed");
+    }
+}
+
+#[test]
+fn a_release_consent_orders_the_mutators_stores_before_the_trace() {
+    loom::model(|| consent_execution(Ordering::Release));
+}
+
+#[test]
+#[should_panic(expected = "a trace read the storage the mutator freed")]
+fn a_relaxed_consent_orders_nothing_before_the_trace() {
+    loom::model(|| consent_execution(Ordering::Relaxed));
+}
+
+/// The collector requests and withdraws while the mutator consents: the
+/// withdrawal's read-back is the grant, which the collector serves and
+/// releases, and the byte ends `FREE` with exactly one of the two having
+/// held it. `failure_ordering` is the withdrawal's: the protocol's
+/// `Acquire` reads the mutator's stores; a `Relaxed` one can read the old
+/// head under the grant.
+fn withdrawal_execution(failure_ordering: Ordering) {
+    let shared = shared();
+
+    let collector = {
+        let shared = shared.clone();
+        thread::spawn(move || {
+            assert!(
+                shared
+                    .word
+                    .compare_exchange(FREE, REQUESTED, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+            );
+            match shared
+                .word
+                .compare_exchange(REQUESTED, FREE, Ordering::Relaxed, failure_ordering)
+            {
+                Ok(_) => None,
+                Err(COLLECTOR) => {
+                    let head = shared.head.load(Ordering::Relaxed);
+                    shared.word.store(FREE, Ordering::Release);
+                    Some(head)
+                }
+                Err(_) => None,
+            }
+        })
+    };
+
+    shared.head.store(1, Ordering::Relaxed);
+    if shared.word.load(Ordering::Acquire) == REQUESTED {
+        let _ = shared.word.compare_exchange(
+            REQUESTED,
+            COLLECTOR,
+            Ordering::Release,
+            Ordering::Acquire,
+        );
+    }
+
+    let traced = collector.join().unwrap();
+    assert_eq!(
+        shared.word.load(Ordering::Relaxed),
+        FREE,
+        "nobody holds the byte"
+    );
+    if traced == Some(0) {
+        panic!("a trace read the storage the mutator freed");
+    }
+}
+
+#[test]
+fn a_withdrawal_that_reads_the_grant_back_serves_it_and_leaves_the_byte_free() {
+    loom::model(|| withdrawal_execution(Ordering::Acquire));
+}
+
+#[test]
+#[should_panic(expected = "a trace read the storage the mutator freed")]
+fn a_relaxed_withdrawal_reads_nothing_of_the_mutator_under_the_grant() {
+    loom::model(|| withdrawal_execution(Ordering::Relaxed));
 }

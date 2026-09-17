@@ -151,6 +151,12 @@ struct ReaderLine {
     /// difference is a disposition that freed something since the last
     /// round ([`MutatorRecord::note_freeing_disposition`]).
     freeing_dispositions_seen: AtomicU32,
+    /// Whether this mutator left the collector's last request unanswered
+    /// past its wait: the collector's own mark, so that its next request
+    /// stands without a wait (`crate::cycle::worker`, the standing
+    /// requests). Cleared when a request is served, and with the line at a
+    /// re-take.
+    silent: AtomicBool,
 }
 
 /// The line the mutator writes: where it registers into R, where it reads
@@ -232,6 +238,7 @@ impl ReaderLine {
             p_tail_block: AtomicPtr::new(std::ptr::null_mut()),
             batch: AtomicUsize::new(0),
             freeing_dispositions_seen: AtomicU32::new(0),
+            silent: AtomicBool::new(false),
         }
     }
 
@@ -243,6 +250,7 @@ impl ReaderLine {
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         self.batch.store(0, Ordering::Relaxed);
         self.freeing_dispositions_seen.store(0, Ordering::Relaxed);
+        self.silent.store(false, Ordering::Relaxed);
     }
 }
 
@@ -378,6 +386,19 @@ impl MutatorRecord {
         self.reader.batch.store(roots, Ordering::Relaxed);
     }
 
+    /// Whether the collector marked this mutator silent
+    /// ([`ReaderLine::silent`]); the collector's own line, so relaxed.
+    #[inline]
+    pub(crate) fn is_silent(&self) -> bool {
+        self.reader.silent.load(Ordering::Relaxed)
+    }
+
+    /// Mark or clear the silent note ([`ReaderLine::silent`]).
+    #[inline]
+    pub(crate) fn note_silent(&self, silent: bool) {
+        self.reader.silent.store(silent, Ordering::Relaxed);
+    }
+
     /// Whether the mutator is collecting in line: the word is the mutator's
     /// own, so relaxed.
     #[inline]
@@ -398,9 +419,9 @@ impl MutatorRecord {
         self.writer.collecting.store(false, Ordering::Relaxed);
     }
 
-    /// Note, on the mutator's thread, that a disposition of P at its poll
-    /// freed something: the collector's next round reads it and shortens
-    /// its fallback interval.
+    /// Note, on the mutator's thread, that the collection its poll fired
+    /// freed or retired something: the collector's next round reads it and
+    /// shortens its fallback interval.
     #[inline]
     pub(crate) fn note_freeing_disposition(&self) {
         let count = self.writer.freeing_dispositions.load(Ordering::Relaxed);

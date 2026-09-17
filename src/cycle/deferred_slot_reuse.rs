@@ -548,6 +548,13 @@ impl ActiveTrace {
         self.batch = Some(crate::cycle::queue::read_batch());
     }
 
+    /// Read P alone as this trace's batch, the collection over the
+    /// collector's verdicts (`crate::cycle::queue::read_batch_of_verdicts`).
+    pub(crate) fn read_verdicts(&mut self) {
+        assert!(self.batch.is_none(), "a trace reads its batch once");
+        self.batch = Some(crate::cycle::queue::read_batch_of_verdicts());
+    }
+
     /// The arena and the batch in one answer, because a trace reads
     /// the batch's roots while writing the arena's rows and two calls would
     /// borrow this window twice.
@@ -792,7 +799,11 @@ pub(crate) unsafe fn withhold_under_a_trace_or_make_returns(ptr: *mut u8, kind: 
         return unsafe { withhold(window, ptr, kind) };
     }
 
-    if crate::cycle::token::collector_is_tracing_this_thread() {
+    // The slot entry is one of the two readers that act on the byte: a
+    // request is consented to here, and `POSTED` arms the collection over P
+    // (`crate::cycle::token::read_and_act_on_this_thread`).
+    if crate::cycle::token::read_and_act_on_this_thread() == crate::cycle::token::Reading::Collector
+    {
         // The reset's whole-block sentinel addresses a block header, which
         // has no byte 8 to thread the stack through; the block's return
         // waits at the pool's own entry instead

@@ -34,8 +34,22 @@ impl Mutator {
             tell.send(Sent(mutator_record::this_thread_record()))
                 .expect("the case waits");
             let mut arena = Arena::new();
-            while let Ok(job) = inbox.recv() {
-                job(&mut arena);
+            // Between jobs the thread does what a mutator's polls do at its
+            // byte — consent to a request — and, for these cases, which read
+            // batch after batch with no collection between, clears the
+            // `POSTED` a batch leaves, standing in for the disposition the
+            // case makes at its end.
+            loop {
+                match inbox.recv_timeout(std::time::Duration::from_millis(1)) {
+                    Ok(job) => job(&mut arena),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        crate::cycle::token::read_and_act_on_this_thread();
+                        unsafe { &*mutator_record::this_thread_record() }
+                            .token
+                            .clear_posted_for_test();
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
             }
 
             crate::cycle::queue::release_queue_segments();
@@ -106,12 +120,13 @@ unsafe fn let_go_and_collect(roots: Vec<Sent<*mut Object>>) {
         );
     }
 
-    // A poll disposes of the verdicts standing in P — read live, they go to
-    // the deferred lane — and the re-offer brings the lane back into R.
-    let freed_at_the_poll = unsafe { crate::gc::ll_gc_maybe_collect() };
+    // A collection disposes of the verdicts standing in P at its close —
+    // read live, they go to the deferred lane — and the re-offer brings the
+    // lane back into R for the next.
+    let freed_first = unsafe { crate::gc::ll_gc_collect_cycles() };
     crate::cycle::queue::reoffer_deferred_candidates();
     assert_eq!(
-        freed_at_the_poll + unsafe { crate::gc::ll_gc_collect_cycles() },
+        freed_first + unsafe { crate::gc::ll_gc_collect_cycles() },
         members,
         "the ring is collected whole"
     );
@@ -122,6 +137,9 @@ fn wait_for_rounds_of(index: usize, rounds: usize) {
     assert!(
         wait_until(
             || {
+                // As the other mutator's loop does: the `POSTED` a batch
+                // left is cleared, so that the next round batches again.
+                unsafe { &*record() }.token.clear_posted_for_test();
                 seen += testing::take_rounds_of(index);
                 seen >= rounds
             },
