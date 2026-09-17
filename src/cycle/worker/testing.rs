@@ -14,6 +14,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use super::{ALIVE, COLLECTORS, ELDER, ENDING, MAX_COLLECTORS, STARTING, UNBORN};
 use crate::cycle::mutator_record::MutatorRecord;
@@ -151,13 +152,37 @@ pub(crate) fn interval_for_this_wait() -> Option<std::time::Duration> {
 /// elder's timer holds after the last of its rounds, in milliseconds.
 static ROUNDS: [AtomicUsize; MAX_COLLECTORS] = [const { AtomicUsize::new(0) }; MAX_COLLECTORS];
 static TIMER_MILLIS: AtomicUsize = AtomicUsize::new(0);
+/// When each round of the elder began and ended, since a case last asked:
+/// the stress probe reads the gap between two rounds against the timer.
+static ROUND_TIMES: Mutex<Vec<(Instant, Option<Instant>)>> = Mutex::new(Vec::new());
+
+fn round_times() -> std::sync::MutexGuard<'static, Vec<(Instant, Option<Instant>)>> {
+    ROUND_TIMES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub(crate) fn note_round_start(index: usize) {
+    if index == ELDER {
+        round_times().push((Instant::now(), None));
+    }
+}
 
 pub(crate) fn note_round(index: usize, interval: std::time::Duration) {
     if index == ELDER {
         TIMER_MILLIS.store(interval.as_millis() as usize, Ordering::Relaxed);
+        if let Some(open) = round_times().last_mut() {
+            open.1 = Some(Instant::now());
+        }
     }
 
     ROUNDS[index].fetch_add(1, Ordering::Release);
+}
+
+/// The elder's rounds since the last call as (start, end) pairs, the last
+/// end `None` for a round still running, and forget them.
+pub(crate) fn take_round_times() -> Vec<(Instant, Option<Instant>)> {
+    std::mem::take(&mut *round_times())
 }
 
 /// Rounds every collector made since the last call, and zero the counts.
@@ -179,12 +204,58 @@ pub(crate) fn timer_interval() -> std::time::Duration {
     std::time::Duration::from_millis(TIMER_MILLIS.load(Ordering::Relaxed) as u64)
 }
 
-/// Mutators the rounds claimed and released since a case last asked.
+/// What the serves answered since a case last asked, one count per
+/// [`super::Served`] variant, and the two counts a variant does not carry:
+/// grants served, whether the batch under one took anything, and requests
+/// the mutator refused by a take of its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) struct Outcomes {
+    pub(crate) token_held: usize,
+    pub(crate) posted: usize,
+    pub(crate) unanswered: usize,
+    pub(crate) idle: usize,
+    pub(crate) batches: usize,
+    pub(crate) grants: usize,
+    pub(crate) refusals: usize,
+}
+
+static TOKEN_HELD: AtomicUsize = AtomicUsize::new(0);
+static POSTED: AtomicUsize = AtomicUsize::new(0);
+static UNANSWERED: AtomicUsize = AtomicUsize::new(0);
+static IDLE: AtomicUsize = AtomicUsize::new(0);
 static MUTATORS_SERVED: AtomicUsize = AtomicUsize::new(0);
+static GRANTS: AtomicUsize = AtomicUsize::new(0);
+static REFUSALS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn note_served(served: super::Served) {
-    if matches!(served, super::Served::Batch { .. }) {
-        MUTATORS_SERVED.fetch_add(1, Ordering::Relaxed);
+    let count = match served {
+        super::Served::TokenHeld => &TOKEN_HELD,
+        super::Served::Posted => &POSTED,
+        super::Served::Unanswered => &UNANSWERED,
+        super::Served::Idle => &IDLE,
+        super::Served::Batch { .. } => &MUTATORS_SERVED,
+    };
+    count.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn note_grant() {
+    GRANTS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn note_refusal() {
+    REFUSALS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Every outcome since the last call, and zero the counts.
+pub(crate) fn take_outcomes() -> Outcomes {
+    Outcomes {
+        token_held: TOKEN_HELD.swap(0, Ordering::Relaxed),
+        posted: POSTED.swap(0, Ordering::Relaxed),
+        unanswered: UNANSWERED.swap(0, Ordering::Relaxed),
+        idle: IDLE.swap(0, Ordering::Relaxed),
+        batches: MUTATORS_SERVED.swap(0, Ordering::Relaxed),
+        grants: GRANTS.swap(0, Ordering::Relaxed),
+        refusals: REFUSALS.swap(0, Ordering::Relaxed),
     }
 }
 
@@ -324,6 +395,34 @@ pub(crate) fn retire() {
     wait_between_rounds_for(None);
     super::set_collector_cap(super::DEFAULT_COLLECTOR_CAP);
     let _ = take_rounds();
+    let _ = take_round_times();
+    let _ = take_outcomes();
+}
+
+/// Put the calling thread's handle where the elder's would stand, so that a
+/// consent's wake of slot [`ELDER`] reaches a stand-in collector instead
+/// of finding no thread: a stand-in that waits on its wake token until the
+/// grant, rather than spinning on the byte, makes progress under Miri's weak-memory
+/// emulation, where a spinning reader can read the old value for a very
+/// long time. Cleared by [`stand_down_as_the_elder`]; a case that calls
+/// this has no collector thread born.
+pub(crate) fn stand_in_as_the_elder() {
+    assert_eq!(
+        thread_state(),
+        ThreadState::Unborn,
+        "the elder's slot is free"
+    );
+    *COLLECTORS[ELDER]
+        .handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::thread::current());
+}
+
+pub(crate) fn stand_down_as_the_elder() {
+    *COLLECTORS[ELDER]
+        .handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }
 
 /// One [`super::serve`] of `record` on the calling thread with standing
@@ -348,15 +447,41 @@ pub(crate) fn consent_while<T>(collector: JoinHandle<T>) -> T {
     collector.join().expect("the collector finished")
 }
 
-/// The request wait the serves use under the harness, in milliseconds:
-/// the crate's own bound is a placeholder sized for a running mutator, and
-/// a harness thread consenting between yields on a loaded box misses it,
-/// which would read as a silent mutator in a case about something else. A
-/// case about the bound itself sets its own ([`request_wait_for_tests`]).
-static REQUEST_WAIT_MILLIS: AtomicUsize = AtomicUsize::new(2_000);
+/// The request wait the serves use under the harness: the crate's own
+/// bound is a placeholder sized for a running mutator, and a harness thread
+/// consenting between yields on a loaded box misses it, which would read
+/// as a silent mutator in a case about something else. A case about the
+/// bound itself holds its own ([`HeldRequestWait`]).
+pub(crate) const HARNESS_REQUEST_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-pub(crate) fn request_wait_for_tests(wait: std::time::Duration) {
+static REQUEST_WAIT_MILLIS: AtomicUsize =
+    AtomicUsize::new(HARNESS_REQUEST_WAIT.as_millis() as usize);
+
+fn request_wait_for_tests(wait: std::time::Duration) {
     REQUEST_WAIT_MILLIS.store(wait.as_millis() as usize, Ordering::Relaxed);
+}
+
+/// A request wait held for one case — the crate's own, or one the case is
+/// about — and the harness's put back when the guard drops, on the unwind
+/// too, so that a failed case leaves no short wait for the cases after it
+/// to read as a silent mutator.
+pub(crate) struct HeldRequestWait;
+
+impl HeldRequestWait {
+    pub(crate) fn crate_own() -> Self {
+        Self::of(super::REQUEST_WAIT)
+    }
+
+    pub(crate) fn of(wait: std::time::Duration) -> Self {
+        request_wait_for_tests(wait);
+        Self
+    }
+}
+
+impl Drop for HeldRequestWait {
+    fn drop(&mut self) {
+        request_wait_for_tests(HARNESS_REQUEST_WAIT);
+    }
 }
 
 pub(crate) fn request_wait() -> std::time::Duration {

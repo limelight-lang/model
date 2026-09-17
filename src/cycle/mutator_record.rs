@@ -2,16 +2,17 @@
 //! thread reaches, in storage that outlives the thread
 //! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"; `dev/DECISIONS.md`,
 //! "the token stands in a record the process keeps, and the exit's claim on
-//! it is never released"). Four lines: the trace token's; the reader's line, the collector's words of the
+//! it is never released"). Four lines: the token line, the trace token's
+//! byte and its wait; the reader's line, the collector's words of the
 //! two rings; the writer's line, the mutator's words of them and its count
 //! of freeing dispositions; and the hold line, the word under
 //! which a collector reads the rings' blocks before its claim and the word
 //! that names the mutator's collector (`rfc/dev/DECISIONS.md`, "the candidate
 //! queue is read behind its writer, and the collector's verdicts come back
-//! by a second ring"). The first three lines are each written by one
-//! party, so a registration's store and a batch's load never share a line;
-//! the hold line is the one two parties write. Both rings' words are read
-//! by `crate::cycle::queue` through `crate::ring`.
+//! by a second ring"). The reader's and the writer's lines are each written
+//! by one party, so a registration's store and a batch's load never share a
+//! line; the token line and the hold line are the two both parties write.
+//! Both rings' words are read by `crate::cycle::queue` through `crate::ring`.
 //!
 //! # P's one block is drawn with the record
 //!
@@ -103,9 +104,9 @@ use crate::cycle::token::TraceToken;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
 use crate::memory::gc_metadata;
 
-/// One mutator thread's record: four 64-byte lines — the token's, the
-/// reader's and the writer's each written by one party, the hold line
-/// shared — so that the collector's loads of one mutator touch nothing of
+/// One mutator thread's record: four 64-byte lines — the token's and the
+/// hold line written by both parties, the reader's and the writer's each
+/// by one — so that the collector's loads of one mutator touch nothing of
 /// another's and nothing the mutator's registration stores into.
 #[repr(C, align(64))]
 pub(crate) struct MutatorRecord {

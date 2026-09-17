@@ -412,16 +412,23 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
     let (release, waiting_until) = std::sync::mpsc::channel::<()>();
     testing::make_the_next_batch_wait_before_its_advance(waiting_until);
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    let (batched_tell, batched) = std::sync::mpsc::channel::<()>();
     let sent = Sent(record());
+    // The collector waits for each consent as the thread does, on its wake
+    // token, so that neither side spins on the byte (`dev/WORKFLOW.md`,
+    // Miri, "A test thread waits, it does not spin").
     let collector = std::thread::spawn(move || {
         assert!(crate::memory::heap::ll_thread_init());
+        testing::stand_in_as_the_elder();
         let record = sent.into_inner();
         let mut batches = 0;
         loop {
             if let Served::Batch { .. } = unsafe { testing::serve_alone(record) } {
                 batches += 1;
+                batched_tell.send(()).expect("the case counts");
             }
             if stopped.try_recv().is_ok() {
+                testing::stand_down_as_the_elder();
                 return batches;
             }
             std::thread::yield_now();
@@ -459,15 +466,29 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
     );
     release.send(()).expect("the batch is waiting");
 
-    // The batches that follow take the rest; a last one after the last
-    // registration, so that every root the collector could take is taken.
-    // This thread consents to each request and clears the `POSTED` each
-    // batch leaves, standing in for the collections a mutator would run
-    // between them, which this case makes by hand at its end.
-    let until = std::time::Instant::now() + std::time::Duration::from_millis(20);
-    while std::time::Instant::now() < until {
+    // The batches that follow take the rest, until R is empty, so that
+    // every root the collector could take is taken. This thread consents
+    // to each request and clears the `POSTED` each batch leaves, standing
+    // in for the collections a mutator would run between them, which this
+    // case makes by hand at its end.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut batches_seen = 0;
+    loop {
         crate::cycle::token::read_and_act_on_this_thread();
         unsafe { &*record() }.token.clear_posted_for_test();
+        while batched.try_recv().is_ok() {
+            batches_seen += 1;
+        }
+
+        if batches_seen >= 2 && candidate_count() == 0 {
+            break;
+        }
+
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the batches drained R: {batches_seen} so far, {} left",
+            candidate_count()
+        );
         std::thread::yield_now();
     }
     stop.send(()).expect("the collector is looping");

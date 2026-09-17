@@ -500,6 +500,22 @@ runs over different trees reported 154.41 s and 154.59 s while each cost
 tens of minutes — so a Miri run is timed by `time` or by the shell, and a
 figure quoted from its output says nothing about how long it took.
 
+**A test thread waits, it does not spin.** Under Miri's weak-memory
+emulation a load may keep returning an older value of the word, and a
+thread that re-reads the word in a loop — with `yield_now` or a
+`park_timeout` between reads — can read the old value for longer than a
+run's timeout: on 2026-09-17 a consent test whose stand-in collector spun
+on the byte, and whose case thread spun on the request, held a slice for
+50 minutes and was killed, while the same test finished in 28 s with
+`-Zmiri-disable-weak-memory-emulation`. Miri forces the latest value only
+when the spinning thread is the sole one that can make progress, which two
+spinning threads never are. A stand-in for the collector parks and is
+unparked by the consent's wake, its handle installed by
+`worker::testing::stand_in_as_the_elder`; a case waiting for a stand-in's
+step receives it over a channel. The crate's own waits are already of this
+form — the collector parks, the mutator waits on the token's mutex — so
+the rule is for the harness alone.
+
 **What a whole-suite run costs.** No figure for the single configuration
 has been taken. What is measured is a set of module slices, all at two threads
 on 2026-09-06, given as passed/ignored, Miri's clock, wall:

@@ -6,86 +6,13 @@
 //! sibling is lost and the count stands; and a cap of one births nothing.
 //!
 //! The second mutator is a thread of the case's that registers and polls on
-//! its own thread through jobs the case sends it.
+//! its own thread through jobs the case sends it ([`Mutator`]).
 
 use super::*;
 use crate::cycle::testing::Sent;
 use crate::memory::arena::Arena;
 use crate::object::Object;
 use crate::refcount::{RcHeader, ll_release, ll_retain};
-
-/// A registered thread the case drives by jobs, each run on that thread
-/// with its arena; the thread lives until the case drops it.
-struct Mutator {
-    record: *mut MutatorRecord,
-    jobs: std::sync::mpsc::Sender<Box<dyn FnOnce(&mut Arena) + Send>>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Mutator {
-    fn start() -> Self {
-        let (jobs, inbox) = std::sync::mpsc::channel::<Box<dyn FnOnce(&mut Arena) + Send>>();
-        let (tell, told) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            assert!(
-                crate::memory::heap::ll_thread_init(),
-                "the pool served the mutator thread"
-            );
-            tell.send(Sent(mutator_record::this_thread_record()))
-                .expect("the case waits");
-            let mut arena = Arena::new();
-            // Between jobs the thread does what a mutator's polls do at its
-            // byte — consent to a request — and, for these cases, which read
-            // batch after batch with no collection between, clears the
-            // `POSTED` a batch leaves, standing in for the disposition the
-            // case makes at its end.
-            loop {
-                match inbox.recv_timeout(std::time::Duration::from_millis(1)) {
-                    Ok(job) => job(&mut arena),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        crate::cycle::token::read_and_act_on_this_thread();
-                        unsafe { &*mutator_record::this_thread_record() }
-                            .token
-                            .clear_posted_for_test();
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            }
-
-            crate::cycle::queue::release_queue_segments();
-        });
-        let record = told
-            .recv()
-            .expect("the mutator thread started")
-            .into_inner();
-        Self {
-            record,
-            jobs,
-            thread: Some(thread),
-        }
-    }
-
-    /// Run `job` on the mutator's thread and wait for its answer.
-    fn run<T: Send + 'static>(&self, job: impl FnOnce(&mut Arena) -> T + Send + 'static) -> T {
-        let (tell, told) = std::sync::mpsc::channel();
-        self.jobs
-            .send(Box::new(move |arena| {
-                tell.send(Sent(job(arena))).expect("the case waits");
-            }))
-            .expect("the mutator thread runs");
-        told.recv().expect("the job ran").into_inner()
-    }
-}
-
-impl Drop for Mutator {
-    fn drop(&mut self) {
-        let (jobs, _) = std::sync::mpsc::channel();
-        drop(std::mem::replace(&mut self.jobs, jobs));
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
 
 /// Roots each mutator registers: the first two batches take one and two
 /// starting sizes, K doubling after a completed batch, and leave three at

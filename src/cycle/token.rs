@@ -132,7 +132,10 @@ pub(crate) enum Reading {
     Mutator,
 }
 
-/// Where a mutator's take found the byte.
+/// Where a mutator's take found the byte. Production acts the same on
+/// both — every ending of a collection disposes of P whether or not the
+/// take consumed `POSTED` — so the answer is read by tests alone, which
+/// assert which state a take consumed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TookFrom {
     /// `FREE`, or a request refused: nothing stands in P.
@@ -162,6 +165,14 @@ pub(crate) struct TraceToken {
     /// never what it reached.
     #[cfg(test)]
     waits: std::sync::atomic::AtomicUsize,
+    /// Requests this mutator consented to, and requests it refused by a
+    /// take of its own: the mutator's side of the ledger the stress probe
+    /// balances against the collector's grants served and refusals read
+    /// (`crate::cycle::worker::tests::under_stress`).
+    #[cfg(test)]
+    consents: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    refusals: std::sync::atomic::AtomicUsize,
 }
 
 const _: () = assert!(
@@ -180,6 +191,10 @@ impl TraceToken {
             released: Condvar::new(),
             #[cfg(test)]
             waits: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            consents: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            refusals: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -253,6 +268,8 @@ impl TraceToken {
         self.word
             .compare_exchange(seen, granted, Ordering::Release, Ordering::Acquire)
             .map(|_| {
+                #[cfg(test)]
+                self.consents.fetch_add(1, Ordering::Relaxed);
                 crate::cycle::worker::wake(slot(seen));
             })
     }
@@ -336,6 +353,8 @@ impl TraceToken {
             {
                 Ok(_) => {
                     if state(seen) == REQUESTED {
+                        #[cfg(test)]
+                        self.refusals.fetch_add(1, Ordering::Relaxed);
                         crate::cycle::worker::wake(slot(seen));
                     }
 
@@ -361,6 +380,18 @@ impl TraceToken {
     #[cfg(test)]
     pub(crate) fn waits(&self) -> usize {
         self.waits.load(Ordering::SeqCst)
+    }
+
+    /// Requests the mutator consented to so far.
+    #[cfg(test)]
+    pub(crate) fn consents(&self) -> usize {
+        self.consents.load(Ordering::Relaxed)
+    }
+
+    /// Requests the mutator refused by a take of its own so far.
+    #[cfg(test)]
+    pub(crate) fn refusals(&self) -> usize {
+        self.refusals.load(Ordering::Relaxed)
     }
 
     /// Whether somebody holds the token: the byte at `MUTATOR` or

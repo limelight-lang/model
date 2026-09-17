@@ -151,6 +151,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("THREAD_FIGURES", false),
         ("THREAD_HEAP", false),
         ("TRACED_MUTATOR", false), // test-only const Cell of a pointer, no drop glue
+        ("VERDICT_COLLECTIONS", false), // test-only const Cell, no drop glue
         ("WEAK_TABLE", false),
         ("WINDOW", false),
         ("WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue

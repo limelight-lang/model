@@ -775,7 +775,7 @@ impl Drop for ActiveTrace {
 /// queue entry itself keeps the slot withheld.
 ///
 /// With no window open the cost is one thread-local load, the token's
-/// reading — a fence and an acquire load through the record — and, with
+/// reading — one acquire load through the record — and, with
 /// nothing withheld, three thread-local reads of empty heads. With a window
 /// open, the block's own state is read — one load for a slotted or a
 /// retained death, one for a large entity's row — and a withheld death then

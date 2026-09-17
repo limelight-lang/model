@@ -8,6 +8,80 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-17 — S51.5 the token handshake's instruments: the poll 3.3 ns cheaper with the peek gone, and the six stress readings
+
+**The poll.** `ll_gc_maybe_collect` on a registered thread with nothing to
+do — unarmed, its queue empty, its byte `FREE` — is the path a statement
+pays. A, the tree before S51 (`e1a2360`, the poll reading P's prefix through
+`Reader::new` and one `peek` every call), against B, the S51 tree (one
+acquire load of the byte, no peek), the same probe
+`collect::tests::what_the_poll_costs` compiled into each tree's binary and
+run A B A B A B on the i7-11700K at a load average of 4.6 to 5.7 (two Miri
+processes beside the run); minimum and median in ns over 9 rounds of
+200,000:
+
+| tree | min | median |
+|---|---:|---:|
+| A, the peek of P per poll | 10.84 – 11.02 | 11.39 – 18.97 |
+| B, the byte's acquire load | 7.52 – 7.72 | 7.95 – 8.09 |
+
+The poll is 3.3 ns cheaper per call. The two figures come from two
+binaries, so up to 7–10 % of either is placement (2026-09-14, "the null
+pair"); the difference is 30 % of A and outside that band. The 18.97 median
+of A's third run is one round's interference, its minimum unmoved.
+
+**W's tail.** The wait the collector gives a mutator that answered its last
+request (`worker::REQUEST_WAIT`, 2 ms) lands above the 99th percentile of
+the interval between two consecutive polls or slot frees of a running
+mutator on the corpus. The corpus is Phase D's (`PLAN.md`, "Phase D, the
+vertical slice"), so the arm is blocked and the placeholder keeps its "not a
+measured figure"; what the probes below show is that the placeholder is
+long enough for a mutator that polls every millisecond and short enough
+that a blocked one costs the round 2 ms once.
+
+**The stress readings**, `worker::tests::under_stress`, release build, real
+threads, one case at a time, the crate's own request wait, three runs of
+the module all green; the figures are one run's:
+
+- *A sleeper.* A mutator with a ring of 64 at the threshold, blocked on a
+  pipe read for 2 s (twice the timer's maximum): 7 rounds while blocked, 7
+  `Unanswered`, no batch and no grant, its byte `REQUESTED|0` before the
+  pipe was written; after the write its first poll consented and its ring
+  was batched and collected 3.46 ms later, inside one round, the 64 freed by
+  its own disposition.
+- *Sleepers beside an active mutator.* The active mutator's interval
+  between two collections over P, a ring of 64 registered per interval,
+  median of 20 after 4 of warm-up: alone 10.71, 11.09, 11.05 ms over three
+  runs; beside three sleepers standing silent with their rings at the
+  threshold, 11.09 ms — inside the runs' spread. The interval is the timer's
+  minimum plus the poll's millisecond; a standing request costs the round
+  no wait.
+- *Full-rate freeing under continuous requests.* 2 s of a loop that
+  registers a ring of 64, frees 2,000 dead slots through the reading and
+  polls once: 46,123 iterations at 43.4 µs each; the collector made 2,884
+  batches and 2,884 grants, read 1,383 `POSTED` skips and no refusal; the
+  mutator consented 2,884 times, refused none, and fired 2,884 collections
+  over P; every ring registered was freed, nothing was left withheld at the
+  safepoint after the drain, and the pool's count of blocks out — read with
+  the queue at its base block and both spares — was 34 before and 34 after.
+  K doubled to its bound after the first completed batches, so a batch took
+  up to 1,024 roots, sixteen rings, and the 2,884 batches covered the
+  46,123 rings.
+- *A wake inside a round.* With the sleep between rounds pinned at 2 s and
+  the wait at 300 ms: a poll's wake landing inside the first round's wait
+  started the second round 425 ns after the first ended; a consent landing
+  between rounds started the third 96 µs after the consent.
+- *A sleeper waking during the active mutator's batch.* The active batch
+  held open at the harness hook for 50.2 ms after the sleeper's consent: the
+  sleeper's release came 1.13 ms after the active batch let go, 51.3 ms after
+  its consent.
+- *A pressure collection fired by that sleeper.* Fired 50.06 ms before the
+  active batch let go, it ended 229 µs after it, its own ring freed by it.
+
+The design's invariant on `POSTED` skips holds as ≥: 1,383 skips plus
+2,884 collections against 2,884 batches, since a batch's `POSTED` is
+collected at the mutator's next poll and the rounds between read it.
+
 ## 2026-09-16 — the free path's fence against the take: 2.5 to 3 ns per free, the same as a read-modify-write
 
 The owner's reading of the token on its free path

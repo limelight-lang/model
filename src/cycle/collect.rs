@@ -118,9 +118,10 @@ pub(crate) fn may_collect() -> bool {
 /// Per thread because a collection is: the window, the workspace and the
 /// ring it reads are all this thread's, and another thread collecting its own
 /// graph is no reason to refuse this one. The word stands in the record
-/// rather than in a thread-local because a collector thread reads it too —
-/// it is what keeps the collector out of the ring for the collection's whole
-/// length (`crate::cycle::mutator_record`, the collecting word).
+/// beside the mutator's other words of the rings, written and read by the
+/// mutator alone; what keeps a collector out of the ring for the
+/// collection's whole length is the token, held as `MUTATOR` through the
+/// close (`crate::cycle::mutator_record`, the collecting word).
 #[inline]
 fn is_collecting() -> bool {
     let record = crate::cycle::mutator_record::this_thread_record();

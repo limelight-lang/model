@@ -67,7 +67,7 @@
 //! that the runtime stay in it until every queued root has been walked, and
 //! nothing in this crate carries such a state, the poll refilling the
 //! reserve unconditionally at the next safepoint. What exists is the draw
-//! and the arming.
+//! and the signal it raises for the collector.
 //!
 //! # Why a registration cannot fail
 //!
@@ -129,7 +129,7 @@
 //!
 //! # What the poll does for this module
 //!
-//! Seven things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
+//! Six things, and [`crate::gc::ll_gc_maybe_collect`] does them in order.
 //! Where a spare cell is short it unlinks the block a burst left empty
 //! behind R's tail block, one per poll, into the cell, so that the refill
 //! after it draws one block fewer; it refills the spare cells, asking
@@ -137,14 +137,15 @@
 //! thread whose fill at init was refused has never drawn and would never be
 //! asked again. It then drains the overflow buffer into the queue, which is
 //! why the refill comes first; compares the full-width epoch against the
-//! deferred lane's mirror and re-offers that lane where it moved; behind an
-//! open gate, disposes of the prefix of P up to the first proposed root
-//! ([`verdicts`]); armed, fires a collection; and
-//! last, behind the same gate, signals the collector when a registration
-//! has filled a block of R since the last signal
+//! deferred lane's mirror and re-offers that lane where it moved; reads
+//! the token byte, consenting to a collector's request and arming for the
+//! collection over P on `POSTED` ([`verdicts`]); armed and behind an open
+//! gate, fires a collection; and last, behind the same gate, signals the
+//! collector when a registration has filled a block of R, drawn the
+//! reserve or overflowed since the last signal
 //! ([`signal_the_collector_if_due`]) — after the fire, whose reading of R
-//! lowers the flag. A reserve draw, an overflow append, a due
-//! deferred re-offer, or a proposal standing in P arms it.
+//! whole lowers the flag. A due deferred re-offer arms it for R whole, and
+//! the byte's `POSTED` for P.
 //!
 //! # The second ring, P
 //!
@@ -153,7 +154,7 @@
 //! P's contract). The mutator alone reads it: a collection's batch is R's
 //! entries and the proposed roots standing in P ([`Batch`]), and every
 //! reduction of state a verdict leads to is made on the mutator's own
-//! re-reading, at the close or at the poll.
+//! re-reading, at a collection's close.
 //!
 //! # What the in-line collection does with the rings
 //!

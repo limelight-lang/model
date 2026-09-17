@@ -269,29 +269,28 @@ fn a_request_is_consented_to_at_the_poll_and_at_a_slot_free() {
     let token = || unsafe { &(*crate::cycle::mutator_record::this_thread_record()).token };
 
     for by_the_poll in [true, false] {
+        let (requested_tell, requested) = std::sync::mpsc::channel();
         let (granted_tell, granted) = std::sync::mpsc::channel();
         let record = Sent(record.0);
+        // The stand-in waits as the collector does — on its wake token until the
+        // consent's wake — and tells the case when its request stands,
+        // so that neither thread spins on the byte.
         let collector = std::thread::spawn(move || {
+            crate::cycle::worker::testing::stand_in_as_the_elder();
             let token = unsafe { &(*record.into_inner()).token };
             assert_eq!(token.request(ELDER), Ok(()));
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            requested_tell.send(()).expect("the case waits");
             while token.read() != word(COLLECTOR, ELDER) {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the mutator consented"
-                );
-                std::thread::park_timeout(std::time::Duration::from_millis(1));
+                std::thread::park();
             }
             granted_tell.send(()).expect("the case waits");
             token.release_claim(ELDER, false);
+            crate::cycle::worker::testing::stand_down_as_the_elder();
         });
 
         // The request stands before the consent.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while state(token().read()) != crate::cycle::token::REQUESTED {
-            assert!(std::time::Instant::now() < deadline, "the request landed");
-            std::thread::yield_now();
-        }
+        requested.recv().expect("the stand-in requested");
+        assert_eq!(state(token().read()), crate::cycle::token::REQUESTED);
         if by_the_poll {
             unsafe { ll_gc_maybe_collect() };
         } else {
@@ -323,7 +322,8 @@ fn a_silent_mutators_request_stands_and_is_served_at_a_checkpoint() {
     let _ring = unsafe { ring(&mut arena, [node, node]) };
     // The bound itself is what this case is about: short, so that a serve
     // this thread does not answer withdraws within the case.
-    crate::cycle::worker::testing::request_wait_for_tests(std::time::Duration::from_millis(2));
+    let _wait =
+        crate::cycle::worker::testing::HeldRequestWait::of(std::time::Duration::from_millis(2));
     let record = Sent(crate::cycle::mutator_record::this_thread_record());
     let (serve_tell, serve) = std::sync::mpsc::channel::<()>();
     let (served_tell, served) = std::sync::mpsc::channel();
@@ -374,7 +374,6 @@ fn a_silent_mutators_request_stands_and_is_served_at_a_checkpoint() {
     assert_eq!(verdict_count(), 2);
     drop(serve_tell);
     collector.join().expect("the collector finished");
-    crate::cycle::worker::testing::request_wait_for_tests(std::time::Duration::from_secs(2));
 
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
     reset();

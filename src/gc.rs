@@ -126,6 +126,19 @@ pub(crate) fn arming() -> Arming {
     Arming::from_word(COLLECTION_ARMED.with(|armed| armed.get()))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Collections over P this thread's polls fired, for the stress probe's
+    /// count of `POSTED` skips against batches minus collections.
+    static VERDICT_COLLECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Collections over P this thread's polls have fired so far.
+#[cfg(test)]
+pub(crate) fn verdict_collections_on_this_thread() -> usize {
+    VERDICT_COLLECTIONS.with(|count| count.get())
+}
+
 /// Lower the flag, for a case whose subject is an arming.
 ///
 /// A fixture arms this thread as a side effect — the queue's growth draws the
@@ -281,7 +294,11 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     crate::cycle::queue::take_retired_by_the_close();
     let freed = match take_arming() {
         Arming::None => 0,
-        Arming::Verdicts => unsafe { crate::cycle::collect::collect_over_the_verdicts() },
+        Arming::Verdicts => {
+            #[cfg(test)]
+            VERDICT_COLLECTIONS.with(|count| count.set(count.get() + 1));
+            unsafe { crate::cycle::collect::collect_over_the_verdicts() }
+        }
         Arming::AllRoots => unsafe { ll_gc_collect_cycles() },
     };
 
@@ -293,8 +310,10 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         crate::cycle::queue::verdicts::note_freeing_disposition();
     }
 
-    // The soft signal, last: a fire above read R whole and started the
-    // count again, so a signal sent here is for entries still in R, and the
+    // The soft signal, last: a fire over R whole above read R and started
+    // the count again, so a signal sent here is for entries still in R; a
+    // fire over P alone read nothing of R and lowers no flag, the
+    // block-filled wake being for an R it did not read. Either way the
     // round it starts meets no collection of this thread's at the token. A
     // wake, and no arming.
     crate::cycle::queue::signal_the_collector_if_due();

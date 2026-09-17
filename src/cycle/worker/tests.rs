@@ -26,6 +26,105 @@ fn record() -> *mut MutatorRecord {
     record
 }
 
+/// A registered thread the case drives by jobs, each run on that thread
+/// with its arena; between jobs it runs `between_jobs`, and it lives until
+/// the case drops it.
+struct Mutator {
+    record: *mut MutatorRecord,
+    jobs: std::sync::mpsc::Sender<Box<dyn FnOnce(&mut crate::memory::arena::Arena) + Send>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Mutator {
+    /// A mutator that, between jobs, does what a mutator's polls do at its
+    /// byte — consent to a request — and clears the `POSTED` a batch leaves,
+    /// standing in for the disposition a case that reads batch after batch
+    /// with no collection between makes at its end.
+    fn start() -> Self {
+        Self::start_idling_with(|_| {
+            crate::cycle::token::read_and_act_on_this_thread();
+            unsafe { &*mutator_record::this_thread_record() }
+                .token
+                .clear_posted_for_test();
+        })
+    }
+
+    /// A mutator that polls between jobs as a running one does
+    /// (`crate::gc::ll_gc_maybe_collect`), so that a batch's `POSTED` is
+    /// collected over; `freed` sums what its polls freed.
+    fn start_polling(freed: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        Self::start_idling_with(move |_| {
+            let count = unsafe { crate::gc::ll_gc_maybe_collect() };
+            freed.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+        })
+    }
+
+    fn start_idling_with(
+        between_jobs: impl Fn(&mut crate::memory::arena::Arena) + Send + 'static,
+    ) -> Self {
+        let (jobs, inbox) =
+            std::sync::mpsc::channel::<Box<dyn FnOnce(&mut crate::memory::arena::Arena) + Send>>();
+        let (tell, told) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            assert!(
+                crate::memory::heap::ll_thread_init(),
+                "the pool served the mutator thread"
+            );
+            tell.send(Sent(mutator_record::this_thread_record()))
+                .expect("the case waits");
+            let mut arena = crate::memory::arena::Arena::new();
+            loop {
+                match inbox.recv_timeout(std::time::Duration::from_millis(1)) {
+                    Ok(job) => job(&mut arena),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => between_jobs(&mut arena),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+
+            crate::cycle::queue::release_queue_segments();
+        });
+        let record = told
+            .recv()
+            .expect("the mutator thread started")
+            .into_inner();
+        Self {
+            record,
+            jobs,
+            thread: Some(thread),
+        }
+    }
+
+    /// Run `job` on the mutator's thread and wait for its answer.
+    fn run<T: Send + 'static>(
+        &self,
+        job: impl FnOnce(&mut crate::memory::arena::Arena) -> T + Send + 'static,
+    ) -> T {
+        let (tell, told) = std::sync::mpsc::channel();
+        self.send(move |arena| {
+            tell.send(Sent(job(arena))).expect("the case waits");
+        });
+        told.recv().expect("the job ran").into_inner()
+    }
+
+    /// Run `job` on the mutator's thread without waiting for it: for a job
+    /// that blocks until the case lets it go.
+    fn send(&self, job: impl FnOnce(&mut crate::memory::arena::Arena) + Send + 'static) {
+        self.jobs
+            .send(Box::new(job))
+            .expect("the mutator thread runs");
+    }
+}
+
+impl Drop for Mutator {
+    fn drop(&mut self) {
+        let (jobs, _) = std::sync::mpsc::channel();
+        drop(std::mem::replace(&mut self.jobs, jobs));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// Ends the collector thread when the case ends, on a panic as on a return,
 /// so that a failed case leaves no thread rounding under the next one.
 struct RetireOnDrop;
@@ -68,7 +167,6 @@ const ANY_ENTRY: usize = 1;
 /// harness thread another case used.
 fn reset_lanes() {
     crate::cycle::queue::verdicts::discard_standing_verdicts();
-    unsafe { &*record() }.token.clear_posted_for_test();
     crate::cycle::queue::release_queue_segments();
     crate::memory::critical::drain_for_test();
     crate::gc::disarm();
@@ -483,3 +581,4 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
 mod the_batch;
 mod the_reading_before_the_claim;
 mod the_siblings;
+mod under_stress;

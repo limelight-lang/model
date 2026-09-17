@@ -7,6 +7,36 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-17 — the arena moved above the request for the checkpoint's sake, and the design's clause on its place went unread
+
+**What happened.** S51.2 gave the collector's walk two checkpoints, and a
+checkpoint that serves a grant needs a workspace, so `serve` opened its
+`TraceScratchArena` first, before the idle test and the request, and passed
+it down to every grant it served. The design's E2 rules the opposite order
+— the arena declared after the release guard, so that its reset runs
+before the token goes on the unwind as on the return — and the module doc
+was rewritten to describe the order built. On a panic inside a batch the
+release ran first and the arena's drop reset the rows afterwards, storing
+into the shadow words of the mutator's block headers after the mutator
+had been told it was free to return them. The release profile aborts at
+the panic, so the consequence is confined to unwinding builds; the stage's
+Code Reviewer found it, three Critic rounds and the stage's own tests
+having not.
+
+**Why it was possible.** The clause lives in an exhibit's resolution (E2)
+and not in the collector's algorithm paragraph, which says only "arena
+opened after the grant"; the build read the paragraph as a sequence of
+calls and the checkpoint's need for an arena as a reason to hoist one. The
+unwind order of two guards is a property no test of the module exercises,
+since every panic case ends at the first drop it asserts on.
+
+**What changed.** `serve_the_grant` opens the arena after the guard, one
+per grant, and a workspace the pool refuses is a grant released with no
+batch, as E2 and the algorithm paragraph say; the checkpoints carry no
+arena. The rule for the reader: a clause of the design that names an order
+of drops is checked against the declaration order of the guards, not
+against the order of the calls.
+
 ## 2026-09-17 — a hold decided outside the wait consumed what the wait delivered
 
 **What happened.** The retirement pass's take was written as a pre-read of
