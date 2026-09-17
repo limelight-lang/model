@@ -173,12 +173,15 @@ pub(crate) unsafe fn record_occupant(block: usize, list: *mut usize, address: us
 /// ([`occupant_index`]). The count is then the one the fill pass put on the
 /// block's word, that pass having been the last reader of those slots.
 ///
-/// **An occupant already dead when the list is published is counted only when
-/// its candidate registration is still live.** An unregistered death has had
-/// its one free and will never reach [`occupant_freed`], so counting it would
-/// hold the block for nobody. A registered death is the opposite: its queue
-/// entry will later return the slot through that same decrement, and until
-/// then the block is what keeps the raw entry tied to its own allocation.
+/// **An occupant whose free has already taken its slot is counted only when
+/// its candidate registration is still live.** An unregistered freed death
+/// will never reach [`occupant_freed`], so counting it would hold the block
+/// for nobody. A registered death is the opposite: its queue entry will
+/// later return the slot through that same decrement, and until then the
+/// block is what keeps the raw entry tied to its own allocation. An occupant
+/// at count zero that no free has taken — a survivor promoted at zero for
+/// the edges it holds, its teardown still to run — is counted as a live one:
+/// that teardown's free is the death that will reach the decrement.
 ///
 /// **True when the block is empty already**, which is that same case
 /// taken to its end: every occupant died inside the reset and nothing
@@ -393,13 +396,16 @@ pub(crate) unsafe fn release_emptied(block: usize) {
 }
 
 /// Whether a survivor's slot still holds an allocation identity the retained
-/// block must keep. A live entity does. So does a dead-in-place registered
-/// candidate: the queue holds only its address and its later retirement is the
-/// event that reaches [`occupant_freed`]. A dead unregistered survivor does
-/// not, because no later event can spend a count taken for it.
+/// block must keep. A live entity does, and so does one at count zero that
+/// no free has taken yet: a survivor promoted at zero for its edges, whose
+/// teardown — and the free inside it — is still to come. So does a
+/// dead-in-place registered candidate: the queue holds only its address and
+/// its later retirement is the event that reaches [`occupant_freed`]. A
+/// dead-in-place unregistered survivor does not, because its one free has
+/// happened and no later event can spend a count taken for it.
 ///
-/// `DEAD_IN_PLACE` alone is not enough: an ordinary dead survivor has no later
-/// free with which to spend a count. The candidate bit is the
+/// `DEAD_IN_PLACE` alone is not enough: an ordinary freed survivor has no
+/// later free with which to spend a count. The candidate bit is the
 /// allocation-identity obligation — it names the queue entry whose owner
 /// retirement will make that later free. Every address here belongs to the
 /// retained block being published. Such a block has no stride or per-slot free
@@ -424,7 +430,9 @@ unsafe fn is_occupied(address: usize) -> bool {
         crate::refcount::SlotStateReading::DeadInPlace { flags } => {
             crate::refcount::is_registered_candidate(flags)
         }
-        crate::refcount::SlotStateReading::Free { .. } => false,
+        // Count zero and no free yet: nothing above a retained block's bump
+        // is listed, so this is a promoted survivor whose teardown is pending.
+        crate::refcount::SlotStateReading::Free { .. } => true,
     }
 }
 

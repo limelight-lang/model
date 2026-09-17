@@ -8,6 +8,35 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-17 — S52 an entity-only free for the death path: no measurable difference
+
+`ll_free_entity`, the free for a pointer the caller knows to be a GC-heap
+entity header (`ll_object_die`'s phase 3), skips what `ll_free` pays to
+serve C `free` too: the null test, the entity test (`points_to_gc_entity`,
+read twice there) and the raw-heap arm, compiled out of the shared tail by
+a const generic. Priced with `deferred_slot_reuse::tests::what_a_foreign_holder_costs`,
+the entity arms placed right after the general free's in each round so
+the pair shares the round's state; one binary, three runs on the i7-11700K
+at a load average under 1; minimum and median in ns over 9 rounds of
+20,000:
+
+| arm | `ll_free`, min | `ll_free`, median | `ll_free_entity`, min | `ll_free_entity`, median |
+|---|---:|---:|---:|---:|
+| slot free, token free (returned) | 4.63 – 4.82 | 4.90 – 5.31 | 4.76 – 4.96 | 4.98 – 5.00 |
+| slot free, token held (withheld) | 3.60 – 3.74 | 3.81 – 4.16 | 3.40 – 3.49 | 3.70 – 3.98 |
+
+The returned arm reads the same within 0.2 ns either way; the withheld
+arm reads the entity entry 0.2 ns lower, which is the size of the
+run-to-run spread of the general free on the same arm (3.26 – 3.33 in an
+unmodified binary the same evening, against 3.60 – 3.74 here: placement,
+2026-09-14, "the null pair"). The branches the entry saves are predicted
+and cost nothing visible beside the header's read-modify-write and the
+free list's push. The entry stays on the death path for the precondition
+it states — a debug assertion that the pointer is an entity header — which
+found `retained::is_occupied` not counting a survivor promoted at count
+zero (`dev/POSTMORTEM.md`, same day); the saving Edmond asked to have
+priced is not there.
+
 ## 2026-09-17 — S51.5 the token handshake's instruments: the poll 3.3 ns cheaper with the peek gone, and the six stress readings
 
 **The poll.** `ll_gc_maybe_collect` on a registered thread with nothing to

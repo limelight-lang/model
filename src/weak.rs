@@ -264,7 +264,7 @@ pub(crate) unsafe fn weakref_die(cell: *mut LLWeakRef) {
     // teardown shape uniform with `reference_die`.
     if unsafe { crate::object::header_category(cell as *const RcHeader) } == MemoryCategory::GcHeap
     {
-        unsafe { crate::memory::stdapi::ll_free(cell as *mut u8) };
+        unsafe { crate::memory::stdapi::ll_free_entity(cell as *mut u8) };
     }
 }
 

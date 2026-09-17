@@ -42,16 +42,18 @@ fn a_registered_index_is_safe_for_the_enumerator_to_read() {
     assert_eq!(seen, 0, "zeroed cells read refcount 0 and are skipped");
 }
 
-/// A live occupant of a published list is visited, and a dead one is
-/// not: the block has no stride, so the list is the enumerator's only
-/// road to its occupants, and a walk that skipped the block would drop
-/// every promoted survivor from the census.
+/// A live occupant of a published list is visited, and a dead one —
+/// freed, its slot taken by `DEAD_IN_PLACE` — is not: the block has no
+/// stride, so the list is the enumerator's only road to its occupants, and
+/// a walk that skipped the block would drop every promoted survivor from
+/// the census. The dead one is not counted either: its free has happened.
 #[test]
 fn a_live_occupant_of_a_published_list_is_visited() {
     let _g = crate::memory::block_pool::test_guard();
     let (block, cells, live) = walkable_index(3);
     unsafe {
         live[0].write(1);
+        live[1].write(u64::from(crate::refcount::DEAD_IN_PLACE) << 32);
         live[2].write(1);
     }
 
@@ -76,6 +78,7 @@ fn a_live_occupant_of_a_published_list_is_visited() {
     assert!(unsafe { occupant_freed(block) });
     unsafe {
         live[0].write(0);
+        live[1].write(0);
         live[2].write(0);
     }
 

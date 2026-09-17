@@ -7,6 +7,38 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-17 — a survivor promoted at count zero was not counted as an occupant, and the free that found it was swallowed as a C mistake
+
+**What happened.** `retained::is_occupied` read a survivor at count zero
+with no `DEAD_IN_PLACE` as holding nothing, so a survivor promoted at zero
+for the edges it holds — the case
+`promote::tests::the_reset_reads_no_zero_count_member` builds on purpose —
+was left out of its retained block's occupant count. The block went home
+at the death before the survivor's own; the survivor's teardown then ran
+its `dispose` over memory the pool already held and freed into a block of
+kind `FREE`, which `ll_free` tolerates without a word, that arm existing for
+a C caller's double free. The test passed: its assertions read the survivor
+before its death and nothing after.
+
+**Why it was possible.** `is_occupied` equated "count zero" with "dead",
+and its doc said an unregistered dead occupant "has had its one free" —
+true of a survivor the reset's own drain tore down, whose free took the
+slot and left `DEAD_IN_PLACE`, and false of one at zero whose teardown is
+still to come. The two states share a count word and differ in a flag
+bit, and the reading took the count alone. Nothing caught it because the
+one free that could — the survivor's, landing on a pool block — is the
+free `ll_free` is built to ignore, so the fault had no symptom in any
+build.
+
+**What changed.** `is_occupied` counts a zero-count slot no free has taken;
+`when_a_retained_block_goes_home` has the case, red before the fix on the
+block emptying one death early. The fixture of
+`a_live_occupant_of_a_published_list_is_visited` wrote its dead occupant
+as an all-zero word and now writes `DEAD_IN_PLACE`, which is what a dead
+one carries. What found it was the debug assertion of `ll_free_entity`
+(S52), which refuses a pointer whose block is no entity block: an entry
+that states its precondition sees what the general free's tolerance hides.
+
 ## 2026-09-17 — the arena moved above the request for the checkpoint's sake, and the design's clause on its place went unread
 
 **What happened.** S51.2 gave the collector's walk two checkpoints, and a

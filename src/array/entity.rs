@@ -1438,7 +1438,7 @@ pub(crate) unsafe fn array_die(a: *mut LLArray) {
         unsafe { release_children_in_order(dying, &mut pending) };
         unsafe { dispose_storage(dying, category_of(dying)) };
         if unsafe { category_of(dying) } == MemoryCategory::GcHeap {
-            unsafe { crate::memory::stdapi::ll_free(dying as *mut u8) };
+            unsafe { crate::memory::stdapi::ll_free_entity(dying as *mut u8) };
         }
 
         let mut next = None;

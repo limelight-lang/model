@@ -877,7 +877,7 @@ pub(crate) unsafe fn string_die(s: *mut LLString) {
     }
 
     if owner_cat == MemoryCategory::GcHeap {
-        unsafe { crate::memory::stdapi::ll_free(s as *mut u8) };
+        unsafe { crate::memory::stdapi::ll_free_entity(s as *mut u8) };
     }
 }
 

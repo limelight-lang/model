@@ -107,7 +107,7 @@ pub(crate) unsafe fn reference_die(boxed: *mut LLReference) {
         }
     }
 
-    unsafe { crate::memory::stdapi::ll_free(boxed as *mut u8) };
+    unsafe { crate::memory::stdapi::ll_free_entity(boxed as *mut u8) };
 }
 
 #[cfg(test)]

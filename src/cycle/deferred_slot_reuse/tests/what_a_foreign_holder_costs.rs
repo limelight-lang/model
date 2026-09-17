@@ -1,6 +1,8 @@
 //! What the foreign holder's window costs the mutator, per return: a free
 //! that withholds against a free that returns, a chunk free the same way,
-//! and the pop that makes the withheld returns afterwards.
+//! and the pop that makes the withheld returns afterwards; and beside the
+//! general free, the entity entry `ll_free_entity` on the same two arms,
+//! which is the death path's free priced against the one it replaced.
 //!
 //! The probe prices the mechanism and not a workload — the churn a trace
 //! holds is this figure's reciprocal times the trace's length, and the
@@ -56,6 +58,16 @@ unsafe fn ns_per_free(slots: &[*mut u8]) -> f64 {
     start.elapsed().as_nanos() as f64 / black_box(slots.len()) as f64
 }
 
+/// Nanoseconds per free through the entity entry over `slots`, in order.
+unsafe fn ns_per_entity_free(slots: &[*mut u8]) -> f64 {
+    let start = Instant::now();
+    for &slot in black_box(slots) {
+        unsafe { crate::memory::stdapi::ll_free_entity(slot) };
+    }
+
+    start.elapsed().as_nanos() as f64 / black_box(slots.len()) as f64
+}
+
 /// Nanoseconds per chunk free over `chunks`.
 unsafe fn ns_per_chunk_free(chunks: &[(*mut u8, usize)]) -> f64 {
     let start = Instant::now();
@@ -86,6 +98,8 @@ fn measure_what_a_foreign_holder_costs() {
     let mut chunk_returned = Vec::new();
     let mut chunk_withheld = Vec::new();
     let mut chunk_popped = Vec::new();
+    let mut entity_returned = Vec::new();
+    let mut entity_withheld = Vec::new();
 
     // A warm-up round of every arm, dropped: the first measurement a process
     // takes is systematically slow (`dev/BENCHMARKS.md`, Method).
@@ -104,6 +118,19 @@ fn measure_what_a_foreign_holder_costs() {
         let start = Instant::now();
         unsafe { make_returns_withheld_under_a_foreign_trace() };
         let c = start.elapsed().as_nanos() as f64 / SLOTS as f64;
+        assert_eq!(foreign_withheld_count(), 0);
+
+        // The entity entry on the same two arms, right after the general
+        // free's, so that the pair shares the round's state of the box.
+        let slots = unsafe { dead_slots() };
+        let g = unsafe { ns_per_entity_free(&slots) };
+
+        let slots = unsafe { dead_slots() };
+        let mut holder = HeldByACollector::take(this_thread_token(), false);
+        let h = unsafe { ns_per_entity_free(&slots) };
+        assert_eq!(foreign_withheld_count(), SLOTS);
+        holder.release();
+        unsafe { make_returns_withheld_under_a_foreign_trace() };
         assert_eq!(foreign_withheld_count(), 0);
 
         let batch = chunks();
@@ -130,6 +157,8 @@ fn measure_what_a_foreign_holder_costs() {
         chunk_returned.push(d);
         chunk_withheld.push(e);
         chunk_popped.push(f);
+        entity_returned.push(g);
+        entity_withheld.push(h);
     }
 
     for (label, samples) in [
@@ -140,6 +169,8 @@ fn measure_what_a_foreign_holder_costs() {
         ("chunk_free_returned", &mut chunk_returned),
         ("chunk_free_withheld", &mut chunk_withheld),
         ("chunk_pop", &mut chunk_popped),
+        ("entity_free_returned", &mut entity_returned),
+        ("entity_free_withheld", &mut entity_withheld),
     ] {
         let stats = stats(samples);
         println!(

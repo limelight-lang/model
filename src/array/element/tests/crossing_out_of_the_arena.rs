@@ -220,8 +220,14 @@ fn a_promoted_array_takes_its_next_storage_from_the_heap() {
             "the storage came from the arena the array was promoted out of"
         );
 
+        // The array's shell stands in an arena block a real promotion
+        // would have retained, so its death is not run through the entity
+        // free, whose precondition is a block a promotion stamped; the
+        // storage is given back by hand and the shell goes with the reset.
+        crate::refcount::ll_retain(a as *mut RcHeader);
         assert!(ll_release(h as *mut RcHeader));
         ll_object_die(h);
+        crate::array::entity::dispose_storage(a, MemoryCategory::GcHeap);
     }
 
     crate::memory::context::set_current_context(std::ptr::null_mut());

@@ -329,7 +329,9 @@ pub(crate) unsafe fn hand_back_and_free(slot: *mut u8) {
 /// kind — no size needed.
 ///
 /// Split fast/cold like [`ll_alloc`]: the heap path is the body, the
-/// large and huge kinds are a `#[cold]` tail.
+/// large and huge kinds are a `#[cold]` tail. A caller that knows its
+/// pointer is a GC-heap entity header frees through [`ll_free_entity`],
+/// which skips what this entry pays to tell a raw buffer from an entity.
 ///
 /// # Safety
 /// `ptr` must be a live allocation from [`ll_alloc`] on this thread (for
@@ -342,7 +344,50 @@ pub unsafe fn ll_free(ptr: *mut u8) {
 
     let block = block_of(ptr);
     let kind = unsafe { load_block_kind(block as *const AtomicU32) };
+    let flags = if points_to_gc_entity(kind, ptr, block) {
+        match unsafe { take_entity_slot(ptr) } {
+            Some(flags) => flags,
+            None => return,
+        }
+    } else {
+        0
+    };
 
+    unsafe { free_taken::<false>(ptr, block, kind, flags) }
+}
+
+/// Free a GC-heap entity by its header: the death path's free
+/// (`crate::object::ll_object_die`, phase 3), for a caller that has read
+/// the category and so knows the pointer is an entity header in an entity
+/// block, a large-entity block or run, or a retained block — never null,
+/// never a raw buffer, never a block base. What [`ll_free`] does for such
+/// a pointer, less the null test, the entity test and the raw-heap arm.
+///
+/// # Safety
+/// `ptr` is a live GC-heap entity header this thread may free, readable at
+/// its first eight bytes, not already freed and not on any free list.
+#[inline]
+pub unsafe fn ll_free_entity(ptr: *mut u8) {
+    let block = block_of(ptr);
+    let kind = unsafe { load_block_kind(block as *const AtomicU32) };
+    debug_assert!(
+        points_to_gc_entity(kind, ptr, block),
+        "an entity free of a pointer that is no entity header, in a block of kind {kind}"
+    );
+    let Some(flags) = (unsafe { take_entity_slot(ptr) }) else {
+        return;
+    };
+
+    unsafe { free_taken::<true>(ptr, block, kind, flags) }
+}
+
+/// Take an entity slot for its free: the flags as they stood, or `None` for
+/// a second free of one entity, which does nothing and is counted refused.
+///
+/// # Safety
+/// `ptr` is an entity header in a live allocation this thread may free.
+#[inline]
+unsafe fn take_entity_slot(ptr: *mut u8) -> Option<u32> {
     // An entity slot reaches the free list carrying the final
     // refcount-0 header, because that count is the occupancy test every
     // pass over the entity blocks applies
@@ -359,7 +404,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // another thread half an hour later (`dev/POSTMORTEM.md`, "an entity
     // killed at refcount 1").
     #[cfg(test)]
-    if points_to_gc_entity(kind, ptr, block) {
+    {
         let refcount =
             unsafe { crate::refcount::header_refcount(ptr as *const crate::refcount::RcHeader) };
         assert_eq!(
@@ -372,7 +417,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     }
 
     // **A second free of one entity does nothing.** The flags bit taken here
-    // says this slot is `ll_free`'s and has not been handed back, so the
+    // says this slot is the free's and has not been handed back, so the
     // repeat reads it up and returns, touching no free list, no pool and no
     // mapping; how far the refusal reaches in each population is the bit's
     // own doc (`crate::refcount::DEAD_IN_PLACE`).
@@ -380,24 +425,32 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     // Entities only: a raw heap block carries no header to take, and the
     // retained sentinel addresses a `BlockHeader` rather than an `RcHeader`
     // ([`points_to_gc_entity`]). The flags come back as they stood, which is
-    // what the candidate arm below reads instead of loading them again.
-    let flags = if points_to_gc_entity(kind, ptr, block) {
-        match unsafe { crate::refcount::take_slot_for_free(ptr as *mut crate::refcount::RcHeader) }
-        {
-            Some(flags) => {
-                #[cfg(test)]
-                crate::memory::reset_window::note_slot_taken();
-                flags
-            }
-            None => {
-                note_refused_free();
-                return;
-            }
+    // what the candidate arm of the tail reads instead of loading them again.
+    match unsafe { crate::refcount::take_slot_for_free(ptr as *mut crate::refcount::RcHeader) } {
+        Some(flags) => {
+            #[cfg(test)]
+            crate::memory::reset_window::note_slot_taken();
+            Some(flags)
         }
-    } else {
-        0
-    };
+        None => {
+            note_refused_free();
+            None
+        }
+    }
+}
 
+/// The free from the taken slot on, shared by [`ll_free`] and
+/// [`ll_free_entity`]: the reset window's two holds, the two withholdings
+/// of `rc-cycle`, then the return by block kind. `ENTITY` says the caller
+/// knows the pointer is an entity header, so the raw-heap arm is compiled
+/// out and the entity arm is the first one read; `flags` is what the take
+/// read back, zero for a raw buffer.
+///
+/// # Safety
+/// As [`ll_free`], with `block` and `kind` read for `ptr`, and the slot
+/// taken when `ptr` is an entity.
+#[inline]
+unsafe fn free_taken<const ENTITY: bool>(ptr: *mut u8, block: *mut u8, kind: u32, flags: u32) {
     // A reset in flight on this thread reads one header word of every
     // survivor it holds after its fixpoint, and one of every child their
     // slots still name, so a body whose free would return memory to the
@@ -460,7 +513,7 @@ pub unsafe fn ll_free(ptr: *mut u8) {
         return;
     }
 
-    if kind == BLOCK_KIND_HEAP {
+    if !ENTITY && kind == BLOCK_KIND_HEAP {
         let h = crate::memory::heap::thread_heap();
         if h.is_null() {
             // No heap on this thread means we cannot be the block's owner, so
@@ -477,8 +530,8 @@ pub unsafe fn ll_free(ptr: *mut u8) {
     }
 
     // The entity population: same slot mechanics, its own heap instance.
-    // This is object teardown's path (`ll_object_die` → here), not the C
-    // `free` hot path, so the second compare costs nothing that matters.
+    // Through `ll_free` this is the second compare, after the C `free` hot
+    // path's; through the entity entry it is the first.
     if kind == BLOCK_KIND_ENTITY {
         let h = crate::memory::heap::thread_entity_heap();
         if h.is_null() {

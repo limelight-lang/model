@@ -66,6 +66,38 @@ fn an_occupant_dead_at_registration_holds_nothing() {
     assert_eq!(kind_of(block), BLOCK_KIND_FREE);
 }
 
+/// A survivor promoted at count zero whose teardown has not run — no
+/// `DEAD_IN_PLACE`, since no free has taken the slot — is counted: its
+/// teardown's free is the death that reaches [`occupant_freed`], and a
+/// block that did not count it goes home while the survivor still stands
+/// in it (`promote::tests::the_reset_reads_no_zero_count_member`, the
+/// survivor promoted at refcount zero).
+#[test]
+fn an_occupant_at_count_zero_whose_teardown_is_pending_holds_the_block() {
+    let _g = crate::memory::block_pool::test_guard();
+    let (block, cells, live) = walkable_index(2);
+    let _empty = unsafe {
+        live[0].write(1);
+        live[1].write(0);
+        count_and_register(block, &cells, list_room(block, 2))
+    };
+
+    assert!(
+        !unsafe { occupant_freed(block) },
+        "the zero-count survivor was not counted, and the first death emptied the block"
+    );
+    assert!(
+        unsafe { occupant_freed(block) },
+        "the second death is the survivor's teardown"
+    );
+    unsafe {
+        live[0].write(0);
+        live[1].write(0);
+    }
+    give_back(block);
+    assert_eq!(kind_of(block), BLOCK_KIND_FREE);
+}
+
 /// The last death can arrive on a thread other than the one that
 /// published the list, and it finds the list: the count word is
 /// published last, by an increment whose release half covers the list's
