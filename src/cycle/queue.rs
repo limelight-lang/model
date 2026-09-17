@@ -3,15 +3,15 @@
 //!
 //! The contract is `rfc/model/gc/cycle/questions.md`, Y12, and every
 //! clause of it is normative here. What this module builds is the
-//! **owner's side** of that contract: the write, the growth and the
+//! **mutator's side** of that contract: the write, the growth and the
 //! funding. The read side belongs to whoever holds the trace token:
 //! `cycle::mark` traces from one root, and the collection that reads those
 //! roots out of this queue is `cycle::collect`. A collector thread reads
-//! the ring behind this owner's writer without a detach
+//! the ring behind this mutator's writer without a detach
 //! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
 //! and the collector's verdicts come back by a second ring"); its batch is
 //! `crate::cycle::worker`'s, under the token, and the in-line collection is
-//! the same reader on the owner's own thread.
+//! the same reader on the mutator's own thread.
 //!
 //! # The three storage paths
 //!
@@ -41,8 +41,8 @@
 //! pool blocks linked in a circle, each carrying its own `front` and `tail`
 //! on separate lines, so that a reader can stand behind the writer without
 //! a detach and neither touches the other's index. R's two block pointers
-//! stand in the owner's record ([`OwnerRecord::candidate_ring`]) — the front
-//! block on the collector's line and the tail block on the owner's — and
+//! stand in the mutator's record ([`MutatorRecord::candidate_ring`]) — the front
+//! block on the collector's line and the tail block on the mutator's — and
 //! the blocks themselves are pool blocks, the only unit both allocation
 //! paths dispense (`rfc/model/gc/cycle/questions.md`, Y12 clause 3). A
 //! consumed block stays in the circle for the writer to reach again, until
@@ -51,7 +51,7 @@
 //! block's contents are bounded by anything but its own two indices.
 //!
 //! **The deferred lane is a chain of the same blocks** ([`ring::Chain`]),
-//! filled by the owner alone at a collection's close and re-offered at the
+//! filled by the mutator alone at a collection's close and re-offered at the
 //! epoch's turn by a splice into R after the tail block, with no copy and
 //! no block drawn ([`reoffer_deferred_candidates`]).
 //!
@@ -150,9 +150,9 @@
 //!
 //! The collector's verdicts about the roots it took from R come back by a
 //! ring of the same form with the roles swapped ([`verdicts`], which owns
-//! P's contract). The owner alone reads it: a collection's batch is R's
+//! P's contract). The mutator alone reads it: a collection's batch is R's
 //! entries and the proposed roots standing in P ([`Batch`]), and every
-//! reduction of state a verdict leads to is made on the owner's own
+//! reduction of state a verdict leads to is made on the mutator's own
 //! re-reading, at the close or at the poll.
 //!
 //! # What the in-line collection does with the rings
@@ -163,7 +163,7 @@
 //! traces, and at its close **compacts the ring in place** ([`compaction`]):
 //! an entry it disposed of is dropped, every other entry is kept in order,
 //! and the blocks' `tail` indices and the tail block are lowered, every one
-//! of them the owner's own words on its own thread. Nothing is taken out, so
+//! of them the mutator's own words on its own thread. Nothing is taken out, so
 //! nothing is merged back; a registration the collection's own destructors
 //! make lands at the tail, behind the batch, and the compaction keeps it.
 //! The batch's prefix of P is disposed of by the same pass and P's front
@@ -172,7 +172,7 @@
 //! drained them.
 use std::cell::{Cell, UnsafeCell};
 
-use crate::cycle::owner_record::{self, OwnerRecord};
+use crate::cycle::mutator_record::{self, MutatorRecord};
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
 use crate::memory::gc_metadata;
 use crate::refcount::RcHeader;
@@ -182,10 +182,10 @@ use crate::ring::{self, Chain, Quiescent, Writer};
 /// manager-owned control line.
 ///
 /// The capacity is the 65,280-byte payload less one 64-byte
-/// [`OwnerCycleState`]: 8,152 pointers. [`POLL_STRIDE`] is derived from
+/// [`MutatorCycleState`]: 8,152 pointers. [`POLL_STRIDE`] is derived from
 /// this figure and statically checked.
 pub(crate) const OVERFLOW_CAPACITY: usize =
-    (BLOCK_PAYLOAD - size_of::<OwnerCycleState>()) / size_of::<*mut RcHeader>();
+    (BLOCK_PAYLOAD - size_of::<MutatorCycleState>()) / size_of::<*mut RcHeader>();
 
 /// Iterations a runtime-owned bulk loop may run between two safepoint
 /// polls of its own.
@@ -216,10 +216,10 @@ pub(crate) const SPARE_SEGMENTS: usize = 2;
 /// here has drop glue, so thread exit frees it by hand
 /// ([`release_queue_segments`]) rather than through a destructor whose order is
 /// unspecified (`memory::heap::ll_thread_exit`). R's own two words are not
-/// here: they stand in the owner's record, where a collector reaches them
-/// (`crate::cycle::owner_record`).
+/// here: they stand in the mutator's record, where a collector reaches them
+/// (`crate::cycle::mutator_record`).
 #[repr(C, align(64))]
-struct OwnerCycleState {
+struct MutatorCycleState {
     /// This thread's collection workspace, in three states: null before the
     /// thread's first collection, the block's address while the workspace is
     /// idle, and that address with [`WORKSPACE_LENT`] set while an arena is
@@ -232,7 +232,7 @@ struct OwnerCycleState {
     /// what tells a turnover from a commit ([`reoffer_deferred_if_epoch_moved`]).
     turnover_mirror: Cell<u64>,
     /// The deferred lane: candidates a later turnover rather than a decrement
-    /// offers to a trace again. Written and read by the owner alone, at a
+    /// offers to a trace again. Written and read by the mutator alone, at a
     /// collection's close and at the re-offer.
     deferred: UnsafeCell<Chain>,
     /// Entries in the base block no allocation path could fund a block
@@ -257,15 +257,15 @@ struct OwnerCycleState {
 thread_local! {
     /// Non-owning locator only. The state and every pointer it owns are
     /// stored in the manager-issued base block to which this points.
-    static OWNER_STATE: Cell<*mut OwnerCycleState> = const { Cell::new(std::ptr::null_mut()) };
+    static MUTATOR_STATE: Cell<*mut MutatorCycleState> = const { Cell::new(std::ptr::null_mut()) };
 }
 
-const _: () = assert!(size_of::<OwnerCycleState>() == 64);
-const _: () = assert!(align_of::<OwnerCycleState>() == 64);
+const _: () = assert!(size_of::<MutatorCycleState>() == 64);
+const _: () = assert!(align_of::<MutatorCycleState>() == 64);
 const _: () = assert!(POLL_STRIDE * 2 <= OVERFLOW_CAPACITY);
 const _: () = assert!(ring::BLOCK_ENTRIES > OVERFLOW_CAPACITY / 2);
 
-impl OwnerCycleState {
+impl MutatorCycleState {
     const fn new() -> Self {
         Self {
             workspace_base: Cell::new(std::ptr::null_mut()),
@@ -278,27 +278,27 @@ impl OwnerCycleState {
         }
     }
 
-    /// The deferred lane, for the owner's own thread alone.
+    /// The deferred lane, for the mutator's own thread alone.
     #[allow(clippy::mut_from_ref)]
     fn deferred(&self) -> &mut Chain {
-        // The owner is the one thread that reaches this cell, and no caller
+        // The mutator is the one thread that reaches this cell, and no caller
         // holds one borrow across a call that takes another.
         unsafe { &mut *self.deferred.get() }
     }
 }
 
 #[inline]
-fn owner_state() -> *mut OwnerCycleState {
-    OWNER_STATE.with(Cell::get)
+fn mutator_state() -> *mut MutatorCycleState {
+    MUTATOR_STATE.with(Cell::get)
 }
 
 #[inline]
-unsafe fn owner_state_ref<'a>(state: *mut OwnerCycleState) -> &'a OwnerCycleState {
+unsafe fn mutator_state_ref<'a>(state: *mut MutatorCycleState) -> &'a MutatorCycleState {
     unsafe { &*state }
 }
 
 #[inline]
-fn queue_base_of(state: *mut OwnerCycleState) -> *mut BlockHeader {
+fn queue_base_of(state: *mut MutatorCycleState) -> *mut BlockHeader {
     BlockHeader::of_ptr(state as *const u8)
 }
 
@@ -307,10 +307,10 @@ fn queue_base_of(state: *mut OwnerCycleState) -> *mut BlockHeader {
 ///
 /// Every entry this answers is outside the control line, so `state` must
 /// carry the provenance of the whole base block — the form
-/// [`draw_queue_base`] produces and [`OWNER_STATE`] holds.
+/// [`draw_queue_base`] produces and [`MUTATOR_STATE`] holds.
 #[inline]
-fn overflow_entries(state: *mut OwnerCycleState) -> *mut *mut RcHeader {
-    unsafe { (state as *mut u8).add(size_of::<OwnerCycleState>()) as *mut *mut RcHeader }
+fn overflow_entries(state: *mut MutatorCycleState) -> *mut *mut RcHeader {
+    unsafe { (state as *mut u8).add(size_of::<MutatorCycleState>()) as *mut *mut RcHeader }
 }
 
 #[inline]
@@ -321,8 +321,8 @@ fn stored_len(len: usize) -> u16 {
 /// This thread's record, which every thread with a base block has: the
 /// record is drawn beside the block on both paths that draw one.
 #[inline]
-fn this_thread_record_ref<'a>() -> &'a OwnerRecord {
-    let record = owner_record::this_thread_record();
+fn this_thread_record_ref<'a>() -> &'a MutatorRecord {
+    let record = mutator_record::this_thread_record();
     debug_assert!(!record.is_null(), "a thread with a base block has a record");
     unsafe { &*record }
 }
@@ -341,7 +341,7 @@ fn entry_entity(entry: usize) -> *mut RcHeader {
 }
 
 /// The entity an entry of R names, for the collector's batch, which reads
-/// R's entries as the owner's walk does (`crate::cycle::worker`).
+/// R's entries as the mutator's walk does (`crate::cycle::worker`).
 #[inline]
 pub(crate) fn entry_root(entry: usize) -> *mut RcHeader {
     entry_entity(entry)
@@ -365,7 +365,7 @@ pub(crate) fn entry_root(entry: usize) -> *mut RcHeader {
 /// `entity` points to a live heap entity beginning with `RcHeader`, and
 /// stays live at least until this thread's next safepoint.
 pub(crate) unsafe fn register_candidate(entity: *mut RcHeader) {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         // Nothing to report it through and no continuation that keeps the
         // root: `CANDIDATE_BIT` is set before this call and nothing unsets
@@ -385,21 +385,21 @@ pub(crate) unsafe fn register_candidate(entity: *mut RcHeader) {
 /// admits.
 ///
 /// # Safety
-/// `state` is this thread's base-block pointer as [`OWNER_STATE`] holds it,
+/// `state` is this thread's base-block pointer as [`MUTATOR_STATE`] holds it,
 /// carrying the provenance of the whole block ([`append_to_overflow`] reaches
 /// past the control line through it).
-unsafe fn append_entry(state: *mut OwnerCycleState, entity: *mut RcHeader) {
-    let owner_state = unsafe { owner_state_ref(state) };
+unsafe fn append_entry(state: *mut MutatorCycleState, entity: *mut RcHeader) {
+    let mutator_state = unsafe { mutator_state_ref(state) };
     // `register_candidate` established the base block before reaching here,
     // and the record beside it. Drawing either at the first refusal would be
     // too late: every other allocation path would already have found the
     // pool empty.
     let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
-    match writer.push(entity_entry(entity), || fresh_block(owner_state)) {
+    match writer.push(entity_entry(entity), || fresh_block(mutator_state)) {
         Ok(ring::Pushed::IntoTailBlock) => {}
         // A block of entries filled: the poll's signal to the collector, on
         // the path that was slow already.
-        Ok(ring::Pushed::IntoNextBlock) => owner_state.signal_due.set(true),
+        Ok(ring::Pushed::IntoNextBlock) => mutator_state.signal_due.set(true),
         Err(ring::NoBlock) => {
             unsafe { append_to_overflow(state, entity) };
             // The overflow append arms on its own: the refill the poll
@@ -418,41 +418,41 @@ unsafe fn append_entry(state: *mut OwnerCycleState, entity: *mut RcHeader) {
 /// stands until one is received). A thread with no base block has
 /// registered nothing.
 pub(crate) fn signal_the_collector_if_due() {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return;
     }
 
-    let owner_state = unsafe { owner_state_ref(state) };
-    if !owner_state.signal_due.get() {
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    if !mutator_state.signal_due.get() {
         return;
     }
 
     if crate::cycle::worker::wake(this_thread_record_ref().collector()) {
-        owner_state.signal_due.set(false);
+        mutator_state.signal_due.set(false);
     }
 }
 
 /// Raise the poll's signal flag as a filled block would, for a case.
 #[cfg(test)]
 pub(crate) fn make_a_signal_due() {
-    let state = owner_state();
+    let state = mutator_state();
     assert!(!state.is_null(), "the case's thread has a base block");
-    unsafe { owner_state_ref(state) }.signal_due.set(true);
+    unsafe { mutator_state_ref(state) }.signal_due.set(true);
 }
 
 /// Whether the poll's signal flag stands, for a case.
 #[cfg(test)]
 pub(crate) fn signal_is_due() -> bool {
-    let state = owner_state();
-    !state.is_null() && unsafe { owner_state_ref(state) }.signal_due.get()
+    let state = mutator_state();
+    !state.is_null() && unsafe { mutator_state_ref(state) }.signal_due.get()
 }
 
 /// The growth path's block: a spare, or the critical reserve with both
 /// cells empty, or null when neither has one. A block this answers is
 /// charged as the ring's from here.
-fn fresh_block(owner_state: &OwnerCycleState) -> *mut BlockHeader {
-    let mut block = take_spare(owner_state);
+fn fresh_block(mutator_state: &MutatorCycleState) -> *mut BlockHeader {
+    let mut block = take_spare(mutator_state);
     if block.is_null() {
         // Both cells empty, so the reserve — the draw clause 6
         // funds. It is a fixed-array pop on any thread that has
@@ -510,13 +510,13 @@ fn discharge_block() {
 /// lost, and then thousands of further non-final decrements.
 ///
 /// # Safety
-/// `state` is this thread's base-block pointer as [`OWNER_STATE`] holds it,
+/// `state` is this thread's base-block pointer as [`MUTATOR_STATE`] holds it,
 /// carrying the provenance of the whole block. A pointer reconstructed from
-/// a `&OwnerCycleState` covers the control line alone and cannot address
+/// a `&MutatorCycleState` covers the control line alone and cannot address
 /// the overflow buffer behind it.
-unsafe fn append_to_overflow(state: *mut OwnerCycleState, entity: *mut RcHeader) {
-    let owner_state = unsafe { owner_state_ref(state) };
-    let overflow_len = owner_state.overflow_len.get();
+unsafe fn append_to_overflow(state: *mut MutatorCycleState, entity: *mut RcHeader) {
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    let overflow_len = mutator_state.overflow_len.get();
     if usize::from(overflow_len) == OVERFLOW_CAPACITY {
         // Nothing to report it through: `ll_release` holds no frame, and
         // the poll that would raise is what this thread has not reached.
@@ -530,7 +530,7 @@ unsafe fn append_to_overflow(state: *mut OwnerCycleState, entity: *mut RcHeader)
             .add(usize::from(overflow_len))
             .write(entity)
     };
-    owner_state.overflow_len.set(overflow_len + 1);
+    mutator_state.overflow_len.set(overflow_len + 1);
     gc_metadata::charge(size_of::<*mut RcHeader>());
 }
 
@@ -545,7 +545,7 @@ unsafe fn append_to_overflow(state: *mut OwnerCycleState, entity: *mut RcHeader)
 /// its own caller.
 pub(crate) fn draw_queue_base() -> bool {
     debug_assert!(
-        owner_state().is_null(),
+        mutator_state().is_null(),
         "the base block is drawn once per life of a thread"
     );
     let block = gc_metadata::acquire();
@@ -553,21 +553,21 @@ pub(crate) fn draw_queue_base() -> bool {
         return false;
     }
 
-    let state = BlockHeader::payload_start(block) as *mut OwnerCycleState;
-    unsafe { state.write(OwnerCycleState::new()) };
+    let state = BlockHeader::payload_start(block) as *mut MutatorCycleState;
+    unsafe { state.write(MutatorCycleState::new()) };
     // Publish last: a reader after this point sees fully initialised control.
-    OWNER_STATE.with(|cell| cell.set(state));
-    gc_metadata::charge(size_of::<OwnerCycleState>());
+    MUTATOR_STATE.with(|cell| cell.set(state));
+    gc_metadata::charge(size_of::<MutatorCycleState>());
     true
 }
 
 /// Whether this thread holds a base block now: the mark of a started thread,
 /// drawn at its init and held to its exit.
 pub(crate) fn queue_base_present() -> bool {
-    !owner_state().is_null()
+    !mutator_state().is_null()
 }
 
-/// Set in [`OwnerCycleState::workspace_base`] while an arena holds the block.
+/// Set in [`MutatorCycleState::workspace_base`] while an arena holds the block.
 /// A block address never carries it, blocks being 64 KiB-aligned.
 const WORKSPACE_LENT: usize = 1;
 
@@ -591,13 +591,13 @@ const WORKSPACE_LENT: usize = 1;
 /// granting the same bytes twice. The release profile ends the process on it;
 /// the test profile unwinds, which is what lets a case state the refusal.
 pub(crate) fn lend_workspace_base() -> *mut BlockHeader {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return std::ptr::null_mut();
     }
 
-    let owner_state = unsafe { owner_state_ref(state) };
-    let installed = owner_state.workspace_base.get();
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    let installed = mutator_state.workspace_base.get();
     assert_eq!(
         installed as usize & WORKSPACE_LENT,
         0,
@@ -611,7 +611,7 @@ pub(crate) fn lend_workspace_base() -> *mut BlockHeader {
     };
 
     if !base.is_null() {
-        owner_state
+        mutator_state
             .workspace_base
             .set((base as usize | WORKSPACE_LENT) as *mut BlockHeader);
     }
@@ -629,18 +629,18 @@ pub(crate) fn lend_workspace_base() -> *mut BlockHeader {
 /// any other, and the block is already the pool's business rather than a
 /// closing arena's.
 pub(crate) fn return_workspace_base(base: *mut BlockHeader) {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return;
     }
 
-    let owner_state = unsafe { owner_state_ref(state) };
+    let mutator_state = unsafe { mutator_state_ref(state) };
     assert_eq!(
-        owner_state.workspace_base.get() as usize,
+        mutator_state.workspace_base.get() as usize,
         base as usize | WORKSPACE_LENT,
         "the closing arena returns the block it was lent"
     );
-    owner_state.workspace_base.set(base);
+    mutator_state.workspace_base.set(base);
 }
 
 /// Draw this thread's workspace ahead of any collection, so that a test
@@ -673,33 +673,33 @@ pub(crate) fn warm_workspace_base() {
 /// before the pool sees anything. The workspace does not: the reason is at the
 /// line that releases it.
 pub(crate) fn release_queue_base() {
-    let state = OWNER_STATE.with(|cell| cell.replace(std::ptr::null_mut()));
+    let state = MUTATOR_STATE.with(|cell| cell.replace(std::ptr::null_mut()));
     if state.is_null() {
         return;
     }
 
-    let owner_state = unsafe { owner_state_ref(state) };
-    let record = owner_record::this_thread_record();
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    let record = mutator_record::this_thread_record();
     // The flag first: a hand-back running beside this nulls the words
     // before it clears the flag, so a flag read clear orders the null store
     // before the front block's load.
     assert!(
         record.is_null()
-            || owner_record::ring_left_to_a_holder(record, owner_record::Ring::Candidates)
+            || mutator_record::ring_left_to_a_holder(record, mutator_record::Ring::Candidates)
             || !unsafe { Quiescent::new((*record).candidate_ring()) }.has_blocks(),
         "release follows the ring's release, or the ring was left to a collector's hold"
     );
     assert!(
-        owner_state.deferred().is_empty(),
+        mutator_state.deferred().is_empty(),
         "release follows deferred-lane release"
     );
     assert_eq!(
-        owner_state.spare_count.get(),
+        mutator_state.spare_count.get(),
         0,
         "release follows spare release"
     );
     assert_eq!(
-        owner_state.overflow_len.get(),
+        mutator_state.overflow_len.get(),
         0,
         "release follows overflow release"
     );
@@ -708,7 +708,7 @@ pub(crate) fn release_queue_base() {
     // and to the pool rather than through the reserve: what the reserve lent
     // goes back to the reserve, and the reserve never funded this one
     // ([`lend_workspace_base`]).
-    let workspace = owner_state.workspace_base.replace(std::ptr::null_mut());
+    let workspace = mutator_state.workspace_base.replace(std::ptr::null_mut());
     assert_eq!(
         workspace as usize & WORKSPACE_LENT,
         0,
@@ -716,7 +716,7 @@ pub(crate) fn release_queue_base() {
     );
     gc_metadata::release(workspace);
 
-    gc_metadata::discharge(size_of::<OwnerCycleState>());
+    gc_metadata::discharge(size_of::<MutatorCycleState>());
     gc_metadata::release_to_critical(queue_base_of(state));
 }
 
@@ -751,7 +751,7 @@ pub(crate) fn refill_and_drain() {
 /// into a short spare cell"): with both cells full the block would go to
 /// the pool and the next growth draw it back, so a circle a burst grew
 /// keeps its consumed blocks while the cells are full and gives one back at
-/// each poll that finds a cell spent. The one block the owner may take out
+/// each poll that finds a cell spent. The one block the mutator may take out
 /// while a collector reads the ring, since a reader under the token never
 /// walks past the tail block (`crate::ring::Writer::unlink_after_tail`,
 /// which answers null for the front block and for a block with an entry
@@ -759,7 +759,7 @@ pub(crate) fn refill_and_drain() {
 /// blocks gives them back over as many polls, and the poll's price stays
 /// one link per call.
 fn unlink_surplus_block() {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() || !needs_spares() {
         return;
     }
@@ -771,7 +771,7 @@ fn unlink_surplus_block() {
     }
 
     discharge_block();
-    return_surplus_block(unsafe { owner_state_ref(state) }, block);
+    return_surplus_block(unsafe { mutator_state_ref(state) }, block);
 }
 
 /// Move overflow entries back into the queue, as far as the room a poll
@@ -782,23 +782,23 @@ fn unlink_surplus_block() {
 /// entry would be written straight back to the overflow buffer, so the move
 /// stops instead and waits for the collection the same poll is about to run.
 pub(crate) fn drain_overflow() {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return;
     }
-    let owner_state = unsafe { owner_state_ref(state) };
-    while owner_state.overflow_len.get() > 0 {
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    while mutator_state.overflow_len.get() > 0 {
         // Room is a tail block with a free slot, or a spare to link in after
         // a full one; the writer's own move into a consumed block of the
         // circle is room this reading does not see, and costs one more round
         // through the buffer at the next poll.
         let has_room =
             unsafe { Writer::new(this_thread_record_ref().candidate_ring()) }.tail_block_has_room();
-        if !has_room && owner_state.spare_count.get() == 0 {
+        if !has_room && mutator_state.spare_count.get() == 0 {
             break;
         }
 
-        let overflow_len = owner_state.overflow_len.get() - 1;
+        let overflow_len = mutator_state.overflow_len.get() - 1;
         // The base block exists wherever the count is above zero, one
         // having been drawn before the first entry was written.
         let entity = unsafe {
@@ -806,7 +806,7 @@ pub(crate) fn drain_overflow() {
                 .add(usize::from(overflow_len))
                 .read()
         };
-        owner_state.overflow_len.set(overflow_len);
+        mutator_state.overflow_len.set(overflow_len);
         // Per entry rather than once for the run: the re-registration below
         // can link a block and charge its payload, and a discharge held to
         // the end would leave the overflow buffer's bytes standing over
@@ -971,10 +971,10 @@ pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK;
 /// found.
 ///
 /// # Safety
-/// No reader and no writer runs over R: the caller is the exiting owner
-/// under its claim, or the exit left R to the caller's hold and the owner is
+/// No reader and no writer runs over R: the caller is the exiting mutator
+/// under its claim, or the exit left R to the caller's hold and the mutator is
 /// gone.
-unsafe fn give_back_candidate_ring(record: *mut OwnerRecord) {
+unsafe fn give_back_candidate_ring(record: *mut MutatorRecord) {
     unsafe { Quiescent::new((*record).candidate_ring()) }.dismantle(|block| {
         discharge_block();
         gc_metadata::release_to_critical(block);
@@ -982,22 +982,22 @@ unsafe fn give_back_candidate_ring(record: *mut OwnerRecord) {
 }
 
 /// Return the R an exit left in `record` for a collector's hold
-/// ([`crate::cycle::owner_record::hand_back_reading`]).
+/// ([`crate::cycle::mutator_record::hand_back_reading`]).
 ///
 /// # Safety
 /// The calling thread holds the record's reading and the exit left R to it.
-pub(crate) unsafe fn give_back_candidate_ring_left_by_an_exit(record: *mut OwnerRecord) {
+pub(crate) unsafe fn give_back_candidate_ring_left_by_an_exit(record: *mut MutatorRecord) {
     unsafe { give_back_candidate_ring(record) };
 }
 
-/// The owner's handle over R while no reader runs, or `None` for a thread
+/// The mutator's handle over R while no reader runs, or `None` for a thread
 /// with no record — one past its exit's release of it.
 ///
 /// The exclusion is the caller's: the collecting word in the record keeps a
 /// collector out for an in-line collection's whole length, and the token
 /// does for a retirement outside one (`crate::cycle::collect`).
 fn candidate_ring<'a>() -> Option<Quiescent<'a>> {
-    let record = owner_record::this_thread_record();
+    let record = mutator_record::this_thread_record();
     if record.is_null() {
         return None;
     }
@@ -1027,9 +1027,9 @@ pub(crate) fn read_batch() -> Batch {
     // The reading consumes what the signal flag stands for: a signal sent
     // for it would find R read out, and a collision with this collection at
     // the token.
-    let state = owner_state();
+    let state = mutator_state();
     if !state.is_null() {
-        unsafe { owner_state_ref(state) }.signal_due.set(false);
+        unsafe { mutator_state_ref(state) }.signal_due.set(false);
     }
 
     Batch {
@@ -1048,7 +1048,7 @@ pub(crate) fn read_batch() -> Batch {
 /// `at_commits` is the process's commit count as the reading that decided the
 /// marks saw it, and it is recorded only where the deferred lane goes from
 /// empty to occupied — the oldest deferred record is what decides when the
-/// owner owes a re-offer, as it is for [`defer_candidates`].
+/// mutator owes a re-offer, as it is for [`defer_candidates`].
 ///
 /// **A marked entry stays in the ring when the deferred lane cannot take
 /// it.** The lane grows by a spare block per block it fills, and both cells
@@ -1061,7 +1061,7 @@ pub(crate) fn dispose_candidates(batch: Batch, at_commits: u64) {
     compaction::compact(Some(at_commits), false, Some(batch.verdicts));
 }
 
-/// Move a traced batch whole into this owner's deferred lane, sweeping out of
+/// Move a traced batch whole into this mutator's deferred lane, sweeping out of
 /// that lane the records whose entities completed their deaths on the way.
 ///
 /// `at_commits` is the process's commit count as the reading that found the
@@ -1070,7 +1070,7 @@ pub(crate) fn dispose_candidates(batch: Batch, at_commits: u64) {
 /// on opposite sides of their own commit's increment, and a mirror taken here
 /// would put the same event one whole epoch apart between them. It is recorded
 /// only when the lane goes from empty to occupied — the oldest deferred record
-/// is what decides when the owner owes a re-offer.
+/// is what decides when the mutator owes a re-offer.
 ///
 /// The deferred lane is swept before it receives the batch, so a record
 /// naming an entity that is already dead in place gives its slot back here
@@ -1088,7 +1088,7 @@ pub(crate) fn defer_candidates(mut batch: Batch, at_commits: u64) {
     compaction::compact(Some(at_commits), true, Some(batch.verdicts));
 }
 
-/// Re-offer every deferred record: at an owner poll whose epoch moved, and
+/// Re-offer every deferred record: at a mutator poll whose epoch moved, and
 /// before each round of the exit's collection, which is the thread's last
 /// turnover (`crate::cycle::collect::collect_before_exit`).
 ///
@@ -1098,12 +1098,12 @@ pub(crate) fn defer_candidates(mut batch: Batch, at_commits: u64) {
 /// deferred lane. A reader that wants the count moved takes
 /// `deferred_count` before the call: nothing is counted here.
 pub(crate) fn reoffer_deferred_candidates() {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return;
     }
-    let owner_state = unsafe { owner_state_ref(state) };
-    let Some((first, last)) = owner_state.deferred().take() else {
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    let Some((first, last)) = mutator_state.deferred().take() else {
         return;
     };
 
@@ -1112,7 +1112,7 @@ pub(crate) fn reoffer_deferred_candidates() {
 }
 
 /// Re-offer the deferred lane exactly once after `commits` stands in a later
-/// epoch than the mirror this owner recorded. Returns whether it moved any
+/// epoch than the mirror this mutator recorded. Returns whether it moved any
 /// records.
 ///
 /// The caller is the safepoint poll. What the comparison asks is whether a
@@ -1121,26 +1121,26 @@ pub(crate) fn reoffer_deferred_candidates() {
 /// thread would give back the whole recall the deferral buys. The count is
 /// full-width rather than the header's two epoch bits so that four turnovers
 /// slept through read as four, and the mirror advances only with the
-/// owner-side move, so a refused collection cannot make the lane disappear.
+/// mutator-side move, so a refused collection cannot make the lane disappear.
 pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return false;
     }
-    let owner_state = unsafe { owner_state_ref(state) };
-    if owner_state.deferred().is_empty()
-        || crate::cycle::epoch::turnovers_of(owner_state.turnover_mirror.get())
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    if mutator_state.deferred().is_empty()
+        || crate::cycle::epoch::turnovers_of(mutator_state.turnover_mirror.get())
             == crate::cycle::epoch::turnovers_of(commits)
     {
         return false;
     }
 
-    owner_state.turnover_mirror.set(commits);
+    mutator_state.turnover_mirror.set(commits);
     reoffer_deferred_candidates();
     true
 }
 
-/// Retire completed deaths at the owner's exact reading, compacting the ring
+/// Retire completed deaths at the mutator's exact reading, compacting the ring
 /// and the overflow buffer in place without drawing memory, and retiring
 /// in place — the entry nulled, P's front unmoved — every completed death
 /// a verdict of P names. A live or unfinished death stays registered, in
@@ -1167,16 +1167,16 @@ pub(crate) mod verdicts;
 /// a collection's close would be a request under the pressure that can have
 /// started it (`rfc/model/gc/cycle/questions.md`, Y12 clause 8). `at_commits`
 /// is recorded as the turnover mirror only where the lane goes from empty to
-/// occupied — the oldest deferred record is what decides when the owner owes
+/// occupied — the oldest deferred record is what decides when the mutator owes
 /// a re-offer — and `None` records nothing.
 fn defer_entry(
-    owner_state: &OwnerCycleState,
+    mutator_state: &MutatorCycleState,
     entity: *mut RcHeader,
     at_commits: Option<u64>,
 ) -> Result<(), ring::NoBlock> {
-    let lane_was_empty = owner_state.deferred().is_empty();
-    owner_state.deferred().push(entity_entry(entity), || {
-        let block = take_spare(owner_state);
+    let lane_was_empty = mutator_state.deferred().is_empty();
+    mutator_state.deferred().push(entity_entry(entity), || {
+        let block = take_spare(mutator_state);
         if !block.is_null() {
             charge_block();
         }
@@ -1184,7 +1184,7 @@ fn defer_entry(
     })?;
 
     if lane_was_empty && let Some(at_commits) = at_commits {
-        owner_state.turnover_mirror.set(at_commits);
+        mutator_state.turnover_mirror.set(at_commits);
     }
 
     Ok(())
@@ -1192,11 +1192,11 @@ fn defer_entry(
 
 /// Put a block the queue no longer holds where the next growth finds it: a
 /// spare cell, or the critical reserve with both cells full.
-fn return_surplus_block(owner_state: &OwnerCycleState, block: *mut BlockHeader) {
-    let spare_count = owner_state.spare_count.get();
+fn return_surplus_block(mutator_state: &MutatorCycleState, block: *mut BlockHeader) {
+    let spare_count = mutator_state.spare_count.get();
     if usize::from(spare_count) < SPARE_SEGMENTS {
-        owner_state.spares[usize::from(spare_count)].set(block);
-        owner_state.spare_count.set(spare_count + 1);
+        mutator_state.spares[usize::from(spare_count)].set(block);
+        mutator_state.spare_count.set(spare_count + 1);
     } else {
         gc_metadata::release_to_critical(block);
     }
@@ -1243,14 +1243,14 @@ pub(crate) fn take_queue_work() -> QueueWork {
 
 /// Take one spare, or null when both cells are empty.
 #[inline]
-fn take_spare(owner_state: &OwnerCycleState) -> *mut BlockHeader {
-    let spare_count = owner_state.spare_count.get();
+fn take_spare(mutator_state: &MutatorCycleState) -> *mut BlockHeader {
+    let spare_count = mutator_state.spare_count.get();
     if spare_count == 0 {
         return std::ptr::null_mut();
     }
 
-    owner_state.spare_count.set(spare_count - 1);
-    owner_state.spares[usize::from(spare_count - 1)].replace(std::ptr::null_mut())
+    mutator_state.spare_count.set(spare_count - 1);
+    mutator_state.spares[usize::from(spare_count - 1)].replace(std::ptr::null_mut())
 }
 
 /// Whether this thread's spare cells are below their stock and want a
@@ -1262,9 +1262,9 @@ fn take_spare(owner_state: &OwnerCycleState) -> *mut BlockHeader {
 /// leave it unasked for the rest of its life (`memory::reserve`,
 /// `is_drawn`).
 pub(crate) fn needs_spares() -> bool {
-    let state = owner_state();
+    let state = mutator_state();
     state.is_null()
-        || usize::from(unsafe { owner_state_ref(state) }.spare_count.get()) < SPARE_SEGMENTS
+        || usize::from(unsafe { mutator_state_ref(state) }.spare_count.get()) < SPARE_SEGMENTS
 }
 
 /// Fill the spare cells through the ordinary allocation path, answering
@@ -1274,20 +1274,20 @@ pub(crate) fn needs_spares() -> bool {
 /// reported by something else: at thread init, where the thread's first
 /// allocation returns null, and at the safepoint poll, which comes back.
 pub(crate) fn refill_spares() -> bool {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return false;
     }
-    let owner_state = unsafe { owner_state_ref(state) };
-    while usize::from(owner_state.spare_count.get()) < SPARE_SEGMENTS {
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    while usize::from(mutator_state.spare_count.get()) < SPARE_SEGMENTS {
         let block = gc_metadata::acquire();
         if block.is_null() {
             return false;
         }
 
-        let spare_count = owner_state.spare_count.get();
-        owner_state.spares[usize::from(spare_count)].set(block);
-        owner_state.spare_count.set(spare_count + 1);
+        let spare_count = mutator_state.spare_count.get();
+        mutator_state.spares[usize::from(spare_count)].set(block);
+        mutator_state.spare_count.set(spare_count + 1);
     }
 
     true
@@ -1319,36 +1319,36 @@ pub(crate) fn refill_spares() -> bool {
 /// to the pool, so a reserve below capacity is refilled before the pool
 /// sees anything.
 pub(crate) fn release_queue_segments() {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return;
     }
-    let owner_state = unsafe { owner_state_ref(state) };
+    let mutator_state = unsafe { mutator_state_ref(state) };
 
     // At the exit, R's blocks stay in the record for a collector reading
     // them before its claim, which returns them at its hand-back
-    // (`crate::cycle::owner_record`, "The blocks a collector reads before
-    // its claim are held"); the lane and the cells are the owner's alone. A
+    // (`crate::cycle::mutator_record`, "The blocks a collector reads before
+    // its claim are held"); the lane and the cells are the mutator's alone. A
     // running thread emptying its queue — a test's reset — dismantles R
     // itself, and a collector reading it meanwhile is the case's to keep
     // away.
-    let record = owner_record::this_thread_record();
+    let record = mutator_record::this_thread_record();
     if !record.is_null()
         && !(crate::memory::heap::thread_exit_running()
             && unsafe {
-                owner_record::leave_to_holder_if_held(record, owner_record::Ring::Candidates)
+                mutator_record::leave_to_holder_if_held(record, mutator_record::Ring::Candidates)
             })
     {
         unsafe { give_back_candidate_ring(record) };
     }
 
-    owner_state.deferred().dismantle(|block| {
+    mutator_state.deferred().dismantle(|block| {
         discharge_block();
         gc_metadata::release_to_critical(block);
     });
 
-    let spare_count = owner_state.spare_count.replace(0);
-    for cell in &owner_state.spares[..usize::from(spare_count)] {
+    let spare_count = mutator_state.spare_count.replace(0);
+    for cell in &mutator_state.spares[..usize::from(spare_count)] {
         let block = cell.replace(std::ptr::null_mut());
         gc_metadata::release_to_critical(block);
     }
@@ -1357,17 +1357,17 @@ pub(crate) fn release_queue_segments() {
     // the base block's contents. The base block itself stays: it belongs to
     // the thread's life rather than to the queue's contents, and
     // [`release_queue_base`] is what ends that life.
-    let overflow_len = owner_state.overflow_len.replace(0);
+    let overflow_len = mutator_state.overflow_len.replace(0);
     gc_metadata::discharge(usize::from(overflow_len) * size_of::<*mut RcHeader>());
 }
 
 /// Entries this thread's overflow buffer holds.
 pub(crate) fn overflow_len() -> usize {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         0
     } else {
-        usize::from(unsafe { owner_state_ref(state) }.overflow_len.get())
+        usize::from(unsafe { mutator_state_ref(state) }.overflow_len.get())
     }
 }
 
@@ -1382,20 +1382,20 @@ pub(crate) fn overflow_len() -> usize {
 /// count, and a deferral moves a root from one lane to another and leaves
 /// the sum where it was, which the next round's re-offer makes progress.
 pub(crate) fn registered_by_lane() -> [usize; 4] {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return [0; 4];
     }
-    let owner_state = unsafe { owner_state_ref(state) };
+    let mutator_state = unsafe { mutator_state_ref(state) };
     [
         candidate_ring().map_or(0, |ring| ring.count()),
-        owner_state.deferred().len(),
-        usize::from(owner_state.overflow_len.get()),
+        mutator_state.deferred().len(),
+        usize::from(mutator_state.overflow_len.get()),
         standing_verdict_count(),
     ]
 }
 
-/// Entries of P the owner has not answered for, by a walk of its slots:
+/// Entries of P the mutator has not answered for, by a walk of its slots:
 /// registrations in transit, which the exit's residue counts and a round of
 /// its collection moves.
 fn standing_verdict_count() -> usize {
@@ -1412,7 +1412,7 @@ fn standing_verdict_count() -> usize {
 /// Entries this thread's ring holds, by its indices.
 #[cfg(test)]
 pub(crate) fn candidate_count() -> usize {
-    if owner_state().is_null() {
+    if mutator_state().is_null() {
         return 0;
     }
 
@@ -1438,12 +1438,12 @@ pub(crate) fn candidate_count() -> usize {
 /// (`rfc/model/gc/cycle/questions.md`, Y12 clause 7).
 #[cfg(test)]
 pub(crate) fn collect_lane_tokens(out: &mut Vec<*mut RcHeader>) {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return;
     }
 
-    let owner_state = unsafe { owner_state_ref(state) };
+    let mutator_state = unsafe { mutator_state_ref(state) };
     if let Some(ring) = candidate_ring() {
         ring.walk(|entry| {
             out.push(entry_entity(entry));
@@ -1451,11 +1451,11 @@ pub(crate) fn collect_lane_tokens(out: &mut Vec<*mut RcHeader>) {
         });
     }
 
-    owner_state
+    mutator_state
         .deferred()
         .walk(|entry| out.push(entry_entity(entry)));
 
-    for index in 0..usize::from(owner_state.overflow_len.get()) {
+    for index in 0..usize::from(mutator_state.overflow_len.get()) {
         out.push(unsafe { overflow_entries(state).add(index).read() });
     }
 
@@ -1472,7 +1472,7 @@ pub(crate) fn collect_lane_tokens(out: &mut Vec<*mut RcHeader>) {
 /// Blocks in this thread's ring.
 #[cfg(test)]
 pub(crate) fn segment_count() -> usize {
-    if owner_state().is_null() {
+    if mutator_state().is_null() {
         return 0;
     }
 
@@ -1482,26 +1482,26 @@ pub(crate) fn segment_count() -> usize {
 /// Blocks in this thread's deferred lane.
 #[cfg(test)]
 pub(crate) fn deferred_segment_count() -> usize {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return 0;
     }
 
-    unsafe { owner_state_ref(state) }.deferred().block_count()
+    unsafe { mutator_state_ref(state) }.deferred().block_count()
 }
 
 /// Spares this thread holds.
 #[cfg(test)]
 pub(crate) fn spare_count() -> usize {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         0
     } else {
-        usize::from(unsafe { owner_state_ref(state) }.spare_count.get())
+        usize::from(unsafe { mutator_state_ref(state) }.spare_count.get())
     }
 }
 
-/// The commit count this owner recorded when its deferred lane last became
+/// The commit count this mutator recorded when its deferred lane last became
 /// nonempty or was re-offered, which is what [`reoffer_deferred_if_epoch_moved`]
 /// compares its argument against.
 ///
@@ -1511,12 +1511,12 @@ pub(crate) fn spare_count() -> usize {
 /// does not hold.
 #[cfg(test)]
 pub(crate) fn deferred_turnover_mirror() -> u64 {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return 0;
     }
 
-    unsafe { owner_state_ref(state) }.turnover_mirror.get()
+    unsafe { mutator_state_ref(state) }.turnover_mirror.get()
 }
 
 /// Records standing in this thread's deferred lane. Read by the census and
@@ -1524,19 +1524,19 @@ pub(crate) fn deferred_turnover_mirror() -> u64 {
 /// out of the re-offer itself.
 #[cfg(any(test, feature = "bench-loads"))]
 pub(crate) fn deferred_count() -> usize {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return 0;
     }
 
-    unsafe { owner_state_ref(state) }.deferred().len()
+    unsafe { mutator_state_ref(state) }.deferred().len()
 }
 
 /// This thread's base block, or null when it holds none. One block, out of
 /// the pool for the thread's whole life, so an exact `blocks_out` names it.
 #[cfg(test)]
 pub(crate) fn queue_base() -> *mut BlockHeader {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         std::ptr::null_mut()
     } else {
@@ -1553,19 +1553,19 @@ pub(crate) fn queue_base() -> *mut BlockHeader {
 /// mask would hide.
 #[cfg(test)]
 pub(crate) fn workspace_base() -> *mut BlockHeader {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return std::ptr::null_mut();
     }
 
-    unsafe { owner_state_ref(state) }.workspace_base.get()
+    unsafe { mutator_state_ref(state) }.workspace_base.get()
 }
 
 /// The block of R this thread registers into, or null before the first
 /// registration.
 #[cfg(test)]
 pub(crate) fn tail_block() -> *mut BlockHeader {
-    let record = owner_record::this_thread_record();
+    let record = mutator_record::this_thread_record();
     if record.is_null() {
         return std::ptr::null_mut();
     }
@@ -1587,7 +1587,7 @@ pub(crate) fn tail_block() -> *mut BlockHeader {
 /// words to dereference.
 #[cfg(test)]
 pub(crate) fn fill_tail_block(filler: *mut RcHeader) {
-    assert!(!owner_state().is_null(), "no queue base block");
+    assert!(!mutator_state().is_null(), "no queue base block");
     let ring = candidate_ring().expect("a thread with a base block has a record");
     assert!(ring.has_blocks(), "no tail block to fill");
     ring.fill_tail_block(entity_entry(filler));
@@ -1596,7 +1596,7 @@ pub(crate) fn fill_tail_block(filler: *mut RcHeader) {
 /// The nth entry of the ring, counting from the front.
 #[cfg(test)]
 pub(crate) fn entry_at(index: usize) -> *mut RcHeader {
-    assert!(!owner_state().is_null(), "no queue base block");
+    assert!(!mutator_state().is_null(), "no queue base block");
     let ring = candidate_ring().expect("a thread with a base block has a record");
     let mut found = None;
     let mut position = 0;

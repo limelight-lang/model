@@ -160,7 +160,7 @@ pub(crate) unsafe fn arm(region: *mut u8, capacity: u32) -> bool {
 
     let control = region as *mut MemberControl;
     // Field by field and written rather than assigned: the workspace arrives
-    // from the pool with whatever its last owner left in it, so an assignment
+    // from the pool with whatever its last mutator left in it, so an assignment
     // would drop a `MemberControl` that was never constructed.
     unsafe {
         (&raw mut (*control).fill).write(Cell::new(0));

@@ -68,7 +68,7 @@ const VALIDATIONS_WITH_A_DESTRUCTOR: usize = 2;
 ///
 /// Exact sizing makes block occupancy predictable. Separate widths keep these
 /// fixtures independent of one another; completed registered slots return at
-/// the owner's final reading, after every membership reader has finished.
+/// the mutator's final reading, after every membership reader has finished.
 fn a_class_of_its_own(name: &str, properties: usize, destructor: *const ()) -> *const Class {
     let mut builder = ClassBuilder::new(name).prop("next", true);
     let fillers: Vec<String> = (1..properties).map(|index| format!("f{index}")).collect();
@@ -124,7 +124,7 @@ fn block_of(entity: *mut Object) -> usize {
 }
 
 #[test]
-fn registered_large_candidates_return_their_mappings_at_owner_retirement() {
+fn registered_large_candidates_return_their_mappings_at_mutator_retirement() {
     let _g = test_guard();
     crate::cycle::queue::release_queue_segments();
     let class = os_direct_class("RetiredLargeRing");
@@ -170,7 +170,7 @@ fn an_ordinary_collection_asks_only_what_its_debug_checks_ask() {
     // The child takes the edge as its creation reference rather than through
     // the barrier: no decrement happens, so the candidate gate never sees it
     // and no queue entry names its body. Its free therefore belongs to the
-    // trace window rather than the owner's later candidate retirement.
+    // trace window rather than the mutator's later candidate retirement.
     let child = unsafe {
         let child = new_constructed(&mut context, wide, MemoryCategory::GcHeap);
         *Object::prop_at(members[0], prop_offset(1)) =
@@ -408,7 +408,7 @@ fn a_collection_of_retained_survivors_asks_only_what_its_debug_checks_ask() {
             )
         },
         crate::memory::block_pool::BLOCK_KIND_FREE,
-        "owner retirement returned the retained block; its count word is no longer readable as retained"
+        "mutator retirement returned the retained block; its count word is no longer readable as retained"
     );
 
     let exempt = exempt_allocations(walks, MEMBERS, VALIDATIONS_WITH_A_DESTRUCTOR);

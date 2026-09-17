@@ -113,7 +113,7 @@ fn every_token_stays_in_its_lane_across_a_reading() {
 
     // A third in the tier below the reserve, because the overflow buffer is
     // the lane the reading deliberately leaves out.
-    let state = owner_state();
+    let state = mutator_state();
     let mut overflowed = candidate(2);
     let overflowed_entity = &raw mut overflowed;
     unsafe { append_to_overflow(state, overflowed_entity) };

@@ -1,8 +1,8 @@
-//! What one serve does for an owner: the batch it takes from behind the
-//! owner's writer, clamped to P's room; the verdict per root, in R's order;
+//! What one serve does for a mutator: the batch it takes from behind the
+//! mutator's writer, clamped to P's room; the verdict per root, in R's order;
 //! the advance that follows the last post from the return and from the
 //! unwind alike; the budget that turns a batch unwalked and halves K; the
-//! skip of an owner collecting in line; and a mutator registering
+//! skip of a mutator collecting in line; and a mutator registering
 //! throughout, whose registrations come out once each.
 //!
 //! The collector is a thread of the case's that calls [`serve`] on this
@@ -157,7 +157,7 @@ fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
         "a completed batch doubles K"
     );
 
-    // The owner's poll: the deaths retired and the kept roots deferred up
+    // The mutator's poll: the deaths retired and the kept roots deferred up
     // to the first proposal — which is first, so the poll arms and the
     // collection takes the ring out of P and disposes of the rest.
     assert_eq!(
@@ -294,7 +294,7 @@ fn a_batch_that_meets_its_budget_posts_every_root_unwalked_and_halves_k() {
     );
     assert_eq!(record_batch_size(), 8, "K halved on the budget met");
 
-    // The owner's collection traces the unwalked roots exactly: the small
+    // The mutator's collection traces the unwalked roots exactly: the small
     // ring and the first members of the big one are its batch's P roots,
     // the rest of the big ring still stands in R, and one trace over both
     // frees everything.
@@ -349,7 +349,7 @@ fn the_advance_follows_the_last_post_from_the_unwind_as_well() {
 }
 
 #[test]
-fn an_owner_collecting_in_line_is_skipped() {
+fn an_mutator_collecting_in_line_is_skipped() {
     let _g = test_guard();
     reset_lanes();
     let node = node_class("SkipNode");
@@ -358,7 +358,7 @@ fn an_owner_collecting_in_line_is_skipped() {
 
     let record = record();
     unsafe { (*record).set_collecting() };
-    assert_eq!(served_by_a_collector(), Served::OwnerCollecting);
+    assert_eq!(served_by_a_collector(), Served::MutatorCollecting);
     assert_eq!(candidate_count(), 1, "nothing was taken");
     assert_eq!(verdict_count(), 0);
     unsafe { (*record).clear_collecting() };
@@ -469,7 +469,7 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
         "every registration once, across R and P, and none twice"
     );
 
-    // The owner's next collection defers what P holds and traces what R
+    // The mutator's next collection defers what P holds and traces what R
     // holds live: every root ends in one lane once.
     assert!(refill_spares());
     assert_eq!(unsafe { crate::gc::ll_gc_collect_cycles() }, 0);

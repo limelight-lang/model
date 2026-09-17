@@ -65,19 +65,19 @@
 //! stamp yet, so the stamp cannot say which slots it holds. The stack is the
 //! window's own shape — threaded through the dead entities, the head one
 //! thread-local word — and it draws nothing, so a thread that never
-//! collected withholds without a workspace. The owner makes the returns once
+//! collected withholds without a workspace. The mutator makes the returns once
 //! it reads the token free ([`make_returns_withheld_under_a_foreign_trace`]):
 //! at its next free, at the safepoint poll and before its exit; a holder
 //! that arrives meanwhile leaves them standing. A cross-thread free of an
-//! entity slot is a return of the owner's memory made at the owner's reclaim
+//! entity slot is a return of the mutator's memory made at the mutator's reclaim
 //! of its remote stack, and that reclaim waits the same way
 //! ([`returns_are_withheld`]). What this costs is the churn one trace lasts,
 //! measured in `dev/BENCHMARKS.md`, "S38.3 what a foreign holder costs the
-//! owner".
+//! mutator".
 //!
 //! **The deaths are one of three stacks**, because a trace holds addresses
 //! into more than entity slots (`rfc/model/gc/rc-cycle.md`, "The deferral's
-//! contract"). A buffer chunk an array's growth or an owner's death would
+//! contract"). A buffer chunk an array's growth or a mutator's death would
 //! free waits on the second, threaded through the chunk's first word with
 //! its capacity packed above the link ([`withhold_chunk_under_a_foreign_trace`]);
 //! a whole block — an arena's at its reset, a buffer arena's or an entity
@@ -86,7 +86,7 @@
 //! OS-direct run wait on the third, threaded through the header word the
 //! pool links by ([`withhold_block_under_a_foreign_trace`]). The block's
 //! gate stands in the pool's own `put`, which is the one entry every block
-//! return reaches, and the run's in the run arm of `ll_free`. The owner
+//! return reaches, and the run's in the run arm of `ll_free`. The mutator
 //! makes all three at the same three moments, the slots first, because a
 //! slot's return can empty its block and reach the pool.
 //!
@@ -123,8 +123,8 @@
 //! ([`crate::refcount::DEAD_IN_PLACE`]).
 //!
 //! **The close walks no block's slots**, whoever owns the block: the bump
-//! cursor that would bound such a walk is the owner's to move, and reading a
-//! slot the owner is publishing races that store. What the window itself reads
+//! cursor that would bound such a walk is the mutator's to move, and reading a
+//! slot the mutator is publishing races that store. What the window itself reads
 //! of a block is the one word the stamp stands in; what the return then reads
 //! is `ll_free`'s own. What the stack costs the close moves with the deaths
 //! withheld rather than with the blocks the collection touched, and the pop
@@ -194,7 +194,7 @@ thread_local! {
         const { Cell::new(std::ptr::null_mut()) };
 }
 
-/// The stack a trace's withheld returns are pushed onto, and the owner that
+/// The stack a trace's withheld returns are pushed onto, and the mutator that
 /// clears what an unwind leaves standing.
 ///
 /// A holder of its own rather than a field the enclosing drop unwinds by hand:
@@ -298,7 +298,7 @@ impl WithheldReturns {
     /// no word of any block, only the dead slot's own link; what reads the
     /// block is the return behind it, `ll_free` posting onto the block's stack
     /// of cross-thread frees while the block is another thread's and taking
-    /// the ordinary owner path where this thread owns it.
+    /// the ordinary mutator path where this thread owns it.
     ///
     /// **The link is read before the return overwrites it**, the free list
     /// linking through the same word ([`withheld_link`]); the pop takes the
@@ -362,7 +362,7 @@ pub(crate) fn take_slots_popped() -> usize {
 /// acquire load of the class word returned the link re-reads the count as
 /// zero and expands nothing (`crate::cells::trace_cells`); a version read
 /// as the link fails the bracket or finds the null storage the dispose left.
-/// On the owner's own window the stack has one writer and one reader and the
+/// On the mutator's own window the stack has one writer and one reader and the
 /// atomics cost nothing.
 ///
 /// # Safety
@@ -652,7 +652,7 @@ impl ActiveTrace {
         })
     }
 
-    /// Select the owner-side disposition for the trace's original records: the
+    /// Select the mutator-side disposition for the trace's original records: the
     /// marked pass, with `at_commits` the commit count the reading that set
     /// those marks saw (`crate::cycle::queue::dispose_candidates`).
     ///
@@ -761,7 +761,7 @@ impl Drop for ActiveTrace {
 /// memory this collection never touched ([`classify`]). On the first of
 /// those the returns a foreign holder withheld earlier are made first
 /// ([`make_returns_withheld_under_a_foreign_trace`]): the free that finds
-/// the token free is one of the three places the owner makes them.
+/// the token free is one of the three places the mutator makes them.
 ///
 /// Called only after the queue-entry window has refused the same return. A
 /// close that still finds `CANDIDATE_BIT` stops before here, because the
@@ -775,7 +775,7 @@ impl Drop for ActiveTrace {
 /// costs one write into the dying entity's own byte 8 and one store of the
 /// head, with no allocator call and no pool call; the link store is a
 /// release store, priced in `dev/BENCHMARKS.md`, "S38.3 what a foreign
-/// holder costs the owner".
+/// holder costs the mutator".
 ///
 /// # Safety
 /// `ptr` is a dead entity slot whose teardown has completed and which this call
@@ -812,7 +812,7 @@ pub(crate) unsafe fn withhold_under_a_trace_or_make_returns(ptr: *mut u8, kind: 
 /// Whether a return of this thread's entity memory would be made under a
 /// trace — this thread's own window, or a foreign holder of its token — and
 /// so has to wait. For the reclaim of cross-thread frees, which reaches no
-/// `ll_free` on the owner: the slots stay on their block's remote stack until
+/// `ll_free` on the mutator: the slots stay on their block's remote stack until
 /// a collect that finds no trace (`crate::memory::heap::Heap::collect_remote`).
 #[inline]
 pub(crate) fn returns_are_withheld() -> bool {
@@ -899,7 +899,7 @@ unsafe fn set_block_link(block: *mut u8, next: *mut u8) {
 
 /// Whether a return of this thread's memory made now would be made under a
 /// foreign holder of its token: the token held and no window of the
-/// thread's own open. The owner's own window withholds by its stamp and
+/// thread's own open. The mutator's own window withholds by its stamp and
 /// frees no chunk and no block while it traces
 /// (`rfc/model/gc/rc-cycle.md`, "The deferral's contract").
 #[inline]
@@ -963,13 +963,13 @@ pub(crate) unsafe fn withhold_block_under_a_foreign_trace(block: *mut u8) -> boo
 
 /// Withhold a death while another thread's trace holds this thread's token.
 ///
-/// **Every death is withheld, and no stamp is read**, unlike the owner's own
+/// **Every death is withheld, and no stamp is read**, unlike the mutator's own
 /// window ([`classify`]): a trace on another thread holds an address between
 /// reading the cell that named it and meeting its row, and in that interval
 /// the block carries no stamp yet, so a return made on the strength of a
 /// clear stamp could be handed out again under the address the trace still
 /// holds. The cost is the churn one trace lasts (`dev/BENCHMARKS.md`, "S38.3
-/// what a foreign holder costs the owner"). The stack is threaded through
+/// what a foreign holder costs the mutator"). The stack is threaded through
 /// the dead entities like the window's ([`withheld_link`]), headed in a word
 /// of this thread's, and nothing is drawn.
 ///
@@ -986,10 +986,10 @@ unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8) {
 
 /// Make the returns withheld under a foreign holder, once the token is free.
 ///
-/// Called by the owner and by nobody else — a free that finds the token
+/// Called by the mutator and by nobody else — a free that finds the token
 /// free, the safepoint poll, the pressure path under its own token ahead of
 /// its allocation retry, and the exit after its wait for the holder —
-/// because the slots are the owner's and the physical return is its heap's.
+/// because the slots are the mutator's and the physical return is its heap's.
 /// Nothing is made while the token is held: a holder that arrived after the
 /// release keeps every return standing, and a pop that finds the token taken
 /// between two returns puts the slot back and stops, so a slot is never
@@ -1144,9 +1144,9 @@ enum Withholding {
 ///
 /// **No arm asks who owns the block.** A withheld slot is found again through
 /// the dead entity itself, no word of its block being read on either side of
-/// the window, so ownership decides nothing here. Why the owner is no part of
+/// the window, so ownership decides nothing here. Why the mutator is no part of
 /// the condition: `dev/DECISIONS.md`, "the stamp is the whole condition where
-/// the return is not the owner's" and "one stack through the dead entity
+/// the return is not the mutator's" and "one stack through the dead entity
 /// holds every withheld return".
 ///
 /// # Safety
@@ -1238,7 +1238,7 @@ unsafe fn withhold(control: &WindowControl, ptr: *mut u8, kind: u32) -> bool {
 
 /// Refuse a thread exit that would abandon an open trace window.
 ///
-/// A live window at exit would leave a trace using blocks whose owner is being
+/// A live window at exit would leave a trace using blocks whose mutator is being
 /// abandoned; that is outside the protocol, and this ends the process rather
 /// than letting it happen — `ll_thread_exit` is `extern "C"` and has no caller
 /// that could act on a refusal. No path from user code reaches it: an exit a

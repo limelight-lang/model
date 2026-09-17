@@ -78,17 +78,17 @@ fn epoch_of(commits: u64) -> u32 {
 
 /// Commits closed process-wide.
 ///
-/// The owner queue compares this full-width value with its private mirror at a
+/// The mutator queue compares this full-width value with its private mirror at a
 /// safepoint. The low two epoch bits in a header cannot answer whether four
-/// turns elapsed while that owner was asleep.
+/// turns elapsed while that mutator was asleep.
 pub(crate) fn commits() -> u64 {
     COMMITS.load(Ordering::Relaxed)
 }
 
 /// How many turnovers `commits` closed commits stand past process start.
 ///
-/// The owner queue compares this rather than [`current`]: the epoch itself
-/// wraps at four, and a lane whose owner slept through four turnovers would
+/// The mutator queue compares this rather than [`current`]: the epoch itself
+/// wraps at four, and a lane whose mutator slept through four turnovers would
 /// read as one that slept through none.
 pub(crate) fn turnovers_of(commits: u64) -> u64 {
     commits / COMMITS_PER_EPOCH
@@ -107,7 +107,7 @@ pub(crate) fn one_commit_inside_the_turnover_of(commits: u64) -> u64 {
 }
 
 /// The commit count one turnover past `commits`, which a case passes to the
-/// owner poll in place of the counter.
+/// mutator poll in place of the counter.
 ///
 /// Driving 64 real commits is what [`pin`] exists to avoid: the counter is
 /// process-global, so a case that closed a turnover would move every other

@@ -16,13 +16,14 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 
 use super::{ALIVE, COLLECTORS, ELDER, ENDING, MAX_COLLECTORS, STARTING, UNBORN};
-use crate::cycle::owner_record::OwnerRecord;
+use crate::cycle::mutator_record::MutatorRecord;
 
 /// Whether [`super::ensure_thread`] may spawn.
 static BIRTHS_PERMITTED: AtomicBool = AtomicBool::new(false);
 /// The records a round serves and asks, null slots unused; all null is every
 /// record.
-static CONFINED: [AtomicPtr<OwnerRecord>; 4] = [const { AtomicPtr::new(std::ptr::null_mut()) }; 4];
+static CONFINED: [AtomicPtr<MutatorRecord>; 4] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; 4];
 /// Records the rounds have reached since a case last asked, confined or not.
 static RECORDS_VISITED: AtomicUsize = AtomicUsize::new(0);
 /// Whether the next birth's `ll_thread_init` runs under a zero block budget.
@@ -67,13 +68,13 @@ pub(crate) fn births_permitted() -> bool {
 }
 
 /// Confine the rounds to `record`; null lifts the confinement.
-pub(crate) fn confine_rounds_to(record: *mut OwnerRecord) {
+pub(crate) fn confine_rounds_to(record: *mut MutatorRecord) {
     confine_rounds_to_records(&[record]);
 }
 
 /// Confine the rounds to `records`, up to four; an empty list lifts the
 /// confinement.
-pub(crate) fn confine_rounds_to_records(records: &[*mut OwnerRecord]) {
+pub(crate) fn confine_rounds_to_records(records: &[*mut MutatorRecord]) {
     assert!(records.len() <= CONFINED.len());
     for (slot, cell) in CONFINED.iter().enumerate() {
         cell.store(
@@ -92,13 +93,13 @@ pub(crate) fn panic_at_the_next_visit() {
 }
 
 /// Whether a round serves and asks `record`, counting the visit either way.
-pub(crate) fn in_round(record: *mut OwnerRecord) -> bool {
+pub(crate) fn in_round(record: *mut MutatorRecord) -> bool {
     RECORDS_VISITED.fetch_add(1, Ordering::Relaxed);
     if PANIC_AT_NEXT_VISIT.swap(false, Ordering::Relaxed) {
         panic!("a round panicked at a visit, by the case's request");
     }
 
-    let confined: Vec<*mut OwnerRecord> = CONFINED
+    let confined: Vec<*mut MutatorRecord> = CONFINED
         .iter()
         .map(|cell| cell.load(Ordering::Relaxed))
         .filter(|record| !record.is_null())
@@ -178,15 +179,15 @@ pub(crate) fn timer_interval() -> std::time::Duration {
     std::time::Duration::from_millis(TIMER_MILLIS.load(Ordering::Relaxed) as u64)
 }
 
-/// Owners the rounds claimed and released since a case last asked.
-static OWNERS_SERVED: AtomicUsize = AtomicUsize::new(0);
+/// Mutators the rounds claimed and released since a case last asked.
+static MUTATORS_SERVED: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn note_served(served: super::Served) {
     if matches!(
         served,
-        super::Served::OwnerCollecting | super::Served::Batch { .. }
+        super::Served::MutatorCollecting | super::Served::Batch { .. }
     ) {
-        OWNERS_SERVED.fetch_add(1, Ordering::Relaxed);
+        MUTATORS_SERVED.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -238,8 +239,8 @@ pub(crate) fn between_the_post_and_the_advance() {
     }
 }
 
-/// What the next pre-claim reading runs between its take of the owner's
-/// blocks and its loads of them, for the case whose owner exits in that
+/// What the next pre-claim reading runs between its take of the mutator's
+/// blocks and its loads of them, for the case whose mutator exits in that
 /// window; the closure runs on the collector's thread, once.
 static AT_THE_NEXT_READING: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
 
@@ -259,9 +260,9 @@ pub(crate) fn between_the_take_and_the_reading() {
     }
 }
 
-/// Owners the rounds claimed since the last call, and zero the count.
-pub(crate) fn take_owners_served() -> usize {
-    OWNERS_SERVED.swap(0, Ordering::Relaxed)
+/// Mutators the rounds claimed since the last call, and zero the count.
+pub(crate) fn take_mutators_served() -> usize {
+    MUTATORS_SERVED.swap(0, Ordering::Relaxed)
 }
 
 /// Refuse the base block of the next birth: its `ll_thread_init` runs under a

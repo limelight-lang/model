@@ -22,7 +22,7 @@
 //!
 //! The candidate queue is the exception that proves the split: it knows
 //! neither layout, holding entity pointers and pool blocks it never carves.
-//! Owner retirement reads the entity's count/free mark through `refcount`
+//! Mutator retirement reads the entity's count/free mark through `refcount`
 //! and returns its slot through `memory::stdapi::ll_free`.
 //!
 //! # What each module owns, and for how long
@@ -146,12 +146,12 @@ pub(crate) mod shadow;
 // it stands on.
 pub(crate) mod stack;
 // The per-thread trace token: taken by [`collect`] around its trace,
-// waited for by an owner whose graph a collector is tracing.
+// waited for by a mutator whose graph a collector is tracing.
 pub(crate) mod token;
 // The record the token stands in, with the words a collector thread's
 // handoff uses, in storage that outlives the thread.
-pub(crate) mod owner_record;
-// What a collector thread does for one owner: take the offered chain under
+pub(crate) mod mutator_record;
+// What a collector thread does for one mutator: take the offered chain under
 // the token, trace it through the collector's reader, mark and post.
 pub(crate) mod worker;
 // The two phases of one trace, in the order the rows require.

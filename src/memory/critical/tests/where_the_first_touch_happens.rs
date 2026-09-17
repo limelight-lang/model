@@ -117,8 +117,8 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("LATE_CELL", false),
         ("MEMBER_LIST", false),
         ("MEMBER_LIST_HELD", false),
-        ("OWNER_RECORD", false), // const Cell of a pointer into a record the process keeps, no drop glue
-        ("OWNER_STATE", false),
+        ("MUTATOR_RECORD", false), // const Cell of a pointer into a record the process keeps, no drop glue
+        ("MUTATOR_STATE", false),
         ("PANIC_IN_CLOSE", false),
         ("PANIC_IN_HARVEST", false),
         ("PANIC_IN_RESET", false),
@@ -150,7 +150,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("THREAD_CACHE", true),
         ("THREAD_FIGURES", false),
         ("THREAD_HEAP", false),
-        ("TRACED_OWNER", false), // test-only const Cell of a pointer, no drop glue
+        ("TRACED_MUTATOR", false), // test-only const Cell of a pointer, no drop glue
         ("WEAK_TABLE", false),
         ("WINDOW", false),
         ("WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue

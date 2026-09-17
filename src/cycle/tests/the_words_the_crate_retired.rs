@@ -111,7 +111,7 @@ const RETIRED: [(&str, &str, Where); 93] = [
     ("live_segment", "write_segment", Where::Anywhere),
     ("fill_live_segment", "fill_write_segment", Where::Anywhere),
     ("live_entry", "write_segment_entry", Where::Anywhere),
-    ("OWNER", "OWNER_STATE", Where::Anywhere),
+    ("OWNER", "MUTATOR_STATE", Where::Anywhere),
     ("escrow", "append_to_overflow", Where::Under("cycle")),
     ("escrowed", "overflow_len", Where::Under("cycle")),
     ("escrow_entries", "overflow_entries", Where::Under("cycle")),
@@ -127,8 +127,12 @@ const RETIRED: [(&str, &str, Where); 93] = [
         "release_queue_segments",
         Where::Under("cycle/queue"),
     ),
-    ("owner", "owner_state", Where::Under("cycle/queue")),
-    ("owner_ref", "owner_state_ref", Where::Under("cycle/queue")),
+    ("mutator", "mutator_state", Where::Under("cycle/queue")),
+    (
+        "mutator_ref",
+        "mutator_state_ref",
+        Where::Under("cycle/queue"),
+    ),
     // Row resolution.
     ("SOLE_OCCUPANT", "SINGLE_ENTITY_INDEX", Where::Anywhere),
     ("edge_to", "resolve_edge_target", Where::Anywhere),
@@ -394,7 +398,7 @@ fn code_of(line: &str) -> String {
 }
 
 /// The identifier tokens of `text`, each one whole and paired with the byte
-/// it starts at: `owner_state` is one token and does not contain `owner`, and
+/// it starts at: `mutator_state` is one token and does not contain `mutator`, and
 /// the offset is what lets a caller read the `::` that joins two of them.
 fn identifiers(text: &str) -> Vec<(usize, String)> {
     let mut found = Vec::new();
@@ -464,7 +468,7 @@ fn retired_in(path: &Path, text: &str) -> Vec<(usize, String, &'static str)> {
                         && match scope {
                             Where::Anywhere => true,
                             Where::Under(prefix) => under(path, prefix),
-                            Where::Except(owners) => !owners.iter().any(|prefix| {
+                            Where::Except(mutators) => !mutators.iter().any(|prefix| {
                                 under(path, prefix) || qualified_by(prefix, &code, previous, *start)
                             }),
                         }
@@ -567,7 +571,7 @@ fn the_debt_list_names_only_files_that_still_offend() {
 #[test]
 fn the_guard_sees_a_retired_name_in_code() {
     let source = "\
-fn append(state: *mut OwnerCycleState, entity: *mut RcHeader) -> bool {
+fn append(state: *mut MutatorCycleState, entity: *mut RcHeader) -> bool {
     if unsafe { (*state).escrowed.get() } == ESCROW_ENTRIES {
         return false;
     }
@@ -587,9 +591,9 @@ fn append(state: *mut OwnerCycleState, entity: *mut RcHeader) -> bool {
 #[test]
 fn the_guard_reads_whole_identifiers() {
     let source = "\
-fn append(state: *mut OwnerCycleState) {
-    let owner_state = unsafe { (*state).owner_state_ref() };
-    owner_state.overflow_len.set(0);
+fn append(state: *mut MutatorCycleState) {
+    let mutator_state = unsafe { (*state).mutator_state_ref() };
+    mutator_state.overflow_len.set(0);
     let _ = ROW_COUNT;
 }
 ";
@@ -616,7 +620,7 @@ fn the_guard_scopes_ordinary_english_to_its_module() {
 /// `critical::replenish` refills the reserve wherever it is called from, and
 /// only a bare `replenish()` outside the queue could be the queue's leftover.
 #[test]
-fn the_guard_spares_a_call_qualified_by_its_owner() {
+fn the_guard_spares_a_call_qualified_by_its_mutator() {
     let qualified = "    let _ = crate::memory::critical::replenish();\n";
     assert!(
         retired_in(Path::new("gc.rs"), qualified).is_empty(),

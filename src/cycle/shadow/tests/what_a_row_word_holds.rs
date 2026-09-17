@@ -177,7 +177,7 @@ fn a_subtraction_stops_at_zero_and_keeps_the_colour() {
     );
 }
 
-/// More edges than the count holds is a defect of the in-line owner trace,
+/// More edges than the count holds is a defect of the in-line mutator trace,
 /// which reads exact counts, and a test build fails on it rather than
 /// clamping (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 6). The test runs
 /// under `debug_assertions` alone: a `--release` test build carries no
@@ -196,7 +196,7 @@ fn a_subtraction_below_the_count_fails_a_test_build() {
 /// A collector thread's pass reads a count the mutator moves under it, so a
 /// reference stored after the row started is one more in-edge than the
 /// count holds; the subtraction clamps at zero there, in every build, where
-/// the owner's pass asserts (`cells::CellReader::CONCURRENT` is what
+/// the mutator's pass asserts (`cells::CellReader::CONCURRENT` is what
 /// `cycle::mark` passes as `exact`).
 #[test]
 fn a_subtraction_below_the_count_clamps_on_a_collector_threads_pass() {

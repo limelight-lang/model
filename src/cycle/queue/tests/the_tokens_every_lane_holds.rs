@@ -36,7 +36,7 @@ fn the_walk_answers_what_both_lanes_hold() {
     // Straight into the overflow buffer rather than through a pool the test
     // would have to exhaust: the tier below the reserve is a store and an
     // increment, and this is the store.
-    let state = owner_state();
+    let state = mutator_state();
     let mut overflowed = candidate(2);
     let overflowed_entity = &raw mut overflowed;
     unsafe { append_to_overflow(state, overflowed_entity) };
@@ -138,7 +138,7 @@ fn an_unwind_inside_the_deferral_keeps_every_lane_whole() {
     let mut second_active = candidate(2);
     let second_active_entity = &raw mut second_active;
     assert!(unsafe { !release(second_active_entity) });
-    let state = owner_state();
+    let state = mutator_state();
     let mut overflowed = candidate(2);
     let overflowed_entity = &raw mut overflowed;
     unsafe { append_to_overflow(state, overflowed_entity) };
@@ -386,10 +386,10 @@ fn a_reoffer_at_a_poll_with_nothing_to_draw_splices_the_lane_in() {
     assert!(unsafe { !release(ahead_entity) });
 
     // Nothing to draw from: the cells spent by hand, the reserve drained.
-    let state = owner_state();
-    let owner_state = unsafe { owner_state_ref(state) };
+    let state = mutator_state();
+    let mutator_state = unsafe { mutator_state_ref(state) };
     loop {
-        let spare = take_spare(owner_state);
+        let spare = take_spare(mutator_state);
         if spare.is_null() {
             break;
         }
@@ -494,7 +494,7 @@ fn a_deferral_retires_the_record_of_a_completed_death() {
     for entity in [survivor, dead] {
         unsafe {
             crate::refcount::update_header_flags(entity, |flags| flags | CANDIDATE_BIT);
-            append_entry(owner_state(), entity);
+            append_entry(mutator_state(), entity);
         }
     }
     unsafe { dismantle_candidate(dead) };

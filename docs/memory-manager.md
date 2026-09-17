@@ -692,7 +692,7 @@ block is charged whole from its link to its unlink, so its fill is no
 residue.
 
 The queue's base block is held for one thread life. Its payload begins with one
-64-byte, cache-line-aligned `OwnerCycleState`; TLS contains only the non-owning
+64-byte, cache-line-aligned `MutatorCycleState`; TLS contains only the non-owning
 pointer to that state, and that state carries the address of the second block a
 thread holds for its life, the collection workspace. The remaining 65,216 bytes are the bounded overflow
 buffer, 8,152 pointers, so the runtime bulk-loop poll stride is derived as

@@ -272,7 +272,7 @@ fn the_sweep_reaches_every_block_of_the_chain() {
 /// the slot returns that close makes can hand a block to the pool and
 /// another collection can recommission it. What that means here: after the
 /// sweep the list is empty, so the reset that follows cannot write into a
-/// header word that has changed owner.
+/// header word that has changed mutator.
 #[test]
 fn a_swept_list_is_not_swept_again_at_reset() {
     let _g = test_guard();

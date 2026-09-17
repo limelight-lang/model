@@ -251,15 +251,15 @@ pub(crate) enum MarkResult {
 /// the collection carries on with its other roots.
 ///
 /// `R` is how the cells are read (`cells::CellReader`): plainly on the
-/// owning thread, atomically from a collector thread that holds the owner's
-/// token while the owner runs.
+/// owning thread, atomically from a collector thread that holds the mutator's
+/// token while the mutator runs.
 ///
 /// # Safety
 /// `root` is an entity header of the owning thread's heap whose slot is still
 /// its own — a candidate the queue names, live or dead — and the trace runs
 /// where `cells::trace_cells` may read an entity's cells through `R`: on the
 /// owning thread with no mutator running beside it for `PlainCells`, under
-/// the owner's trace token for `AtomicCells`.
+/// the mutator's trace token for `AtomicCells`.
 pub(crate) unsafe fn mark<R: CellReader>(
     arena: &mut TraceScratchArena,
     root: *mut RcHeader,
@@ -379,7 +379,7 @@ unsafe fn schedule_root_if_unvisited(arena: &mut TraceScratchArena, root: *mut R
 ///
 /// # Safety
 /// As [`mark`], and `child` is a counted child `cells::trace_cells`
-/// yielded, hence an entity header: live under the owner's reader, live or
+/// yielded, hence an entity header: live under the mutator's reader, live or
 /// torn down under a concurrent one.
 unsafe fn visit_child<R: CellReader>(
     arena: &mut TraceScratchArena,
@@ -397,7 +397,7 @@ unsafe fn visit_child<R: CellReader>(
 
     let count = unsafe { header_refcount(child) };
     if count == 0 {
-        // Under the owner's reader a counted edge is a reference, so the
+        // Under the mutator's reader a counted edge is a reference, so the
         // entity it names holds at least that one, and a zero is an
         // expansion of a torn-down entity's residual cells, which
         // [`schedule_root_if_unvisited`] is what keeps out of the descent.

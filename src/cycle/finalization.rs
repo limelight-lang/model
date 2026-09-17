@@ -22,7 +22,7 @@
 //! ([`stamp_component`]). What the stamp buys is paid at the next collection —
 //! the descent stops at a mature edge target instead of following it
 //! (`crate::cycle::mark`) — so the write is a reduction of future suspicion and
-//! therefore the owner's alone, by the law that only the owner reduces state
+//! therefore the mutator's alone, by the law that only the mutator reduces state
 //! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial deletion",
 //! the ownership invariant).
 //!

@@ -21,8 +21,8 @@ fn the_base_block_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     // and `dev/BENCHMARKS.md` all name. Written out rather than derived
     // through the expressions that define them: a test that recomputes a
     // constant agrees with whatever the constant becomes.
-    assert_eq!(size_of::<OwnerCycleState>(), 64);
-    assert_eq!(align_of::<OwnerCycleState>(), 64);
+    assert_eq!(size_of::<MutatorCycleState>(), 64);
+    assert_eq!(align_of::<MutatorCycleState>(), 64);
     assert_eq!(BLOCK_ENTRIES, 8_135);
     assert_eq!(OVERFLOW_CAPACITY, 8_152);
     assert_eq!(POLL_STRIDE, 4_076);
@@ -31,7 +31,7 @@ fn the_base_block_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     // entries account for the payload exactly, with no tail to absorb an
     // off-by-one and nothing of a neighbour within reach.
     assert_eq!(
-        size_of::<OwnerCycleState>() + OVERFLOW_CAPACITY * size_of::<*mut RcHeader>(),
+        size_of::<MutatorCycleState>() + OVERFLOW_CAPACITY * size_of::<*mut RcHeader>(),
         BLOCK_PAYLOAD
     );
 
@@ -66,7 +66,7 @@ fn a_spare_stays_one_accounted_block_when_it_joins_the_ring() {
 fn the_base_block_accepts_its_exact_rederived_overflow_capacity() {
     let _g = test_guard();
     reset();
-    let state = owner_state();
+    let state = mutator_state();
     let mut header = candidate(2);
 
     for _ in 0..OVERFLOW_CAPACITY {
@@ -94,7 +94,7 @@ fn one_entry_past_the_overflow_capacity_aborts() {
     if std::env::var_os(CHILD).is_some() {
         let _g = test_guard();
         reset();
-        let state = owner_state();
+        let state = mutator_state();
         let mut header = candidate(2);
         for _ in 0..=OVERFLOW_CAPACITY {
             unsafe { append_to_overflow(state, &raw mut header) };
@@ -206,7 +206,7 @@ fn a_spare_is_reservation_and_a_block_in_the_ring_is_the_payload_it_holds() {
 fn an_overflow_entry_costs_the_pointer_it_holds_and_nothing_more() {
     let _g = test_guard();
     reset();
-    let state = owner_state();
+    let state = mutator_state();
     let before = in_use();
     let mut header = candidate(2);
 
@@ -237,7 +237,7 @@ fn a_threads_base_block_is_in_use_from_its_draw_until_its_exit() {
         assert!(crate::memory::heap::ll_thread_init());
         assert_eq!(
             in_use(),
-            size_of::<OwnerCycleState>() + BLOCK_PAYLOAD,
+            size_of::<MutatorCycleState>() + BLOCK_PAYLOAD,
             "the control line and P's block are working memory; the spares \
              behind them are not"
         );
@@ -260,7 +260,7 @@ fn an_entry_leaving_the_overflow_buffer_gives_its_pointer_back() {
         refill_spares(),
         "the move below re-registers into a spare, so the cells start full"
     );
-    let state = owner_state();
+    let state = mutator_state();
     let before = in_use();
     let mut header = candidate(2);
 

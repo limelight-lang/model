@@ -1,13 +1,13 @@
 //! A token held from another thread, for the cases that need one: the
 //! stand-in for a collector tracing this mutator's graph, which holds and
 //! traces nothing, where the collector thread of `cycle::worker` takes the
-//! token through the owner's record and traces under it. A collector thread
+//! token through the mutator's record and traces under it. A collector thread
 //! that traces as well as holds is `cells::tests::what_a_collector_thread_reads`'.
 //!
 //! Two test trees hold a token this way — the token's own, and the entity
 //! allocation's slow path, which reaches the wait through a refusal — and a
 //! second copy of the holder would be a second opinion about when it lets go.
-//! It lets go only once the token's own count says the owner is waiting,
+//! It lets go only once the token's own count says the mutator is waiting,
 //! because a case that only terminates terminates most easily when the wait
 //! is never taken.
 
@@ -16,7 +16,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// A token pointer handed to another thread. The pointee is a line of the
-/// test thread's owner record, whose storage outlives the thread, and the
+/// test thread's mutator record, whose storage outlives the thread, and the
 /// guard that carries this joins the holder before the test thread returns,
 /// so the holder never outlives the case that reads its count.
 pub(crate) struct Handed(pub(crate) *const TraceToken);
@@ -32,7 +32,7 @@ impl Handed {
 }
 
 /// Spin until the token's count of waits passes `before`, or a bound
-/// passes — so a case whose owner never waits fails on an assertion rather
+/// passes — so a case whose mutator never waits fails on an assertion rather
 /// than hanging.
 pub(crate) fn wait_for_a_waiter(token: *const TraceToken, before: usize) {
     let bound = Instant::now() + Duration::from_secs(10);
@@ -47,7 +47,7 @@ pub(crate) fn wait_for_a_waiter(token: *const TraceToken, before: usize) {
 /// unwind as well as on the return, so a failed assertion never leaves a
 /// holder on the token of a thread that has gone on to its next case.
 ///
-/// With `until_waited` the holder lets go on its own once the owner has gone
+/// With `until_waited` the holder lets go on its own once the mutator has gone
 /// to wait on the token; without it, at `release`.
 pub(crate) struct HeldByACollector {
     release: Option<mpsc::Sender<()>>,
@@ -63,8 +63,11 @@ impl HeldByACollector {
         let collector = std::thread::spawn(move || {
             let token = handed.token();
             let waits_before = unsafe { (*token).waits() };
-            assert!(unsafe { (*token).try_take() }, "the owner was not tracing");
-            held_sender.send(()).expect("the owner waits for this");
+            assert!(
+                unsafe { (*token).try_take() },
+                "the mutator was not tracing"
+            );
+            held_sender.send(()).expect("the mutator waits for this");
             if until_waited {
                 wait_for_a_waiter(token, waits_before);
             } else {

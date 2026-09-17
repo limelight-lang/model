@@ -1,11 +1,11 @@
-//! What the foreign holder's window costs the owner, per return: a free
+//! What the foreign holder's window costs the mutator, per return: a free
 //! that withholds against a free that returns, a chunk free the same way,
 //! and the pop that makes the withheld returns afterwards.
 //!
 //! The probe prices the mechanism and not a workload — the churn a trace
 //! holds is this figure's reciprocal times the trace's length, and the
 //! length is the corpus's (`dev/BENCHMARKS.md`, "S38.3 what a foreign
-//! holder costs the owner"). Every arm frees `SLOTS` distinct slots, so
+//! holder costs the mutator"). Every arm frees `SLOTS` distinct slots, so
 //! the two free arms stride the same memory and differ in the gate alone;
 //! the arms interleave A, B, A, B over `ROUNDS`, and the minimum stands
 //! beside the median (`dev/BENCHMARKS.md`, Method).

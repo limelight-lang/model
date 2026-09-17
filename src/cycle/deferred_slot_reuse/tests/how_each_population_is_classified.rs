@@ -327,7 +327,7 @@ fn an_unstamped_block_is_returned_at_once() {
 /// A death in a stamped block **this thread does not own** is stacked like
 /// every other: the close returns it through the block's own stack of
 /// cross-thread frees, and walks no slot of the block, such a walk being
-/// bounded by a cursor its owner moves.
+/// bounded by a cursor its mutator moves.
 ///
 /// The block is `abandoned_block_of`'s, in a class of this case's own, so
 /// that the adoption at the end has nowhere to draw from but the block's own
@@ -379,7 +379,7 @@ fn a_slot_of_a_stamped_block_this_thread_does_not_own_is_stacked() {
     assert_eq!(
         unsafe { crate::memory::heap::block_occupancy(block) },
         occupancy_before,
-        "the owner has not heard of the death, so its count still holds the slot \
+        "the mutator has not heard of the death, so its count still holds the slot \
          and the block cannot reach the pool while the return is withheld"
     );
 

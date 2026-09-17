@@ -214,11 +214,11 @@ fn a_threads_whole_life_gives_every_block_back() {
 /// the teardown will run. Three in the `debug-journal` build as well,
 /// measured rather than argued from what the journal reaches.
 ///
-/// **What the owner record leaves is the registry's, not the thread's.** The
+/// **What the mutator record leaves is the registry's, not the thread's.** The
 /// record is drawn beside the base block and goes back to the registry's
 /// free list, which is where the next thread takes it from; a record carved
 /// fresh stays carved and charged, and the block it was carved from stays
-/// with the process (`crate::cycle::owner_record`, "Why the storage outlives
+/// with the process (`crate::cycle::mutator_record`, "Why the storage outlives
 /// the thread"). What this thread carved is read on the thread, so the
 /// figures stay exact under other cases' carves.
 #[test]
@@ -234,18 +234,18 @@ fn a_thread_nothing_will_tear_down_is_not_funded() {
         crate::memory::heap::FORCE_GUARD_UNARMED.store(false, Ordering::Relaxed);
         assert!(queue_base().is_null(), "and it holds no base block");
         assert!(
-            crate::cycle::owner_record::this_thread_record().is_null(),
+            crate::cycle::mutator_record::this_thread_record().is_null(),
             "and no record"
         );
         (
             started,
             thread_stats(),
-            crate::cycle::owner_record::carved_by_this_thread(),
+            crate::cycle::mutator_record::carved_by_this_thread(),
         )
     })
     .join()
     .unwrap();
-    let carved_bytes = records_carved * size_of::<crate::cycle::owner_record::OwnerRecord>();
+    let carved_bytes = records_carved * size_of::<crate::cycle::mutator_record::MutatorRecord>();
 
     assert!(!started, "the thread reports that it did not start");
     assert!(

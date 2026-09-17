@@ -45,11 +45,11 @@
 //!
 //! # The one header half this module reads that the trace does not
 //!
-//! Occupancy comes from `BlockPrivate::used`, which is the owner's half
+//! Occupancy comes from `BlockPrivate::used`, which is the mutator's half
 //! of the block header — the half every allocation borrows as `&mut`,
 //! and the half the design keeps the collector out of by splitting
-//! `kind`, `size_class` and `owner` out of it. Reading it here is sound
-//! on the terms the in-line owner trace already runs on: the owning
+//! `kind`, `size_class` and `mutator` out of it. Reading it here is sound
+//! on the terms the in-line mutator trace already runs on: the owning
 //! thread, with no mutator beside it, which is the same condition
 //! `heap::for_each_entity_slot` reads `private.bump` under. It is a
 //! `cfg(test)` reading and no production path takes it. **Whether a
@@ -168,7 +168,7 @@ pub(crate) struct InternalEdgeCensus {
 /// reads rows the pool has lent out again. A caller that met rows
 /// without a window — a test driving `ensure_row` — owes the same
 /// condition by holding the entities alive itself. An entity block's
-/// occupancy is read out of the owner's half of its header, so this runs
+/// occupancy is read out of the mutator's half of its header, so this runs
 /// on the thread that owns it.
 unsafe fn for_each_touched_block(arena: &TraceScratchArena, mut visit: impl FnMut(BlockDensity)) {
     let mut array = arena.touched_head();

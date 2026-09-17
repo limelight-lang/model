@@ -114,7 +114,7 @@ pub(crate) enum Reclaimed {
 /// The component and its membership are finished before this value exists.
 /// What remains is owned by `arena`: one counted reference per queued child,
 /// kept until [`DeferredReclamation::drain`] releases it. This split is the
-/// successful pressure path's safe point for owner candidate retirement — no
+/// successful pressure path's safe point for mutator candidate retirement — no
 /// member address is read afterwards, while a child's destructor may allocate
 /// from a member slot the retirement returned.
 #[must_use = "the severed external children still carry counted references"]
@@ -128,7 +128,7 @@ impl DeferredReclamation<'_> {
     pub(crate) fn drain(mut self) {
         self.drained = true;
         self.arena.drain_drops(|child| unsafe {
-            // The owner category is `GcHeap` for every member: the validation
+            // The mutator category is `GcHeap` for every member: the validation
             // answers about counted entities alone, so the drop needs no read
             // of a header that is no longer there.
             drop_ref(MemoryCategory::GcHeap, child);

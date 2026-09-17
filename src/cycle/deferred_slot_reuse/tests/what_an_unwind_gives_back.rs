@@ -211,7 +211,7 @@ fn a_panic_in_the_reset_returns_every_withheld_slot() {
     assert_eq!(
         unsafe { crate::memory::heap::block_occupancy(block) },
         occupied_before - 1,
-        "through the owner's `used`, as an ordered close does"
+        "through the mutator's `used`, as an ordered close does"
     );
     assert_eq!(
         gc_blocks(),

@@ -1121,8 +1121,8 @@ impl TraceScratchArena {
     /// the growth that would pass it answers as a refused allocation does,
     /// so a trace under the budget ends with `AllocationFailed` where an
     /// unbounded one would have drawn. The collector's batch runs under one,
-    /// so that what an owner waits for is bounded by memory rather than by
-    /// the closure of a root (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner
+    /// so that what a mutator waits for is bounded by memory rather than by
+    /// the closure of a root (`rfc/model/gc/rc-cycle.md`, "Worker-to-mutator
     /// handoff", the block budget B). Blocks already drawn count.
     pub(crate) fn budget_blocks(&mut self, blocks: usize) {
         self.block_budget = blocks;

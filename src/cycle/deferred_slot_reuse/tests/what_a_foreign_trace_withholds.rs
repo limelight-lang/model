@@ -1,12 +1,12 @@
 //! A death on a thread whose token another thread holds is withheld until
-//! that holder lets go, and the returns are then made by the owner — at its
+//! that holder lets go, and the returns are then made by the mutator — at its
 //! next free, at the safepoint poll, and before its exit.
 //!
 //! The holder here traces nothing: what the gate reads is the token alone,
-//! since a trace on another thread may hold an address the owner's free
+//! since a trace on another thread may hold an address the mutator's free
 //! would pull out from under it between reading a cell and meeting the row
 //! (`rfc/model/gc/rc-cycle.md`, "The deferral's contract"). The trace that
-//! does read while the owner frees is `cells::tests::what_a_collector_thread_reads`'
+//! does read while the mutator frees is `cells::tests::what_a_collector_thread_reads`'
 //! subject once this window stands; here the question is the window itself.
 
 use super::*;
@@ -48,10 +48,10 @@ fn a_death_under_a_foreign_holder_waits_for_the_release() {
     assert_eq!(
         foreign_withheld_count(),
         1,
-        "the release makes no return by itself: the owner makes them"
+        "the release makes no return by itself: the mutator makes them"
     );
 
-    // The owner's next free is the first place the returns are made, ahead
+    // The mutator's next free is the first place the returns are made, ahead
     // of that free's own.
     unsafe { crate::refcount::set_header_refcount(fresh, 0) };
     unsafe { crate::memory::stdapi::ll_free(fresh as *mut u8) };
@@ -114,7 +114,7 @@ fn kind_and_used(addr: usize) -> (u32, u32) {
     (field("kind"), field("used"))
 }
 
-/// A holder that takes the token again before the owner has made its
+/// A holder that takes the token again before the mutator has made its
 /// returns leaves them standing: the pop stops at a held token rather than
 /// handing a slot back under the new trace.
 #[test]
@@ -187,8 +187,8 @@ impl Sent {
     }
 }
 
-/// A slot another thread freed is reclaimed by the owner onto its free list,
-/// and that reclaim is a return of the owner's memory: under a holder it
+/// A slot another thread freed is reclaimed by the mutator onto its free list,
+/// and that reclaim is a return of the mutator's memory: under a holder it
 /// waits on the block's remote stack, where nothing hands it out, and once
 /// the holder lets go the next reclaim takes it.
 #[test]
@@ -256,8 +256,8 @@ fn a_cross_thread_free_is_not_reclaimed_under_a_holder() {
     unsafe { crate::memory::stdapi::ll_free(dead) };
 }
 
-/// The trace that reads while the owner frees: a collector thread traces the
-/// ring a thousand times while the owner kills the leaf its first member
+/// The trace that reads while the mutator frees: a collector thread traces the
+/// ring a thousand times while the mutator kills the leaf its first member
 /// holds and hangs a fresh one there, so every death goes through `ll_free`
 /// under the holder. Each slot freed under the trace is written down, and no
 /// allocation made under the trace receives one of them — the reuse the
@@ -286,7 +286,7 @@ fn a_death_under_a_running_trace_is_not_reused_before_the_release() {
             // `cells::tests::what_a_collector_thread_reads` gives.
             if cfg!(miri) { 20 } else { 1_000 },
             Some(storing),
-            move || done_sender.send(()).expect("the owner waits for this"),
+            move || done_sender.send(()).expect("the mutator waits for this"),
         )
     };
 
@@ -339,7 +339,7 @@ fn a_death_under_a_running_trace_is_not_reused_before_the_release() {
     }
 
     collector.join().expect("the collector thread returned");
-    assert!(deaths > 1, "the owner killed leaves under the trace");
+    assert!(deaths > 1, "the mutator killed leaves under the trace");
     unsafe { crate::gc::ll_gc_maybe_collect() };
     assert_eq!(foreign_withheld_count(), 0, "the poll made every return");
 

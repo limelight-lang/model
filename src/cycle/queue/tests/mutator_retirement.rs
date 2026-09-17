@@ -13,12 +13,12 @@ fn append_real(arena: &mut Arena, class: *const Class, overflow: bool) -> *mut R
     unsafe {
         crate::refcount::update_header_flags(entity, |flags| flags | CANDIDATE_BIT);
         if overflow {
-            append_to_overflow(owner_state(), entity);
+            append_to_overflow(mutator_state(), entity);
         } else {
             if spare_count() == 0 {
                 assert!(refill_spares());
             }
-            append_entry(owner_state(), entity);
+            append_entry(mutator_state(), entity);
         }
     }
     entity
@@ -47,7 +47,7 @@ fn run_shape(
     assert!(refill_spares());
     let baseline = thread_stats().current_bytes_in_use();
     let mut arena = Arena::new();
-    let class = candidate_class("OwnerRetirement");
+    let class = candidate_class("MutatorRetirement");
     let mut entities = Vec::new();
     for _ in 0..read {
         entities.push(append_real(&mut arena, class, false));
@@ -197,7 +197,7 @@ fn empty_dead_live_and_exact_capacity_shapes_balance_the_ledger() {
 /// entry is kept, and after everything. Point 3 is the deferred arm's, which
 /// a retirement never takes ([`a_deferring_pass_survives_an_unwind_at_each_of_its_boundaries`]).
 #[test]
-fn every_compaction_boundary_has_an_unwind_owner() {
+fn every_compaction_boundary_has_an_unwind_mutator() {
     let _g = test_guard();
     for point in (0..=compaction::LAST_CHECKPOINT).filter(|&point| point != 3) {
         run_shape(3, 5, 7, 2, Some(point));

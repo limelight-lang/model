@@ -43,10 +43,10 @@ fn a_reader_on_another_thread_takes_every_registration_once_and_in_order() {
     }
     assert_eq!(segment_count(), 2);
 
-    let record = Sent(owner_record::this_thread_record());
+    let record = Sent(mutator_record::this_thread_record());
     assert!(!record.0.is_null(), "this thread has registered before");
     let reader = std::thread::spawn(move || {
-        let record: &'static OwnerRecord = unsafe { &*record.into_inner() };
+        let record: &'static MutatorRecord = unsafe { &*record.into_inner() };
         let reader = unsafe { Reader::new(record.candidate_ring()) };
         let mut out = [0; 61];
         let mut taken_in_order = Vec::with_capacity(count);

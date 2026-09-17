@@ -1,13 +1,13 @@
 //! The verdict ring P: what the collector says about the roots it took from
-//! R, and what the owner does with each verdict.
+//! R, and what the mutator does with each verdict.
 //!
 //! P is a ring of `crate::ring`'s form with the roles swapped — the
-//! collector writes, the owner reads — and it never grows: one block per
-//! thread, the owner's memory, drawn with the record
-//! (`crate::cycle::owner_record`). The collector reads P's room before it
+//! collector writes, the mutator reads — and it never grows: one block per
+//! thread, the mutator's memory, drawn with the record
+//! (`crate::cycle::mutator_record`). The collector reads P's room before it
 //! traces and clamps its batch to it, so no link is ever written into P and
-//! no block passes from the owner to the collector; a P that is full is an
-//! owner that has not polled (`rfc/dev/DECISIONS.md`, "the candidate queue is
+//! no block passes from the mutator to the collector; a P that is full is a
+//! mutator that has not polled (`rfc/dev/DECISIONS.md`, "the candidate queue is
 //! read behind its writer, and the collector's verdicts come back by a
 //! second ring", "The ring P and the verdicts"; `rfc/model/gc/rc-cycle.md`,
 //! "Worker-to-owner handoff").
@@ -17,22 +17,22 @@
 //! An entry is the entity's address with one of four verdicts in its low
 //! two bits ([`Verdict`]): the collector's reading of the root, made on a
 //! copy of the graph and under a budget, so none of the four is a fact the
-//! owner acts on without reading again. The owner is the one party that
+//! mutator acts on without reading again. The mutator is the one party that
 //! changes state (`rfc/model/gc/rc-cycle.md`, "The mutator's disposition").
-//! Bit 2 is the owner's: the mark a close writes over a root it read live
-//! ([`VERDICT_DEFER_MARK`]). An entry whose address is null is one the owner
+//! Bit 2 is the mutator's: the mark a close writes over a root it read live
+//! ([`VERDICT_DEFER_MARK`]). An entry whose address is null is one the mutator
 //! has answered for in place and the next advance of P's front drops.
 //!
 //! # Who writes P's slots
 //!
-//! The collector, between `tail` and `front`. The owner writes into the
+//! The collector, between `tail` and `front`. The mutator writes into the
 //! slots it has read and not yet advanced past — the mark, and the null of
 //! a disposed entry — only under its token or its collecting word, which
 //! keep the collector out of P altogether: the two never touch a slot at
-//! once, and the collector's next write into that slot follows the owner's
+//! once, and the collector's next write into that slot follows the mutator's
 //! advance of `front` through the ring's own release/acquire pair.
 //!
-//! # When the owner reads P
+//! # When the mutator reads P
 //!
 //! **Every in-line collection reads P into its batch** — the fire, the
 //! pressure path, the exit — so that a proposal never stands through a
@@ -73,12 +73,12 @@ use crate::ring::{NoBlock, Reader};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(usize)]
 pub(crate) enum Verdict {
-    /// The root's row read potentially unreachable: a component the owner's
+    /// The root's row read potentially unreachable: a component the mutator's
     /// exact validation may confirm.
     Proposed = 0,
     /// The root read live, held from outside.
     ReadLive = 1,
-    /// The count read zero: a death the owner may find completed.
+    /// The count read zero: a death the mutator may find completed.
     ZeroCount = 2,
     /// The trace never walked the root — its block budget was met, or an
     /// allocation refused — posted so that no root blocks the ring behind
@@ -87,8 +87,8 @@ pub(crate) enum Verdict {
 }
 
 impl Verdict {
-    /// Whether an entry under this verdict is a root of the owner's batch:
-    /// one the owner traces and validates exactly.
+    /// Whether an entry under this verdict is a root of the mutator's batch:
+    /// one the mutator traces and validates exactly.
     fn is_root(self) -> bool {
         matches!(self, Self::Proposed | Self::Unwalked)
     }
@@ -97,7 +97,7 @@ impl Verdict {
 /// The bits of an entry that carry the verdict.
 const VERDICT_BITS: usize = 3;
 
-/// The owner's mark over a root of the batch that a close read live, written
+/// The mutator's mark over a root of the batch that a close read live, written
 /// in place by [`crate::cycle::queue::Batch::mark_for_deferral`] and read
 /// once by the pass that disposes of the batch. Bit 2: the third of the
 /// three bits a fixture's eight-byte header alignment frees
@@ -127,25 +127,25 @@ pub(super) fn entry_verdict(entry: usize) -> Verdict {
 }
 
 /// The entity an entry of P names, its low bits taken off; null for an
-/// entry the owner has answered for.
+/// entry the mutator has answered for.
 #[inline]
 pub(super) fn verdict_entity(entry: usize) -> *mut RcHeader {
     std::ptr::with_exposed_provenance_mut(entry & !LOW_BITS)
 }
 
-/// Whether the owner has answered for this entry in place.
+/// Whether the mutator has answered for this entry in place.
 #[inline]
 pub(super) fn is_disposed(entry: usize) -> bool {
     entry & !LOW_BITS == 0
 }
 
-/// Whether an entry of P is a root of the owner's batch.
+/// Whether an entry of P is a root of the mutator's batch.
 #[inline]
 pub(super) fn is_batch_root(entry: usize) -> bool {
     !is_disposed(entry) && entry_verdict(entry).is_root()
 }
 
-/// The collector's handle over one owner's P: how much room it has, and the
+/// The collector's handle over one mutator's P: how much room it has, and the
 /// post of one verdict (`crate::cycle::worker`, the batch).
 pub(crate) struct VerdictWriter<'a>(ring::Writer<'a>);
 
@@ -155,7 +155,7 @@ impl<'a> VerdictWriter<'a> {
     /// # Safety
     /// The calling thread holds `record`'s token, which is what makes it P's
     /// one producer for the handle's life.
-    pub(crate) unsafe fn open(record: &'a OwnerRecord) -> Self {
+    pub(crate) unsafe fn open(record: &'a MutatorRecord) -> Self {
         Self(unsafe { ring::Writer::new(record.verdict_ring()) })
     }
 
@@ -180,12 +180,12 @@ impl<'a> VerdictWriter<'a> {
     }
 }
 
-/// The owner's handle over P while the collector is kept out: under the
-/// owner's token, or under its collecting word.
+/// The mutator's handle over P while the collector is kept out: under the
+/// mutator's token, or under its collecting word.
 ///
 /// `None` for a thread with no record, which holds no verdict.
 pub(super) fn verdict_ring<'a>() -> Option<Quiescent<'a>> {
-    let record = owner_record::this_thread_record();
+    let record = mutator_record::this_thread_record();
     if record.is_null() {
         return None;
     }
@@ -194,10 +194,10 @@ pub(super) fn verdict_ring<'a>() -> Option<Quiescent<'a>> {
 }
 
 /// Note on this thread's record that a disposition at its poll freed
-/// something ([`OwnerRecord::note_freeing_disposition`]); nothing for a
+/// something ([`MutatorRecord::note_freeing_disposition`]); nothing for a
 /// thread with no record, which holds no verdict.
 pub(crate) fn note_freeing_disposition() {
-    let record = owner_record::this_thread_record();
+    let record = mutator_record::this_thread_record();
     if !record.is_null() {
         unsafe { &*record }.note_freeing_disposition();
     }
@@ -230,18 +230,18 @@ pub(crate) struct PrefixReading {
 /// holds no verdict; the reading is empty.
 pub(crate) fn dispose_prefix_at_the_poll(at_commits: u64) -> PrefixReading {
     let mut reading = PrefixReading::default();
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return reading;
     }
 
-    let owner_state = unsafe { owner_state_ref(state) };
-    let record = owner_record::this_thread_record();
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    let record = mutator_record::this_thread_record();
     if record.is_null() {
         return reading;
     }
 
-    // The owner is P's one consumer.
+    // The mutator is P's one consumer.
     let reader = unsafe { Reader::new((*record).verdict_ring()) };
     let mut one = [0usize; 1];
     loop {
@@ -263,7 +263,7 @@ pub(crate) fn dispose_prefix_at_the_poll(at_commits: u64) -> PrefixReading {
                 return reading;
             }
             Verdict::ReadLive if !compaction::completed_death(entity) => {
-                if defer_entry(owner_state, entity, Some(at_commits)).is_err() {
+                if defer_entry(mutator_state, entity, Some(at_commits)).is_err() {
                     reading.proposal_stands = true;
                     return reading;
                 }
@@ -302,7 +302,7 @@ pub(crate) fn dispose_prefix_at_the_poll(at_commits: u64) -> PrefixReading {
 /// among them.
 #[cfg(test)]
 pub(crate) fn verdict_count() -> usize {
-    let record = owner_record::this_thread_record();
+    let record = mutator_record::this_thread_record();
     if record.is_null() {
         return 0;
     }
@@ -310,12 +310,12 @@ pub(crate) fn verdict_count() -> usize {
     unsafe { Reader::new((*record).verdict_ring()) }.unread()
 }
 
-/// Drop every verdict standing in this thread's P, as the owner: a case
+/// Drop every verdict standing in this thread's P, as the mutator: a case
 /// leaves P as it found it, the harness thread and its record outliving
 /// the case.
 #[cfg(test)]
 pub(crate) fn discard_standing_verdicts() {
-    let record = owner_record::this_thread_record();
+    let record = mutator_record::this_thread_record();
     if record.is_null() {
         return;
     }
@@ -324,7 +324,7 @@ pub(crate) fn discard_standing_verdicts() {
     reader.advance(reader.unread());
 }
 
-/// Every verdict this thread's P holds and the owner has not answered for,
+/// Every verdict this thread's P holds and the mutator has not answered for,
 /// oldest first, with its entity.
 #[cfg(test)]
 pub(crate) fn standing_verdicts() -> Vec<(*mut RcHeader, Verdict)> {

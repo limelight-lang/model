@@ -78,7 +78,7 @@ unsafe fn link_of(entity: *mut RcHeader) -> *mut u8 {
     }
 }
 
-/// Retire a withheld candidate by hand, which is what the queue's owner does
+/// Retire a withheld candidate by hand, which is what the queue's mutator does
 /// in production (`cycle::queue::compaction`): the candidate bit comes off, and
 /// the slot is handed back before it is offered again, because the free that
 /// registered the death took it and the candidate arm then refused the return,

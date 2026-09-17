@@ -301,7 +301,7 @@ fn lines_of(addresses: &[usize]) -> usize {
 ///
 /// # Safety
 /// As `density::totals`: the arena has not been reset, every touched block is
-/// still mapped, and the owner's half of an entity block's header is read on
+/// still mapped, and the mutator's half of an entity block's header is read on
 /// the thread that owns it.
 unsafe fn walked_blocks(arena: &TraceScratchArena) -> Vec<WalkedBlock> {
     let mut walked = Vec::new();

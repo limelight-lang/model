@@ -417,7 +417,7 @@ stage is what makes a trace affordable rather than what tunes it.
         so the guard now skips its pass where the close is itself a retiring
         one. Checkpoint 9 and the whole deferred arm were reachable by no
         injection, the one harness passing `deferred_at: None`:
-        `owner_retirement::a_deferring_pass_survives_an_unwind_at_each_of_its_boundaries`
+        `mutator_retirement::a_deferring_pass_survives_an_unwind_at_each_of_its_boundaries`
         drops the pass on each of the ten boundaries over a batch whose records
         are marked, dead, both and neither, and the Critic's own mutation —
         the boundary raised above the clear — reads back as one entity twice.
@@ -452,7 +452,7 @@ stage is what makes a trace affordable rather than what tunes it.
         tree, three slices: the deferring-pass case 1 passed, 24.97 s on Miri's
         clock and 19.8 s of wall; the three disposition cases 20.33 s and
         16.8 s; `queue::tests::the_tokens_every_lane_holds` 7 passed, 72.49 s
-        and 53.7 s. A run over `cycle::queue::tests::owner_retirement` whole was
+        and 53.7 s. A run over `cycle::queue::tests::mutator_retirement` whole was
         killed at 25 minutes and left an empty log, so nothing is claimed from
         it. Three existing cases moved with the contract rather than being
         muted, each named in the commit.
@@ -1359,7 +1359,7 @@ in `dev/INDEX.md`. What it did not do is below.
   failed 4 of 100 runs of `cargo test --lib -- --test-threads=16`, asserting
   that `gc_metadata::stats()` is unchanged across `arena_reset_full`. What
   differed was the high-water pair alone — a queue base block and the
-  `OwnerCycleState` control line another thread charged inside the window,
+  `MutatorCycleState` control line another thread charged inside the window,
   twenty-nine test files never taking `block_pool::test_guard`. The ledger
   now answers a per-thread reading beside the process one, every exact
   assertion takes it, and the same loop ran 500 times with no failure. Three

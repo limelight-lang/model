@@ -180,10 +180,10 @@ fn a_live_root_the_deferred_lane_cannot_take_stays_offerable() {
 /// saw, so a second deferral into a lane that already holds records leaves it
 /// where it stands.
 ///
-/// The oldest deferred record decides when the owner owes a re-offer; a mirror
+/// The oldest deferred record decides when the mutator owes a re-offer; a mirror
 /// that moved with every append would put that debt one collection further off
 /// at each one, and a lane that never empties would never be re-offered at all
-/// (`rfc/dev/DECISIONS.md`, "the deferred-candidate buffer is the owner's, and
+/// (`rfc/dev/DECISIONS.md`, "the deferred-candidate buffer is the mutator's, and
 /// the re-offer is a splice at the epoch's turn").
 #[test]
 fn the_mirror_is_the_count_the_lane_started_at() {

@@ -42,9 +42,9 @@ fn burst_read_behind_by_another_thread(headers: &mut [RcHeader], take: usize) {
 /// collector would, in reads no longer than the count so that the reader
 /// never runs a block dry beyond the last entry asked for.
 fn take_on_another_thread(count: usize) -> usize {
-    let record = Sent(owner_record::this_thread_record());
+    let record = Sent(mutator_record::this_thread_record());
     let reader = std::thread::spawn(move || {
-        let record: &'static OwnerRecord = unsafe { &*record.into_inner() };
+        let record: &'static MutatorRecord = unsafe { &*record.into_inner() };
         let reader = unsafe { Reader::new(record.candidate_ring()) };
         let mut out = [0; 64];
         let mut taken = 0;

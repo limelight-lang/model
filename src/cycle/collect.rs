@@ -120,10 +120,10 @@ pub(crate) fn may_collect() -> bool {
 /// graph is no reason to refuse this one. The word stands in the record
 /// rather than in a thread-local because a collector thread reads it too —
 /// it is what keeps the collector out of the ring for the collection's whole
-/// length (`crate::cycle::owner_record`, the collecting word).
+/// length (`crate::cycle::mutator_record`, the collecting word).
 #[inline]
 fn is_collecting() -> bool {
-    let record = crate::cycle::owner_record::this_thread_record();
+    let record = crate::cycle::mutator_record::this_thread_record();
     !record.is_null() && unsafe { (*record).is_collecting() }
 }
 
@@ -152,8 +152,8 @@ fn is_collecting() -> bool {
 /// that memory is lost for the life of the process.
 struct CollectingThread {
     /// This thread's record, whose collecting word this guard holds up.
-    record: *mut crate::cycle::owner_record::OwnerRecord,
-    /// Whether this guard's drop still owes the owner retirement pass.
+    record: *mut crate::cycle::mutator_record::MutatorRecord,
+    /// Whether this guard's drop still owes the mutator retirement pass.
     ///
     /// A collection off the poll retires inside its own close — the pass that
     /// disposes of its batch is a retiring one — and a second pass over the
@@ -180,10 +180,10 @@ impl CollectingThread {
 
         // The word is raised before the token is taken, which is the order
         // the collector's exclusion rests on: its claim of the token after
-        // the owner's release at the scan's end reads the word set. A thread
+        // the mutator's release at the scan's end reads the word set. A thread
         // with no record — one past its exit's release of it — does not
         // collect.
-        let record = crate::cycle::owner_record::this_thread_record();
+        let record = crate::cycle::mutator_record::this_thread_record();
         if record.is_null() {
             return Err(GateClosed::NoRecord);
         }
@@ -246,12 +246,12 @@ pub(crate) fn count_pressure_roots(enabled: bool) {
 
 impl Drop for CollectingThread {
     fn drop(&mut self) {
-        struct LowerGate(*mut crate::cycle::owner_record::OwnerRecord);
+        struct LowerGate(*mut crate::cycle::mutator_record::MutatorRecord);
         impl Drop for LowerGate {
             fn drop(&mut self) {
                 // The close's last store, and a release: what publishes the
                 // compaction's entries and indices to a collector that reads
-                // the word clear (`crate::cycle::owner_record`).
+                // the word clear (`crate::cycle::mutator_record`).
                 unsafe { (*self.0).clear_collecting() };
             }
         }
@@ -274,7 +274,7 @@ impl Drop for CollectingThread {
 ///
 /// **Zero is every answer short of a teardown**, and this entry does not
 /// distinguish them; [`collection_off_the_poll`] does, for the one caller that
-/// reports the difference. Before final owner retirement, each
+/// reports the difference. Before final mutator retirement, each
 /// refusal leaves the graph it was reading byte-identical and no live root
 /// loses its registration. The `CollectingThread` guard then removes completed
 /// deaths left by this or an earlier collection, so a zero answer does not
@@ -554,7 +554,7 @@ pub(crate) const EXIT_ROUNDS: usize = 8;
 /// below waits for it, and from then on no collector takes this thread's
 /// token again — the rounds run under the claim, their takes nested, and the
 /// record goes back to the registry still held
-/// (`crate::cycle::owner_record`; `rfc/model/gc/rc-cycle.md`, "Concurrency",
+/// (`crate::cycle::mutator_record`; `rfc/model/gc/rc-cycle.md`, "Concurrency",
 /// the exit paragraph). The gate is open here by construction —
 /// `ll_thread_exit` runs only outside a collection, a teardown and a reset,
 /// recording a request made inside one for the thread's top
@@ -668,7 +668,7 @@ pub(crate) fn take_exit_residue() -> Option<ExitResidue> {
 /// trace**, on the memory it just returned, because the roots the bound left
 /// out are exactly the garbage this call was asked for. A round that freed
 /// nothing ends the loop, which is what makes it terminate. The trace close
-/// restores every entry, then owner retirement removes completed deaths; live
+/// restores every entry, then mutator retirement removes completed deaths; live
 /// registrations remain, so an empty queue is not the stopping condition and
 /// progress is.
 ///
@@ -872,7 +872,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
 /// the round over the records"). Called at every ending of a pressure
 /// collection, the refused ones included, after the collection so that the
 /// thread's draws compete with no rows of this one's; the wake is a soft
-/// signal, and the round it starts reads every owner's count itself.
+/// signal, and the round it starts reads every mutator's count itself.
 fn ask_for_the_collector_thread() {
     crate::cycle::worker::ensure_thread();
     // A wake lost here is a thread just born, whose first round is at once.

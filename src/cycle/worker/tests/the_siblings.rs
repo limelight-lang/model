@@ -1,11 +1,11 @@
-//! Several collectors dividing the owners: a collector with a backlog after
+//! Several collectors dividing the mutators: a collector with a backlog after
 //! two rounds births a sibling through the elder's birth path and names
-//! half of its owners to it; an owner's poll wakes the collector its record
+//! half of its mutators to it; a mutator's poll wakes the collector its record
 //! names; a sibling idle for the named rounds is ended by the elder, whose
-//! next round names its owners back to itself; a wake sent to an ended
+//! next round names its mutators back to itself; a wake sent to an ended
 //! sibling is lost and the count stands; and a cap of one births nothing.
 //!
-//! The second owner is a thread of the case's that registers and polls on
+//! The second mutator is a thread of the case's that registers and polls on
 //! its own thread through jobs the case sends it.
 
 use super::*;
@@ -16,22 +16,22 @@ use crate::refcount::{RcHeader, ll_release, ll_retain};
 
 /// A registered thread the case drives by jobs, each run on that thread
 /// with its arena; the thread lives until the case drops it.
-struct Owner {
-    record: *mut OwnerRecord,
+struct Mutator {
+    record: *mut MutatorRecord,
     jobs: std::sync::mpsc::Sender<Box<dyn FnOnce(&mut Arena) + Send>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-impl Owner {
+impl Mutator {
     fn start() -> Self {
         let (jobs, inbox) = std::sync::mpsc::channel::<Box<dyn FnOnce(&mut Arena) + Send>>();
         let (tell, told) = std::sync::mpsc::channel();
         let thread = std::thread::spawn(move || {
             assert!(
                 crate::memory::heap::ll_thread_init(),
-                "the pool served the owner thread"
+                "the pool served the mutator thread"
             );
-            tell.send(Sent(owner_record::this_thread_record()))
+            tell.send(Sent(mutator_record::this_thread_record()))
                 .expect("the case waits");
             let mut arena = Arena::new();
             while let Ok(job) = inbox.recv() {
@@ -40,7 +40,10 @@ impl Owner {
 
             crate::cycle::queue::release_queue_segments();
         });
-        let record = told.recv().expect("the owner thread started").into_inner();
+        let record = told
+            .recv()
+            .expect("the mutator thread started")
+            .into_inner();
         Self {
             record,
             jobs,
@@ -48,19 +51,19 @@ impl Owner {
         }
     }
 
-    /// Run `job` on the owner's thread and wait for its answer.
+    /// Run `job` on the mutator's thread and wait for its answer.
     fn run<T: Send + 'static>(&self, job: impl FnOnce(&mut Arena) -> T + Send + 'static) -> T {
         let (tell, told) = std::sync::mpsc::channel();
         self.jobs
             .send(Box::new(move |arena| {
                 tell.send(Sent(job(arena))).expect("the case waits");
             }))
-            .expect("the owner thread runs");
+            .expect("the mutator thread runs");
         told.recv().expect("the job ran").into_inner()
     }
 }
 
-impl Drop for Owner {
+impl Drop for Mutator {
     fn drop(&mut self) {
         let (jobs, _) = std::sync::mpsc::channel();
         drop(std::mem::replace(&mut self.jobs, jobs));
@@ -70,7 +73,7 @@ impl Drop for Owner {
     }
 }
 
-/// Roots each owner registers: the first two batches take one and two
+/// Roots each mutator registers: the first two batches take one and two
 /// starting sizes, K doubling after a completed batch, and leave three at
 /// the threshold behind them.
 const A_BACKLOG: usize = 6 * INITIAL_BATCH + 8;
@@ -129,12 +132,12 @@ fn wait_for_rounds_of(index: usize, rounds: usize) {
 }
 
 #[test]
-fn a_backlog_births_a_sibling_that_takes_half_the_owners_and_is_ended_when_idle() {
+fn a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idle() {
     let _g = test_guard();
     let record = record();
     let _end = RetireOnDrop;
     reset_lanes();
-    let other = Owner::start();
+    let other = Mutator::start();
     let class = node_class("SiblingNode");
     let mut arena = Arena::new();
     let mine = unsafe { live_roots(&mut arena, class, A_BACKLOG) };
@@ -150,7 +153,7 @@ fn a_backlog_births_a_sibling_that_takes_half_the_owners_and_is_ended_when_idle(
     wait_for_rounds_of(ELDER, 1);
     assert_eq!(testing::take_spawns(), 1);
 
-    // The birth: the first round's batches left both owners at the
+    // The birth: the first round's batches left both mutators at the
     // threshold, the second's too, and the second births the sibling.
     assert!(wake(ELDER));
     wait_for_rounds_of(ELDER, 1);
@@ -167,7 +170,7 @@ fn a_backlog_births_a_sibling_that_takes_half_the_owners_and_is_ended_when_idle(
     // rounds are counted for the routing.
     wait_for_rounds_of(1, 1);
 
-    // The handover: of the two backlogged owners, the second the round read
+    // The handover: of the two backlogged mutators, the second the round read
     // is named to the sibling; a record with no backlog — another thread's,
     // or one on the free list — is not in the handover at all.
     let named = [record, other.record].map(|record| unsafe { &*record }.collector());
@@ -187,15 +190,15 @@ fn a_backlog_births_a_sibling_that_takes_half_the_owners_and_is_ended_when_idle(
         (other.record, record)
     };
 
-    // The routing: an owner's poll wakes the collector its record names and
+    // The routing: a mutator's poll wakes the collector its record names and
     // no other. The roots are live, so the poll's disposition defers them
     // and fires nothing.
-    let poll_on = |owner: *mut OwnerRecord| {
+    let poll_on = |mutator: *mut MutatorRecord| {
         let poll = move || unsafe {
             crate::cycle::queue::make_a_signal_due();
             crate::gc::ll_gc_maybe_collect()
         };
-        if owner == record {
+        if mutator == record {
             poll()
         } else {
             other.run(move |_| poll())
@@ -209,13 +212,13 @@ fn a_backlog_births_a_sibling_that_takes_half_the_owners_and_is_ended_when_idle(
     wait_for_rounds_of(ELDER, 1);
     assert_eq!(testing::take_rounds_of(1), 0, "the sibling was not woken");
 
-    // The end: the sibling's owner lets its roots go and collects them, so
+    // The end: the sibling's mutator lets its roots go and collects them, so
     // the sibling's rounds are empty; after the named number the elder ends
-    // it, and the elder's next round names the owner back to itself.
+    // it, and the elder's next round names the mutator back to itself.
     let mut mine = Some(mine);
     let mut theirs = Some(theirs);
-    let let_go_on = |owner: *mut OwnerRecord, mine: Option<_>, theirs: Option<_>| {
-        if owner == record {
+    let let_go_on = |mutator: *mut MutatorRecord, mine: Option<_>, theirs: Option<_>| {
+        if mutator == record {
             unsafe { let_go_and_collect(mine.expect("held once")) };
         } else {
             let theirs = theirs.expect("held once");
@@ -247,12 +250,12 @@ fn a_backlog_births_a_sibling_that_takes_half_the_owners_and_is_ended_when_idle(
     );
 
     // The lost wake: a signal to the ended sibling is lost and the count
-    // stands; the elder's round takes the owner back, and the next signal
+    // stands; the elder's round takes the mutator back, and the next signal
     // reaches the elder.
     assert!(!wake(1));
     assert_eq!(poll_on(to_sibling), 0);
-    let signal_stands_on = |owner: *mut OwnerRecord| {
-        if owner == record {
+    let signal_stands_on = |mutator: *mut MutatorRecord| {
+        if mutator == record {
             crate::cycle::queue::signal_is_due()
         } else {
             other.run(|_| crate::cycle::queue::signal_is_due())
@@ -278,7 +281,7 @@ fn a_backlog_births_a_sibling_that_takes_half_the_owners_and_is_ended_when_idle(
 }
 
 #[test]
-fn one_backlogged_owner_births_no_sibling() {
+fn one_backlogged_mutator_births_no_sibling() {
     let _g = test_guard();
     let record = record();
     let _end = RetireOnDrop;
@@ -293,7 +296,7 @@ fn one_backlogged_owner_births_no_sibling() {
     let _ = testing::take_rounds();
     ensure_thread();
     wait_for_rounds_of(ELDER, 1);
-    // One owner is read by one collector at a time, so its backlog, however
+    // One mutator is read by one collector at a time, so its backlog, however
     // many rounds it outlasts, is no reason for a sibling.
     for _ in 0..2 * BACKLOG_ROUNDS_TO_BIRTH {
         assert!(wake(ELDER));
@@ -314,7 +317,7 @@ fn a_cap_of_one_births_no_sibling() {
     let record = record();
     let _end = RetireOnDrop;
     reset_lanes();
-    let other = Owner::start();
+    let other = Mutator::start();
     let class = node_class("CappedNode");
     let mut arena = Arena::new();
     let mine = unsafe { live_roots(&mut arena, class, A_BACKLOG) };

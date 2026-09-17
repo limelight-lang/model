@@ -6,7 +6,7 @@
 //! collection disposes of no component: it takes the close's ordinary path,
 //! which merges the detached batch back into the active lane. Every token
 //! survives that, the candidate bits stand, and no slot is returned — only the
-//! owner reduces state, and only through a token that names a dead entity
+//! mutator reduces state, and only through a token that names a dead entity
 //! (`rfc/model/gc/cycle/questions.md`, Y12 clauses 4 and 5).
 //!
 //! The case below is what that law buys. Registration is edge-triggered, so a

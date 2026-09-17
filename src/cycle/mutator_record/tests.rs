@@ -1,7 +1,7 @@
 //! A record outlives its thread and says, through its token alone, whether
 //! anyone may claim it: never before its thread's initialisation is complete,
 //! never after its exit's final claim, and only through the record while its
-//! thread lives. The owner's own claim is told from a foreign holder's by
+//! thread lives. The mutator's own claim is told from a foreign holder's by
 //! the free path, which withholds under the second and not the first. The
 //! record is four lines — the token's, the reader's, the writer's and a
 //! spare — drawn at `ll_thread_init` beside the base block, so that its
@@ -18,7 +18,7 @@ use std::sync::mpsc;
 /// runs through the guard `ll_thread_init` arms.
 fn a_started_thread() -> (
     *const TraceToken,
-    *mut OwnerRecord,
+    *mut MutatorRecord,
     mpsc::Sender<()>,
     std::thread::JoinHandle<()>,
 ) {
@@ -176,21 +176,21 @@ fn an_exit_draws_no_record() {
 }
 
 #[test]
-fn the_owner_s_own_claim_withholds_nothing() {
+fn the_mutator_s_own_claim_withholds_nothing() {
     let _g = test_guard();
     assert!(!held_by_a_foreign_holder());
     let claim = HeldToken::take();
     assert!(
         unsafe { (*this_thread_token()).is_held() },
-        "the owner holds its token"
+        "the mutator holds its token"
     );
     assert!(
         !held_by_a_foreign_holder(),
-        "the free path reads the owner's own claim as no foreign holder"
+        "the free path reads the mutator's own claim as no foreign holder"
     );
     assert!(
         !crate::cycle::deferred_slot_reuse::returns_are_withheld(),
-        "a return under the owner's own claim is made"
+        "a return under the mutator's own claim is made"
     );
 
     let nested = HeldToken::take();
@@ -230,7 +230,7 @@ fn a_record_is_carved_from_a_gc_block_on_a_line_boundary() {
     );
     assert_eq!((record as usize) % 64, 0, "a record stands on its own line");
     assert_eq!(
-        (record as usize - BlockHeader::payload_start(block) as usize) % size_of::<OwnerRecord>(),
+        (record as usize - BlockHeader::payload_start(block) as usize) % size_of::<MutatorRecord>(),
         0
     );
     let _ = token;
@@ -240,20 +240,20 @@ fn a_record_is_carved_from_a_gc_block_on_a_line_boundary() {
 
 #[test]
 fn a_record_is_four_lines_and_a_block_holds_255() {
-    assert_eq!(size_of::<OwnerRecord>(), 256);
-    assert_eq!(std::mem::offset_of!(OwnerRecord, token), 0);
+    assert_eq!(size_of::<MutatorRecord>(), 256);
+    assert_eq!(std::mem::offset_of!(MutatorRecord, token), 0);
     assert_eq!(
-        std::mem::offset_of!(OwnerRecord, reader),
+        std::mem::offset_of!(MutatorRecord, reader),
         64,
         "the collector's words are the second line"
     );
     assert_eq!(
-        std::mem::offset_of!(OwnerRecord, writer),
+        std::mem::offset_of!(MutatorRecord, writer),
         128,
-        "the owner's words are the third"
+        "the mutator's words are the third"
     );
     assert_eq!(
-        std::mem::offset_of!(OwnerRecord, hold),
+        std::mem::offset_of!(MutatorRecord, hold),
         192,
         "the hold word the collector and the exit share is the fourth"
     );

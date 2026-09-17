@@ -7,9 +7,9 @@
 //!
 //! **Whether a collection waited is read off the token's own count of
 //! waits**, because a case that only terminates terminates most easily when
-//! the wait is never taken: a holder that lets go before the owner reaches
+//! the wait is never taken: a holder that lets go before the mutator reaches
 //! the wait proves nothing, so every holder here lets go only once the
-//! count says the owner is waiting.
+//! count says the mutator is waiting.
 
 use super::*;
 use crate::class::{Class, ClassBuilder};

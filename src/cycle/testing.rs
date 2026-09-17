@@ -156,7 +156,7 @@ pub(crate) unsafe fn traced_unreachable_from(
 /// What a destructor does when it gives up its own edge to the next member:
 /// the Box property at [`prop_offset`] 0 is emptied and the reference it held
 /// released, which is the pair of acts a store of null through the barrier
-/// performs over a slot whose owner and old value are both of the GC heap.
+/// performs over a slot whose mutator and old value are both of the GC heap.
 /// Answers the member the edge named and whether the release reached zero.
 ///
 /// # Safety
@@ -352,7 +352,7 @@ pub(crate) unsafe fn dismantle_ring<const MEMBERS: usize>(
 }
 
 /// A value handed to another thread by a case that knows the pointee
-/// outlives it — an entity pointer, or an array of them — because the owner
+/// outlives it — an entity pointer, or an array of them — because the mutator
 /// joins that thread before it touches the pointee again.
 pub(crate) struct Sent<T>(pub(crate) T);
 
@@ -369,14 +369,14 @@ impl<T> Sent<T> {
 /// Trace `root` from a second thread holding this thread's token, `traces`
 /// times through the collector's reader, and answer what `read` found in
 /// the rows of the last trace before they went back with the collector's
-/// workspace. Returns once the collector holds the token, so the owner's
+/// workspace. Returns once the collector holds the token, so the mutator's
 /// next free is under it.
 ///
 /// With `wait_for` the collector holds the token and waits on it before its
 /// first trace, for a case whose mutator half has to be running beside the
 /// trace. The thread is the stand-in for the collector worker
 /// (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"): it takes the
-/// owner's token, opens a workspace of its own and runs the two phases
+/// mutator's token, opens a workspace of its own and runs the two phases
 /// through `cells::AtomicCells`.
 ///
 /// # Safety
@@ -399,11 +399,11 @@ pub(crate) unsafe fn traced_from_a_collector_thread<T: Send + 'static>(
         );
         let token = token.token();
         let root = root.into_inner();
-        assert!(unsafe { (*token).try_take() }, "the owner was tracing");
-        held_sender.send(()).expect("the owner waits for this");
+        assert!(unsafe { (*token).try_take() }, "the mutator was tracing");
+        held_sender.send(()).expect("the mutator waits for this");
         // Released on the unwind as well as on the return: a collector that
         // failed an assertion while holding the token would leave the
-        // owner's exit waiting for it forever, and the case's own failure
+        // mutator's exit waiting for it forever, and the case's own failure
         // would never be reported.
         struct ReleaseOnDrop(*const crate::cycle::token::TraceToken);
         impl Drop for ReleaseOnDrop {
@@ -413,7 +413,7 @@ pub(crate) unsafe fn traced_from_a_collector_thread<T: Send + 'static>(
         }
         let _held = ReleaseOnDrop(token);
         if let Some(wait_for) = wait_for {
-            wait_for.recv().expect("the owner signalled");
+            wait_for.recv().expect("the mutator signalled");
         }
 
         let mut read = Some(read);

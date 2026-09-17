@@ -162,9 +162,9 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 /// A count that reaches zero with edges left to subtract means the trace
 /// read more in-edges than the refcount held. The design permits that of
 /// a dirty pass, because the counts it reads may be stale, and the exact
-/// test on the owner's thread is what turns a candidate into a verdict
+/// test on the mutator's thread is what turns a candidate into a verdict
 /// (`rfc/model/gc/rc-cycle.md`, "Speculative tracing and exact
-/// validation"); so a release build clamps at zero. The in-line owner
+/// validation"); so a release build clamps at zero. The in-line mutator
 /// trace reads exact counts ("Synchronous collection is exact by
 /// construction", same document) and cannot find more in-edges than the
 /// refcount holds, so with `exact` a test build asserts `count >= edges`
@@ -172,7 +172,7 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 /// clamping (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 6). A trace on another
 /// thread reads a count the mutator moves under it — a reference stored
 /// after the row started is one more in-edge than the count — and passes
-/// `exact` false, so it clamps where the owner's trace asserts
+/// `exact` false, so it clamps where the mutator's trace asserts
 /// (`cells::CellReader::CONCURRENT`).
 ///
 /// **A saturated count is absorbing** and this call leaves it alone: it
@@ -191,7 +191,7 @@ pub(crate) unsafe fn subtract(row: *mut u32, edges: u32, exact: bool) -> u32 {
 
     debug_assert!(
         !exact || count(word) >= edges,
-        "a subtraction below the count: the owner trace found more in-edges \
+        "a subtraction below the count: the mutator trace found more in-edges \
          than the refcount holds"
     );
 

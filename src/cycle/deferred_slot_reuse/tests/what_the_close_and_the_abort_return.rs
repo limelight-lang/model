@@ -3,7 +3,7 @@
 //! The close pops every withheld return through `ll_free`, so a slot reaches
 //! its free list, a retained survivor its count word, a pooled block the pool
 //! and a run the operating system — each exactly once, whoever owned the block
-//! at the death, and to a live owner through the block's cross-thread stack.
+//! at the death, and to a live mutator through the block's cross-thread stack.
 //! The abort is the same pop with both allocation paths refusing.
 
 use super::*;
@@ -109,7 +109,7 @@ fn the_close_returns_a_withheld_slot() {
     assert_eq!(
         unsafe { crate::memory::heap::block_occupancy(block) },
         occupied_before - 1,
-        "the return went through the owner's `used`, which is what retires a block"
+        "the return went through the mutator's `used`, which is what retires a block"
     );
     assert_eq!(
         take_slots_popped(),
@@ -331,24 +331,24 @@ fn the_close_returns_a_withheld_run() {
     assert_eq!(gc_blocks(), held_before, "and the close drew nothing");
 }
 
-/// The close of a window that withheld a slot of a **live** owner's block gives
-/// that slot back to the owner, through the block's own stack of cross-thread
+/// The close of a window that withheld a slot of a **live** mutator's block gives
+/// that slot back to the mutator, through the block's own stack of cross-thread
 /// frees.
 ///
-/// The owner fills one block of its class to capacity and holds every slot,
+/// The mutator fills one block of its class to capacity and holds every slot,
 /// so its next allocation has nowhere to go but that stack
 /// (`crate::memory::heap::Heap::alloc_block_full`). A close that dropped the
 /// stacked slot, or returned it to the tracing thread's own heap, leaves the
-/// owner allocating out of a second block instead.
+/// mutator allocating out of a second block instead.
 #[test]
-fn the_close_returns_a_withheld_slot_to_a_live_owner() {
+fn the_close_returns_a_withheld_slot_to_a_live_mutator() {
     use std::sync::mpsc;
 
     let _guard = test_guard();
-    let (to_tracer, from_owner) = mpsc::channel::<usize>();
-    let (to_owner, from_tracer) = mpsc::channel::<()>();
+    let (to_tracer, from_mutator) = mpsc::channel::<usize>();
+    let (to_mutator, from_tracer) = mpsc::channel::<()>();
 
-    let owner = std::thread::spawn(move || {
+    let mutator = std::thread::spawn(move || {
         assert!(
             crate::memory::heap::ll_thread_init(),
             "the pool served the second thread"
@@ -379,7 +379,7 @@ fn the_close_returns_a_withheld_slot_to_a_live_owner() {
         crate::memory::heap::ll_thread_exit();
     });
 
-    let victim = from_owner.recv().expect("the owner handed out a slot") as *mut RcHeader;
+    let victim = from_mutator.recv().expect("the mutator handed out a slot") as *mut RcHeader;
     let block = block_of(victim);
     assert!(
         !unsafe { crate::memory::heap::block_is_owned_by_this_thread(block) },
@@ -402,7 +402,7 @@ fn the_close_returns_a_withheld_slot_to_a_live_owner() {
     assert_eq!(
         unsafe { crate::memory::heap::block_occupancy(block) },
         occupancy_before,
-        "and the owner cannot hand the slot out again, never having heard of \
+        "and the mutator cannot hand the slot out again, never having heard of \
          the death"
     );
 
@@ -416,11 +416,11 @@ fn the_close_returns_a_withheld_slot_to_a_live_owner() {
     assert_eq!(
         unsafe { crate::refcount::slot_state(victim) },
         crate::refcount::SlotState::DeadInPlace,
-        "and made the return, which the owner's own allocation is what shows"
+        "and made the return, which the mutator's own allocation is what shows"
     );
 
-    to_owner.send(()).expect("the owner is waiting");
-    owner.join().expect("the owner thread finished");
+    to_mutator.send(()).expect("the mutator is waiting");
+    mutator.join().expect("the mutator thread finished");
 }
 
 /// A block another thread's when one of its slots died, and this thread's by
@@ -428,8 +428,8 @@ fn the_close_returns_a_withheld_slot_to_a_live_owner() {
 ///
 /// `Heap::adopt` runs on the ordinary refill path, so ownership moves inside
 /// an open window and one block ends up with two slots on the window's stack,
-/// pushed under different owners. What the case pins is that the owner decides
-/// nothing here: the close pops both through `ll_free`, which reads the owner
+/// pushed under different mutators. What the case pins is that the mutator decides
+/// nothing here: the close pops both through `ll_free`, which reads the mutator
 /// word itself and sends each return down the path that word names.
 #[test]
 fn a_block_adopted_after_a_slot_of_it_was_stacked_returns_each_slot_once() {
@@ -588,7 +588,7 @@ fn an_aborted_window_returns_its_withheld_slots() {
     assert_eq!(
         unsafe { crate::memory::heap::block_occupancy(block) },
         occupied_before - 1,
-        "through the owner's `used`, as the ordered close does"
+        "through the mutator's `used`, as the ordered close does"
     );
     assert_eq!(
         gc_blocks(),

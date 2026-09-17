@@ -17,7 +17,7 @@
 //!
 //! **The commit counter is passed rather than driven.** It is process-global,
 //! and 64 commits closed here would move every other case's epoch under it
-//! (`crate::cycle::epoch::pin`). The owner poll takes the count as its
+//! (`crate::cycle::epoch::pin`). The mutator poll takes the count as its
 //! argument for that reason, so a case reads the mirror the deferral recorded
 //! and answers from it: one commit past that mirror is not a turnover, and one
 //! turnover past it is.

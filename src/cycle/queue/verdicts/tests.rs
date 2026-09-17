@@ -80,7 +80,7 @@ fn register_bare(headers: &mut [RcHeader]) -> Vec<*mut RcHeader> {
 /// The stand-in's batch over this thread's record, made on a thread of its
 /// own and joined.
 fn stand_in_posts(k: usize, verdict_for: impl Fn(usize) -> Verdict + Send + 'static) -> Posted {
-    let record = Sent(owner_record::this_thread_record());
+    let record = Sent(mutator_record::this_thread_record());
     assert!(!record.0.is_null(), "this thread has a record");
     std::thread::spawn(move || {
         let mut index = 0;
@@ -136,7 +136,7 @@ unsafe extern "C" fn counting_destructor(_object: *mut Object) {
 }
 
 /// A destructor that keeps `$this` alive past its own death: the count the
-/// collector read as zero is above zero again by the time the owner reads
+/// collector read as zero is above zero again by the time the mutator reads
 /// the verdict.
 unsafe extern "C" fn resurrecting_destructor(object: *mut Object) {
     unsafe { ll_retain(object as *mut RcHeader) };
@@ -146,8 +146,8 @@ unsafe extern "C" fn resurrecting_destructor(object: *mut Object) {
 fn p_is_one_block_drawn_with_the_record_and_clamps_the_batch_to_its_room() {
     let _g = test_guard();
     start();
-    let record = owner_record::this_thread_record();
-    let block = owner_record::verdict_block(record);
+    let record = mutator_record::this_thread_record();
+    let block = mutator_record::verdict_block(record);
     assert!(!block.is_null(), "P's block came with the record");
     assert_eq!(verdict_count(), 0);
 
@@ -173,7 +173,7 @@ fn p_is_one_block_drawn_with_the_record_and_clamps_the_batch_to_its_room() {
         "a full P takes nothing, and P did not grow"
     );
     assert_eq!(
-        owner_record::verdict_block(record),
+        mutator_record::verdict_block(record),
         block,
         "the same block, for the thread's life"
     );
@@ -363,7 +363,7 @@ fn a_zero_count_verdict_retires_a_completed_death_and_keeps_a_resurrection() {
         assert!(!ll_release(risen), "registered at the non-final decrement");
         assert!(ll_release(risen), "the count reached zero");
         // The death the collector would read as a zero count, undone by the
-        // destructor before the owner reads the verdict.
+        // destructor before the mutator reads the verdict.
         ll_object_die(risen as *mut Object);
     }
     assert_eq!(
@@ -627,7 +627,7 @@ fn a_batch_of_verdicts_without_a_root_is_disposed_of_by_the_close() {
         let mut arena = Arena::new();
         let _members = unsafe { ring(&mut arena, [class, class]) };
         drop(arena);
-        // The collector read the ring live — stale by the time the owner
+        // The collector read the ring live — stale by the time the mutator
         // reads the verdict — and R is empty.
         assert_eq!(stand_in_posts(2, |_| Verdict::ReadLive), Posted::Batch(2));
         assert_eq!(candidate_count(), 0);

@@ -9,6 +9,14 @@ derived from a ratified row and which say so where they stand. This document cha
 Ratifying `rfc/dev/PLAN.md` S9.1 stays with that repository; the glossary is
 authoritative here, and this mapping follows it if it moves again.
 
+Renamed since, 2026-09-17, on Edmond's ruling that the mutator thread is called
+the mutator in this crate: `OwnerRecord` → `MutatorRecord`, `owner_record` →
+`mutator_record`, `OwnerCycleState` → `MutatorCycleState`, `owner_state` →
+`mutator_state`, `owner_state_ref` → `mutator_state_ref`, `OWNER_STATE` →
+`MUTATOR_STATE`, and the prose of `src/cycle` with them. The tables below keep
+the names of their date; `owner_cat`, `owner_cls` and `ownership` (an entity
+holding a reference) are untouched.
+
 Scope: `src/cycle`, its tests, direct callers, and active API maps. Historical
 records are out of scope.
 

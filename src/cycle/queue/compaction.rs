@@ -1,4 +1,4 @@
-//! The owner's retirement pass in ring form: one in-place compaction of R,
+//! The mutator's retirement pass in ring form: one in-place compaction of R,
 //! the overflow buffer and, when asked, the deferred lane, drawing nothing;
 //! and over P, the disposition of a batch's prefix of verdicts or the
 //! in-place retirement of the completed deaths standing anywhere in it.
@@ -55,16 +55,16 @@ enum Destination {
 /// past ([`dispose_verdicts`]); `None` retires P's completed deaths in
 /// place and advances nothing.
 pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: Option<usize>) {
-    let state = owner_state();
+    let state = mutator_state();
     if state.is_null() {
         return;
     }
-    let owner_state = unsafe { owner_state_ref(state) };
+    let mutator_state = unsafe { mutator_state_ref(state) };
     note_queue_work(1, 0, 0);
     checkpoint(0);
 
     if sweep_deferred {
-        owner_state.deferred().retain(
+        mutator_state.deferred().retain(
             |entry| {
                 note_queue_work(0, 1, 0);
                 let entity = entry_entity(entry);
@@ -77,7 +77,7 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: 
             },
             |block| {
                 discharge_block();
-                return_surplus_block(owner_state, block);
+                return_surplus_block(mutator_state, block);
             },
         );
     }
@@ -108,7 +108,7 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: 
                     // Out of the ring before it is in the lane, so that no
                     // unwind between the two finds it in both.
                     pass.discard();
-                    let deferred = defer_entry(owner_state, entity, deferred_at);
+                    let deferred = defer_entry(mutator_state, entity, deferred_at);
                     note_queue_work(0, 0, 1);
                     if deferred.is_err() {
                         // Both cells empty: the root stays in the ring and
@@ -142,18 +142,22 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: 
 /// advances past the whole prefix. Without a prefix, every completed death
 /// standing in P is retired in place, its entry nulled, and P's front stays.
 ///
-/// The writes into P's slots are the owner's under its exclusion of the
+/// The writes into P's slots are the mutator's under its exclusion of the
 /// collector (`crate::cycle::queue::verdicts`, "Who writes P's slots"). An
 /// entry is nulled as soon as it is answered for, so an unwind out of a
 /// free or a write-back leaves no entry that a later reading would answer
 /// for twice; the advance is the pass's last act, and a prefix an unwind
 /// left unadvanced is read again by the next batch, its disposed entries
 /// skipped.
-fn dispose_verdicts(state: *mut OwnerCycleState, prefix: Option<usize>, deferred_at: Option<u64>) {
+fn dispose_verdicts(
+    state: *mut MutatorCycleState,
+    prefix: Option<usize>,
+    deferred_at: Option<u64>,
+) {
     let Some(ring) = verdicts::verdict_ring() else {
         return;
     };
-    let owner_state = unsafe { owner_state_ref(state) };
+    let mutator_state = unsafe { mutator_state_ref(state) };
     let count = prefix.unwrap_or_else(|| ring.count());
     ring.map_prefix_in_place(count, |slot| {
         let entry = *slot;
@@ -181,7 +185,7 @@ fn dispose_verdicts(state: *mut OwnerCycleState, prefix: Option<usize>, deferred
         // Nulled before the move, so that no unwind between the two finds
         // the entity in P and in a lane.
         *slot = 0;
-        if deferrable && defer_entry(owner_state, entity, deferred_at).is_ok() {
+        if deferrable && defer_entry(mutator_state, entity, deferred_at).is_ok() {
             note_queue_work(0, 0, 1);
             return;
         }
@@ -195,7 +199,7 @@ fn dispose_verdicts(state: *mut OwnerCycleState, prefix: Option<usize>, deferred
 
     if prefix.is_some() {
         checkpoint(7);
-        let record = owner_record::this_thread_record();
+        let record = mutator_record::this_thread_record();
         unsafe { ring::Reader::new((*record).verdict_ring()) }.advance(count);
     }
 }
@@ -243,20 +247,20 @@ pub(super) fn free(entity: *mut RcHeader) {
 /// from the buffer's start. The drop finishes it, so an unwind out of a free
 /// leaves the buffer packed and its count right.
 struct OverflowPass {
-    state: *mut OwnerCycleState,
+    state: *mut MutatorCycleState,
     read: usize,
     write: usize,
     bound: usize,
 }
 
 impl OverflowPass {
-    fn open(state: *mut OwnerCycleState) -> Self {
-        let owner_state = unsafe { owner_state_ref(state) };
+    fn open(state: *mut MutatorCycleState) -> Self {
+        let mutator_state = unsafe { mutator_state_ref(state) };
         Self {
             state,
             read: 0,
             write: 0,
-            bound: usize::from(owner_state.overflow_len.get()),
+            bound: usize::from(mutator_state.overflow_len.get()),
         }
     }
 
@@ -292,8 +296,8 @@ impl Drop for OverflowPass {
             self.keep(entity);
         }
 
-        let owner_state = unsafe { owner_state_ref(self.state) };
-        owner_state.overflow_len.set(stored_len(self.write));
+        let mutator_state = unsafe { mutator_state_ref(self.state) };
+        mutator_state.overflow_len.set(stored_len(self.write));
         // The entries that left took their pointers with them; the ledger
         // follows in one step rather than per free, the bytes being
         // released in the same breath.

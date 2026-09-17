@@ -4,11 +4,11 @@
 //! beyond the caller's and claims nothing of a record on the free list, a
 //! panicking round that hands the word back for the next birth; and its
 //! wakes — a wake that finds every count below the threshold makes a round
-//! and no batch, an owner's poll signals at the threshold of its own
+//! and no batch, a mutator's poll signals at the threshold of its own
 //! registrations and not before, and the fallback timer lengthens after
 //! empty rounds, holds over work it could not take, and comes back to its
 //! minimum on a batch and on a freeing disposition. What
-//! a round does for an owner — the batch over the ring behind its writer —
+//! a round does for a mutator — the batch over the ring behind its writer —
 //! is `the_batch`'s.
 
 use super::*;
@@ -17,8 +17,8 @@ use crate::cycle::worker::testing::{self, ThreadState};
 use crate::memory::block_pool::test_guard;
 
 /// This thread's record, which the guard's initialisation drew.
-fn record() -> *mut OwnerRecord {
-    let record = owner_record::this_thread_record();
+fn record() -> *mut MutatorRecord {
+    let record = mutator_record::this_thread_record();
     assert!(
         !record.is_null(),
         "the guard's init drew this thread's record"
@@ -94,7 +94,7 @@ fn the_first_pressure_collection_births_one_thread_whose_rounds_claim_and_releas
     let _end = RetireOnDrop;
     let _ = testing::take_spawns();
     reset_lanes();
-    let _ = testing::take_owners_served();
+    let _ = testing::take_mutators_served();
     testing::serve_rounds_at(ANY_ENTRY);
 
     // An empty lane: the collection has nothing to do, and births at its
@@ -112,14 +112,14 @@ fn the_first_pressure_collection_births_one_thread_whose_rounds_claim_and_releas
     );
     assert_eq!(testing::take_spawns(), 1);
 
-    // A round claims only an owner with work: one garbage ring in R, which
+    // A round claims only a mutator with work: one garbage ring in R, which
     // the batch takes and the case collects at its end. The count moves
     // after the serve returns, which is after the release.
     let class = node_class("BirthRingNode");
     let mut arena = crate::memory::arena::Arena::new();
     let _ring = unsafe { crate::cycle::testing::ring(&mut arena, [class, class]) };
     assert!(
-        wait_until(|| testing::take_owners_served() >= 1, A_BIRTH),
+        wait_until(|| testing::take_mutators_served() >= 1, A_BIRTH),
         "a round claimed and released this thread's record"
     );
 
@@ -136,7 +136,7 @@ fn the_first_pressure_collection_births_one_thread_whose_rounds_claim_and_releas
 /// Birth the thread with its rounds confined to this record and its wait
 /// between rounds pinned at `wait`, and wait for its first round to be
 /// over: from here a round happens on a wake alone.
-fn born_waiting_for(record: *mut OwnerRecord, wait: std::time::Duration) {
+fn born_waiting_for(record: *mut MutatorRecord, wait: std::time::Duration) {
     testing::confine_rounds_to(record);
     testing::wait_between_rounds_for(Some(wait));
     testing::permit_births(true);
@@ -147,7 +147,7 @@ fn born_waiting_for(record: *mut OwnerRecord, wait: std::time::Duration) {
         wait_until(|| testing::take_rounds() >= 1, A_BIRTH),
         "the thread was born and made its first round"
     );
-    let _ = testing::take_owners_served();
+    let _ = testing::take_mutators_served();
 }
 
 /// Wake the thread and wait for the round the wake starts.
@@ -182,7 +182,7 @@ fn a_wake_whose_counts_are_below_the_threshold_makes_a_round_and_no_batch() {
     let _small = unsafe { crate::cycle::testing::ring(&mut arena, [class, class]) };
     wake_for_a_round();
     assert_eq!(
-        testing::take_owners_served(),
+        testing::take_mutators_served(),
         0,
         "no batch below the threshold"
     );
@@ -193,7 +193,11 @@ fn a_wake_whose_counts_are_below_the_threshold_makes_a_round_and_no_batch() {
     let members =
         unsafe { crate::cycle::testing::long_ring(&mut arena, class, SOFT_THRESHOLD - 2) };
     wake_for_a_round();
-    assert_eq!(testing::take_owners_served(), 1, "a batch at the threshold");
+    assert_eq!(
+        testing::take_mutators_served(),
+        1,
+        "a batch at the threshold"
+    );
     assert_eq!(
         crate::cycle::queue::verdicts::verdict_count(),
         SOFT_THRESHOLD,
@@ -235,7 +239,7 @@ fn a_poll_signals_once_a_registration_filled_a_block_and_not_before() {
 
     // The registration that fills the tail block raises the flag; the poll
     // signals, the flag goes down, and the round the signal starts serves
-    // the owner.
+    // the mutator.
     let members = unsafe {
         crate::cycle::testing::long_ring(&mut arena, class, crate::ring::BLOCK_ENTRIES - 1)
     };
@@ -257,8 +261,8 @@ fn a_poll_signals_once_a_registration_filled_a_block_and_not_before() {
         "the signal started a round"
     );
     assert!(
-        wait_until(|| testing::take_owners_served() >= 1, A_BIRTH),
-        "the round served the owner"
+        wait_until(|| testing::take_mutators_served() >= 1, A_BIRTH),
+        "the round served the mutator"
     );
 
     testing::retire();
@@ -325,27 +329,27 @@ fn the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_dis
     let mut arena = crate::memory::arena::Arena::new();
     let members = unsafe { crate::cycle::testing::long_ring(&mut arena, class, SOFT_THRESHOLD) };
     wake_for_a_round();
-    assert_eq!(testing::take_owners_served(), 1);
+    assert_eq!(testing::take_mutators_served(), 1);
     assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN);
     wake_for_a_round();
     assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN * 2);
 
-    // A round that reads an owner at the threshold and cannot serve it — the
-    // owner holding its own token — holds the interval; released, the next
+    // A round that reads a mutator at the threshold and cannot serve it — the
+    // mutator holding its own token — holds the interval; released, the next
     // round's batch returns it to the minimum.
     let second = unsafe { crate::cycle::testing::long_ring(&mut arena, class, SOFT_THRESHOLD) };
     let holding = crate::cycle::token::HeldToken::take();
     wake_for_a_round();
-    assert_eq!(testing::take_owners_served(), 0, "the token was held");
+    assert_eq!(testing::take_mutators_served(), 0, "the token was held");
     assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN * 2);
     drop(holding);
     wake_for_a_round();
-    assert_eq!(testing::take_owners_served(), 1);
+    assert_eq!(testing::take_mutators_served(), 1);
     assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN);
     wake_for_a_round();
     assert_eq!(testing::timer_interval(), FALLBACK_INTERVAL_MIN * 2);
 
-    // The owner's poll disposes of the proposal, the collection it fires
+    // The mutator's poll disposes of the proposal, the collection it fires
     // frees the ring, and the note the poll leaves brings the next round's
     // interval back to its minimum; the round after that is empty again.
     assert_eq!(
@@ -415,12 +419,12 @@ fn a_round_reaches_a_record_beyond_the_callers_and_leaves_a_free_one_alone() {
     // A record another thread lived in and gave back, pinned so that no
     // thread of another case takes it while this one reads it.
     let free = crate::cycle::testing::on_a_fresh_thread(|| {
-        let record = owner_record::this_thread_record();
-        owner_record::pin_for_test(record, true);
+        let record = mutator_record::this_thread_record();
+        mutator_record::pin_for_test(record, true);
         Sent(record)
     })
     .into_inner();
-    assert!(owner_record::registry_lists_free(free));
+    assert!(mutator_record::registry_lists_free(free));
     assert!(
         unsafe { (*free).token.is_held() },
         "held by the exit's claim"
@@ -431,16 +435,16 @@ fn a_round_reaches_a_record_beyond_the_callers_and_leaves_a_free_one_alone() {
     // stands, and a compare-and-swap from free fails on it.
     testing::confine_rounds_to(free);
     let _ = testing::take_records_visited();
-    let _ = testing::take_owners_served();
+    let _ = testing::take_mutators_served();
     round(ELDER, ANY_ENTRY);
     assert!(
         testing::take_records_visited() >= 1,
         "the walk reached past the caller's record"
     );
-    assert_eq!(testing::take_owners_served(), 0);
+    assert_eq!(testing::take_mutators_served(), 0);
     assert!(unsafe { (*free).token.is_held() });
     testing::confine_rounds_to(std::ptr::null_mut());
-    owner_record::pin_for_test(free, false);
+    mutator_record::pin_for_test(free, false);
 }
 
 #[test]

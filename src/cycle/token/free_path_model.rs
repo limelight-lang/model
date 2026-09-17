@@ -1,32 +1,32 @@
 //! A `loom` model of the free path's reading of the token against a
 //! collector's take, and of nothing else: one token word, one word for
-//! the owner's last store before a free, one owner and one taker.
+//! the mutator's last store before a free, one mutator and one taker.
 //!
 //! It models a **copy of the protocol** rather than the token's code. The
 //! token cannot run under `--cfg loom` — it stands in a record reached
 //! through a thread-local — so what is checked here is the ordering
 //! argument, on the assumption that the code implements it. Keep the two
 //! in step by hand: the taker below is [`TraceToken::try_take`](super::TraceToken::try_take)
-//! and the owner is [`TraceToken::is_held`](super::TraceToken::is_held)
+//! and the mutator is [`TraceToken::is_held`](super::TraceToken::is_held)
 //! read on the free path (`crate::cycle::deferred_slot_reuse`, "A foreign
 //! holder of the token").
 //!
-//! The owner's word stands for the storage head an array republishes
-//! before it frees the old storage: the owner stores it, reads the token
+//! The mutator's word stands for the storage head an array republishes
+//! before it frees the old storage: the mutator stores it, reads the token
 //! free, and frees. A taker whose take lands after that reading traces
-//! the owner's graph, and the graph it must see is the one with the new
-//! head; a stale head names the storage the owner is freeing, and the
-//! trace strides memory the owner reuses meanwhile.
+//! the mutator's graph, and the graph it must see is the one with the new
+//! head; a stale head names the storage the mutator is freeing, and the
+//! trace strides memory the mutator reuses meanwhile.
 //!
 //! # What it demonstrated
 //!
-//! With the owner's reading an acquire load and the take an acquire
+//! With the mutator's reading an acquire load and the take an acquire
 //! compare-and-swap — the form the deferral was first written in, found by
 //! the Code Reviewer of 2026-09-16 — loom finds the execution at once: the
-//! owner reads the token free, the taker takes, and the taker reads the
+//! mutator reads the token free, the taker takes, and the taker reads the
 //! old head. This is the store-buffering shape, and on x86 it is the
-//! owner's store buffer: nothing between the head store and the token load
-//! drains it. A `SeqCst` fence on each side, the owner's before its load
+//! mutator's store buffer: nothing between the head store and the token load
+//! drains it. A `SeqCst` fence on each side, the mutator's before its load
 //! and the taker's after its take, closes it; either fence alone does not,
 //! and the three defective configurations stay pinned below as
 //! `should_panic`.
@@ -49,13 +49,13 @@ struct Shared {
     head: AtomicUsize,
 }
 
-/// One execution of owner against taker.
+/// One execution of mutator against taker.
 ///
-/// `owner_fenced` selects `fence(SeqCst)` between the owner's head store
+/// `mutator_fenced` selects `fence(SeqCst)` between the mutator's head store
 /// and its token load; `taker_fenced` selects `fence(SeqCst)` between the
 /// taker's compare-and-swap and its head load. Both false is the protocol
 /// as first written.
-fn execution(owner_fenced: bool, taker_fenced: bool) {
+fn execution(mutator_fenced: bool, taker_fenced: bool) {
     let shared = Arc::new(Shared {
         held: AtomicBool::new(false),
         head: AtomicUsize::new(0),
@@ -80,10 +80,10 @@ fn execution(owner_fenced: bool, taker_fenced: bool) {
         })
     };
 
-    // The owner republishes the head, then asks whether a trace holds the
+    // The mutator republishes the head, then asks whether a trace holds the
     // token before it frees the old storage.
     shared.head.store(1, Ordering::Release);
-    if owner_fenced {
+    if mutator_fenced {
         fence(Ordering::SeqCst);
     }
 
@@ -91,7 +91,7 @@ fn execution(owner_fenced: bool, taker_fenced: bool) {
 
     let traced = taker.join().unwrap();
     if freed && traced == Some(0) {
-        panic!("a trace read the storage the owner freed");
+        panic!("a trace read the storage the mutator freed");
     }
 }
 
@@ -101,19 +101,19 @@ fn free_path_two_fences_order_the_free_against_the_take() {
 }
 
 #[test]
-#[should_panic(expected = "a trace read the storage the owner freed")]
+#[should_panic(expected = "a trace read the storage the mutator freed")]
 fn free_path_an_acquire_load_orders_nothing_before_it() {
     loom::model(|| execution(false, false));
 }
 
 #[test]
-#[should_panic(expected = "a trace read the storage the owner freed")]
-fn free_path_the_owners_fence_alone_is_not_enough() {
+#[should_panic(expected = "a trace read the storage the mutator freed")]
+fn free_path_the_mutators_fence_alone_is_not_enough() {
     loom::model(|| execution(true, false));
 }
 
 #[test]
-#[should_panic(expected = "a trace read the storage the owner freed")]
+#[should_panic(expected = "a trace read the storage the mutator freed")]
 fn free_path_the_takers_fence_alone_is_not_enough() {
     loom::model(|| execution(false, true));
 }

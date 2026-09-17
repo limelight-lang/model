@@ -1,8 +1,8 @@
-//! A store that lands between the trace's verdict and the owner's
+//! A store that lands between the trace's verdict and the mutator's
 //! validation, and the control that shows the refusal came from the store.
 //!
 //! This is the staleness the exact test exists to absorb: the trace read
-//! the counts of a ring nobody held, and by the time the owner reads
+//! the counts of a ring nobody held, and by the time the mutator reads
 //! them one of the members is named from outside
 //! (`rfc/model/gc/rc-cycle.md`, "Speculative tracing and exact
 //! validation").
@@ -10,7 +10,7 @@
 use super::*;
 
 /// A reference taken after the scan reads as externally referenced the
-/// component, because what the owner compares is the count as it stands at its
+/// component, because what the mutator compares is the count as it stands at its
 /// own reading.
 #[test]
 fn a_reference_taken_after_the_verdict_leaves_the_ring_externally_referenced() {

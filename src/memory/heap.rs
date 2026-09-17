@@ -1875,7 +1875,7 @@ pub extern "C" fn ll_thread_exit() {
     //    collects, and then exits"). The claim outlives this function: the
     //    record goes back to the registry held, so no collector takes this
     //    thread's token between here and the record's next life
-    //    (`crate::cycle::owner_record`).
+    //    (`crate::cycle::mutator_record`).
     unsafe { crate::cycle::collect::collect_before_exit() };
 
     // 3. The trace window, before anything it could still be addressing goes
@@ -1971,7 +1971,7 @@ fn retire_the_journal() {
     // of `ll_thread_exit` took and kept: it is what a collector reaches this
     // thread through, and after this line the thread has nothing a collector
     // could reach.
-    unsafe { crate::cycle::owner_record::release_thread_record() };
+    unsafe { crate::cycle::mutator_record::release_thread_record() };
     crate::memory::reserve::drain();
     crate::memory::critical::drain();
     crate::memory::block_pool::drain_thread_cache();
@@ -2070,7 +2070,7 @@ impl Drop for ExitGuard {
 /// cycle root and is the one stock no later poll can make good
 /// (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is allocator-issued", which
 /// is that block); and the owner record drawn beside it, which is what a
-/// collector reaches the thread through (`crate::cycle::owner_record`).
+/// collector reaches the thread through (`crate::cycle::mutator_record`).
 /// A thread whose *heap* the OS refuses still answers `true`: it is
 /// registered, it releases entities allocated elsewhere, and its own
 /// allocations report null, which is the state this module already
@@ -2093,7 +2093,7 @@ pub extern "C" fn ll_thread_init() -> bool {
     // while nothing is yet built. The record a collector reaches this
     // thread through is drawn beside it under the same rule; its token stays
     // held until the end of this function, so no collector claims a thread
-    // that is still being built (`crate::cycle::owner_record`).
+    // that is still being built (`crate::cycle::mutator_record`).
     // The base block is the mark of a started thread: drawn here and held
     // until the exit, so its presence is a second call on a started thread.
     let started = crate::cycle::queue::queue_base_present();
@@ -2109,7 +2109,7 @@ pub extern "C" fn ll_thread_init() -> bool {
         return false;
     }
 
-    if !crate::cycle::owner_record::draw_thread_record() {
+    if !crate::cycle::mutator_record::draw_thread_record() {
         crate::cycle::queue::release_queue_base();
         return false;
     }
@@ -2142,7 +2142,7 @@ pub extern "C" fn ll_thread_init() -> bool {
         crate::cycle::queue::release_queue_base();
         // Under the initialisation's own hold, which is never released for
         // a thread that never starts.
-        unsafe { crate::cycle::owner_record::release_thread_record() };
+        unsafe { crate::cycle::mutator_record::release_thread_record() };
         crate::memory::reserve::drain();
         crate::memory::critical::drain();
         return false;
@@ -2190,7 +2190,7 @@ pub extern "C" fn ll_thread_init() -> bool {
         // candidates: its record is made claimable as a funded thread's
         // is, or its own first collection would wait on the hold this
         // function took.
-        unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
+        unsafe { crate::cycle::mutator_record::make_thread_record_claimable() };
         return true;
     }
 
@@ -2209,14 +2209,14 @@ pub extern "C" fn ll_thread_init() -> bool {
         // already report as null.
         unsafe { std::ptr::drop_in_place(heap) };
         unsafe { std::alloc::dealloc(heap as *mut u8, layout) };
-        unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
+        unsafe { crate::cycle::mutator_record::make_thread_record_claimable() };
         return true;
     }
 
     // The record drawn beside the base block is made claimable here, where
     // nothing of this thread's initialisation is left
-    // (`crate::cycle::owner_record`).
-    unsafe { crate::cycle::owner_record::make_thread_record_claimable() };
+    // (`crate::cycle::mutator_record`).
+    unsafe { crate::cycle::mutator_record::make_thread_record_claimable() };
 
     true
 }

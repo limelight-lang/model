@@ -81,7 +81,7 @@ pub(crate) const ALL_ROOTS: usize = usize::MAX;
 /// the walk is the only place one is taken.
 ///
 /// `R` is how the cells are read: `PlainCells` on the owning thread,
-/// `AtomicCells` from a collector thread holding the owner's token
+/// `AtomicCells` from a collector thread holding the mutator's token
 /// (`cells::CellReader`).
 ///
 /// # Safety

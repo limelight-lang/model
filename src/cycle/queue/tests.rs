@@ -120,7 +120,7 @@ fn reset() {
 }
 
 mod an_arena_entity_leaves_no_entry;
-mod owner_retirement;
+mod mutator_retirement;
 mod the_base_block_a_thread_holds_for_its_life;
 mod the_batch_a_collection_reads;
 mod the_tokens_every_lane_holds;
