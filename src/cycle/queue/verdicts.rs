@@ -27,8 +27,8 @@
 //!
 //! The collector, between `tail` and `front`. The mutator writes into the
 //! slots it has read and not yet advanced past — the mark, and the null of
-//! a disposed entry — only under its token or its collecting word, which
-//! keep the collector out of P altogether: the two never touch a slot at
+//! a disposed entry — only under its token, which keeps the collector out
+//! of P altogether: the two never touch a slot at
 //! once, and the collector's next write into that slot follows the mutator's
 //! advance of `front` through the ring's own release/acquire pair.
 //!
@@ -181,7 +181,7 @@ impl<'a> VerdictWriter<'a> {
 }
 
 /// The mutator's handle over P while the collector is kept out: under the
-/// mutator's token, or under its collecting word.
+/// mutator's token.
 ///
 /// `None` for a thread with no record, which holds no verdict.
 pub(super) fn verdict_ring<'a>() -> Option<Quiescent<'a>> {

@@ -64,7 +64,7 @@ impl HeldByACollector {
             let token = handed.token();
             let waits_before = unsafe { (*token).waits() };
             assert!(
-                unsafe { (*token).try_take() },
+                unsafe { (*token).try_claim(crate::cycle::worker::ELDER) },
                 "the mutator was not tracing"
             );
             held_sender.send(()).expect("the mutator waits for this");
@@ -74,7 +74,7 @@ impl HeldByACollector {
                 let _ = release_receiver.recv_timeout(Duration::from_secs(10));
             }
 
-            unsafe { (*token).release() };
+            unsafe { (*token).release_claim(crate::cycle::worker::ELDER, false) };
         });
         held.recv().expect("the collector took the token");
         Self {

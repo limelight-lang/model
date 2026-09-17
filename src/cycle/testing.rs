@@ -399,7 +399,10 @@ pub(crate) unsafe fn traced_from_a_collector_thread<T: Send + 'static>(
         );
         let token = token.token();
         let root = root.into_inner();
-        assert!(unsafe { (*token).try_take() }, "the mutator was tracing");
+        assert!(
+            unsafe { (*token).try_claim(crate::cycle::worker::ELDER) },
+            "the mutator was tracing"
+        );
         held_sender.send(()).expect("the mutator waits for this");
         // Released on the unwind as well as on the return: a collector that
         // failed an assertion while holding the token would leave the
@@ -408,7 +411,7 @@ pub(crate) unsafe fn traced_from_a_collector_thread<T: Send + 'static>(
         struct ReleaseOnDrop(*const crate::cycle::token::TraceToken);
         impl Drop for ReleaseOnDrop {
             fn drop(&mut self) {
-                unsafe { (*self.0).release() };
+                unsafe { (*self.0).release_claim(crate::cycle::worker::ELDER, false) };
             }
         }
         let _held = ReleaseOnDrop(token);

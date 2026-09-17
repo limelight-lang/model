@@ -158,9 +158,9 @@
 //! # What the in-line collection does with the rings
 //!
 //! It reads every entry from the front block to the tail, and every root
-//! standing in P, as its batch ([`read_batch`]) — the collecting word in
-//! the record keeps the collector out for the collection's whole length —
-//! traces, and at its close **compacts the ring in place** ([`compaction`]):
+//! standing in P, as its batch ([`read_batch`]) — the token, at `MUTATOR`
+//! through the close, keeps the collector out for the collection's whole
+//! length — traces, and at its close **compacts the ring in place** ([`compaction`]):
 //! an entry it disposed of is dropped, every other entry is kept in order,
 //! and the blocks' `tail` indices and the tail block are lowered, every one
 //! of them the mutator's own words on its own thread. Nothing is taken out, so
@@ -993,9 +993,10 @@ pub(crate) unsafe fn give_back_candidate_ring_left_by_an_exit(record: *mut Mutat
 /// The mutator's handle over R while no reader runs, or `None` for a thread
 /// with no record — one past its exit's release of it.
 ///
-/// The exclusion is the caller's: the collecting word in the record keeps a
-/// collector out for an in-line collection's whole length, and the token
-/// does for a retirement outside one (`crate::cycle::collect`).
+/// The exclusion is the caller's: the token at `MUTATOR` keeps a collector
+/// out for an in-line collection's whole length and for a retirement outside
+/// one alike, and a byte at `POSTED` keeps it out of a retirement too, since
+/// only this thread moves it (`crate::cycle::collect`).
 fn candidate_ring<'a>() -> Option<Quiescent<'a>> {
     let record = mutator_record::this_thread_record();
     if record.is_null() {
@@ -1007,8 +1008,8 @@ fn candidate_ring<'a>() -> Option<Quiescent<'a>> {
 
 /// Read this thread's two rings as one collection's batch: every entry of R
 /// from the front to the tail, and every entry of P the collector has
-/// posted, counted and left where they are. The caller holds the token or
-/// the collecting word, so P is quiescent under the reading.
+/// posted, counted and left where they are. The caller holds the token, so
+/// P is quiescent under the reading.
 ///
 /// **It draws nothing and cannot be refused.** Nothing is taken out, so the
 /// next registration finds the tail where the writer left it, and a
@@ -1149,8 +1150,8 @@ pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
 /// # Safety
 /// No membership or shadow reader can still name an entry being retired, no
 /// arena reset is open, and no collector reads R or writes P: the caller
-/// holds the token, or the collecting word excludes the collector. Every
-/// entry still names its own held allocation.
+/// holds the token, or the byte reads `POSTED`, which only this thread
+/// moves. Every entry still names its own held allocation.
 pub(crate) unsafe fn retire_candidates() {
     compaction::compact(None, false, None);
 }

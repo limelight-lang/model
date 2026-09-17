@@ -183,10 +183,7 @@ pub(crate) fn timer_interval() -> std::time::Duration {
 static MUTATORS_SERVED: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn note_served(served: super::Served) {
-    if matches!(
-        served,
-        super::Served::MutatorCollecting | super::Served::Batch { .. }
-    ) {
+    if matches!(served, super::Served::Batch { .. }) {
         MUTATORS_SERVED.fetch_add(1, Ordering::Relaxed);
     }
 }

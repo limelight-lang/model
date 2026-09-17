@@ -2,8 +2,7 @@
 //! thread reaches, in storage that outlives the thread
 //! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"; `dev/DECISIONS.md`,
 //! "the token stands in a record the process keeps, and the exit's claim on
-//! it is never released"). Four lines: the trace token with the mutator's
-//! note of who holds it; the reader's line, the collector's words of the
+//! it is never released"). Four lines: the trace token's; the reader's line, the collector's words of the
 //! two rings; the writer's line, the mutator's words of them and its count
 //! of freeing dispositions; and the hold line, the word under
 //! which a collector reads the rings' blocks before its claim and the word
@@ -85,17 +84,12 @@
 //!
 //! # The mutator's own claim, told from a foreign one
 //!
-//! The free path withholds a return while a foreign holder has the token
+//! The free path withholds a return while a collector has the token
 //! (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the token"),
-//! and the exit's rounds of collection run under the mutator's own claim, so
-//! the word alone does not say which. [`MutatorRecord::mutator_holds`] is the
-//! mutator's note to itself, written beside its take and its release and read
-//! only when the token reads held, so the free path's common case stays one
-//! load. The ruling that made the token one bit dissolved the holder kind
-//! because no reader needed it (`rfc/dev/DECISIONS.md`, "the trace token
-//! covers the trace alone, and the accelerator hands off by buffer swap");
-//! the exit's held claim is the reader that does, and its note is the
-//! mutator's rather than the word's, so a collector still reads one bit.
+//! and the exit's rounds of collection run under the mutator's own claim.
+//! The byte itself says which: `MUTATOR` is written by the mutator alone and
+//! `COLLECTOR` by a collector or by the mutator's consent
+//! (`crate::cycle::token`), so the free path reads one byte and no note.
 //!
 //! The collector thread that makes the round, and the round itself, are
 //! `crate::cycle::worker`; the round reaches every record through
@@ -121,10 +115,6 @@ pub(crate) struct MutatorRecord {
     /// The next free record, meaningful while this one is on the registry's
     /// free list and written under its lock alone.
     free_link: Cell<*mut MutatorRecord>,
-    /// Whether the holder of [`MutatorRecord::token`] is the mutator itself.
-    /// Written by the mutator alone, beside its take and its release, and
-    /// read by the mutator alone, so relaxed on both sides.
-    mutator_holds: AtomicBool,
     /// Whether a case has asked the registry to leave this record on the
     /// free list: other tests' threads start and exit under the parallel
     /// harness, and a record they could pop is one no case can read after
@@ -172,16 +162,12 @@ struct WriterLine {
     /// The block of P the mutator reads verdicts from: P's one block.
     p_front_block: AtomicPtr<BlockHeader>,
     /// Whether an in-line collection is running on the mutator, from before
-    /// its take of the token to the last store of its close. The mutator's
-    /// gate against a second collection on its own thread, and what keeps a
-    /// collector out of R for the collection's whole length rather than for
-    /// its trace: the collector reads it with acquire after its own claim of
-    /// the token and, finding it set, releases and skips. The clear is a
-    /// release store and the close's last, so a collector that reads it
-    /// clear reads the compaction's entries and indices behind it
-    /// (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its
-    /// writer, and the collector's verdicts come back by a second ring", "Who
-    /// reads R").
+    /// its take of the token to its close: the mutator's gate against a
+    /// second collection on its own thread, written and read by the mutator
+    /// alone. What keeps a collector out of R for the collection's whole
+    /// length is the token itself, at `MUTATOR` from the take through the
+    /// close (`crate::cycle::token`; `rfc/dev/design/trace-token-handshake.md`,
+    /// E10).
     collecting: AtomicBool,
     /// Dispositions of P at this mutator's poll that freed something, counted
     /// up by the mutator and never cleared: the collector compares it with
@@ -332,7 +318,6 @@ impl MutatorRecord {
         Self {
             token: TraceToken::new_held(),
             free_link: Cell::new(std::ptr::null_mut()),
-            mutator_holds: AtomicBool::new(false),
             #[cfg(test)]
             pinned: AtomicBool::new(false),
             reader: ReaderLine::empty(),
@@ -358,24 +343,6 @@ impl MutatorRecord {
             u8::try_from(collector).expect("a collector slot index"),
             Ordering::Relaxed,
         );
-    }
-
-    /// Whether a collector is tracing this mutator's heap now, which is the
-    /// token held by a thread other than the mutator: a reading, stale in both
-    /// directions in the ways [`TraceToken::is_held`] names.
-    ///
-    /// The mutator's free path reads it before it returns memory a trace
-    /// could still address, and the `SeqCst` fence ahead of the load is
-    /// paired with the one after a taker's swap
-    /// ([`TraceToken::try_take`]): the pair orders the mutator's stores
-    /// before this reading against the taker's loads after its take, so a
-    /// take this reading missed sees every store made before it. A fence
-    /// per free is its price (`dev/BENCHMARKS.md`, "the free path's fence
-    /// against the take").
-    #[inline]
-    pub(crate) fn collector_is_tracing(&self) -> bool {
-        std::sync::atomic::fence(Ordering::SeqCst);
-        self.token.is_held() && !self.mutator_holds.load(Ordering::Relaxed)
     }
 
     /// R's two words: the front block on the reader's line, the tail block
@@ -411,33 +378,24 @@ impl MutatorRecord {
         self.reader.batch.store(roots, Ordering::Relaxed);
     }
 
-    /// Whether the mutator is collecting in line, as a collector reads it after
-    /// its claim of the token: acquire, so that a clear reading carries the
-    /// close's stores.
-    #[inline]
-    pub(crate) fn is_collecting_as_collector(&self) -> bool {
-        self.writer.collecting.load(Ordering::Acquire)
-    }
-
-    /// Whether the mutator is collecting in line, as the mutator reads it:
-    /// relaxed, the word being the mutator's own on that side.
+    /// Whether the mutator is collecting in line: the word is the mutator's
+    /// own, so relaxed.
     #[inline]
     pub(crate) fn is_collecting(&self) -> bool {
         self.writer.collecting.load(Ordering::Relaxed)
     }
 
-    /// Raise the collecting word, before the mutator takes its token: the take
-    /// is what orders the word before a collector's next claim.
+    /// Raise the collecting word, before the mutator takes its token.
     #[inline]
     pub(crate) fn set_collecting(&self) {
         self.writer.collecting.store(true, Ordering::Relaxed);
     }
 
-    /// Clear the collecting word: the close's last store, and a release, so
-    /// that a collector reading it clear reads everything the close wrote.
+    /// Clear the collecting word, at the close; the token's release after it
+    /// is the close's last store.
     #[inline]
     pub(crate) fn clear_collecting(&self) {
-        self.writer.collecting.store(false, Ordering::Release);
+        self.writer.collecting.store(false, Ordering::Relaxed);
     }
 
     /// Note, on the mutator's thread, that a disposition of P at its poll
@@ -518,12 +476,11 @@ pub(crate) fn this_thread_record() -> *mut MutatorRecord {
 /// while the thread's own exit runs, which draws no record (module doc, "The
 /// exit draws no record").
 ///
-/// The hold is noted as the mutator's, because the rest of the initialisation
-/// runs under it and a rollback's returns go through the free path, which
-/// withholds under a foreign holder and not under the mutator
-/// ([`MutatorRecord::mutator_holds`]). The caller releases the hold
-/// ([`make_thread_record_claimable`]) or gives the record back
-/// ([`release_thread_record`]).
+/// The hold is the mutator's own, `MUTATOR` on the byte, so the rest of the
+/// initialisation runs under it and a rollback's returns go through the free
+/// path, which withholds under a collector and not under the mutator. The
+/// caller releases the hold ([`make_thread_record_claimable`]) or gives the
+/// record back ([`release_thread_record`]).
 pub(crate) fn draw_thread_record() -> bool {
     debug_assert!(
         this_thread_record().is_null(),
@@ -551,7 +508,6 @@ pub(crate) fn draw_thread_record() -> bool {
     MUTATOR_RECORD.with(|cell| cell.set(record));
     #[cfg(test)]
     RECORDS_TAKEN.with(|count| count.set(count.get() + 1));
-    unsafe { note_mutator_holds(record, true) };
     true
 }
 
@@ -565,33 +521,12 @@ pub(crate) fn draw_thread_record() -> bool {
 pub(crate) unsafe fn make_thread_record_claimable() {
     let record = this_thread_record();
     debug_assert!(
-        !record.is_null() && unsafe { (*record).token.is_held() && mutator_holds(record) },
+        !record.is_null()
+            && crate::cycle::token::state(unsafe { (*record).token.read() })
+                == crate::cycle::token::MUTATOR,
         "the initialisation's hold is what this releases"
     );
-    unsafe {
-        note_mutator_holds(record, false);
-        (*record).token.release();
-    }
-}
-
-/// Note whether the mutator holds its own token. Written by
-/// the mutator beside its take and its release, and by nothing else.
-///
-/// # Safety
-/// `record` is this thread's record and this thread is the holder whose
-/// claim the note describes.
-#[inline]
-pub(crate) unsafe fn note_mutator_holds(record: *mut MutatorRecord, holds: bool) {
-    unsafe { (*record).mutator_holds.store(holds, Ordering::Relaxed) };
-}
-
-/// Whether the mutator's own claim stands on `record`.
-///
-/// # Safety
-/// `record` is this thread's record.
-#[inline]
-pub(crate) unsafe fn mutator_holds(record: *mut MutatorRecord) -> bool {
-    unsafe { (*record).mutator_holds.load(Ordering::Relaxed) }
+    unsafe { (*record).token.release() };
 }
 
 /// Give this thread's record back to the registry, for the next thread, and
@@ -620,8 +555,9 @@ pub(crate) unsafe fn release_thread_record() {
         unsafe { give_back_verdict_ring(record) };
     }
 
-    debug_assert!(
-        unsafe { (*record).token.is_held() },
+    debug_assert_eq!(
+        crate::cycle::token::state(unsafe { (*record).token.read() }),
+        crate::cycle::token::MUTATOR,
         "a record goes back held: under the exit's claim, or under the \
          initialisation's own hold"
     );
@@ -786,7 +722,6 @@ fn take_record() -> *mut MutatorRecord {
         // token outlives the last life, and the word it will compare must be
         // the held one the exit left rather than a rewritten one.
         unsafe {
-            (*released).mutator_holds.store(false, Ordering::Relaxed);
             (*released).free_link.set(std::ptr::null_mut());
             (*released).reader.reset();
             (*released).writer.reset();

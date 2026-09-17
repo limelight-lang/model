@@ -163,6 +163,13 @@ struct CollectingThread {
     /// between its rounds and can leave deaths behind after the last, and the
     /// second never ran a pass at all.
     retire_on_drop: Cell<bool>,
+    /// This thread's token, held from the take through the close: the last
+    /// field, so that its release — the field's drop, after the drop body's
+    /// retirement pass and the collecting word's clear — is the close's last
+    /// store, on the unwind as on the return
+    /// (`rfc/dev/design/trace-token-handshake.md`, E10).
+    #[expect(dead_code, reason = "held for its drop, which is the release")]
+    token: HeldToken,
 }
 
 impl CollectingThread {
@@ -178,20 +185,25 @@ impl CollectingThread {
             return Err(closed);
         }
 
-        // The word is raised before the token is taken, which is the order
-        // the collector's exclusion rests on: its claim of the token after
-        // the mutator's release at the scan's end reads the word set. A thread
-        // with no record — one past its exit's release of it — does not
-        // collect.
+        // The word is raised before the token is taken: the word is the
+        // mutator's own gate, and the token, held through the close, is what
+        // keeps a collector out. A thread with no record — one past its
+        // exit's release of it — does not collect.
         let record = crate::cycle::mutator_record::this_thread_record();
         if record.is_null() {
             return Err(GateClosed::NoRecord);
         }
 
         unsafe { (*record).set_collecting() };
+        // Eligibility above, the token below: a thread that may not collect
+        // never waits for a token it could not use
+        // (`rfc/model/gc/rc-cycle.md`, "Check collection eligibility before
+        // waiting").
+        let token = HeldToken::take();
         Ok(Self {
             record,
             retire_on_drop: Cell::new(true),
+            token,
         })
     }
 
@@ -249,9 +261,9 @@ impl Drop for CollectingThread {
         struct LowerGate(*mut crate::cycle::mutator_record::MutatorRecord);
         impl Drop for LowerGate {
             fn drop(&mut self) {
-                // The close's last store, and a release: what publishes the
-                // compaction's entries and indices to a collector that reads
-                // the word clear (`crate::cycle::mutator_record`).
+                // Cleared before the token's release, which is the close's
+                // last store and what publishes the compaction's entries and
+                // indices to the next claimant (`crate::cycle::token`).
                 unsafe { (*self.0).clear_collecting() };
             }
         }
@@ -358,10 +370,6 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
         return zero(Ending::GateClosed);
     };
 
-    // Eligibility above, the token below: a thread that may not collect never
-    // waits for a token it could not use (`rfc/model/gc/rc-cycle.md`,
-    // "Check collection eligibility before waiting").
-    let token = HeldToken::take();
     let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS) } {
         Ok(traced) => traced,
         Err(TraceRefusal::NoWorkspace) => return zero(Ending::NoWorkspace),
@@ -369,11 +377,6 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
         Err(TraceRefusal::AllocationFailed) => return zero(Ending::TraceRefused),
     };
 
-    // The scan has answered, and the right to trace ends here — before the
-    // exact validation and before the first destructor. The rows outlive it:
-    // what the release ends is the tracing, not the window
-    // (`crate::cycle::token`).
-    drop(token);
     unsafe { note_scan_end(window.arena(), roots) };
 
     // The rows this trace wrote, read as the commit's membership. They stand
@@ -419,8 +422,8 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
 /// it. Answers the window, still open with its rows and its batch, and how
 /// many roots the trace read.
 ///
-/// The token is the caller's: the poll path releases it at the scan's end and
-/// the pressure path holds it through the harvest, and neither takes it here.
+/// The token is the caller's, held through the collection's close on both
+/// paths, and neither takes it here.
 ///
 /// # Safety
 /// As [`collect_off_the_poll`].
@@ -725,7 +728,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             // names come back under the same pass: a slot the collector
             // read as dead and took out of R returns through no other.
             if closed == GateClosed::Teardown {
-                let _token = HeldToken::take();
+                let _token = HeldToken::take_or_hold_posted();
                 unsafe {
                     crate::cycle::queue::retire_candidates();
                     make_withheld_returns_before_the_retry();
@@ -854,13 +857,10 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
         break;
     }
 
-    // Under a token of this thread's own, so that a collector's transient
-    // claim cannot stop the loop: the returns a foreign holder left this
-    // thread withholding are what the retry after this call allocates from.
-    {
-        let _token = HeldToken::take();
-        unsafe { make_withheld_returns_before_the_retry() };
-    }
+    // Under this thread's own claim, so that no collector's claim can stop
+    // the loop: the returns a foreign holder left this thread withholding are
+    // what the retry after this call allocates from.
+    unsafe { make_withheld_returns_before_the_retry() };
 
     ask_for_the_collector_thread();
     freed
@@ -906,10 +906,6 @@ unsafe fn make_withheld_returns_before_the_retry() {
 /// # Safety
 /// As [`collect_under_pressure`].
 unsafe fn trace_and_harvest(roots: usize) -> Traced {
-    // Held through the harvest, which is the last read of the touched list
-    // the token covers; the guard drops with the frame, after
-    // `close_and_take_batch`, and before the teardown the caller runs.
-    let _token = HeldToken::take();
     let (mut window, roots_traced) = match unsafe { open_and_trace(roots) } {
         Ok(traced) => traced,
         Err(TraceRefusal::EmptyLane) => return Traced::Nothing,

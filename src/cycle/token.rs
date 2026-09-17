@@ -1,39 +1,55 @@
-//! The trace token: the per-mutator word whose holder may trace that
+//! The trace token: the per-mutator byte whose state says who may trace that
 //! mutator's graph — the arena, the block triples, the touched list — and
-//! read its live candidate queue (`rfc/model/gc/rc-cycle.md`, "Concurrency").
+//! read its candidate ring (`rfc/model/gc/rc-cycle.md`, "Concurrency";
+//! `rfc/dev/design/trace-token-handshake.md`, the ruled form).
 //!
-//! One token per mutator thread, taken by compare-and-swap and released by
-//! one store. It stands in the thread's record, whose storage outlives the
-//! thread so that a collector may reach it before holding anything
-//! (`crate::cycle::mutator_record`). A thread meets its own token held only by
-//! a collector that is tracing its graph, never by itself: mark and scan run
-//! no user code, and the teardown that does runs after the release. So the
-//! in-line collection takes the token before it detaches the lane and
-//! releases it after its last row read — the scan's end on the path off the
-//! poll, the harvest sweep on the path under pressure — and everything from
-//! the exact validation on runs untokened. The one holder that keeps the
-//! token past its last row read is the exit, whose final claim is never
-//! released (`rfc/model/gc/rc-cycle.md`, "Concurrency", the exit paragraph).
-//! What the release ends is the right to trace, not the life of the rows: a
-//! collection off the poll keeps reading its rows through the teardown, and
-//! whether a foreign holder may take the token over rows that teardown is
-//! still reading is a ruling nobody has made (`rfc/model/gc/rc-cycle.md`,
-//! "Concurrency", the readership paragraph). The collector thread's batch
-//! is `crate::cycle::worker`'s, and the record's collecting word is what
-//! keeps it off an in-line collection's rows
-//! (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
-//! and the collector's verdicts come back by a second ring").
+//! One byte per mutator thread, in the thread's record, whose storage
+//! outlives the thread so that a collector may reach it before holding
+//! anything (`crate::cycle::mutator_record`). Five states in the low three
+//! bits, and the slot of the collector a request or a claim names in the
+//! three above them ([`STATE_MASK`], [`SLOT_SHIFT`]):
 //!
-//! **A waiter blocks rather than spins.** The mutator that finds its token held
-//! waits on a mutex and is woken by the release; a trace runs no user code and
-//! takes no user lock, so the wait is bounded by one trace (Edmond,
-//! 2026-08-29, `rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of
-//! the thread it claimed"). Eligibility is checked before the wait: a thread
-//! the gate refuses — one already collecting, inside a teardown, or inside a
-//! reset — opens no window (`crate::cycle::collect::may_collect`), and of
-//! the three only the teardown refusal takes the token afterwards, for the
-//! retirement pass that rewrites the ring
-//! (`crate::cycle::collect::collect_under_pressure`); the exit's own
+//! | state | who writes it | meaning |
+//! |---|---|---|
+//! | [`FREE`] | either | nobody traces this thread; the mutator returns memory at once |
+//! | [`MUTATOR`] | the mutator | the mutator's own claim: a collection through its close, the exit's final claim, an initialisation not yet complete |
+//! | [`REQUESTED`]`\|s` | collector s | collector s asks to trace; the mutator has not consented |
+//! | [`COLLECTOR`]`\|s` | collector s, or the consenting mutator | collector s traces; the mutator withholds every return |
+//! | [`POSTED`] | collector s | no collector holds anything; the last batch's verdicts stand in P undisposed of, and the mutator owes a collection over P |
+//!
+//! `FREE`, `MUTATOR` and `POSTED` carry slot zero, so a collector's request
+//! expects exactly zero. Every transition is a compare-and-swap that names
+//! the byte it expects, and a failed swap is acted on by the value it read
+//! back, never inferred; the two exceptions are the releases, stores over a
+//! value only their writer can change. The table is the byte's whole
+//! contract; of its writers, the collector's request and the mutator's
+//! consent are `cycle::worker`'s and the poll's reading's, and until they
+//! are built the one writer of `COLLECTOR` is the collector's own claim
+//! ([`try_claim`](TraceToken::try_claim)) and nothing writes `REQUESTED`
+//! outside a test.
+//!
+//! **The mutator holds `MUTATOR` from its take through its close**, on the
+//! path off the poll and under pressure alike: exact validation, the
+//! destructors, the sever, the frees and the ring's compaction all run under
+//! it, and the close's last store releases it. A collector's claim therefore
+//! fails on a collecting mutator in one swap, and the record's collecting
+//! word is the mutator's own gate and nobody else's. The one holder that
+//! never releases is the exit, whose final claim stays on the record until
+//! the next thread's initialisation ends
+//! (`crate::cycle::mutator_record`, "The token is what says whether a record
+//! is anyone's").
+//!
+//! **A waiter blocks rather than spins.** The mutator that finds its byte at
+//! `COLLECTOR` waits on the mutex and is woken by the collector's release; a
+//! trace runs no user code and takes no user lock, so the wait is bounded by
+//! one batch (Edmond, 2026-08-29, `rfc/dev/DECISIONS.md`, "a trace stays
+//! inside the blocks of the thread it claimed"). Nobody waits on any other
+//! state: a collector that meets `MUTATOR`, `REQUESTED` or `POSTED` skips.
+//! Eligibility is checked before the wait: a thread the gate refuses — one
+//! already collecting, inside a teardown, or inside a reset — opens no window
+//! (`crate::cycle::collect::may_collect`), and of the three only the teardown
+//! refusal touches the byte afterwards, for the retirement pass that rewrites
+//! the ring (`crate::cycle::collect::collect_under_pressure`); the exit's own
 //! collection runs with the gate open and waits through the same take
 //! (`crate::cycle::collect::collect_before_exit`).
 //!
@@ -44,26 +60,71 @@
 //! (`rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of the thread it
 //! claimed").
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex};
+
+/// Nobody traces this thread; the mutator returns memory at once.
+pub(crate) const FREE: u8 = 0;
+/// The mutator's own claim.
+pub(crate) const MUTATOR: u8 = 1;
+/// A collector asks to trace; the mutator has not consented.
+pub(crate) const REQUESTED: u8 = 2;
+/// A collector traces; the mutator withholds every return.
+pub(crate) const COLLECTOR: u8 = 3;
+/// The last batch posted verdicts the mutator has not disposed of.
+pub(crate) const POSTED: u8 = 4;
+
+/// The bits the state takes.
+pub(crate) const STATE_MASK: u8 = 0b111;
+/// The bit the slot starts at; three bits hold `MAX_COLLECTORS` of 8.
+pub(crate) const SLOT_SHIFT: u32 = 3;
+
+/// The state of a byte.
+#[inline]
+pub(crate) const fn state(word: u8) -> u8 {
+    word & STATE_MASK
+}
+
+/// The collector slot a byte names: meaningful for `REQUESTED` and
+/// `COLLECTOR`, zero for the rest.
+#[inline]
+pub(crate) const fn slot(word: u8) -> usize {
+    (word >> SLOT_SHIFT) as usize
+}
+
+/// The byte of `state` naming collector `slot`.
+#[inline]
+pub(crate) const fn word(state: u8, slot: usize) -> u8 {
+    state | ((slot as u8) << SLOT_SHIFT)
+}
+
+/// Where a mutator's take found the byte.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TookFrom {
+    /// `FREE`, or a request refused: nothing stands in P.
+    Free,
+    /// `POSTED`: the collector's last batch stands in P, and this collection
+    /// disposes of it.
+    Posted,
+}
 
 /// The token of one mutator thread.
 ///
-/// Three fields: the flag the compare-and-swap takes, and the mutex and
+/// Three fields: the byte the compare-and-swaps act on, and the mutex and
 /// condition variable a waiter blocks on. None of the three may carry drop
 /// glue, because the token stands in a record that is written in place and
 /// never dropped (`crate::cycle::mutator_record`); the assertion below holds
 /// that on every target, and a target whose mutex is not futex-backed fails
 /// there.
 pub(crate) struct TraceToken {
-    held: AtomicBool,
+    word: AtomicU8,
     wait: Mutex<()>,
     released: Condvar,
     /// How many times a taker has gone to wait on this token. A case reads
     /// it because a take that never waited is indistinguishable, from
     /// outside, from one whose wait is a no-op. Counted per wait on the
     /// condition variable rather than per take: a spurious wakeup re-tests
-    /// the flag and waits again, so a case asserts that the count moved and
+    /// the byte and waits again, so a case asserts that the count moved and
     /// never what it reached.
     #[cfg(test)]
     waits: std::sync::atomic::AtomicUsize,
@@ -75,12 +136,12 @@ const _: () = assert!(
 );
 
 impl TraceToken {
-    /// A token already held, the state a record leaves the registry in
+    /// A token at `MUTATOR`, the state a record leaves the registry in
     /// (`crate::cycle::mutator_record`): the taker releases it when its
     /// initialisation is complete, and no claim succeeds before that.
     pub(crate) const fn new_held() -> Self {
         Self {
-            held: AtomicBool::new(true),
+            word: AtomicU8::new(MUTATOR),
             wait: Mutex::new(()),
             released: Condvar::new(),
             #[cfg(test)]
@@ -88,68 +149,82 @@ impl TraceToken {
         }
     }
 
-    /// Take the token if it is free, and say whether it was.
+    /// The byte now: a reading, not a claim, and stale by the time it is read
+    /// unless the reader is the holder.
     ///
-    /// The form a collector worker uses: one that finds the token held skips
-    /// this mutator until a later round rather than waiting for it.
+    /// An acquire, paired with every release store: what a reader does after
+    /// reading `FREE` or `POSTED` — return a slot, read P — happens after
+    /// every load and store of the trace or the batch that wrote the value.
+    #[inline]
+    pub(crate) fn read(&self) -> u8 {
+        self.word.load(Ordering::Acquire)
+    }
+
+    /// Whether a collector traces this thread now: the byte at `COLLECTOR`.
     ///
-    /// A take is followed by a `SeqCst` fence, paired with the one before
+    /// The mutator reads it on its free path to decide whether a return waits
+    /// for a foreign trace (`crate::cycle::deferred_slot_reuse`), and both
+    /// stale directions are safe there: a holder that let go just after the
+    /// read costs one return withheld until the mutator's next pop, and a
+    /// claim that landed just after it starts a trace that sees every store
+    /// the mutator made before the read, which is what the `SeqCst` fence
+    /// ahead of the load, paired with the one after
+    /// [`try_claim`](Self::try_claim)'s swap, is for (`dev/BENCHMARKS.md`,
+    /// "the free path's fence against the take"). The pair goes when a
+    /// claim is a consent the mutator makes with a release swap of its own
+    /// (`rfc/dev/design/trace-token-handshake.md`, E3).
+    #[inline]
+    pub(crate) fn collector_is_tracing(&self) -> bool {
+        std::sync::atomic::fence(Ordering::SeqCst);
+        state(self.read()) == COLLECTOR
+    }
+
+    /// Claim the token for collector `slot` if it is free, and say whether
+    /// it was: one swap `FREE → COLLECTOR|slot`, and a skip on every other
+    /// value.
+    ///
+    /// A claim is followed by a `SeqCst` fence, paired with the one before
     /// the mutator's reading on its free path
-    /// (`crate::cycle::mutator_record::MutatorRecord::collector_is_tracing`): the
-    /// pair is what makes the mutator's stores before that reading visible to
-    /// the trace this take starts. Without it the taker may read the graph
+    /// ([`collector_is_tracing`](Self::collector_is_tracing)): the pair is
+    /// what makes the mutator's stores before that reading visible to the
+    /// trace this claim starts. Without it the claimant may read the graph
     /// as it stood before the mutator's last stores — an array's storage head
     /// before its growth — and stride memory the mutator freed after reading
     /// the token free; the acquire on the swap alone orders nothing the
     /// mutator did before its load (`token/free_path_model.rs`, the loom
     /// model that exhibits the execution).
     #[must_use]
-    pub(crate) fn try_take(&self) -> bool {
-        let took = self
-            .held
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+    pub(crate) fn try_claim(&self, slot: usize) -> bool {
+        let claimed = self
+            .word
+            .compare_exchange(
+                FREE,
+                word(COLLECTOR, slot),
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            )
             .is_ok();
-        if took {
+        if claimed {
             std::sync::atomic::fence(Ordering::SeqCst);
         }
 
-        took
+        claimed
     }
 
-    /// Take the token, waiting while a holder has it.
+    /// Release collector `slot`'s claim: one store — `POSTED` when the batch
+    /// posted verdicts into P, `FREE` when it posted nothing — then the wake
+    /// of the mutator, if it waits.
     ///
-    /// The mutator's form. The wait is a block on the mutex, woken by
-    /// [`release`](Self::release); the flag is re-tested under the mutex, so a
-    /// release between the test and the wait is not lost.
-    pub(crate) fn take(&self) {
-        if self.try_take() {
-            return;
-        }
-
-        let mut guard = self
-            .wait
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while !self.try_take() {
-            #[cfg(test)]
-            self.waits.fetch_add(1, Ordering::SeqCst);
-            guard = self
-                .released
-                .wait(guard)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-        }
-    }
-
-    /// Release the token: one store, then the wake of whoever waits on it.
-    ///
-    /// The notify is made under the mutex so that a waiter which tested the
-    /// flag before this store and is about to wait cannot miss it.
-    pub(crate) fn release(&self) {
-        debug_assert!(
-            self.held.load(Ordering::Relaxed),
-            "a release of a token nobody holds"
+    /// The notify is made under the mutex so that a waiter which read the
+    /// byte before this store and is about to wait cannot miss it.
+    pub(crate) fn release_claim(&self, slot: usize, posted: bool) {
+        debug_assert_eq!(
+            self.word.load(Ordering::Relaxed),
+            word(COLLECTOR, slot),
+            "a release of a claim this collector does not hold"
         );
-        self.held.store(false, Ordering::Release);
+        self.word
+            .store(if posted { POSTED } else { FREE }, Ordering::Release);
         let _guard = self
             .wait
             .lock()
@@ -157,29 +232,106 @@ impl TraceToken {
         self.released.notify_all();
     }
 
-    /// Whether some tracer holds the token now — a reading, not a claim, and
-    /// stale by the time it is read unless the reader is the holder.
+    /// Take the token as the mutator, waiting while a collector holds it,
+    /// and say where the take found the byte.
     ///
-    /// The mutator reads it on its free path to decide whether a return waits
-    /// for a foreign trace (`crate::cycle::deferred_slot_reuse`), and both
-    /// stale directions are safe there: a holder that let go just after the
-    /// read costs one return withheld until the mutator's next pop, and a
-    /// taker that arrived just after it starts a trace that sees every store
-    /// the mutator made before the read — the fence pair of
-    /// [`try_take`](Self::try_take) is what makes that so — and so never
-    /// holds the address the mutator is returning. The load is an acquire,
-    /// paired with [`release`](Self::release)'s store: a return the mutator
-    /// makes after reading the token free then happens after every load of
-    /// the trace that held it, and the free-list link it writes into the
-    /// dead entity does not race the trace's load of that word.
-    pub(crate) fn is_held(&self) -> bool {
-        self.held.load(Ordering::Acquire)
+    /// From `FREE` and `POSTED` the swap to `MUTATOR` is the take. From
+    /// `REQUESTED|s` it is a refusal: the swap lands and collector `s` is
+    /// woken to read it. Under `COLLECTOR` the mutator blocks on the mutex
+    /// and is woken by [`release_claim`](Self::release_claim); the byte is
+    /// re-read under the mutex, so a release between the read and the wait
+    /// is not lost. `MUTATOR` is the caller's own claim, and the caller tells
+    /// a nested take apart before calling ([`HeldToken::take`]).
+    pub(crate) fn take(&self) -> TookFrom {
+        self.take_unless(false)
+            .expect("a take that holds at POSTED was not asked for")
+    }
+
+    /// [`take`](Self::take), except that with `hold_at_posted` a byte read
+    /// as `POSTED` — at the first read or after a wait — is left as it is
+    /// and `None` is answered: the retirement pass's form, decided on the
+    /// same read a swap would act on.
+    pub(crate) fn take_unless(&self, hold_at_posted: bool) -> Option<TookFrom> {
+        let mut guard = None;
+        let mut seen = self.read();
+        loop {
+            let took = match state(seen) {
+                FREE | REQUESTED => TookFrom::Free,
+                POSTED if hold_at_posted => return None,
+                POSTED => TookFrom::Posted,
+                COLLECTOR => {
+                    let held = guard.take().unwrap_or_else(|| {
+                        self.wait
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    });
+                    seen = self.read();
+                    if state(seen) != COLLECTOR {
+                        guard = Some(held);
+                        continue;
+                    }
+
+                    #[cfg(test)]
+                    self.waits.fetch_add(1, Ordering::SeqCst);
+                    guard = Some(
+                        self.released
+                            .wait(held)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                    );
+                    seen = self.read();
+                    continue;
+                }
+                _ => unreachable!("a mutator's take under its own claim"),
+            };
+            match self
+                .word
+                .compare_exchange(seen, MUTATOR, Ordering::Acquire, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    if state(seen) == REQUESTED {
+                        crate::cycle::worker::wake(slot(seen));
+                    }
+
+                    return Some(took);
+                }
+                Err(actual) => seen = actual,
+            }
+        }
+    }
+
+    /// Release the mutator's own claim: the close's last store. Nobody waits
+    /// on `MUTATOR`, so no wake follows.
+    pub(crate) fn release(&self) {
+        debug_assert_eq!(
+            self.word.load(Ordering::Relaxed),
+            MUTATOR,
+            "a release of a claim the mutator does not hold"
+        );
+        self.word.store(FREE, Ordering::Release);
     }
 
     /// How many times a taker has gone to wait on this token so far.
     #[cfg(test)]
     pub(crate) fn waits(&self) -> usize {
         self.waits.load(Ordering::SeqCst)
+    }
+
+    /// Whether somebody holds the token: the byte at `MUTATOR` or
+    /// `COLLECTOR`. A case's reading; production reads the state it acts on.
+    #[cfg(test)]
+    pub(crate) fn is_held(&self) -> bool {
+        matches!(state(self.read()), MUTATOR | COLLECTOR)
+    }
+
+    /// Write `requested`, a `REQUESTED|s` byte, over `FREE`: a case standing
+    /// in for a collector's request, which the collector thread makes with
+    /// its own swap.
+    #[cfg(test)]
+    pub(crate) fn request_for_test(&self, requested: u8) {
+        assert_eq!(state(requested), REQUESTED);
+        self.word
+            .compare_exchange(FREE, requested, Ordering::Acquire, Ordering::Relaxed)
+            .expect("a request lands on a free byte");
     }
 }
 
@@ -191,8 +343,9 @@ impl TraceToken {
 /// The pointee is a line of the mutator's record, and the record's storage
 /// outlives the thread (`crate::cycle::mutator_record`), so the pointer stays
 /// valid after this thread exits; what a holder finds there after the exit's
-/// final claim is a token held until the record's next thread completes its
-/// initialisation and releases it. Null for a thread with no record.
+/// final claim is a token at `MUTATOR` until the record's next thread
+/// completes its initialisation and releases it. Null for a thread with no
+/// record.
 #[cfg(test)]
 pub(crate) fn this_thread_token() -> *const TraceToken {
     let record = crate::cycle::mutator_record::this_thread_record();
@@ -203,23 +356,25 @@ pub(crate) fn this_thread_token() -> *const TraceToken {
     unsafe { &raw const (*record).token }
 }
 
-/// Whether a collector is tracing this thread's heap now: the token held by
-/// a thread other than this one ([`TraceToken::is_held`], less the mutator's
-/// own claim). False for a thread with no record: no collector can reach a
-/// token that does not exist.
+/// Whether a collector is tracing this thread's heap now
+/// ([`TraceToken::collector_is_tracing`]). False for a thread with no record:
+/// no collector can reach a token that does not exist.
 #[inline]
 pub(crate) fn collector_is_tracing_this_thread() -> bool {
     let record = crate::cycle::mutator_record::this_thread_record();
-    !record.is_null() && unsafe { (*record).collector_is_tracing() }
+    !record.is_null() && unsafe { (*record).token.collector_is_tracing() }
 }
 
 /// The token of the calling thread, held from the call to the guard's drop:
-/// the mutator's own take around its trace.
+/// the mutator's own claim.
 ///
 /// **A take inside the mutator's own claim is nested and releases nothing**:
-/// the exit claims its token once for good and runs its collection rounds
-/// under that claim (`crate::cycle::collect::collect_before_exit`), and each
-/// round's take must neither wait on the exit's own word nor let go of it.
+/// the byte reads `MUTATOR`, which only this thread writes, so the take is
+/// under a claim of this thread's — a collection's, from its take through its
+/// close, or the exit's, which claims its token once for good and runs its
+/// collection rounds under that claim
+/// (`crate::cycle::collect::collect_before_exit`) — and each inner take must
+/// neither wait on the thread's own byte nor let go of it.
 ///
 /// **A thread with no record holds nothing.** Its collection is refused
 /// before any window opens (`crate::cycle::collect::CollectingThread`), and
@@ -228,13 +383,14 @@ pub(crate) fn collector_is_tracing_this_thread() -> bool {
 /// reaches a thread through its record, and this thread has none.
 ///
 /// The drop releases on the unwind as well as on the return, so a panic
-/// inside a trace leaves no token held for a waiter to block on forever. Not
-/// `Send`: the drop releases the word of the thread it runs on, and a guard
-/// moved to another thread would free that thread's token instead.
+/// inside a collection leaves no claim standing for a collector to skip
+/// forever. Not `Send`: the drop releases the byte of the thread it runs on,
+/// and a guard moved to another thread would free that thread's token
+/// instead.
 #[must_use = "the token is released when this guard drops"]
 pub(crate) struct HeldToken {
-    /// The record whose token this guard released on drop, or null for a
-    /// nested take and for a thread without a record.
+    /// The record whose token this guard releases on drop, or null for a
+    /// nested take, a hold at `POSTED` and a thread without a record.
     releases: *mut crate::cycle::mutator_record::MutatorRecord,
     thread_bound: std::marker::PhantomData<*const ()>,
 }
@@ -242,25 +398,45 @@ pub(crate) struct HeldToken {
 impl HeldToken {
     /// Take this thread's token, waiting while a collector holds it.
     pub(crate) fn take() -> Self {
-        let record = crate::cycle::mutator_record::this_thread_record();
-        let releases = if record.is_null() {
-            std::ptr::null_mut()
-        } else if unsafe { crate::cycle::mutator_record::mutator_holds(record) } {
-            std::ptr::null_mut()
-        } else {
-            unsafe { (*record).token.take() };
-            unsafe { crate::cycle::mutator_record::note_mutator_holds(record, true) };
-            record
-        };
+        Self::take_unless(false)
+    }
 
+    /// Take this thread's token as [`take`](Self::take) does, except that a
+    /// byte at `POSTED` is left as it is and nothing is held: the retirement
+    /// pass's form. Under `POSTED` no collector holds anything and a claim
+    /// fails, so the pass may rewrite the rings under it; and the byte left
+    /// standing is what makes the next reading arm the collection over P
+    /// that the pass, run with the gate closed, cannot be. The byte is
+    /// decided on the read the swap acts on, after any wait, so a collector
+    /// that releases `POSTED` into this take is held at `POSTED` too.
+    pub(crate) fn take_or_hold_posted() -> Self {
+        Self::take_unless(true)
+    }
+
+    fn take_unless(hold_at_posted: bool) -> Self {
+        let record = crate::cycle::mutator_record::this_thread_record();
+        if record.is_null() || state(unsafe { (*record).token.read() }) == MUTATOR {
+            return Self::holding_nothing();
+        }
+
+        match unsafe { (*record).token.take_unless(hold_at_posted) } {
+            Some(_) => Self {
+                releases: record,
+                thread_bound: std::marker::PhantomData,
+            },
+            None => Self::holding_nothing(),
+        }
+    }
+
+    fn holding_nothing() -> Self {
         Self {
-            releases,
+            releases: std::ptr::null_mut(),
             thread_bound: std::marker::PhantomData,
         }
     }
 
-    /// Keep the claim past the guard: the token stays held by this thread,
-    /// and nothing releases it. The exit's final claim
+    /// Keep the claim past the guard: the token stays at `MUTATOR`, and
+    /// nothing releases it. The exit's final claim
     /// (`crate::cycle::mutator_record::release_thread_record`).
     pub(crate) fn keep(self) {
         std::mem::forget(self);
@@ -297,9 +473,10 @@ pub(crate) fn note_traced_mutator(record: *mut crate::cycle::mutator_record::Mut
     let _ = record;
 }
 
-/// Record whether the token is held at the reading that ends a trace's row
-/// reads, and do nothing at all without `cfg(test)`. The token is the traced
-/// mutator's: this thread's own unless [`note_traced_mutator`] named another.
+/// Record whether the token is held — at `MUTATOR` or `COLLECTOR` — at the
+/// reading that ends a trace's row reads, and do nothing at all without
+/// `cfg(test)`. The token is the traced mutator's: this thread's own unless
+/// [`note_traced_mutator`] named another.
 ///
 /// Called by `cycle::trace` at the scan's end and by the arena's harvest
 /// sweep, and by nothing else.
@@ -312,7 +489,11 @@ pub(crate) fn note_last_row_read() {
             record = crate::cycle::mutator_record::this_thread_record();
         }
 
-        let held = !record.is_null() && unsafe { (*record).token.is_held() };
+        let held = !record.is_null()
+            && matches!(
+                state(unsafe { (*record).token.read() }),
+                MUTATOR | COLLECTOR
+            );
         HELD_AT_LAST_ROW_READ.with(|cell| cell.set(Some(held)));
     }
 }
@@ -329,10 +510,7 @@ impl Drop for HeldToken {
             return;
         }
 
-        unsafe {
-            crate::cycle::mutator_record::note_mutator_holds(self.releases, false);
-            (*self.releases).token.release();
-        }
+        unsafe { (*self.releases).token.release() };
     }
 }
 
@@ -342,7 +520,7 @@ pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
 
-// The loom model of the free path's reading against a take is not run by
+// The loom model of the free path's reading against a claim is not run by
 // the suite: it exists only under `--cfg loom`, where the dev-dependency
 // exists too. How to run it, and what it demonstrated, are in the file.
 #[cfg(loom)]

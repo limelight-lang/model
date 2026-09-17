@@ -7,6 +7,33 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-17 — a hold decided outside the wait consumed what the wait delivered
+
+**What happened.** The retirement pass's take was written as a pre-read of
+the token byte — `POSTED` means hold nothing — followed by the ordinary
+take, whose loop waits under `COLLECTOR` and swaps from whatever the release
+wrote. A collector releasing `POSTED` into that wait was swapped to
+`MUTATOR`, the pass ran, and the close stored `FREE` over a P nobody had
+disposed of: the invariant "`FREE` promises an empty P" broken on the one
+path the design exempts. The Critic of S51.1 found it; no test could, since
+no caller wrote `POSTED` yet.
+
+**Why it was possible.** The decision and the swap read the byte twice, and
+the wait sits between them. A rule of the design — a failed swap is acted on
+by the value it read back — was stated in the module doc and not followed by
+the loop, which discarded the read-back and re-loaded.
+
+**What changed.** `TraceToken::take_unless` decides on the read the swap acts
+on, after any wait, and acts on the swap's read-back; the pre-read wrapper
+is gone. A case releases `POSTED` into a waiting hold and reads the byte
+still `POSTED`.
+
+**The rule.** A decision about a word and the swap that acts on it read the
+word once. Where a wait can stand between them, the decision moves inside
+the loop.
+
+---
+
 ## 2026-09-16 — a stale-direction argument was stated for both directions and proved for one
 
 **What happened.** The trace token's `is_held` documented its free-path

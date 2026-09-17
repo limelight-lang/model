@@ -31,7 +31,7 @@ fn served_by_a_collector() -> Served {
             crate::memory::heap::ll_thread_init(),
             "the pool served the collector thread"
         );
-        unsafe { serve(sent.into_inner(), ANY_ENTRY) }
+        unsafe { serve(sent.into_inner(), ELDER, ANY_ENTRY) }
     })
     .join()
     .expect("the collector finished")
@@ -320,7 +320,7 @@ fn the_advance_follows_the_last_post_from_the_unwind_as_well() {
         assert!(crate::memory::heap::ll_thread_init());
         let record = sent.into_inner();
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-            serve(record, ANY_ENTRY)
+            serve(record, ELDER, ANY_ENTRY)
         }))
     })
     .join()
@@ -348,20 +348,22 @@ fn the_advance_follows_the_last_post_from_the_unwind_as_well() {
     reset_lanes();
 }
 
+/// The mutator's own claim, `MUTATOR` on the byte from its take through its
+/// close, is what a collector's claim fails on: the collecting word is the
+/// mutator's own gate and the collector never reads it.
 #[test]
-fn an_mutator_collecting_in_line_is_skipped() {
+fn a_mutator_collecting_in_line_is_skipped() {
     let _g = test_guard();
     reset_lanes();
     let node = node_class("SkipNode");
     let mut arena = Arena::new();
     let (_, keeper) = unsafe { kept_root(&mut arena, node, "SkipKeeper") };
 
-    let record = record();
-    unsafe { (*record).set_collecting() };
-    assert_eq!(served_by_a_collector(), Served::MutatorCollecting);
+    let claim = crate::cycle::token::HeldToken::take();
+    assert_eq!(served_by_a_collector(), Served::TokenHeld);
     assert_eq!(candidate_count(), 1, "nothing was taken");
     assert_eq!(verdict_count(), 0);
-    unsafe { (*record).clear_collecting() };
+    drop(claim);
     assert_eq!(
         served_by_a_collector(),
         Served::Batch {
@@ -415,7 +417,7 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
         let record = sent.into_inner();
         let mut batches = 0;
         loop {
-            if let Served::Batch { .. } = unsafe { serve(record, ANY_ENTRY) } {
+            if let Served::Batch { .. } = unsafe { serve(record, ELDER, ANY_ENTRY) } {
                 batches += 1;
             }
             if stopped.try_recv().is_ok() {

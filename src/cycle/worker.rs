@@ -16,10 +16,9 @@
 //! opens its own workspace: a mutator with nothing to take pays no
 //! foreign-holder window, under which every one of its deaths is withheld.
 //! Then it claims
-//! the token and reads the mutator's collecting word with acquire: set, the
-//! mutator is collecting in line and the collector releases and skips — the
-//! two orders both resolve, a claim made first being waited out by the
-//! mutator's take, one made second seeing the word. It peeks up to K entries
+//! the token by one swap from `FREE`, which fails on a mutator collecting in
+//! line — the mutator holds `MUTATOR` through its close — and on every
+//! other holder, and a failure is a skip. It peeks up to K entries
 //! from R's front through the reader's pair without consuming them, K
 //! clamped to P's room and to what R holds, and copies them into its
 //! workspace. It marks and scans each root through `cells::AtomicCells` on
@@ -128,11 +127,10 @@ use crate::ring::{BLOCK_ENTRIES, Reader};
 /// What one round over one mutator did.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Served {
-    /// The mutator, or another collector, holds the token.
+    /// The byte was not free: the mutator collects in line, another
+    /// collector holds or asks for it, or the mutator has not disposed of
+    /// the last batch's verdicts.
     TokenHeld,
-    /// The token was claimed and released at once: the mutator is collecting
-    /// in line.
-    MutatorCollecting,
     /// Nothing was taken: before any claim — R below the threshold, P
     /// without room, the workspace refused, the record under another
     /// collector's reading — or under the claim, when the peek came up
@@ -665,7 +663,7 @@ fn round(index: usize, threshold: usize) -> Round {
             outcome.read_a_freeing_disposition = true;
         }
 
-        let served = unsafe { serve(record, threshold) };
+        let served = unsafe { serve(record, index, threshold) };
         match served {
             Served::Batch { backlog, .. } => {
                 outcome.made_a_batch = true;
@@ -673,7 +671,7 @@ fn round(index: usize, threshold: usize) -> Round {
                     outcome.backlogged.push(record);
                 }
             }
-            Served::TokenHeld | Served::MutatorCollecting => outcome.saw_work = true,
+            Served::TokenHeld => outcome.saw_work = true,
             Served::Idle => {}
         }
 
@@ -692,10 +690,13 @@ fn round(index: usize, threshold: usize) -> Round {
 /// Runs on a collector thread, which holds a base block of its own for the
 /// workspace the batch's trace opens (`crate::memory::heap::ll_thread_init`).
 ///
+/// `slot` is the calling collector's, the name its claim writes into the
+/// byte.
+///
 /// # Safety
 /// `record` is a record of the registry's, and the calling thread is not its
 /// mutator.
-pub(crate) unsafe fn serve(record: *mut MutatorRecord, threshold: usize) -> Served {
+pub(crate) unsafe fn serve(record: *mut MutatorRecord, slot: usize, threshold: usize) -> Served {
     let mutator = unsafe { &*record };
     // Work first, and the collector's own memory, before any claim — by
     // loads alone, since nothing of the mutator's may be written under no
@@ -735,24 +736,21 @@ pub(crate) unsafe fn serve(record: *mut MutatorRecord, threshold: usize) -> Serv
         return Served::Idle;
     };
 
-    if !mutator.token.try_take() {
+    if !mutator.token.try_claim(slot) {
         return Served::TokenHeld;
     }
 
     // Released on the unwind too: a collector that panicked under the claim
     // would otherwise leave the mutator's exit waiting forever.
-    struct ReleaseOnDrop<'a>(&'a crate::cycle::token::TraceToken);
+    struct ReleaseOnDrop<'a>(&'a crate::cycle::token::TraceToken, usize);
     impl Drop for ReleaseOnDrop<'_> {
         fn drop(&mut self) {
             crate::cycle::token::note_traced_mutator(std::ptr::null_mut());
-            self.0.release();
+            self.0.release_claim(self.1, false);
         }
     }
-    let _held = ReleaseOnDrop(&mutator.token);
+    let _held = ReleaseOnDrop(&mutator.token, slot);
     crate::cycle::token::note_traced_mutator(record);
-    if mutator.is_collecting_as_collector() {
-        return Served::MutatorCollecting;
-    }
 
     unsafe { batch(mutator, &mut arena, threshold) }
 }

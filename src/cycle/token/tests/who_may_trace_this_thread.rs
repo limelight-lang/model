@@ -1,9 +1,9 @@
 //! A held token blocks the collection of the thread it belongs to, and nothing
 //! else: that thread keeps allocating, storing and registering, another thread
 //! collects its own graph meanwhile, and the blocked collection runs once the
-//! holder releases. The token is held through the trace's last row read and
-//! released before the first destructor, on both paths, and a thread that may
-//! not collect never waits for it.
+//! holder releases. The mutator holds the token from its take through its
+//! close, destructors included, on both paths, and a thread that may not
+//! collect never waits for it.
 //!
 //! **Whether a collection waited is read off the token's own count of
 //! waits**, because a case that only terminates terminates most easily when
@@ -98,11 +98,13 @@ fn a_held_token_blocks_this_thread_s_collection_alone_until_the_release() {
     assert_eq!(DESTRUCTORS.load(Ordering::Relaxed), 5);
 }
 
-/// The right to trace ends after the trace's last row read — the scan's end
-/// off the poll, the harvest sweep under pressure — and before the exact
-/// validation and the first destructor.
+/// The mutator's claim lasts from the take through the close on both paths:
+/// held at the trace's last row read — the scan's end off the poll, the
+/// harvest sweep under pressure — and still held in every destructor, so a
+/// collector's claim fails for the collection's whole length
+/// (`rfc/dev/design/trace-token-handshake.md`, E10).
 #[test]
-fn the_token_is_released_before_the_first_destructor_on_both_paths() {
+fn the_token_is_held_through_the_destructors_on_both_paths() {
     let _g = test_guard();
     crate::cycle::queue::release_queue_segments();
     DESTRUCTORS.store(0, Ordering::Relaxed);
@@ -134,8 +136,8 @@ fn the_token_is_released_before_the_first_destructor_on_both_paths() {
 
     assert_eq!(
         HELD_IN_A_DESTRUCTOR.load(Ordering::Relaxed),
-        0,
-        "a destructor ran with this thread's token held"
+        4,
+        "every destructor ran under this thread's own claim"
     );
     assert!(
         !unsafe { (*this_thread_token()).is_held() },
@@ -171,22 +173,32 @@ fn a_thread_that_may_not_collect_does_not_wait_for_its_held_token() {
     assert!(!unsafe { (*this_thread_token()).is_held() });
 }
 
-/// The wait itself: a take that finds the token held returns once the holder
-/// releases, and a release that races the waiter's test is not lost.
+/// The wait itself: a take that finds a collector's claim on the byte returns
+/// once the collector releases, and a release that races the waiter's test is
+/// not lost. A claim fails on the initialisation's hold and on another
+/// collector's claim alike.
 #[test]
 fn a_take_that_finds_the_token_held_returns_at_the_release() {
+    use crate::cycle::token::{MUTATOR, TookFrom, state};
     let token = TraceToken::new_held();
-    assert!(!token.try_take(), "held twice");
+    assert!(
+        !token.try_claim(crate::cycle::worker::ELDER),
+        "claimed under the initialisation's hold"
+    );
+    token.release();
+    assert!(token.try_claim(crate::cycle::worker::ELDER));
+    assert!(!token.try_claim(1), "claimed twice");
 
     std::thread::scope(|scope| {
         let waiter = scope.spawn(|| {
-            token.take();
-            token.is_held()
+            let took = token.take();
+            (took, state(token.read()))
         });
         wait_for_a_waiter(&token, 0);
-        token.release();
-        assert!(
+        token.release_claim(crate::cycle::worker::ELDER, false);
+        assert_eq!(
             waiter.join().expect("the waiter returned"),
+            (TookFrom::Free, MUTATOR),
             "the waiter holds it now"
         );
     });
@@ -200,8 +212,56 @@ fn a_take_that_finds_the_token_held_returns_at_the_release() {
     assert!(!token.is_held());
 }
 
-/// The path under pressure takes the token round by round, so a held token
-/// blocks it the way it blocks the path off the poll.
+/// A take that holds at `POSTED` decides on the byte a collector's release
+/// wrote into its wait, not on the byte it first read: a release to `POSTED`
+/// leaves the taker holding nothing and the byte at `POSTED`.
+#[test]
+fn a_take_that_holds_at_posted_holds_after_a_wait_too() {
+    use crate::cycle::token::{POSTED, state};
+    let token = TraceToken::new_held();
+    token.release();
+    assert!(token.try_claim(crate::cycle::worker::ELDER));
+
+    std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| token.take_unless(true));
+        wait_for_a_waiter(&token, 0);
+        token.release_claim(crate::cycle::worker::ELDER, true);
+        assert_eq!(waiter.join().expect("the waiter returned"), None);
+    });
+
+    assert_eq!(state(token.read()), POSTED);
+}
+
+/// A take from `POSTED` says so, and a take from a standing request refuses
+/// it: the byte reads `MUTATOR` after either, and the request's collector is
+/// woken to read it (a wake to a slot with no thread is lost, and that is
+/// what this case sends).
+#[test]
+fn a_take_consumes_posted_and_refuses_a_request() {
+    use crate::cycle::token::{MUTATOR, REQUESTED, TookFrom, state, word};
+    let token = TraceToken::new_held();
+    token.release();
+
+    assert!(token.try_claim(crate::cycle::worker::ELDER));
+    token.release_claim(crate::cycle::worker::ELDER, true);
+    assert_eq!(token.take(), TookFrom::Posted);
+    assert_eq!(state(token.read()), MUTATOR);
+    token.release();
+
+    assert!(token.try_claim(crate::cycle::worker::ELDER));
+    token.release_claim(crate::cycle::worker::ELDER, false);
+    token.request_for_test(word(REQUESTED, 5));
+    assert!(
+        !token.try_claim(crate::cycle::worker::ELDER),
+        "claimed over a request"
+    );
+    assert_eq!(token.take(), TookFrom::Free);
+    assert_eq!(state(token.read()), MUTATOR);
+    token.release();
+}
+
+/// The path under pressure takes the token at its start, the way the path
+/// off the poll does, so a held token blocks it the same way.
 #[test]
 fn a_held_token_blocks_the_collection_under_pressure_too() {
     let _g = test_guard();

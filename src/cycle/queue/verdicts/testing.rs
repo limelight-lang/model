@@ -31,7 +31,7 @@ pub(crate) unsafe fn post_batch(
     mut verdict_for: impl FnMut(*mut RcHeader) -> Verdict,
 ) -> Posted {
     let record = unsafe { &*record };
-    if !record.token.try_take() {
+    if !record.token.try_claim(crate::cycle::worker::ELDER) {
         return Posted::TokenHeld;
     }
 
@@ -39,7 +39,7 @@ pub(crate) unsafe fn post_batch(
     impl Drop for ReleaseOnDrop<'_> {
         fn drop(&mut self) {
             crate::cycle::token::note_traced_mutator(std::ptr::null_mut());
-            self.0.release();
+            self.0.release_claim(crate::cycle::worker::ELDER, false);
         }
     }
     let _held = ReleaseOnDrop(&record.token);

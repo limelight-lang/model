@@ -53,10 +53,10 @@ fn a_record_is_claimable_while_its_thread_lives_and_not_after_its_exit() {
     );
 
     assert!(
-        unsafe { (*token).try_take() },
+        unsafe { (*token).try_claim(crate::cycle::worker::ELDER) },
         "a live thread's record is claimable through the record"
     );
-    unsafe { (*token).release() };
+    unsafe { (*token).release_claim(crate::cycle::worker::ELDER, false) };
 
     assert!(
         !registry_lists_free(record),
@@ -73,7 +73,7 @@ fn a_record_is_claimable_while_its_thread_lives_and_not_after_its_exit() {
         "the exit's final claim stands on the record"
     );
     assert!(
-        !unsafe { (*token).try_take() },
+        !unsafe { (*token).try_claim(crate::cycle::worker::ELDER) },
         "a released record refuses a claim"
     );
     assert!(
@@ -90,7 +90,10 @@ fn a_reused_record_is_claimable_once_its_next_thread_has_initialised() {
     pin_for_test(record, true);
     drop(release);
     thread.join().expect("the first thread exited");
-    assert!(!unsafe { (*token).try_take() }, "held between two lives");
+    assert!(
+        !unsafe { (*token).try_claim(crate::cycle::worker::ELDER) },
+        "held between two lives"
+    );
     assert!(registry_lists_free(record));
     pin_for_test(record, false);
 
@@ -103,15 +106,15 @@ fn a_reused_record_is_claimable_once_its_next_thread_has_initialised() {
         "the record the second thread lives in left the free list"
     );
     assert!(
-        unsafe { (*next_token).try_take() },
+        unsafe { (*next_token).try_claim(crate::cycle::worker::ELDER) },
         "the next thread's initialisation released the token"
     );
-    unsafe { (*next_token).release() };
+    unsafe { (*next_token).release_claim(crate::cycle::worker::ELDER, false) };
     pin_for_test(next_record, true);
     drop(release);
     thread.join().expect("the second thread exited");
     assert!(
-        !unsafe { (*next_token).try_take() },
+        !unsafe { (*next_token).try_claim(crate::cycle::worker::ELDER) },
         "held again after the second exit"
     );
     assert!(registry_lists_free(next_record));
@@ -140,8 +143,15 @@ fn a_thread_living_twice_takes_a_record_per_life() {
             !registry_lists_free(second),
             "the second life's record is nobody else's to take"
         );
-        assert!(unsafe { (*second).token.try_take() }, "and it is claimable");
-        unsafe { (*second).token.release() };
+        assert!(
+            unsafe { (*second).token.try_claim(crate::cycle::worker::ELDER) },
+            "and it is claimable"
+        );
+        unsafe {
+            (*second)
+                .token
+                .release_claim(crate::cycle::worker::ELDER, false)
+        };
         pin_for_test(second, true);
         crate::memory::heap::ll_thread_exit();
         assert!(registry_lists_free(second));

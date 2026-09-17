@@ -74,12 +74,11 @@
 //! calling frame's own stack aborts, `ll_thread_exit` being `extern "C"` and
 //! having no caller to refuse to, and no path from user code reaches that.
 //!
-//! The ordering the whole module rests on is one sentence: **the right to
-//! trace ends at the token's release, and the rows die at the window's
-//! close** (`rfc/model/gc/rc-cycle.md`, "Concurrency"). The scan's end off
-//! the poll and the harvest sweep under pressure are the last things the token
-//! covers; validation, teardown and the slot returns run after its release,
-//! untokened, and [`validation`] re-reads the heap rather than a row. A collection off the poll keeps its rows open through the teardown
+//! The ordering the whole module rests on is one sentence: **the mutator's
+//! claim of its token lasts from its take through its close, and the rows
+//! die at the window's close** (`rfc/model/gc/rc-cycle.md`, "Concurrency";
+//! `rfc/dev/design/trace-token-handshake.md`, E10). Validation, teardown and
+//! the slot returns run under the claim, and [`validation`] re-reads the heap rather than a row. A collection off the poll keeps its rows open through the teardown
 //! ([`membership`]), a collection under pressure gives them back before it
 //! ([`members`]) — and on neither path does a row outlive its window.
 

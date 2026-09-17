@@ -1116,7 +1116,12 @@ reading of the collecting word and the poll's reading of P. The design
 document is normative; the steps below are its order of construction, and
 each closes on the tests the document names for it.
 
-- [ ] S51.1 The byte and its takers
+- [x] S51.1 The byte and its takers
+      closed 2026-09-17: as below; the Critic's round found the retirement
+        pass's hold at `POSTED` decided on a pre-read outside the wait
+        (`dev/POSTMORTEM.md`, "a hold decided outside the wait consumed what
+        the wait delivered") and six module docs still stating the release
+        at the scan's end; both fixed before the commit.
       done: the token word is the six-bit byte with the five states and the
         slot in bits 3–5; `mutator_holds` and `is_collecting_as_collector`
         are gone; `HeldToken::take` swaps from `FREE`, `POSTED` or
@@ -1125,9 +1130,10 @@ each closes on the tests the document names for it.
         is `FREE`; the exit's claim consumes `POSTED` and is kept; the
         initialisation's hold is `MUTATOR` and its end stores `FREE`; the
         teardown-refusal retirement holds `POSTED` unswapped; the loom model
-        `cycle/token/free_path_model.rs` models the byte with the design's
-        exhibits, the fourth round's included, and the free path's `SeqCst`
-        fence of 2026-09-16 is gone
+        `cycle/token/free_path_model.rs` models the byte, its fence exhibits
+        kept and the fourth round's take from `POSTED` added; the collector's
+        claim is still its own swap `FREE → COLLECTOR|s` with the `SeqCst`
+        fence pair of 2026-09-16, which the consent of S51.3 replaces
       tier: T2 · role: Critic
 - [ ] S51.2 The collector's request, wait and release   *(after S51.1)*
       done: `serve` requests by CAS `FREE → REQUESTED|s` and skips every
@@ -1151,7 +1157,10 @@ each closes on the tests the document names for it.
         `AllRoots`; `dispose_prefix_at_the_poll` and `PrefixReading` are
         gone and their tests rewritten as tests of the trigger; the poll's
         note is on `freed + retired`; the reserve draw and the overflow
-        append raise `signal_due` and lock nothing
+        append raise `signal_due` and lock nothing; the `SeqCst` fence pair
+        of the free path and the claim is gone, the consent's release swap
+        ordering the mutator's stores instead, and the loom model gains the
+        design's consent exhibits (E1–E4, the standing request)
       tier: T2 · role: Critic
 - [ ] S51.4 The collection over P   *(after S51.3)*
       done: a `Verdicts` fire takes `POSTED → MUTATOR`, counts P's proposed

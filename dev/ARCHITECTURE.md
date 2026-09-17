@@ -181,10 +181,11 @@ handshake, and its GC activity flag with the parked lists. `rc-cycle`'s
 replacements are a per-thread root queue (`cycle::queue`), per-block shadow rows in
 an arena of their own (`cycle::shadow`; the triple that reaches them is
 on each block's header line already), the in-line owner's deferred-reuse
-list (`cycle::deferred_slot_reuse`), the per-thread trace token (`cycle::token`: one word taken
-by compare-and-swap around the trace and released after its last row read,
-before the first destructor, with a mutex an owner waits on when a
-collector holds it, standing in a record the process keeps past the thread,
+list (`cycle::deferred_slot_reuse`), the per-thread trace token (`cycle::token`: one byte of five
+states, `FREE / MUTATOR / REQUESTED|s / COLLECTOR|s / POSTED`, taken by
+compare-and-swap, held by the owner from its take through its close and by
+a collector for its batch, with a mutex an owner waits on when a collector
+holds it, standing in a record the process keeps past the thread,
 `cycle::mutator_record`), and the two rings beside it: the
 candidate ring a collector reads behind the owner's writer, and the verdict
 ring the owner reads at its poll (`rfc/dev/DECISIONS.md`, "the candidate

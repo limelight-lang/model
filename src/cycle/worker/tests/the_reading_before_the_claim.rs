@@ -84,7 +84,7 @@ fn served_with_an_act_inside_the_reading(
 ) -> Served {
     testing::at_the_next_reading(act);
     testing::confine_rounds_to(record);
-    let served = unsafe { serve(record, ANY_ENTRY) };
+    let served = unsafe { serve(record, ELDER, ANY_ENTRY) };
     testing::confine_rounds_to(std::ptr::null_mut());
     served
 }
