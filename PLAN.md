@@ -11,7 +11,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-16 · Active: S37 and S40. **S38 closed and was deleted on 2026-09-16** on Edmond's ruling of that evening: the question its S38.7 had left him was asked of the shortage relay S49 deleted, so nothing stood between its closed steps and the Code Reviewer, whose seventeen findings over the surviving code — the token, the entry gate, the wait, the collector's reader, the deferral under a foreign holder — landed the same night, the one defect being the free path's reading of the token, which ordered nothing the owner stored before it against a taker's loads after its take and is fenced now; its record is `dev/DECISIONS.md`, "the free path's reading of the token is fenced against the take, and the accelerator question of 2026-09-15 is void", its trap `dev/POSTMORTEM.md`, "a stale-direction argument was stated for both directions and proved for one", its price `dev/BENCHMARKS.md`, "the free path's fence against the take", and the loom model `cycle/token/free_path_model.rs`; the form that moves that price from the free path to the take is a question for Edmond, named in the decision. **S50 closed and was deleted on 2026-09-16**: `ll_thread_init` is called once per thread life, the lazy self-initialising paths are gone, and an allocation or a candidate registration on a thread nobody started ends the process with a named reason; its record is `dev/DECISIONS.md`, "an entry point reached outside a thread's life ends the process, and the base block is the mark of a started thread", its trap `dev/POSTMORTEM.md`, "a reason printed before an abort is captured by the harness"; the Critic's and the Code Reviewer's rounds are folded into that entry. **S49 closed and was deleted on 2026-09-16**: the candidate ring read behind its writer, the verdict ring, the collector's batch, its wakes and timer, and the sibling collectors, on Edmond's ruling that restored his read-behind queue over the outbox form S38.5–S38.7 built; its rulings are in `dev/DECISIONS.md` under 2026-09-16, its one trap in `dev/POSTMORTEM.md`, and what it named and left is in the backlog ("What S49 named and left"). Every open step is
+Updated: 2026-09-17 · Active: S51, S37 and S40. **S51 opened on 2026-09-17**: the trace token handshake with the collector's batch as the mutator's trigger, Edmond's five-line algorithm of that day, built as one stage from `rfc/dev/design/trace-token-handshake.md`. **S38 closed and was deleted on 2026-09-16** on Edmond's ruling of that evening: the question its S38.7 had left him was asked of the shortage relay S49 deleted, so nothing stood between its closed steps and the Code Reviewer, whose seventeen findings over the surviving code — the token, the entry gate, the wait, the collector's reader, the deferral under a foreign holder — landed the same night, the one defect being the free path's reading of the token, which ordered nothing the owner stored before it against a taker's loads after its take and is fenced now; its record is `dev/DECISIONS.md`, "the free path's reading of the token is fenced against the take, and the accelerator question of 2026-09-15 is void", its trap `dev/POSTMORTEM.md`, "a stale-direction argument was stated for both directions and proved for one", its price `dev/BENCHMARKS.md`, "the free path's fence against the take", and the loom model `cycle/token/free_path_model.rs`; the form that moves that price from the free path to the take is a question for Edmond, named in the decision. **S50 closed and was deleted on 2026-09-16**: `ll_thread_init` is called once per thread life, the lazy self-initialising paths are gone, and an allocation or a candidate registration on a thread nobody started ends the process with a named reason; its record is `dev/DECISIONS.md`, "an entry point reached outside a thread's life ends the process, and the base block is the mark of a started thread", its trap `dev/POSTMORTEM.md`, "a reason printed before an abort is captured by the harness"; the Critic's and the Code Reviewer's rounds are folded into that entry. **S49 closed and was deleted on 2026-09-16**: the candidate ring read behind its writer, the verdict ring, the collector's batch, its wakes and timer, and the sibling collectors, on Edmond's ruling that restored his read-behind queue over the outbox form S38.5–S38.7 built; its rulings are in `dev/DECISIONS.md` under 2026-09-16, its one trap in `dev/POSTMORTEM.md`, and what it named and left is in the backlog ("What S49 named and left"). Every open step is
 blocked outside this repository or on a corpus. **S48 closed and was deleted
 on 2026-09-14**, the ValueBox relayout to `rfc/model/values.md`, "ValueBox
 Layout", in three steps, its close read by the Code Reviewer, whose
@@ -1105,6 +1105,79 @@ Goal: the readings the row form is decided on, and the decision.
 
 ---
 
+## S51 — The trace token handshake, and the collector's batch as the trigger
+
+Goal: build `rfc/dev/design/trace-token-handshake.md` as ruled through its
+fourth round (Edmond, 2026-09-17; `rfc/dev/DECISIONS.md`, "the collector's
+batch is the mutator's trigger, through the token byte"). One byte per
+mutator — `FREE / MUTATOR / REQUESTED|s / COLLECTOR|s / POSTED` — replaces
+`TraceToken::held`, the record's `mutator_holds`, the collector-facing
+reading of the collecting word and the poll's reading of P. The design
+document is normative; the steps below are its order of construction, and
+each closes on the tests the document names for it.
+
+- [ ] S51.1 The byte and its takers
+      done: the token word is the six-bit byte with the five states and the
+        slot in bits 3–5; `mutator_holds` and `is_collecting_as_collector`
+        are gone; `HeldToken::take` swaps from `FREE`, `POSTED` or
+        `REQUESTED|s` (waking the refused collector), waits only under
+        `COLLECTOR|s`, and acts on every read-back; the close's last store
+        is `FREE`; the exit's claim consumes `POSTED` and is kept; the
+        initialisation's hold is `MUTATOR` and its end stores `FREE`; the
+        teardown-refusal retirement holds `POSTED` unswapped; the loom model
+        `cycle/token/free_path_model.rs` models the byte with the design's
+        exhibits, the fourth round's included, and the free path's `SeqCst`
+        fence of 2026-09-16 is gone
+      tier: T2 · role: Critic
+- [ ] S51.2 The collector's request, wait and release   *(after S51.1)*
+      done: `serve` requests by CAS `FREE → REQUESTED|s` and skips every
+        other value, `POSTED` as neither batch nor work; waits with the
+        deadline loop and bound W (a placeholder marked "not a measured
+        figure"); keeps a silent mutator's request standing in the fixed
+        array on the thread's frame, read at the two checkpoints; releases
+        `COLLECTOR|s → POSTED` when the batch posted and `→ FREE` when not,
+        the posted fact carried by the unwind guard; the withdrawal acts on
+        its read-back; the elder is born at the poll's first wake, not at
+        the pressure path; the timer reads the skip and the mutator's note
+      tier: T2 · role: Critic
+- [ ] S51.3 The one reading, the consent and the arming   *(after S51.2)*
+      done: one function of `cycle::token` reads the byte for the slot
+        entry and the poll and nobody else; at `POSTED` it arms `Verdicts`
+        and returns memory; at `REQUESTED|s` it consents, wakes s and
+        withholds the slot; the chunk gate, the block gate,
+        `returns_are_withheld` and the drains' per-pop tests read
+        `state == COLLECTOR`; the arming is the word `None < Verdicts <
+        AllRoots` merged by maximum, the pressure path's endings arming
+        `AllRoots`; `dispose_prefix_at_the_poll` and `PrefixReading` are
+        gone and their tests rewritten as tests of the trigger; the poll's
+        note is on `freed + retired`; the reserve draw and the overflow
+        append raise `signal_due` and lock nothing
+      tier: T2 · role: Critic
+- [ ] S51.4 The collection over P   *(after S51.3)*
+      done: a `Verdicts` fire takes `POSTED → MUTATOR`, counts P's proposed
+        and unwalked roots without writing, answers `EmptyLane` only on a
+        zero count, traces and finalizes them, and disposes of P whole in
+        `CollectingThread`'s drop on every ending of every path — read-live
+        deferred or written into R on `NoBlock`, zero-count retired on the
+        re-read bit, finalized nulled, refused or unreached written back
+        through `append_entry` — with `front` advanced last; the pressure
+        path and the exit dispose of P the same way; the P-only reading
+        leaves `signal_due` standing; the four regression tests of the
+        design's fourth round pass, `P = [Proposed x]` under a forced pool
+        refusal among them
+      tier: T2 · role: Critic
+- [ ] S51.5 The instruments   *(after S51.4)*
+      done: the Miri lines the design names run clean; the stress test
+        shows the design's four readings with `POSTED` skips counted as
+        rounds; bench measures the poll's load with the peek gone and the
+        tail of the poll-or-free interval on the corpus that sets W, or
+        records the corpus arm as Phase-D-blocked with the placeholder kept
+      tier: T2 · role: Bench
+
+The optional pass over R that retires entries whose count reads zero
+(Edmond's fifth line) is not in this stage: the backlog line "The
+zero-refcount pass over R" below holds it with its ruled bound.
+
 ## Cross-cutting (every stage)
 
 - The old collectors are reachable at `archive/pre-rc-cycle` and nowhere else.
@@ -1327,6 +1400,15 @@ own checkbox.
   outside this crate.
 
 ## Residual / carried-over items
+
+- [ ] **The zero-refcount pass over R.** Edmond's fifth line of 2026-09-17,
+  an option: the collection `POSTED` fires also walks R and retires the
+  entries whose count already reads zero, one count load per entry and no
+  trace, leaving every other entry to the collector. The Sage's bound if it
+  is built: one block of R per fire by a cursor over the occupied run,
+  the front-block-only and capped forms refused; a bench line before it is
+  called free. What it buys: slot retirement no longer waits on the
+  collector's throughput (S51's named cost).
 
 What the map design owed by the array table — the per-process key, the
 ladder's repair and the key word's tag — was S27, closed 2026-08-18 and
