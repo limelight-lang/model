@@ -360,8 +360,9 @@ impl MutatorRecord {
         );
     }
 
-    /// Whether a thread other than the mutator holds the token now: a reading,
-    /// stale in both directions in the ways [`TraceToken::is_held`] names.
+    /// Whether a collector is tracing this mutator's heap now, which is the
+    /// token held by a thread other than the mutator: a reading, stale in both
+    /// directions in the ways [`TraceToken::is_held`] names.
     ///
     /// The mutator's free path reads it before it returns memory a trace
     /// could still address, and the `SeqCst` fence ahead of the load is
@@ -372,7 +373,7 @@ impl MutatorRecord {
     /// per free is its price (`dev/BENCHMARKS.md`, "the free path's fence
     /// against the take").
     #[inline]
-    pub(crate) fn held_by_another(&self) -> bool {
+    pub(crate) fn collector_is_tracing(&self) -> bool {
         std::sync::atomic::fence(Ordering::SeqCst);
         self.token.is_held() && !self.mutator_holds.load(Ordering::Relaxed)
     }

@@ -11,7 +11,7 @@ what was tried, measured, and accepted or rejected.
 ## 2026-09-16 — the free path's fence against the take: 2.5 to 3 ns per free, the same as a read-modify-write
 
 The owner's reading of the token on its free path
-(`owner_record::OwnerRecord::held_by_another`) gained a `SeqCst` fence
+(`owner_record::OwnerRecord::collector_is_tracing`) gained a `SeqCst` fence
 ahead of its load, paired with a fence after a taker's swap
 (`token::TraceToken::try_take`), because the acquire load alone left the
 owner's stores before the reading unordered against the taker's loads after

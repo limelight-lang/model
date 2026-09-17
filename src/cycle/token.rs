@@ -95,7 +95,7 @@ impl TraceToken {
     ///
     /// A take is followed by a `SeqCst` fence, paired with the one before
     /// the mutator's reading on its free path
-    /// (`crate::cycle::mutator_record::MutatorRecord::held_by_another`): the
+    /// (`crate::cycle::mutator_record::MutatorRecord::collector_is_tracing`): the
     /// pair is what makes the mutator's stores before that reading visible to
     /// the trace this take starts. Without it the taker may read the graph
     /// as it stood before the mutator's last stores — an array's storage head
@@ -203,13 +203,14 @@ pub(crate) fn this_thread_token() -> *const TraceToken {
     unsafe { &raw const (*record).token }
 }
 
-/// Whether a thread other than this one holds this thread's token now
-/// ([`TraceToken::is_held`], less the mutator's own claim). False for a thread
-/// with no record: no collector can reach a token that does not exist.
+/// Whether a collector is tracing this thread's heap now: the token held by
+/// a thread other than this one ([`TraceToken::is_held`], less the mutator's
+/// own claim). False for a thread with no record: no collector can reach a
+/// token that does not exist.
 #[inline]
-pub(crate) fn held_by_a_foreign_holder() -> bool {
+pub(crate) fn collector_is_tracing_this_thread() -> bool {
     let record = crate::cycle::mutator_record::this_thread_record();
-    !record.is_null() && unsafe { (*record).held_by_another() }
+    !record.is_null() && unsafe { (*record).collector_is_tracing() }
 }
 
 /// The token of the calling thread, held from the call to the guard's drop:

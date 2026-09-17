@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::cycle::testing::Sent;
-use crate::cycle::token::{HeldToken, held_by_a_foreign_holder, this_thread_token};
+use crate::cycle::token::{HeldToken, collector_is_tracing_this_thread, this_thread_token};
 use crate::memory::block_pool::test_guard;
 use std::sync::mpsc;
 
@@ -178,14 +178,14 @@ fn an_exit_draws_no_record() {
 #[test]
 fn the_mutator_s_own_claim_withholds_nothing() {
     let _g = test_guard();
-    assert!(!held_by_a_foreign_holder());
+    assert!(!collector_is_tracing_this_thread());
     let claim = HeldToken::take();
     assert!(
         unsafe { (*this_thread_token()).is_held() },
         "the mutator holds its token"
     );
     assert!(
-        !held_by_a_foreign_holder(),
+        !collector_is_tracing_this_thread(),
         "the free path reads the mutator's own claim as no foreign holder"
     );
     assert!(
@@ -208,10 +208,10 @@ fn a_foreign_holder_is_read_as_one() {
     let _g = test_guard();
     let mut holder =
         crate::cycle::token::testing::HeldByACollector::take(this_thread_token(), false);
-    assert!(held_by_a_foreign_holder());
+    assert!(collector_is_tracing_this_thread());
     assert!(crate::cycle::deferred_slot_reuse::returns_are_withheld());
     holder.release();
-    assert!(!held_by_a_foreign_holder());
+    assert!(!collector_is_tracing_this_thread());
 }
 
 #[test]

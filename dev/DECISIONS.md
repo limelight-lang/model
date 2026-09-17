@@ -12,7 +12,7 @@ never edited or deleted.
 
 **Decided (the model, on the Code Reviewer's finding at `PLAN.md` S38's
 close; the price is Edmond's to move, below).** The owner's reading of its
-token on the free path (`owner_record::OwnerRecord::held_by_another`, the
+token on the free path (`owner_record::OwnerRecord::collector_is_tracing`, the
 one reading `deferred_slot_reuse` makes before a physical return) is
 preceded by a `SeqCst` fence, and a collector's successful take
 (`token::TraceToken::try_take`) is followed by one. The pair is the
