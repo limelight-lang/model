@@ -8,6 +8,37 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-18 — S37.8 the review's cuts leave the poll where it was
+
+**What was measured.** The poll on a registered thread with nothing to do —
+unarmed, its queue empty, its byte `FREE` —
+(`cycle::collect::tests::what_the_poll_costs`, 200,000 polls per round, nine
+rounds, the minimum beside the median), before and after the eight functions
+S37.8 cut. The path the probe walks is not itself rewritten; what the reading
+is for is the code around it, `token::take_unless` and the free path's
+`drain_withheld` among it, which the same binary carries.
+
+**A** is the tree at `f1a2316`, built in its own worktree; **B** is the cut
+tree. A B A B, eight rounds each, two binaries, the first four while a Miri
+slice held two cores and the last four on a quiet box.
+
+| | round 5 | 6 | 7 | 8 | minimum |
+|---|---|---|---|---|---|
+| A, before | 7.58 | 7.71 | 7.64 | 7.61 | **7.58 ns** |
+| B, after | 7.61 | 7.61 | 7.46 | 7.60 | **7.46 ns** |
+
+The four loaded rounds read 7.77–8.16 ns (A) and 7.63–9.94 ns (B), the 9.94
+being a first run; they are reported and not used, load inflating a minimum
+and never lowering it.
+
+**The reading.** No difference this instrument resolves: 0.12 ns between the
+two minima, which is 1.6 % of the figure, and Method puts this box's noise
+floor at 1.5–3 % of an identical binary's own repeated runs. The placement
+bar is wider still, two builds of one loop differing by 7–10 %. A's figure
+also reproduces S51.5's 7.52–7.72 ns for the same probe on the same machine
+six days later, which is what says the instrument is the one that was
+calibrated.
+
 ## 2026-09-17 — S52 an entity-only free for the death path: no measurable difference
 
 `ll_free_entity`, the free for a pointer the caller knows to be a GC-heap

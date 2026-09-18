@@ -449,25 +449,11 @@ fn thread_body(index: usize) {
     }
     let _unborn = UnbornOnDrop(index);
 
-    let started = {
-        #[cfg(test)]
-        let _budget = testing::base_block_budget_for_this_birth();
-        crate::memory::heap::ll_thread_init()
-    };
-    if !started {
-        // The base block was refused, so this is a thread that never started
-        // (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is
-        // allocator-issued"); a call after the interval births again.
-        note_refused_birth();
+    if !begin_the_thread(index) {
         return;
     }
 
     let collector = &COLLECTORS[index];
-    *collector
-        .handle
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::thread::current());
-    collector.state.store(ALIVE, Ordering::Release);
     let mut interval = FALLBACK_INTERVAL_MIN;
     let mut backlog_rounds = 0;
     // The requests this collector left standing on silent mutators, on this
@@ -476,44 +462,20 @@ fn thread_body(index: usize) {
     while !retiring() && collector.state.load(Ordering::Relaxed) == ALIVE {
         #[cfg(test)]
         testing::note_round_start(index);
-        let Round {
-            made_a_batch,
-            saw_work,
-            read_a_freeing_disposition,
-            backlogged,
-        } = round(index, threshold_for_rounds(), &mut standing);
-        interval = if made_a_batch || read_a_freeing_disposition {
-            FALLBACK_INTERVAL_MIN
-        } else if saw_work {
-            interval
-        } else {
-            (interval * 2).min(FALLBACK_INTERVAL_MAX)
-        };
+        let outcome = round(index, threshold_for_rounds(), &mut standing);
+        interval = next_interval(interval, &outcome);
 
-        backlog_rounds = if backlogged.len() >= 2 {
+        backlog_rounds = if outcome.backlogged.len() >= 2 {
             backlog_rounds + 1
         } else {
             0
         };
         if backlog_rounds >= BACKLOG_ROUNDS_TO_BIRTH {
             backlog_rounds = 0;
-            if let Some(sibling) = birth_a_sibling(index) {
-                hand_over_half(&backlogged, sibling);
-            }
+            grow_the_siblings(index, &outcome.backlogged);
         }
 
-        // A mutator at the threshold this round could not serve is work and
-        // not idleness, so a sibling whose mutator collects in line for a
-        // while is not ended for it.
-        let idle = if made_a_batch || saw_work {
-            0
-        } else {
-            collector.idle_rounds.load(Ordering::Relaxed) + 1
-        };
-        collector.idle_rounds.store(idle, Ordering::Relaxed);
-        if index == ELDER && backlogged.len() < 2 {
-            end_idle_siblings();
-        }
+        note_idleness(index, &outcome);
 
         #[cfg(test)]
         testing::note_round(index, interval);
@@ -529,6 +491,76 @@ fn thread_body(index: usize) {
     }
 
     crate::memory::heap::ll_thread_exit();
+}
+
+/// Draw this collector thread's base block and announce it alive, or answer
+/// false for a thread that never started.
+///
+/// A refused base block is a birth that did not happen
+/// (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is
+/// allocator-issued"), and a call after the interval births again. Past the
+/// draw the wake handle stands before the state does, so a wake that follows
+/// the state reaches a thread with a handle to receive it.
+fn begin_the_thread(index: usize) -> bool {
+    let started = {
+        #[cfg(test)]
+        let _budget = testing::base_block_budget_for_this_birth();
+        crate::memory::heap::ll_thread_init()
+    };
+    if !started {
+        note_refused_birth();
+        return false;
+    }
+
+    let collector = &COLLECTORS[index];
+    *collector
+        .handle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::thread::current());
+    collector.state.store(ALIVE, Ordering::Release);
+    true
+}
+
+/// The wait before the next round, from what this one did: a batch or a
+/// freeing disposition is the shortest interval, work seen without a batch
+/// holds it where it stands, and an idle round doubles it up to
+/// [`FALLBACK_INTERVAL_MAX`].
+fn next_interval(interval: Duration, outcome: &Round) -> Duration {
+    if outcome.made_a_batch || outcome.read_a_freeing_disposition {
+        FALLBACK_INTERVAL_MIN
+    } else if outcome.saw_work {
+        interval
+    } else {
+        (interval * 2).min(FALLBACK_INTERVAL_MAX)
+    }
+}
+
+/// Birth one sibling for the backlog this round left and hand it half of
+/// the backlogged mutators; a cap that refuses the birth leaves the backlog
+/// where it is.
+fn grow_the_siblings(index: usize, backlogged: &Backlogged) {
+    if let Some(sibling) = birth_a_sibling(index) {
+        hand_over_half(backlogged, sibling);
+    }
+}
+
+/// Count this round against collector `index`'s idle rounds, and let the
+/// elder end the siblings that have run out of work.
+///
+/// A mutator at the threshold this round could not serve is work and not
+/// idleness, so a sibling whose mutator collects in line for a while is not
+/// ended for it.
+fn note_idleness(index: usize, outcome: &Round) {
+    let collector = &COLLECTORS[index];
+    let idle = if outcome.made_a_batch || outcome.saw_work {
+        0
+    } else {
+        collector.idle_rounds.load(Ordering::Relaxed) + 1
+    };
+    collector.idle_rounds.store(idle, Ordering::Relaxed);
+    if index == ELDER && outcome.backlogged.len() < 2 {
+        end_idle_siblings();
+    }
 }
 
 /// Birth a sibling in the first empty slot under the cap other than `from`,
@@ -703,30 +735,48 @@ fn round(index: usize, threshold: usize, standing: &mut Standing) -> Round {
             return;
         }
 
-        // The note is read whatever the serve answers: a free-list record
-        // has a count equal to the copy, and a record between threads
-        // answers one spurious shortening at most.
-        if unsafe { &*record }.take_freeing_disposition_note() {
-            outcome.read_a_freeing_disposition = true;
-        }
-
-        let served = unsafe { serve(record, index, threshold, standing) };
-        outcome.made_a_batch |= standing.take_batches_served() > 0;
-        match served {
-            Served::Batch { backlog, .. } => {
-                outcome.made_a_batch = true;
-                if backlog {
-                    outcome.backlogged.push(record);
-                }
-            }
-            Served::TokenHeld => outcome.saw_work = true,
-            Served::Idle | Served::Posted | Served::Unanswered => {}
-        }
-
-        #[cfg(test)]
-        testing::note_served(served);
+        unsafe { read_one_record(record, index, threshold, standing, &mut outcome) };
     });
     outcome
+}
+
+/// One record of a round: read its note for the timer, serve it once, and
+/// fold what the serve answered into `outcome`.
+///
+/// The note is read whatever the serve answers — a free-list record has a
+/// count equal to the copy, and a record between threads answers one
+/// spurious shortening at most. A batch served at a checkpoint inside the
+/// serve counts as this round's too, which is what the standing array's
+/// count carries out.
+///
+/// # Safety
+/// `record` is a record of the registry's that this collector reclaims, and
+/// the calling thread is not its mutator.
+unsafe fn read_one_record(
+    record: *mut MutatorRecord,
+    index: usize,
+    threshold: usize,
+    standing: &mut Standing,
+    outcome: &mut Round,
+) {
+    if unsafe { &*record }.take_freeing_disposition_note() {
+        outcome.read_a_freeing_disposition = true;
+    }
+
+    let served = unsafe { serve(record, index, threshold, standing) };
+    outcome.made_a_batch |= standing.take_batches_served() > 0;
+    match served {
+        Served::Batch { backlog: true, .. } => {
+            outcome.made_a_batch = true;
+            outcome.backlogged.push(record);
+        }
+        Served::Batch { .. } => outcome.made_a_batch = true,
+        Served::TokenHeld => outcome.saw_work = true,
+        Served::Idle | Served::Posted | Served::Unanswered => {}
+    }
+
+    #[cfg(test)]
+    testing::note_served(served);
 }
 
 /// Serve `record`'s mutator once: request its token, wait for the mutator's
@@ -807,20 +857,8 @@ pub(crate) unsafe fn serve(
     }
 
     if let Err(seen) = mutator.token.request(slot) {
-        return if state(seen) == POSTED {
-            Served::Posted
-        } else if seen == word(REQUESTED, slot) {
-            // This collector's own request, still standing on a silent
-            // mutator: neither a batch nor work, round after round.
-            Served::Unanswered
-        } else if seen == word(COLLECTOR, slot) {
-            // This collector's own grant: a standing request consented to
-            // between the checkpoint above and this request, served now
-            // and forgotten by the array.
-            standing.forget(record);
-            unsafe { serve_the_grant(mutator, slot, threshold) }
-        } else {
-            Served::TokenHeld
+        return unsafe {
+            answer_a_refused_request(mutator, seen, record, slot, threshold, standing)
         };
     }
 
@@ -834,6 +872,66 @@ pub(crate) unsafe fn serve(
         };
     }
 
+    unsafe { wait_for_consent(mutator, slot, threshold, standing) }
+}
+
+/// The four-way reading of a request the token refused, as [`serve`]'s
+/// answer.
+///
+/// The refusal's value names who holds the byte: a batch of this mutator's
+/// own that nothing has disposed of, this collector's request still standing
+/// on a silent mutator, this collector's grant — consented to between the
+/// checkpoint and the request, so the array forgets the standing entry and
+/// the grant is served here — or any other holder, which is a skip.
+///
+/// # Safety
+/// As [`serve`], and `seen` is the value that refusal read back.
+unsafe fn answer_a_refused_request(
+    mutator: &MutatorRecord,
+    seen: u8,
+    record: *mut MutatorRecord,
+    slot: usize,
+    threshold: usize,
+    standing: &mut Standing,
+) -> Served {
+    if state(seen) == POSTED {
+        return Served::Posted;
+    }
+
+    if seen == word(REQUESTED, slot) {
+        // This collector's own request, still standing on a silent
+        // mutator: neither a batch nor work, round after round.
+        return Served::Unanswered;
+    }
+
+    if seen == word(COLLECTOR, slot) {
+        // This collector's own grant: a standing request consented to
+        // between [`serve`]'s checkpoint and its request, served here
+        // and forgotten by the array.
+        standing.forget(record);
+        return unsafe { serve_the_grant(mutator, slot, threshold) };
+    }
+
+    Served::TokenHeld
+}
+
+/// Wait out [`REQUEST_WAIT`] for the mutator's consent to the request
+/// [`serve`] just made, and answer: the grant is served, and anything else
+/// — a refusal, a life ended, or the deadline — is the withdrawal's
+/// read-back ([`answer_the_withdrawal`]).
+///
+/// The wait is on the byte alone, its own return being no answer; a return
+/// before the deadline that is not the grant runs the second checkpoint and
+/// remembers a wake it may have consumed.
+///
+/// # Safety
+/// As [`serve`], and this collector's request stands on `mutator`.
+unsafe fn wait_for_consent(
+    mutator: &MutatorRecord,
+    slot: usize,
+    threshold: usize,
+    standing: &mut Standing,
+) -> Served {
     // Withdrawn on the unwind between the request and the grant: a request
     // left standing by a collector that is gone would be consented to by a
     // mutator that then withholds forever.
@@ -1126,6 +1224,49 @@ unsafe fn batch(
 
     let complete = unsafe { trace(arena, roots) };
     posted.set(true);
+    unsafe { post_the_verdicts(&verdicts, roots, complete) };
+
+    // Every verdict is posted: from here the advance is owed, and the guard
+    // makes it from the unwind as well.
+    let advance = AdvanceOnDrop(&reader, peeked);
+    #[cfg(test)]
+    testing::between_the_post_and_the_advance();
+    drop(advance);
+    let backlog = reader.has_at_least(threshold);
+
+    let met_budget = arena.met_its_budget();
+    arena.reset();
+    size_the_next_batch(mutator, size, complete, met_budget);
+
+    Served::Batch {
+        roots: roots.len(),
+        complete,
+        backlog,
+    }
+}
+
+/// The advance a posted batch owes R, made on the unwind as well: past the
+/// last verdict the entries are the collector's answer, and leaving them
+/// unread would hand the same roots to the next batch.
+struct AdvanceOnDrop<'a>(&'a Reader<'a>, crate::ring::Peeked);
+
+impl Drop for AdvanceOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.commit(self.1);
+    }
+}
+
+/// Post one verdict per root of `roots`, in the order the batch read them.
+///
+/// A trace that ran to its end gives each root the colour its rows carry;
+/// an abandoned one posts [`Verdict::Unwalked`] for every root, the batch
+/// having no reading to offer (`rfc/model/gc/rc-cycle.md`, "Speculative
+/// tracing and exact validation").
+///
+/// # Safety
+/// `roots` are the entries this batch copied out of R under the token, and
+/// `verdicts` is the writer opened over the same mutator.
+unsafe fn post_the_verdicts(verdicts: &VerdictWriter, roots: &[usize], complete: bool) {
     for &entry in roots {
         let root = crate::cycle::queue::entry_root(entry);
         let verdict = if complete {
@@ -1137,33 +1278,18 @@ unsafe fn batch(
             .post(root, verdict)
             .expect("the batch was clamped to P's room");
     }
+}
 
-    // Every verdict is posted: from here the advance is owed, and the guard
-    // makes it from the unwind as well.
-    struct AdvanceOnDrop<'a>(&'a Reader<'a>, crate::ring::Peeked);
-    impl Drop for AdvanceOnDrop<'_> {
-        fn drop(&mut self) {
-            self.0.commit(self.1);
-        }
-    }
-    let advance = AdvanceOnDrop(&reader, peeked);
-    #[cfg(test)]
-    testing::between_the_post_and_the_advance();
-    drop(advance);
-    let backlog = reader.has_at_least(threshold);
-
-    let met_budget = arena.met_its_budget();
-    arena.reset();
+/// Size the mutator's next batch from what this one of `size` roots did: a
+/// trace that finished doubles it up to [`BATCH_BOUND`], and one that met
+/// the workspace budget halves it. A trace abandoned for anything else
+/// leaves the size where it stands, the refusal saying nothing about how
+/// much of the heap the batch would have reached.
+fn size_the_next_batch(mutator: &MutatorRecord, size: usize, complete: bool, met_budget: bool) {
     if complete {
         mutator.set_batch_size((size * 2).min(BATCH_BOUND));
     } else if met_budget {
         mutator.set_batch_size((size / 2).max(1));
-    }
-
-    Served::Batch {
-        roots: roots.len(),
-        complete,
-        backlog,
     }
 }
 

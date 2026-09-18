@@ -224,14 +224,15 @@ stage is what makes a trace affordable rather than what tunes it.
         and never a traced live member is `dev/DECISIONS.md`, "the deferred lane
         holds a registered root"; YRC's borrowed 56 % is `dev/RESEARCH.md`. The
         sweep the close no longer makes is in the residual list.
-- [ ] S37.8 The review's simplifications in the collector's own modules
+- [~] S37.8 The review's simplifications in the collector's own modules
       done: `worker::serve`, `worker::thread_body`, `worker::batch`,
         `worker::round`, `collect::collect_under_pressure`,
         `collect::commit_before_drops`, `token::TraceToken::take_unless` and
         `deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace` each
-        stand under fifty code lines and under three levels of control nesting,
-        every lifted body named in the commit; the `--list` diff in all three
-        configurations shows no case added or removed, and the poll probe
+        stand under fifty code lines and nest control constructs no more than
+        two deep — an `if`, `match`, `loop`, `while` or `for` counted where it
+        opens — every lifted body named in the commit; the `--list` diff in all
+        three configurations shows no case added or removed, and the poll probe
         `collect/tests/what_the_poll_costs.rs` is re-run and its reading
         reported beside the recorded one (`dev/BENCHMARKS.md`, "S51.5 the token
         handshake's instruments")
@@ -241,6 +242,50 @@ stage is what makes a trace affordable rather than what tunes it.
         loops of the withheld-return drain are one algorithm three times, and
         `splice_behind_the_head` beside them already carries the parameter shape
         a shared body needs.
+      Critic 2026-09-18: one defect, and it was mine to make — the extraction
+        of `refused_under_pressure` went in between `collect_under_pressure`'s
+        sixty-line doc block and the function, so the whole pressure path's
+        contract and its `# Safety` clause stood over a helper that traces
+        nothing and runs no destructor, while the function three `As
+        [collect_under_pressure]` clauses point at had none at all. The block
+        is back where it belongs and the helper carries a precondition it owns.
+        Two findings accepted as costing nothing, both named where they are: the
+        chunk drain reads the packed word twice per chunk, once for the link and
+        once for the capacity, which one owner-only word cannot disagree on; and
+        an arena refusal now drops the harvest inside `tear_down_the_harvest`
+        rather than after the caller's `arm()`, which `StandingMembers::drop`
+        makes unobservable. What it read and found sound is the wait under the
+        claim, the drain's early answer against the old `return`, the advance
+        guard's two points and the folded `Served` arms.
+      handoff: eight functions cut and nine named ones lifted —
+        `answer_a_refused_request` and `wait_for_consent` out of `serve` (80
+        code lines to 42), `begin_the_thread`, `next_interval`,
+        `grow_the_siblings` and `note_idleness` out of `thread_body` (77 to
+        45), `post_the_verdicts` and `size_the_next_batch` out of `batch` (65
+        to 45) with `AdvanceOnDrop` now a module-level guard,
+        `read_one_record` out of `round`, `refused_under_pressure`,
+        `after_the_harvest` and `tear_down_the_harvest` out of
+        `collect_under_pressure` (79 to 46),
+        `reclaim_what_the_second_reading_confirms` out of `commit_before_drops`,
+        `wait_out_a_claim` out of `TraceToken::take_unless`, and one
+        `drain_withheld` in place of the three withheld-return loops. Two
+        `match` arms took guards instead of an inner `if`. Nothing of the eight
+        is over 50 code lines or nests control constructs more than two deep.
+        The poll is where it was: 7.46–7.61 ns against 7.58–7.71 before, two
+        binaries A B A B (`dev/BENCHMARKS.md`, "S37.8 the review's cuts leave
+        the poll where it was"). Gate on the final tree: 1041 passed, 0 failed,
+        28 ignored, three times at four threads, `hash-folding` once,
+        `debug-journal` 1050 three times, `--list` unchanged in all three
+        configurations, release, `cargo bench --no-run`, `cargo +1.94 fmt
+        --check`, `cargo doc` 49 warnings against the same 49 before.
+        `citations.py` fell from 13 misses to 6: the owner-to-mutator rename
+        had rewritten eight citations whose journal headings still read
+        *owner*, and a citation keeps its heading. Miri at two threads:
+        `cycle::token::tests` 7 passed (15.55 s, 42 s of wall) and
+        `cycle::deferred_slot_reuse` 52 passed, 1 ignored (66.83 s, 8 m 30 s);
+        `worker::tests::the_batch` and `collect::tests::what_the_byte_arms`
+        were still running when this was written, each on the long case
+        `dev/WORKFLOW.md` names.
 - [ ] S37.5 The turnover constant, against a corpus   *(after S37.4)*
       done: the volume the deferred-candidate lane re-offers is measured at the
         epoch turnover on a corpus, and S37.1's 64-collection turnover is

@@ -51,7 +51,7 @@ use std::cell::Cell;
 use crate::cells::PlainCells;
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
-use crate::cycle::finalization::{Finalization, Revalidated};
+use crate::cycle::finalization::{Finalization, Revalidated, Revalidation};
 use crate::cycle::maturation::stamp_live_components;
 use crate::cycle::members::HarvestEnding;
 use crate::cycle::members::MEMBER_CAPACITY;
@@ -694,6 +694,53 @@ pub(crate) fn take_exit_residue() -> Option<ExitResidue> {
     EXIT_RESIDUE.with(Cell::take)
 }
 
+/// What a pressure collection does when the gate refuses it: return the
+/// slots a teardown withheld, arm the poll, ask for the collector thread,
+/// and answer zero freed.
+///
+/// # Safety
+/// The gate refused this thread a collection, `closed` being its answer,
+/// and the caller is the allocation path that asked for one.
+unsafe fn refused_under_pressure(closed: GateClosed) -> usize {
+    // A refusal inside a teardown alone still returns what a completed
+    // death of the same cascade withheld: a slot that dies while a
+    // queue entry names it comes back only at a retirement, and every
+    // other retirement runs inside a collection — so without this one
+    // a destructor's allocation would be refused K times over up to
+    // K−1 returnable slots. The retirement runs outside the collecting
+    // flag because it runs no user code, takes no window and reads no
+    // rows, so nothing inside it can reach a second collection; it
+    // passes over the dying object, whose slot reads no
+    // `DEAD_IN_PLACE` until the free at the end of its frame
+    // (`crate::cycle::queue::retire_candidates`). The other two
+    // refusals own their retirement: a running collection retires at
+    // its close, and a reset forbids one. The pass rewrites the ring
+    // with no collecting word raised, so it takes the token the way
+    // a collection does and waits out a collector's batch
+    // (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind
+    // its writer, and the collector's verdicts come back by a second
+    // ring", "Who reads R"). The completed deaths the verdict ring
+    // names come back under the same pass: a slot the collector
+    // read as dead and took out of R returns through no other.
+    if closed == GateClosed::Teardown {
+        let _token = HeldToken::take_or_hold_posted();
+        unsafe {
+            crate::cycle::queue::retire_candidates();
+            make_withheld_returns_before_the_retry();
+        }
+    }
+
+    // Armed on every refusal, because a refusal at depth says nothing
+    // about the garbage standing behind it; the next poll at a clean
+    // point is what reads that. A reset and a running collection are
+    // no different here from a teardown: the allocation that was
+    // refused is answered memory-exhausted either way, and the arming
+    // is the one thing this call can leave for the poll.
+    crate::gc::arm();
+    ask_for_the_collector_thread();
+    0
+}
+
 /// Collect this thread's candidates for a caller that has run out of memory,
 /// giving every block back before the first destructor, and answer how many
 /// entities were freed.
@@ -757,45 +804,7 @@ pub(crate) fn take_exit_residue() -> Option<ExitResidue> {
 pub(crate) unsafe fn collect_under_pressure() -> usize {
     let _collecting = match CollectingThread::take() {
         Ok(collecting) => collecting,
-        Err(closed) => {
-            // A refusal inside a teardown alone still returns what a completed
-            // death of the same cascade withheld: a slot that dies while a
-            // queue entry names it comes back only at a retirement, and every
-            // other retirement runs inside a collection — so without this one
-            // a destructor's allocation would be refused K times over up to
-            // K−1 returnable slots. The retirement runs outside the collecting
-            // flag because it runs no user code, takes no window and reads no
-            // rows, so nothing inside it can reach a second collection; it
-            // passes over the dying object, whose slot reads no
-            // `DEAD_IN_PLACE` until the free at the end of its frame
-            // (`crate::cycle::queue::retire_candidates`). The other two
-            // refusals own their retirement: a running collection retires at
-            // its close, and a reset forbids one. The pass rewrites the ring
-            // with no collecting word raised, so it takes the token the way
-            // a collection does and waits out a collector's batch
-            // (`rfc/dev/DECISIONS.md`, "the candidate queue is read behind
-            // its writer, and the collector's verdicts come back by a second
-            // ring", "Who reads R"). The completed deaths the verdict ring
-            // names come back under the same pass: a slot the collector
-            // read as dead and took out of R returns through no other.
-            if closed == GateClosed::Teardown {
-                let _token = HeldToken::take_or_hold_posted();
-                unsafe {
-                    crate::cycle::queue::retire_candidates();
-                    make_withheld_returns_before_the_retry();
-                }
-            }
-
-            // Armed on every refusal, because a refusal at depth says nothing
-            // about the garbage standing behind it; the next poll at a clean
-            // point is what reads that. A reset and a running collection are
-            // no different here from a teardown: the allocation that was
-            // refused is answered memory-exhausted either way, and the arming
-            // is the one thing this call can leave for the poll.
-            crate::gc::arm();
-            ask_for_the_collector_thread();
-            return 0;
-        }
+        Err(closed) => return unsafe { refused_under_pressure(closed) },
     };
 
     #[cfg(test)]
@@ -804,7 +813,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     let mut freed = 0;
     let mut roots = ALL_ROOTS;
     loop {
-        let mut standing = match unsafe { trace_and_harvest(roots) } {
+        let standing = match unsafe { trace_and_harvest(roots) } {
             Traced::Harvested(standing) => standing,
             // Nothing was registered, so there is nothing this path can do and
             // nothing for a later poll to do either.
@@ -822,67 +831,24 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             }
         };
 
-        #[cfg(test)]
-        if COUNT_PRESSURE_ROOTS.with(Cell::get) {
-            PRESSURE_ROOTS_TRACED.with(|traced| {
-                traced.set(traced.get() + standing.roots_traced);
-            });
-        }
+        note_pressure_roots(standing.roots_traced);
 
-        match standing.ending() {
-            HarvestEnding::Complete => {}
-            HarvestEnding::Overflowed => {
-                // The list is empty after an overflow, so nothing is torn down
-                // and nothing is owed; the roots keep their registration and
-                // the next trace of this loop is over fewer of them.
-                let traced = standing.roots_traced;
-                drop(standing);
-                if traced <= 1 {
-                    // One root reaches more than the region holds, so no bound
-                    // makes this component fit. The poll's collection keeps
-                    // its rows and has no region to overflow — though it does
-                    // have blocks to be refused, and under the pressure that
-                    // started this it may meet the same refusal.
-                    crate::gc::arm();
-                    break;
-                }
-
-                roots = traced / 2;
+        let standing = match after_the_harvest(standing) {
+            NextRound::TearDown(list) => list,
+            NextRound::Retry(fewer) => {
+                roots = fewer;
                 continue;
             }
-            HarvestEnding::Abandoned => {
-                // A row named no entity: a disagreement between an array and
-                // a retained block's survivor list, which every trace of these
-                // candidates meets again. Halving would repeat the mark and scan
-                // log2(roots) times under the pressure that started this and
-                // end here anyway, so this ends at once; the poll's collection
-                // reads its rows as a membership and refuses the same reading
-                // whole (`crate::cycle::membership`).
-                drop(standing);
-                crate::gc::arm();
-                break;
-            }
-        }
+            NextRound::Stop => break,
+        };
 
-        let mut taken = 0;
-        if !standing.members().entities().is_empty() {
-            // The trace's own arena went back with its blocks, so the queue
-            // the sever's displaced children wait in stands in a second one —
-            // over the same workspace, which this thread holds whether or not
-            // the pool has anything (`crate::cycle::reclamation`).
-            let Some(mut arena) = TraceScratchArena::open() else {
-                // Not reachable past a thread's first collection, the
-                // workspace being the thread's; armed all the same, because
-                // the set in hand is proven garbage this path is leaving.
-                crate::gc::arm();
-                break;
-            };
-
-            taken = unsafe { commit_under_pressure(&mut standing, &mut arena, roots == ALL_ROOTS) };
-            arena.reset();
-        } else {
-            drop(standing);
-        }
+        let Some(taken) = (unsafe { tear_down_the_harvest(standing, roots == ALL_ROOTS) }) else {
+            // Not reachable past a thread's first collection, the workspace
+            // being the thread's; armed all the same, because the set in hand
+            // is proven garbage this path is leaving.
+            crate::gc::arm();
+            break;
+        };
 
         // Always repeat after the external drops: their destructors may enter
         // an arena reset or create further completed candidate deaths. On a
@@ -994,6 +960,95 @@ enum Traced {
     /// An allocation path refused, or the memory the window stands on could
     /// not be had. Nothing was read, so nothing about the lane was proved.
     AllocationFailed,
+}
+
+/// Count the roots one trace of the pressure path read, for the case that
+/// asked for the count; the release body is empty.
+#[cfg(test)]
+fn note_pressure_roots(traced: usize) {
+    if COUNT_PRESSURE_ROOTS.with(Cell::get) {
+        PRESSURE_ROOTS_TRACED.with(|counted| counted.set(counted.get() + traced));
+    }
+}
+
+/// Counts nothing outside a test build.
+#[cfg(not(test))]
+fn note_pressure_roots(_traced: usize) {}
+
+/// Tear the harvested list down and answer what it freed, or `None` where
+/// the second workspace could not be opened.
+///
+/// The trace's own arena went back with its blocks, so the queue the sever's
+/// displaced children wait in stands in a second one — over the same
+/// workspace, which this thread holds whether or not the pool has anything
+/// (`crate::cycle::reclamation`). An empty list frees nothing and closes its
+/// window on the drop. `whole_lane` says the trace read the lane entire,
+/// which is what the commit needs to know before it defers the roots it read
+/// live.
+///
+/// # Safety
+/// As [`collect_under_pressure`]; `standing` is this thread's harvest, taken
+/// under its own collecting flag.
+unsafe fn tear_down_the_harvest(mut standing: HarvestedMembers, whole_lane: bool) -> Option<usize> {
+    if standing.members().entities().is_empty() {
+        drop(standing);
+        return Some(0);
+    }
+
+    let mut arena = TraceScratchArena::open()?;
+    let taken = unsafe { commit_under_pressure(&mut standing, &mut arena, whole_lane) };
+    arena.reset();
+    Some(taken)
+}
+
+/// What the harvest's ending leaves the pressure loop to do.
+enum NextRound {
+    /// The list stands and is the loop's to tear down.
+    TearDown(HarvestedMembers),
+    /// Nothing is owed and the roots keep their registration: trace again
+    /// over this many of them.
+    Retry(usize),
+    /// End the loop, the poll being what tries again on whatever memory the
+    /// ending gave back.
+    Stop,
+}
+
+/// Read the harvest's ending and answer the loop with it, arming the poll on
+/// every ending that stops.
+///
+/// An overflow leaves an empty list, so nothing is torn down: the next trace
+/// is over half the roots, unless one root alone reached more than the region
+/// holds, which no bound makes fit. An abandoned sweep — a row that named no
+/// entity, the disagreement between an array and a retained block's survivor
+/// list — ends at once rather than halving, because every trace of these
+/// candidates meets it again and the poll's collection reads the same rows as
+/// one membership (`crate::cycle::membership`).
+///
+/// Owning the harvest is what makes this safe to call: the list is this
+/// thread's, and the drop of an ending that keeps nothing closes its window.
+fn after_the_harvest(standing: HarvestedMembers) -> NextRound {
+    match standing.ending() {
+        HarvestEnding::Complete => NextRound::TearDown(standing),
+        // One root reaches more than the region holds, so no bound makes this
+        // component fit. The poll's collection keeps its rows and has no
+        // region to overflow — though it does have blocks to be refused, and
+        // under the pressure that started this it may meet the same refusal.
+        HarvestEnding::Overflowed if standing.roots_traced <= 1 => {
+            drop(standing);
+            crate::gc::arm();
+            NextRound::Stop
+        }
+        HarvestEnding::Overflowed => {
+            let traced = standing.roots_traced;
+            drop(standing);
+            NextRound::Retry(traced / 2)
+        }
+        HarvestEnding::Abandoned => {
+            drop(standing);
+            crate::gc::arm();
+            NextRound::Stop
+        }
+    }
 }
 
 /// What one trace of the pressure path left behind: the harvested list, and
@@ -1204,21 +1259,37 @@ unsafe fn commit_before_drops<'a>(
     let mut revalidation = pass.close();
     let mut reclaimed = None;
     if confirmed {
-        match unsafe { revalidation.revalidate(members) } {
-            Revalidated::Unreachable(component) => {
-                if let Some(deferred) = unsafe { reclaim_before_drops(component, members, arena) } {
-                    reclaimed = Some((members.len(), deferred));
-                }
-            }
-            // The set is live: a destructor resurrected a member, and the
-            // guards came off inside the reading. Every member keeps its
-            // candidate bit and a later trace proposes it again.
-            Revalidated::ExternallyReferenced => {}
-        }
+        reclaimed =
+            unsafe { reclaim_what_the_second_reading_confirms(&mut revalidation, members, arena) };
     }
 
     revalidation.close();
     reclaimed
+}
+
+/// Read the component a second time, after the destructors, and reclaim it
+/// where it is still unreachable: the member count and the deferred drops,
+/// or `None`.
+///
+/// The set reading live is a destructor's resurrection of a member, the
+/// guards having come off inside the reading; every member keeps its
+/// candidate bit and a later trace proposes it again.
+///
+/// # Safety
+/// As [`commit_before_drops`], and `revalidation` is the pass this commit
+/// opened over `members`.
+unsafe fn reclaim_what_the_second_reading_confirms<'a>(
+    revalidation: &mut Revalidation,
+    members: &Membership<'_>,
+    arena: &'a mut TraceScratchArena,
+) -> Option<(usize, DeferredReclamation<'a>)> {
+    match unsafe { revalidation.revalidate(members) } {
+        Revalidated::Unreachable(component) => {
+            unsafe { reclaim_before_drops(component, members, arena) }
+                .map(|deferred| (members.len(), deferred))
+        }
+        Revalidated::ExternallyReferenced => None,
+    }
 }
 
 // Mutation injection, tests only, and for a state one thread has no other way

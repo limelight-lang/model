@@ -73,7 +73,7 @@
 //! of its remote stack, and that reclaim waits the same way
 //! ([`returns_are_withheld`]). What this costs is the churn one trace lasts,
 //! measured in `dev/BENCHMARKS.md`, "S38.3 what a foreign holder costs the
-//! mutator".
+//! owner".
 //!
 //! **The deaths are one of three stacks**, because a trace holds addresses
 //! into more than entity slots (`rfc/model/gc/rc-cycle.md`, "The deferral's
@@ -782,7 +782,7 @@ impl Drop for ActiveTrace {
 /// costs one write into the dying entity's own byte 8 and one store of the
 /// head, with no allocator call and no pool call; the link store is a
 /// release store, priced in `dev/BENCHMARKS.md`, "S38.3 what a foreign
-/// holder costs the mutator".
+/// holder costs the owner".
 ///
 /// # Safety
 /// `ptr` is a dead entity slot whose teardown has completed and which this call
@@ -981,7 +981,7 @@ pub(crate) unsafe fn withhold_block_under_a_foreign_trace(block: *mut u8) -> boo
 /// the block carries no stamp yet, so a return made on the strength of a
 /// clear stamp could be handed out again under the address the trace still
 /// holds. The cost is the churn one trace lasts (`dev/BENCHMARKS.md`, "S38.3
-/// what a foreign holder costs the mutator"). The stack is threaded through
+/// what a foreign holder costs the owner"). The stack is threaded through
 /// the dead entities like the window's ([`withheld_link`]), headed in a word
 /// of this thread's, and nothing is drawn.
 ///
@@ -1015,79 +1015,93 @@ unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8) {
 /// This thread has no window of its own open, and every slot on the stack is
 /// a dead entity this thread's free withheld.
 pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
-    // The whole stack is taken off the head first: each return re-enters
-    // the entry that withheld it, which asks this function again, and a head
-    // still naming the rest would make the returns a recursion one frame
-    // deep per slot. Re-entered with an empty head it makes nothing and
-    // answers at once.
-    let mut taken = WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
-    while !taken.is_null() {
-        if crate::cycle::token::collector_is_tracing_this_thread() {
-            // A holder arrived between two returns: what is left goes back
-            // on the head, behind whatever the returns so far re-withheld.
-            WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| unsafe {
-                splice_behind_the_head(
-                    head,
-                    taken,
-                    |slot| withheld_next(slot),
-                    |last, next| set_withheld_next(last, next),
-                )
-            });
-            return;
-        }
-
-        let slot = taken;
-        taken = unsafe { withheld_next(slot) };
-        unsafe { crate::memory::stdapi::hand_back_and_free(slot) };
+    // The slots go first because a slot's return can empty its block and
+    // reach the pool, which is where a block would be withheld again under a
+    // holder that arrived meanwhile — and then the block list below finds it.
+    let drained = unsafe {
+        drain_withheld(
+            &WITHHELD_UNDER_A_FOREIGN_TRACE,
+            |slot| withheld_next(slot),
+            |last, next| set_withheld_next(last, next),
+            |slot| crate::memory::stdapi::hand_back_and_free(slot),
+        )
+    };
+    if !drained {
+        return;
     }
 
-    // The chunks, then the blocks, each the same way. The slots go first
-    // because a slot's return can empty its block and reach the pool,
-    // which is where a block would be withheld again under a holder that
-    // arrived meanwhile — and then the block list below finds it.
-    let mut taken =
-        CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
-    while !taken.is_null() {
-        let (next, capacity) = unsafe { chunk_link(taken) };
-        if crate::cycle::token::collector_is_tracing_this_thread() {
-            CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| unsafe {
-                splice_behind_the_head(
-                    head,
-                    taken,
-                    |chunk| chunk_link(chunk).0,
-                    |last, next| {
-                        let (_, last_capacity) = chunk_link(last);
-                        set_chunk_link(last, next, last_capacity);
-                    },
-                )
-            });
-            return;
-        }
-
-        let chunk = taken;
-        taken = next;
-        unsafe { crate::memory::buffer_arena::buffer_free_longlived_payload(chunk, capacity) };
+    // The chunk's packed word is read twice per chunk — once for the link and
+    // once for the capacity the free needs — where one read would serve both.
+    // The word is the owning thread's own and no other writes it, so the two
+    // reads cannot disagree; what the shared drain buys instead is one copy of
+    // the re-withhold and its splice (`dev/BENCHMARKS.md`, "S38.3 what a
+    // foreign holder costs the owner", for the path this sits on).
+    let drained = unsafe {
+        drain_withheld(
+            &CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE,
+            |chunk| chunk_link(chunk).0,
+            |last, next| {
+                let (_, last_capacity) = chunk_link(last);
+                set_chunk_link(last, next, last_capacity);
+            },
+            |chunk| {
+                let (_, capacity) = chunk_link(chunk);
+                crate::memory::buffer_arena::buffer_free_longlived_payload(chunk, capacity);
+            },
+        )
+    };
+    if !drained {
+        return;
     }
 
-    let mut taken =
-        BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| head.replace(std::ptr::null_mut()));
+    unsafe {
+        drain_withheld(
+            &BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE,
+            |block| block_link(block),
+            |last, next| set_block_link(last, next),
+            |block| crate::memory::stdapi::return_withheld_block(block),
+        )
+    };
+}
+
+/// Give back one withheld list, and answer whether it went back whole.
+///
+/// The whole stack is taken off the head first: each return re-enters the
+/// entry that withheld it, which asks
+/// [`make_returns_withheld_under_a_foreign_trace`] again, and a head still
+/// naming the rest would make the returns a recursion one frame deep per
+/// item. Re-entered with an empty head it makes nothing and answers at once.
+///
+/// A holder that arrives between two returns ends the drain: what is left
+/// goes back on the head, behind whatever the returns so far re-withheld,
+/// and the answer is false so that the caller leaves the lists after this
+/// one standing too.
+///
+/// `next_of` reads an item's link, `link` writes one, and `give_back` is the
+/// return itself — the entry a withheld item goes back through.
+///
+/// # Safety
+/// As [`make_returns_withheld_under_a_foreign_trace`]: the list is this
+/// thread's, and its items are what this thread's own free withheld.
+unsafe fn drain_withheld(
+    head: &'static std::thread::LocalKey<Cell<*mut u8>>,
+    next_of: impl Fn(*mut u8) -> *mut u8,
+    link: impl Fn(*mut u8, *mut u8),
+    give_back: impl Fn(*mut u8),
+) -> bool {
+    let mut taken = head.with(|head| head.replace(std::ptr::null_mut()));
     while !taken.is_null() {
         if crate::cycle::token::collector_is_tracing_this_thread() {
-            BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| unsafe {
-                splice_behind_the_head(
-                    head,
-                    taken,
-                    |block| block_link(block),
-                    |last, next| set_block_link(last, next),
-                )
-            });
-            return;
+            head.with(|head| unsafe { splice_behind_the_head(head, taken, &next_of, &link) });
+            return false;
         }
 
-        let block = taken;
-        taken = unsafe { block_link(block) };
-        unsafe { crate::memory::stdapi::return_withheld_block(block) };
+        let item = taken;
+        taken = next_of(item);
+        give_back(item);
     }
+
+    true
 }
 
 /// Put a chain a drain took off `head` back on it, behind what the returns
@@ -1158,7 +1172,7 @@ enum Withholding {
 /// the dead entity itself, no word of its block being read on either side of
 /// the window, so ownership decides nothing here. Why the mutator is no part of
 /// the condition: `dev/DECISIONS.md`, "the stamp is the whole condition where
-/// the return is not the mutator's" and "one stack through the dead entity
+/// the return is not the owner's" and "one stack through the dead entity
 /// holds every withheld return".
 ///
 /// # Safety

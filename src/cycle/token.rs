@@ -63,7 +63,7 @@
 //! claimed").
 
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, MutexGuard};
 
 /// Nobody traces this thread; the mutator returns memory at once.
 pub(crate) const FREE: u8 = 0;
@@ -319,6 +319,35 @@ impl TraceToken {
             .expect("a take that holds at POSTED was not asked for")
     }
 
+    /// Wait out a collector's claim once and answer the byte read after the
+    /// wait.
+    ///
+    /// The lock is taken before the byte is re-read, and a claim gone by then
+    /// is answered at once with the lock kept in `guard` for the next round:
+    /// the release writes the byte under the same lock, so a claim still
+    /// standing under it cannot end between this reading and the wait.
+    fn wait_out_a_claim<'a>(&'a self, guard: &mut Option<MutexGuard<'a, ()>>) -> u8 {
+        let held = guard.take().unwrap_or_else(|| {
+            self.wait
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
+        let seen = self.read();
+        if state(seen) != COLLECTOR {
+            *guard = Some(held);
+            return seen;
+        }
+
+        #[cfg(test)]
+        self.waits.fetch_add(1, Ordering::SeqCst);
+        *guard = Some(
+            self.released
+                .wait(held)
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        self.read()
+    }
+
     /// [`take`](Self::take), except that with `hold_at_posted` a byte read
     /// as `POSTED` — at the first read or after a wait — is left as it is
     /// and `None` is answered: the retirement pass's form, decided on the
@@ -332,25 +361,7 @@ impl TraceToken {
                 POSTED if hold_at_posted => return None,
                 POSTED => TookFrom::Posted,
                 COLLECTOR => {
-                    let held = guard.take().unwrap_or_else(|| {
-                        self.wait
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    });
-                    seen = self.read();
-                    if state(seen) != COLLECTOR {
-                        guard = Some(held);
-                        continue;
-                    }
-
-                    #[cfg(test)]
-                    self.waits.fetch_add(1, Ordering::SeqCst);
-                    guard = Some(
-                        self.released
-                            .wait(held)
-                            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-                    );
-                    seen = self.read();
+                    seen = self.wait_out_a_claim(&mut guard);
                     continue;
                 }
                 _ => unreachable!("a mutator's take under its own claim"),
@@ -359,15 +370,15 @@ impl TraceToken {
                 .word
                 .compare_exchange(seen, MUTATOR, Ordering::Acquire, Ordering::Acquire)
             {
-                Ok(_) => {
-                    if state(seen) == REQUESTED {
-                        #[cfg(test)]
-                        self.refusals.fetch_add(1, Ordering::Relaxed);
-                        crate::cycle::worker::wake(slot(seen));
-                    }
-
+                // A take over a standing request is this mutator's refusal,
+                // and the collector is woken rather than left on its wait.
+                Ok(_) if state(seen) == REQUESTED => {
+                    #[cfg(test)]
+                    self.refusals.fetch_add(1, Ordering::Relaxed);
+                    crate::cycle::worker::wake(slot(seen));
                     return Some(took);
                 }
+                Ok(_) => return Some(took),
                 Err(actual) => seen = actual,
             }
         }
