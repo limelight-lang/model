@@ -315,3 +315,45 @@ fn a_consumed_block_stays_charged_until_it_leaves_the_circle() {
         "the high-water figure is the block, and no fill stands beside it"
     );
 }
+
+/// A block the deferral links into the lane is charged whole as a ring
+/// block is, at the link and not at the fill, and the lane's blocks are
+/// discharged with the rest at the release. The ring's own charge does not
+/// move when the deferral empties its blocks: they stay in the circle.
+#[test]
+fn a_block_the_deferral_links_into_the_lane_is_charged_whole() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares(), "the cells start full");
+    let before = in_use();
+
+    let mut filler = candidate(2);
+    let mut grew = candidate(2);
+    unsafe { ring_of_two_blocks(&raw mut filler, &raw mut grew) };
+    assert_eq!(
+        in_use(),
+        before + 2 * BLOCK_PAYLOAD,
+        "the ring's two blocks"
+    );
+
+    assert!(refill_spares());
+    assert_eq!(
+        in_use(),
+        before + 2 * BLOCK_PAYLOAD,
+        "a spare is reservation"
+    );
+    defer_candidates(read_batch(), 0);
+    assert_eq!(deferred_segment_count(), 2);
+    assert_eq!(
+        in_use(),
+        before + 4 * BLOCK_PAYLOAD,
+        "the lane's two blocks are charged whole at the link, beside the ring's emptied two"
+    );
+
+    reset();
+    assert_eq!(
+        in_use(),
+        before,
+        "the release gives every charged byte back"
+    );
+}

@@ -235,6 +235,16 @@ struct MutatorCycleState {
     /// The deferred lane: candidates a later turnover rather than a decrement
     /// offers to a trace again. Written and read by the mutator alone, at a
     /// collection's close and at the re-offer.
+    ///
+    /// **A record here withholds its entity's slot for as long as it stands**:
+    /// `ll_free` reads the candidate bit and hands nothing back, and the
+    /// ordinary close and the retirement pass read this lane not at all. The
+    /// bound is the first close after the turnover's re-offer, which retires
+    /// the record as any completed death in R; a pressure collection's
+    /// deferral sweeps the lane earlier ([`defer_candidates`]). A sweep of
+    /// the lane on its own is not built (`dev/DECISIONS.md`, "the safepoint
+    /// poll takes the free path's road and runs no retirement of its own; a
+    /// bounded sweep of R is not built until a workload asks").
     deferred: UnsafeCell<Chain>,
     /// Entries in the base block no allocation path could fund a block
     /// for, written oldest first, which is the order every walk of the buffer

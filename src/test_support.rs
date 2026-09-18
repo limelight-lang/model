@@ -124,6 +124,25 @@ pub(crate) unsafe fn store_prop(
     }
 }
 
+/// The occupancy the heap reads for the block `addr` stands in, and the
+/// block's kind beside it, off `heap::describe_slot`'s own line. `used` moves
+/// at a slot's issue and at its return, so a withheld slot leaves it where it
+/// stood: the instrument for whether a free reached the block, which an
+/// allocation's address is not, since the class's head block can change under
+/// a case.
+pub(crate) fn block_kind_and_used(addr: usize) -> (u32, u32) {
+    let line = crate::memory::heap::describe_slot(addr);
+    let field = |name: &str| -> u32 {
+        let start = line.find(&format!(" {name} ")).expect(name) + name.len() + 2;
+        line[start..]
+            .split(' ')
+            .next()
+            .and_then(|word| word.parse().ok())
+            .expect(name)
+    };
+    (field("kind"), field("used"))
+}
+
 /// Run the test `case` — its full path — again in a child process with the
 /// environment variable `marker` set, and assert that the child ended by
 /// `SIGABRT` with `reason` on its stderr.

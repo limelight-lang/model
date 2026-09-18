@@ -7,8 +7,9 @@
 //! cases are about the interval between: a ring that loses its keeper inside
 //! that interval is garbage no collection finds, and it dies at the re-offer.
 //!
-//! **The reading is staged by an injected store**, except in the case of the
-//! mature member no lane names, whose live reading is the prune's own. One thread's trace and its
+//! **The reading is staged by an injected store**, except in the cases of the
+//! mature member no lane names, whose live reading is the prune's own, and of
+//! the withheld dead slot, whose keeper simply holds it. One thread's trace and its
 //! validation are a call apart, so the disagreement between them — the trace
 //! proposes a component, the reading finds a reference the component does not
 //! hold — has no other way in
@@ -39,6 +40,7 @@ use crate::cycle::testing::{move_prop, ring_with_a_spare_property, stamp_of};
 use crate::refcount::{
     entity_refcount, is_registered_candidate, mutator_flags, read_maturation_stamp,
 };
+use crate::test_support::block_kind_and_used;
 
 /// The age the stamp of `entity` carries: how many collections of one epoch
 /// have read its component live.
@@ -492,4 +494,200 @@ fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnov
     );
     assert_eq!(take_edges_pruned(), 0);
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
+}
+
+/// A registered object read live through its keeper, deferred, and then
+/// killed by the keeper's death: a completed death whose only record stands
+/// in the deferred lane. Answers the object and its block's occupancy as the
+/// death left it.
+///
+/// The keeper is of another size class than the object, so that its own
+/// return at its death moves no figure of the object's block.
+///
+/// # Safety
+/// As `new_constructed`: `arena` is this thread's, under the pool's guard.
+unsafe fn a_dead_object_whose_record_is_deferred(
+    arena: &mut Arena,
+    name: &str,
+) -> (*mut Object, u32) {
+    let node = node_class(&format!("{name}Node"), counting_destructor as *const ());
+    let keeper_of_another_class = ClassBuilder::new(&format!("{name}Keeper"))
+        .prop("held", true)
+        .prop("second", true)
+        .prop("third", true)
+        .prop("fourth", true)
+        .build();
+    assert_ne!(
+        crate::memory::heap::size_class_index(unsafe { (*node).object_size } as usize),
+        crate::memory::heap::size_class_index(
+            unsafe { (*keeper_of_another_class).object_size } as usize
+        ),
+        "the keeper's return must not move the object's block"
+    );
+    let (held, keeper) = {
+        let mut context = LLContext { arena: &mut *arena };
+        unsafe {
+            (
+                new_constructed(&mut context, node, MemoryCategory::GcHeap),
+                new_constructed(
+                    &mut context,
+                    keeper_of_another_class,
+                    MemoryCategory::GcHeap,
+                ),
+            )
+        }
+    };
+    unsafe {
+        store_prop(arena, keeper, prop_offset(0), held);
+        assert!(!ll_release(held as *mut RcHeader), "the keeper holds it");
+    }
+    assert_eq!(
+        candidate_count(),
+        1,
+        "the release registered the held object"
+    );
+
+    assert!(refill_spares());
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 0, "the keeper holds it");
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(deferred_count(), 1, "read live, the record is deferred");
+
+    let (_, used_before_the_death) = block_kind_and_used(held as usize);
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+    }
+    assert_eq!(
+        unsafe { slot_state(held as *mut RcHeader) },
+        SlotState::DeadInPlace
+    );
+    let (_, used) = block_kind_and_used(held as usize);
+    assert_eq!(
+        used, used_before_the_death,
+        "the free of a registered entity handed its slot to nobody"
+    );
+    assert_eq!(deferred_count(), 1);
+    (held, used)
+}
+
+/// A record the close deferred withholds its entity's slot for the whole of
+/// its wait: `ll_free` reads the standing candidate bit and hands nothing
+/// back, the ordinary close reads the deferred lane not at all, and so does
+/// the retirement pass. The slot comes back at the first close after the
+/// turnover's re-offer, which is the bound `crate::cycle::queue` states for
+/// the lane; the other end of the interval is the case below.
+///
+/// The instrument is the block's occupancy, which a return lowers and a
+/// withheld free leaves alone (`test_support::block_kind_and_used`).
+#[test]
+fn a_deferred_record_withholds_its_dead_slot_until_the_close_after_the_reoffer() {
+    let _g = test_guard();
+    release_queue_segments();
+    let _epoch = epoch::pin(1);
+
+    let mut arena = Arena::new();
+    let (held, used) = unsafe { a_dead_object_whose_record_is_deferred(&mut arena, "Withheld") };
+
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 0, "nothing is offered");
+    assert_eq!(
+        block_kind_and_used(held as usize).1,
+        used,
+        "a close with nothing offered reads the deferred lane not at all"
+    );
+    assert_eq!(deferred_count(), 1);
+
+    let mirror = deferred_turnover_mirror();
+    assert!(reoffer_deferred_if_epoch_moved(epoch::one_turnover_past(
+        mirror
+    )));
+    assert_eq!(
+        candidate_count(),
+        1,
+        "the dead record is back in the active lane"
+    );
+    assert_eq!(
+        unsafe { ll_gc_collect_cycles() },
+        0,
+        "a completed death is retired at the close, not collected"
+    );
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(
+        block_kind_and_used(held as usize).1,
+        used - 1,
+        "the close after the re-offer handed the slot back"
+    );
+}
+
+/// The earlier end of the interval: a pressure collection whose reading is
+/// live defers its batch, and that deferral sweeps the lane before the batch
+/// joins it, so a dead record already standing there gives its slot back
+/// there (`crate::cycle::queue::defer_candidates`). The ordinary close never
+/// reaches this arm.
+///
+/// The pressure path commits only a harvested list, so the live reading is
+/// staged as the first cases stage theirs: a ring the trace proposes and a
+/// reference taken before the counts are read. The ring and its keeper are
+/// of another size class than the dead object, so that no allocation of
+/// theirs lands in its block.
+#[test]
+fn a_pressure_collections_deferral_sweeps_a_dead_record_out_of_the_lane() {
+    let _g = test_guard();
+    release_queue_segments();
+    let _epoch = epoch::pin(1);
+
+    let mut arena = Arena::new();
+    let (held, used) = unsafe { a_dead_object_whose_record_is_deferred(&mut arena, "Swept") };
+
+    let wide = |name: &str| {
+        ClassBuilder::new(name)
+            .prop("next", true)
+            .prop("second", true)
+            .prop("third", true)
+            .prop("fourth", true)
+            .build()
+    };
+    let node = wide("SweptRingNode");
+    let members = unsafe { ring(&mut arena, [node, node]) };
+    let keeper = {
+        let mut context = LLContext { arena: &mut arena };
+        unsafe {
+            new_constructed(
+                &mut context,
+                wide("SweptRingKeeper"),
+                MemoryCategory::GcHeap,
+            )
+        }
+    };
+    assert_eq!(candidate_count(), 2);
+    assert_eq!(block_kind_and_used(held as usize).1, used);
+
+    assert!(refill_spares());
+    let _race = InjectedVerdictRace::arm(&mut arena, keeper, members[0]);
+    assert_eq!(
+        unsafe { collect_under_pressure() },
+        0,
+        "the reference the store took holds the ring"
+    );
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(
+        deferred_count(),
+        2,
+        "the ring's records joined the lane, and the dead one left it"
+    );
+    assert_eq!(
+        block_kind_and_used(held as usize).1,
+        used - 1,
+        "the deferral's sweep handed the slot back"
+    );
+
+    // The ring goes back the way the first case's does.
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+    }
+    let mirror = deferred_turnover_mirror();
+    assert!(reoffer_deferred_if_epoch_moved(epoch::one_turnover_past(
+        mirror
+    )));
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 2);
 }

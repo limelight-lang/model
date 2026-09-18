@@ -12,6 +12,7 @@
 use super::*;
 use crate::cycle::token::testing::HeldByACollector;
 use crate::cycle::token::this_thread_token;
+use crate::test_support::block_kind_and_used as kind_and_used;
 use crate::test_support::prop_offset;
 
 /// Red without the foreign window: the free list is LIFO, so the allocation
@@ -97,21 +98,6 @@ fn the_poll_makes_the_returns_a_holder_left_behind() {
     );
     let again = unsafe { dead_entity(again) };
     unsafe { crate::memory::stdapi::ll_free(again as *mut u8) };
-}
-
-/// The occupancy the heap reads for the block `addr` stands in, and the
-/// block's kind beside it, off `heap::describe_slot`'s own line.
-fn kind_and_used(addr: usize) -> (u32, u32) {
-    let line = crate::memory::heap::describe_slot(addr);
-    let field = |name: &str| -> u32 {
-        let start = line.find(&format!(" {name} ")).expect(name) + name.len() + 2;
-        line[start..]
-            .split(' ')
-            .next()
-            .and_then(|word| word.parse().ok())
-            .expect(name)
-    };
-    (field("kind"), field("used"))
 }
 
 /// A holder that takes the token again before the mutator has made its

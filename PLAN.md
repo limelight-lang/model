@@ -39,7 +39,7 @@ of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
 `dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36 and S38
-through S55 — every number this plan has spent but S37. A number is never
+through S56 — every number this plan has spent but S37. A number is never
 reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -725,36 +725,6 @@ repair of 2026-09-03 that made the ledger answer per thread is in
 `dev/DECISIONS.md`, "the test-facing reading of the GC ledger is per thread",
 and its trap in `dev/POSTMORTEM.md`, "an exact assertion cannot be made against
 a process-global ledger". **No work is scheduled here until a failure.**
-
-- [ ] **The deferred lane is not swept, and the close no longer sweeps it.**
-  `defer_candidates` lifted the active lane and ran the retirement pass over
-  the deferred one, so a record whose entity had died gave its slot back on the
-  way in; `dispose_candidates`, which the ordinary close now uses, reads the
-  deferred lane not at all, and `retire_candidates` walks the active lane
-  alone. A record deferred at one collection whose entity dies afterwards
-  therefore withholds its slot until the turnover. The population this applies
-  to grew with S37.6 from "the batch of an `ExternallyReferenced` commit" to
-  "every root any collection read live". Teaching retirement to walk the
-  deferred lane was refused under S37.4 — its work would become proportional to
-  the accumulated deferred set — so what is owed is either a sweep bounded like
-  the re-offer's or a statement that the turnover is the bound. At thread exit
-  the lane is re-offered before the exit's last round, so a deferred record
-  withholds nothing past the exit (`cycle::collect::collect_before_exit`).
-  done: the interval a deferred record can withhold a slot for is stated with
-  its bound, and a case shows it.
-
-- [ ] **The deferred lane's second segment is written by no case.** A lane
-  takes `SEGMENT_CAPACITY` — 8,160 — records per segment, and the widest
-  candidate population this crate's cases build is the 4,077 of
-  `queue::tests::where_a_full_segment_comes_from::`
-  `a_bulk_release_polls_on_its_own_backedge`. So the growth arm of
-  `compaction::Compaction::append_to_deferred_lane` and the `deferred_heads`
-  term of the ledger beside it are exercised by nothing, and a mutation that
-  deletes either stays green. `the_tokens_every_lane_holds::`
-  `a_deferred_lane_of_two_segments_comes_back_whole` builds two segments
-  through `defer_candidates`, which is the other machine.
-  done: a case drives the append past one segment, or a `#[cfg(test)]` seam
-  puts the lane at its bound without the population behind it.
 
 - [ ] **A weak map, and the second kind of death subscriber.**
   `rfc/model/weak-references.md` names two subscriber kinds and the crate

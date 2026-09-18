@@ -108,6 +108,21 @@ unsafe fn release(entity: *mut RcHeader) -> bool {
     unsafe { crate::refcount::ll_release(entity) }
 }
 
+/// A ring of two blocks: `filler` registered and its entries copied to the
+/// tail block's end, `grew` registered into the block that growth links in.
+/// The two headers stay in the caller's frame so that the caller keeps the
+/// raw pointers it registered (`dev/WORKFLOW.md`, Miri).
+///
+/// # Safety
+/// `filler` and `grew` point at headers this thread owns that outlive every
+/// read of the queue.
+unsafe fn ring_of_two_blocks(filler: *mut RcHeader, grew: *mut RcHeader) {
+    assert!(unsafe { !release(filler) });
+    fill_tail_block(filler);
+    assert!(unsafe { !release(grew) });
+    assert_eq!(segment_count(), 2);
+}
+
 /// Empty the queue and the spare cells, and give every block back.
 ///
 /// Every test here starts and ends with it, because the queue is per

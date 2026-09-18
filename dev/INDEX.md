@@ -665,8 +665,10 @@ versions live in `docs/history/`, marked at the top.
   `tests/` directory at the crate root: every test is a unit test and
   reads crate-internal state. A fixture a second module needs is in
   `src/test_support.rs` or a submodule of it — `test_support::outside_block`
-  is the class three modules build on, and `prop_offset` the offset its
-  `store_prop` takes — and what one family of modules needs is beside
+  is the class three modules build on, `prop_offset` the offset its
+  `store_prop` takes, and `block_kind_and_used` the reading of a block's
+  occupancy a case takes when it asks whether a free reached the block — and
+  what one family of modules needs is beside
   those modules: `src/array/testing.rs`, and `src/cycle/testing.rs` for
   the two readers that say what the trace left in a shadow row and the ring
   fixtures every case of the collector builds on — `ring`,

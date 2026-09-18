@@ -13,13 +13,13 @@
 //! while a multiset over `collect_lane_tokens` still read whole; the two
 //! together say which lane, and the multiset says which entities.
 //!
-//! **What no case here reaches is the second head.** A deferred lane takes one
-//! segment per `SEGMENT_CAPACITY` records, which is 8,160, and the widest
-//! population any case of this crate builds is the 4,077 of
-//! `queue::tests::where_a_full_segment_comes_from::`
-//! `a_bulk_release_polls_on_its_own_backedge`; so the append's growth arm and
-//! the ledger term beside it are exercised by nothing, and `PLAN.md`'s
-//! residual list carries the debt.
+//! **What no case here reaches is the lane's second block.** No case of this
+//! file registers `BLOCK_ENTRIES` records, so the lane's growth is driven
+//! where the records are cheap:
+//! `queue::tests::the_tokens_every_lane_holds::`
+//! `a_deferred_lane_of_two_blocks_is_spliced_back_whole` for the link and the
+//! splice, `queue::tests::what_gc_owns::`
+//! `a_block_the_deferral_links_into_the_lane_is_charged_whole` for the ledger.
 
 use super::*;
 use crate::cycle::queue::{

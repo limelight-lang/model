@@ -276,13 +276,9 @@ fn a_deferred_lane_of_two_blocks_is_spliced_back_whole() {
     assert!(refill_spares());
 
     let mut filler = candidate(2);
-    let filler_entity = &raw mut filler;
-    assert!(unsafe { !release(filler_entity) });
-    fill_tail_block(filler_entity);
     let mut grew = candidate(2);
     let grew_entity = &raw mut grew;
-    assert!(unsafe { !release(grew_entity) });
-    assert_eq!(segment_count(), 2);
+    unsafe { ring_of_two_blocks(&raw mut filler, grew_entity) };
 
     // The deferral fills its blocks from the spare cells, which the growth
     // above spent: refilled first, so that the lane can take every record
@@ -368,9 +364,7 @@ fn a_reoffer_at_a_poll_with_nothing_to_draw_splices_the_lane_in() {
     let grew = [&raw mut first_grew, &raw mut second_grew];
     for (round, &filler_entity) in fillers.iter().enumerate() {
         assert!(refill_spares());
-        assert!(unsafe { !release(filler_entity) });
-        fill_tail_block(filler_entity);
-        assert!(unsafe { !release(grew[round]) });
+        unsafe { ring_of_two_blocks(filler_entity, grew[round]) };
         // The lane's blocks come from the cells too.
         assert!(refill_spares());
         defer_candidates(read_batch(), 0);
