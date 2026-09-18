@@ -248,3 +248,69 @@ fn an_evicted_ring_is_freed_by_a_live_thread_rather_than_a_dying_one() {
     // test's. Leave nothing of its own behind either way.
     let _ = evict_retired_ring(identity);
 }
+
+/// A second life whose heap the allocator refused is a life all the same:
+/// the phase is lowered and the ring reopened before the heap is built, so
+/// the life journals into a ring of its own rather than the one its first
+/// life retired, and it may free. The heap is refused for that life alone
+/// (`memory::heap::refuse_thread_heap`), and the ring comes from GC metadata
+/// rather than from the heap.
+#[test]
+fn a_heapless_second_life_journals_into_a_ring_of_its_own() {
+    let _quiet = kinds::disable_sites_for_test();
+    const FIRST: u64 = 0x1_C0FFEE;
+    const SECOND: u64 = 0x2_C0FFEE;
+    let _g = crate::memory::block_pool::test_guard();
+    let start = mark();
+
+    let (first, second, may_free) = std::thread::spawn(|| {
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "the runtime started this thread"
+        );
+        record(ANY_KIND, 0, FIRST, 0, 0);
+        let first = this_thread_identity();
+        crate::memory::heap::ll_thread_exit();
+
+        let _refused = crate::memory::heap::refuse_thread_heap();
+        assert!(
+            crate::memory::heap::ll_thread_init(),
+            "a heapless thread is a started thread"
+        );
+        assert!(
+            crate::memory::heap::thread_heap().is_null(),
+            "this case needs a heapless second life"
+        );
+        record(ANY_KIND, 0, SECOND, 0, 0);
+        let second = this_thread_identity();
+        let may_free = crate::memory::heap::thread_may_free();
+        crate::memory::heap::ll_thread_exit();
+        (first, second, may_free)
+    })
+    .join()
+    .expect("the heapless thread panicked");
+
+    let end = mark();
+    assert_ne!(second, 0, "a heapless life journaled into no ring");
+    assert_ne!(second, first, "the heapless life reopened the retired ring");
+    assert!(may_free, "the heapless life was left in the exit's phase");
+    // What the ring holds, rather than that it exists: a record path that
+    // gave up on a thread with no heap would leave both lives registered,
+    // retired and empty, which reads from the registry exactly like this one.
+    let subjects: Vec<u64> = events(between(&start, &end))
+        .into_iter()
+        .filter(|event| event.thread == first || event.thread == second)
+        .map(|event| event.subject)
+        .collect();
+    assert_eq!(subjects, vec![FIRST, SECOND]);
+    assert_eq!(
+        rings_named(second),
+        (0, 1),
+        "the exit left the heapless life's ring live"
+    );
+    assert_eq!(
+        rings_named(first),
+        (0, 1),
+        "the first life's ring is still live"
+    );
+}

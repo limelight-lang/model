@@ -435,7 +435,12 @@ versions live in `docs/history/`, marked at the top.
   thread's cell is counted and reported as `Lost`, while a never-journaled
   thread's records are not counted again on top of its own answer.
   `ll_thread_init` reopens the cell, so a pool thread's second life
-  journals into a ring of its own. An evicted ring is freed by
+  journals into a ring of its own — a life whose heap the OS refused
+  included, that thread being started and heapless rather than closed. A
+  case reaches such a life through `memory::heap::refuse_thread_heap`,
+  which refuses the `ThreadHeaps` allocation of the thread holding the
+  guard and nothing else
+  (`memory::heap::tests::a_life_the_allocator_left_heapless`). An evicted ring is freed by
   the next thread to journal or to mark, never by one inside its own exit,
   whose pending-free list is gone by then — the three-valued
   `heap::ExitPhase` is what tells those apart, a boolean having conflated

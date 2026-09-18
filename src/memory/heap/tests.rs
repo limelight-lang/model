@@ -2,6 +2,7 @@ use super::*;
 use crate::memory::block_pool::BLOCK_PAYLOAD;
 use std::sync::atomic::Ordering;
 
+mod a_life_the_allocator_left_heapless;
 mod a_thread_outside_its_life;
 mod blocks_going_home_with_nobody_asking;
 mod frees_arriving_from_another_thread;

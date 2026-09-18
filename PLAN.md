@@ -11,10 +11,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-18 · Active: S37. Every open step is blocked outside this
-repository or on a corpus: S37.2 waits on the compiler that computes the
-acyclic proof, S37.5 and S37.7 on the Phase-D corpus. The prose
-sections after S37 are the backlog, and the next stage is drawn from them.
+Updated: 2026-09-18 · Active: S37. Every open step of S37 is blocked
+outside this repository or on a corpus: S37.2 waits on the compiler that
+computes the acyclic proof, S37.5 and S37.7 on the Phase-D corpus. The prose
+sections below are the backlog a stage is drawn from while they wait.
 
 Review 2026-09-18: the first one recorded here, and overdue — the hook reads
 `dev/PLAN.md` while this plan sits at the repo root, so nothing named the
@@ -38,8 +38,8 @@ have dropped were filed first, in `dev/DECISIONS.md` (four entries),
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36 and S38
-through S52 — every number this plan has spent but S37. A number is never
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36, S38
+through S52 and S53 — every number this plan has spent but S37. A number is never
 reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -664,12 +664,18 @@ took it.
   box; a fixture that disposes instead of clearing pays a collection per
   batch. Neither is priced.
 
-- [ ] **What S50 left unpinned, 2026-09-16.** A second life whose `ThreadHeaps`
-  allocation or slot store the OS refuses is set `Live` and its journal
-  reopened before the heap is built (`heap::ll_thread_init`), so it frees and
-  journals as a life; no seam refuses either on demand, so no case reads it.
-  The seam is a test-only fault on the `ThreadHeaps` allocation, in the form
-  `FORCE_GUARD_UNARMED` takes for the guard.
+- [ ] **The second heapless arm has no case off Windows, 2026-09-18.** A
+  thread whose heap is built and whose `tls::set` then refuses it is left
+  heapless by the same two lines as a refused allocation
+  (`memory::heap::ll_thread_init`), and `memory::heap::refuse_thread_heap`
+  reaches the allocation alone. On Linux `tls::set` answers `true` always, so the arm is unreachable
+  there and its Windows case is
+  `heap::tests::blocks_going_home_with_nobody_asking::`
+  `a_thread_without_a_tls_slot_reports_instead_of_dying`, which reads three of
+  the six promises the cases in
+  `heap::tests::a_life_the_allocator_left_heapless` state. What is missing is a reading of the other three
+  on a Windows run, and nothing here can make one.
+
 - [ ] **What S49 named and left, 2026-09-16.** A component past the
   collector's block budget whose owner-side trace the pool refuses circles
   P and R under pressure, arming a collection each round (Critic, S49.5); the

@@ -7,6 +7,30 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-18 — a case that starts a thread without the pool's guard is the third thread another case's ledger reading cannot survive
+
+**What happened.** S53's cases start a runtime thread to reach a heapless
+life, and four of the six took no `block_pool::test_guard()`. Under
+`debug-journal` the suite then failed twice in ten runs at eight threads, in
+`gc_metadata::tests::a_threads_exit_ends_every_block_it_acquired`, which read
+10 GC-metadata blocks where it had left 6. Ten runs after the guard was taken
+in all of them were green.
+
+**Why it was possible.** The pool's guard is documented as the rule for tests
+that assert on the process-global pool, and the cases asserting nothing about
+it read as exempt. The population it protects is the other side: `PLAN.md`'s
+gate flake watch names six cases that bracket a child thread's whole life with
+a process-wide figure, and any thread started beside them moves that figure. A
+new case is a third thread by the act of spawning, whatever it asserts, and
+under `debug-journal` each such thread also retires a ring the registry keeps.
+
+**What catches it.** Nothing automatic: the guard is a convention no test
+enforces, and the failure surfaces in a module the change never touched, once
+in five runs. What stands in for a check is the run — the `debug-journal` leg
+repeated until a figure either drifts or does not, rather than once — and the
+rule that a case starting a runtime thread takes the guard even where it
+asserts nothing.
+
 ## 2026-09-18 — a first-touch draw is the thread's history, so a deny bracket refused nothing
 
 **What happened.** S37.9's two cases drive a refused store: an arena COW

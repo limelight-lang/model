@@ -2184,7 +2184,7 @@ pub extern "C" fn ll_thread_init() -> bool {
     // module already models (`thread_heap` documents it), so every
     // allocation path reports null instead of the process dying.
     let layout = std::alloc::Layout::new::<ThreadHeaps>();
-    let heap = unsafe { std::alloc::alloc(layout) } as *mut ThreadHeaps;
+    let heap = alloc_thread_heaps(layout);
     if heap.is_null() {
         // A heapless thread is a started one, and it registers
         // candidates: its record is made claimable as a funded thread's
@@ -2219,6 +2219,48 @@ pub extern "C" fn ll_thread_init() -> bool {
     unsafe { crate::cycle::mutator_record::make_thread_record_claimable() };
 
     true
+}
+
+/// The pair of heaps a thread starts with, or null where the allocator
+/// refuses the memory.
+fn alloc_thread_heaps(layout: std::alloc::Layout) -> *mut ThreadHeaps {
+    // Fault injection, tests only (`refuse_thread_heap`): an allocator that
+    // refuses this one request cannot be arranged. The same heapless thread
+    // is also left by a failing `tls::set` below, which no case reaches off
+    // Windows, that being the only target where `set` can refuse.
+    #[cfg(test)]
+    if REFUSE_THREAD_HEAP.with(|refused| refused.replace(false)) {
+        return std::ptr::null_mut();
+    }
+
+    let bytes = unsafe { std::alloc::alloc(layout) };
+    bytes as *mut ThreadHeaps
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether this thread's heap allocation is refused, tests only.
+    ///
+    /// Per thread rather than process-wide: a process-wide refusal reaches
+    /// every thread the tests running beside this one start, and a heapless
+    /// thread is a state they do not expect
+    /// (`crate::memory::block_pool::BLOCK_BUDGET` carries the same reasoning
+    /// for the pool). The cell is read in `alloc_thread_heaps`, under
+    /// `ll_thread_init`, so a case raises it on the thread it means to deny,
+    /// before that thread's init — and one arming refuses one heap, a
+    /// second life under the same guard being funded.
+    static REFUSE_THREAD_HEAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Refuse the next heap of this thread ([`ArmedInjection`]): the
+/// `ll_thread_init` made under the guard leaves the thread started and
+/// heapless. It names the `ThreadHeaps` allocation of [`alloc_thread_heaps`]
+/// and nothing else, so a case that takes it proves which memory the thread
+/// was denied, and a thread starting beside it is funded as usual.
+#[cfg(test)]
+#[must_use = "the heap is refused only while the guard lives"]
+pub(crate) fn refuse_thread_heap() -> crate::cycle::testing::ArmedInjection {
+    crate::cycle::testing::ArmedInjection::arm(&REFUSE_THREAD_HEAP)
 }
 
 /// End the process from an entry point reached outside a thread's life: on a
