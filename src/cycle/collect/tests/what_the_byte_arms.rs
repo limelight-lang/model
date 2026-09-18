@@ -401,3 +401,89 @@ fn the_pressure_path_spends_an_arming_for_the_verdicts() {
     );
     reset();
 }
+
+/// The collection the byte arms reads no root of R, and retires R's
+/// completed deaths all the same: its close compacts the ring whole
+/// (`cycle::queue::dispose_candidates`), so a death registered after the
+/// batch took its own roots out gives its slot back at this fire.
+#[test]
+fn the_fire_the_byte_arms_retires_a_death_standing_in_r() {
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let node = node_class("ArmedFireNode");
+    let mut arena = Arena::new();
+    let keeper = unsafe { kept_root(&mut arena, node, "ArmedFireKeeper") };
+    assert_eq!(stand_in_posts(1, Verdict::ReadLive), Posted::Batch(1));
+    assert_eq!(state(byte()), POSTED);
+
+    // A death of its own, registered after the batch took its root out of R.
+    let class = ClassBuilder::new("ArmedFireDeath").build();
+    let mut context = LLContext { arena: &mut arena };
+    let dying = unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) };
+    unsafe {
+        crate::refcount::ll_retain(dying as *mut RcHeader);
+        assert!(
+            !ll_release(dying as *mut RcHeader),
+            "the non-final decrement registers it"
+        );
+        assert!(ll_release(dying as *mut RcHeader));
+        ll_object_die(dying);
+    }
+    assert_eq!(candidate_count(), 1, "the death stands in R");
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(
+        candidate_count(),
+        0,
+        "the fire over P retired the death standing in R"
+    );
+    assert_eq!(state(byte()), FREE);
+
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+    }
+    unsafe { crate::cycle::queue::retire_candidates() };
+    reset();
+}
+
+/// A poll with nothing armed and a byte at `FREE` reads no lane: a completed
+/// death stands in R across any number of polls, its slot withheld from the
+/// allocator, until something runs a retirement pass. What that costs, and
+/// who is to run such a pass, is `PLAN.md`, S54.
+#[test]
+fn an_unarmed_poll_leaves_a_completed_death_registered() {
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let mut arena = Arena::new();
+    let class = ClassBuilder::new("UnarmedPollDeath").build();
+    let mut context = LLContext { arena: &mut arena };
+    let dying = unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) };
+    unsafe {
+        crate::refcount::ll_retain(dying as *mut RcHeader);
+        assert!(
+            !ll_release(dying as *mut RcHeader),
+            "the non-final decrement registers it"
+        );
+        assert!(ll_release(dying as *mut RcHeader));
+        ll_object_die(dying);
+    }
+    assert_eq!(candidate_count(), 1);
+    assert_eq!(state(byte()), FREE);
+    assert_eq!(crate::gc::arming(), Arming::None);
+
+    for _ in 0..5 {
+        assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    }
+    assert_eq!(
+        candidate_count(),
+        1,
+        "five polls read nothing and the death stands"
+    );
+
+    unsafe { crate::cycle::queue::retire_candidates() };
+    assert_eq!(candidate_count(), 0, "a retirement pass is what clears it");
+    reset();
+}

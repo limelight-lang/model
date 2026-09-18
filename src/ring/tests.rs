@@ -722,3 +722,162 @@ fn a_pack_over_a_front_the_reader_moved_keeps_the_writers_full_test_sound() {
     assert_eq!(all[BLOCK_ENTRIES], 7_000_002);
     words.dismantle();
 }
+
+/// A peek reads two blocks, so a block holding no entry between the front
+/// block and the tail block answers a batch of nothing while entries stand
+/// behind it: the reader crosses one hole per read, and the entries arrive a
+/// read later for each. This is what the queue's bounded sweep pays to avoid
+/// by unlinking a block it empties
+/// (`cycle::queue::compaction::sweep_block`).
+#[test]
+fn a_peek_before_an_empty_middle_block_answers_nothing() {
+    let _g = test_guard();
+    let _hold = SharedRing::take();
+    let words = &SHARED;
+    let writer = unsafe { Writer::new(words.slots()) };
+    for entry in 1..=(BLOCK_ENTRIES * 2 + 1) {
+        writer.push(entry, fresh).expect("a block was had");
+    }
+    let quiet = unsafe { Quiescent::new(words.slots()) };
+    let mut blocks = Vec::new();
+    quiet.blocks_in_order(|block| blocks.push(block));
+    assert_eq!(blocks.len(), 3, "three blocks stand");
+
+    // The middle block emptied by hand, as a sweep finding every entry of it
+    // a completed death would leave it.
+    {
+        let mut sweep = unsafe { quiet.sweep_block(blocks[1]) };
+        while sweep.read().is_some() {
+            sweep.discard();
+        }
+    }
+    assert_eq!(
+        quiet.count(),
+        BLOCK_ENTRIES + 1,
+        "the other two blocks keep their entries"
+    );
+
+    let reader = unsafe { Reader::new(words.slots()) };
+    reader.advance(BLOCK_ENTRIES);
+    let mut out = [0usize; 32];
+    let peeked = reader.peek(&mut out);
+    assert_eq!(
+        peeked.len(),
+        0,
+        "the peek crossed the front block and the hole and answered nothing"
+    );
+    reader.commit(peeked);
+
+    let peeked = reader.peek(&mut out);
+    assert_eq!(
+        peeked.len(),
+        1,
+        "the entry behind the hole came a read later"
+    );
+    assert_eq!(out[0], BLOCK_ENTRIES * 2 + 1);
+    reader.commit(peeked);
+    assert_eq!(quiet.count(), 0);
+
+    words.dismantle();
+}
+
+/// A block the owner empties between the front block and the tail block
+/// leaves the circle, so no such hole stands: the front block and the tail
+/// block are left where they are, a reader standing in one and the writer
+/// appending to the other.
+#[test]
+fn an_emptied_middle_block_leaves_the_circle() {
+    let _g = test_guard();
+    let _hold = SharedRing::take();
+    let words = &SHARED;
+    let writer = unsafe { Writer::new(words.slots()) };
+    for entry in 1..=(BLOCK_ENTRIES * 2 + 1) {
+        writer.push(entry, fresh).expect("a block was had");
+    }
+    let quiet = unsafe { Quiescent::new(words.slots()) };
+    let mut blocks = Vec::new();
+    quiet.blocks_in_order(|block| blocks.push(block));
+
+    {
+        let mut sweep = unsafe { quiet.sweep_block(blocks[1]) };
+        while sweep.read().is_some() {
+            sweep.discard();
+        }
+    }
+    let unlinked = unsafe { quiet.unlink_empty_block(blocks[1]) };
+    assert_eq!(unlinked, blocks[1], "the emptied middle block came back");
+
+    let mut left = Vec::new();
+    quiet.blocks_in_order(|block| left.push(block));
+    assert_eq!(
+        left,
+        vec![blocks[0], blocks[2]],
+        "the circle closed over it"
+    );
+    assert_eq!(quiet.count(), BLOCK_ENTRIES + 1);
+
+    // The two blocks the ring's own rules carry stay, read empty or not: the
+    // front block is where a reader stands and the tail block is where the
+    // writer appends. Each is emptied first, so the refusal is the guard's
+    // and not the block's contents.
+    let reader = unsafe { Reader::new(words.slots()) };
+    reader.advance(BLOCK_ENTRIES);
+    assert!(
+        unsafe { quiet.unlink_empty_block(blocks[0]) }.is_null(),
+        "an emptied front block stays"
+    );
+
+    let mut out = [0usize; 32];
+    let peeked = reader.peek(&mut out);
+    assert_eq!(peeked.len(), 1, "and the entry behind it is read at once");
+    assert_eq!(out[0], BLOCK_ENTRIES * 2 + 1);
+    reader.commit(peeked);
+    assert!(
+        unsafe { quiet.unlink_empty_block(blocks[2]) }.is_null(),
+        "and so does an emptied tail block"
+    );
+
+    gc_metadata::release(unlinked);
+    words.dismantle();
+}
+
+/// A ring the owner swept empty answers `has_at_least` false, whatever its
+/// blocks: that reading is a collector's before it holds anything, and it
+/// takes `front_block != tail_block` for entries standing in a block
+/// between them. A sweep lowers a block's tail without moving either word,
+/// so a ring emptied block by block would read as work for every round the
+/// collector ever makes.
+#[test]
+fn a_ring_swept_empty_reads_empty_to_a_collector() {
+    let _g = test_guard();
+    let _hold = SharedRing::take();
+    let words = &SHARED;
+    let writer = unsafe { Writer::new(words.slots()) };
+    for entry in 1..=(BLOCK_ENTRIES + 1) {
+        writer.push(entry, fresh).expect("a block was had");
+    }
+    let quiet = unsafe { Quiescent::new(words.slots()) };
+    let mut blocks = Vec::new();
+    quiet.blocks_in_order(|block| blocks.push(block));
+    assert_eq!(blocks.len(), 2, "a full front block and a tail block");
+
+    for &block in &blocks {
+        let mut sweep = unsafe { quiet.sweep_block(block) };
+        while sweep.read().is_some() {
+            sweep.discard();
+        }
+    }
+    assert_eq!(quiet.count(), 0, "the ring holds nothing");
+    assert!(
+        unsafe { quiet.collapse_if_empty() },
+        "the two block words came together"
+    );
+
+    let reader = unsafe { Reader::new(words.slots()) };
+    assert!(
+        !reader.has_at_least(1),
+        "an emptied ring offered a collector a batch"
+    );
+
+    words.dismantle();
+}

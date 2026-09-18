@@ -134,6 +134,88 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: 
     dispose_verdicts(state, verdicts, deferred_at);
 }
 
+/// Retire the completed deaths standing in one block of R, and leave every
+/// other entry of that block as it stood, in order — the mark it carries
+/// included, this pass answering for nothing but a death.
+///
+/// The bound is the block: the rest of the circle, the overflow buffer, the
+/// deferred lane and P are not read, and a block left half-empty is read as
+/// it stands ([`crate::ring::BlockSweep`]).
+///
+/// # Safety
+/// As [`crate::cycle::queue::retire_candidates`], and no reading of R stands
+/// uncommitted: a `Peeked` names blocks by address, and this pass can take
+/// one of them out of the circle.
+pub(super) unsafe fn sweep_block(block: *mut BlockHeader) {
+    let state = mutator_state();
+    if state.is_null() {
+        return;
+    }
+    let Some(ring) = candidate_ring() else {
+        return;
+    };
+
+    // A block the circle no longer holds is refused rather than swept. The
+    // caller of a bounded pass keeps a block pointer across fires, and four
+    // paths take a block out from under such a pointer — this sweep's own
+    // unlink, the poll's surplus unlink, the deferred lane's return and the
+    // reoffer's splice — after which the block may be a spare cell's, the
+    // critical reserve's, or another kind's entirely. The walk is over the
+    // circle's blocks, which are few; the bound this step is about is over
+    // entries.
+    let mut in_the_circle = false;
+    ring.blocks_in_order(|linked| in_the_circle |= linked == block);
+    debug_assert!(
+        in_the_circle,
+        "a sweep of a block this thread's candidate ring does not hold"
+    );
+    if !in_the_circle {
+        return;
+    }
+
+    note_queue_work(1, 0, 0);
+    checkpoint(0);
+
+    {
+        let mut sweep = unsafe { ring.sweep_block(block) };
+        while let Some(entry) = sweep.read() {
+            note_queue_work(0, 1, 0);
+            let entity = entry_entity(entry);
+            if !completed_death(entity) {
+                note_queue_work(0, 0, 1);
+                sweep.keep();
+                continue;
+            }
+
+            // Before the disposition acts: an unwind here keeps the entry as
+            // it stood, mark and all.
+            checkpoint(1);
+            sweep.discard();
+            free(entity);
+        }
+    }
+
+    // A block the sweep emptied leaves the circle rather than standing in it
+    // with nothing in it: a collector's peek reads two blocks, so a hole
+    // between the front block and the tail block answers a batch of nothing
+    // while roots stand behind it, one round per hole
+    // (`ring::tests::a_peek_before_an_empty_middle_block_answers_nothing`).
+    // The front block and the tail block are left where they are, the ring's
+    // own rules carrying an empty block in either.
+    // A ring this sweep left holding nothing brings its two block words
+    // together, the shape a whole-ring pack leaves: a collector's pre-claim
+    // reading takes two different words for entries standing between them,
+    // and would ask for a batch every round over a ring swept empty
+    // (`ring::Quiescent::collapse_if_empty`).
+    unsafe { ring.collapse_if_empty() };
+
+    let unlinked = unsafe { ring.unlink_empty_block(block) };
+    if !unlinked.is_null() {
+        discharge_block();
+        return_surplus_block(unsafe { mutator_state_ref(state) }, unlinked);
+    }
+}
+
 /// The pass over P. With `prefix` the batch's count of P's entries, dispose
 /// of each of them: a completed death is retired, a root marked or read live
 /// goes to the deferred lane, and everything else — a component refused or
