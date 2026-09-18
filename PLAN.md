@@ -581,10 +581,7 @@ took it.
   refusal, and no ruling says whether a collector thread may spend a
   reserve; a ring a burst grew while both spare cells were full keeps its
   blocks until a cell is spent, with no bound (`dev/DECISIONS.md`, "the
-  ring's surplus goes into a short spare cell"); the rfc's "one in-line
-  collection over the proposed roots" admits a narrower batch than the
-  whole of R the crate traces at every fire (`rfc/dev/DECISIONS.md`, "P
-  stays one block"), a reading named for Edmond and not put to him.
+  ring's surplus goes into a short spare cell").
 **A gate flake watch, not a step.** Six cases read the process-wide GC ledger
 across a child thread's whole life, which no per-thread figure can answer, and
 they drift if a third thread draws GC memory in that window:
