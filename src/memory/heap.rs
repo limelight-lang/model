@@ -1902,10 +1902,10 @@ pub extern "C" fn ll_thread_exit() {
     //    still free a buffer into it: a static block's teardown reaches
     //    `string_die`, which returns a dynamic string's payload here, and
     //    the withheld backlog's flush routes payload frees the same way.
-    //    Disposing earlier is not caught — a later free would build a
-    //    second arena through the lazy path and leak it. The blocks it
-    //    hands back go to the process-global pool, which outlives every
-    //    thread, so nothing below needs it.
+    //    Disposing earlier is not caught — a later free posts remote, and a
+    //    later long-lived allocation bumps a fresh block nothing hands over.
+    //    The blocks it hands back go to the process-global pool, which
+    //    outlives every thread, so nothing below needs it.
     crate::memory::buffer_arena::dispose();
 
     // 5 is the last act of this function rather than the fifth of five,

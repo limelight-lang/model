@@ -805,9 +805,11 @@ is destroyed before it runs. (Against the two slots `ll_thread_init`
 itself touches, the barrier reserve and the pool's thread cache, the
 guard registers *later* and therefore runs *first*; `heap.rs`'s
 `ll_thread_exit` states that half, which is the one easy to get
-backwards.) Every per-thread structure on this path is therefore a
-pointer cell with no drop glue, freed by hand (`dev/DECISIONS.md`,
-"thread exit owns the order its per-thread state dies in").
+backwards.) Every per-thread structure on this path is therefore a cell
+with no drop glue — a pointer, or the structure itself under
+`ManuallyDrop`, as the buffer arena is — disposed of by hand
+(`dev/DECISIONS.md`, "thread exit owns the order its per-thread state dies
+in").
 
 **The survivor list outlives the reset.** It is grouped per block,
 written into memory the arena already holds — the retained block's own

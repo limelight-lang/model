@@ -33,7 +33,8 @@
 //! chunk died (`dev/DECISIONS.md`, "a buffer block carries its own cursor,
 //! so an adopted block is reused and not just held").
 
-use std::cell::Cell;
+use std::cell::UnsafeCell;
+use std::mem::ManuallyDrop;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
@@ -779,14 +780,15 @@ unsafe fn post_remote(block: *mut BufferBlockHeader, ptr: *mut u8, size: usize) 
 }
 
 thread_local! {
-    /// This thread's persistent buffer arena, behind a raw pointer in a
-    /// `Cell` rather than a `RefCell<BufferArena>` — the shape every
-    /// thread-local reachable from thread exit was converted to on
-    /// 2026-08-03. What keeps drop glue is the four structures that
-    /// need a destructor of their own: the two memory reserves, the
-    /// pool's thread cache and the exit guard (`dev/DECISIONS.md`,
-    /// "what the first touch of a thread-local with drop glue may
-    /// cost").
+    /// This thread's persistent buffer arena, the struct itself under
+    /// `ManuallyDrop` rather than a `RefCell<BufferArena>` or a box the
+    /// first use builds — a cell with no drop glue, the shape of every
+    /// thread-local reachable from thread exit (`dev/DECISIONS.md`, "thread
+    /// exit owns the order its per-thread state dies in"). What keeps drop
+    /// glue is the four structures that need a destructor of their own: the
+    /// two memory reserves, the pool's thread cache and the exit guard
+    /// (`dev/DECISIONS.md`, "what the first touch of a thread-local with
+    /// drop glue may cost").
     ///
     /// The thread-exit path reaches this arena: static-block teardown
     /// runs `__destruct` bodies, those release entities, and a dying
@@ -799,33 +801,30 @@ thread_local! {
     /// destroyed by then; `with` would panic with `AccessError`, and a
     /// panic inside a TLS destructor cannot unwind — the process aborts.
     ///
-    /// A `Cell<*mut _>` has no drop glue, is never registered, and stays
-    /// readable for the whole life of the thread. [`dispose`] frees it
-    /// explicitly, at the position `ll_thread_exit` chooses.
-    static THREAD_BUFFER_ARENA: Cell<*mut BufferArena> = const { Cell::new(std::ptr::null_mut()) };
+    /// `ManuallyDrop` strips the drop glue, so the slot is never registered
+    /// and stays readable for the whole life of the thread; [`dispose`]
+    /// hands the blocks over explicitly, at the position `ll_thread_exit`
+    /// chooses. Holding the struct in place rather than a box to it means
+    /// the first use allocates nothing: a box's `Box::new` aborts on
+    /// refusal, and the first use can be a destructor at thread exit
+    /// freeing a payload (`dev/DECISIONS.md`, "the reset window's memory
+    /// comes from the manager, and an allocation it cannot get is a
+    /// refusal").
+    static THREAD_BUFFER_ARENA: UnsafeCell<ManuallyDrop<BufferArena>> =
+        const { UnsafeCell::new(ManuallyDrop::new(BufferArena::new())) };
 }
 
-/// Run `f` with this thread's persistent long-lived buffer arena,
-/// creating it on first use.
+/// Run `f` with this thread's persistent long-lived buffer arena.
 ///
-/// The `RefCell`'s borrow guard is gone with the conversion, and nothing
-/// needs it: no path inside `BufferArena` calls back out, so there is no
-/// reentrancy to catch.
+/// No borrow guard, and nothing needs one: no path inside `BufferArena`
+/// calls back out, so there is no reentrancy to catch. `f` may not call
+/// this function again for the same reason a `RefCell` would have
+/// refused it.
 pub fn with_buffer_arena<R>(f: impl FnOnce(&mut BufferArena) -> R) -> R {
-    let arena = THREAD_BUFFER_ARENA.with(|cell| {
-        let mut p = cell.get();
-        if p.is_null() {
-            p = Box::into_raw(Box::new(BufferArena::new()));
-            cell.set(p);
-        }
-
-        p
-    });
-
-    f(unsafe { &mut *arena })
+    THREAD_BUFFER_ARENA.with(|cell| f(unsafe { &mut *cell.get() }))
 }
 
-/// Give this thread's buffer arena back, running its [`Drop`] by hand.
+/// Hand this thread's buffer blocks over, as the arena's [`Drop`] would.
 ///
 /// Called from `heap::ll_thread_exit` rather than from a TLS destructor,
 /// which is the whole point (see [`THREAD_BUFFER_ARENA`]). Its position
@@ -835,16 +834,14 @@ pub fn with_buffer_arena<R>(f: impl FnOnce(&mut BufferArena) -> R) -> R {
 /// routes payload frees back here — and the blocks it returns go to the
 /// process-global pool, which outlives every thread.
 ///
-/// Null-tolerant and idempotent: a thread that never allocated a buffer,
-/// and a second call, both find nothing. Disposing too early is not
-/// caught: a later free would silently build a second arena through the
-/// lazy path above and leak it, which is why the position is stated
-/// rather than assumed.
+/// Idempotent: a thread that never allocated a buffer, and a second call,
+/// both find an arena with no blocks. The arena stays usable afterwards,
+/// and that is a trap rather than a feature: a later free posts remote,
+/// since the hand-over nulled every block's owner, but a later long-lived
+/// allocation bumps a fresh block under this thread's arena that nothing
+/// hands over — which is why the position is stated rather than assumed.
 pub fn dispose() {
-    let p = THREAD_BUFFER_ARENA.with(|cell| cell.replace(std::ptr::null_mut()));
-    if !p.is_null() {
-        drop(unsafe { Box::from_raw(p) });
-    }
+    with_buffer_arena(|arena| arena.hand_over());
 }
 
 // --- Long-lived growth over the arena -------------------------------------
@@ -980,7 +977,13 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
             return;
         }
 
-        unsafe { free_chunk(ptr, capacity) };
+        // Through this thread's arena whether or not it ever allocated: a
+        // thread that never did can still drop the last reference to a
+        // string another thread built — that is what the ownership
+        // protocol is for — and the arena's free posts a chunk it does not
+        // own remote. The arena is the thread-local itself, so reaching it
+        // builds nothing.
+        with_buffer_arena(|arena| unsafe { arena.free(ptr, capacity) });
     } else {
         // OS-direct run: the standard path frees it by mask.
         unsafe { crate::memory::stdapi::ll_free(ptr) };
@@ -1057,29 +1060,6 @@ fn longlived_refusal_takes_this_one() -> bool {
 
     REFUSALS.fetch_add(1, Relaxed);
     true
-}
-
-/// Free a chunk without building this thread's arena to do it.
-///
-/// A thread that never allocated a buffer can still be the one that drops
-/// the last reference to a string another thread built — that is what the
-/// ownership protocol is for. Going through [`with_buffer_arena`] would
-/// allocate a `BufferArena` on the system allocator just to compute an
-/// identity that cannot match, and `Box::new` aborts the process when it
-/// refuses: an abort on a free path. `stdapi::ll_free` answers the same
-/// question the same way for an entity slot with no thread heap.
-///
-/// # Safety
-/// `(ptr, capacity)` must be exactly one live chunk of some arena.
-unsafe fn free_chunk(ptr: *mut u8, capacity: usize) {
-    let existing = THREAD_BUFFER_ARENA.with(|cell| cell.get());
-    if existing.is_null() {
-        let block = BufferBlockHeader::of_ptr(ptr);
-        let size = round_up_8(capacity).max(MIN_CHUNK);
-        return unsafe { post_remote(block, ptr, size) };
-    }
-
-    unsafe { (*existing).free(ptr, capacity) };
 }
 
 /// Release a long-lived buffer: frees the payload, zeroes the struct.

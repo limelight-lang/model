@@ -4,4 +4,5 @@ use crate::memory::buffer::set_pressure_mode;
 mod growing_a_payload;
 mod how_far_a_chunk_is_searched_for;
 mod what_adoption_recovers;
+mod what_the_thread_local_asks_the_allocator;
 mod who_may_touch_a_block;

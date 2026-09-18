@@ -92,6 +92,52 @@ fn a_foreign_free_leaves_the_owners_block_alone() {
     }
 }
 
+/// The payload free on a thread that never allocated a buffer: its own
+/// arena owns no block, so the free finds a foreign owner and posts the
+/// chunk on the block's stack, where the owner collects it. The thread's
+/// arena is its thread-local and builds nothing to answer this, which is
+/// what keeps the free path free of a `Box::new` that could abort.
+#[test]
+fn a_thread_that_never_allocated_posts_a_payload_free_remote() {
+    let _g = crate::memory::block_pool::test_guard();
+    let (chunk, granted) = buffer_alloc_longlived_payload(32);
+    assert!(!chunk.is_null(), "the arena served nothing");
+    let block = BufferBlockHeader::of_ptr(chunk);
+
+    let chunk_address = chunk as usize;
+    std::thread::spawn(move || unsafe {
+        buffer_free_longlived_payload(chunk_address as *mut u8, granted);
+    })
+    .join()
+    .unwrap();
+
+    unsafe {
+        assert_eq!(
+            (*block).private.live,
+            1,
+            "live is the owner's count, and a posted chunk still counts"
+        );
+        assert_eq!(
+            (*block).remote.remote_free.load(Ordering::Relaxed) as usize,
+            chunk_address,
+            "the chunk belongs on the block's posting stack"
+        );
+    }
+
+    with_buffer_arena(|owner| owner.collect_owned());
+    unsafe {
+        assert!(
+            (*block)
+                .remote
+                .remote_free
+                .load(Ordering::Relaxed)
+                .is_null(),
+            "collected by the owner"
+        );
+        assert_eq!((*block).private.live, 0, "and accounted for");
+    }
+}
+
 /// An arena that dies still holding chunks hands its blocks over
 /// instead of dropping them: the memory comes back, and the frees
 /// other threads are still posting into those blocks get a collector

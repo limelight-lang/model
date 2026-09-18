@@ -955,12 +955,6 @@ pub(crate) fn test_guard() -> TestGuard {
     // happen halfway through it
     // (`crate::cycle::queue::warm_workspace_base`).
     crate::cycle::queue::warm_workspace_base();
-    // And the thread's long-lived buffer arena, which is a `Box` built at
-    // its first use: a test counting what a path draws from the process
-    // charges that `Box` to whichever path reaches a long-lived payload
-    // first — an arena reset carrying an array's storage out, for one — and
-    // which test that is depends on the order the harness ran them in.
-    crate::memory::buffer_arena::with_buffer_arena(|_| ());
     guard
 }
 

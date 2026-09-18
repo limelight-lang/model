@@ -10,16 +10,6 @@ use super::*;
 
 use crate::test_support::allocation_probe;
 
-/// Draw this thread's long-lived buffer arena before the window opens.
-///
-/// The arena itself is one `Box` per thread, made on its first use and
-/// nothing to do with the table that happens to be the first user of it in a
-/// test. Taken outside every measurement below, so what each measures is the
-/// path it names.
-fn warm_the_buffer_arena() {
-    crate::memory::buffer_arena::with_buffer_arena(|_| ());
-}
-
 /// One GC-heap object of a class of its own, so two targets never share
 /// an address the table could collapse.
 unsafe fn a_target(ctx: *mut LLContext, name: &str) -> *mut Object {
@@ -43,7 +33,6 @@ fn the_first_create_reaches_no_global_allocator() {
     with_ctx(|ctx| {
         let target = unsafe { a_target(ctx, "FirstCreateTarget") };
 
-        warm_the_buffer_arena();
         let _ = allocation_probe::take_allocations();
         let cell = unsafe { ll_weakref_create(ctx, target as *mut RcHeader) };
         let (heap, _pool) = allocation_probe::take_allocations();
@@ -68,7 +57,6 @@ fn a_table_that_grows_reaches_no_global_allocator() {
             pairs.push(unsafe { a_target(ctx, &format!("GrowTarget{index}")) });
         }
 
-        warm_the_buffer_arena();
         let mut cells: Vec<*mut LLWeakRef> = Vec::with_capacity(TARGETS);
         let capacity_before = table::capacity();
         let _ = allocation_probe::take_allocations();
@@ -102,7 +90,6 @@ fn a_death_notification_reaches_no_global_allocator() {
         let target = unsafe { a_target(ctx, "NotifyTarget") };
         let cell = unsafe { ll_weakref_create(ctx, target as *mut RcHeader) };
 
-        warm_the_buffer_arena();
         let _ = allocation_probe::take_allocations();
         unsafe {
             assert!(ll_release(target as *mut RcHeader));
@@ -135,7 +122,6 @@ fn a_reset_of_eight_objects(weak: bool) -> (usize, Vec<*mut LLWeakRef>) {
         }
     }
 
-    warm_the_buffer_arena();
     let _ = allocation_probe::take_allocations();
     unsafe { crate::promote::arena_reset_full(&mut arena) };
     let (heap, _pool) = allocation_probe::take_allocations();
