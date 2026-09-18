@@ -429,11 +429,11 @@ other five failed in 500 runs. A seventh of the same class,
 `a_heapless_life_gives_back_the_blocks_it_drew`, whose last assertion reads
 `blocks_out` across the child's life with the guard taken, failed twice in
 43 `debug-journal` runs at eight threads on 2026-09-18 (a tree whose source
-changes were comments), the reading one block off, and twice more in the
-28 runs of that day's later stages, both on the trees of S59 (2 in 16; 112
-against 113 each time) — a lead for the repair, not a finding: a collector
-life runs `ll_thread_exit` three times since S59, its loop's, the
-trampoline's and the guard's. What would close them is
+changes were comments), the reading one block off, and three times more in
+the 33 runs of that day's later stages, all on the trees of S59 (3 in 21;
+112 against 113 each time) against none in 12 on S58's — a lead for the
+repair, not a finding: a collector life runs `ll_thread_exit` three times
+since S59, its loop's, the trampoline's and the guard's. What would close them is
 a reading of a named thread's figures that outlives the thread, a structure
 rather than a patch; Edmond deferred building it on 2026-09-18 ("fix it
 later"), so the watch stands and the flake is re-run past, and until it is
@@ -455,7 +455,11 @@ across 23 files as of 2026-09-18, counted by `cfg_attr(\s*miri,` over `src/`.
 The classes the rule sanctions are a dispatch-table comparison of function
 identity, which Miri does not model, and a test that reads a source file or
 spawns a child process, which its isolation refuses; each attribute states its
-own reason in place. Assertions stay untouched.
+own reason in place. Assertions stay untouched. A case whose body names an
+item that exists on no Miri build — the collector's stack and its refusal
+injections, `cfg(not(miri))` in `cycle::worker::birth` — is compiled out with
+a `cfg` carrying `not(miri)` instead of being ignored, since an ignored test
+still compiles; the guard below reads that `cfg` as the same exclusion.
 
 **A test that spawns a process or reads a file carries that attribute in
 the commit that adds it.** Miri stops at the first error, so such a test

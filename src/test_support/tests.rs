@@ -46,6 +46,12 @@ const REACHES_OUTSIDE: [&str; 8] = [
 /// the wrapped one rustfmt produces for a long reason.
 const IGNORED_UNDER_MIRI: [&str; 3] = ["cfg_attr(", "miri", "ignore"];
 
+/// What a test compiled out of the Miri build carries instead: a `cfg` with
+/// `not(miri)` in it, for a case whose body names items that exist on no
+/// Miri build — the raw thread's stack and its injections — and so cannot be
+/// merely ignored there.
+const EXCLUDED_FROM_MIRI: &str = "not(miri)";
+
 /// Every `.rs` file under `src/`, in no particular order.
 fn sources(dir: &Path, found: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("src/ is readable") {
@@ -235,7 +241,8 @@ fn a_test_that_reaches_outside_the_process_is_ignored_under_miri() {
             reaching += 1;
             let ignored = IGNORED_UNDER_MIRI
                 .iter()
-                .all(|part| function.attributes.contains(part));
+                .all(|part| function.attributes.contains(part))
+                || function.attributes.contains(EXCLUDED_FROM_MIRI);
             if !ignored {
                 unguarded.push(format!("{named}::{}", function.name));
             }
@@ -252,7 +259,7 @@ fn a_test_that_reaches_outside_the_process_is_ignored_under_miri() {
     assert!(
         unguarded.is_empty(),
         "these tests read a file or spawn a process and carry no \
-         `#[cfg_attr(miri, ignore = \"…\")]`, so Miri stops the whole slice at \
+         `#[cfg_attr(miri, ignore = \"…\")]` and no `cfg` with `not(miri)`, so Miri stops the whole slice at \
          the first of them (`dev/WORKFLOW.md`, \"Tests\"): {unguarded:?}"
     );
 }

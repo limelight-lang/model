@@ -275,12 +275,8 @@ fn a_birth_asks_the_global_allocator_for_nothing() {
 /// the stack is mapped without any access, the stack above it readable and
 /// writable, each of its stated size, and the pair adjacent — so a frame
 /// past the stack's low end faults rather than writing on.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "reads /proc, and under Miri the thread is the std spawn's"
-)]
 fn the_collectors_stack_stands_on_a_guard_the_kernel_refuses_access_to() {
     let _g = test_guard();
     let record = record();
@@ -333,12 +329,8 @@ fn the_collectors_stack_stands_on_a_guard_the_kernel_refuses_access_to() {
 
 /// The thread carries its slot's name for the OS, which is what a profiler
 /// or a debugger lists it under.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(miri)))]
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "reads /proc, and under Miri the thread is the std spawn's"
-)]
 fn the_collector_thread_is_named_for_the_os() {
     let _g = test_guard();
     let record = record();
@@ -642,12 +634,8 @@ fn a_refused_base_block_is_a_birth_a_later_call_repeats() {
 /// on the calling thread and before any thread exists: the slot stays
 /// unborn, the refusal holds the interval as a refused base block does, and
 /// a call after the interval births.
-#[cfg(unix)]
+#[cfg(all(unix, not(miri)))]
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "under Miri the thread is the std spawn's, on no stack of the slot's"
-)]
 fn a_refused_stack_is_a_birth_a_later_call_repeats() {
     let _g = test_guard();
     let record = record();
@@ -684,12 +672,8 @@ fn a_refused_stack_is_a_birth_a_later_call_repeats() {
 /// A create the operating system refuses, after the stack was granted, is
 /// a birth that did not happen: the slot stays unborn with its stack kept,
 /// the refusal holds the interval, and a call after it births.
-#[cfg(unix)]
+#[cfg(all(unix, not(miri)))]
 #[test]
-#[cfg_attr(
-    miri,
-    ignore = "under Miri the thread is the std spawn's, with no create to refuse"
-)]
 fn a_refused_create_is_a_birth_a_later_call_repeats() {
     let _g = test_guard();
     let record = record();
