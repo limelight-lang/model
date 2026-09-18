@@ -7,6 +7,33 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-18 — a held root outside the ring raises the ring live on the scan, and a prune case built on one stays green with the prune off
+
+**What happened.** S55's case reads the recall the mature-core prune costs:
+a garbage ring with a mature member no lane names is read live by the trace
+that enters it. The Critic asked for the reading in its ordinary shape, a
+registered root outside the ring pointing in, and the first rewrite built
+that root as an object the case held, registered by a retain/release pair.
+The case stayed green with the prune short-circuited to false: the collection
+freed nothing either way, and the mutation was only caught by the pruned-edge
+count three asserts later.
+
+**Why it was possible.** Trial deletion's scan is "live spreads": a root whose
+row stays above zero raises everything it reaches, so a held outside root
+reads live itself and raises the ring beneath it live whatever the descent
+did. An outside root the case does not hold is no better — it is held by
+nothing, and the test's release kills it at count one. The shape that
+observes the prune is an outside root that is garbage and yet a root: a ring
+of its own, `cycle::testing::ring_with_a_spare_property`, pointing in. It
+dies at that reading, the mature ring does not, and the freed count separates
+the two readings, 3 against 5 with the prune off.
+
+**What catches it.** The mutation, run before the rewrite was accepted: a
+case that agrees with the code under a mutation of the mechanism it names is
+agreeing by its fixture. The rule that stands: a fixture that needs "a
+registered root pointing into X" builds a self-held cycle, never a held object
+plus a retain/release pair.
+
 ## 2026-09-18 — a case that starts a thread without the pool's guard is the third thread another case's ledger reading cannot survive
 
 **What happened.** S53's cases start a runtime thread to reach a heapless

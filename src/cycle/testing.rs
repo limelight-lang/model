@@ -34,6 +34,9 @@
 //!
 //! [`ArmedInjection`] is the one shape every fault injection in the tree takes:
 //! a thread-local flag armed for one firing and restored when the guard dies.
+//!
+//! [`move_prop`] is the store that hands a creation reference to a cell with
+//! no retain, which is how a case builds a member no lane names.
 
 use crate::cells::PlainCells;
 use crate::class::{Class, ClassBuilder};
@@ -47,6 +50,7 @@ use crate::memory::context::LLContext;
 use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain, read_maturation_stamp};
 use crate::test_support::{prop_offset, store_prop};
+use crate::value::{Tag, Value};
 
 /// The row word the trace left for `entity`, read the way the scan
 /// reads it — through the block's own shadow pointer. A meeting would
@@ -457,6 +461,40 @@ pub(crate) unsafe fn colors(entities: &[*mut RcHeader]) -> Vec<Color> {
         .iter()
         .map(|&entity| unsafe { row_color(entity) })
         .collect()
+}
+
+/// Move `value`'s creation reference into `holder`'s empty slot at `offset`:
+/// the slot takes the reference the factory handed the caller, so the count
+/// of `value` does not move and no decrement ever registers it as a
+/// candidate. That is the form ARC pairing gives `$this->p = new C` — the
+/// store's retain and the temporary's release cancel
+/// (`rfc/model/lowering.md`, "ARC pairing (LLVM pass)") — and the shape
+/// `store_prop` cannot build, since the reference it leaves with the caller
+/// either stands for the holder's life or is released, and the release
+/// registers the entity.
+///
+/// The slot is written bare rather than through the barrier: both entities
+/// are GC-heap by contract, so the category barrier has nothing to do, and a
+/// retain is what this store exists to leave out.
+///
+/// # Safety
+/// `holder` and `value` are live GC-heap objects, and `value`'s creation
+/// reference is the caller's and is spent here.
+pub(crate) unsafe fn move_prop(holder: *mut Object, offset: u32, value: *mut Object) {
+    use crate::memory::barrier::write_value_slot;
+    use crate::refcount::entity_category;
+    use crate::test_support::entity_checked;
+
+    unsafe {
+        assert_eq!(entity_category(holder), MemoryCategory::GcHeap);
+        assert_eq!(entity_category(value), MemoryCategory::GcHeap);
+        let slot = Object::prop_at(holder, offset);
+        assert!(
+            entity_checked(&*slot).is_null(),
+            "the slot holds an entity, and a bare write would lose its reference"
+        );
+        write_value_slot(slot, Value::entity(Tag::Object, value as *mut RcHeader));
+    }
 }
 
 /// A ring of three whose first member holds a second property, which is

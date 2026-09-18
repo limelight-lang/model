@@ -39,7 +39,7 @@ of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
 `dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36 and S38
-through S54 — every number this plan has spent but S37. A number is never
+through S55 — every number this plan has spent but S37. A number is never
 reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -755,20 +755,6 @@ a process-global ledger". **No work is scheduled here until a failure.**
   through `defer_candidates`, which is the other machine.
   done: a case drives the append past one segment, or a `#[cfg(test)]` seam
   puts the lane at its bound without the population behind it.
-
-- [ ] **The prune's own recall loss has no case.** The descent stops at a
-  mature edge target, so a ring one of whose members never observed a
-  non-final decrement — its creation reference moved into a cell rather than
-  released — is read live at the collection that meets it and collected at the
-  turnover that re-offers its root. Both halves are built and no case drives
-  them together: `cycle::mark::tests::where_the_descent_stops` proves the stop
-  and `cycle::collect::tests::when_the_turnover_reoffers` proves the re-offer,
-  the second staging its reading with `InjectedVerdictRace` because the
-  natural producer did not exist when it was written. What the fixture needs
-  is a store that moves a reference instead of retaining one, which
-  `test_support::store_prop` is not.
-  done: one case drives a mature ring through the collection that reads it
-  live and the turnover that collects it, with no injection.
 
 - [ ] **A weak map, and the second kind of death subscriber.**
   `rfc/model/weak-references.md` names two subscriber kinds and the crate
