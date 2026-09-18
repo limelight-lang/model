@@ -431,8 +431,9 @@ other five failed in 500 runs. A seventh of the same class,
 43 `debug-journal` runs at eight threads on 2026-09-18 (a tree whose source
 changes were comments), the reading one block off. What would close them is
 a reading of a named thread's figures that outlives the thread, a structure
-rather than a patch, and the second failure is the signal that ruling waited
-for; until it is built a case that starts a runtime thread takes
+rather than a patch; Edmond deferred building it on 2026-09-18 ("fix it
+later"), so the watch stands and the flake is re-run past, and until it is
+built a case that starts a runtime thread takes
 `block_pool::test_guard()` whatever it asserts
 (`POSTMORTEM.md`, "a case that starts a thread without the pool's guard is
 the third thread another case's ledger reading cannot survive"; the per-thread
