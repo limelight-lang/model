@@ -1,9 +1,9 @@
 //! The per-thread critical reserve: blocks a collection draws when the ordinary
 //! allocation path has already refused.
 //!
-//! The protocol and who is entitled to it: `rfc/model/memory/`
-//! `critical-reserve.md`, "Allocation paths" and "Reserve users". Why
-//! it stands beside the log reserve rather than inside it:
+//! The protocol and who is entitled to it:
+//! `rfc/model/memory/critical-reserve.md`, "Allocation paths" and "Reserve
+//! users". Why it stands beside the log reserve rather than inside it:
 //! `rfc/runtime/exceptions.md`, "The reserve is three reserves, not one"
 //! — a consumer that shared a reserve with another would make each
 //! consumer's worst case the sum of both, and a collection that drained

@@ -127,14 +127,17 @@ impl LLString {
     }
 }
 
-/// The dynamic layout, `COW = 0`: the same first three words as
-/// [`LLString`] — that is the point of the shared offsets — with the
-/// padding at +12 spent on `capacity` and the bytes reached through
-/// `data` (`rfc/model/strings.md`). 32 bytes.
+/// The dynamic layout: the same first three words as [`LLString`] — that
+/// is the point of the shared offsets — with the padding at +12 spent on
+/// `capacity` and the bytes reached through `data` (`rfc/model/strings.md`).
+/// 32 bytes.
 ///
-/// Writes go in place and never separate: this is the non-COW form, and
-/// the compiler allocates one only where it has proved a single owner.
-/// Nothing promotes between the layouts at run time.
+/// Two things put a string in this layout, and the [`COW`] bit tells them
+/// apart: a compiler proof of a single owner, `COW = 0`, whose writes go in
+/// place and never separate; and content past what the category packs in
+/// one slot ([`placement`] against `routing::slot_limit`), which keeps
+/// `COW` and separates like an inline string. Nothing promotes between the
+/// layouts at run time.
 #[repr(C)]
 pub struct LLStringDynamic {
     pub rc: RcHeader,

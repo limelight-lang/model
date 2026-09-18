@@ -9,9 +9,11 @@ sequences. When a boundary changes, both files change in the same
 commit (`dev/WORKFLOW.md`).
 
 The diagrams show the implementation, not the destination. The in-line
-`rc-cycle` path is built; its future collector-thread accelerator is not and is
-therefore absent. The deleted `rc-walk` and `rc-trace` structures remain on
-`archive/pre-rc-cycle`, not in this picture.
+`rc-cycle` path and the collector thread beside it are both built and both
+drawn; what is not built — the acyclic gate's compiler channel, the corpus
+figures behind the prune's constants — is `PLAN.md` S37's. The deleted
+`rc-walk` and `rc-trace` structures remain on `archive/pre-rc-cycle`, not in
+this picture.
 
 Diagrams are PlantUML, embedded as fenced blocks; render on demand
 (IDE plugin or any PlantUML processor). No generated images are
@@ -30,11 +32,11 @@ skinparam shadowing false
 skinparam defaultTextAlignment center
 
 rectangle "**L4 — collectors**\ngc (ABI) · cells · cycle · promote" as L4
-rectangle "**L3 — object model**\nobject · class · reference · weak · intern" as L3
+rectangle "**L3 — object model**\nobject · class · reference · weak · intern · static_block\nstring · template · array" as L3
 rectangle "**LB — mutation**\nmemory/barrier" as LB
-rectangle "**L2 — memory manager**\ncontext · arena · heap · immortal · buffer · buffer_arena\nreserve · critical · retained · stats · stdapi · routing · large_entity · reset_window" as L2
-rectangle "**L1 — entity substrate**\nrefcount · value" as L1
-rectangle "**L0 — block supply**\nblock_pool" as L0
+rectangle "**L2 — memory manager**\ncontext · arena · heap · immortal · buffer · buffer_arena\nreserve · critical · retained · stats · stdapi · routing · large_entity · reset_window\ngc_metadata · ring · journal" as L2
+rectangle "**L1 — entity substrate**\nrefcount · value · hash" as L1
+rectangle "**L0 — block supply**\nblock_pool · os" as L0
 
 L4 -down-> L3
 L3 -down-> LB
@@ -45,9 +47,14 @@ L1 -down-> L0
 L1 .up.> L4 #red : ""refcount -> cycle/queue""\nregister a non-final decrement
 L2 .up.> L4 #red : ""context -> promote"" ll_arena_reset
 L2 .up.> L3 #red : ""arena -> weak""\nreset drains the weak log
-L2 .up.> L4 #red : ""heap -> cycle""\nthread init / exit
+L2 .up.> L4 #red : ""heap -> cycle""\ninit / exit / the pressure fire / two reads on the allocation path
+L2 .up.> L3 #red : ""heap -> static_block, weak""\nthe exit's teardown
+L0 .up.> L4 #red : ""block_pool -> cycle""\na block withheld at put
+L2 .up.> L4 #red : ""stdapi, buffer_arena -> cycle""\na slot, a run or a chunk withheld under a trace window
+L0 .up.> L2 #red : ""block_pool -> journal""\nrecord sites (debug-journal)
+L1 .up.> L2 #red : ""refcount -> journal""\nrecord sites (debug-journal)
 LB .up.> L3 #red : ""barrier -> object""\ndrop_ref cascade
-L3 .up.> L4 #red : ""object -> gc"" checkpoint bracket\n""object kinds -> cells"" trace adapters
+L3 .up.> L4 #red : ""object -> gc"" checkpoint bracket\n""object kinds -> cells"" trace adapters\n""object -> cycle/queue"" the poll stride (data)
 L3 -> L3 #red : ""class -> object""\ndispose default (data, not a call)
 
 note right of L0
@@ -77,7 +84,10 @@ package "L4 - collectors" as P4 {
   [gc ABI] as gc
   [cells] as cells
   package "cycle" as cycle {
-    [queue] as cycle_queue
+    [queue: ring R] as cycle_queue
+    [verdicts: ring P] as cycle_verdicts
+    [token + mutator_record] as cycle_token
+    [worker] as cycle_worker
     [collect] as cycle_collect
     [arena + rows + deferred reuse] as cycle_rows
     [mark + scan] as cycle_trace
@@ -122,7 +132,18 @@ gc --> cycle_collect : collect / poll
 gc --> reserve : refill at poll
 gc --> critical : refill at poll
 gc --> cycle_queue : refill + drain overflow
-cycle_collect --> cycle_queue : read / compact in place
+gc --> cycle_token : read the byte; consent
+gc --> cycle_verdicts : note a freeing disposition
+gc --> cycle_worker : the collector cap
+cycle_collect --> cycle_token : take / release
+cycle_collect --> cycle_queue : read R (with P's roots ahead)\nor P alone; compact in place
+cycle_collect --> cycle_worker : birth + wake at a pressure ending
+cycle_queue --> cycle_worker : signal; birth of the elder
+cycle_worker --> cycle_token : request; claim; POSTED / FREE
+cycle_worker --> cycle_queue : peek behind the writer
+cycle_worker --> cycle_verdicts : post one verdict per root
+cycle_worker --> cycle_trace : mark + scan over AtomicCells
+cycle_worker --> cycle_rows : own arena + rows
 cycle_collect --> cycle_rows : trace window + scratch
 cycle_collect --> cycle_trace
 cycle_collect --> cycle_validate
@@ -169,7 +190,11 @@ buffer_arena --> buffer
 heap --> reserve
 arena --> reserve
 stdapi --> heap
-stdapi --> cycle_rows : defer reuse in trace
+stdapi .up.> cycle_rows #red : withhold a slot or a run
+pool .up.> cycle_rows #red : withhold a block at put
+buffer_arena .up.> cycle_rows #red : withhold a chunk
+heap .up.> cycle_token #red : record at init / exit
+heap .up.> cycle_collect #red : pressure fire; exit rounds
 value --> refcount
 P2 --> pool : get / put blocks
 
@@ -189,11 +214,15 @@ object .up.> cells #red : trace adapter
 barrier .up.> object #red : drop_ref cascade
 class .up.> object #red : dispose default (data)
 heap .up.> cycle_queue #red : thread init / exit
+heap .up.> weak #red : exit teardown
 @enduml
 ```
 
-`block_pool` knows nothing above itself; its references to
-heap/reserve are the shared test-lock harness.
+`block_pool` reaches above itself at two points: the block a foreign trace
+withholds at `put`, and the journal's record sites under `debug-journal`;
+its `cycle::queue` references are the shared test-lock harness. Red dashed
+edges are the sanctioned upward ones; the complete table is
+`dev/ARCHITECTURE.md`'s.
 
 ## What each component is responsible for
 
@@ -209,7 +238,14 @@ resources, invariants) is in `dev/ARCHITECTURE.md`.
 | `buffer` | growable headerless payload over the mounted arena | entity lifecycle |
 | `buffer_arena` | long-lived buffer blocks, per-block free lists, pressure modes | the object heap, entities |
 | `reserve` | two blocks per thread for store-barrier log growth | what a log records |
-| `critical` | eight blocks per thread shared by candidate-queue and collection overflow | what either consumer stores |
+| `critical` | eight blocks per thread: the collection's arena above its workspace, after the pool refuses; the candidate ring when both spare cells are empty, which asks no pool first | what either consumer stores |
+| `routing` | where a memory category's bytes come from: entity, body, and the slot limit | what kind of entity is being placed |
+| `large_entity` | one entity per allocation past the size classes: a pooled block or an OS-direct run, and the registry of runs | the entity past its first eight bytes |
+| `reset_window` | the window a reset holds over its own frees and the COW reconciliation's log | which entity is a survivor — promote says |
+| `gc_metadata` | the one door through which collection takes and returns pool blocks; the count and its high-water mark | what a GC block holds |
+| `os` | `mmap` / `VirtualAlloc` behind an aligned span; every refusal reported | what a region holds |
+| `ring` | a single-producer single-consumer ring of pool blocks; peek/commit, quiet pack, splice | what an entry means |
+| `journal` | 32-byte records in one ring per thread, drawn past the thread-started check; read back by a mark; sites under `debug-journal` | what an event means |
 | `retained` | survivor-list lookup and held-occupant accounting for retained arena blocks | entity kinds and verdicts |
 | `stats` | block-granular telemetry, zero hot-path tax | per-object events |
 | `stdapi` | size-less malloc/free front door; routes by block kind | entity semantics |
@@ -217,14 +253,19 @@ resources, invariants) is in `dev/ARCHITECTURE.md`.
 | `barrier` *(hot)* | store-barrier micro-ops: publish (`store_ptr`/`store_box`), `drop_ref`, escape recording | per-site composition (lowering's) |
 | `refcount` | the 8-byte header at offset 0: refcount + flag word; retain/release | entity bodies, blocks, when to collect |
 | `value` | the 16-byte Box: payload + tag + flags | unboxed representations (compiler contract) |
+| `hash` | `hash_bytes` (rapidhash V3), the seed and the folding axis, the per-process key | what is being hashed |
 | `intern` | interned names as immortal string entities; lookup table | classes — it only serves them names |
 | `class` | descriptors: inline vtable train, itables, Cohen display, layout runs, trace lists | instance state, categories, GC |
 | `object` | factory, constructed hook, three-phase death, kind-switched `ll_entity_die` | collector internals, block internals |
 | `reference` | the `&` reference box, entity kind 3 | classes |
 | `weak` | weak cell (kind 11) = canonical `WeakReference`; per-thread weak table; every notification rule | *when* to notify — the death sites' duty |
-| `gc` | GC ABI, per-thread due flag, poll refills and dispatch into `cycle::collect` | collector internals and arming policy |
-| `cells` | kind-dispatched counted-child trace and sever adapters | slots and occupancy (heap's side) |
-| `cycle` | candidate queue; in-line mark/scan over shadow rows; exact validation; finalization, reclamation and owner retirement | entity-kind layout and size-class arithmetic |
+| `static_block` | the per-thread registry of static blocks and the exit pass that releases their roots | what a root points at |
+| `string` | the string entity in two layouts told apart by kind code; append, separate, carry at reset | classes, arrays, the collector |
+| `template` | the interpolated template: a static shape, an instance under one class, `flatten` | floats and objects, which it refuses |
+| `array` | the mixed vector and the ordered hash under one head a walker may read; element operations; the entity over them | the collector's rows |
+| `gc` | GC ABI, the poll's duties in order, the arming word, dispatch into `cycle::collect`, the signal to the collector | collector internals and arming policy |
+| `cells` | kind-dispatched counted-child trace and sever adapters, for the owner (`PlainCells`) and for a collector thread (`AtomicCells`) | slots and occupancy (heap's side) |
+| `cycle` | the candidate ring R and the verdict ring P; the trace token in a record the process keeps; the in-line collection — mark/scan over shadow rows, exact validation, finalization, reclamation, the close's compaction; the collector thread's round and batch | entity-kind layout and size-class arithmetic |
 | `promote` | arena death with promotion: fixpoint, edge count, retain blocks, release log | copying/evacuation (future) |
 
 ## Use cases
@@ -373,19 +414,26 @@ skinparam shadowing false
 participant "mutator safepoint" as mutator
 participant "gc ABI" as gc
 participant "cycle/collect" as driver
-participant "cycle/queue" as queue
+participant "cycle/token" as token
+participant "cycle/queue: R and P" as queue
 participant "trace window + arena" as arena
 participant "mark + scan" as trace
 participant "validation + finalization" as finalization
 participant reclamation
 
 mutator -> gc : ll_gc_collect_cycles / armed poll
-gc -> driver : collect_off_the_poll
+gc -> driver : collect_off_the_poll / collect_over_the_verdicts
+driver -> driver : may_collect: not inside a collection,\na teardown or an open reset
+driver -> token : take — the explicit fire, the pressure path and the exit\nwait for a collector that holds it; the poll returns instead (E9)
 driver -> arena : open trace window over\nresident workspace
-driver -> queue : read the ring as the batch
+alt the explicit fire, or the arming names R whole
+  driver -> queue : read R behind its writer as the batch,\nP's roots ahead in it
+else POSTED armed the collection over P
+  driver -> queue : read P's proposed roots as the batch
+end
 queue --> driver : roots
 driver -> trace : mark every root, then scan every root
-trace -> trace : shadow counts -> live /\npotentially unreachable rows
+trace -> trace : shadow counts -> live /\npotentially unreachable rows;\nthe mark stops at a mature stamped target\nno queue names
 driver -> finalization : membership from rows
 finalization -> finalization : exact validation; guards;\nnull weak cells; destructors; revalidate
 alt confirmed unreachable
@@ -395,8 +443,39 @@ else live / refused / resurrected
   finalization --> queue : candidates remain registered
 end
 driver -> arena : close after commit
-arena -> queue : sweep rows; return deferred slots;\ncompact the ring in place
-driver -> queue : retire completed candidate deaths
-note over mutator, reclamation : the ordinary path keeps rows through teardown;\nthe pressure path harvests a bounded member list\nand returns trace blocks first
+arena -> queue : sweep rows; compact R in place — completed deaths\nto ll_free, roots read live to the deferred lane;\ndispose of P's batch
+arena -> arena : make the withheld returns;\ngive the arena's blocks back
+driver -> token : release — the close's last store (E10)
+note over mutator, reclamation : the ordinary path keeps rows through teardown;\nthe pressure path harvests a bounded member list\nand returns trace blocks before the first destructor
+@enduml
+```
+
+### UC6 — The collector thread's batch
+
+```plantuml
+@startuml
+skinparam shadowing false
+participant "collector thread\n(cycle/worker)" as worker
+participant "mutator record\n+ token byte" as token
+participant "ring R" as R
+participant "ring P" as P
+participant "mutator poll /\nslot free" as mutator
+
+worker -> worker : born at the poll's first wake or a pressure\ncollection's ending; wakes on a block of R filled,\na consent, a pressure collection, or the timer
+worker -> token : read the rings' words under the hold line
+alt R below the threshold or byte not FREE\n(a collecting owner holds MUTATOR through its close)
+  worker -> worker : skip this owner
+else
+  worker -> token : REQUESTED|s, and a bounded wait (REQUEST_WAIT)
+  mutator -> token : consent at the next poll or slot free\n(COLLECTOR|s), or refuse; a silent owner's\nrequest is withdrawn at the bound
+  worker -> R : peek up to K entries from behind\nthe writer, clamped to P's room
+  worker -> worker : mark + scan through AtomicCells\non its own arena, under a block budget
+  worker -> P : one verdict per root, in R's order
+  worker -> R : advance past the batch\n(the guard runs on the unwind too)
+  worker -> token : release to POSTED, or to FREE\nwhen the batch posted nothing
+end
+mutator -> token : reads POSTED
+mutator -> mutator : arms the collection over P (UC5)
+note over worker, mutator : every death on the mutator's side while the collector holds\nits token is withheld and returned when the byte reads free;\nthe mutator is the one party that changes heap state
 @enduml
 ```

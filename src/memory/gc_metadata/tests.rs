@@ -57,8 +57,8 @@ fn a_threads_exit_ends_every_block_it_acquired() {
     let _g = test_guard();
     // The process figure, the claim being about blocks a thread that no longer
     // exists gave back — a reading a third thread can move, and one no
-    // per-thread figure can replace (`PLAN.md`, "A gate flake watch, not a
-    // step").
+    // per-thread figure can replace (`dev/WORKFLOW.md`, "The gate flake
+    // watch").
     let before = stats().current_blocks();
     let blocks_before = BlockPool::global().blocks_out();
 

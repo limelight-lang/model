@@ -226,7 +226,7 @@ fn a_threads_base_block_is_in_use_from_its_draw_until_its_exit() {
     // The process figure and not this thread's, the claim being about memory a
     // thread that no longer exists gave back. It is the reading a third thread
     // can move, and the one case here that no per-thread figure can replace
-    // (`PLAN.md`, "A gate flake watch, not a step").
+    // (`dev/WORKFLOW.md`, "The gate flake watch").
     let before = stats().current_bytes_in_use();
 
     std::thread::spawn(move || {

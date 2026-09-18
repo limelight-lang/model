@@ -2,7 +2,7 @@
 
 Checks record and segment preservation, not Rust pointer validity, accounting,
 concurrent access, or the production queue implementation.
-Run from the crate root: python3 dev/tools/check_memory_protocol_compaction.py
+Run from the crate root: python3 docs/history/check_memory_protocol_compaction-2026-09-09.py
 """
 
 from itertools import product

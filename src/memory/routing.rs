@@ -1,12 +1,11 @@
 //! Where a memory category's bytes come from.
 //!
 //! The compiler assigns a category to an owner without knowing what kind
-//! of entity will live there (`rfc/model/memory/arenas.md`), so "which
-//! allocator serves this category" is a question of the memory layer
-//! rather than of each factory. It used to be answered by the same
-//! `match` written out in eight places — six factories and two
-//! out-of-line bodies — and the two body copies had already drifted
-//! apart when this module replaced them.
+//! of entity will live there, so which allocator serves a category is a
+//! question of the memory layer rather than of each factory
+//! (`rfc/model/memory/arenas.md`). One `match` here rather than one per
+//! factory: eight copies of it — six factories and two out-of-line bodies —
+//! had drifted apart.
 //!
 //! Two populations, and they are not interchangeable. An **entity** has
 //! an `RcHeader` and goes to `entity_alloc` in the long-lived

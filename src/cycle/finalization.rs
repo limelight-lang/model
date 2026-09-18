@@ -313,11 +313,11 @@ impl Drop for Finalization {
         }
 
         // Silent while another panic is unwinding, as
-        // `crate::cycle::queue::InFlightBatch`'s drop is and for the same
-        // reason: this one would be the second panic, and it would end the
-        // process without the message that says what went wrong. The guards
-        // such an unwind leaves are stranded all the same, and the message
-        // that carries the reason is the first panic's.
+        // `crate::cycle::reclamation::DeferredReclamation`'s drop is and for the
+        // same reason: this one would be the second panic, and it would end
+        // the process without the message that says what went wrong. The
+        // guards such an unwind leaves are stranded all the same, and the
+        // message that carries the reason is the first panic's.
         if std::thread::panicking() {
             return;
         }

@@ -1,5 +1,21 @@
 # Cycle collector review, 2026-09-01
 
+Status, 2026-09-18: a record. "State of the collector" describes the tree
+of 2026-09-01, and every mechanism it lists as unbuilt is built (`dev/INDEX.md`,
+"Entry points"). Of the six findings, 1 was withdrawn on 2026-09-03 with
+its reason below; 2 is built — the worklist entry carries the row pointer
+(`cycle::stack`, `cycle::row`); 3 was ruled and then superseded on the
+storage question — the survivor list is written into the arena's own memory
+and the process registry is gone (`dev/DECISIONS.md`, "a retained block's
+survivor list lives in the arena's own memory, and the process registry
+goes"; the proposal is `docs/history/retained-index-ownership-2026-09-01.md`);
+4 stands as ruled, one charge per overflow entry (`cycle::queue`); 5 and 6
+landed in the commits the table names. The open question at the end is
+answered in `cycle::mark`, "A root at count zero is expanded by nothing":
+`ll_default_dispose` releases and leaves the cells, and the mark reads a
+root's count before its cells. Code cites the findings by number, and the
+numbers do not move.
+
 A read-only review of `src/cycle/` at `8ccf426`, with Edmond's ruling on
 each finding. It records what the trace core costs today, in operations
 and in memory, and what was agreed to change. Nothing here was edited in
@@ -43,7 +59,7 @@ life of the thread.
 |---|---|---|---|
 | 1 | A quarter of each arena block is lost at the smallest size class | `cycle/arena.rs` | agreed 2026-09-01, withdrawn 2026-09-03: the agreed mechanism draws the same blocks as the arena it replaces (below) |
 | 2 | Scan resolves a row twice per entity | `cycle/scan.rs` | agreed: carry the row pointer in the worklist entry |
-| 3 | One global mutex per edge into a retained block | `memory/retained.rs` | rework: `dev/design/retained-index-ownership.md` |
+| 3 | One global mutex per edge into a retained block | `memory/retained.rs` | rework: `docs/history/retained-index-ownership-2026-09-01.md` |
 | 4 | Ledger atomics per entry on the pressure path | `cycle/queue.rs` | leave as is |
 | 5 | Debug premise check in validation is quadratic | `cycle/validation.rs` | T1, linear in-degree array — done, `1e2306f` |
 | 6 | `shadow::subtract` clamps at zero silently | `cycle/shadow.rs` | T1, `debug_assert` — done, `ba616d6` |
@@ -132,7 +148,7 @@ file, `918cf1d`) and outlived it by the 2026-08-26 decision.
 
 Edmond's ruling: the logic is wrong at the root; an arena belongs to its
 thread, and the thread answers for its retained blocks. The worked
-proposal is `dev/design/retained-index-ownership.md`. It is a design
+proposal is `docs/history/retained-index-ownership-2026-09-01.md`. It is a design
 change and needs an rfc entry before code; the plan's slice is S36.9e.
 
 ### 4. Ledger atomics on the pressure path

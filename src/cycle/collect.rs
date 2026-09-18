@@ -149,7 +149,7 @@ fn is_collecting() -> bool {
 /// had reached is freed or carries its true count. The children a sever had
 /// already queued are rewound with the arena rather than dropped, so their
 /// counted references go with them. The thread itself is clean — the window
-/// closed, the returns made, the batch merged, the workspace given back — and
+/// closed, the returns made, the batch disposed of in place, the workspace given back — and
 /// that memory is lost for the life of the process.
 struct CollectingThread {
     /// This thread's record, whose collecting word this guard holds up.
@@ -440,8 +440,8 @@ unsafe fn collection(form: BatchForm) -> Collection {
     // **The disposition is selected before the first mark is written.** The
     // pass it selects is the one that takes a mark off an entry again, so an
     // unwind out of the marking walk still leaves every entry masked; the
-    // ordinary merge does not mask, and a marked entry reaching a lane through
-    // it would be read as an entity address one byte along.
+    // ordinary disposition does not mask, and a marked entry reaching a lane
+    // through it would be read as an entity address one byte along.
     window.dispose_batch_on_close(outcome.at_commits);
     _collecting.retirement_runs_at_the_close();
     window.mark_roots_for_deferral(outcome.initial == ValidationResult::ExternallyReferenced);
@@ -788,8 +788,8 @@ unsafe fn refused_under_pressure(closed: GateClosed) -> usize {
 /// die between two refusals and this trace is what returns its slot
 /// (`dev/DECISIONS.md`, "do not cache an empty pressure collection"). Where
 /// the two paths part is the live root: the poll's collection defers a root
-/// its scan read live to the deferred lane for an epoch, and this one merges
-/// its batch back whole, so every refused allocation traces the live lane
+/// its scan read live to the deferred lane for an epoch, and this one keeps
+/// its batch in R whole, so every refused allocation traces the live lane
 /// again — priced in `dev/BENCHMARKS.md`, "S40.4 a refused allocation repeats
 /// the whole live candidate lane". Completed candidate slots return
 /// after the standing membership ends, before another bounded round and before

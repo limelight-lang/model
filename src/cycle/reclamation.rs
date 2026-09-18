@@ -51,11 +51,11 @@
 //!
 //! Entries. Every deferred drop is a counted release, so a child that survives
 //! it takes a non-final decrement and the candidate gate admits it: the drop
-//! writes the thread's live lane. On the ordinary path the teardown runs inside
-//! its own trace, whose batch was detached before the mark, so the lane the
-//! close finds is not the lane the detach emptied — which is why the close
-//! joins the two chains rather than writing one over the other
-//! (`cycle::queue::merge_candidates`). That is the design's own clause, "the
+//! registers into the thread's ring R, behind the entries the collection's
+//! batch read, and the close's compaction keeps such an entry in order for the
+//! next collection (`cycle::queue::compaction`; `rfc/dev/DECISIONS.md`, "the
+//! candidate queue is read behind its writer, and the collector's verdicts
+//! come back by a second ring"). That is the design's own clause, "the
 //! releases the sever performs \[being\] non-final decrements", read from the
 //! side of the entries it produces (`rfc/model/gc/rc-cycle.md`,
 //! "Concurrency").

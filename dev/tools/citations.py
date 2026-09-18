@@ -4,9 +4,12 @@ RFC_ROOT = "/home/edmond/limelight"
 FILES = []
 for base in ["src", "benches", "docs"]:
     for dirpath, _, filenames in os.walk(os.path.join(ROOT, base)):
+        # a superseded document under docs/history/ is a record, and cites the tree of its day
+        if dirpath.startswith(os.path.join(ROOT, "docs", "history")):
+            continue
         for fn in filenames:
             FILES.append(os.path.join(dirpath, fn))
-FILES += [os.path.join(ROOT, "dev/INDEX.md"), os.path.join(ROOT, "dev/ARCHITECTURE.md")]
+FILES += [os.path.join(ROOT, f) for f in ("dev/INDEX.md", "dev/ARCHITECTURE.md", "dev/WORKFLOW.md", "PLAN.md")]
 PATH_RE = re.compile(r'`([a-zA-Z0-9_./-]+\.md)`')
 def norm(s):
     s = s.replace('*', '').replace('_', '')
@@ -53,6 +56,16 @@ for fpath in sorted(FILES):
         q_start = start + qm.start() + 1
         close = text.find('"', q_start)
         if close == -1 or close - q_start > 400:
+            continue
+        # in a test file a quoted span that runs into a code line is a guard test's
+        # example of an unbalanced quote, or an assert message's closing quote, never
+        # a citation: a heading wraps across comment lines only
+        lines = text[q_start:close].split('\n')
+        if '/tests/' in fpath and any(
+                l.strip() and not re.match(r'^(///|//!|//|\*)', l.strip()) for l in lines[1:]):
+            continue
+        # a rule's example of the citation form quotes a placeholder heading
+        if text[q_start:close].strip() == '…':
             continue
         quoted = norm(' '.join(re.sub(r'^(///|//!|//|\*|>)\s?', '', l.strip())
                                 for l in text[q_start:close].split('\n')).rstrip('\\'))

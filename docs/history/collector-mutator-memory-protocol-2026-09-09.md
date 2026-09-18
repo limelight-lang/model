@@ -1,10 +1,39 @@
 # Очередь кандидатов и возврат памяти при сборке циклов
 
-> Снимок реализации до S39.2. Описание прежнего merge в Q7 и статус
-> уплотнения в R2 сохраняют исходное исследование. Реализация owner retirement
-> теперь находится в `src/cycle/queue/compaction.rs`; актуальный порядок
-> завершения описан в `docs/memory-manager.md` и `PLAN.md`, S39.2.
-> Это изменение не реализует предложенный протокол фонового worker.
+> **Заменён 2026-09-18.** Снимок реализации на `16fc741` (2026-09-09) и
+> предложение протокола фонового worker; лежал в `dev/` до 2026-09-18.
+> Поток-коллектор построен 2026-09-15 и 2026-09-16, а его рукопожатие —
+> запрос коллектора и согласие мутатора — вынесено решением 2026-09-17
+> (`dev/DECISIONS.md`, «the collector requests and the mutator consents,
+> and the batch's release is the mutator's trigger»); протокол другой, и
+> разбор ниже описывает очередь, которой больше нет.
+>
+> Что устарело. Раздел 1 — очередь до кольца: `OwnerCycleState`,
+> `InFlightBatch`, `detach_candidates` и `merge_candidates` удалены;
+> очередь — кольцо R, которое коллектор читает из-за писателя без detach
+> (`dev/DECISIONS.md`, «the outbox form is deleted: the collector reads the
+> ring behind its writer»). В разделе 2 — последнее предложение F2, F4 и
+> F5: удержание возвратов при чужом держателе token построено для всех
+> четырёх адресов — слота, блока, чанка и run-а
+> (`dev/DECISIONS.md`, «a foreign holder of the token withholds every
+> death, and the owner makes the returns»), retirement выполняет
+> уплотнение кольца через `ll_free` (`cycle::queue::compaction`), а выход
+> потока освобождает сегменты после собственной коллекции
+> (`cycle::collect::collect_before_exit`). Разделы 4–5 — протокол с inbox
+> ёмкости один и флагом защиты менеджера: построены кольцо вердиктов P
+> (`cycle::queue::verdicts`) и те же окна удержания. R2 и его модель —
+> уплотнение цепочки, которое стало уплотнением кольца на месте.
+>
+> Что в силе. F1 и F3 из раздела 2, с рукой чужого держателя token перед
+> ними. Раздел 3 построен как предложено: retirement после последнего
+> чтения membership, ранний возврат под давлением до `drain_drops`,
+> предусловия retirement (`dev/DECISIONS.md` от 2026-09-09: «keep early
+> pressure retirement before external-child drops», «owner retirement
+> compacts both bounded chains before publication», «a registered dead
+> survivor is a held occupant until owner retirement»). Распределение
+> ролей C1 — коллектор читает и предлагает, владелец проверяет и
+> освобождает. Роли построенного коллектора — `dev/INDEX.md`, строки
+> `worker`, `token` и `queue`.
 
 Разбор реализации и проект её продолжения · 2026-09-09.
 
@@ -20,7 +49,7 @@
 
 ## 1. Существующая очередь: что действительно написано
 
-Источник: [queue.rs](../src/cycle/queue.rs), OwnerCycleState,
+Источник: [queue.rs](../../src/cycle/queue.rs), OwnerCycleState,
 register_candidate, append_entry, append_with_new_segment, drain_overflow,
 InFlightBatch, detach_candidates и merge_candidates.
 
@@ -43,7 +72,7 @@ write_segment и write_len — обычные Cell. Запись указате�
 
     base block: [OwnerCycleState | overflow[overflow_len]]
 
-**Q3 — реализовано.** release_word в [refcount.rs](../src/refcount.rs)
+**Q3 — реализовано.** release_word в [refcount.rs](../../src/refcount.rs)
 сначала уменьшает счётчик, затем при ненулевом результате и подходящем
 candidate gate ставит CANDIDATE_BIT и вызывает register_candidate.
 Повторный decrement не добавляет второй записи. Запись — не сильная ссылка.
@@ -77,7 +106,7 @@ drain_overflow переносит записи с конца overflow при н�
 Непустой batch обязан быть возвращён; его Drop отвергает потерю цепочки.
 
 **Q6 — реализовано.** InFlightBatch::walk_roots не является pop и не удаляет
-записи. [trace.rs](../src/cycle/trace.rs), trace_batch, читает один и тот же
+записи. [trace.rs](../../src/cycle/trace.rs), trace_batch, читает один и тот же
 prefix дважды: сначала MARK всех выбранных корней, затем SCAN тех же корней.
 Записи, добавленные после detach, не расширяют текущий prefix.
 
@@ -90,10 +119,10 @@ prefix дважды: сначала MARK всех выбранных корне�
 ### Что отсутствует для второго потока
 
 **Q8 — контракт RFC, не реализация.**
-[RFC, Y12](../../rfc/model/gc/cycle/questions.md), clause 2, назначает
+[RFC, Y12](../../../rfc/model/gc/cycle/questions.md), clause 2, назначает
 читателем держателя trace token: worker или синхронно собирающий owner.
 Именно читатель выполняет detach. Но согласование с конкурентной записью
-там явно оставлено открытым; им занимается [план RFC](../../rfc/dev/PLAN.md),
+там явно оставлено открытым; им занимается [план RFC](../../../rfc/dev/PLAN.md),
 S8.7. В model оно связано с S38.1.
 
 Нынешние Cell::replace нельзя вызвать на чужом потоке. Даже замена каждого
@@ -118,15 +147,15 @@ splice. Здесь он не заменяется новой очередью и
 
 **Q9 — расхождение документов.** Y12 clause 2 ещё говорит о disposal
 сегментов, а обновлённая clause 5 — о merge. Код и раздел Concurrency в
-[rc-cycle.md](../../rfc/model/gc/rc-cycle.md) используют merge. Старая фраза
+[rc-cycle.md](../../../rfc/model/gc/rc-cycle.md) используют merge. Старая фраза
 не даёт права вернуть сегменты и потерять стоящие в них регистрации.
 
 ## 2. Существующий путь смерти и удержания слота
 
-Источники: [object.rs](../src/object.rs), ll_object_die;
-[stdapi.rs](../src/memory/stdapi.rs), ll_free;
-[deferred_slot_reuse.rs](../src/cycle/deferred_slot_reuse.rs);
-[heap.rs](../src/memory/heap.rs), Heap::free.
+Источники: [object.rs](../../src/object.rs), ll_object_die;
+[stdapi.rs](../../src/memory/stdapi.rs), ll_free;
+[deferred_slot_reuse.rs](../../src/cycle/deferred_slot_reuse.rs);
+[heap.rs](../../src/memory/heap.rs), Heap::free.
 
 **F1 — реализовано.**
 
@@ -160,7 +189,7 @@ TLS DEFERRED_RETURNS. ActiveTrace явно не Send. Это не общий ф�
 удержание уже, чем защита всей памяти выбранного владельца.
 
 **F4 — отсутствует для worker.**
-[buffer_arena.rs](../src/memory/buffer_arena.rs),
+[buffer_arena.rs](../../src/memory/buffer_arena.rs),
 buffer_free_longlived_payload, возвращает обычные buffer chunks и retained
 payloads отдельными путями. Комментарии относят их фоновое удержание к S38.3.
 Одна правка stdapi::ll_free не закроет возврат всех читаемых буферов.
@@ -180,7 +209,7 @@ retire_completed_candidates ниже — предлагаемая новая о�
 ### Обычный режим
 
 **S1 — текущий порядок с явно отмеченной вставкой.**
-[collect.rs](../src/cycle/collect.rs), collect_off_the_poll, держит
+[collect.rs](../../src/cycle/collect.rs), collect_off_the_poll, держит
 Membership::Rows до конца commit. Перечисление membership читает блоки и
 retained-индексы: возврат последнего объекта может освободить сам индекс,
 нужный следующему перечислению.
@@ -243,7 +272,7 @@ trace с меньшим числом корней; часть переполне
     закрыть commit и arena
     следующий раунд / повторная аллокация
 
-Это требует разделить [reclamation.rs](../src/cycle/reclamation.rs), reclaim:
+Это требует разделить [reclamation.rs](../../src/cycle/reclamation.rs), reclaim:
 сейчас release_guards и drain_drops находятся внутри одного вызова,
 а component.guards_released стоит после drain.
 
@@ -514,8 +543,8 @@ reset из GC-деструктора, но запрещает GC из откры
 reader. Обязательный owner-detach на safepoint из предложения исключён.
 
 Проверка каждого из 29 утверждений и граничных случаев —
-[отчёт Критика](COLLECTOR-MUTATOR-MEMORY-REVIEW.md).
-Абстрактная проверка конкретного R2 сохранена в
-[check_memory_protocol_compaction.py](tools/check_memory_protocol_compaction.py):
+[отчёт Критика](collector-mutator-memory-review-2026-09-09.md).
+Абстрактная проверка конкретного R2 сохранена рядом,
+[check_memory_protocol_compaction-2026-09-09.py](check_memory_protocol_compaction-2026-09-09.py):
 5260 конфигураций без потерь записей или сегментов. Это модель уплотнения,
 не проверка Rust pointer provenance, учёта памяти или конкурентной очереди.

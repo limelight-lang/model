@@ -89,7 +89,7 @@ fn the_workspace_stands_between_collections_and_goes_back_at_exit() {
     let _g = test_guard();
     // The process figure, the last assertion being about blocks a thread that
     // no longer exists gave back; the three the child takes are its own
-    // (`PLAN.md`, "A gate flake watch, not a step").
+    // (`dev/WORKFLOW.md`, "The gate flake watch").
     let outside = stats().current_blocks();
 
     let (before_collecting, after_first, after_second) = std::thread::spawn(|| {

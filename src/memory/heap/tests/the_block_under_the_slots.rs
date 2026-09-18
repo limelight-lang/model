@@ -68,9 +68,10 @@ fn block_header_halves_are_laid_out_as_the_design_requires() {
     );
 }
 
-/// The commissioning writes the triple and no production path reads it
-/// yet — `entity_slot_index` is reached only from `cycle::row::edge_to`,
-/// whose caller is `cycle::mark`, which a collection runs. A
+/// The commissioning writes the triple, and this reads it back directly;
+/// its production readers are a collection's, through `entity_slot_index`
+/// under `cycle::row::resolve_edge_target`, which every phase of a trace
+/// calls. A
 /// `refill` that skipped the write would leave the pool's previous
 /// contents in the block's tail, and the first row lookup would multiply
 /// by them.

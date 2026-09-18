@@ -16,7 +16,8 @@
 //!   The store-back is the representation's copy, and on a struct of four
 //!   fields it compiles field-wise — payload, tag byte, flags byte, the
 //!   reserved bytes through a stack temporary — which was 45 % of the
-//!   arm's figure on 2026-09-14 (`dev/BENCHMARKS.md`, the S48.0 entry); a
+//!   arm's figure on 2026-09-14 (`dev/BENCHMARKS.md`, "S48.0 the box's price
+//!   before the relayout"); a
 //!   struct of two words copies as two qwords, so the arm is expected to
 //!   fall by about that on the after-tree for a reason the ruling did not
 //!   price. A separate copy arm was tried and refused: `black_box` on a

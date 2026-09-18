@@ -1,7 +1,14 @@
 # Критический аудит collector/mutator memory protocol
 
+> **Заменён 2026-09-18.** Аудит предложения на `16fc741`; вердикты
+> «implemented / RFC / proposed / unproven» относятся к дереву того дня.
+> Поток-коллектор построен 2026-09-15 и 2026-09-16 по другому протоколу —
+> шапка аудируемого документа перечисляет, что из предложения устарело и
+> чем заменено. Лежал в `dev/` до 2026-09-18.
+
 Аудитор: Critic. Код: `/home/edmond/limelight/model`, `HEAD 16fc741`.
-Документ: `model/dev/COLLECTOR-MUTATOR-MEMORY-PROTOCOL.md`.
+Документ: `model/dev/COLLECTOR-MUTATOR-MEMORY-PROTOCOL.md`, с 2026-09-18
+`docs/history/collector-mutator-memory-protocol-2026-09-09.md`.
 Статус: аудит редакции с утверждениями Q1–Q9, F1–F5, S1–S3, R1–R2,
 C1–C6, P1, V1–V3 (2026-09-09). Runtime не менялся.
 Независимо повторён queue suite: 41 passed. Miri/TSan не запускались.
@@ -269,7 +276,7 @@ heads, unwind, lifecycle физически возвращаемых сущно�
 | S3 | cached member count до consume, один набор без SCC | **implemented shape/proposed API**: `collect.rs:434–463` делает один commit. Нынешний `members.len()` после reclaim сам по себе безопасен: cached Rows count или slice length (`membership.rs:98`); замена мотивирована будущим consuming API, не найденным UAF. Участники отклонённого после resurrection набора тоже могут умереть при снятии guards. |
 | R1 | exclusive queue ownership, no readers/rows/reset, live keep bit, dead zero+DEAD, publish live bounds before free | **proposed**, базовые операции есть (`refcount.rs:1058,1087,1145`; `stdapi.rs:455`), production retirement нет. Предусловие readable **withheld** candidate slot должно быть доказано отдельно; один DEAD на произвольном адресе недостаточен. Reset absorption caveat ниже. |
 | R1 | временный byte8 dead list, candidate arm не дублирует WithheldReturns, без Vec | **proposed**, корректен при указанных clean-boundary условиях и candidate bit, сохраняемом до публикации новых queue ranges. `stdapi.rs:455` возвращает до stack arm. Требуется pop next-before-free, как `deferred_slot_reuse.rs:252`. Unwind/error ownership пока **unproven**, в тексте честно оставлен проверке. |
-| R2 | reverse chain → two-cursor pack → reverse used prefix, head partial/rest full, zero/full cases | **proposed; abstract algorithm verified**: дополнительно выполнена точная linked-node simulation описанного R2, 5260 exhaustive случаев, `dev/tools/check_memory_protocol_compaction.py`. Read/write cursors не затирают непрочитанное; использованные и лишние nodes образуют partition. Это не runtime/provenance проверка. |
+| R2 | reverse chain → two-cursor pack → reverse used prefix, head partial/rest full, zero/full cases | **proposed; abstract algorithm verified**: дополнительно выполнена точная linked-node simulation описанного R2, 5260 exhaustive случаев, `docs/history/check_memory_protocol_compaction-2026-09-09.py`. Read/write cursors не затирают непрочитанное; использованные и лишние nodes образуют partition. Это не runtime/provenance проверка. |
 | R2 | O(entries+segments), no new segment for one-chain pack, overflow отдельно, order may change | **proposed; structurally supported** количеством линейных проходов и monotone writer. Два reversals меняют head-filling placement; не требуется сохранение исторического queue order. Несколько partial chains, gc_metadata и безаллокативный merge остаются **unproven**, как текст и указывает. |
 | C1 | worker selects owner, token single reader, writer continues, capacity-one inbox, owner exact commit | **RFC**, не current code: `rc-cycle.md:504–619`; current S38 открыт. Диаграмма — обязанности, не concurrency implementation. Publication inbox pointer само не ACK; исправленный поясняющий абзац требует окончания worker accesses. |
 | C2 | synchronized gate/inbox/claim, no second trace until commit end, token released before destructors | **proposed + RFC base**, совместимая необходимая гарантия, но atomic state transitions/linearization **unproven**. Текущий COLLECTING — local Cell; заменить им межпоточный gate нельзя (`collect.rs:68`). |

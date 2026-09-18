@@ -342,9 +342,10 @@ pub extern "C" fn ll_gc_set_collector_cap(cap: usize) {
 /// of an emitted pair would rewrite the calling convention to save nothing.
 /// `rc-cycle` has no handshake to serve here — the in-line collection is
 /// exact by construction (`rfc/model/gc/rc-cycle.md`, "Speculative tracing
-/// and exact validation") — so
-/// whether this stays empty forever is settled when the collector-thread
-/// accelerator is built, not before.
+/// and exact validation") — and the collector thread (`crate::cycle::worker`)
+/// keeps it so: its batch is traced on its own arena under the mutator's
+/// token, and nothing of the bracket's is asked of the mutator between the
+/// two calls.
 ///
 /// # Safety
 /// Callable at a safepoint of the mutator.

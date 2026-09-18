@@ -203,8 +203,8 @@ fn no_source_file_is_named_after_a_metaphor() {
 
     assert!(
         kept.is_empty(),
-        "{} source files are named after a metaphor the audit retires \
-         (`dev/CYCLE-TERMINOLOGY-AUDIT.md`):\n{}",
+        "{} source files are named after a metaphor the audit retires; the \
+         table is `dev/CYCLE-TERMINOLOGY-AUDIT.md`:\n{}",
         kept.len(),
         kept.join("\n")
     );
@@ -241,8 +241,8 @@ fn no_declaration_is_named_after_a_metaphor() {
 
     assert!(
         kept.is_empty(),
-        "{} declarations are named after a metaphor the audit retires \
-         (`dev/CYCLE-TERMINOLOGY-AUDIT.md`):\n{}",
+        "{} declarations are named after a metaphor the audit retires; the \
+         table is `dev/CYCLE-TERMINOLOGY-AUDIT.md`:\n{}",
         kept.len(),
         kept.join("\n")
     );

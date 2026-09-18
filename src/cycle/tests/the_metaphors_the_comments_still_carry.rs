@@ -344,8 +344,8 @@ fn the_guard_spares_a_quoted_heading_and_reads_the_sentence_around_it() {
 #[test]
 fn the_guard_spares_a_heading_that_wraps_across_two_lines() {
     let source = "\
-/// The slot is withheld (`rfc/model/gc/rc-cycle.md`, \"Death while
-/// enrolled\"). The registration is the release path's.
+/// The slot is withheld (`dev/DECISIONS.md`, \"an enrolment cannot fail, and the undo of the
+/// enrolled bit is deleted\"). The registration is the release path's.
 ";
     assert!(
         metaphors_in("cycle/queue.rs", source).is_empty(),

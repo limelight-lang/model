@@ -33,7 +33,15 @@ cargo test --lib
 cargo test --lib -- --test-threads=8      # three times
 cargo build --release
 cargo bench --no-run
+cargo doc --no-deps --document-private-items   # prints no warning
 ```
+
+The documentation is built with its private items, because a public
+item's doc links the private one that holds the mechanism, and rustdoc
+warns on every such link without the flag (`dev/DECISIONS.md`, "the crate's
+documentation is built with its private items, and a public doc may link
+one"). A warning from this command is a broken link or a link into a
+`#[cfg(test)]` item, and it is repaired in the same commit.
 
 **One configuration since 2026-08-26.** The GC axis went with the two
 collectors: there is no `rc-walk` feature and no `rc-trace` default, so
@@ -230,7 +238,7 @@ normative for that module. A dated decision still goes to
 either by the entry's title rather than by its date.
 
 **How a reference is written.** By file and named section:
-`rfc/model/gc/rc-cycle.md`, "Cycle teardown". Never by a
+`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation". Never by a
 number that gets reissued, which rules out a line number, a dated `dev/`
 entry, and an item number from a list that has since been rewritten.
 When the section a comment needs does not exist yet, write it and give
@@ -316,9 +324,9 @@ re-run after any deletion of a module, a document or a feature:
    of 2026-08-30 renamed sections under 73 citations that the file test read
    as clean. `python3 dev/tools/citations.py`, run from the crate root, pulls
    every `` `…md`, "…" `` pair out of `src/`, `benches/`, `docs/`,
-   `dev/INDEX.md` and `dev/ARCHITECTURE.md`, resolves `rfc/…` against the
-   sibling repository, and prints each citation whose quoted text is not in
-   the named file.
+   `dev/INDEX.md`, `dev/ARCHITECTURE.md`, `dev/WORKFLOW.md` and `PLAN.md`,
+   resolves `rfc/…` against the sibling repository, and prints each citation
+   whose quoted text is not in the named file.
 
    **A document that was deleted is cited on the branch it survives on**, and
    the checker reads that form: `` `rfc`'s `archive/pre-rc-cycle`,
@@ -327,11 +335,14 @@ re-run after any deletion of a module, a document or a feature:
    `docs/performance-case-decompositions.md` are the population, and they
    were read as misses until 2026-09-05.
 
-   On 2026-09-05 it reported 435 citations and 7 misses: one split path in
-   `memory/critical.rs` and one `routing.rs` sentence that is not a heading
-   (both read correctly), and five string literals inside the two guard
-   tests, which are examples and not citations. A run that prints anything
-   else has found a renamed heading.
+   On 2026-09-18 it reports 723 citations and no miss, so a run that prints
+   anything has found a renamed heading, a split path or a quoted phrase that
+   is not a heading. Three things it skips by rule: `docs/history/`, whose
+   documents are superseded and cite the tree of their day; a quoted span in
+   a test file that runs into a code line, which is the comment guard's test
+   of an unbalanced quote or an assert message's closing quote; and a quoted
+   `…`, this file's placeholder in the citation form. The other examples in
+   the two guard tests cite real headings.
 
    **What a hit means depends on where it stands.** A dated journal —
    `DECISIONS.md`, `BENCHMARKS.md`, `POSTMORTEM.md` — names the document of
@@ -400,6 +411,33 @@ load.** Build the test binary with `--no-run`, pin it to two cores with
 cores. The census flake of 2026-08-06 failed 3 in 30, 7 in 40, 6 in 40
 and 9 in 40 that way, and 0 in 60 after the fix under the same load
 (`dev/POSTMORTEM.md`, "an entity killed at refcount 1").
+
+**The gate flake watch.** Six cases read the process-wide GC ledger across
+a child thread's whole life, which no per-thread figure can answer, and they
+drift if a third thread draws GC memory in that window:
+`gc_metadata::tests::a_threads_exit_ends_every_block_it_acquired`,
+`what_gc_owns::a_threads_base_block_is_in_use_from_its_draw_until_its_exit`,
+`the_workspace_stands_between_collections_and_goes_back_at_exit`, the two
+refusal cases in `the_base_block_a_thread_holds_for_its_life`, and
+`mark::tests::an_aborted_mark_writes_nothing::`
+`a_refusal_two_entities_deep_leaves_the_heap_byte_identical`, whose
+`force_oom` is process-wide and whose reserve reading is asserted at zero.
+The last failed once on 2026-09-15, in one plain run of some twenty-five;
+ten further runs were green and no cause was established, and none of the
+other five failed in 500 runs. A seventh of the same class,
+`heap::tests::a_life_the_allocator_left_heapless::`
+`a_heapless_life_gives_back_the_blocks_it_drew`, whose last assertion reads
+`blocks_out` across the child's life with the guard taken, failed twice in
+43 `debug-journal` runs at eight threads on 2026-09-18 (a tree whose source
+changes were comments), the reading one block off. What would close them is
+a reading of a named thread's figures that outlives the thread, a structure
+rather than a patch, and the second failure is the signal that ruling waited
+for; until it is built a case that starts a runtime thread takes
+`block_pool::test_guard()` whatever it asserts
+(`POSTMORTEM.md`, "a case that starts a thread without the pool's guard is
+the third thread another case's ledger reading cannot survive"; the per-thread
+ledger is `DECISIONS.md`, "the test-facing reading of the GC ledger is per
+thread").
 
 **Never mute, skip, weaken or delete an existing test to go green.** A
 failing old test is a signal: either the change broke behaviour, or the
@@ -555,7 +593,7 @@ its copy tests ran 25 in 59 s — so it is the one slice whose whole-module run
 does not finish.
 
 **Two cases of 2026-09-17 are unverified under Miri, and stay so until one of
-them is cut down.** The Miri selection of S51 and S52 covered
+them is cut down.** The Miri selection of 2026-09-17 covered
 `what_the_byte_arms` (7), `cycle::token::tests` (7),
 `cycle::queue::verdicts::tests` (12), `worker::tests::the_batch` (5),
 `what_an_exit_collects` (8) and `cycle::mutator_record::tests` (10), all green.

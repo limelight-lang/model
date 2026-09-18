@@ -1201,7 +1201,7 @@ impl Table {
     /// layout leaves consistent, and never lands on a counted edge").
     ///
     /// The entry is the unit because a key word has no null: below
-    /// [`KEY_SENTINEL_LIMIT`](crate::array::entry::KEY_SENTINEL_LIMIT) it
+    /// [`KEY_SENTINEL_LIMIT`] it
     /// reads as an integer key rather than as a hole, so a key cannot be
     /// emptied while its element stays. The live and hole counters move as
     /// [`remove`](Self::remove) moves them.

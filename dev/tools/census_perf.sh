@@ -1,7 +1,9 @@
 #!/bin/bash
-# The hardware arm of PLAN.md S40.3: every load of the census through the
-# driver in benches/, pinned to one CPU under `perf stat --control`, twice
-# per cell (A, then A again as the control), plus the empty interval.
+# The hardware arm of the census (`dev/BENCHMARKS.md`, "S40.3 the census of a
+# collection, and the hardware arm over the same loads"): every
+# load of the census through the driver in benches/, pinned to one CPU under
+# `perf stat --control`, twice per cell (A, then A again as the control), plus
+# the empty interval.
 #
 # Usage: dev/tools/census_perf.sh <out.csv> [cpu]
 # Build first: cargo bench --no-run --features bench-loads --bench census_driver

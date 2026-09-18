@@ -1,5 +1,16 @@
 # Retained index ownership
 
+> **Superseded.** Moved out of `dev/design/` on 2026-09-18. The status
+> paragraph below records the ruling; the proposal under it describes the
+> tree of 2026-09-01. Of "the refusals in the last section" the paragraph
+> names as standing, two are themselves superseded: the list is stored beside
+> the retained block after all — the block's own tail is the ruling's first
+> choice — and the reset keeps no `HashMap` or `Vec`, the ruling being global
+> (`dev/DECISIONS.md`, "the reset window's memory comes from the manager";
+> `dev/BENCHMARKS.md`, "the reset's grouping leaves the global allocator").
+> What stands of that section is the refusal of a block per list and of a
+> `HeapBlockHeader` on a retained block.
+
 A proposal to move the occupant index of a retained block out of the
 process-global registry (`memory/retained.rs`) and into the block's own
 header line, owned by the thread whose arena reset produced the block.

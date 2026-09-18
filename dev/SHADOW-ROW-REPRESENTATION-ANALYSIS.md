@@ -1,16 +1,19 @@
 # Shadow rows: representation and measurement analysis
 
-Date: 2026-09-12. Scope: S40.3's experiment and S40.2's flat/chunked
-representation decision in [PLAN.md](../PLAN.md).
-Reviewed model source: the tree after S40.1's pruning arm closed on 2026-09-12
-(the day's work lands squashed over `ea51cbe`, so the tree is inside that commit).
-`PLAN.md` had pre-existing working-tree edits; this analysis does not alter them.
+Date: 2026-09-12. Scope: the census experiment over the shadow rows and the
+decision between the flat row array and a chunked form. Reviewed model
+source: the tree of 2026-09-12 after the pruning arm of the maturation stamp
+closed (the day's work lands squashed over `ea51cbe`, so the tree is inside
+that commit).
 
-Status: source analysis and proposed experiment. This document changes no
-collector behavior, closes neither step, and reports no new hardware timing.
-Amended 2026-09-12 by S40.5: §3.1 specifies the chunked form, and the replay
-of the census through both forms is `cycle::census::replay`, its figures in
-[BENCHMARKS.md](BENCHMARKS.md), 2026-09-12 (S40.5).
+Status: source analysis and the specification of a form the crate refused.
+The flat form was kept and the chunked form of §3.1 was not adopted
+([DECISIONS.md](DECISIONS.md), "analysis of a candidate that may be refused
+stays in `dev/`, and the rfc moves only on adoption", which is why this
+document stays here); §3.1 remains the specification that
+`cycle::census::replay` models against the flat form, its figures in
+[BENCHMARKS.md](BENCHMARKS.md), 2026-09-12. This document changes no
+collector behavior and reports no new hardware timing.
 Arithmetic below is derived from the current implementation or from an
 explicitly stated hypothetical chunk layout. Existing benchmark observations
 remain in [BENCHMARKS.md](BENCHMARKS.md); their scope must be preserved.

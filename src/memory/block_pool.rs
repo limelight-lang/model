@@ -323,8 +323,8 @@ thread_local! {
     /// thread, so a stranger's thread exit reopens a capped path mid-case and the
     /// counts a case reads stop being deterministic; and a process-wide refusal
     /// reaches every other test running beside it, which is the rule
-    /// `dev/POSTMORTEM.md` states for a fault injection and the reason
-    /// `gc::FORCE_BUFFER_REFUSAL` is per thread.
+    /// `dev/POSTMORTEM.md`, "a test that dies with `FORCE_OOM` raised reports
+    /// the next test's crash" states for a fault injection.
     ///
     /// [`FORCE_OOM`] answers a different question and cannot answer this one: it
     /// refuses every request whatever comes back, so a case about a retry served

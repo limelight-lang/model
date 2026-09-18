@@ -303,16 +303,8 @@ impl TraceToken {
         self.released.notify_all();
     }
 
-    /// Take the token as the mutator, waiting while a collector holds it,
-    /// and say where the take found the byte.
-    ///
-    /// From `FREE` and `POSTED` the swap to `MUTATOR` is the take. From
-    /// `REQUESTED|s` it is a refusal: the swap lands and collector `s` is
-    /// woken to read it. Under `COLLECTOR` the mutator blocks on the mutex
-    /// and is woken by [`release_claim`](Self::release_claim); the byte is
-    /// re-read under the mutex, so a release between the read and the wait
-    /// is not lost. `MUTATOR` is the caller's own claim, and the caller tells
-    /// a nested take apart before calling ([`HeldToken::take`]).
+    /// [`take_unless`](Self::take_unless) with `hold_at_posted` off, expecting
+    /// a take, for tests.
     #[cfg(test)]
     pub(crate) fn take(&self) -> TookFrom {
         self.take_unless(false)
@@ -348,10 +340,20 @@ impl TraceToken {
         self.read()
     }
 
-    /// [`take`](Self::take), except that with `hold_at_posted` a byte read
-    /// as `POSTED` — at the first read or after a wait — is left as it is
-    /// and `None` is answered: the retirement pass's form, decided on the
-    /// same read a swap would act on.
+    /// Take the token as the mutator, waiting while a collector holds it,
+    /// and say where the take found the byte; the take behind
+    /// [`HeldToken::take`].
+    ///
+    /// From `FREE` and `POSTED` the swap to `MUTATOR` is the take. From
+    /// `REQUESTED|s` it is a refusal: the swap lands and collector `s` is
+    /// woken to read it. Under `COLLECTOR` the mutator blocks on the mutex
+    /// and is woken by [`release_claim`](Self::release_claim); the byte is
+    /// re-read under the mutex, so a release between the read and the wait
+    /// is not lost. `MUTATOR` is the caller's own claim, and the caller tells
+    /// a nested take apart before calling ([`HeldToken::take`]). With
+    /// `hold_at_posted` a byte read as `POSTED` — at the first read or after
+    /// a wait — is left as it is and `None` is answered, which is the
+    /// retirement pass's form, decided on the same read a swap would act on.
     pub(crate) fn take_unless(&self, hold_at_posted: bool) -> Option<TookFrom> {
         let mut guard = None;
         let mut seen = self.read();

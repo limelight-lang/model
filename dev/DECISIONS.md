@@ -8,6 +8,33 @@ never edited or deleted.
 
 ---
 
+## 2026-09-18 — the crate's documentation is built with its private items, and a public doc may link one
+
+`cargo doc --no-deps --document-private-items` is how the documentation is
+built, it is on the commit gate, and the crate root allows
+`rustdoc::private_intra_doc_links`. Forty-eight public docs link a private
+item — `Table::empty` to `Table::reseed`, `InsertOutcome::AdmissionDenied` to
+`CHAIN_LIMIT` — and rustdoc warns on each under either invocation, because the
+lint is about the link and not about whether the target is rendered.
+
+**Why the links stay.** The crate is built as an rlib and a staticlib for the
+compiler, and nobody reads its rendered documentation but its own developers,
+for whom a private item is exactly where the mechanism behind a public
+contract is. A link that resolves is a navigation; the same name in backticks
+is a search. Rewriting the forty-eight as plain names would have kept the
+words and lost the resolution, and every later public doc would face the same
+choice again.
+
+**What it costs.** One attribute at the crate root, and the rule that the
+documentation is built with the flag: without it the same forty-eight warnings
+come back, so the invocation is written in `dev/WORKFLOW.md` and not left to
+memory. The other three warnings the flag exposed — a `#[cfg(test)]` target
+linked from a production doc, two explicit targets a bare label already
+resolved to — were repaired in place.
+
+Raised by S27's Code Reviewer on 2026-08-18 and carried in the backlog as a
+ruling owed; ruled by the model under S57.2.
+
 ## 2026-09-18 — the safepoint poll takes the free path's road and runs no retirement of its own; a bounded sweep of R is not built until a workload asks
 
 Edmond's ruling, on a stage that had built one. The stage was drawn from his

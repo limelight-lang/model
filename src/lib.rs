@@ -1,5 +1,11 @@
 //! Limelight runtime data model: classes, memory manager, GC.
 //!
+//! The documentation is built with `--document-private-items`: the crate's
+//! readers are its own developers, and a public item's doc links the private
+//! item that holds the mechanism (`dev/DECISIONS.md`, "the crate's
+//! documentation is built with its private items, and a public doc may link
+//! one").
+//!
 //! Implements the design from the `rfc` repository (`model/`, `runtime/`).
 //! This crate contains runtime *mechanics* only — no PHP standard library
 //! functions live here.
@@ -10,8 +16,8 @@
 //! barrier-free concurrent walk that was the default build; `rc-trace`, the
 //! stop-the-thread candidate-buffer tracer; and `rc-satb`, designed and never
 //! built. The design in force is `rc-cycle` (`rfc/model/gc/rc-cycle.md`),
-//! whose in-line owner path is implemented by `crate::cycle::collect`. Its
-//! collector-thread accelerator remains planned.
+//! whose in-line mutator path is `crate::cycle::collect` and whose collector
+//! thread is `crate::cycle::worker`.
 //!
 //! **Every line of the deleted code, and every document that described it, is
 //! on the branch `archive/pre-rc-cycle`** — in this repository and in `rfc`,
@@ -25,6 +31,8 @@
 //! Nothing is copied back from that branch without an entry there: the
 //! deletion happened because a superseded mechanism left in the tree is read
 //! as the design in force.
+
+#![allow(rustdoc::private_intra_doc_links)]
 
 pub mod array;
 pub(crate) mod cells;

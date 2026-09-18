@@ -1,4 +1,4 @@
-//! One trace over one detached batch: every root marked, then every root
+//! One trace over one batch read out of the ring: every root marked, then every root
 //! scanned.
 //!
 //! The order is the whole of this module, and it is a correctness requirement
@@ -10,7 +10,10 @@
 //! into the first one's closure is what makes the case ordinary rather than
 //! rare, and the rfc states neither the ordering nor that frequency. Both
 //! phases run here, in one function, so the rule holds by construction rather
-//! than by a caller remembering it.
+//! than by a caller remembering it — with one other keeper of the same order:
+//! the collector thread's batch runs the two phases over `AtomicCells` in
+//! `crate::cycle::worker` (`worker::trace`), and it is that function's
+//! obligation to mark every root before any root scans.
 //!
 //! # What it owns
 //!
@@ -18,7 +21,7 @@
 //! the roots are the caller's batch; the phases read the batch twice and write
 //! neither it nor any entity. A trace that gives up leaves the heap
 //! byte-identical, and what it owes afterwards is the arena's reset and the
-//! batch's merge back into the lane — both of them
+//! batch's disposition in place — both of them
 //! `crate::cycle::deferred_slot_reuse::ActiveTrace`'s at its close.
 //!
 //! # What a root at zero costs

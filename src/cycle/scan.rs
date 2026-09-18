@@ -56,7 +56,7 @@
 //! worklist segment through
 //! [`TraceScratchArena::push_work`](crate::cycle::arena::TraceScratchArena::push_work) — it reads rows
 //! through
-//! [`find_initialized_row`](crate::cycle::arena::find_initialized_row), which
+//! [`find_initialized_row`], which
 //! allocates nothing — and a refusal there answers
 //! [`ScanResult::AllocationFailed`] and abandons the trace with the heap
 //! untouched.

@@ -11,12 +11,14 @@ not built, it says so. Superseded versions live in
 [`docs/history/`](history/) and are marked as such; the rule that keeps
 this file honest is in [`dev/WORKFLOW.md`](../dev/WORKFLOW.md).
 
-> **The in-line cycle collector is `rc-cycle`.** Ordinary collections retain
-> shadow rows through teardown; pressure collections harvest a bounded member
-> list and return trace storage before teardown. Both retire completed
-> candidate slots after their membership readers finish. The collector worker
-> remains planned. The deleted `rc-walk`, `rc-trace` and `rc-satb` code and
-> documents are preserved on `archive/pre-rc-cycle`.
+> **The cycle collector is `rc-cycle`.** Ordinary collections retain shadow
+> rows through teardown; pressure collections harvest a bounded member list
+> and return trace storage before teardown; both retire completed candidate
+> slots at their close. A collector thread traces a mutator's candidates
+> under the mutator's trace token and posts verdicts into a second ring the
+> mutator reads (`dev/ARCHITECTURE.md`, paths 5 and 6). The deleted
+> `rc-walk`, `rc-trace` and `rc-satb` code and documents are preserved on
+> `archive/pre-rc-cycle`.
 
 ---
 
@@ -354,9 +356,11 @@ this path is the workspace one collection earlier — a thread whose first
 collection cannot draw its workspace does not start one.
 
 The window covers mark and scan alone and ends before exact validation and
-teardown. Today the in-line owner finds it through one thread-local pointer to
-that control line, a null pointer being the closed window; the collector-worker
-form waits on S38's owner-addressable token and deferred-reuse handoff.
+teardown. The in-line owner finds it through one thread-local pointer to that
+control line, a null pointer being the closed window. A collector thread
+holding the owner's trace token withholds the owner's deaths the same way,
+under a thread-local head, until the owner reads the token free and makes the
+returns (`cycle::deferred_slot_reuse`, "A foreign holder of the token").
 
 The gate covers ordinary entity slots, retained blocks and both large entity
 kinds. A retained block rides at block granularity — its last occupant can
@@ -365,66 +369,15 @@ unmapped under its header row. A retained block pointer used as the reset's
 empty-block return sentinel can have its reuse deferred but is not an entity
 header, so the refcount and `CANDIDATE_BIT` tests explicitly exclude it.
 
-#### Historical rc-walk mechanism
+#### What `rc-walk`'s parking was
 
-*What follows described `deferred_free.rs`, which was deleted with `rc-walk`.*
-
-While an rc-walk collection epoch was in flight, a free **parked** instead
-of recycling (`deferred_free.rs`): one relaxed load of a global activity
-bit and a predicted branch, after the kind dispatch, active only during
-an epoch. The entity still dies on time, destructor included, and only
-reuse waits, so a walked slot cannot become a different object
-mid-epoch. Identity is what makes an exact validation sound
-(`rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`).
-
-**Parking is out of band.** The parked pointer goes into a thread-local
-vector, and the parked memory is not written until the flush. The first
-draft threaded an intrusive link through the allocation's bytes 8-15,
-which in an entity slot is the class word the walker dereferences one
-pass after reading the header: a wild read under the walker's feet. Out
-of band a corpse stays intact — header reading refcount 0, class word
-live, fields nulled — so a walker chasing a stale pointer lands on
-readable bytes. The price is a park path that may allocate, cold and
-epoch-only.
-
-**What rides.** Every block kind that reaches `ll_free` and can put
-memory back in circulation: heap raw buffers, entity slots, pooled
-large, OS-direct runs and retained blocks. A reset in flight takes two
-of those before this test is reached: a large-entity body parks in the
-reset's own window instead, and the free of a corpse in a block whose
-occupant count is not established yet is dropped entirely (below, "Arena reset"). Buffer-arena chunks never
-reach `ll_free` at all, `buffer_free_longlived_payload` calling
-`BufferArena::free` directly, so that branch makes the test itself and
-parks the whole call: `free` is size-carrying and can hand an emptied
-block back to the pool to be re-stamped as another kind. A payload in a
-retained block arrives from the same function and hands back no memory
-of its own; what it may hand back is the block those bytes pinned. So a
-parked record names the free it replays rather than deriving it from a
-size.
-
-**What does not.** The arena kind, which recycles nothing, so identity
-holds without parking. A retained block rides for a reason of its own:
-nothing is recycled inside it, former arena memory having neither stride
-nor free list, but the return of its last held occupant slot hands the whole
-block to the pool, and a block reissued mid-epoch is the identity loss
-parking exists to prevent.
-
-**Cross-thread frees ride like any other.** The epoch test fires on the
-block kind alone and stands before the owner dispatch, so during an
-epoch a free of another thread's heap or entity slot parks on the
-freeing thread and reaches `free_foreign` only when the flush replays
-it. The crate is single-mutator today, so nothing depends on that
-ordering yet; actors reopen the question.
-
-**Known limit.** A thread that parks and exits before flushing leaks its
-parked list until process end, bounded by what that thread freed inside
-one epoch window and measured in blocks rather than bytes: a dropped
-chunk record leaves `live` above zero on its block forever, and a block
-that never empties bounces between the abandoned list and its adopters
-instead of going home, so one record can pin 64 KiB. A large-entity run
-raises that ceiling to the run's own size
-(`rfc/model/memory/large-entities.md`) and keeps its registry entry, so
-the collector walks it once per epoch for the life of the process.
+The deleted collector parked a free instead of recycling it while a
+collection epoch was in flight (`deferred_free.rs`, deleted with `rc-walk` on
+2026-08-26). The present windows above replace it: a return is withheld in
+the dying entity's own memory, never in a thread-local vector, and by a
+per-thread token rather than a global activity bit. The old mechanism and
+its known limit are on `archive/pre-rc-cycle`, in this document's version
+there.
 
 ### Cross-thread free
 

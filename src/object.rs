@@ -798,8 +798,9 @@ pub unsafe extern "C" fn ll_object_die(obj: *mut Object) {
         // Phase 3 — memory, by category. Arenas reclaim at reset; the
         // long-lived policy is TBD; only the GC heap frees here, through
         // the entry for a pointer known to be an entity header
-        // (`dev/BENCHMARKS.md`, 2026-09-17, "S52": no measurable saving
-        // over `ll_free`, kept for the precondition it states).
+        // (`dev/BENCHMARKS.md`, "S52 an entity-only free for the death
+        // path: no measurable difference" — kept for the precondition it
+        // states).
         if unsafe { header_category(obj as *const RcHeader) } == MemoryCategory::GcHeap {
             unsafe { crate::memory::stdapi::ll_free_entity(obj as *mut u8) };
         }
