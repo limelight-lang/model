@@ -134,7 +134,7 @@ commit (`WORKFLOW.md`).
 | `class` | class descriptors: the inline vtable train (`[Class][vtbl][itables…]`, pure code-pointer arrays), method table, Cohen display; property layout as three typed runs; the trace lists (`ptr_runs` / `box_runs`); link-time construction | immortal allocation; interned names; the default dispose pointer | instance state; memory categories; GC; who calls the methods | `cells`, `intern`, `memory/immortal`, `object`, `string` |
 | `object` | `ll_object_new` factory; `ll_object_constructed` (destructor registration); three-phase `ll_object_die`; the kind-switched `ll_entity_die`; `for_each_counted_child` | class runs; every category's allocator; the weak gate bit; the destructor-debt protocol | collector internals; block internals; per-site barrier composition | `array/entity`, `cells`, `class`, `cycle`, `gc`, `journal`, `memory/arena`, `memory/barrier`, `memory/context`, `memory/routing`, `memory/stdapi`, `refcount`, `reference`, `string`, `template`, `value`, `weak` — `cycle` for the poll stride `ll_release_vector` reads, a constant |
 | `reference` | the `&` reference box, entity kind 3: `RcHeader \| Value` — the model's only extra indirection, self-describing at teardown via the kind field | its own kind | classes; typed slot references (future) | `journal`, `memory/barrier`, `memory/routing`, `memory/stdapi`, `object`, `refcount`, `value` |
-| `static_block` | the per-thread registry of static blocks and the teardown pass that releases their roots at thread exit (A6): registration in first-touch order, drained in reverse | that a static block is headerless and laid out by a descriptor; that a `__destruct` may register another block mid-pass | how a static block is allocated; what its slots mean — the release policy is the barrier's, the teardown `object`'s | `class`, `memory/barrier`, `object`, `refcount` |
+| `static_block` | the per-thread registry of static blocks and the teardown pass that releases their roots at thread exit (A6): registration in first-touch order into a chunk of the thread's buffer arena, drained in reverse, closed behind the exit's pass | that a static block is headerless and laid out by a descriptor; that a `__destruct` may register another block mid-pass; that a growth the arena refuses is a registration refused | how a static block is allocated; what its slots mean — the release policy is the barrier's, the walk over the slots `object`'s and the emptying `cells`' | `cells`, `class`, `memory/barrier`, `memory/buffer`, `memory/buffer_arena`, `object`, `refcount` |
 | `weak` | the kind-11 weak cell (the canonical `WeakReference` *is* the cell); the per-thread weak table; every notification rule (`notify_death` / `notify_member` / `drain_arena_weak_log`); `ll_weakref_create` / `ll_weakref_get` | the `HAS_WEAK_REFERENCES` gate; that cells always live in the GC heap; that only the owning thread touches the table; where the table's rows come from and what a refused one answers | *when* to call in — that duty belongs to the death sites (dispose phase 2 first act, both collectors, arena reset) | `journal`, `memory/arena`, `memory/buffer_arena`, `memory/context`, `memory/heap`, `memory/stdapi`, `object`, `refcount` |
 | `string` | the string entity in two layouts told apart by kind code — inline `RcHeader \| len \| hash \| bytes` (kind 8) and out of line with spare capacity (kind 9) — `ll_string_new`, `ll_string_new_dynamic`, `ll_string_append`, the 4 GiB length gate `fits`, the cached hash, the COW `separate`, and `carry_payload_out_of` for a survivor's payload at reset | both layouts; where a payload comes from (`routing`) | classes; arrays; the collector | `hash`, `journal`, `memory/arena`, `memory/block_pool`, `memory/buffer`, `memory/buffer_arena`, `memory/context`, `memory/routing`, `memory/stdapi`, `object`, `refcount` |
 | `template` | the interpolated string template: `TemplateShape` is static data the compiler emits once, the instance `RcHeader \| class \| shape \| Value[n]` under one class for every site; `flatten` builds the string in one allocation | the shape's value count, which the instance's cell walk reads in one place (`object::for_each_counted_cell`) | floats and objects, which it refuses to flatten | `cells`, `class`, `memory/barrier`, `memory/context`, `memory/routing`, `memory/stdapi`, `refcount`, `string`, `value` |
@@ -194,7 +194,7 @@ teardown they run call back out — which is why `object` names
 | Immortal region | process-global mutex | `immortal` | `class`, `intern`, `object` (immortal category) |
 | Intern table | process-global mutex, Rust-owned | `intern` | `class` looks names up |
 | Retained-block survivor lists | the block's own header line and the arena's memory; no process-global structure, no lock, one atomic count word per block | `retained` | `promote` places and publishes at reset; the trace and `heap`'s test-only enumerator read the header |
-| Static-block registry | TLS, no drop glue | `static_block` | the static initializer registers; `heap`'s `ll_thread_exit` drains |
+| Static-block registry | one long-lived buffer chunk while blocks are registered, TLS holding the `Buffer` and no drop glue | `static_block` | the static initializer registers; `heap`'s `ll_thread_exit` drains and then closes it, and `ll_thread_init` reopens it for the thread's next life; `buffer_arena` owns the chunk |
 | Weak table | one long-lived buffer payload for the life of the thread, TLS holding one non-owning pointer to it and no drop glue | `weak::table` | death sites call in, gated by `HAS_WEAK_REFERENCES`; the collector thread never touches it; `buffer_arena` owns the chunk it sits in, and no figure of `gc_metadata`'s ledger moves with it |
 
 Three rows left this table on 2026-08-26 with the collectors that owned
@@ -350,7 +350,8 @@ block, the reserve-drawn ones included, returns to the pool.
 **4a. Thread exit.** `ll_thread_exit` (`heap`), reached explicitly or
 from the TLS guard → the static-block pass (`static_block`) releases
 each registered block's roots in reverse registration order through the
-barrier's `drop` → the exit's collection (`cycle::collect::collect_before_exit`)
+barrier's `drop`, and the registry closes behind it → the exit's collection
+(`cycle::collect::collect_before_exit`)
 claims the thread's trace token for good, waiting for a holder, then collects what the
 thread left registered in rounds until one makes no progress, and reports
 what is still registered as the exit's residue; these two are the steps
@@ -466,8 +467,10 @@ write them. Each is load-bearing for at least two modules.
    because it registers first. A key with drop glue is therefore
    reliably already gone, `with` panics with `AccessError`, and a panic
    in a destructor cannot unwind — the process aborts. Every such
-   structure is a `Cell<*mut T>` freed by an explicit `dispose` in the
-   order `ll_thread_exit` fixes. `block_pool`'s cache and `reserve` are
+   structure is a cell with no drop glue — a `Cell<*mut T>`, or the
+   structure itself where it has no `Drop` (`static_block`'s `Buffer`) or
+   is held under `ManuallyDrop` (the buffer arena) — disposed of by an
+   explicit `dispose` in the order `ll_thread_exit` fixes. `block_pool`'s cache and `reserve` are
    the sanctioned exceptions: they use `try_with`, and there failure
    means "go to the global tier", which is sound.
 8. **Publish before teardown**: the barrier owns the whole slot; an

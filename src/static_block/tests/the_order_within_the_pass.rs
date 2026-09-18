@@ -1,9 +1,65 @@
 //! Reverse registration order, as C++ tears down function-local
 //! statics, and one block popped at a time rather than a drain held
 //! across user code: a `__destruct` reached mid-pass can register a
-//! block of its own, and that block is the newest.
+//! block of its own, and that block is the newest. Within a block the
+//! slot is emptied before its occupant is dropped, so the occupant's own
+//! destructor reads the slot as null.
 
 use super::*;
+
+/// The block whose slot a destructor reads back, and what it read.
+static READ_BACK_BLOCK: AtomicUsize = AtomicUsize::new(0);
+static READ_BACK_NULL: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn reads_its_own_slot(_o: *mut Object) {
+    let block = READ_BACK_BLOCK.load(Ordering::Relaxed) as *mut u8;
+    let slot = unsafe { &*(block.add(16) as *const Value) };
+    READ_BACK_NULL.store(usize::from(slot.is_null()), Ordering::Relaxed);
+}
+
+/// The slot is emptied before its occupant is dropped: a `__destruct` run
+/// by that drop, which can reach the very block being torn down, reads
+/// null there rather than a reference to the entity it is the destructor
+/// of. Dropping first and emptying after would hand it a reference to an
+/// entity mid-teardown, which a store elsewhere would then retain past its
+/// free.
+#[test]
+fn a_destructor_reads_its_own_slot_as_null() {
+    let _g = crate::memory::block_pool::test_guard();
+    READ_BACK_NULL.store(usize::MAX, Ordering::Relaxed);
+    let cls = ClassBuilder::new("ReadsItsOwnSlot")
+        .destructor(reads_its_own_slot as *const ())
+        .build();
+    let layout = ClassBuilder::new("StaticsOfReadBack")
+        .prop("kept", true)
+        .build();
+
+    let mut arena = Arena::new();
+    let mut ctx = LLContext { arena: &mut arena };
+    let obj = unsafe { new_constructed(&mut ctx, cls, MemoryCategory::GcHeap) };
+    let block = static_block(layout);
+    READ_BACK_BLOCK.store(block as usize, Ordering::Relaxed);
+    unsafe {
+        assert!(crate::memory::barrier::store_box(
+            &mut arena,
+            MemoryCategory::LongLived,
+            block.add(16) as *mut Value,
+            Value::entity(Tag::Object, obj as *mut RcHeader),
+        ));
+        ll_static_block_register(block, layout);
+        assert!(!crate::refcount::ll_release(obj as *mut RcHeader));
+    }
+
+    run_thread_exit_teardown();
+    assert_eq!(
+        READ_BACK_NULL.load(Ordering::Relaxed),
+        1,
+        "the destructor ran and read its slot (1 null, 0 an entity, MAX never ran)"
+    );
+
+    unsafe { free_static_block(block, layout) };
+    arena.reset(|_| {});
+}
 
 /// Reverse initialization order, as C++ tears down function-local
 /// statics: the later block may hold a reference the earlier one's

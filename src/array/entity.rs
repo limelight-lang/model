@@ -1274,9 +1274,9 @@ pub(crate) unsafe fn sever_element_at(
 /// ordered hash every string key beside them — collecting them into
 /// `displaced` without releasing them. The array's arm of a cycle
 /// teardown's sever (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation",
-/// step 6), and the counterpart of
-/// [`crate::object::sever_counted_slots`]: same contract, same reason
-/// for not dropping inline, and the caller owes one drop per entry.
+/// step 6), and the counterpart of the object arm of
+/// [`crate::cells::sever_cells`]: same contract, same reason for not
+/// dropping inline, and the caller owes one drop per entry.
 ///
 /// One call per representation, because the state that replaces a
 /// severed entry is the representation's: a hole in the ordered hash

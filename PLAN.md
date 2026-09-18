@@ -15,13 +15,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-18 · Active: S58; S37 blocked. Every open step of S37 is
+Updated: 2026-09-18 · Active: S37, blocked. Every open step of S37 is
 blocked outside this repository or on a corpus: S37.2 waits on the compiler
 that computes the acyclic proof, S37.5 and S37.7 on the Phase-D corpus. The
 prose sections below are the backlog a stage is drawn from while S37 waits;
-S58 was drawn from it on 2026-09-18, the three exit-path sites of the S36
-residue, under the ruling that no runtime path aborts on an allocation the
-manager could have refused.
+the last drawn, S58, closed the three exit-path sites of the S36 residue on
+2026-09-18 and is deleted, its record `dev/DECISIONS.md`, "the exit path
+holds no container: the buffer arena is its thread-local, and the static
+registry is a chunk closed per life".
 
 Review 2026-09-18, second: pass 3 by the Critic over the plan as rewritten
 by S57.7 — its findings and their disposition are in that step. Pass 1 over
@@ -51,7 +52,7 @@ of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
 `dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36 and S38
-through S57 — every number this plan has spent but S37 and S58. A number is never
+through S58 — every number this plan has spent but S37. A number is never
 reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -267,71 +268,6 @@ stage is what makes a trace affordable rather than what tunes it.
         mark and `object::ll_owned_child_die` honours it (`dev/DECISIONS.md`,
         "the ownership mark is the owned store's to move and the holder's
         `dispose` to honour").
-
-## S58 — The exit's own containers  [in progress]
-
-Goal: the thread's exit sequence takes its memory from the manager, as the
-ruling of 2026-09-12 requires of every runtime path, and answers a refusal
-to its caller instead of aborting out of `Vec` or `Box`. Three sites stand
-on the global allocator, none on a collection frame, so the deny run never
-met them: the `Box` holding a thread's `BufferArena`, which
-`weak::table::draw` reaches from a step-4 destructor; `static_block`'s
-registry `Vec`; and the `Vec` its teardown collects displaced children into
-(`dev/DECISIONS.md`, "the reset window's memory comes from the manager, and
-an allocation it cannot get is a refusal"). The fourth site S36 left, the
-collector thread's spawn, stays in the backlog: it needs a spawn of its own
-with a platform arm each, a stage rather than a step.
-Done when: the exit's first and fifth steps — the static pass over a
-registry a destructor grows mid-pass, and the buffer arena's dispose — make
-no call into the global allocator and no free through it, read by
-`test_support::allocation_probe` on the exiting thread; a registration the
-manager refuses, and one made after the pass has drained, each leave the
-block's roots held with the pass running to its end; and the Miri run at
-the close covers the tests the diff selects (`dev/WORKFLOW.md`, Miri).
-Notes: `dev/plans/S58.md` — the Critic's pass over the draft and what each
-finding changed.
-
-- [x] S58.1 The thread's buffer arena is inline in its thread-local
-      done: `THREAD_BUFFER_ARENA` holds the `BufferArena` itself, in an
-        `UnsafeCell<ManuallyDrop<BufferArena>>` with no drop glue, so the
-        first use allocates nothing; `dispose` hands the blocks over and
-        leaves the arena empty; `free_chunk`'s never-allocated arm folds into
-        `BufferArena::free`, whose owner test posts a foreign chunk remote. A
-        red test on a thread with no warm-up shows the first
-        `with_buffer_arena` go from one allocation to zero and the `dispose`
-        from one deallocation to zero, each on its own counter.
-      tier: T2 · role: Critic, one pass over the stage at S58.3
-      handoff: `buffer_arena::tests::what_the_thread_local_asks_the_allocator`
-        read (1, 1) on the box and (0, 0) inline; the fold's arm is
-        `who_may_touch_a_block::a_thread_that_never_allocated_posts_a_payload_free_remote`,
-        red under a no-op free. The two test warm-ups that existed for the
-        box (`block_pool::test_guard`, the weak table's deny cases) went.
-        Gate on this tree: 1058 ×3 at eight threads, `hash-folding` 1058,
-        `debug-journal` 1067 ×3, release, bench, doc 0 warnings.
-- [ ] S58.2 The static-block registry is a long-lived buffer
-      done: `ll_static_block_register` appends its `(block, layout)` pair to a
-        `memory::buffer::Buffer` grown through `buffer_ensure_longlived`,
-        `len` and `capacity` in bytes as that type's contract has them; the
-        pass pops one pair per access to the thread-local — `len` reduced
-        by a pair, the pair copied out, nothing derived from the buffer
-        outliving the access — and releases the chunk on the access that
-        finds it empty; `ll_thread_exit` closes the registry after the pass,
-        so a registration from a step-2 destructor is refused rather than
-        drawing a chunk no pass frees. A red test shows a first registration
-        go from two global calls to zero; a case under
-        `longlived_refusal_takes_this_one` and one from a step-2 destructor
-        each show the block's root still held after the exit while the
-        registered blocks are torn down.
-      tier: T2 · role: Critic, one pass over the stage at S58.3
-- [ ] S58.3 The static pass drops each displaced child as its slot is severed
-      done: `tear_down` walks the block's counted slots once, emptying a cell
-        and dropping its former occupant in the same visit, as
-        `rfc/model/classes.md`, "Teardown at thread exit" writes the pass
-        ("runs `drop` on each"); the `Vec` sink goes, and `sever_counted_slots`,
-        whose only caller this was, goes with it. A red test shows a pass over
-        two displaced children go from one global call to zero, and the two
-        cases of `the_order_within_the_pass` stay green unchanged.
-      tier: T1 · role: Critic
 
 ---
 

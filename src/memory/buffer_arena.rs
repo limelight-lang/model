@@ -267,12 +267,14 @@ impl BufferArena {
         }
     }
 
-    /// Free a chunk previously handed out by [`alloc`](Self::alloc) on this
-    /// thread. `size` must be the granted capacity (the holding entity tracks
-    /// it as the buffer's `capacity` anyway) — the zero-metadata contract.
+    /// Free a chunk of a buffer block: this arena's goes to its block's free
+    /// list or retires the block, another arena's is posted to that block's
+    /// stack for its owner to collect. `size` must be the granted capacity
+    /// (the holding entity tracks it as the buffer's `capacity` anyway) — the
+    /// zero-metadata contract.
     ///
     /// # Safety
-    /// `ptr`/`size` must be exactly one live allocation of this arena.
+    /// `ptr`/`size` must be exactly one live chunk of some arena's block.
     pub unsafe fn free(&mut self, ptr: *mut u8, size: usize) {
         let size = round_up_8(size).max(MIN_CHUNK);
         let block = BufferBlockHeader::of_ptr(ptr);
@@ -701,9 +703,10 @@ impl BufferArena {
 }
 
 impl Drop for BufferArena {
-    /// A dying thread must not take its blocks with it, and since
-    /// 2026-08-04 it must not drop the ones still holding chunks either:
-    /// a chunk here is an entity's body and its holder may be any
+    /// A test's local arena is the only one ever dropped: the thread's own
+    /// sits under `ManuallyDrop`, and [`dispose`] hands it over. The same
+    /// hand-over here, so an arena that dies holding chunks leaves them
+    /// findable — a chunk is an entity's body and its holder may be any
     /// thread. [`BufferArena::hand_over`] gives the empty blocks to the
     /// pool and the rest to the abandoned list.
     fn drop(&mut self) {
@@ -781,8 +784,8 @@ unsafe fn post_remote(block: *mut BufferBlockHeader, ptr: *mut u8, size: usize) 
 
 thread_local! {
     /// This thread's persistent buffer arena, the struct itself under
-    /// `ManuallyDrop` rather than a `RefCell<BufferArena>` or a box the
-    /// first use builds — a cell with no drop glue, the shape of every
+    /// `ManuallyDrop` rather than a `RefCell<BufferArena>` — a cell with no
+    /// drop glue, the shape of every
     /// thread-local reachable from thread exit (`dev/DECISIONS.md`, "thread
     /// exit owns the order its per-thread state dies in"). What keeps drop
     /// glue is the four structures that need a destructor of their own: the
@@ -945,8 +948,10 @@ pub fn buffer_ensure_longlived(buf: &mut Buffer, min_capacity: usize, hint: usiz
 /// Release a long-lived payload, routing by the owning block's kind.
 ///
 /// # Safety
-/// `(ptr, capacity)` must be a live payload from
-/// [`buffer_ensure_longlived`] on this thread, not freed yet.
+/// `(ptr, capacity)` must be one live payload handed out by
+/// [`buffer_alloc_longlived_payload`] or [`buffer_ensure_longlived`], on
+/// any thread, and not freed yet: a chunk of another thread's block is
+/// posted to that block.
 pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
     let kind = unsafe { load_block_kind(((ptr as usize) & !BLOCK_MASK) as *const AtomicU32) };
     if kind == crate::memory::block_pool::BLOCK_KIND_RETAINED {
@@ -981,8 +986,7 @@ pub unsafe fn buffer_free_longlived_payload(ptr: *mut u8, capacity: usize) {
         // thread that never did can still drop the last reference to a
         // string another thread built — that is what the ownership
         // protocol is for — and the arena's free posts a chunk it does not
-        // own remote. The arena is the thread-local itself, so reaching it
-        // builds nothing.
+        // own remote.
         with_buffer_arena(|arena| unsafe { arena.free(ptr, capacity) });
     } else {
         // OS-direct run: the standard path frees it by mask.

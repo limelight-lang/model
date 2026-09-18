@@ -63,8 +63,9 @@ fn thread_init_touches_both_reserves_before_anything_can_release() {
 /// new thread-local appear unnoticed — adding one fails here, and the
 /// person adding it reads the rule the failure names.
 ///
-/// The rule: a per-thread structure that thread exit can reach holds a
-/// raw pointer in a `Cell` and is freed by hand (`dev/DECISIONS.md`,
+/// The rule: a per-thread structure that thread exit can reach has no
+/// drop glue — a raw pointer in a `Cell`, a struct with no `Drop`, or one
+/// under `ManuallyDrop` — and is disposed of by hand (`dev/DECISIONS.md`,
 /// "thread exit owns the order its per-thread state dies in"). Four
 /// declarations are exempt because they exist to have a destructor —
 /// `RESERVE`, `CRITICAL`, `THREAD_CACHE`, `EXIT_GUARD` — and each of
@@ -90,6 +91,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue
         ("BLOCK_BUDGET", false),
         ("CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue
+        ("CLOSED", false),                                // const Cell<bool>, no drop glue
         ("COLLECTION_ARMED", false),
         ("COUNTS", false),               // test-only const Cell, no drop glue
         ("COUNT_PRESSURE_ROOTS", false), // test-only const Cell, no drop glue

@@ -100,7 +100,11 @@ collector–mutator memory protocol of 2026-09-09 and its review are in
   `dev/ARCHITECTURE.md`'s `gc` row and `cycle::queue`'s module doc, "What the
   poll does for this module".
 - Static blocks and thread exit: `src/static_block.rs` — the per-thread
-  registry and the exit's release of each block's roots. The exit's order is
+  registry, a chunk of the thread's buffer arena closed behind the exit's
+  pass and reopened by the next life's init, and that pass's release of
+  each block's roots (`dev/DECISIONS.md`, "the exit path holds no container:
+  the buffer arena is its thread-local, and the static registry is a chunk
+  closed per life"). The exit's order is
   fixed in `heap::ll_thread_exit` (`dev/DECISIONS.md`, 2026-08-03: TLS
   destructor order is unspecified; nothing on that path may have drop glue).
   The exit's own collection is `cycle::collect::collect_before_exit`, its

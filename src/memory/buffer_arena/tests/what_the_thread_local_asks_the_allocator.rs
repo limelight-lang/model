@@ -32,6 +32,6 @@ fn a_threads_first_use_and_its_dispose_ask_the_global_allocator_for_nothing() {
     assert_eq!(
         (first_use, disposal),
         (0, 0),
-        "(allocations at the first use, frees at the dispose): the arena was a box"
+        "(allocations at the first use, frees at the dispose): the arena reached the global allocator"
     );
 }

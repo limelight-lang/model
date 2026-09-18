@@ -3,6 +3,7 @@ use crate::class::ClassBuilder;
 use crate::memory::arena::Arena;
 use crate::memory::context::LLContext;
 use crate::object::{Object, new_constructed};
+use crate::refcount::RcHeader;
 use crate::value::{Tag, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -25,4 +26,6 @@ unsafe fn free_static_block(p: *mut u8, layout: *const Class) {
 
 mod the_order_within_the_pass;
 mod the_pass_nobody_calls_by_hand;
+mod the_registry_across_two_lives;
 mod what_the_exit_pass_gives_back;
+mod what_the_registry_asks_the_allocator;

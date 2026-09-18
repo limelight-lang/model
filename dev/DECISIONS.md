@@ -8,6 +8,67 @@ never edited or deleted.
 
 ---
 
+## 2026-09-18 — the exit path holds no container: the buffer arena is its thread-local, and the static registry is a chunk closed per life
+
+**Decided (S58).** Three sites on the thread's exit path allocated through
+the global allocator, where a refusal is an abort: the `Box` the first use
+of a thread's `BufferArena` built, which a destructor at exit freeing a
+dynamic string's payload could be the first to reach; the `Vec` the
+static-block registry grew; and the `Vec` the static pass collected a
+block's displaced children into. None was on a collection frame, so the deny
+run never met them. The ruling of 2026-09-12 that no runtime path aborts on
+an allocation the manager could have refused is global, and these were its
+last three sites outside the collector thread's spawn.
+
+**The arena is the thread-local itself**, under `ManuallyDrop` so the slot
+carries no drop glue, and `dispose` hands the blocks over in place. The
+first use allocates nothing, and the arm that answered a free on a thread
+that never allocated by building nothing folds into `BufferArena::free`,
+whose owner test posts a foreign chunk remote — `hand_over` nulls every
+owner, so a free after the dispose posts remote too. A long-lived
+allocation after the dispose bumps a fresh block nothing hands over; no
+path makes one, and a fence that would refuse it is not built, because it
+would cost a read on every long-lived allocation for a shape no path has.
+
+**The registry is a `Buffer` chunk of the thread's buffer arena**, grown
+through `buffer_ensure_longlived`, so a growth the manager refuses is a
+registration refused and the block's roots leak — the cost the refusal
+already priced. The pass pops one entry per access to the thread-local and
+releases the chunk on the access that finds it empty; nothing read off the
+registry survives an access, since a destructor inside the pass may register
+and move the chunk. **The registry closes behind the exit's pass and reopens
+at the next life's init**, beside the exit phase and the journal's ring: a
+registration from the exit's collection, the last step that runs user
+code, would be popped by no pass, and its chunk would keep the buffer block
+it sits in on the abandoned list for the life of the process, where a
+refused registration leaks its roots alone. The close is per life because a
+pool thread that runs init and exit per task must register again in its
+next life, and a close that outlived the life refused every registration
+from the second task on — the Critic's finding over the built stage, which
+the suite could not see because libtest runs each test on a fresh thread.
+
+**The pass empties each slot and drops its occupant in the same visit**,
+the shape `rfc/model/classes.md`, "Teardown at thread exit" writes ("runs
+`drop` on each"), so it holds no list; `object::sever_counted_slots`, which
+served the sever-all-then-drop shape and had this one caller, went with it.
+What a destructor run mid-pass sees of the other slots is now that
+heading's sentence.
+
+**Refused.** A second static pass after the exit's collection, to take a
+late registration: `heap::ll_thread_exit` fixes step 2 as the last step that
+runs user code, and a second pass reopens that. A fixed-size sink for the
+displaced children with the walk re-run when it fills: the walk's visitor
+cannot stop early, and the per-slot drop is what the design says.
+
+**What is left.** The collector thread's spawn, `PLAN.md`, "The collector
+thread's spawn allocates through the global allocator", a stage of its own
+with a platform arm each. `CLASS_OUTSIDE_CELLS` on a static block's layout
+is refused by a `debug_assert` alone, a contract on the compiler that
+predates the stage. Whether the compiler's static initializer runs once per
+OS thread or once per life decides whether a second life re-registers at
+all: `rfc/model/classes.md` says "once per thread", and the registry's
+per-life close is the reading under which a second life can work.
+
 ## 2026-09-18 — the crate's documentation is built with its private items, and a public doc may link one
 
 `cargo doc --no-deps --document-private-items` is how the documentation is

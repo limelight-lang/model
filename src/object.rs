@@ -479,37 +479,6 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::cells::CellReader>(
     }
 }
 
-/// Sever the counted slots of a region laid out by `cls`: empty each cell
-/// and collect its former occupant into `displaced`, **without dropping
-/// it** — the caller owes one drop per entry (`cells::sever_cells`, which
-/// is the dispatch this serves).
-///
-/// Takes a base and a descriptor rather than an entity because a static
-/// block carries no header to read a class from (A6) — which is also why
-/// it strides the body alone: a class's outside cells are severed through
-/// the group, and the group takes an entity. A static block's layout may
-/// not carry [`crate::class::CLASS_OUTSIDE_CELLS`], and
-/// `ll_static_block_register` says so.
-///
-/// One caller, the thread-exit pass over static blocks. The drain severs
-/// an entity through `cells::sever_cells`, which reaches the group.
-///
-/// # Safety
-/// `base` must address a live region laid out by `cls`, with its slots
-/// readable and writable.
-pub(crate) unsafe fn sever_counted_slots(
-    base: *mut u8,
-    cls: &crate::class::Class,
-    mut displaced: impl FnMut(*mut RcHeader),
-) {
-    unsafe {
-        for_each_body_cell::<crate::cells::PlainCells>(base, cls, &mut |cell| {
-            crate::cells::empty_cell(cell);
-            displaced(cell.child);
-        })
-    };
-}
-
 /// Phase 1 alone: run `__destruct` exactly once (sets the guard bit).
 /// Returns `false` when there was nothing to run. Arena reset uses
 /// this directly — dying arena objects get only phase 1, their memory

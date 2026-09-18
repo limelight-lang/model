@@ -1862,8 +1862,11 @@ pub extern "C" fn ll_thread_exit() {
 
     // 1. Static blocks let go of their roots (A6). Runs user code, so it
     //    goes first, while every structure the `__destruct` bodies may touch
-    //    is still alive — heaps, context, weak table.
+    //    is still alive — heaps, context, weak table. The registry closes
+    //    behind the pass: a block a step-2 destructor registers would be
+    //    torn down by nothing, and its registration is refused instead.
     crate::static_block::run_thread_exit_teardown();
+    crate::static_block::close_the_registry();
 
     // 2. Claim this thread's token for good — the wait for any trace over
     //    this thread's blocks — then collect what the releases above and the
@@ -2165,6 +2168,10 @@ pub extern "C" fn ll_thread_init() -> bool {
     if !thread_exit_running() && exit_guard_armed() {
         EXIT_PHASE.with(|phase| phase.set(ExitPhase::Live));
         crate::journal::reopen_thread();
+        // The static-block registry is per life for the same reason: the
+        // exit closed it behind its pass, and this life's exit will run a
+        // pass of its own.
+        crate::static_block::reopen_the_registry();
     }
 
     // After the reopen, so a pool thread's second life records its

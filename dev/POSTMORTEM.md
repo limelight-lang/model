@@ -7,6 +7,41 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-18 — a per-thread close set at exit outlived the thread's life, and no test could run two lives
+
+**What happened.** S58 closed the static-block registry behind the exit's
+pass, so a registration from a step-2 destructor is refused instead of
+drawing a chunk no pass frees. The bit was never cleared. A pool thread that
+runs `ll_thread_init` and `ll_thread_exit` per task starts a new life with
+each init, and from the second task on every registration was refused and
+every static root leaked — the accumulation the module exists to prevent.
+The gate was green: 1064 tests, three times at eight threads.
+
+**Why it was possible.** `ll_thread_init` already lowers the exit phase and
+reopens the journal's ring for a second life, under one `if`; the registry
+was a third per-life structure and its author read the close as the end of
+the thread. The suite could not see it because libtest runs each test on a
+fresh thread, so no case ran init → exit → init → register on one thread;
+the journal's own two-lives case exists and was not read as the template.
+The Critic's pass over the built stage found it by asking what `ll_thread_exit`
+is not: the end of the OS thread.
+
+**What changed.** `ll_thread_init` reopens the registry where it lowers the
+phase, under the same two conditions, and
+`static_block::tests::the_registry_across_two_lives` runs two lives on one
+thread and reads a root released by each exit — `[1, 0]` before the fix.
+The rule for the next per-life structure: a bit the exit sets is cleared
+where the exit phase is, and its case runs two lives, because one life is
+what every other test already runs.
+
+**A second reading in the same pass.** The step-2 refusal case first read
+the refusal off the pool-request count around the registration. An accepted
+registration on a fresh thread can be served out of a block another thread
+abandoned, with no pool request at all, so the case was red under the
+deleted check only while the abandoned list happened to be empty. It reads
+the registry's `(len, capacity)` now. A counter one layer below the structure
+is a proxy, and a proxy has a path around it.
+
 ## 2026-09-18 — a held root outside the ring raises the ring live on the scan, and a prune case built on one stays green with the prune off
 
 **What happened.** S55's case reads the recall the mature-core prune costs:
