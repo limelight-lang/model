@@ -120,9 +120,8 @@
 //! landing beside a slot's rebirth resolves at the token like any two
 //! claims.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::thread::Thread;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::cells::AtomicCells;
@@ -275,17 +274,21 @@ const THREAD_NAMES: [&str; MAX_COLLECTORS] = [
     "ll-collector-7",
 ];
 
-/// One collector slot: where its thread stands, the handle a wake reaches it
+/// One collector slot: where its thread stands, the word a wake reaches it
 /// through, and the count the elder reads of a sibling.
 struct Collector {
     /// [`UNBORN`], [`STARTING`] from the spawn until its `ll_thread_init`
     /// answered, [`ALIVE`] from a started init until the thread ends, and
     /// [`ENDING`] from the elder's word to end a sibling until it does.
     state: AtomicU8,
-    /// The handle a wake ends the thread's wait through, published by the
-    /// thread once its init is through and cleared as it ends; `None` is a
-    /// wake lost.
-    handle: Mutex<Option<Thread>>,
+    /// The wake word: set under the mutex by [`wake`], whoever the sender,
+    /// and taken by the thread's waits, so a wake sent before the wait ends
+    /// it at once. Cleared when the thread announces itself alive, so a
+    /// wake sent to an empty slot is lost rather than handed to the next
+    /// birth as a round nobody asked for.
+    woken: Mutex<bool>,
+    /// What the waits sleep on, notified with every set of the word.
+    wakes: Condvar,
     /// Rounds in a row this collector made no batch and read no mutator at
     /// the threshold, its own count, read by the elder to end an idle
     /// sibling.
@@ -296,7 +299,8 @@ impl Collector {
     const fn unborn() -> Self {
         Self {
             state: AtomicU8::new(UNBORN),
-            handle: Mutex::new(None),
+            woken: Mutex::new(false),
+            wakes: Condvar::new(),
             idle_rounds: AtomicUsize::new(0),
         }
     }
@@ -329,8 +333,8 @@ fn collector_cap() -> usize {
 ///
 /// The spawn allocates through the global allocator — the thread's name, the
 /// handle's shared state — which the ruling that no runtime path may abort
-/// on an allocation forbids; the debt is `PLAN.md`, backlog, "The collector
-/// thread's spawn allocates through the global allocator".
+/// on an allocation forbids; S59.2 makes the birth a raw thread on a stack
+/// the slot keeps.
 pub(crate) fn ensure_thread() {
     ensure_collector(ELDER);
 }
@@ -397,23 +401,48 @@ fn note_refused_birth() {
 /// any thread; a mutator's poll makes it at [`SOFT_THRESHOLD`] registrations,
 /// to the collector its record names, and a pressure collection at each of
 /// its endings, to the elder. False is a wake lost: before the thread's
-/// birth, between its spawn and its init, and after its end. A lost wake
+/// birth, between its spawn and its init, while it ends, and after its
+/// end. A lost wake
 /// costs nothing but the round it did not start: the poll leaves its flag
 /// standing and sends again at its next poll
 /// (`crate::cycle::queue::signal_the_collector_if_due`), and a sibling's
 /// first round runs at its birth.
 pub(crate) fn wake(index: usize) -> bool {
-    let collector = COLLECTORS[index]
-        .handle
+    let collector = &COLLECTORS[index];
+    *collector
+        .woken
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+    collector.wakes.notify_all();
+    is_alive(index)
+}
+
+/// Sleep on slot `index`'s word until a wake or `timeout`, and take the
+/// word either way: a wake that lands as the timeout runs out is spent on
+/// the round that follows rather than kept for the next wait. The thread
+/// blocks on the condvar and never re-reads the word in a loop of its own,
+/// which is what lets it make progress under Miri's weak-memory emulation
+/// (`dev/WORKFLOW.md`, Miri, "A test thread waits, it does not spin").
+fn wait_for_a_wake(index: usize, timeout: Duration) {
+    let collector = &COLLECTORS[index];
+    let woken = collector
+        .woken
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    match collector.as_ref() {
-        Some(thread) => {
-            thread.unpark();
-            true
-        }
-        None => false,
-    }
+    let (mut woken, _) = collector
+        .wakes
+        .wait_timeout_while(woken, timeout, |woken| !*woken)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *woken = false;
+}
+
+/// Clear slot `index`'s word, so that a wake sent while no thread stood is
+/// not the next thread's first wait ended.
+fn forget_wakes(index: usize) {
+    *COLLECTORS[index]
+        .woken
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
 }
 
 /// Whether slot `index` holds a thread that has started and not ended.
@@ -433,18 +462,12 @@ fn thread_body(index: usize) {
     // The word goes back to unborn however this thread ends — a refused
     // base block, a test's retire, the elder's end, or a panic in a round
     // that unwinds out of here — so that a later birth can happen rather
-    // than read a thread that no longer exists; the wake handle goes with
-    // it, so that a wake after the end is lost rather than sent to a thread
-    // that is not there.
+    // than read a thread that no longer exists; a wake after the end sets a
+    // word the next birth clears before it announces itself.
     struct UnbornOnDrop(usize);
     impl Drop for UnbornOnDrop {
         fn drop(&mut self) {
-            let collector = &COLLECTORS[self.0];
-            *collector
-                .handle
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-            collector.state.store(UNBORN, Ordering::Release);
+            COLLECTORS[self.0].state.store(UNBORN, Ordering::Release);
         }
     }
     let _unborn = UnbornOnDrop(index);
@@ -486,7 +509,7 @@ fn thread_body(index: usize) {
         // skipped once (`rfc/dev/design/trace-token-handshake.md`, "The two
         // sides", the collector).
         if !standing.take_consumed_a_wake() {
-            std::thread::park_timeout(interval);
+            wait_for_a_wake(index, interval);
         }
     }
 
@@ -499,8 +522,9 @@ fn thread_body(index: usize) {
 /// A refused base block is a birth that did not happen
 /// (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is
 /// allocator-issued"), and a call after the interval births again. Past the
-/// draw the wake handle stands before the state does, so a wake that follows
-/// the state reaches a thread with a handle to receive it.
+/// draw the word is cleared before the state is stored, so a wake that
+/// follows the state is the first this thread's wait can take, and one sent
+/// to the empty slot is lost.
 fn begin_the_thread(index: usize) -> bool {
     let started = {
         #[cfg(test)]
@@ -512,12 +536,8 @@ fn begin_the_thread(index: usize) -> bool {
         return false;
     }
 
-    let collector = &COLLECTORS[index];
-    *collector
-        .handle
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::thread::current());
-    collector.state.store(ALIVE, Ordering::Release);
+    forget_wakes(index);
+    COLLECTORS[index].state.store(ALIVE, Ordering::Release);
     true
 }
 
@@ -963,7 +983,7 @@ unsafe fn wait_for_consent(
             return unsafe { answer_the_withdrawal(mutator, slot, threshold) };
         }
 
-        std::thread::park_timeout(deadline - now);
+        wait_for_a_wake(slot, deadline - now);
         // A return before the deadline that was not the grant: the
         // checkpoint, and if it served nothing the wake this wait may have
         // consumed is remembered.

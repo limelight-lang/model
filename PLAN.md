@@ -15,14 +15,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-18 · Active: S37, blocked. Every open step of S37 is
+Updated: 2026-09-18 · Active: S59; S37 blocked. Every open step of S37 is
 blocked outside this repository or on a corpus: S37.2 waits on the compiler
 that computes the acyclic proof, S37.5 and S37.7 on the Phase-D corpus. The
 prose sections below are the backlog a stage is drawn from while S37 waits;
-the last drawn, S58, closed the three exit-path sites of the S36 residue on
-2026-09-18 and is deleted, its record `dev/DECISIONS.md`, "the exit path
-holds no container: the buffer arena is its thread-local, and the static
-registry is a chunk closed per life".
+S58 closed the three exit-path sites of the S36 residue on 2026-09-18 and is
+deleted, its record `dev/DECISIONS.md`, "the exit path holds no container:
+the buffer arena is its thread-local, and the static registry is a chunk
+closed per life", and S59 takes the fourth, the collector thread's spawn.
 
 Review 2026-09-18, second: pass 3 by the Critic over the plan as rewritten
 by S57.7 — its findings and their disposition are in that step. Pass 1 over
@@ -52,7 +52,7 @@ of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
 `dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36 and S38
-through S58 — every number this plan has spent but S37. A number is never
+through S58 — every number this plan has spent but S37 and S59. A number is never
 reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -268,6 +268,91 @@ stage is what makes a trace affordable rather than what tunes it.
         mark and `object::ll_owned_child_die` honours it (`dev/DECISIONS.md`,
         "the ownership mark is the owned store's to move and the holder's
         `dispose` to honour").
+
+## S59 — The collector thread's birth takes its memory from the manager  [in progress]
+
+Goal: the pressure path births a collector thread without an allocation the
+global allocator could refuse into an abort — the fourth and last site S36
+left under the ruling of 2026-09-12 (`dev/DECISIONS.md`, "the reset
+window's memory comes from the manager, and an allocation it cannot get is
+a refusal"). `std::thread::Builder::spawn` builds the thread's name, the
+handle's shared state and the closure's box on the global heap, and
+`worker::ensure_thread` runs it at the end of the first pressure collection,
+on the path where the manager has just refused; `thread::current()` in
+`begin_the_thread` and `Thread::unpark` in `wake` stand on the same `Arc`.
+What replaces them: a per-slot wake word under a condvar, and a thread the
+OS entry creates on a stack the manager maps once per slot and keeps.
+Done when: a birth on the pressure path makes no call into the crate's
+`#[global_allocator]`, read by `allocation_probe` on the spawning thread
+with births permitted (what libc allocates inside `pthread_create` is
+reported by its error code and is not this reading); a refused mapping and
+a refused create are each a refused birth, answered by the birth interval
+like a refused base block; the worker's, the byte arms' and the consent
+cases stay green, the stand-in and the tests' `retire` included;
+`std::thread` is gone from `worker`'s production paths except under
+`cfg(miri)`; the Windows arm leaves `cargo check` against
+`x86_64-pc-windows-gnu` reporting the per-process key's `compile_error!`
+and nothing else, its run the Windows box's; and the closing record names
+what Miri covers, the raw thread's own lines having no Miri coverage by
+construction.
+Notes: `dev/plans/S59.md` — the Critic's pass over the draft and what each
+finding changed.
+
+- [x] S59.1 The wake is the slot's word under a condvar, not a `Thread`
+      done: `Collector` carries a `Mutex<bool>` and a `Condvar` where
+        `handle: Mutex<Option<Thread>>` stood; `wake` sets the word under the
+        mutex unconditionally and answers `state == ALIVE`; the round wait and
+        the consent wait sleep on the condvar with their timeout and take the
+        word; `begin_the_thread` clears the word before it stores `ALIVE`, the
+        stand-in clears it when it takes the slot, and the tests' `retire`
+        sets every slot's word under its mutex before it notifies;
+        `thread::current()` leaves `begin_the_thread`, and the stand-in cases
+        wait on the elder slot's condvar in place of `std::thread::park`. The
+        worker, byte-arms, consent and siblings cases stay green. A case reads
+        that a wake sent before the wait ends the wait at once, red under a
+        wait that sleeps without reading the word first.
+      tier: T2 · role: Critic, one pass over the stage at S59.3
+      handoff: `Collector::{woken, wakes}`, `wake`, `wait_for_a_wake`,
+        `forget_wakes`; the cases
+        `a_wake_sent_before_the_wait_ends_it_at_once_and_is_spent_by_it`
+        (red under a wait that sleeps first, 2.0 s, and under one that leaves
+        the word, 564 ns) and
+        `a_wake_sent_to_an_empty_slot_is_not_the_next_births_second_round`
+        (red under a birth that keeps the word, 2 rounds against 1). Gate:
+        1066 ×3 at eight threads, `hash-folding` 1066, `debug-journal`
+        1075 ×3, release, bench, doc 0 warnings.
+- [ ] S59.2 The birth is a raw thread on a stack the slot keeps
+      done: on unix each slot maps its stack once through `memory::os` —
+        `COLLECTOR_STACK_BYTES`, 2 MiB, std's default and not a measured
+        figure, with the lowest page turned `PROT_NONE` by `mprotect` inside
+        the one mapping so the guard turns a wrong figure into a death — and
+        keeps it across the slot's lives, never unmapped, `MAX_COLLECTORS`
+        stacks the bound; a null mapping is a refused birth. The thread is
+        made by `pthread_create` on that stack, joinable, through a
+        128-byte opaque `pthread_attr_t` (56 on glibc and musl, 64 on macOS,
+        stated where it is declared), named from inside by
+        `pthread_setname_np` on linux; the trampoline is an `extern "C"`
+        function taking the slot index that runs `thread_body` under
+        `catch_unwind`, runs `ll_thread_exit`, and stores `UNBORN` last, so
+        the state goes unborn only when the thread has nothing of the
+        runtime left to run; the slot keeps the `pthread_t`, and the next
+        birth of the slot and the tests' `retire` join it before creating
+        again — a join that fails is a refused birth, never a reuse. A
+        `pthread_create` that refuses keeps the stack, notes the refused
+        birth and stores `UNBORN`. A red test shows a birth on the pressure
+        path go from the std spawn's global calls to zero on the spawning
+        thread. Under `cfg(miri)` the std spawn stays, the test names it as
+        the instrument's exemption, and `HANDLES` keeps that arm's handles.
+      tier: T2 · role: Critic, one pass over the stage at S59.3
+- [ ] S59.3 The Windows arm
+      done: `CreateThread` on the OS's stack, `WaitForSingleObject` and
+        `CloseHandle` for the join, an `extern "system"` trampoline of its
+        own, behind `cfg(windows)` beside the unix arm and declared raw as
+        `memory::os` declares `VirtualAlloc`; `cargo check --lib --target
+        x86_64-pc-windows-gnu` reports the per-process key's `compile_error!`
+        alone, and the run on the Windows box is a backlog line beside the
+        per-process key's.
+      tier: T2 · role: Critic
 
 ---
 
@@ -544,16 +629,12 @@ live: `archive/pre-rc-cycle`").
   the crate is made by Rust code inside tests; an embedder needs that entry
   before anything outside this crate exercises the arena paths.
 
-What S36 left without an owner, 2026-09-14, under the ruling that no runtime
-path may end the process on an allocation the manager could have refused
-(`dev/DECISIONS.md`, "the reset window's memory comes from the manager"):
+What S36 left without an owner, 2026-09-14. Its sites under the ruling that
+no runtime path may end the process on an allocation the manager could have
+refused (`dev/DECISIONS.md`, "the reset window's memory comes from the
+manager") went to S58, the three on the exit path, and to S59, the collector
+thread's spawn; the rest:
 
-- [ ] **The collector thread's spawn allocates through the global allocator.**
-  `std::thread::Builder::spawn` builds the thread's name and the handle's
-  shared state with `String` and `Arc`, whose refusal ends the process, and
-  `cycle::worker::ensure_thread` runs it at the end of the first pressure
-  collection — the path on which the manager has just refused. What closes it
-  is a spawn over `pthread_create` with a stack the manager issues.
 - [ ] **The collection's journal kinds.** `journal/kinds.rs` carries no record
   for a collection's begin or end (`dev/design/debug-modes.md`, §9.5);
   `cycle::collect` records `KIND_EXIT_RESIDUE` alone. A window over a

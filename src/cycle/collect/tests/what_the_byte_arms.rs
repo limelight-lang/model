@@ -272,8 +272,8 @@ fn a_request_is_consented_to_at_the_poll_and_at_a_slot_free() {
         let (requested_tell, requested) = std::sync::mpsc::channel();
         let (granted_tell, granted) = std::sync::mpsc::channel();
         let record = Sent(record.0);
-        // The stand-in waits as the collector does — on its wake token until the
-        // consent's wake — and tells the case when its request stands,
+        // The stand-in waits as the collector does — on the slot's word until
+        // the consent's wake — and tells the case when its request stands,
         // so that neither thread spins on the byte.
         let collector = std::thread::spawn(move || {
             crate::cycle::worker::testing::stand_in_as_the_elder();
@@ -281,7 +281,9 @@ fn a_request_is_consented_to_at_the_poll_and_at_a_slot_free() {
             assert_eq!(token.request(ELDER), Ok(()));
             requested_tell.send(()).expect("the case waits");
             while token.read() != word(COLLECTOR, ELDER) {
-                std::thread::park();
+                crate::cycle::worker::testing::wait_for_the_elders_wake(
+                    std::time::Duration::from_secs(10),
+                );
             }
             granted_tell.send(()).expect("the case waits");
             token.release_claim(ELDER, false);

@@ -379,8 +379,13 @@ pub(crate) fn retire() {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     );
+    // Every slot's word, under its mutex, before the notify: a thread between
+    // its `retiring()` check and its wait would otherwise sleep out a wait a
+    // case pinned long.
+    for index in 0..super::MAX_COLLECTORS {
+        let _ = super::wake(index);
+    }
     for handle in handles {
-        handle.thread().unpark();
         // A thread that panicked in a round is joined all the same: the case
         // that reads its word sees the panic there, and a panic raised inside
         // this drop during an unwind would end the whole binary.
@@ -399,30 +404,32 @@ pub(crate) fn retire() {
     let _ = take_outcomes();
 }
 
-/// Put the calling thread's handle where the elder's would stand, so that a
-/// consent's wake of slot [`ELDER`] reaches a stand-in collector instead
-/// of finding no thread: a stand-in that waits on its wake token until the
-/// grant, rather than spinning on the byte, makes progress under Miri's weak-memory
+/// Take the elder's slot for the calling thread, so that a consent's wake
+/// of slot [`ELDER`] reaches a stand-in collector: a stand-in that waits on
+/// the slot's word until the grant ([`wait_for_the_elders_wake`]), rather
+/// than spinning on the byte, makes progress under Miri's weak-memory
 /// emulation, where a spinning reader can read the old value for a very
-/// long time. Cleared by [`stand_down_as_the_elder`]; a case that calls
-/// this has no collector thread born.
+/// long time. The word is cleared as the thread's own birth clears it, so a
+/// wake sent to the empty slot is not the stand-in's first wait ended.
+/// Given back by [`stand_down_as_the_elder`]; a case that calls this has no
+/// collector thread born.
 pub(crate) fn stand_in_as_the_elder() {
     assert_eq!(
         thread_state(),
         ThreadState::Unborn,
         "the elder's slot is free"
     );
-    *COLLECTORS[ELDER]
-        .handle
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::thread::current());
+    super::forget_wakes(ELDER);
 }
 
-pub(crate) fn stand_down_as_the_elder() {
-    *COLLECTORS[ELDER]
-        .handle
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+/// Leave the elder's slot as a thread's end leaves it: the word a late wake
+/// set stays for the next birth's clear.
+pub(crate) fn stand_down_as_the_elder() {}
+
+/// Sleep on the elder slot's word until a wake or `timeout`, taking the
+/// word, as the thread's own waits do.
+pub(crate) fn wait_for_the_elders_wake(timeout: std::time::Duration) {
+    super::wait_for_a_wake(ELDER, timeout);
 }
 
 /// One [`super::serve`] of `record` on the calling thread with standing

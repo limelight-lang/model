@@ -549,6 +549,68 @@ fn a_round_reaches_a_record_beyond_the_callers_and_leaves_a_free_one_alone() {
     mutator_record::pin_for_test(free, false);
 }
 
+/// The wake is a word the thread's wait takes, not a signal the thread has
+/// to be waiting for: one sent before the wait ends the wait at once, and
+/// the wait after it, with nothing sent, sleeps its timeout out. Sent to an
+/// empty slot here, which answers false — the wake is lost to the poll's
+/// reckoning and still stands in the word until a birth clears it.
+#[test]
+fn a_wake_sent_before_the_wait_ends_it_at_once_and_is_spent_by_it() {
+    let _g = test_guard();
+    assert_eq!(testing::thread_state(), ThreadState::Unborn);
+    testing::stand_in_as_the_elder();
+
+    assert!(!wake(ELDER), "no thread stands to be woken");
+    let before = Instant::now();
+    wait_for_a_wake(ELDER, Duration::from_secs(2));
+    let ended_by_the_wake = before.elapsed();
+
+    let before = Instant::now();
+    wait_for_a_wake(ELDER, Duration::from_millis(100));
+    let slept_out = before.elapsed();
+    testing::stand_down_as_the_elder();
+
+    assert!(
+        ended_by_the_wake < Duration::from_millis(500),
+        "the wait slept {ended_by_the_wake:?} past a wake already sent"
+    );
+    assert!(
+        slept_out >= Duration::from_millis(100),
+        "the second wait returned after {slept_out:?}: the first left the word standing"
+    );
+}
+
+/// A wake sent while no thread stands is lost: the birth that follows
+/// clears the word before it announces itself, so the new thread makes its
+/// first round at birth and none for a wake nobody sent it. A stale word
+/// would end its first wait at once — a second round inside a window the
+/// pinned wait should leave empty.
+#[test]
+fn a_wake_sent_to_an_empty_slot_is_not_the_next_births_second_round() {
+    let _g = test_guard();
+    let record = record();
+    let _end = RetireOnDrop;
+    reset_lanes();
+    assert!(!wake(ELDER), "no thread stands: the wake is lost");
+
+    testing::confine_rounds_to(record);
+    testing::wait_between_rounds_for(Some(PAST_THE_CASE));
+    testing::permit_births(true);
+    let _ = testing::take_spawns();
+    let _ = testing::take_rounds();
+    ensure_thread();
+    assert!(wait_until(
+        || testing::thread_state() == ThreadState::Alive,
+        A_BIRTH
+    ));
+    std::thread::sleep(A_ROUNDS_ABSENCE);
+    assert_eq!(
+        testing::take_rounds(),
+        1,
+        "rounds since the birth: one is its own, a second is the stale word ending the first wait"
+    );
+}
+
 #[test]
 fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
     let _g = test_guard();
