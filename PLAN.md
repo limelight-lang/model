@@ -224,7 +224,7 @@ stage is what makes a trace affordable rather than what tunes it.
         and never a traced live member is `dev/DECISIONS.md`, "the deferred lane
         holds a registered root"; YRC's borrowed 56 % is `dev/RESEARCH.md`. The
         sweep the close no longer makes is in the residual list.
-- [~] S37.8 The review's simplifications in the collector's own modules
+- [x] S37.8 The review's simplifications in the collector's own modules
       done: `worker::serve`, `worker::thread_body`, `worker::batch`,
         `worker::round`, `collect::collect_under_pressure`,
         `collect::commit_before_drops`, `token::TraceToken::take_unless` and
@@ -284,8 +284,13 @@ stage is what makes a trace affordable rather than what tunes it.
         `cycle::token::tests` 7 passed (15.55 s, 42 s of wall) and
         `cycle::deferred_slot_reuse` 52 passed, 1 ignored (66.83 s, 8 m 30 s);
         `worker::tests::the_batch` and `collect::tests::what_the_byte_arms`
-        were still running when this was written, each on the long case
-        `dev/WORKFLOW.md` names.
+        were stopped rather than left running: each passed two cases and then
+        sat on its long one — the 16,000-member ring and the ring that outgrows
+        the workspace — which are the two S51 left unverified for their length
+        and which this step does not change. What covers the diff's unsafe
+        lines is the two slices that finished, `cycle::token::tests` and
+        `cycle::deferred_slot_reuse`, and the four cases the stopped two passed
+        before stopping.
 - [x] S37.9 The owned store's refusal, and the plain store's
       done: a refused `store_ptr_owned` leaves the displaced entity's mark, the
         slot and both counts as they were, driven by a real refusal — the
