@@ -321,7 +321,7 @@ finding changed.
         (red under a birth that keeps the word, 2 rounds against 1). Gate:
         1066 ×3 at eight threads, `hash-folding` 1066, `debug-journal`
         1075 ×3, release, bench, doc 0 warnings.
-- [ ] S59.2 The birth is a raw thread on a stack the slot keeps
+- [x] S59.2 The birth is a raw thread on a stack the slot keeps
       done: on unix each slot maps its stack once through `memory::os` —
         `COLLECTOR_STACK_BYTES`, 2 MiB, std's default and not a measured
         figure, with the lowest page turned `PROT_NONE` by `mprotect` inside
@@ -333,18 +333,29 @@ finding changed.
         stated where it is declared), named from inside by
         `pthread_setname_np` on linux; the trampoline is an `extern "C"`
         function taking the slot index that runs `thread_body` under
-        `catch_unwind`, runs `ll_thread_exit`, and stores `UNBORN` last, so
-        the state goes unborn only when the thread has nothing of the
-        runtime left to run; the slot keeps the `pthread_t`, and the next
+        `catch_unwind`, runs `ll_thread_exit`, and stores `UNBORN` after it,
+        so the state goes unborn only after the runtime exit the thread
+        runs itself; the slot keeps the `pthread_t` under a lock a birth
+        holds from the join through the create to the store, so the next
         birth of the slot and the tests' `retire` join it before creating
-        again — a join that fails is a refused birth, never a reuse. A
+        again whatever the clock — a join that fails is a refused birth,
+        never a reuse. A
         `pthread_create` that refuses keeps the stack, notes the refused
         birth and stores `UNBORN`. A red test shows a birth on the pressure
         path go from the std spawn's global calls to zero on the spawning
         thread. Under `cfg(miri)` the std spawn stays, the test names it as
         the instrument's exemption, and `HANDLES` keeps that arm's handles.
       tier: T2 · role: Critic, one pass over the stage at S59.3
-- [ ] S59.3 The Windows arm
+      handoff: `cycle::worker::birth`, three `platform` arms; the deny case
+        `a_birth_asks_the_global_allocator_for_nothing` read 8 on the std
+        spawn and 0 after; `the_collectors_stack_stands_on_a_guard_the_kernel_refuses_access_to`
+        reads `/proc/self/maps` (red without `mprotect`),
+        `the_collector_thread_is_named_for_the_os` reads `/proc/self/task`
+        (red without the name), `a_refused_stack_is_a_birth_a_later_call_repeats`
+        under `REFUSE_NEXT_STACK`; the miri arm keeps its `JoinHandle` per
+        slot rather than a `HANDLES` list, so the tests' `retire` joins
+        through `birth::join_every_slot` on every arm.
+- [x] S59.3 The Windows arm
       done: `CreateThread` on the OS's stack, `WaitForSingleObject` and
         `CloseHandle` for the join, an `extern "system"` trampoline of its
         own, behind `cfg(windows)` beside the unix arm and declared raw as
@@ -353,6 +364,11 @@ finding changed.
         alone, and the run on the Windows box is a backlog line beside the
         per-process key's.
       tier: T2 · role: Critic
+      handoff: `cargo check --lib --target x86_64-pc-windows-gnu` reports the
+        per-process key's `compile_error!` and nothing else (the `--tests`
+        check stops earlier, on mimalloc's C build, with no mingw here);
+        `aarch64-unknown-linux-gnu` checks clean. The run: `PLAN.md`,
+        residual, "The collector's birth has no run off Linux".
 
 ---
 
@@ -624,6 +640,19 @@ live: `archive/pre-rc-cycle`").
   is unix-only, `#[cfg(not(unix))]` a `compile_error!` naming this gap, until
   a session on the Windows box adds the source (`BCryptGenRandom` or an
   equivalent) and runs the gate there. Deferred by Edmond, 2026-08-17.
+- [ ] **The collector's birth has no run off Linux.** `cycle::worker::birth`
+  has a windows arm (`CreateThread`, `WaitForSingleObject`, `CloseHandle`)
+  that type-checks against `x86_64-pc-windows-gnu` and has run nowhere, and
+  a unix arm whose `pthread_setname_np` is declared for linux and android
+  alone; the aarch64 target checks clean and has run nowhere. The Windows
+  run waits on the same session as the key above. On the unixes std backs
+  its `Mutex` and `Condvar` with pthread rather than a futex — macOS and
+  the BSDs but freebsd, openbsd and dragonfly — the lock boxes itself on
+  its first use, so the collector slots' wake words, the slot locks and
+  `REFUSED_AT` would each make one global allocation on the first pressure
+  collection there: the birth's deny reading is linux's and windows's, and
+  a build for those targets owes the locks a first touch outside the
+  pressure path or a futex the crate declares itself.
 - [ ] **No ABI entry creates or mounts an arena.** An external caller can
   build an `LLContext` and reach the store barrier, but every `*mut Arena` in
   the crate is made by Rust code inside tests; an embedder needs that entry

@@ -235,6 +235,129 @@ fn the_first_pressure_collection_births_one_thread_whose_rounds_claim_and_releas
     crate::cycle::queue::release_queue_segments();
 }
 
+/// The birth asks the global allocator for nothing on the thread that
+/// births: the thread is created by the OS entry on a stack the slot keeps,
+/// so the pressure path, where the manager has just refused, meets no
+/// allocation whose refusal is an abort (`dev/DECISIONS.md`, "the reset
+/// window's memory comes from the manager, and an allocation it cannot get
+/// is a refusal"). What libc allocates inside `pthread_create` is answered
+/// by its error code and is not this reading, which is the crate's
+/// `#[global_allocator]` alone.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "under Miri the birth is the std spawn, whose allocations are the exemption this case reads past"
+)]
+fn a_birth_asks_the_global_allocator_for_nothing() {
+    let _g = test_guard();
+    let record = record();
+    assert_eq!(testing::thread_state(), ThreadState::Unborn);
+    testing::confine_rounds_to(record);
+    testing::permit_births(true);
+    let _end = RetireOnDrop;
+    let _ = testing::take_spawns();
+
+    let _ = crate::test_support::allocation_probe::take_heap_allocations();
+    ensure_thread();
+    let heap = crate::test_support::allocation_probe::take_heap_allocations();
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
+        "the call birthed the thread"
+    );
+    assert_eq!(testing::take_spawns(), 1);
+    assert_eq!(
+        heap, 0,
+        "global-allocator calls the birth made on this thread"
+    );
+}
+
+/// The mapping the slot keeps, read back from the kernel: the guard below
+/// the stack is mapped without any access, the stack above it readable and
+/// writable, each of its stated size, and the pair adjacent — so a frame
+/// past the stack's low end faults rather than writing on.
+#[cfg(target_os = "linux")]
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "reads /proc, and under Miri the thread is the std spawn's"
+)]
+fn the_collectors_stack_stands_on_a_guard_the_kernel_refuses_access_to() {
+    let _g = test_guard();
+    let record = record();
+    testing::confine_rounds_to(record);
+    testing::permit_births(true);
+    let _end = RetireOnDrop;
+    ensure_thread();
+    assert!(wait_until(
+        || testing::thread_state() == ThreadState::Alive,
+        A_BIRTH
+    ));
+
+    let base = super::birth::stack_base_of(ELDER);
+    assert_ne!(base, 0, "the birth mapped the slot's stack");
+    let maps = std::fs::read_to_string("/proc/self/maps").expect("the kernel lists the mappings");
+    // `start-end perms ...` per line, hexadecimal.
+    let span = |line: &str| -> Option<(usize, usize, String)> {
+        let mut fields = line.split_whitespace();
+        let (start, end) = fields.next()?.split_once('-')?;
+        let perms = fields.next()?.to_owned();
+        Some((
+            usize::from_str_radix(start, 16).ok()?,
+            usize::from_str_radix(end, 16).ok()?,
+            perms,
+        ))
+    };
+    let guard = maps
+        .lines()
+        .filter_map(span)
+        .find(|(start, _, _)| *start == base)
+        .expect("the guard is a mapping of its own");
+    let stack_start = base + super::birth::STACK_GUARD_BYTES;
+    let stack = maps
+        .lines()
+        .filter_map(span)
+        .find(|(start, _, _)| *start == stack_start)
+        .expect("the stack is a mapping of its own above the guard");
+
+    assert_eq!(
+        (guard.1 - guard.0, &guard.2[..3]),
+        (super::birth::STACK_GUARD_BYTES, "---"),
+        "(size, access) of the guard"
+    );
+    assert_eq!(
+        (stack.1 - stack.0, &stack.2[..3]),
+        (super::birth::COLLECTOR_STACK_BYTES, "rw-"),
+        "(size, access) of the stack"
+    );
+}
+
+/// The thread carries its slot's name for the OS, which is what a profiler
+/// or a debugger lists it under.
+#[cfg(target_os = "linux")]
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "reads /proc, and under Miri the thread is the std spawn's"
+)]
+fn the_collector_thread_is_named_for_the_os() {
+    let _g = test_guard();
+    let record = record();
+    testing::confine_rounds_to(record);
+    testing::permit_births(true);
+    let _end = RetireOnDrop;
+    ensure_thread();
+    assert!(wait_until(
+        || testing::thread_state() == ThreadState::Alive,
+        A_BIRTH
+    ));
+
+    let named = std::fs::read_dir("/proc/self/task")
+        .expect("the kernel lists the tasks")
+        .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+        .any(|comm| comm.trim_end() == "ll-collector");
+    assert!(named, "no task of this process is named ll-collector");
+}
+
 /// Birth the thread with its rounds confined to this record and its wait
 /// between rounds pinned at `wait`, and wait for its first round to be
 /// over: from here a round happens on a wake alone.
@@ -513,6 +636,127 @@ fn a_refused_base_block_is_a_birth_a_later_call_repeats() {
         "a call after the interval birthed one"
     );
     assert_eq!(testing::take_spawns(), 1);
+}
+
+/// A stack the operating system refuses is a birth that did not happen,
+/// on the calling thread and before any thread exists: the slot stays
+/// unborn, the refusal holds the interval as a refused base block does, and
+/// a call after the interval births.
+#[cfg(unix)]
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "under Miri the thread is the std spawn's, on no stack of the slot's"
+)]
+fn a_refused_stack_is_a_birth_a_later_call_repeats() {
+    let _g = test_guard();
+    let record = record();
+    assert_eq!(testing::thread_state(), ThreadState::Unborn);
+    testing::confine_rounds_to(record);
+    testing::permit_births(true);
+    let _end = RetireOnDrop;
+    let _ = testing::take_spawns();
+
+    super::birth::REFUSE_NEXT_STACK.store(true, Ordering::Relaxed);
+    ensure_thread();
+    assert_eq!(
+        testing::thread_state(),
+        ThreadState::Unborn,
+        "a birth whose stack was refused made no thread"
+    );
+    assert_eq!(testing::take_spawns(), 0);
+
+    ensure_thread();
+    assert_eq!(
+        testing::take_spawns(),
+        0,
+        "a refused birth is not retried at once"
+    );
+    std::thread::sleep(BIRTH_RETRY_INTERVAL);
+    ensure_thread();
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
+        "a call after the interval birthed one"
+    );
+    assert_eq!(testing::take_spawns(), 1);
+}
+
+/// A create the operating system refuses, after the stack was granted, is
+/// a birth that did not happen: the slot stays unborn with its stack kept,
+/// the refusal holds the interval, and a call after it births.
+#[cfg(unix)]
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "under Miri the thread is the std spawn's, with no create to refuse"
+)]
+fn a_refused_create_is_a_birth_a_later_call_repeats() {
+    let _g = test_guard();
+    let record = record();
+    assert_eq!(testing::thread_state(), ThreadState::Unborn);
+    testing::confine_rounds_to(record);
+    testing::permit_births(true);
+    let _end = RetireOnDrop;
+    let _ = testing::take_spawns();
+
+    super::birth::REFUSE_NEXT_CREATE.store(true, Ordering::Relaxed);
+    ensure_thread();
+    assert_eq!(
+        testing::thread_state(),
+        ThreadState::Unborn,
+        "a birth whose create was refused made no thread"
+    );
+    assert_ne!(
+        super::birth::stack_base_of(ELDER),
+        0,
+        "the stack granted before the refusal is the slot's to keep"
+    );
+    assert_eq!(testing::take_spawns(), 0);
+
+    ensure_thread();
+    assert_eq!(
+        testing::take_spawns(),
+        0,
+        "a refused birth is not retried at once"
+    );
+    std::thread::sleep(BIRTH_RETRY_INTERVAL);
+    ensure_thread();
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
+        "a call after the interval birthed one"
+    );
+    assert_eq!(testing::take_spawns(), 1);
+}
+
+/// The word goes unborn after the runtime exit the thread runs itself, on
+/// the panic path as on the loop's own: what the thread recorded at its
+/// word is at least one exit sequence run, where a word stored before the
+/// exit would record none. The join at the next birth then waits on the
+/// guard's own pass and glibc's teardown alone.
+#[test]
+fn the_word_goes_unborn_after_the_threads_own_runtime_exit() {
+    let _g = test_guard();
+    let record = record();
+    testing::confine_rounds_to(record);
+    testing::permit_births(true);
+    let _end = RetireOnDrop;
+    let _ = testing::take_exits_before_the_word();
+
+    ensure_thread();
+    assert!(wait_until(
+        || testing::thread_state() == ThreadState::Alive,
+        A_BIRTH
+    ));
+    testing::panic_at_the_next_visit();
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Unborn, A_BIRTH),
+        "the panic unwound out of the thread and the word went back"
+    );
+    let exits = testing::take_exits_before_the_word();
+    assert!(
+        (1..usize::MAX).contains(&exits),
+        "exit sequences run when the word was stored: {exits} (MAX is a word never recorded)"
+    );
 }
 
 #[test]

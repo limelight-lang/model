@@ -262,18 +262,6 @@ const BACKLOGGED_REMEMBERED: usize = 16;
 /// several.
 const IDLE_ROUNDS_TO_END: usize = 8;
 
-/// The names the collector threads are spawned under, by slot.
-const THREAD_NAMES: [&str; MAX_COLLECTORS] = [
-    "ll-collector",
-    "ll-collector-1",
-    "ll-collector-2",
-    "ll-collector-3",
-    "ll-collector-4",
-    "ll-collector-5",
-    "ll-collector-6",
-    "ll-collector-7",
-];
-
 /// One collector slot: where its thread stands, the word a wake reaches it
 /// through, and the count the elder reads of a sibling.
 struct Collector {
@@ -331,10 +319,8 @@ fn collector_cap() -> usize {
 /// interval. The pressure path calls it after its collection, so that the
 /// thread's draws compete with no rows of the caller's own.
 ///
-/// The spawn allocates through the global allocator — the thread's name, the
-/// handle's shared state — which the ruling that no runtime path may abort
-/// on an allocation forbids; S59.2 makes the birth a raw thread on a stack
-/// the slot keeps.
+/// The birth is a thread the OS entry creates on a stack the slot keeps
+/// ([`birth`]), so the path meets no allocation whose refusal is an abort.
 pub(crate) fn ensure_thread() {
     ensure_collector(ELDER);
 }
@@ -361,23 +347,15 @@ fn ensure_collector(index: usize) -> bool {
     }
 
     collector.idle_rounds.store(0, Ordering::Relaxed);
-    match std::thread::Builder::new()
-        .name(THREAD_NAMES[index].into())
-        .spawn(move || thread_body(index))
-    {
-        Ok(handle) => {
-            #[cfg(test)]
-            testing::keep_handle(handle);
-            #[cfg(not(test))]
-            drop(handle);
-            true
-        }
-        Err(_) => {
-            note_refused_birth();
-            collector.state.store(UNBORN, Ordering::Release);
-            false
-        }
+    if !birth::spawn(index) {
+        note_refused_birth();
+        collector.state.store(UNBORN, Ordering::Release);
+        return false;
     }
+
+    #[cfg(test)]
+    testing::note_spawn();
+    true
 }
 
 /// Whether a birth was refused less than [`BIRTH_RETRY_INTERVAL`] ago.
@@ -458,20 +436,13 @@ fn has_no_thread(index: usize) -> bool {
 }
 
 /// The collector thread's life: its registration, its rounds, its exit.
+/// Run by [`birth::run_the_life`], which stores the word back to unborn
+/// however this returns — a refused base block, a test's retire, the
+/// elder's end, or a panic in a round that unwinds out of here — after the
+/// runtime exit, so that a later birth can happen rather than read a thread
+/// that no longer exists; a wake after the end sets a word the next birth
+/// clears before it announces itself.
 fn thread_body(index: usize) {
-    // The word goes back to unborn however this thread ends — a refused
-    // base block, a test's retire, the elder's end, or a panic in a round
-    // that unwinds out of here — so that a later birth can happen rather
-    // than read a thread that no longer exists; a wake after the end sets a
-    // word the next birth clears before it announces itself.
-    struct UnbornOnDrop(usize);
-    impl Drop for UnbornOnDrop {
-        fn drop(&mut self) {
-            COLLECTORS[self.0].state.store(UNBORN, Ordering::Release);
-        }
-    }
-    let _unborn = UnbornOnDrop(index);
-
     if !begin_the_thread(index) {
         return;
     }
@@ -1365,6 +1336,8 @@ unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
         None => Verdict::ReadLive,
     }
 }
+
+mod birth;
 
 #[cfg(test)]
 pub(crate) mod testing;

@@ -429,7 +429,11 @@ other five failed in 500 runs. A seventh of the same class,
 `a_heapless_life_gives_back_the_blocks_it_drew`, whose last assertion reads
 `blocks_out` across the child's life with the guard taken, failed twice in
 43 `debug-journal` runs at eight threads on 2026-09-18 (a tree whose source
-changes were comments), the reading one block off. What would close them is
+changes were comments), the reading one block off, and twice more in the
+28 runs of that day's later stages, both on the trees of S59 (2 in 16; 112
+against 113 each time) — a lead for the repair, not a finding: a collector
+life runs `ll_thread_exit` three times since S59, its loop's, the
+trampoline's and the guard's. What would close them is
 a reading of a named thread's figures that outlives the thread, a structure
 rather than a patch; Edmond deferred building it on 2026-09-18 ("fix it
 later"), so the watch stands and the flake is re-run past, and until it is
@@ -665,7 +669,12 @@ Three things about the command itself are load-bearing:
 Known limits: the crate's integer-to-pointer casts put Miri into
 permissive provenance in the most pointer-heavy modules, so a clean run
 is weaker evidence there than elsewhere. Tree Borrows cannot run at all
-until those casts go away — it requires strict provenance.
+until those casts go away — it requires strict provenance. And the
+collector thread's birth (`cycle::worker::birth`) has no Miri coverage by
+construction: Miri models neither a user-provided stack nor `mprotect`, so
+under `cfg(miri)` the thread is the std spawn's and the raw entry's lines —
+the attribute, `pthread_create`, the guard, the join — are executed by the
+suite alone.
 
 **A test keeps one raw pointer per object and reuses it**, which is the
 shape generated code actually has. Taking a fresh `&mut` per call retags

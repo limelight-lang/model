@@ -31,8 +31,6 @@ static RECORDS_VISITED: AtomicUsize = AtomicUsize::new(0);
 static REFUSE_NEXT_BASE_BLOCK: AtomicBool = AtomicBool::new(false);
 /// Whether the thread was asked to end.
 static RETIRING: AtomicBool = AtomicBool::new(false);
-/// The handles of the threads spawned, for the join.
-static HANDLES: Mutex<Vec<JoinHandle<()>>> = Mutex::new(Vec::new());
 
 /// Where the thread stands, for a case that waits on its birth.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -349,12 +347,23 @@ pub(crate) fn base_block_budget_for_this_birth() -> Option<crate::memory::block_
 /// Threads spawned since a case last asked.
 static SPAWNS: AtomicUsize = AtomicUsize::new(0);
 
-pub(crate) fn keep_handle(handle: JoinHandle<()>) {
+pub(crate) fn note_spawn() {
     SPAWNS.fetch_add(1, Ordering::Relaxed);
-    HANDLES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push(handle);
+}
+
+/// The exit sequences the collector thread had run at the instant it stored
+/// its word unborn, as recorded by the thread itself just before the store:
+/// zero is a word stored before the runtime exit.
+static EXITS_BEFORE_THE_WORD: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+pub(crate) fn note_exits_before_the_word(exits: usize) {
+    EXITS_BEFORE_THE_WORD.store(exits, Ordering::Release);
+}
+
+/// What the last collector thread to end recorded at its word, or
+/// `usize::MAX` for none since the last call.
+pub(crate) fn take_exits_before_the_word() -> usize {
+    EXITS_BEFORE_THE_WORD.swap(usize::MAX, Ordering::AcqRel)
 }
 
 /// Threads spawned since the last call, and zero the count.
@@ -374,23 +383,17 @@ pub(crate) fn retiring() -> bool {
 pub(crate) fn retire() {
     permit_births(false);
     RETIRING.store(true, Ordering::Relaxed);
-    let handles = std::mem::take(
-        &mut *HANDLES
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-    );
     // Every slot's word, under its mutex, before the notify: a thread between
     // its `retiring()` check and its wait would otherwise sleep out a wait a
     // case pinned long.
     for index in 0..super::MAX_COLLECTORS {
         let _ = super::wake(index);
     }
-    for handle in handles {
-        // A thread that panicked in a round is joined all the same: the case
-        // that reads its word sees the panic there, and a panic raised inside
-        // this drop during an unwind would end the whole binary.
-        let _ = handle.join();
-    }
+    // A thread that panicked in a round is joined all the same: the panic
+    // was caught on the thread, the case that raised it reads its word, and
+    // a panic raised inside this drop during an unwind would end the whole
+    // binary.
+    super::birth::join_every_slot();
 
     super::forget_refused_birth();
 
