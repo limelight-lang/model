@@ -11,11 +11,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-18 · Active: S37, S54. Every open step of S37 is blocked
+Updated: 2026-09-18 · Active: S37. Every open step of S37 is blocked
 outside this repository or on a corpus: S37.2 waits on the compiler that
-computes the acyclic proof, S37.5 and S37.7 on the Phase-D corpus. S54 is the
-stage drawn from the backlog while they wait, and the prose sections below are
-that backlog.
+computes the acyclic proof, S37.5 and S37.7 on the Phase-D corpus. The prose
+sections below are the backlog a stage is drawn from while they wait.
 
 Review 2026-09-18: the first one recorded here, and overdue — the hook reads
 `dev/PLAN.md` while this plan sits at the repo root, so nothing named the
@@ -39,8 +38,8 @@ have dropped were filed first, in `dev/DECISIONS.md` (four entries),
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36, S38
-through S52 and S53 — every number this plan has spent but S37. A number is never
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36 and S38
+through S54 — every number this plan has spent but S37. A number is never
 reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -393,85 +392,6 @@ stage is what makes a trace affordable rather than what tunes it.
 
 ---
 
-## S54 — The retirement sweep off the `POSTED` fire  [in progress]
-
-Goal: a completed death standing in R gives its slot back at the mutator's own
-fire, instead of waiting for a collector's batch to reach that entry.
-Done when: the collection `POSTED` arms retires the completed deaths of one
-block of R and returns their slots, the cursor advances a block per fire, and
-what the added pass costs a fire stands in `dev/BENCHMARKS.md` beside what it
-returns.
-
-Edmond's fifth line of 2026-09-17, with the Sage's bound of the same day: one
-block of R per fire by a cursor over the occupied run, the front-block-only and
-capped forms refused, and a bench line before it is called free. What the crate
-retires is a **completed death in place** — a zero count and `DEAD_IN_PLACE`,
-`queue::compaction::completed_death` — and a zero count whose teardown has not
-ended stays registered; the pass here reads exactly what every other retirement
-reads. The machinery it reuses is `queue::compaction::compact`, which walks R
-whole today; what is new is a bounded form of it and the caller.
-
-- [x] S54.1 One named block of R, swept in place
-      done: a compaction form over a single block retires that block's
-        completed deaths, returns their slots and keeps every other entry of
-        it in order, while the other blocks of the ring and the overflow
-        buffer keep every record and every index they held; a mutation of the
-        bound is seen red. **Amended 2026-09-18**, the Critic's fourth
-        finding: "byte-identical" forbade the link words the unlink writes,
-        and the unlink is what keeps a hole out of the circle
-      tier: T2 · role: Critic
-      Critic 2026-09-18: a ring swept empty block by block moves neither
-        block word, and `Reader::has_at_least` answers true for any
-        `front_block != tail_block` — so a collector would ask for a batch of
-        nothing every round for the rest of the thread's life. Accepted, seen
-        red as `ring::tests::a_ring_swept_empty_reads_empty_to_a_collector`
-        and fixed by `Quiescent::collapse_if_empty`, the shape a whole-ring
-        pack leaves. Accepted too: a bounded caller's kept block pointer
-        outlives the block's place in the circle, so the sweep now walks the
-        circle's blocks and refuses a stranger; and the safety clause names
-        an uncommitted `Peeked`, which the instant-wise wording missed.
-        Answered rather than taken: the unlink hands its block to
-        `return_surplus_block` without `unlink_surplus_block`'s `needs_spares`
-        guard because its reason is the hole rather than the surplus, and with
-        both cells full the block goes to the critical reserve, which is where
-        a surplus block goes too.
-      handoff: `ring::BlockSweep` and `queue::sweep_one_block`, over
-        `queue::compaction::sweep_block`. A measured turn: a peek reads two
-        blocks, so a block emptied between the front block and the tail block
-        answers a batch of nothing while roots stand behind it
-        (`ring::tests::a_peek_before_an_empty_middle_block_answers_nothing`),
-        and the sweep therefore unlinks a block it empties into a spare cell,
-        the front block and the tail block excepted, and brings the two block
-        words together where it left the ring holding nothing. Five mutations
-        red: the collapse moving no word, the
-        ring read whole, nothing retired, the emptied block left standing, and
-        the front-block guard dropped, which segfaults.
-
-**S54.2's premise is with Edmond, 2026-09-18.** Two measurements, both in
-`cycle::collect::tests::what_the_byte_arms`: the collection the byte arms
-already retires a completed death standing in R, its close compacting the ring
-whole, so a sweep bounded to one block there would remove work rather than
-return slots sooner; and a poll with nothing armed reads no lane, so a
-completed death stands in R across any number of polls with its slot withheld.
-The cost the line names is therefore on the unarmed poll, not on the `POSTED`
-fire, and which of them the sweep belongs to is his.
-
-- [ ] S54.2 The cursor, and the fire that runs it
-      done: the collection over the verdicts runs that pass on one block per
-        fire, the cursor walking the occupied run and wrapping at its end; a
-        fire on an empty ring reads nothing; and the allocator has the slots
-        of the retired entries back, read off the heap rather than off the
-        candidate count
-      tier: T2 · role: Critic
-- [ ] S54.3 What the sweep costs the fire, and what it gives back
-      done: the `POSTED` fire measured with and without the pass, A B A B, two
-        binaries, minimum beside median, and the slots returned per fire on a
-        ring of completed deaths; recorded in `dev/BENCHMARKS.md`, a negative
-        result as carefully as a win
-      tier: T2 · role: Bench
-
----
-
 ## Cross-cutting (every stage)
 
 - The old collectors are reachable at `archive/pre-rc-cycle` and nowhere else.
@@ -722,6 +642,36 @@ took it.
   outside this crate.
 
 ## Residual / carried-over items
+
+- [ ] **A quiet thread's garbage is taken after X.** Edmond, 2026-09-18: the
+  GC takes a thread's garbage of its own accord once some time X has passed.
+  Today it does not: a collector serves a mutator whose R holds
+  `worker::SOFT_THRESHOLD` (64) records or more, the round's threshold is
+  constant in the working build (`worker::threshold_for_rounds`), the timer
+  sets the rounds' cadence and not their threshold, and the only armings for R
+  whole are the collection's own re-arms, the pressure path and the deferred
+  lane's re-offer — so a thread below the threshold, under no pressure and
+  making no explicit fire, keeps its cycle garbage until it crosses the
+  threshold or exits
+  (`cycle::collect::tests::what_the_byte_arms::`
+  `an_unarmed_poll_leaves_a_completed_death_registered`). The cheapest form
+  leaves the poll alone: a round serves a mutator it has not served for X at a
+  threshold of one, the collector already walking every record and already
+  keeping a timer. X is not a crate constant — it comes from the pressure path
+  or from an rfc ABI (`dev/DECISIONS.md`, "the safepoint poll takes the free
+  path's road").
+- [ ] **A bounded sweep of R, when a workload asks for it.** Built and taken
+  out on 2026-09-18 (commit `0ceb364`, reverted the same day): `BlockSweep`
+  over one block of the ring, retiring completed deaths in place, unlinking a
+  block it empties — a peek reads two blocks, and a hole before the records
+  answers a batch of nothing — and bringing the block words together over a
+  ring left empty, or `has_at_least` offers a batch every round. Three Critic
+  findings are in that commit's tests. Not built because the `POSTED` fire
+  already compacts R whole and the unarmed poll runs no retirement by ruling
+  (`dev/DECISIONS.md`, "the safepoint poll takes the free path's road"); the
+  hold it would shorten is at most sixty-three dead slots per thread. Comes
+  back when a measured workload shows that hold, and then on the free path's
+  road.
 
 - [ ] **What S51 named and left, 2026-09-17.** Two debts of the harness the
   stage-close Code Reviewer priced: every non-ignored case runs the serves

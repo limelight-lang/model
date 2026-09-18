@@ -1211,23 +1211,6 @@ pub(crate) unsafe fn retire_candidates_and_dispose_of_verdicts(at_commits: u64) 
     compaction::compact(Some(at_commits), false, Some(standing));
 }
 
-/// Retire the completed deaths standing in one block of R, leaving every
-/// other entry of it registered and in order and the rest of the queue
-/// unread: the bounded form of [`retire_candidates`], for a caller whose
-/// budget is one block per call.
-///
-/// A block the circle no longer holds is refused: the caller of a bounded
-/// pass keeps its pointer across fires, and several paths take a block out
-/// from under one.
-///
-/// # Safety
-/// As [`retire_candidates`], and no reading of R stands uncommitted — a
-/// `Peeked` a collector has not committed names blocks by address, and this
-/// pass can take one of them out of the circle.
-pub(crate) unsafe fn sweep_one_block(block: *mut BlockHeader) {
-    unsafe { compaction::sweep_block(block) };
-}
-
 mod compaction;
 pub(crate) mod verdicts;
 

@@ -8,6 +8,41 @@ never edited or deleted.
 
 ---
 
+## 2026-09-18 — the safepoint poll takes the free path's road and runs no retirement of its own; a bounded sweep of R is not built until a workload asks
+
+Edmond's ruling, on a stage that had built one. The stage was drawn from his
+line of 2026-09-17 — the collection `POSTED` arms also walks R and retires the
+records whose count reads zero — and the measurements that turned it are
+`cycle::collect::tests::what_the_byte_arms`: the collection the byte arms
+already retires a completed death standing in R, its close compacting the
+ring whole, and a poll with nothing armed reads no lane, so a completed death
+stands in R across any number of polls with its slot withheld. The bounded
+sweep of one block per fire (`ring::BlockSweep`, `queue::sweep_one_block`,
+commit `0ceb364`) was therefore aimed at a path that does the work already,
+and its natural home, the unarmed poll, is where Edmond refused it.
+
+**The ruling.** `ll_gc_maybe_collect` goes the same road as `ll_free`: a poll
+may return what the free path returns, by the free path's own mechanism, and
+runs no retirement pass of its own. It may tidy R only where it can prove no
+collector reads it, and that proof is the byte, which is the complication the
+ruling declines for now.
+
+**Why declining costs little.** The hold is bounded by the serve threshold: a
+collector serves a mutator whose R holds `worker::SOFT_THRESHOLD` (64) records
+or more, and the poll signals at the same count, so a thread below it holds
+fewer than 64 records — at most sixty-three dead slots — and a thread that
+crosses it is served, posted to and compacted whole at the fire. Read off the
+code, not measured.
+
+**What the ruling leaves open, and Edmond named the same day.** The same
+threshold means a quiet thread below it is served by no round however long it
+waits, and its cycle garbage stands with its dead slots: the round's threshold
+is constant in the working build (`worker::threshold_for_rounds`), the timer
+sets the rounds' cadence and not their threshold, and the only armings for R
+whole are the collection's own re-arms, the pressure path and the deferred
+lane's re-offer. The GC is to take such a thread's garbage after some time X
+of its own accord (`PLAN.md`, "A quiet thread's garbage is taken after X").
+
 ## 2026-09-18 — the edge-side prune cannot tear down a live component, because membership decides an internal edge and the trace does not
 
 Filed on S37.1's deletion, from the Critic round of 2026-09-11 that attacked

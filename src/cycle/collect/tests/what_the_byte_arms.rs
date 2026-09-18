@@ -450,8 +450,11 @@ fn the_fire_the_byte_arms_retires_a_death_standing_in_r() {
 
 /// A poll with nothing armed and a byte at `FREE` reads no lane: a completed
 /// death stands in R across any number of polls, its slot withheld from the
-/// allocator, until something runs a retirement pass. What that costs, and
-/// who is to run such a pass, is `PLAN.md`, S54.
+/// allocator, until something runs a retirement pass. By ruling the poll runs
+/// none of its own (`dev/DECISIONS.md`, "the safepoint poll takes the free
+/// path's road"), and the hold is bounded by the collector's serve threshold;
+/// what takes a quiet thread's garbage after a time is `PLAN.md`, "A quiet
+/// thread's garbage is taken after X".
 #[test]
 fn an_unarmed_poll_leaves_a_completed_death_registered() {
     let _g = test_guard();
