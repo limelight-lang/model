@@ -7,6 +7,30 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-18 — a first-touch draw is the thread's history, so a deny bracket refused nothing
+
+**What happened.** S37.9's two cases drive a refused store: an arena COW
+string escaping into a GC-heap slot, whose copy the allocator must refuse. The
+first form set a block budget of zero on a thread of its own and expected the
+copy's first allocation of its size class to ask the pool. Run alone it did,
+and the cases passed. Run inside the suite they failed at the first assertion:
+the store succeeded, because the copy found room the thread already held.
+
+**Why it was possible.** `budget_blocks(0)` refuses a *block draw*, and a
+thread asks the pool only where its size class has no room. What a fresh
+thread's `ll_thread_init` leaves in each class is the pool's warmth at that
+moment — which blocks the thread cache held, what the tests before it
+returned — so "a thread of its own" fixes the thread's history at nothing and
+fixes the heap's at whatever the process reached. The deny bracket was armed
+over an allocation that never happened.
+
+**What catches it.** The class is emptied first, with the call the copy will
+make, and the slots are given back after the window
+(`barrier::tests::fill_the_class_until_refused`). The refusal then belongs to
+the case rather than to the day, and the pool-request count read inside the
+bracket says which allocation was refused — a bare `false` is what every early
+return of the function also answers.
+
 ## 2026-09-18 — a counter whose phase ended late was read by the one case that could not tell, and a journal entry recorded a narrowing the code never got
 
 **What happened.** Three defects of S37.0 and S37.6, repaired inside those

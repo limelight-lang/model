@@ -248,3 +248,99 @@ fn a_copy_leaving_the_arena_takes_the_mark_and_the_original_none() {
     unsafe { drop_ref(MemoryCategory::GcHeap, copy) };
     arena.reset(|_| {});
 }
+
+/// A store the copy path refuses moves nothing: the slot, both counts and the
+/// occupant's mark stand as they were.
+///
+/// The refusal is a real one and its allocation is named. `store_ptr_owned`
+/// answers `false` only through [`store_ptr`], which answers it only where
+/// `escape_copy` could not allocate — and that copy is refused here by giving
+/// the thread a block budget of zero, on a thread whose GC heap has served
+/// nothing yet, so the copy's first size class has no block and must ask the
+/// pool. The pool-request count is what says so: a `false` on its own is
+/// what every early return of the function also produces.
+///
+/// **The mark clause cannot fail here, and the case says so rather than
+/// claiming it.** A refused store leaves the slot holding the entity it
+/// already held, so `move_ownership_mark` would be called with the displaced
+/// entity and the occupant being one and the same, which its own contract
+/// leaves marked as it was. The early return above it is therefore
+/// unobservable through the mark: a build that moves the mark before reading
+/// the store's answer passes this case. What the case does hold is the branch
+/// itself — the answer, the untouched slot, the untouched counts, and which
+/// allocator refused.
+#[test]
+fn a_refused_copy_leaves_the_mark_the_slot_and_the_counts_alone() {
+    let _g = crate::memory::block_pool::test_guard();
+
+    let (answered, requests, slot_kept_the_holder, holder_stayed_marked, string_count) =
+        std::thread::spawn(|| {
+            assert!(
+                crate::memory::heap::ll_thread_init(),
+                "the pool served this thread"
+            );
+            let mut arena = Arena::new();
+            let mut ctx = LLContext {
+                arena: &raw mut arena,
+            };
+            // The value that would be copied: a COW string in arena memory,
+            // which a GC-heap slot may not hold as it stands.
+            let cow = unsafe {
+                crate::string::ll_string_new(&raw mut ctx, MemoryCategory::RequestArena, b"name")
+            } as *mut RcHeader;
+
+            // The occupant the slot already holds, and the mark a refused
+            // store must leave on it.
+            let mut held = entity(MemoryCategory::GcHeap);
+            let ph: *mut RcHeader = &mut held;
+            let mut slot: *mut RcHeader = std::ptr::null_mut();
+            assert!(unsafe {
+                store_ptr_owned(&raw mut arena, MemoryCategory::GcHeap, &mut slot, ph)
+            });
+            assert!(
+                is_owned(unsafe { entity_flags(ph) }),
+                "the occupant is marked"
+            );
+
+            let _budgeted = crate::memory::block_pool::budget_blocks(0);
+            // The class the copy will ask for, emptied with the copy's own
+            // call, so that the refusal is a block draw and not the pool's
+            // warmth (`fill_the_class_until_refused`).
+            let filled = unsafe { fill_the_class_until_refused(&raw mut ctx, b"name") };
+            let _ = crate::memory::block_pool::take_pool_requests();
+            let answered =
+                unsafe { store_ptr_owned(&raw mut arena, MemoryCategory::GcHeap, &mut slot, cow) };
+            let requests = crate::memory::block_pool::take_pool_requests();
+            drop(_budgeted);
+            for taken in filled {
+                unsafe { crate::refcount::ll_release(taken) };
+            }
+
+            let answer = (
+                answered,
+                requests,
+                slot == ph,
+                is_owned(unsafe { entity_flags(ph) }),
+                unsafe { entity_refcount(cow) },
+            );
+            unsafe { drop_ref(MemoryCategory::GcHeap, slot) };
+            answer
+        })
+        .join()
+        .unwrap();
+
+    assert!(
+        !answered,
+        "the copy could not be allocated, so the store refused"
+    );
+    assert!(
+        requests > 0,
+        "the refusal is the pool's: the copy asked for a block and was told no"
+    );
+    assert!(slot_kept_the_holder, "the slot was not written");
+    assert!(
+        holder_stayed_marked,
+        "the occupant keeps its mark: nothing displaced it"
+    );
+    assert_eq!(string_count, 1, "the value keeps the count it had");
+}

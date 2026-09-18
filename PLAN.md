@@ -286,6 +286,46 @@ stage is what makes a trace affordable rather than what tunes it.
         `worker::tests::the_batch` and `collect::tests::what_the_byte_arms`
         were still running when this was written, each on the long case
         `dev/WORKFLOW.md` names.
+- [x] S37.9 The owned store's refusal, and the plain store's
+      done: a refused `store_ptr_owned` leaves the displaced entity's mark, the
+        slot and both counts as they were, driven by a real refusal — the
+        escape copy of a COW value the pool will not give a block for — and the
+        same case proves which allocation was refused rather than asserting a
+        `false` that any early return could produce; the plain `store_ptr`'s
+        refusal takes a case of the same shape beside it
+      tier: T1 · role: — (tests only: no production line changed, and the two
+        cases are read by the mutations below rather than by a reviewer)
+      note: the debt S37.3 named and left, moved here out of the residual list
+        on 2026-09-18. What blocked it then was the instrument: `force_oom`
+        refuses a **pool block**, and a copy that fits the thread's current
+        block asks the pool for nothing. A copy larger than `BLOCK_PAYLOAD`
+        does not help either — the large half draws on the OS and the flag does
+        not reach it
+        (`memory/large_entity/tests/the_two_halves_are_separate_populations.rs`).
+        What is left is to make the copy the first allocation of its size class
+        on a thread of its own, where the refusal is a block draw.
+      correction 2026-09-18: "the first allocation of its size class on a
+        thread of its own" is not enough, and the first form of both cases was
+        flaky for it — whether a fresh thread's init left room in that class is
+        the pool's warmth on the day, so the store succeeded whenever the suite
+        ran before it. The cases empty the class first, with the copy's own
+        call, through `barrier::tests::fill_the_class_until_refused`, and give
+        every slot back after the window.
+      handoff: `barrier/tests/the_owned_store.rs::`
+        `a_refused_copy_leaves_the_mark_the_slot_and_the_counts_alone` and
+        `the_ordinary_store.rs::a_refused_store_leaves_the_slot_and_the_count_alone`,
+        each on a thread of its own under a block budget of zero, with the
+        pool-request count read back so the refusal is named as a block draw
+        rather than assumed from a `false`. Three mutations run: the budget
+        raised so nothing refuses (both red), the retain kept instead of given
+        back on the refusal (both red, count 2 against 1), and the slot written
+        before the refusal returns (both red). A fourth stayed green and is
+        recorded in the case itself — moving the mark before the store's answer
+        is read changes nothing, because a refused store leaves the slot
+        holding what it held, so `move_ownership_mark` sees one entity as both
+        the displaced and the occupant. The early return is unobservable
+        through the mark, and the case says so instead of claiming the clause.
+        Suite 1043 passed, three times.
 - [ ] S37.5 The turnover constant, against a corpus   *(after S37.4)*
       done: the volume the deferred-candidate lane re-offers is measured at the
         epoch turnover on a corpus, and S37.1's 64-collection turnover is
@@ -682,14 +722,6 @@ a process-global ledger". **No work is scheduled here until a failure.**
   through `defer_candidates`, which is the other machine.
   done: a case drives the append past one segment, or a `#[cfg(test)]` seam
   puts the lane at its bound without the population behind it.
-
-- [ ] **The owned store's refusal has no case.** `store_ptr_owned` returns the
-  plain publish's `false` before moving any mark, and nothing drives that
-  branch: the copy a COW value takes leaving the arena is the only refusal a
-  publish has, and `force_oom` does not reach a copy the thread's block
-  already has room for. The plain store's refusal has no barrier case either.
-  done: a refused owned store leaves the displaced entity's mark and the
-  slot as they were, shown by a case whose refusal is the copy's.
 
 - [ ] **The prune's own recall loss has no case.** The descent stops at a
   mature edge target, so a ring one of whose members never observed a
