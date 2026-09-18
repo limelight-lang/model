@@ -94,9 +94,13 @@ pub const ARENA_RESET_MARK: u32 = 1 << 7;
 
 /// This instance's class is proven unable to hold a reference to any
 /// kind that can close a ring, so no ring passes through it and it never
-/// becomes a candidate (`rfc/model/gc/rc-cycle.md`). Stamped by the
-/// factory from the class's own answer; **no producer yet**, which is
-/// S37.2's, and it waits on `rfc` declaring a target per pointer slot.
+/// becomes a candidate (`rfc/model/gc/rc-cycle.md`). **The compiler decides
+/// it, never this crate**: the analysis is the field-type closure over a
+/// class's declared property types, and an untyped, `mixed` or `array`
+/// property is a conservative edge to anything
+/// (`rfc/model/memory/static-lifetimes.md`, "Level A — Acyclic classes").
+/// The crate honours the bit and has no producer for it, which is S37.2's:
+/// how a class carries the compiler's answer to `object::stamp_into`.
 pub const ACYCLIC_GATE: u32 = 1 << 8;
 
 /// A compiler-proven slot holds this entity: the store into that slot moved

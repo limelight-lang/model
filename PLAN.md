@@ -12,8 +12,8 @@ The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
 Updated: 2026-09-18 · Active: S37. Every open step is blocked outside this
-repository or on a corpus: S37.2 waits on `rfc` `model/classes.md` declaring a
-target per pointer slot, S37.5 and S37.7 on the Phase-D corpus. The prose
+repository or on a corpus: S37.2 waits on the compiler that computes the
+acyclic proof, S37.5 and S37.7 on the Phase-D corpus. The prose
 sections after S37 are the backlog, and the next stage is drawn from them.
 
 Review 2026-09-18: the first one recorded here, and overdue — the hook reads
@@ -272,15 +272,21 @@ stage is what makes a trace affordable rather than what tunes it.
         `note_phase_boundary` in `trace_batch`, whose release body is empty.
         This arm needs a driver over `ll-model`'s own heap — the recorded corpus
         instruments read PHP's heap, which has no blocks and no slots — so it is
-        Phase-D-blocked exactly as S37.2 is blocked on `classes.md`.
+        Phase-D-blocked, as S37.2 is blocked on the compiler.
 - [ ] S37.2 The acyclic gate
-      done: an entity of a class the rfc declares acyclic never enters the
-        candidate set, the gate being bit 8 stamped by the factory from the
-        class's own answer, and a red test shows an entity of a cyclic class
-        still does
+      done: an entity of a class the compiler marked acyclic never enters the
+        candidate set, the mark reaching `object::stamp_into` through the class
+        descriptor and landing at bit 8, and a red test shows an entity of an
+        unmarked class still registers
       tier: T2 · role: —
-      handoff: blocked outside this repository; the step is listed so the
-        dependency is visible rather than discovered.
+      handoff: the proof is the compiler's and never this crate's — the
+        field-type closure over declared property types, with `mixed`, `array`,
+        an untyped property, `#[AllowDynamicProperties]`, `__set` and a
+        reflection write all conservative edges to anything
+        (`rfc/model/memory/static-lifetimes.md`, "Level A — Acyclic classes").
+        What is left here is the channel: which class flag carries the answer
+        and where `stamp_into` reads it. Blocked on the compiler, and listed so
+        the dependency is visible rather than discovered.
 - [x] S37.3 The ownership mark
       handoff: `memory::barrier::store_ptr_owned` / `store_box_owned` and the
         ABI pair `ll_store_ptr_owned` / `ll_store_box_owned` move the mark,
