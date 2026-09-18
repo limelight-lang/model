@@ -26,8 +26,8 @@
 //!
 //! Reading a row as unreachable is a decision about one entity, and the trace's
 //! unit is a component: a ring is unreachable when every member of it is. The
-//! scan writes the colour per row and the exact test reads the component, so
-//! nothing here needs to know which members belong together.
+//! scan writes the colour per row and the exact validation reads the
+//! component, so nothing here needs to know which members belong together.
 //!
 //! # The colour is re-read at expansion
 //!

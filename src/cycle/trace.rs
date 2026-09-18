@@ -39,7 +39,7 @@ use crate::cycle::scan::{ScanResult, scan};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TraceOutcome {
     /// Every root was marked and then scanned, and every met row carries a
-    /// proposal the exact test may read.
+    /// proposal the exact validation may read.
     Complete,
     /// An allocation path refused, in either phase, and the trace was
     /// abandoned where it stood. The heap is byte-identical and no colour is a
@@ -59,7 +59,7 @@ pub(crate) const ALL_ROOTS: usize = usize::MAX;
 /// it. In the mark that is forced — a partial mark leaves rows subtracted by an
 /// incomplete closure, and no colour drawn from them means anything. In the
 /// scan the same rule applies one phase later: a colour is a proposal until
-/// the exact test reads it, so an abandoned scan keeps none.
+/// the exact validation reads it, so an abandoned scan keeps none.
 ///
 /// **A bound on the roots is conservative and not a partial answer.** A root
 /// left untraced subtracts no edge from any row, so every row this trace reads

@@ -1,4 +1,4 @@
-//! The hardware arm of `PLAN.md` S40.3: the loads of `ll_model::loads` driven
+//! The hardware arm of `dev/BENCHMARKS.md`, 2026-09-12: the loads of `ll_model::loads` driven
 //! through the public ABI in a binary linked to the ordinary library, so that
 //! `perf stat` counts the collector as it is built and not the test build's
 //! per-dispatch assertion and counters.

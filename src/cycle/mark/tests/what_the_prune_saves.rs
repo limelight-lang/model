@@ -1,6 +1,6 @@
 //! The edges the prune refuses and the rows the mark no longer resolves, at
 //! `k` of 1, 2 and 3, on a load whose answer is fixed by construction
-//! (`PLAN.md` S40.1, the synthetic pruning arm).
+//! (`PLAN.md` S37.7, the synthetic pruning arm).
 //!
 //! Ignored in the ordinary suite and run by hand:
 //!
@@ -18,7 +18,8 @@
 //! hanging off the first member's second property. The registered ring is the
 //! root population; the held ring is what the prune is about, since every
 //! member keeps its creation reference, no queue entry names one, and the
-//! trace reaches the whole of it through one edge. The sizes are S40.3's: 2,
+//! trace reaches the whole of it through one edge. The sizes are the
+//! census's: 2,
 //! 16, 256 and 381.
 //!
 //! The stamps are the commit's and not the harness's. The held ring is one
@@ -35,7 +36,7 @@
 //! the rows the mark no longer resolves, read off `take_edges_pruned` and
 //! `take_dispatches_in_mark_phase`; both are cleared before every collection.
 //! A *share* on this load is the harness's own liveness schedule read back,
-//! and a production `k` waits on the corpus arm (`PLAN.md` S40.1). What the
+//! and a production `k` waits on the corpus arm (`PLAN.md` S37.7). What the
 //! run calibrates is the instrument that arm will read, at each `k` the age
 //! field can hold, against the producer the crate has built rather than
 //! against a simulation of it (`dev/BENCHMARKS.md`, 2026-09-09, withdrawn).
@@ -51,7 +52,8 @@ use crate::cycle::row::{
 use crate::cycle::testing::{dismantle_ring, on_a_fresh_thread, ring, stamp_of};
 use crate::gc::ll_gc_collect_cycles;
 
-/// The held ring's sizes: S40.3's component sizes, so that the two runs can
+/// The held ring's sizes: the census's component sizes, so that the two runs
+/// can
 /// be quoted in one sentence. 381 is the corpus's median closure.
 const HELD_RING_SIZES: [usize; 4] = [2, 16, 256, 381];
 

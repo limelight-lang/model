@@ -1,4 +1,5 @@
-//! The synthetic loads S40.1 reports, and the reading each one leaves.
+//! The synthetic loads the density reading reports, and what each one
+//! leaves.
 //!
 //! Ignored in the ordinary suite and run by hand:
 //!
@@ -19,7 +20,7 @@
 //! which of each block's slots the trace's own arithmetic then met.
 //!
 //! It is not a corpus reading. A corpus arm needs a driver over this
-//! crate's heap and is blocked with Phase D (`PLAN.md` S40.1).
+//! crate's heap and is blocked with Phase D (`PLAN.md` S37.7).
 
 use super::*;
 
@@ -38,7 +39,7 @@ pub(super) const fn slots_per_block(class_bytes: usize) -> usize {
     crate::memory::block_pool::BLOCK_PAYLOAD / class_bytes
 }
 
-/// The component sizes S40.3 fixes, and this step reads the same ones so
+/// The component sizes the census fixes, and this step reads the same ones so
 /// that the two runs can be quoted in one sentence. 381 is the corpus's
 /// median closure size; the rest bracket it.
 const COMPONENT_SIZES: [usize; 4] = [2, 16, 256, 381];

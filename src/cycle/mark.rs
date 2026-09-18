@@ -124,7 +124,7 @@ use crate::refcount::{
 /// 3, provisional after the only published value of the design this rule comes
 /// from (`rfc/model/gc/cycle/questions.md`, Y9: promote age 3). What a real
 /// workload wants is the pruned-edge share at 1, 2 and 3, which `PLAN.md`
-/// S40.1 measures and this constant then takes or keeps.
+/// S37.7 measures and this constant then takes or keeps.
 ///
 /// A threshold above [`MATURATION_AGE_MAX`] would prune nothing, the age
 /// saturating there, so the assertion below is the whole of what the two
@@ -178,7 +178,7 @@ thread_local! {
 
 /// Hold this thread's threshold at `threshold` until the guard is dropped, so
 /// that a measurement can read the pruned-edge count at a `k` the constant
-/// does not carry (`PLAN.md` S40.1).
+/// does not carry (`PLAN.md` S37.7).
 ///
 /// The pin is this thread's alone and moves no constant: a mark on another
 /// thread reads [`TRAVERSAL_AGE_THRESHOLD`] as before.
@@ -449,7 +449,7 @@ unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, prune: Prune
 /// The counter is the trace's own and not the density instrument's: what it
 /// reports is an event no final row state records, a target the mark did not
 /// meet being indistinguishable from one no edge named
-/// (`PLAN.md` S40.1, whose pruned-edge share this is the built form of).
+/// (`PLAN.md` S37.7, whose pruned-edge share this is the built form of).
 #[inline]
 fn note_edge_pruned() {
     #[cfg(test)]

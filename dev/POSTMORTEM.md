@@ -7,6 +7,34 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-18 — a counter whose phase ended late was read by the one case that could not tell, and a journal entry recorded a narrowing the code never got
+
+**What happened.** Three defects of S37.0 and S37.6, repaired inside those
+steps on 2026-09-10 and filed here on the stage's deletion, because the traps
+are one class each and the class outlives the step.
+
+The maturation descent was given "a phase of its own" in the dispatch counters,
+and the phase ran to the end of the commit: it counted the exact validation's
+and the teardown's dispatches as the descent's. The one case that read the
+counter agreed anyway, because its fixture tore nothing down, so the phase's
+tail was empty in exactly the run that measured it. **Why it was possible:** a
+phase opened at a boundary and taken at the caller's end is not a phase, and
+nothing but a case whose fixture reaches the tail can tell the two apart. The
+repair is `row::note_descent_end` and a case that commits over a ring it frees.
+
+The close of a collection made two full compaction passes where it used to make
+one — the disposition's own and the guard's retirement over the same lane —
+and no assertion counted passes. **Why it was possible:** a pass that is
+idempotent costs only time, and time is what no case of this crate asserts on.
+
+The journal entry of S37.0 claimed that `cycle::density`'s contract had been
+narrowed to "before the commit" when the narrowing had not been made, and past
+a commit that module's census reads a component index as an in-edge count and
+raises. **Why it was possible:** a journal entry is written from the work's
+intent, and an intent recorded as a fact is indistinguishable from the fact
+once the session ends. The check is the one this entry is filed under: a
+sentence about the code is read against the code before it is written down.
+
 ## 2026-09-17 — a survivor promoted at count zero was not counted as an occupant, and the free that found it was swallowed as a C mistake
 
 **What happened.** `retained::is_occupied` read a survivor at count zero

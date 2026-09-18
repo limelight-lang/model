@@ -31,8 +31,8 @@
 //! (`crate::memory::heap::entity_alloc`), and which runtime progress
 //! operations a reserve would fund instead is what the ABI does not yet name
 //! (`rfc/model/memory/critical-reserve.md`, "Mutator progress while
-//! collection is unavailable"; `PLAN.md`, Fog, "The threshold arming policy
-//! and the collector-thread accelerator"). No partition among the three is
+//! collection is unavailable"; `PLAN.md`, "The threshold arming policy").
+//! No partition among the three is
 //! built until one of their shares can be derived.
 //!
 //! **The queue's segments come back before this reserve's own blocks do**,

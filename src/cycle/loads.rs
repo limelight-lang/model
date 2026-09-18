@@ -1,5 +1,5 @@
-//! The loads S40.3 reads, built once for the two arms that read them
-//! (`PLAN.md` S40.3): the census in the test build, and the driver in
+//! The loads the census reads, built once for the two arms that read them
+//! (`dev/BENCHMARKS.md`, 2026-09-12): the census in the test build, and the driver in
 //! `benches/` that links the ordinary library under the `bench-loads`
 //! feature.
 //!

@@ -1,5 +1,5 @@
 //! What one ordinary collection cost, read at two boundaries and counted
-//! across it (`PLAN.md` S40.3). Test builds only.
+//! across it (`dev/BENCHMARKS.md`, 2026-09-12). Test builds only.
 //!
 //! # Two boundaries, and why one reading is too late
 //!

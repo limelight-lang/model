@@ -12,7 +12,7 @@
 //! # What lives here, and what does not
 //!
 //! The collector's own state: shadow rows, the arena they come from, the
-//! trace's mark and scan, the exact test that validates a component and the
+//! trace's mark and scan, the exact validation of a component and the
 //! guards and weak-cell nulling its answer stands for. Two
 //! things it deliberately does not hold. The enumeration of an entity's
 //! counted children is `cells`, which knows entity kinds and no blocks;
@@ -121,7 +121,7 @@ pub(crate) mod density;
 // counted across it. Test builds only.
 #[cfg(test)]
 pub(crate) mod census;
-// The loads S40.3 reads, built once for the census and for the driver in
+// The loads the census reads, built once for it and for the driver in
 // `benches/` that links the ordinary library under `bench-loads`.
 #[cfg(any(test, feature = "bench-loads"))]
 pub mod loads;

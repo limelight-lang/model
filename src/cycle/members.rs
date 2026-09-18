@@ -59,7 +59,7 @@ use crate::refcount::RcHeader;
 /// three widest row arrays the bump must still hold beside it
 /// (`dev/DECISIONS.md`, "the member list is the workspace's second region, and
 /// its capacity is 1,024 records"). What revises it is a measurement of a real
-/// pressure collection, which `PLAN.md` S40.1 takes.
+/// pressure collection, which `PLAN.md` S37.7 takes.
 pub(crate) const MEMBER_CAPACITY: u32 = 1_024;
 
 /// The head of the list and the words the sweep reads beside it, resident in

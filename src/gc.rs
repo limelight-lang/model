@@ -181,7 +181,7 @@ pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
 /// moved. A root read live is deferred at a collection's close and the poll
 /// re-offers it at the next turnover only, so a driver that collects the
 /// same live ring eight times inside one epoch calls this before each
-/// collection, as the exit's rounds do (`PLAN.md` S40.3).
+/// collection, as the exit's rounds do (`dev/BENCHMARKS.md`, 2026-09-12).
 ///
 /// The body is the count the census reads and the call the exit already
 /// makes, so no production function computes anything for the hook and the

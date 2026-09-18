@@ -38,7 +38,7 @@ fn the_bump_fills_the_workspace_to_the_byte_before_it_draws() {
 }
 
 /// The flat replay reads the record: the figures `dev/BENCHMARKS.md`,
-/// 2026-09-12 (S40.3) gives for three loads follow from their shapes.
+/// 2026-09-12 gives for three loads follow from their shapes.
 #[test]
 fn the_flat_replay_reproduces_the_record_from_the_shapes_alone() {
     let one_per_block_381 = shape(vec![slotted(256, 1); 381], 3, 2);

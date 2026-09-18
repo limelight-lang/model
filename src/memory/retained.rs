@@ -456,7 +456,7 @@ pub(crate) unsafe fn has_held_occupants(block: usize) -> bool {
 }
 
 /// How many held occupant slots `block` counts, which is the second
-/// denominator of a traced-slot density (`PLAN.md` S40.1).
+/// denominator of a traced-slot density (`PLAN.md` S37.7).
 ///
 /// The low half of the same word [`has_held_occupants`] tests, and a
 /// different number from [`occupant_count`]: the survivor list is the

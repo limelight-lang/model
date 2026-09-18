@@ -1,4 +1,5 @@
-//! The loads S40.3 records, and the report each collection over them leaves.
+//! The loads the census records, and the report each collection over them
+//! leaves.
 //!
 //! Ignored in the ordinary suite and run by hand:
 //!
@@ -7,7 +8,7 @@
 //! ```
 //!
 //! The numbers are in `dev/BENCHMARKS.md`; what stands here is the list the
-//! Sage ruled on (`PLAN.md` S40.3) and the construction of each load, so a
+//! Sage ruled on (`dev/BENCHMARKS.md`, 2026-09-12) and the construction of each load, so a
 //! later run can be compared against the same population. Every load runs on
 //! a thread of its own under a pinned epoch, the deferred lane re-offered by
 //! hand before each of eight collections, and every collection is printed on

@@ -60,7 +60,7 @@ fn exempt_allocations(walks: usize, members: usize, validations: usize) -> usize
 }
 
 /// The validations a confirmed component with a destructor goes through: the
-/// exact test, and the second reading after the destructor pass.
+/// exact validation, and the second reading after the destructor pass.
 const VALIDATIONS_WITH_A_DESTRUCTOR: usize = 2;
 
 /// A class of `properties` Box properties whose instance fits one size class

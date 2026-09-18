@@ -374,7 +374,7 @@ of recycling (`deferred_free.rs`): one relaxed load of a global activity
 bit and a predicted branch, after the kind dispatch, active only during
 an epoch. The entity still dies on time, destructor included, and only
 reuse waits, so a walked slot cannot become a different object
-mid-epoch. Identity is what makes an exact test sound
+mid-epoch. Identity is what makes an exact validation sound
 (`rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`).
 
 **Parking is out of band.** The parked pointer goes into a thread-local
@@ -753,8 +753,7 @@ The third customer the design names, the mutator that cannot collect, is
 not built: a mutator whose entry gate is closed is answered null, and which
 runtime progress operations a reserve would fund instead is what the ABI does
 not yet name (`rfc/model/memory/critical-reserve.md`, "Mutator progress while
-collection is unavailable"; `PLAN.md`, Fog, "The threshold arming policy and
-the collector-thread accelerator"). No partition among the three is built
+collection is unavailable"; `PLAN.md`, "The threshold arming policy"). No partition among the three is built
 until one of their shares can be derived.
 
 Eight blocks is 512 KiB, which is the design's 500 KB figure read at

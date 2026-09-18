@@ -1,6 +1,7 @@
-//! The census replayed through both row forms (`PLAN.md` S40.5): the flat
+//! The census replayed through both row forms
+//! (`dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md`): the flat
 //! form's replay against the counters of the collection it reads, on every
-//! load S40.3 records, and the specified chunked form's replay beside it.
+//! load the census records, and the specified chunked form's replay beside it.
 //!
 //! The matrix is ignored in the ordinary suite and run by hand:
 //!
@@ -182,7 +183,7 @@ fn the_flat_replay_matches_the_census_inside_and_past_the_workspace() {
     );
 }
 
-/// The matrix S40.3 records, replayed: the base rings dense over the four
+/// The matrix the census records, replayed: the base rings dense over the four
 /// classes and one per block at class 256, the retained ring, the two group
 /// occupancies, the full block, the second edge, and the garbage ring.
 #[test]

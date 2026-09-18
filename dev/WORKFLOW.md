@@ -407,11 +407,12 @@ contract genuinely moved. Those cannot be told apart silently — ask.
 
 The one sanctioned exception is an environment that physically cannot
 express what the test checks, marked narrowly and still running
-everywhere else: `#[cfg_attr(miri, ignore = "...")]` stands on eleven
-tests today — six dispatch-table ones comparing function identity, which
-Miri does not model, four that read a source file, and one that spawns a
-child process, both of which its isolation refuses. Assertions stay
-untouched.
+everywhere else: `#[cfg_attr(miri, ignore = "...")]` stands on 50 tests
+across 23 files as of 2026-09-18, counted by `cfg_attr(\s*miri,` over `src/`.
+The classes the rule sanctions are a dispatch-table comparison of function
+identity, which Miri does not model, and a test that reads a source file or
+spawns a child process, which its isolation refuses; each attribute states its
+own reason in place. Assertions stay untouched.
 
 **A test that spawns a process or reads a file carries that attribute in
 the commit that adds it.** Miri stops at the first error, so such a test
@@ -545,7 +546,26 @@ whole-suite run belongs before a release is Edmond's, and open.
 which is longer than any foreground command should hold the box, and a
 background run outlives the session that started it with nobody to stop
 it. Take a submodule at a time — `array::entry`, `array::table`,
-`array::element`, `array::entity` — each under a `timeout`.
+`array::element`, `array::entity` — each under a `timeout`. What each slice
+cost on 2026-08-18 at two threads, on Miri's clock: `array::table` without the
+flood ladder 32 tests in 79 s, the ladder's own module 14 in 273 s, and
+`array::entry` with the tracer and ring tests 13 in 179 s, all clean.
+`array::entity` is the expensive one and is taken by test rather than whole —
+its copy tests ran 25 in 59 s — so it is the one slice whose whole-module run
+does not finish.
+
+**Two cases of 2026-09-17 are unverified under Miri, and stay so until one of
+them is cut down.** The Miri selection of S51 and S52 covered
+`what_the_byte_arms` (7), `cycle::token::tests` (7),
+`cycle::queue::verdicts::tests` (12), `worker::tests::the_batch` (5),
+`what_an_exit_collects` (8) and `cycle::mutator_record::tests` (10), all green.
+Two were left out for their length, both of the sparse-ring class above:
+`collect::tests::what_the_byte_arms::a_proposed_root_whose_trace_was_refused…`
+(a ring sized to outgrow the workspace, past 20 minutes) and
+`worker::tests::the_batch::a_batch_that_meets_its_budget…` (a 16,000-member
+ring, past an hour). What stands unverified with them is the write-back of a
+refused trace and the budget-halving batch; a fixture that reaches either on a
+smaller ring is what would close the gap.
 
 **The region carve has an arm of its own, and it is why Miri runs at
 all.** `memory::os::map_aligned` cuts an aligned span out of an oversized

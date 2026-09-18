@@ -117,11 +117,11 @@ pub(crate) fn open_arena() -> TraceScratchArena {
 }
 
 /// Trace the fixture from one root and assert every entity named is
-/// unreachable, which is the state the exact test is asked about.
+/// unreachable, which is the state the exact validation is asked about.
 ///
 /// The arena comes back so the caller resets it before validating: on the
-/// pressure path the rows have gone back before the exact test runs, and this
-/// is the state such a case asks about (`rfc/model/gc/rc-cycle.md`,
+/// pressure path the rows have gone back before the exact validation runs,
+/// and this is the state such a case asks about (`rfc/model/gc/rc-cycle.md`,
 /// "Concurrency").
 ///
 /// # Safety
@@ -281,7 +281,7 @@ pub(crate) unsafe fn long_ring(
 /// arena reset behind it — the state an exact validation is asked about.
 ///
 /// The reset is here because the rows die at the window's close, which on
-/// the pressure path is before the exact test
+/// the pressure path is before the exact validation
 /// (`rfc/model/gc/rc-cycle.md`, "Concurrency"); a case that wants a row after
 /// the trace builds its ring with [`ring`] and runs the phases itself.
 ///

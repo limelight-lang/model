@@ -40,7 +40,7 @@
 //!
 //! **The four micro-ops are `pub` for the benchmark**, which is a separate
 //! crate and may not reach the `extern "C"` twins at the foot of this file
-//! (`PLAN.md`, "Cross-cutting (every phase)"). Nothing else outside this
+//! (`PLAN.md`, "Cross-cutting (every stage)"). Nothing else outside this
 //! crate calls them: the compiler's code reaches them as bitcode, and a
 //! Rust caller wants `ref_store`. The owned forms are `pub(crate)`: no
 //! benchmark drives them.

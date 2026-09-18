@@ -7,13 +7,13 @@ located.
 ## Modules
 
 Representation analysis: [Shadow rows: flat or chunks](SHADOW-ROW-REPRESENTATION-ANALYSIS.md)
-— S40.3 measurement design and S40.2 decision prerequisites: group occupancy,
+— the census's measurement design and the row-form decision's prerequisites: group occupancy,
 chunk addressing, full-collection workspace, and structural versus hardware
 measurement. Source-derived analysis; no new performance results. Its §3.1 is
-the chunked form S40.2 decides on — a directory of `u16` entries in eight-byte
+the chunked form the row-form decision refused — a directory of `u16` entries in eight-byte
 units from its own address, a continuation directory where the bump has left
 its block — and `cycle::census::replay` prices it against the flat form over
-the census (`dev/BENCHMARKS.md`, 2026-09-12, S40.5).
+the census (`dev/BENCHMARKS.md`, 2026-09-12).
 
 Critical analysis: [Cycle improvement candidates](CYCLE-IMPROVEMENTS-CRITICAL-REVIEW.md)
 — dated source review, corrections to the Cangjie comparison, candidate
@@ -82,8 +82,8 @@ versions live in `docs/history/`, marked at the top.
   | `finalization` | the guard reference on every member of a confirmed component, the weak cells naming them nulled before any destructor, the destructor pass over the whole commit, the second reading each component takes with the guard subtracted, and the maturation stamp every component read as externally referenced takes at either reading | `cycle::collect` |
   | `reclamation` | the teardown of a component the second reading kept: the room taken before the first cell is emptied, the sever, the frees through the ordinary death path, and the queue the displaced external children wait in | `cycle::collect` |
   | `density` | test builds only: what share of a touched block's slots one trace met, the stateless census of recoverable internal in-edges (`refcount - shadow count`) with saturated rows apart, and, in `tests::the_death_loads`, what the window's close costs in time and in cache lines | none |
-  | `census` | test builds only: one report per ordinary collection — the rows at the scan's end through `density`'s readers plus the distinct lines the arrays cover, the chains and the bump at the close, and counters at the events no final state records (grants by consumer, tails, blocks drawn by funding, re-offers, exact validations); armed by a load, nested collections refused. Its loads are `tests/the_loads.rs`, the record `dev/BENCHMARKS.md`, 2026-09-12. `census::replay` runs the arena's bump over a report's shape for the flat form, checked against the report's counters, and for the specified chunked form (`tests/the_replay.rs`, the record `dev/BENCHMARKS.md`, 2026-09-12, S40.5) | none |
-  | `loads` | the rings S40.3 reads, built once for the census and for `benches/census_driver.rs`, which links the ordinary library under the `bench-loads` feature (`Cargo.toml`) and is run by hand under `perf stat` through `dev/tools/census_perf.sh`; the feature's one hook is `gc::ll_gc_reoffer_deferred` | none |
+  | `census` | test builds only: one report per ordinary collection — the rows at the scan's end through `density`'s readers plus the distinct lines the arrays cover, the chains and the bump at the close, and counters at the events no final state records (grants by consumer, tails, blocks drawn by funding, re-offers, exact validations); armed by a load, nested collections refused. Its loads are `tests/the_loads.rs`, the record `dev/BENCHMARKS.md`, 2026-09-12. `census::replay` runs the arena's bump over a report's shape for the flat form, checked against the report's counters, and for the specified chunked form (`tests/the_replay.rs`, the record `dev/BENCHMARKS.md`, 2026-09-12) | none |
+  | `loads` | the rings the census reads, built once for the census and for `benches/census_driver.rs`, which links the ordinary library under the `bench-loads` feature (`Cargo.toml`) and is run by hand under `perf stat` through `dev/tools/census_perf.sh`; the feature's one hook is `gc::ll_gc_reoffer_deferred` | none |
 
   Two numbers about a row, both pinned by tests rather than by prose: a
   count at the field's bound is a floor and absorbs every subtraction, so
@@ -689,7 +689,7 @@ versions live in `docs/history/`, marked at the top.
   `dev/DECISIONS.md`, "the performance case's external comparand is a
   canary, not a self-authored floor". No collector-side count exists: the
   epoch's parked-memory probe went with the two collectors on
-  2026-08-26, and `PLAN.md` S40.1 is the step that measures the trace.
+  2026-08-26, and `PLAN.md` S37.7 is the step that measures the trace.
 - Benches: `benches/alloc.rs`, `benches/standard.rs`,
   `benches/barrier.rs` (the store barrier's three directions and the
   arena logging inside them; it resets the arena between timed regions,
@@ -930,7 +930,7 @@ of what was considered; the code is `memory::retained` and
 `promote::place_survivor_lists`.
 
 
-`dev/tools/census_perf.sh` — the hardware arm of S40.3: every load of
+`dev/tools/census_perf.sh` — the census's hardware arm: every load of
 `cycle::loads` through `benches/census_driver.rs`, pinned to one CPU under
 `perf stat --control`, twice per cell and the empty interval, into one CSV.
 Build the driver with `--features bench-loads` first.

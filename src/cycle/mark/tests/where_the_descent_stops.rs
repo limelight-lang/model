@@ -203,7 +203,7 @@ fn a_stamp_of_another_epoch_prunes_no_edge() {
 ///
 /// The same reading as [`the_fourth_collection_stops_at_the_child_the_third_matured`]
 /// two commits earlier, which is what the pin exists for: the pruned-edge
-/// count at a `k` the constant does not carry (`PLAN.md` S40.1). The pin is
+/// count at a `k` the constant does not carry (`PLAN.md` S37.7). The pin is
 /// dropped before the last collection, which reads the constant again and
 /// descends into a child at age 1.
 #[test]

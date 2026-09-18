@@ -11,112 +11,48 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-17 · Active: S37 and S40. **S52 closed and was deleted on 2026-09-17**, the day it opened: `ll_free_entity`, the free for a pointer known to be a GC-heap entity header, on every death route — object, string, reference box, weak cell, array — priced against `ll_free` in one binary at no measurable difference (`dev/BENCHMARKS.md`, "S52 an entity-only free for the death path"); kept for the precondition it asserts, which found `retained::is_occupied` leaving a survivor promoted at count zero out of its block's occupant count, so the block went home a death early (`dev/POSTMORTEM.md`, "a survivor promoted at count zero was not counted as an occupant"); Miri over `memory::stdapi::tests`, `memory::retained::tests` and the promote case that exposed it. **S51 closed and was deleted on 2026-09-17**, the day it opened: the trace token handshake with the collector's batch as the mutator's trigger, Edmond's five-line algorithm of that day, built as one stage from `rfc/dev/design/trace-token-handshake.md` — one byte per mutator of five states in `cycle/token.rs`, the collector's request, wait and standing array in `cycle/worker.rs`, the one reading at the slot free and the poll, and the collection over P armed by `POSTED`; its record is `dev/DECISIONS.md`, "the collector requests and the mutator consents, and the batch's release is the mutator's trigger", its two traps `dev/POSTMORTEM.md`, "a hold decided outside the wait" and "the arena moved above the request for the checkpoint's sake" (the stage-close Code Reviewer's one defect, fixed before the commit), its figures `dev/BENCHMARKS.md`, "S51.5 the token handshake's instruments" — the poll 3.3 ns cheaper with the peek of P gone, the six stress readings of `worker/tests/under_stress.rs`, W's tail Phase-D-blocked with the placeholder kept — and its Miri rule `dev/WORKFLOW.md`, "A test thread waits, it does not spin". Miri, selected by the diff's unsafe lines, on the final tree: `what_the_byte_arms` (7), `cycle::token::tests` (7), `cycle::queue::verdicts::tests` (12), `worker::tests::the_batch` (5), `what_an_exit_collects` (8), `cycle::mutator_record::tests` (10), all green; two not run for their length — `a_proposed_root_whose_trace_was_refused…` (a ring sized to outgrow the workspace, past 20 min) and `a_batch_that_meets_its_budget…` (a 16,000-member ring, past an hour), both of the class `dev/WORKFLOW.md` names for the census's sparse ring. What it named and left is in the backlog ("What S51 named and left"). **S38 closed and was deleted on 2026-09-16** on Edmond's ruling of that evening: the question its S38.7 had left him was asked of the shortage relay S49 deleted, so nothing stood between its closed steps and the Code Reviewer, whose seventeen findings over the surviving code — the token, the entry gate, the wait, the collector's reader, the deferral under a foreign holder — landed the same night, the one defect being the free path's reading of the token, which ordered nothing the owner stored before it against a taker's loads after its take and is fenced now; its record is `dev/DECISIONS.md`, "the free path's reading of the token is fenced against the take, and the accelerator question of 2026-09-15 is void", its trap `dev/POSTMORTEM.md`, "a stale-direction argument was stated for both directions and proved for one", its price `dev/BENCHMARKS.md`, "the free path's fence against the take", and the loom model `cycle/token/free_path_model.rs`; the form that moves that price from the free path to the take is a question for Edmond, named in the decision. **S50 closed and was deleted on 2026-09-16**: `ll_thread_init` is called once per thread life, the lazy self-initialising paths are gone, and an allocation or a candidate registration on a thread nobody started ends the process with a named reason; its record is `dev/DECISIONS.md`, "an entry point reached outside a thread's life ends the process, and the base block is the mark of a started thread", its trap `dev/POSTMORTEM.md`, "a reason printed before an abort is captured by the harness"; the Critic's and the Code Reviewer's rounds are folded into that entry. **S49 closed and was deleted on 2026-09-16**: the candidate ring read behind its writer, the verdict ring, the collector's batch, its wakes and timer, and the sibling collectors, on Edmond's ruling that restored his read-behind queue over the outbox form S38.5–S38.7 built; its rulings are in `dev/DECISIONS.md` under 2026-09-16, its one trap in `dev/POSTMORTEM.md`, and what it named and left is in the backlog ("What S49 named and left"). Every open step is
-blocked outside this repository or on a corpus. **S48 closed and was deleted
-on 2026-09-14**, the ValueBox relayout to `rfc/model/values.md`, "ValueBox
-Layout", in three steps, its close read by the Code Reviewer, whose
-findings (a duplicated mask, two selectors for one fact, a spill on the
-store path, stale sentences) landed the same day; what outlived it is
-`dev/BENCHMARKS.md` under
-2026-09-14 (the instrument's calibration and the A/B/A reading, whose
-figures Edmond took as the ruling's price), `rfc/dev/DECISIONS.md`, "A1
-closes on a discriminating word" (the ruling, the withdrawn provenance
-clause and the measured price), the crate's `value.rs` module doc, and the
-backlog line "Slot-typed pointer stores for provenance" below. **S36
-closed and was deleted on 2026-09-14**, its last act being the stage-close
-Code Reviewer over the modules no review had read since 2026-09-01, which
-found three defects at the seams between the driver's two paths and inside
-the finalization chain; what outlived it is `dev/POSTMORTEM.md`, 2026-09-14,
-the six backlog lines below headed "What S36 left without an owner", and the
-journals of 2026-08-29 through 2026-09-13 its steps wrote as they closed.
-**S47 closed and was deleted on
-2026-09-14**, its last step being S47.9, the COW reconciliation as three
-linear passes over the window's log; what outlived it is `dev/DECISIONS.md`
-under 2026-09-13 (six entries, the survivor-cell refusal and the count-word
-accumulator among them), `dev/BENCHMARKS.md` under the same date for the
-grouping, the COW rows and the three passes, and `dev/POSTMORTEM.md`,
-2026-09-13, for the branch only the journal observed and the
-write-provenance rule broken in `refcount`'s fixtures.
-S40's one open step is
-S40.1's Phase-D-blocked corpus arm. **S44 closed and was deleted on 2026-09-12**, its last step being
-S44.7, the window's tests under `tests/` by group in the stack's vocabulary;
-what outlived it is `dev/DECISIONS.md` under 2026-09-05 and 2026-09-06 and
-`dev/BENCHMARKS.md`, "S44.4 the close against the chain". **S45, closed
-on 2026-09-07, was deleted on 2026-09-12**; what outlived it is
-`dev/DECISIONS.md`, "the ring fixture is two functions rather than one
-builder with parameters", and the correction above it. S40.2
-closed on 2026-09-12: the flat row form stays, and Edmond ruled the same day
-that no stage builds the chunked candidate (`dev/DECISIONS.md`, "the flat
-row array stays"). S40.5 closed the same day with the chunked form specified
-and the census replayed through both forms; S40.3 closed the same day with
-the census and the hardware arm, its three Sage rulings now in
-`dev/DECISIONS.md`, "the census is one report at two boundaries"; the Sage's
-rulings of the same day on `dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md`
-reshaped S40.3, added S40.5 and rewrote S40.2, and are recorded under S40.5
-and S40.2. **S46 closed and was deleted on 2026-09-12**, one step on
-Edmond's ruling of the same day: an exit a destructor asks for is recorded
-and runs at the thread's top (`dev/DECISIONS.md`, "an exit requested inside a
-collection runs at the thread's top"). **S39 closed and was deleted on 2026-09-12**, its last step
-being S39.1 — the exit's wait on the thread's token and its bounded rounds of
-collection over every chain, the residue reported as a journal record; what
-outlived it is `dev/DECISIONS.md` under 2026-09-09 and 2026-09-12 and
-`dev/BENCHMARKS.md` for the early-return measurement. S37.3 closed on 2026-09-11 — the ownership mark is moved by the
-barrier's owned store and honoured by the holder's `dispose`. S37.0, S37.6
-and S37.1 closed on 2026-09-10 — the
-live-component stamp producer, the per-root disposition and the edge-side
-prune they were built for — so the descent stops at the mature live core and
-S40.1's pruning arm has a counter rather than a simulation; the corpus arm of
-S40.1 still waits on the Phase-D driver, and S37.5 waits on the same corpus.
-Of what is left in S37, S37.2 is blocked outside this repository.
-**S34 closed and was deleted on 2026-09-10**,
-its last step being the law that only the owner reduces state; what outlived
-it is in the journals, and the two debts it carried without an owner are in
-`## Fog` and in the backlog below.
-The commit — the exact validation, the guards and the weak window, the
-destructors and the revalidation, the sever, the frees and the deferred
-drops, the maturation stamp, the collection behind the ABI and the one an
-allocation failure starts — was S36, built between 2026-08-29 and
-2026-09-13 and deleted whole; Edmond's ruling of 2026-09-12 that the reset's
-exemption does not reach the frames a destructor's `ll_arena_reset` enters is
-`dev/DECISIONS.md`, "the reset window's memory comes from the manager".
-S43 closed the withheld-return window: past its region the module draws
-nothing, a death in memory the collection never met is returned at once, a
-marked slot of another thread's block is stacked rather than listing its
-block, and an unwind out of the close returns every mark it can reach. What
-outlived it is in the journals — `dev/DECISIONS.md` under 2026-09-04 and
-2026-09-05, `dev/BENCHMARKS.md` for the walk against the chain, and
-`dev/POSTMORTEM.md` for the fixture trap it hit twice. The sections after S40
-are the backlog.
+Updated: 2026-09-18 · Active: S37. Every open step is blocked outside this
+repository or on a corpus: S37.2 waits on `rfc` `model/classes.md` declaring a
+target per pointer slot, S37.5 and S37.7 on the Phase-D corpus. The prose
+sections after S37 are the backlog, and the next stage is drawn from them.
+
+Review 2026-09-18: the first one recorded here, and overdue — the hook reads
+`dev/PLAN.md` while this plan sits at the repo root, so nothing named the
+period. Code of 2026-09-15 to 2026-09-17 (`abfba48..c58d49f`) against the
+thresholds: eleven places, the largest `worker::serve` at 80 code lines where
+the same function was 42 before the slice, `collect::collect_under_pressure` at
+79 and control depth 4, `worker::thread_body` at 77; they are S37.8 below. Two
+proposed deletions were refused — `make_withheld_returns_before_the_retry`
+states a precondition its callee's `# Safety` does not and carries two callers,
+and deleting `collect_off_the_poll` moves a contract paragraph into `gc.rs` and
+re-points eight `As [...]` citations. The algorithms of the period are Edmond's
+own rulings, so a simpler form is a premise change for him rather than a review
+finding. The plan lost S40, whose goal was discharged on 2026-09-12, ten closed
+steps, the obituary of nine deleted stages, two fog lines and a cross-cutting
+section duplicated 640 lines from its twin; the nine orphan debts that cut would
+have dropped were filed first, in `dev/DECISIONS.md` (four entries),
+`dev/POSTMORTEM.md`, `dev/WORKFLOW.md`, `dev/RESEARCH.md` and S37.5's
+`handoff:`.
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S35
-and S39 through S46. A number is never reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36 and S38
+through S52 — every number this plan has spent but S37. A number is never
+reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
 
-**`array::` is run under Miri in slices**, never whole — invocation and
-thread cap in `dev/WORKFLOW.md`, Miri. What each slice costs, measured
-2026-08-18 at two threads and quoted on Miri's own clock: `array::table`
-without the flood ladder 32 tests in 79 s, the ladder's own module 14 in
-273, and `array::entry` with the tracer and ring tests 13 in 179. All
-clean. `array::entity` is the expensive one and is taken by test rather
-than whole; the copy tests of that module ran 25 in 59 s.
+**`array::` is run under Miri in slices**, never whole — the invocation, the
+thread cap and each slice's measured cost are in `dev/WORKFLOW.md`, Miri.
 
 **The crate collects cycles in-line.** `cycle::collect` is the collector
 and the heap's slow path its allocation-pressure caller. Ordinary collections keep rows through
 teardown; pressure collections harvest a bounded member list. The collector
 thread is `cycle::worker`, S49's, and the exclusion between it and the
-in-line collection is the trace token, `cycle::token`. S30 deleted `rc-walk`, `rc-trace` and `rc-satb` on 2026-08-26;
-that code is on `archive/pre-rc-cycle` and its removal is recorded in
-`dev/DECISIONS.md`. S28 was abandoned by that ruling, and S29's second half
-was carried as S39, closed on 2026-09-12.
-
-**The stages below went through a Critic round and four Sage rulings on
-2026-08-26**, on Edmond's instruction, and are the amended form. The rulings and their reasons are in `dev/DECISIONS.md`.
+in-line collection is the trace token, `cycle::token`.
 
 **Every cycle-GC improvement has one review gate, and the Sage is the
 escalation** (Edmond, 2026-09-10 and again 2026-09-12: the Critic first, the
@@ -127,8 +63,8 @@ the first code edit and recorded in the step; a red test is then seen failing;
 after the implementation, the Critic reviews the repair and its mutations
 before the step can be checked, and a finding the model can neither accept
 with a repair nor refuse with a reason goes to the Sage. The findings are
-recorded in the step's handoff. This applies to every step of S37 and
-S40; one broad review does not waive a later step's gate. Until 2026-09-12 this paragraph put the Sage before the first edit.
+recorded in the step's handoff. This applies to every step of S37; one broad
+review does not waive a later step's gate.
 
 **Every byte owned for cycle collection comes from the memory manager and is
 identifiable there as GC memory.** Production collection paths use no
@@ -151,14 +87,6 @@ no bench target while `benches/lifecycle.rs` imports the GC ABI
 
 A line here is an unresolved question rather than a step: it carries no
 criterion, and it leaves when it gets one or when it is ruled on.
-
-The six the review of 2026-09-01 raised over `52b2cbf` and `0416e83` left the
-same day — four by Edmond's rulings, recorded in `dev/DECISIONS.md` (the
-deferral's `done:` clause carried them until S38 was deleted), and two by
-the repairs they prompted. The `dev/` sweep of the same day raised one more — `FORCE_OOM` against
-the guard rule of `dev/POSTMORTEM.md`, 2026-08-13 — and it was fixed rather
-than carried: the flag is raised only through `block_pool::force_oom`, whose
-guard lowers it on the unwind as well as on the return.
 
 - **Whether an occupant of a retained block can be freed from another
   thread inside the reset that retained it.** `retained::occupant_freed`
@@ -225,19 +153,6 @@ guard lowers it on the unwind as well as on the return.
   `Revalidation::revalidate`; which reading the specification means is
   unresolved, and it is `rfc`'s sentence to sharpen.
 
-- **`exact test` is a term the glossary retires** in favour of *exact
-  validation* (`rfc/dev/GLOSSARY.md`, "Deprecated terms"), and it stands 45
-  times across the tree — `cycle::validation`'s own module doc among them. The
-  three vocabulary guards do not carry it, so nothing goes red and the count
-  only grows; `cycle::finalization` and its cases were written in the ratified
-  word, which is the whole of what has moved. No step owns the rest.
-
-- `promote` keeps `corpse` for the reset's torn-down entity, which the
-  glossary names a *torn-down entity* (`rfc` `9ca669c`,
-  `dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Glossary check"); the exemptions in
-  `cycle::tests::the_metaphors_the_names_still_carry` and
-  `..._the_comments_still_carry` say so. `memory::reset_window` took the
-  glossary's words on 2026-09-12; no step owns `promote`'s.
 - **An object handed to a survivor by a destructor of the same batch still
   runs its own `__destruct`.** The settle loop drains a round's destructor
   entries before the re-trace, so `$survivor->keep = $this->y` in one body
@@ -263,845 +178,121 @@ subgraph reachable from a median candidate root is 381 of 381 objects, so this
 stage is what makes a trace affordable rather than what tunes it.
 
 - [x] S37.0 The commit stamps the live components it read   *(before S37.1)*
-      done: at every collection off the poll, each entity the scan coloured
-        `Live` carries this commit's epoch and an age one more than the minimum
-        current-epoch age over its **strongly connected component in the traced
-        live subgraph**, written by a descent over the rows that runs after the
-        scan and before the first guard; two rings joined by one one-way edge
-        under a single keeper stamp at different ages inside one closure and at
-        one age within each ring; a member joined to a ring between two commits
-        holds that ring at age 1 while the other ring climbs; a commit under a
-        pinned later epoch writes age 1 with the new epoch; a segment refusal
-        injected inside the descent leaves every component stamped whole or
-        untouched, read off a `#[cfg(test)]` counter of components closed, rows
-        visited, stack high-water and refusals; a collection under pressure
-        stamps through the exact validation alone, read off the same counter; a
-        root whose row read `Live` and a root of a set the commit read as
-        externally referenced each keep their one token and stand in the
-        deferred lane at the close, a root whose set was freed is retired, and
-        every other root is back in the active lane; the mark's and the scan's
-        dispatch counters stand at the recorded baseline, the descent's own
-        counted under a phase of its own
-      tier: T2 · role: Critic
-      Critic 2026-09-10: five findings, no broken arithmetic in the descent
-        itself; all five repaired in the same step. The component stack holds
-        the whole live population where the live core is one component, and it
-        draws its segments before `reclamation` reserves room for the children
-        a sever displaces — so a descent that emptied the pool turns a
-        confirmed teardown into a refused reservation; the peak and that
-        ordering were named nowhere, and are now in the module doc and in
-        `dev/DECISIONS.md`. The descent's "own phase" ran to the end of the
-        commit, so it counted the exact validation's and the teardown's
-        dispatches as its own, and the one case reading it agreed by the
-        accident that its fixture tore nothing down: the phase closes at the
-        descent's end now (`row::note_descent_end`) and the case commits over a
-        ring it frees. The journal entry claimed a narrowing of
-        `cycle::density`'s contract that had not been made, and past a commit
-        that module's census reads a component index as an in-edge count and
-        raises: the contract is narrowed to "before the commit" for real.
-        `write_maturation_stamp` and `cycle::epoch` still named one producer.
-        And `clear_touched_rows` checked one of the two chains that carry row
-        pointers.
-      correction 2026-09-10: **the disposition clause moves to S37.6**, before
-        anything was built to it, and this step closes on the rest. The
-        producer and the disposition are two results and the second is a
-        change to the lane discipline S37.4 closed the same week: the batch
-        would have to be partitioned per root, which is a third destination in
-        `queue::compaction`'s unwind-safe pass, and a step whose verdict can
-        read "half done" says nothing. The Sage's ruling is unchanged and S37.6
-        carries the clause word for word; what is lost until it lands is that a
-        root read live is offered to every collection instead of waiting for
-        the turnover, which is the cost this crate already pays today.
-      Sage 2026-09-10 (S37.1's pre-change gate, which created this step): the
-        unit is the strongly connected component of the traced live subgraph,
-        and the descent is Pearce's single-index algorithm run iteratively over
-        the rows, `rindex` held in the row word's 30-bit count — a field no
-        production reader of a `Live` row touches past the scan. The frames and
-        the component stack draw the worklist's segments from the arena's bump,
-        so a refusal ends the descent with every closed component stamped whole
-        and the heap in a state a later collection reads correctly. It runs on
-        the ordinary path alone: the pressure path has given its blocks back
-        before the commit, and the descent would draw the memory that
-        collection exists to return. Refused by name: the whole `Live`
-        population as one unit, because any reachable allocation and any member
-        unmet at the previous reading pin the minimum at 0 and nothing matures;
-        the per-root first-reach partition, which equals the closure on the
-        corpus and moves with the batch order; per-entity ageing, and its
-        disguise as a partition by current age; a minimum taken over stamped
-        members alone, which changes Y9's formula and is S37.5's question
-        rather than this step's; stamping during the mark or the scan, which
-        breaks the byte-identical abort; stamping after the exact validation,
-        which writes into slots user code may have freed; folding the component
-        index into the mark, which taxes the collections the prune makes cheap;
-        and a second array beside the rows.
-      note: this is the producer S37.1's correction of 2026-09-09 required be
-        built before the edge-side read, and what S40.1's pruning arm waits on.
-        `rfc` carries the definition of "component" for the stamp first — Y9 and
-        `rc-cycle.md`'s age-based pruning bullet use the word without defining
-        it, and this crate calls those normative.
       handoff: `cycle::maturation`, called from `commit_before_drops` after
-        `Finalization::begin` and before the first guard, on a `Membership`
-        that carries rows. Pearce's single index lives in the working count of
-        the entity's own row, which `shadow::write_live_index` writes and
-        `cycle::density`'s narrowed contract stays clear of; the frames are the
-        trace's worklist and the component stack is the arena's new
-        `components` chain. Verified on the final tree: 845 passed, 0 failed,
-        10 ignored, three times at eight threads, `hash-folding` once and
-        `debug-journal` 849 three times; `--list` diffed against the pre-change
-        tree, six additions and no removal; release, `cargo bench --no-run`,
-        `cargo +1.94 fmt --check` and `cargo doc` (44 warnings, all the
-        pre-existing private-item class) clean, `citations.py` 504 with the
-        same seven residues. Five source mutations seen red: the maximum age
-        for the minimum, per-entity ageing, a stale-epoch stamp keeping its
-        age, an edge into a visited vertex lowering nothing, and the root test
-        removed. Miri at two threads on the final tree, three slices:
-        `cycle::maturation` 6 passed, 11.26 s on Miri's clock and 14.6 s of
-        wall; `collect::tests::what_a_live_reading_leaves_registered` 1 passed,
-        24.71 s and 18.8 s; `collect::tests::when_the_turnover_reoffers` 3
-        passed, 226.19 s and 8 m 23 s. The descent adds no integer-to-pointer
-        cast — the frame's kind tag keeps the pointer's provenance and the
-        visit index is `ptr::without_provenance_mut`. What the step does not
-        do is S37.6.
+        `Finalization::begin` and before the first guard; Pearce's single index
+        lives in the working count of the entity's own row
+        (`shadow::write_live_index`) and the component stack is the arena's
+        `components` chain, so a segment refusal leaves every closed component
+        stamped whole. The ruling and its refusals are `dev/DECISIONS.md`, "the
+        live population is stamped by component"; the peak and the ordering
+        before `reclamation` are in the module doc. Verified on the final tree:
+        845 passed, 0 failed, 10 ignored, three times at eight threads, five
+        source mutations seen red, Miri over `cycle::maturation` and two
+        `collect` cases.
 
 - [x] S37.6 The close disposes of a batch per root   *(after S37.0, before S37.1)*
-      done: at the close of a collection off the poll, a root whose row read
-        `Live` and a root of a set the commit read as externally referenced
-        each keep their one token and stand in the deferred lane, a root whose
-        set the commit freed is retired, and every other root is back in the
-        active lane; a batch mixing the three is what a red test drives, read
-        through `collect_lane_tokens` and `candidate_count` rather than through
-        a count of one lane; and the deferred lane's fill bound is respected on
-        the mixed batch as it is on the whole one
-      tier: T2 · role: Critic
-      correction 2026-09-10: the criterion says a live root stands in the
-        deferred lane, and the Sage's mechanism makes that true **only while a
-        spare segment stands**: an append that finds both cells empty sends the
-        record to the active lane instead, which is the one destination that
-        cannot refuse. Read the clause with that proviso — a live root stands
-        in the deferred lane where the lane can take it, and is offered to the
-        next collection where it cannot. The fill-bound clause is answered by
-        the reading rather than by a case of this crate: a lane takes 8,160
-        records per segment and the widest population any case builds is 4,077,
-        so the append's growth arm is exercised by nothing and the debt is in
-        the residual list below.
-      note: split out of S37.0 on 2026-09-10, whose correction says why. The
-        mechanism is the Sage's of that day, unchanged: a mark in the entry's
-        reserved low bits, set by a walk over the batch after the commit and
-        while the rows still stand, and one pass of `queue::compaction` with
-        three destinations. S37.4's whole-batch deferral is its special case,
-        so the two cases of `cycle/collect/tests/when_the_turnover_reoffers.rs`
-        keep their expected outcomes.
-      Sage 2026-09-10 (a price the gate ruling did not name): the pass has one
-        read cursor and one write cursor in the one segment list, and
-        `Compaction::drop` re-runs it to completion, so a third destination
-        cannot be a second output cursor there — splitting one chain of
-        segments into two needs segments neither input supplied. Ruled: the
-        deferred lane becomes a **side exit** beside `ll_free`, its head taking
-        a spare segment, and **an append that finds both spare cells empty
-        sends the entry to the in-place output instead**, which is Y12 clause 8
-        read literally and keeps a token out of no lane, the one destination
-        that cannot refuse being the fallback. Refused: two output cursors,
-        which would draw segments out of list order and re-argue all eight
-        checkpoints for a deficit the two cells already cover; and a
-        whole-batch rule with a sharper predicate, because it is right only on
-        `Unreachable` and `ExternallyReferenced` and leaves the live roots of a
-        `ZeroCountMember` or a refused teardown re-traced at every collection —
-        a correctness that would rest on an unmeasured frequency. `Free`
-        outranks `Deferred`; the reserve is never drawn for the lane; the
-        pressure path keeps `defer_candidates` and its lift, the cells being
-        emptiest exactly there.
-      Critic 2026-09-10: no path found on which a token reaches the wrong lane,
-        no lane or two, and nine findings beside it; seven repaired here. The
-        close made **two** full compaction passes where it used to make one —
-        the disposition's own and the guard's retirement over the same lane —
-        so the guard now skips its pass where the close is itself a retiring
-        one. Checkpoint 9 and the whole deferred arm were reachable by no
-        injection, the one harness passing `deferred_at: None`:
-        `mutator_retirement::a_deferring_pass_survives_an_unwind_at_each_of_its_boundaries`
-        drops the pass on each of the ten boundaries over a batch whose records
-        are marked, dead, both and neither, and the Critic's own mutation —
-        the boundary raised above the clear — reads back as one entity twice.
-        The mixed batch reached two destinations of three; the third is the
-        teardown's own registration, which arrives while the batch is out and
-        therefore unmarked. A module doc claimed 4,077 roots were more than a
-        segment holds, which is 8,160. `DEFERRED_MARK` took bit 0 out of the
-        four the module doc reserves for a dirty reader's marks, and the ledger
-        there now says which bits are whose. Two readers were missing from
-        `walk_chain`'s list, and `finish`'s early return carried a clause no
-        caller can reach. Two findings became debts in the residual list
-        instead: the close no longer sweeps the deferred lane, and the lane's
-        second segment is written by no case. Its finding on the order of the
-        marks against the disposition arrived repaired — the same defect was
-        found from this side and the two lines reordered.
       handoff: the mark is `queue::DEFERRED_MARK`, bit 0 of a stored entry,
-        written by `InFlightBatch::mark_for_deferral` from
-        `ActiveTrace::mark_roots_for_deferral` while the rows still stand and
-        read once, by `compaction::stage_entry`, which masks it off before
-        anything else sees the pointer. The disposition is selected before the
-        first mark, so an unwind out of the marking walk still routes the batch
-        through the masking pass. Verified on the final tree: 849 passed, 0
-        failed, 10 ignored, three times at eight threads, `hash-folding` once,
-        `debug-journal` 853 three times; `--list` diffed against the pre-step
-        tree, four additions and no removal; release, `cargo bench --no-run`,
-        `cargo +1.94 fmt --check`, `cargo doc` (44 warnings, all the
-        pre-existing private-item class), `citations.py` 505 with the same
-        seven residues. Four mutations seen red: a live root not marked, the
-        turnover mirror moved at every append, the fallback's condition
-        inverted, and the mark not masked off the entry — that last aborts the
-        process rather than failing a case. Miri at two threads on the final
-        tree, three slices: the deferring-pass case 1 passed, 24.97 s on Miri's
-        clock and 19.8 s of wall; the three disposition cases 20.33 s and
-        16.8 s; `queue::tests::the_tokens_every_lane_holds` 7 passed, 72.49 s
-        and 53.7 s. A run over `cycle::queue::tests::mutator_retirement` whole was
-        killed at 25 minutes and left an empty log, so nothing is claimed from
-        it. Three existing cases moved with the contract rather than being
-        muted, each named in the commit.
+        written by `ActiveTrace::mark_roots_for_deferral` while the rows still
+        stand and masked off by `compaction::stage_entry`; the lane is a side
+        exit of the one compaction pass and an append that finds both spare
+        cells empty sends the root to the active lane instead
+        (`dev/DECISIONS.md`, "the deferred lane is a side exit of the
+        compaction pass"). Verified on the final tree: 849 passed, 0 failed, 10
+        ignored, three times at eight threads, four mutations seen red, Miri
+        over the deferring-pass case, the three disposition cases and
+        `queue::tests::the_tokens_every_lane_holds`. The two debts it left are
+        in the residual list.
 
 - [x] S37.1 The maturation stamp is an edge-side prune
-      done: mark's descent reads the stamp with one single-byte load; an **edge
-        target** whose stamp epoch equals the current epoch (mod 4) and whose
-        age has reached `k` is treated as an **opaque live external and is not
-        descended into**; a **queue root is never pruned**, whatever its stamp,
-        and a red test shows a ring every one of whose members is at the
-        threshold collected at the trace that meets it; a stale-epoch stamp
-        reads as age 0 and is never cleared in place, so the trace writes no
-        stamp; the epoch counter is one process-global full-width word advanced
-        by a collection's commit every 64 collections, read against a
-        full-width per-thread mirror, and `k = 3`, both named provisional after
-        YRC's only known values, with `k` owed a measurement on a real workload
-        and the turnover's owed at S37.5; a `#[cfg(test)]` counter reports edges
-        pruned per collection
-      tier: T2 · role: Critic
-      Critic 2026-09-11: no path on which a still-referenced entity is freed or
-        a row reads lower than the whole batch would leave it; the predicate is
-        stable inside one mark, the scan, the exact validation and the
-        teardown all read a pruned target as never met, and the byte-6 read
-        before the dispatch is legal for every population a counted child can
-        be. Seven findings beside it, all repaired here. The module doc argued
-        the root exemption from the ring it does not save — a ring one of whose
-        mature members never observed a non-final decrement is pruned at that
-        member and waits for the turnover, and that shape is ordinary; the doc
-        says so now and the test says which shape it is right on.
-        `MarkResult::Complete`, `mark`'s own contract and two sentences of the
-        module head still said every reached entity is met and the meeting is
-        the whole terminator. The prune cuts the subgraph `cycle::maturation`
-        ages — a mature member has no row, so its mates close without it and
-        it keeps its stamp — which `maturation`'s "same membership at every
-        reading" and `finalization`'s youngest-member sentence did not say. One
-        assertion of the first case could not fail with the prune off and is
-        marked a fixture check. "A root of some batch" was false of a deferred
-        entry. Its next attack — the exact validation's `RC − IN` over an edge
-        from a pruned target — read here: `validate_component` counts an edge
-        internal only where the child is a member, so a pruned target's edge
-        raises the sum and the component reads externally referenced.
-      correction 2026-09-04: the criterion carried "the same test skipping a
-        mature popped root entirely" and a counter of such roots, which
-        `rfc/model/gc/rc-cycle.md` forbids by name and for soundness — "the rule
-        applies only to edge targets, never to queue roots; otherwise a
-        reference cycle at the threshold could be skipped until the epoch
-        changes", repeated in the summary bullet. The step's own handoff already
-        recorded the root-side reading as struck on 2026-08-26 and the criterion
-        kept it. Struck here, before anything was built to it. The counter of
-        skipped roots goes with it: it counted an event that may not happen.
-        The epoch counter's residence is corrected in the same pass —
-        `rfc/dev/DECISIONS.md` closing Y12 clause 8 makes it process-global and
-        full-width against a per-thread mirror, and the full width is what keeps
-        a wrapped stamp from hiding a turnover.
-      correction 2026-09-07: the counter is built, so this step reads it rather
-        than founds it — `cycle::epoch`, one process-global `AtomicU64` of
-        closed commits advanced at every commit's close, the epoch being
-        `(commits / 64) % 4`. What is left here is the descent's read,
-        the per-thread mirror S37.4's re-offer needs, and `k`. The maturation
-        case moved here from the commit's tests with its arithmetic corrected: with `k = 3`
-        and an age of `min + 1`, a live ring reaches age 3 at its third commit
-        and the fourth collection is the one that prunes its edges, read off
-        this step's counter.
-      correction 2026-09-09: **the write-side prerequisite is not built.** Y9
-        requires a commit to stamp each component it reads as externally
-        referenced, so that a later edge stops at the mature live core. The
-        current production membership contains only rows scan left
-        `PotentiallyUnreachable`; `Finalization::confirm` and the destructor
-        revalidation can stamp that membership when an exact reading changes,
-        but no path presents the ordinary `Color::Live` population to
-        `stamp_component`. Before adding the edge-side read, this step must
-        build or name the component membership and owner disposition that
-        stamps those live rows, together with S37.4's one-token deferred-lane
-        transition. A one-entity fixture cannot discharge the requirement:
-        the test must include unequal member ages and show the component-wide
-        `min(age) + 1`, plus a turnover that makes the stamp stale. This is a
-        prerequisite correction, not permission to stamp rows individually.
-      Sage 2026-09-10 (pre-change gate): the write-side producer that
-        correction demands is a step of its own, S37.0, and the edge-side read
-        below waits on it. Nothing of this step's own criterion moved.
-      handoff: the root-side reading — "traced only after it has stayed a
-        candidate across `k` collections" — was struck from this step and from
-        `rc-cycle.md`'s summary bullet on 2026-08-26. It is not a second
-        mechanism: it filters which roots start a trace and does nothing to the
-        closure, and its real content falls out of the prune at depth zero.
-        Y9 calls the prune the only mechanism in this design that bounds the
-        closure.
       handoff: `cycle::mark::visit_child` tests the target before the block
-        dispatch: a stamp carrying this collection's epoch at
+        dispatch — a stamp of this collection's epoch at
         `TRAVERSAL_AGE_THRESHOLD` (3) over a target `CANDIDATE_BIT` does not
-        stand on is an opaque live external — no subtraction, no expansion, no
-        dispatch. **A queue root is the bit and not the batch**: the bit is the
-        wider set and the batch is not addressable from the mark, so every
-        entity it spares beyond the rfc's population costs a descent and never
-        a collection (`dev/DECISIONS.md`, 2026-09-10, "a queue root is the
-        candidate bit"). The epoch is read once per `mark` call, `current`
-        being a division over a process-global counter. `take_edges_pruned`
-        is the counter, thread-local and cleared as it answers. Verified on
-        the final tree: 852 passed, 0 failed, 10 ignored, three times at eight
-        threads, `hash-folding` once, `debug-journal` 856 three times;
-        `--list` diffed against a worktree at `15ce2ca` in all three
-        configurations, three additions and no removal; release,
-        `cargo bench --no-run`, `cargo +1.94 fmt --check`, `cargo doc` (45
-        warnings, the same 45 the pre-step tree prints) and `citations.py` at
-        508 with the same seven residues. Four mutations seen red: the prune
-        removed, the candidate test dropped, the epoch test dropped, and the
-        threshold lowered to 2. Miri at two threads on the final tree,
-        `cycle::mark::` 9 passed, 15.79 s on Miri's clock and 16.1 s of wall.
-        What the step does not do is the case in the residual list: the pair
-        of the prune's recall loss and the turnover that ends it.
-      handoff: carried from S31 before that stage was deleted. **Two producers
-        hand a member a stamp byte nobody wrote.** A recycled `heap::FreeSlot`
-        preserves the dead entity's final header, so the slot arrives carrying
-        the previous occupant's byte 6; and promotion rewrites a survivor's
-        category with a two-byte store, so the byte leaves the arena exactly as
-        it went in. Either one reads here as a mature stamp of the current
-        epoch and this step prunes a live subgraph permanently and silently.
-        The zeroing belongs to S38.0; this step's counters are what would show
-        it missing.
+        stand on is an opaque live external, with no subtraction, no expansion
+        and no dispatch — and `take_edges_pruned` counts what it cut. `k = 3`
+        and the 64-collection turnover stay provisional (S37.5, S37.7); why the
+        prune cannot cost a live component its teardown is `dev/DECISIONS.md`,
+        "the edge-side prune cannot tear down a live component". Verified on the
+        final tree: 852 passed, 0 failed, 10 ignored, three times at eight
+        threads, four mutations seen red, Miri `cycle::mark::` 9 passed. The
+        recall-loss case it did not write is in the residual list.
 - [x] S37.4 The deferred-candidate buffer and the turnover re-offer
-      done: a reading of `ExternallyReferenced` never clears the candidate bit;
-        the component's root keeps its **one existing token** and the trace's
-        batch moves into the owner's deferred lane, and every deferred
-        candidate is re-offered at **the owner's first safepoint poll that
-        finds the epoch counter moved**, never by registering or copying the
-        entity a second time; red tests prove
-        that a matured ring losing its last external reference mid-epoch is
-        collected at that re-offer and not before, and that a ring whose mates
-        carry unequal ages is likewise collected, so maturing apart costs recall
-        rather than a permanent miss
+      handoff: `queue::defer_candidates` parks the batch in `deferred_segment`
+        and `reoffer_deferred_if_epoch_moved` re-offers it at the turnover,
+        which `epoch::turnovers_of` reads; the two criterion cases are
+        `cycle/collect/tests/when_the_turnover_reoffers.rs`, staging the
+        reading with `InjectedVerdictRace`. Why the lane holds a registered root
+        and never a traced live member is `dev/DECISIONS.md`, "the deferred lane
+        holds a registered root"; YRC's borrowed 56 % is `dev/RESEARCH.md`. The
+        sweep the close no longer makes is in the residual list.
+- [ ] S37.8 The review's simplifications in the collector's own modules
+      done: `worker::serve`, `worker::thread_body`, `worker::batch`,
+        `worker::round`, `collect::collect_under_pressure`,
+        `collect::commit_before_drops`, `token::TraceToken::take_unless` and
+        `deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace` each
+        stand under fifty code lines and under three levels of control nesting,
+        every lifted body named in the commit; the `--list` diff in all three
+        configurations shows no case added or removed, and the poll probe
+        `collect/tests/what_the_poll_costs.rs` is re-run and its reading
+        reported beside the recorded one (`dev/BENCHMARKS.md`, "S51.5 the token
+        handshake's instruments")
       tier: T2 · role: Critic
-      handoff: this is the backstop the withdrawn "retired on contact" clause
-        was supposed to be and never was — eager clearing fires only when a
-        trace touches the entity, and the stamp that wraps is exactly the one no
-        trace touched for four epochs. It also collects YRC's 56 % saving on
-        re-registration.
-      handoff: `CANDIDATE_BIT` means exactly one logical token in exactly one
-        state: `active → in-flight → deferred`, or consumer-retired after
-        death. A decrement while the token is deferred sees the standing bit
-        and cannot add a duplicate. Store original registered
-        roots only — adding every traced live member manufactures tokens, and
-        collapsing two roots in one component can miss it after a later split.
-      correction 2026-09-04, amended 2026-09-10: the criterion re-offered
-        "at the first collection after the heap's epoch advances", by
-        detaching the deferred lane beside the active one.
-        `rfc/dev/DECISIONS.md`, closing Y12 clause 8, chooses the poll over
-        the collection **by name and with the failure case**: "a thread whose
-        only garbage is a deferred ring has an empty queue … waiting for a
-        judgement would wait for ever, which is Y6's permanent miss by another
-        road". The whole-segment splice is no longer the contract either: only
-        a lane head carries a fill bound, so the re-offer is the bounded merge
-        of the deferred lane into the active one at the poll. The retired word
-        "suspects buffer" goes with it (`rfc/dev/GLOSSARY.md`).
-      closed 2026-09-10: the lane is `queue.rs`'s `deferred_segment` beside the
-        write segment, with its own fill bound and a full-width
-        `turnover_mirror`; `defer_candidates(batch, at_commits)` moves a batch
-        into it and `reoffer_deferred_if_epoch_moved` brings the whole lane
-        back at a poll whose commit count stands in a later epoch than the
-        mirror. `gc.rs` wires that call into `ll_gc_maybe_collect` and arms the
-        thread when it moves records, because a deferred ring can be a thread's
-        only garbage. The two criterion tests are
-        `cycle/collect/tests/when_the_turnover_reoffers.rs`; they stage the
-        reading with `InjectedVerdictRace`, the fourth injection of the crate's
-        own kind, because one thread's trace and its exact validation are a
-        call apart and no other seam produces the disagreement between them.
-      note 2026-09-10 — what the Critic round changed. Three defects and two
-        test holes, all repaired in the same step. The re-offer compared raw
-        commit counts, so any commit of any thread ended the deferral; it
-        compares turnovers now (`epoch::turnovers_of`). The mirror was read at
-        the disposition, which on the two paths falls on opposite sides of the
-        commit's own close and put the same event 0 or 64 commits apart; the
-        count is taken at the reading and passed in. A bounded round of the
-        pressure path deferred the whole lane including the roots its trace
-        never read — 2048 of them in the case now standing — so
-        `commit_under_pressure` takes `whole_lane` and restores instead. The
-        deferral also carried this thread's overflow buffer into the lane,
-        found while repairing the above; the buffer is withheld from the pass.
-        The lane's own name went with the round: the glossary's word is
-        deferred-candidate buffer, and `dormant` was a second name for one
-        thing.
-      note 2026-09-10 — the deferral retires completed deaths on the way in.
-        Nothing reads the deferred lane before the turnover, so a record that
-        names a dead entity withholds its slot for a whole epoch, and
-        `retire_candidates` reads the active lane alone. The parking pass is
-        therefore the retirement pass (`compaction::finish(batch, true)`),
-        which is `rfc` Y12 clause 8's own remedy made mandatory. Teaching
-        retirement to walk the deferred lane instead was refused: retirement
-        runs at every collection and every pressure round, and its work would
-        become proportional to the accumulated deferred set, which is the work
-        the deferral exists to remove.
+      note: the eleven places, their measured figures and the three proposals
+        refused are the review of 2026-09-18 in this file's header. The three
+        loops of the withheld-return drain are one algorithm three times, and
+        `splice_behind_the_head` beside them already carries the parameter shape
+        a shared body needs.
 - [ ] S37.5 The turnover constant, against a corpus   *(after S37.4)*
-      done: the suspects re-offer volume is measured at the epoch turnover on a
-        corpus, and S37.1's 64-collection turnover is replaced by a number or
-        recorded as confirmed with its measurement; a synthetic reading is
-        refused and the entry says so
+      done: the volume the deferred-candidate lane re-offers is measured at the
+        epoch turnover on a corpus, and S37.1's 64-collection turnover is
+        replaced by a number or recorded as confirmed with its measurement; a
+        synthetic reading is refused and the entry says so
       tier: T2 · role: Bench
-      handoff: split out of S40.1 by the Sage of 2026-09-04. The re-offer
-        volume is the count of roots acquitted inside one epoch that are still
-        enrolled at the turnover, and on a synthetic population the harness
-        chooses the acquittal rate, so the number is its own input read back.
-        The step needs S37.4's buffer and a corpus, and the corpus is
-        Phase-D-blocked in the same way S40.1's corpus arm is.
+      handoff: split out of the density measurement, now S37.7, by the Sage of
+        2026-09-04. The re-offered volume is the count of roots read live
+        inside one epoch that are still registered at the turnover, and on a
+        synthetic population the harness chooses the rate at which a root reads
+        live, so the number is its own input read back. The step needs S37.4's
+        buffer and a corpus, and the corpus is Phase-D-blocked in the same way
+        S37.7 is.
+        Y9's formula carries a question of its own, refused for S37.0 by the
+        Sage of 2026-09-10 and landed here: a minimum taken over stamped
+        members alone rather than over the whole component changes the formula,
+        and the corpus reading is what answers it.
+- [ ] S37.7 The traced share and `k`, against a corpus
+      done: the share of a touched block's slots that a real collection traces
+        is measured on a booted corpus with the denominator named — occupied
+        slots or all slots — and the pruned-edge share at `k` of 1, 2 and 3 is
+        read off the same instrumented run, which replaces S37.1's provisional
+        `k = 3` with a number or records it as confirmed with its measurement
+      tier: T2 · role: Bench → Critic
+      handoff: what is left of S40.1, whose stage was deleted on 2026-09-18
+        with its goal discharged. The synthetic arm is closed and its figures
+        are in `dev/BENCHMARKS.md`, 2026-09-04 and 2026-09-12; the instrument
+        is the `#[cfg(test)]` walk over the touched list plus
+        `note_phase_boundary` in `trace_batch`, whose release body is empty.
+        This arm needs a driver over `ll-model`'s own heap — the recorded corpus
+        instruments read PHP's heap, which has no blocks and no slots — so it is
+        Phase-D-blocked exactly as S37.2 is blocked on `classes.md`.
 - [ ] S37.2 The acyclic gate
-      done: the factory stamps bit 8 from the class's own answer — waits on
-        `rfc` `model/classes.md` declaring a target per pointer slot
+      done: an entity of a class the rfc declares acyclic never enters the
+        candidate set, the gate being bit 8 stamped by the factory from the
+        class's own answer, and a red test shows an entity of a cyclic class
+        still does
       tier: T2 · role: —
       handoff: blocked outside this repository; the step is listed so the
         dependency is visible rather than discovered.
 - [x] S37.3 The ownership mark
-      done: a proven-owned entity never enters the candidate set, and the
-        compiler's stamp is honoured at bit 9
-      tier: T2 · role: —
-      Edmond 2026-09-11: the mark is not the factory's — a store into a slot
-        the compiler proved moves it, the displaced entity losing it and the
-        new occupant gaining it, and the holder's `dispose` destroys a marked
-        child instead of releasing it, the count unread. Contract in `rfc`
-        first (`model/gc/strategies.md`, "The store barrier, as
-        micro-operations"; `dev/DECISIONS.md`, "the ownership mark is moved
-        by the store into a proven slot, and honoured by the holder's
-        `dispose`"), where the consolidation reader's ten findings were
-        repaired before the code: the rationale this session had attached
-        to the ruling ("the proven sites may have dropped their counting
-        pairs") contradicted the bound of 2026-08-26 and went; the proof
-        gained its third part, no ring closing through proven slots alone,
-        without which a ring of marked entities registers nowhere.
-      handoff: `memory::barrier::store_ptr_owned` / `store_box_owned` and
-        the ABI pair `ll_store_ptr_owned` / `ll_store_box_owned`; the move
-        is `move_ownership_mark`, and the mark lands only on a GC-heap
-        occupant of a GC-heap holder. `object::ll_owned_child_die` — mark
-        off, count written to zero, the ordinary death path — is what
-        `ll_default_dispose` calls for a marked child and what a generated
-        `dispose` owes. `refcount::is_owned`, `set_ownership_mark`,
-        `clear_ownership_mark`. Eleven cases in three new groups:
-        `barrier/tests/the_owned_store.rs`,
-        `object/tests/what_dies_with_its_holder.rs`,
-        `collect/tests/when_a_member_is_owned.rs`. Six mutations seen red:
-        the move removed, the dispose ignoring the mark, the mark not
-        cleared at the child's death, the count not zeroed, the gate
-        without bit 9, and the same-entity early return — which stayed
-        green, clear-then-set giving the same word, so the branch went.
-        Untested: the owned store's refusal (the plain store's refusal has
-        no barrier test either; `force_oom` does not reach a copy the
-        thread's block already has room for). Two reviewers on the final
-        tree (execution and intent, rule 11): the intent axis found the
-        collector's sever leaves a marked member's mark standing, which is
-        harmless because the guard-release free runs no destructor (step 4
-        ran it) — recorded in the decision's cost clause; the execution axis
-        gave ten findings, eight repaired (the owned forms' `# Safety`,
-        `pub(crate)`, `Value::entity_or_null` for the eighteenth copy of one
-        shape, `ll_owned_child_die` exported for a generated `dispose` with
-        the obligation on `ClassBuilder::dispose`, `DeadInPlace` per member
-        in the collect case, trimmed comments, the hot-path inventory) and
-        two accepted with a one-line comment (a flags word loaded twice on
-        the teardown path and once more in the owned store, unmeasured:
-        neither is a listed hot path). Verified on the final tree: 863
-        passed, 0 failed, 10 ignored, plain and three times at eight
-        threads; `hash-folding` once (863); `debug-journal` three times
-        (867, 12 ignored); release; `cargo bench --no-run`; `cargo +1.94 fmt
-        --check`; `cargo doc` 45 warnings, the same per file as the pre-step
-        tree's 45; `citations.py` 514 with the same seven residues; `--list`
-        diffed against the pre-step tree in all three configurations, eleven
-        additions and no removal. Miri two threads over the three new groups
-        and `the_ordinary_store`: 14 passed, 29.30 s Miri's clock, 31.0 s
-        wall.
-
-## S40 — Measure the trace's density and decide the row form
-
-Goal: the readings the row form is decided on, and the decision.
-
-- [~] S40.1 Measure
-      done: the share of a touched block's slots that a real collection traces
-        is measured on the corpus and on a synthetic load, with the denominator
-        named — occupied slots or all slots, which differ by two at the design's
-        assumed half occupancy — and with the instrument checked against a
-        synthetic block whose traced share is fixed by construction; the same
-        instrumented run records the pruned-edge share at `k` of 1, 2 and 3,
-        which is what settles S37.1's first provisional constant
-      tier: T2 · role: Bench → Critic
-      Sage 2026-09-04 (pre-change gate): the step splits by the kind of number
-        rather than by the mechanism. **The pruned-edge share is taken today by
-        simulation**, and the simulation is honest: an entity's age is the
-        scan's own verdict across `n >= k + 2` collections, kept in the
-        harness's own side table, and the internal in-edges the trace found are
-        `refcount - shadow::count`, readable after the trace because mark and
-        scan write into no entity. **The suspects re-offer volume is refused**
-        on a synthetic load at any depth of instrumentation: on a fixed
-        population with a harness-chosen acquittal rate that number is the
-        harness's own input read back. It goes to S37.5 with the corpus as a
-        stated prerequisite, and S37.1's 64-collection turnover stays
-        provisional there while `k` is settled here. What the simulation may
-        not claim, stated beside its numbers: it bounds edges from above and
-        the saving from below, the subtree an edge alone reached depending on
-        the descent order a prune would have changed; it says nothing about
-        recall; a saturated row contributes no in-edge count and is reported
-        apart rather than folded in at zero; and the ages are the harness's
-        ledger, flags bits 16-19 being reserved and unwritten. The instrument is a
-        `#[cfg(test)]` walk over the touched list that the collector never
-        calls, plus one `note_phase_boundary` in `trace_batch` whose release
-        body is empty: zero operations per edge and per entity in a release
-        build, one thread-local read and one store per trace in a test build.
-        The walk bounds at `row_count` and never at the group rounding, reads a
-        row only where its group bit stands, and meets no row. Both
-        denominators are reported per population and never averaged across
-        them: all slots is `RowArray::row_count`, occupied is
-        `BlockPrivate::used` for `Slotted` and the `holds` word's low half for
-        `Retained`, and a large entity is 1 by construction and marked
-        arithmetic. Since S39.3, both of the first two occupancy readings count
-        a dead candidate slot whose physical return is withheld: `used` by not
-        decrementing yet, and `holds` by the retained count established at
-        reset publication. Groups met are recorded beside rows met, the chunked form's
-        directory being one entry per group of eight. Calibration is four
-        anchors and a negative one; the load is S40.3's own population, sizes
-        2, 16, 256 and 381, dense and one-entity-per-block, ordinary and
-        retained; eight collections per load are recorded per collection rather
-        than totalled, the first being the one that draws the workspace.
-        Refused with reasons: counters inside `mark` and `scan` (they buy
-        nothing the final row state lacks and would make `written_bytes` and
-        `take_edge_dispatches` unreadable against their baselines), a
-        `cfg(test)` per-edge callback (an indirect call per edge in the build
-        Miri walks), a feature (a second leg on the commit gate for a
-        measurement that runs once), an unconditional instrument (it would
-        falsify the claim that an abandoned trace writes nothing), a
-        `cfg(test)` field on `TraceScratchArena`, the workspace or `RowArray`
-        (four `const` assertions and four `dev/BENCHMARKS.md` entries pin those
-        layouts), the collector line as an entity block's occupancy source (it
-        carries none; the low half of `holds` is the retained block's),
-        `for_each_entity_slot` as a denominator (a process-wide walk the
-        control arm would not pay, kept for one second opinion in the
-        calibration), repeats of a deterministic count, and any timed run.
-        Taken whole.
-      note 2026-09-10 — the pruned-edge arm has a built instrument now, and
-        the simulation the ruling above priced does not model one of its
-        terms. `cycle::mark::take_edges_pruned` counts the edges a real
-        collection pruned, and the prune spares every target `CANDIDATE_BIT`
-        stands on — a bit cleared at death and at no other point, so it marks
-        every entity that ever observed a non-final decrement. A simulation
-        that ages by the scan's verdict alone counts those edges as pruned and
-        reads high. Reading the counter at `k` of 1 and 2 needs a seam over
-        `TRAVERSAL_AGE_THRESHOLD` that the constant does not have today.
-      progress 2026-09-04 — the traced-slot instrument, and the range over the
-        design's own size classes. `cycle::density` walks the touched list after
-        a trace and before the arena's reset, reporting per block the index
-        space, the occupancy, the rows met, the saturated rows among them and
-        the groups met — kept apart by population and never averaged, an entity
-        block's occupancy coming from `BlockPrivate::used` and a retained
-        block's from the low half of its `holds` word. The traced path gains
-        nothing in a release build; a test build gains one thread-local read
-        and one store per trace, at `trace_batch`'s phase boundary, which is
-        the only place the mark's own resolution count can be read.
-        **The measured range is 0.1 % to 74.7 % over classes 32/64/128/256**,
-        and the design's 29 % crossing lies inside it: one component of 381
-        members — the corpus's median closure — allocated back to back reads
-        18.7 % at class 32 and 37.4 % at class 64, with nothing about the
-        collector changed between the two. The two inputs that decide the
-        figure are the size class and the allocation interleaving, and the
-        collector supplies neither, so **the synthetic arm cannot settle
-        S40.2** (`dev/BENCHMARKS.md`, 2026-09-04). Ten calibration cases, seven
-        source mutations each caught by the case that owns it, and the walk
-        itself makes 0 allocations, 0 pool requests and moves no `gc_metadata`
-        figure. This does not close S40.1: the pruned-edge share at `k` of 1, 2
-        and 3 remains, and the corpus arm stays Phase-D-blocked.
-      progress 2026-09-09 — the pruned-edge simulation. A harness-owned side
-        table ages each entity from the scan's own verdict over eight full
-        traces; the reading before the verdict reports internal in-edges as
-        `refcount - shadow count`, with saturated rows excluded from both
-        numerator and denominator and reported apart. Four one-edge components
-        become live at collections 1, 2, 3 and never. Across all 32 traced
-        edges, `k = 1` would prune 18 (56.25 %), `k = 2` 12 (37.5 %), and
-        `k = 3` 8 (25 %); the per-collection ladder and the construction are in
-        `dev/BENCHMARKS.md`, 2026-09-09. These are edge upper bounds and saved-
-        work lower bounds, not recall or a subtree count. This closes the
-        synthetic work of S40.1; the step remains open only on its Phase-D-
-        blocked corpus arm, so the figures do not settle S37.1's production
-        `k` by themselves.
-      Critic 2026-09-09: the simulation stays test-only, adds no operation to
-        a production trace, reads each met row once after the scan and owns
-        only its harness `HashMap`. Its result is a policy calibration whose
-        liveness schedule the harness chose, not workload evidence; the plan
-        and benchmark record refuse to promote it into a choice of `k`.
-        Saturation is excluded rather than read as zero internal edges, queue
-        roots are absent from the numerator, and the age is tested before the
-        current verdict advances it. Three source mutations were seen red:
-        suppressing the live-age increment, changing `age >= k` to `age > k`,
-        and charging a saturated row as one internal edge. The targeted Miri
-        slice is clean at 12 passed, 5 ignored, 78.18 s on Miri's clock.
-      correction 2026-09-09 — **the pruning result and the Critic verdict
-        above are withdrawn.** The simulator incremented age for `Color::Live`,
-        but the built driver constructs membership only from
-        `Color::PotentiallyUnreachable`, and both `stamp_component` calls stamp
-        only that membership. The three externally held self-cycles that
-        supplied every reported prune are therefore never stamped; the fourth
-        enters membership but is unreachable and is not stamped. Against the
-        producer in the crate, the load reads 0 / 32 at every `k`, not 18, 12
-        and 8. The simulator also omitted the component-wide `min(age) + 1`,
-        the 64-commit epoch turnover, and identity across slot reuse, keying
-        history by a bare address. It and its test are removed. The table stays
-        in `dev/BENCHMARKS.md` only as a withdrawn record, and the root cause is
-        in `dev/POSTMORTEM.md`. S40.1's synthetic pruning arm is open again: it
-        waits for S37.1 to build the live-component producer Y9 requires before
-        it can calibrate the same byte the corpus run will read.
-      correction 2026-09-09, round 2 — the first correction discarded too
-        much and did not price that choice. The age/threshold policy and its
-        ladder stay removed, but the independent completed-mark census is
-        restored as `density::internal_edges`: sum `refcount - shadow count`
-        for exact rows and report saturated rows apart. It holds no state
-        between collections, accepts no `k`, reads no epoch or stamp and cannot
-        claim a pruned share. Its 16-edge ring and saturated-row calibrations
-        sit inside the ordinary gate, and the allocation/GC-ledger bracket
-        covers the census beside density. S40.1 therefore retains its valid
-        denominator while its production-derived numerator remains blocked on
-        S37.1. Sage and Critic independently accepted this boundary; their
-        review added a target visitor private to the test-only measurement
-        module, checked accumulation, the explicit synthetic-row safety clause
-        and positive retained/large coverage. It is not a production hook:
-        S37.1 owns the traversal in `mark`, and only a later measurement may
-        reuse this visitor after that path writes real stamps. Four source
-        mutations were seen red: using refcount without
-        subtracting the shadow count, ignoring the initialized-group bit,
-        treating a large entity's array row count as its index space, and
-        failing to exclude a saturated row. The targeted Miri slice is clean
-        at 11 passed, 5 ignored, 73.64 s on Miri's clock.
-      progress 2026-09-12 — the pruned-edge arm, read against the built
-        producer at `k` of 1, 2 and 3. `cycle::mark::pin_threshold` is the seam
-        the note of 2026-09-10 asked for: a test-build guard over this thread's
-        threshold, read once per `mark` beside the epoch, so no edge pays a
-        read in any build and the constant does not move. The load is a
-        registered ring of two under a keeper with a held ring of `n` hanging
-        off it, `n` being S40.3's 2, 16, 256 and 381, eight real collections
-        each; at every `k` the collection after the commit that wrote `k` is
-        the first to prune, exactly one edge per collection after it, and the
-        mark's rows fall from `n + 5` to 4 — 382 of 386 spared at 381. The scan
-        still dispatches the pruned edge once and finds no row, so the trace's
-        rows fall to 9 rather than to 8. All 96 readings as constructed, three
-        mutations seen red, recorded in `dev/BENCHMARKS.md`, 2026-09-12. What
-        the reading is: a calibration of the counter and the stamps against
-        `rc-cycle.md`'s arithmetic, at every `k` the age field holds. What it is
-        not: a share of any workload, or recall, since the load never loses its
-        external reference; nor evidence of the component-wide minimum, which
-        every member of this load reads the same under a per-entity age. The
-        synthetic work of this step is closed with it; the step stays open on
-        the corpus arm alone, which is what settles S37.1's `k`.
-      Critic 2026-09-12: the seam cannot reach a production build, cross a
-        thread or outlive a panic, and per-mark is the epoch's own granularity;
-        the counts `n + 5` and 4 are fixed by the construction and each
-        misplacement of the prune reads a different pair. Three findings, all
-        repaired here: "one component, one age" was a fixture check presented
-        as evidence of the minimum — a per-entity age reads the same on a load
-        every member of which is met exactly when the entry is — and the
-        record says so now, the minimum staying `cycle::maturation`'s case;
-        the trace-row column was printed and not asserted, and is asserted;
-        and the scan's cost for a pruned edge was undercounted, the row word
-        being read where the group is initialised. The scan's dispatch of the
-        pruned edge is a cost to record and not a defect: the stamp test moved
-        into the scan would load the stamp and the flags on every edge it
-        expands.
-      verified 2026-09-12, on the tree with the Critic's repairs: 888 passed,
-        0 failed, 11 ignored, plain and three times at eight threads;
-        `hash-folding` 888; `debug-journal` 892/13 three times; release;
-        `cargo bench --no-run`; `cargo +1.94 fmt --check`; `cargo doc` 45
-        warnings; `citations.py` 545 with the same seven residues; `--list`
-        diffed against a worktree at the tree before the step, two additions
-        and no removal (the day's work lands squashed over `ea51cbe`).
-        Miri at two threads: `cycle::mark::` 10 passed, 1 ignored, 17.85 s on
-        Miri's clock and 22.8 s of wall; the ignored load itself, 136.68 s and
-        3 m 5 s of wall, clean.
-      handoff: the corpus arm needs a driver over `ll-model`'s own heap. The
-        recorded corpus instruments read PHP's heap, which has no blocks and no
-        slots, so this arm is Phase-D-blocked in the same way S37.2 is blocked
-        on `classes.md`; the synthetic arm is not, and it is what the row form
-        can be decided on if Phase D is far.
-- [x] S40.0 Redraw `docs/architecture.md`'s diagrams
-      handoff: closed 2026-09-09; the diagrams show the built `cycle` boundary
-        and no deleted collector, all five parsing under PlantUML `-checkonly`.
-- [x] S40.3 Count the workspace and the cache traffic   *(before S40.2)*
-      handoff: closed 2026-09-12. `cycle::census` (two seams, counters), the
-        loads `cycle::loads`, the driver `benches/census_driver.rs` with
-        `dev/tools/census_perf.sh`; the record `dev/BENCHMARKS.md`, 2026-09-12
-        (S40.3), the three Sage rulings `dev/DECISIONS.md`, "the census is one
-        report at two boundaries".
-- [x] S40.4 Price the trace a refused allocation repeats
-      handoff: closed 2026-09-09. 127 refused allocations over 1, 64 and 1,024
-        live roots trace exactly that many roots each, 0.45, 3.08 and 42.7 us
-        per refusal (`dev/BENCHMARKS.md`, 2026-09-09); no remembered empty
-        result (`dev/DECISIONS.md`, "do not cache an empty pressure
-        collection").
-
-- [x] S40.5 Specify the chunked form and replay the census through both forms   *(after S40.3, before S40.2)*
-      done: `dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md` §3 is answered in
-        that document: what a directory entry encodes and how absence reads;
-        the representable range and what happens when it is exhausted; where
-        directory and chunk memory come from, their alignment, and how growth
-        across arena blocks keeps every row's address; the load chain of a
-        first and of a repeated lookup; the enumeration of initialised
-        groups, the membership probe, the cleanup and the publication order
-        on a refused allocation; and every supporting structure priced in
-        `A`
-      done: a test-only replay over S40.3's readings reproduces the flat
-        form's observed grants, tails and draws exactly on every load, and
-        then answers the specified chunked form's requests, grants and draws
-        on the same loads, with the draw count given as a bound where the
-        order of group first touches is not recorded — every chunked request
-        is at most one directory, so the tail a block abandons is bounded by
-        that width
-      tier: T2 · role: Critic
-      Sage 2026-09-12: the specification is a step of its own and stays in
-        `dev/`, because a candidate that may be refused is analysis and not
-        design, and the rfc takes the amendment only if S40.2 adopts it
-        (`dev/DECISIONS.md`, a normative table is a precondition). The replay
-        is arithmetic over the census and not a build: the flat form's
-        observed draws calibrate it, and the chunked form's requests follow
-        from the specification and the per-block `G` and `T` the census
-        reads. Final.
-      Critic 2026-09-12: seven findings, all repaired. The directory's own
-        clearing was unspecified and unpriced — a dirty entry would place a
-        row past the block — so §3.1 zeroes the directory whole at placement
-        and the replay counts first-touch writes for both forms, which is
-        where the chunked form loses: 68 to 486 bytes more per block. "The
-        collector's order is fixed by its code" was false past a fan-out of
-        256; restated as the ring's order, asserted per load. The flat
-        bitmap byte is behind `row_count`, so the load-chain claim is the
-        depth at which the row's address is known, two against three. The
-        largest row-side request is 1,088 at the smallest class, not 576;
-        the class-64 and class-128 directory sizes were swapped; three
-        sentences of the record overstated the replay (the rfc's MiB figure
-        is in written bytes, the bitmap is 32 bytes and not 255, four loads
-        draw and not three) and the large-entity arm meets no counter, which
-        the record now says.
-      handoff: closed 2026-09-12. The specification is
-        `dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md` §3.1: a `u16` entry in
-        eight-byte units from the directory's own address, zero for absence,
-        a continuation directory placed with its first chunk where the bump
-        has left the chain's tail's block, the directory cleared whole at
-        placement. The replay is `cycle::census::replay`, its calibration on
-        the gate (`census/tests/the_replay.rs`) and its matrix ignored; the
-        record `dev/BENCHMARKS.md`, 2026-09-12 (S40.5): the flat replay reads
-        the census to the byte on all 36 loads, the chunked form draws 1
-        against 6 and reserves 12 % on the sparse 381 while writing 2.1 times
-        the bytes at first touch, and the bracket is one number wide on every
-        load. Commit `b8010df`. What S40.2 weighs from it: reserved bytes and draws per load
-        for both forms, first-touch writes per load for both, and the range
-        in `T/G` where the chunked form reserves less. One divergence from
-        this step's second `done:` clause: the tail bound the bracket uses is
-        the collection's largest request, a 4,160-byte segment wherever a
-        chain draws, so "bounded by one directory's width" holds on the rows'
-        account alone.
-- [x] S40.2 Decide chunks or not
-      done: the decision and its reason are in `dev/DECISIONS.md`, quoting
-        per load the flat form's observed draws and reserved bytes beside the
-        chunked form's replayed ones (S40.3, S40.5), the row lookups per
-        collection both forms pay and the flat form's measured marginal
-        lookup, and the rfc's full-trace write volumes, each with its
-        denominator; the refused form is recorded with the range, in `T/G`
-        and in draws, over which it would have won
-      done: a decision to adopt the chunked form is taken only on a built
-        candidate measured against S40.3's baseline, and that build is a
-        stage of its own which this step opens rather than performs; a
-        decision to keep the flat form names the draw count it accepts and
-        the loads on which the chunked form would have drawn fewer
-      tier: T2 · role: Critic
-      handoff: **narrower than it was, and still open.**
-        `rfc/model/gc/rc-cycle.md` decides the flat array, and exactly one of
-        its figures bears on chunks: 717 MiB against the chunked form's 762 on
-        a full trace, plus an unquantified further dependent load per edge. Its
-        2.6 ns against 10.4 ns compares the flat array with an open-addressed
-        hash, which is a third form this step does not decide between. Against
-        the flat array stands the figure 2026-09-04 measured and that
-        comparison never took: a sparse trace's manager draws. A 381-member
-        component one per block at class 256 makes the flat form ask for six
-        blocks where the chunked form asks for none, and each draw is a point
-        at which the collection can be refused. One measured figure a side, and
-        the per-edge load neither.
-      handoff: the density is not the input it was taken for. Over the design's
-        own classes one component of 381 members reads 18.7 % at class 32 and
-        37.4 % at class 64 (`dev/BENCHMARKS.md`, 2026-09-04), so the 29 %
-        crossing sits between two adjacent classes of the same component. The
-        class and the allocation interleaving decide it, the collector supplies
-        neither, and a single number for "the density" does not exist.
-      Sage 2026-09-12 (the document's arithmetic): every source claim of
-        `dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md` that was checked stands
-        against the tree it reviewed, the one after S40.1's pruning arm closed
-        on 2026-09-12 (inside the day's squashed commit over `ea51cbe`). The
-        flat request is `24 + 32 G + ceil(G / 8)` (`shadow::bytes_for`),
-        granted at the next multiple of 8 (`TraceScratchArena::alloc`); the
-        two placements of 32 met rows in 256 read 216 against 1,112 bytes
-        under the two-byte directory at a flat 1,052, so slot density does
-        not choose the form and `T/G` does; the descent over a ring of `n`
-        holds `2 n` frames and `n` component entries at its peak
-        (`maturation::open` pushes a finish frame and an edge frame per
-        vertex, `take_edge` a post frame per descent), which at `n` of 381 is
-        three worklist and two component segments of 4,160 bytes, 20,800 in
-        all, out of the 56,960-byte bump; so the load the handoff above
-        quotes draws under the chunked form too, since 45,720 + 20,800
-        exceeds the bump, and "asks for none" is true of the trace alone,
-        which is what the 2026-09-04 run drove — `stamp_live_components`
-        runs on every ordinary commit, an empty membership included
-        (`collect::commit_before_drops`). `written_bytes` counts the prologue,
-        the bitmap and 33 bytes per group and no row store after them, and
-        keeps that contract. The release test binary's assertion is as the
-        document says (`row.rs`, the `cfg(test)` `assert!` in
-        `resolve_edge_target`). Not verified by a run: the size of `RowArray`
-        is read as 24 from the module's layout and the recorded 1,052, and no
-        collection was executed for this ruling. Final.
-      Sage 2026-09-12 (scope): the decision is taken from the census, the
-        replay and the specified model, and the chunk candidate is not built
-        inside S40. The two sides are not symmetric. The memory side is exact
-        without a build: the flat form's draws are observed and the chunked
-        form's follow from the specification to within the tail bound. The
-        time side is not: the chunked form's cost is one further dependent
-        load per lookup, and no number for it exists until the form exists.
-        A decision to keep the flat form can therefore be taken here, quoting
-        the draws it accepts and the lookups and marginal lookup cost the
-        flat form pays; a decision to adopt the chunked form cannot, and a
-        build that touches `shadow`, `arena`, `row`, `mark`, `scan`,
-        `maturation`, `membership` and `density` is a stage with a baseline
-        and a gate of its own, for which S40.3's readings are the baseline.
-        What a decision without the build cannot claim: a speed ratio between
-        the forms, or a cache figure for the chunked form; what it can: the
-        draw count per load for both forms, the lookup count both pay, and
-        the range in `T/G` where the chunked form reserves less. The role is
-        `Critic`, as on every T2 step; the Sage is the escalation and not a
-        role. Final.
-      Critic 2026-09-12 round 1: eight findings, all repaired. "Written bytes
-        decided it" was a cache claim the record disclaims, and the flat
-        form's writes are spread over 98 pages where the chunked form's are
-        contiguous, so it decides nothing by itself; the 2026-09-04
-        refusal-surface argument was outweighed by assertion and "sparse is
-        synthetic" is asymmetric, the dense ring being synthetic too; six
-        loads draw and the chunked form draws fewer on five, not four and
-        two; the draw thresholds were 47 and 6 on a live ring, not fifty and
-        six; three loads at `T = G` reserve more, and the crossing at class
-        256 is `T ≤ 29`; 289 instructions is the marginal edge and not the
-        lookup; the reopening reading had to be one a release build can
-        take; the rfc's 29 % sentence stands contradicted. The entry was
-        rewritten: the flat form stays, the build stage is not opened by the
-        model, and the case for it is recorded for Edmond.
-      Critic 2026-09-12 round 2, scoped to the rewrite: every per-load
-        figure and both crossings check; the window's upper edge was 380 on
-        a ring's segments the table gives as 20,800, and is 282 by the
-        segment formula, which the table cannot pin between 256 and 381;
-        two lesser corrections in the drawing loads' enumeration. Repaired.
-      handoff: closed 2026-09-12. `dev/DECISIONS.md`, "the flat row array
-        stays, and the case for building the chunked form is recorded for
-        Edmond": the flat form keeps its 27 draws over six loads, the
-        chunked form would have drawn fewer on five, reserves less below
-        `T/G` of 0.91 at class 256 and 0.94 at class 32, and writes 68 to
-        486 bytes more per block. Edmond, 2026-09-12: «выбери то что
-        быстрее» — the stage is not opened, the flat form stays; the rfc's
-        29 % sentence was amended the same day on his ruling that refuted
-        text may be changed (`rfc` `8683096`).
+      handoff: `memory::barrier::store_ptr_owned` / `store_box_owned` and the
+        ABI pair `ll_store_ptr_owned` / `ll_store_box_owned` move the mark,
+        which lands only on a GC-heap occupant of a GC-heap holder;
+        `object::ll_owned_child_die` is what `ll_default_dispose` calls for a
+        marked child and what a generated `dispose` owes. The ruling, its
+        rejected forms and its cost clause are `dev/DECISIONS.md`, "the
+        ownership mark is the owned store's to move and the holder's `dispose`
+        to honour". Verified on the final tree: 863 passed, 0 failed, 10
+        ignored, three times at eight threads, six mutations seen red, Miri 14
+        passed over the three new groups and `the_ordinary_store`. The owned
+        store's refusal has no case, and that debt is in the residual list.
 
 ---
 
@@ -1111,8 +302,15 @@ Goal: the readings the row form is decided on, and the decision.
   Nothing is copied back without a decision entry.
 - Every fix carries a regression test verified to fail on the bug
   (`dev/WORKFLOW.md`, Tests).
+- Correctness tests per the project style (`test_guard`, scenario-per-test);
+  benchmarks per `dev/BENCHMARKS.md`, and a bench does not cross the C ABI —
+  ABI-entry work is shown by IR or asm.
 - Miri runs in slices, never whole (`dev/WORKFLOW.md`, Miri).
 - A claim about speed is a measurement or it is not made.
+- `dev/ARCHITECTURE.md` is the crate's knowledge map — layers and their
+  sanctioned edges, the per-module "does not know" table, the header-bit
+  ledger, the five end-to-end paths — and it moves with behaviour like any
+  other document (`dev/WORKFLOW.md`).
 
 ## Then: arrays as a performance problem
 
@@ -1137,7 +335,19 @@ threshold** of **1.5x**, not a percentage: "if the control-byte index wins
 both lookups by 1.5x or more at N between 56 and 28 672 on string keys of
 realistic length, without its deletion margin worsening, the default
 changes." A 1.5x margin is thirty times the noise floor and is resolvable
-here. It leaves the parked set.
+here, so it leaves the parked set and takes an entry of its own:
+
+- [ ] **The string-key cancellation threshold, measured here.**
+  done: the control-byte index and the plain check are timed against each
+  other at N of 56, 512, 4,096 and 28,672 on string keys of realistic length,
+  with the deletion margin read beside them, and the default either changes or
+  is recorded as kept with the readings; the figures go to
+  `dev/BENCHMARKS.md` and the criterion is `rfc/model/arrays-hashtable.md`'s
+  own, quoted above.
+- [ ] **Whether an escalation raises an operations-visible signal.**
+  done: `rfc/model/arrays-hashtable.md`'s open bullet carries this half and
+  this plan never picked it up; the entry is either a decision recorded with
+  its reason or a line saying the rfc answers it, and it names which.
 
 `arrays-hashtable.md`'s own open bullet also carries a second half this
 plan never picked up: whether an escalation raises an operations-visible
@@ -1160,7 +370,20 @@ or a metaphor outside a citation, and their failure messages name
 tables to read. `rfc`'s own S9.1 is still open in that repository's plan and
 carries the remaining cross-repository work.
 
-Two residues have no owner, and both are named here rather than in a step:
+Five residues have no owner, and all five are named here rather than in a
+step. The sixth left on 2026-09-18: `exact test` is out of the crate's
+comments — nine occurrences, rewritten as *exact validation* — and
+`the_metaphors_the_comments_still_carry::no_comment_carries_a_retired_term_of_two_words`
+holds the word out, the guards' unit having been one word until then. What
+stands is the journals' record of the term and two review documents of
+2026-08.
+
+- **`promote` keeps `corpse` for the reset's torn-down entity**, which the
+  glossary names a *torn-down entity* (`rfc` `9ca669c`,
+  `dev/CYCLE-TERMINOLOGY-AUDIT.md`, "Glossary check"); the exemptions in
+  `cycle::tests::the_metaphors_the_names_still_carry` and
+  `..._the_comments_still_carry` say so. `memory::reset_window` took the
+  glossary's words on 2026-09-12.
 
 - **The row-initialization bitmap's accessors have no ratified name.**
   `groups`, `group_bit` and `group_bytes` are described in
@@ -1168,7 +391,8 @@ Two residues have no owner, and both are named here rather than in a step:
   crate is naming them for itself, which the rule against that forbids
   (`dev/DECISIONS.md`, "an uncovered term is a gap rather than a local
   ruling").
-- **The comment guard reads fourteen words of a ninety-one-row mapping.** It
+- **The comment guard reads fourteen words and one term of a ninety-one-row
+  mapping.** It
   walks the whole crate, so the gap is the list and not the reach: `refused`
   is not among the fourteen, which is why five files carried its retired sense
   until a Critic round found it by reading. The same gap leaves 65 comment
@@ -1238,22 +462,20 @@ own checkbox.
   written at its declaration, before a factory stamps it". `StringDynamic`
   (code 9) is not carried here: `string::publish_uninit` stamps it whenever the
   placement is out of line, so the kind has a producer.
-- [ ] **The threshold arming policy and the collector-thread accelerator.**
-  What is left of the old escalation ladder after the entry gate
-  (`cycle::collect::may_collect`) and the slow-path fire. The arming policy is the compiler's
+- [ ] **The threshold arming policy.** What is left of the old escalation
+  ladder after the entry gate (`cycle::collect::may_collect`) and the
+  slow-path fire. The arming policy is the compiler's
   (`rfc/model/gc/strategies.md`, arm/fire); the critical reserve's third
   customer, the mutator whose gate is closed, is answered null today and
   draws nothing, because which runtime progress operations a reserve would
-  fund is what the ABI does not yet name (`rfc/model/memory/critical-reserve.md`,
-  "Mutator progress while collection is unavailable"). The collector thread
-  (`cycle::worker`, born at the first pressure collection) wakes on the
-  owner's count of its own registrations and on its timer, and traces on
-  the count it reads itself (`dev/DECISIONS.md`, "the collector's wake is
-  a soft signal counted on the owner's line, and its timer adapts between
-  two unmeasured bounds"), so it works ahead of a shortage with no ABI;
-  what an arming ABI would add is a request from the compiler's policy or
-  the embedder ahead of the count, and whether an in-line pause is
-  shortened by either is the corpus measurement S37 waits on.
+  fund is what the ABI does not yet name
+  (`rfc/model/memory/critical-reserve.md`, "Mutator progress while collection
+  is unavailable"). The collector-thread accelerator this entry used to carry
+  is void: the collector wakes on the owner's count of its own registrations
+  and on its timer and traces on the count it reads itself, so it works ahead
+  of a shortage with no ABI (`dev/DECISIONS.md`, "the free path's reading of
+  the token is fenced against the take, and the accelerator question of
+  2026-09-15 is void").
 - [ ] **The birth count and the unique-owner policy** — **the text went with
   the file** on 2026-08-26 and no section landed in `rc-cycle.md` or
   `cycle/questions.md`; it is on `archive/pre-rc-cycle`. What is left in the
@@ -1266,7 +488,8 @@ own checkbox.
   share of dynamic publications with compiler-provable targets.
 - [ ] **Per-structure GC memory, behind a feature.** Which structure holds
   collection's logical bytes — shadow rows, the trace worklist, a component's
-  member list, deferred slots, deferred drops, suspects — is not carried in a
+  member list, deferred slots, deferred drops, the deferred-candidate lane —
+  is not carried in a
   production build (Edmond, 2026-09-01). The breakdown is an axis A feature
   designed with `dev/design/debug-modes.md` §8; what it needs before it is
   built is a question that wants it.
@@ -1285,17 +508,13 @@ own checkbox.
   and readable on `archive/pre-rc-cycle`; it is argued against the walk
   throughout, so it is a source to re-read rather than a conclusion to
   carry.
-- [ ] **The horizon's borrow elision** (Edmond's algorithm, 2026-08-18,
-  named `proof-horizon` until 2026-08-20) — **the documents are gone and the
-  work with them**. `gc-horizon.md`, `gc-horizon-cases/`, `gc-horizon-v2/`,
-  `rc-walk.md`, `rc-walk-model.md` and `walk/compiler-proofs.md` were deleted
-  on 2026-08-26 and are on `archive/pre-rc-cycle`; the ruling that took them
-  says why — the proof logic left `rfc`'s scope on 2026-08-23 and nothing in
-  force cites it. So the pre-D instrument work this item scheduled — the
-  graded corpus scan, the census channel list, the summary-language question —
-  has no document to serve and no owner. What outlived the deletion is named
-  in that ruling and is where it says; the algorithm itself is Edmond's and is
-  on the branch. Kept as one line so the name is findable, not as a task.
+**The horizon's borrow elision** — Edmond's algorithm of 2026-08-18, named
+`proof-horizon` until 2026-08-20 — is on `archive/pre-rc-cycle` with the six
+documents deleted on 2026-08-26, and it is no task here: the proof logic left
+`rfc`'s scope on 2026-08-23, nothing in force cites it, and the pre-D
+instrument work it scheduled has no document to serve. The name is written
+here so a search finds it; what outlived the deletion is in the ruling that
+took it.
 - [ ] **The three `promote` tests that claim Miri as their whole regression.**
   `the_reset_reads_no_zero_count_member`'s
   `a_large_survivor_killed_by_the_drain_is_not_read_by_the_reconcile` and its
@@ -1349,12 +568,6 @@ own checkbox.
   box; a fixture that disposes instead of clearing pays a collection per
   batch. Neither is priced.
 
-What the map design owed by the array table — the per-process key, the
-ladder's repair and the key word's tag — was S27, closed 2026-08-18 and
-deleted with its steps; the decisions it leaves are in `dev/DECISIONS.md`
-(2026-08-17 and 2026-08-18), the traps in `dev/POSTMORTEM.md` and the map
-in `dev/INDEX.md`. What it did not do is below.
-
 - [ ] **What S50 left unpinned, 2026-09-16.** A second life whose `ThreadHeaps`
   allocation or slot store the OS refuses is set `Live` and its journal
   reopened before the heap is built (`heap::ll_thread_init`), so it frees and
@@ -1372,46 +585,26 @@ in `dev/INDEX.md`. What it did not do is below.
   collection over the proposed roots" admits a narrower batch than the
   whole of R the crate traces at every fire (`rfc/dev/DECISIONS.md`, "P
   stays one block"), a reading named for Edmond and not put to him.
-- [ ] **A gate flake, measured 2026-09-03 and pre-existing.** The case that
-  reached the gate is fixed and measured; five cases that cannot take the
-  same fix are named below and stay open.
-  `promote::tests::where_a_survivor_list_is_placed::`
-  `lists_with_no_room_anywhere_share_one_fresh_block_the_reset_retains`
-  failed 4 of 100 runs of `cargo test --lib -- --test-threads=16`, asserting
-  that `gc_metadata::stats()` is unchanged across `arena_reset_full`. What
-  differed was the high-water pair alone — a queue base block and the
-  `MutatorCycleState` control line another thread charged inside the window,
-  twenty-nine test files never taking `block_pool::test_guard`. The ledger
-  now answers a per-thread reading beside the process one, every exact
-  assertion takes it, and the same loop ran 500 times with no failure. Three
-  mutations were run and each was caught: `thread_stats` made to answer
-  `stats()`, the mirror deleted from `charge`, and the mirror deleted from
-  `released`, which a test over the module's own source names
-  (`dev/DECISIONS.md`, "the test-facing reading of the GC ledger is per
-  thread"; `dev/POSTMORTEM.md`, "an exact assertion cannot be made against a
-  process-global ledger").
-  **What is left** is the five cases whose claim is about memory a thread
-  that no longer exists gave back, which no per-thread figure can answer:
-  `gc_metadata::tests::a_threads_exit_ends_every_block_it_acquired`,
-  `what_gc_owns::a_threads_base_block_is_in_use_from_its_draw_until_its_exit`,
-  `the_workspace_stands_between_collections_and_goes_back_at_exit`, and the
-  two refusal cases in `the_base_block_a_thread_holds_for_its_life`. Each
-  reads the process figures across a child thread's whole life and drifts if
-  a third thread draws GC memory in that window; none was seen to fail in the
-  500 runs. What would close them is a reading of a named thread's figures
-  that outlives the thread, which is a structure rather than a patch — worth
-  its cost only if one of them is seen to fail. A sixth was seen once, on
-  2026-09-15 in one plain run of the gate of some twenty-five that day:
-  `mark::tests::an_aborted_mark_writes_nothing::`
-  `a_refusal_two_entities_deep_leaves_the_heap_byte_identical`, whose
-  `force_oom` is process-wide and whose reserve reading is asserted at zero;
-  ten further runs were green and no cause was established. The defect one of the five
-  carried is closed: `a_thread_nothing_will_tear_down_is_not_funded` read the
-  same process figure into two variables and asserted both, so its segment
-  claim had no reading behind it, and it now reads `gc_metadata::thread_stats`
-  on the child thread itself — the peak exactly at the base block and both
-  spare segments, in both builds, and both current figures at zero. Seen red
-  on a build whose `ll_thread_init` refills no spares.
+**A gate flake watch, not a step.** Six cases read the process-wide GC ledger
+across a child thread's whole life, which no per-thread figure can answer, and
+they drift if a third thread draws GC memory in that window:
+`gc_metadata::tests::a_threads_exit_ends_every_block_it_acquired`,
+`what_gc_owns::a_threads_base_block_is_in_use_from_its_draw_until_its_exit`,
+`the_workspace_stands_between_collections_and_goes_back_at_exit`, the two
+refusal cases in `the_base_block_a_thread_holds_for_its_life`, and
+`mark::tests::an_aborted_mark_writes_nothing::`
+`a_refusal_two_entities_deep_leaves_the_heap_byte_identical`, whose `force_oom`
+is process-wide and whose reserve reading is asserted at zero. The last was
+seen to fail once, on 2026-09-15, in one plain run of some twenty-five that
+day; ten further runs were green and no cause was established, and none of the
+other five failed in 500 runs. What would close them is a reading of a named
+thread's figures that outlives the thread, which is a structure rather than a
+patch, and it is worth its cost only once one of them is seen to fail. The
+repair of 2026-09-03 that made the ledger answer per thread is in
+`dev/DECISIONS.md`, "the test-facing reading of the GC ledger is per thread",
+and its trap in `dev/POSTMORTEM.md`, "an exact assertion cannot be made against
+a process-global ledger". **No work is scheduled here until a failure.**
+
 - [ ] **The deferred lane is not swept, and the close no longer sweeps it.**
   `defer_candidates` lifted the active lane and ran the retirement pass over
   the deferred one, so a record whose entity had died gave its slot back on the
@@ -1744,13 +937,3 @@ Object model, deferred by design:
   Item 1 of that order, the event journal, is built; the rest of the
   section is unscheduled.
 
-## Cross-cutting (every phase)
-
-- Correctness tests per the project style (`test_guard`, scenario-per-test)
-  and criterion benchmarks per `dev/BENCHMARKS.md` — follow the protocol,
-  do not improvise. Benches do not cross the C ABI; ABI-entry work is shown
-  by IR/asm.
-- `dev/ARCHITECTURE.md` — the crate's knowledge map: layers and their
-  sanctioned edges, the per-module "does not know" table, the header-bit
-  ledger, the five end-to-end paths. Written; it moves with behaviour
-  like any other document (`dev/WORKFLOW.md`).

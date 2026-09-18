@@ -1,7 +1,7 @@
 //! A store that lands between the trace's verdict and the mutator's
 //! validation, and the control that shows the refusal came from the store.
 //!
-//! This is the staleness the exact test exists to absorb: the trace read
+//! This is the staleness the exact validation exists to absorb: the trace read
 //! the counts of a ring nobody held, and by the time the mutator reads
 //! them one of the members is named from outside
 //! (`rfc/model/gc/rc-cycle.md`, "Speculative tracing and exact

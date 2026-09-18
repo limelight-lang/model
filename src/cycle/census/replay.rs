@@ -1,7 +1,7 @@
 //! The arena's grants replayed over one collection's census, for the flat
 //! form the collector has and for the chunked form
 //! `dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md`, "The specified chunked form"
-//! specifies (`PLAN.md` S40.5). Test builds only.
+//! specifies (`dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md`). Test builds only.
 //!
 //! # What a replay is
 //!
@@ -24,7 +24,7 @@
 //! segment at the first push, then every other block's array at its first
 //! touch, then the segments the descent and the teardown draw
 //! (`crate::cycle::mark`, `crate::cycle::maturation`). That is the order of
-//! every load S40.3 records, because a ring keeps the mark's worklist at
+//! every load the census records, because a ring keeps the mark's worklist at
 //! depth one; a mark that queues more entities at once than a segment holds
 //! ([`SEGMENT_ENTRIES`](crate::cycle::stack::SEGMENT_ENTRIES)) draws a
 //! segment between two arrays, and the census, which reads each chain's

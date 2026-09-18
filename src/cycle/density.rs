@@ -1,5 +1,5 @@
 //! What share of a touched block's slots one trace met, read after the
-//! trace and before the commit (`PLAN.md` S40.1).
+//! trace and before the commit (`PLAN.md` S37.7).
 //!
 //! **Before the commit and not merely before the arena's reset.** The commit
 //! runs the maturation descent, which takes the working count of every row the

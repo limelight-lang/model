@@ -490,3 +490,16 @@ compiler-maintained clearable per-object "a local may hold me" bit as
 the collector's root oracle, under any language restriction. That is
 absence of publication, not proof of impossibility — the impossibility
 argument is the ruling's, in `dev/DECISIONS.md`.
+
+## 2026-09-18 — YRC's re-registration saving, the one number behind the deferred lane
+
+Filed on S37.4's deletion, which carried it as a half-sentence: Nim's YRC
+reports a 56 % saving on re-registration from keeping a proven-live root
+registered instead of registering it again at the next decrement, and that
+figure is the whole quantified motive on record for this crate's deferred
+candidate lane. **It is borrowed and unmeasured here.** The lane's own price
+was taken against this crate's fixtures (`dev/BENCHMARKS.md`, S37.4), the
+turnover it re-offers at is provisional after YRC's own values
+(`dev/DECISIONS.md`, "maturation is Y9's edge-side prune…"), and what a real
+workload saves is owed at S37.5 on a corpus. Quoted as YRC's number, never as
+this crate's.

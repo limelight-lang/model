@@ -74,7 +74,7 @@ use crate::memory::heap::FREE_LIST_LINK_OFFSET;
 use crate::refcount::clear_candidate_bit;
 
 /// The component size every load carries: the corpus's median closure, and
-/// the size S40.1 reports its own widest readings at.
+/// the size the density reading reports its own widest readings at.
 const MEMBERS: usize = 381;
 
 /// A cache line, which the crate's own `LINE_SIZE` is not — that constant is
@@ -117,7 +117,8 @@ struct DeathReading {
     density: TraceDensity,
     /// Blocks the trace touched, entity blocks alone.
     blocks: Vec<WalkedBlock>,
-    /// Blocks the arena drew from the memory manager, which S40.1 recorded
+    /// Blocks the arena drew from the memory manager, which the density
+    /// reading recorded
     /// for the same load.
     arena_blocks: usize,
     /// Entities the fixture freed inside the window.
@@ -140,7 +141,8 @@ struct DeathReading {
 struct DeathLoad {
     class_bytes: usize,
     fillers_between: usize,
-    /// The seven collections that change nothing, which are S40.1's control.
+    /// The seven collections that change nothing, which are the density
+    /// reading's control.
     ordinary: Vec<Reading>,
     killing: DeathReading,
 }
@@ -320,7 +322,8 @@ unsafe fn walked_blocks(arena: &TraceScratchArena) -> Vec<WalkedBlock> {
     walked
 }
 
-/// The control S40.1's `every_collection_agrees` is here: seven collections
+/// The control of the density reading's `every_collection_agrees` is here:
+/// seven collections
 /// over an unchanged population, and the killing collection's own reading
 /// taken before it changes anything.
 ///

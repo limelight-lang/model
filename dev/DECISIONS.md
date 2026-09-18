@@ -8,6 +8,66 @@ never edited or deleted.
 
 ---
 
+## 2026-09-18 — the edge-side prune cannot tear down a live component, because membership decides an internal edge and the trace does not
+
+Filed on S37.1's deletion, from the Critic round of 2026-09-11 that attacked
+the prune from this side. The prune stops the descent at a mature edge target,
+so the exact validation's `RC − IN` meets an edge whose target the trace never
+met. `Membership::internal_edges` counts a cell as internal where
+`Membership::contains` holds of the child, which reads the component's own
+member list and nothing the trace wrote; an edge to a pruned target is
+therefore counted external, `RC − IN` stands above zero, and the component
+reads externally referenced. **Why this is the record and not a comment:** the
+soundness of the prune in front of `validate_component` rests on the sever and
+the validation sharing one membership test (`Membership::count_cells_where`),
+and a change that let the trace's reading decide "internal" would break it
+without a case going red — the prune's own recall loss has no case either
+(`PLAN.md`, residual). The conservative direction is the safe one: a live
+component read as externally referenced waits for the turnover, and a mature
+member that never observed a non-final decrement is the ordinary shape of that
+wait (`cycle::mark`'s module doc).
+
+## 2026-09-18 — the deferred lane holds a registered root, never a traced live member
+
+Filed on S37.4's deletion; the refusal is the step's own and was carried in its
+`handoff:`. `CANDIDATE_BIT` means one logical token in one state — active,
+in-flight, deferred, or consumer-retired after death — and the deferral stores
+the roots the batch was built from. **Rejected, with the reason each time:**
+adding every traced live member to the lane manufactures tokens for entities
+that never registered, so the bit stops standing for a registration; and
+collapsing the roots of one component into one entry loses a root the day the
+component splits, after which the surviving entry speaks for a ring the split
+left behind. `cycle::queue`'s one-token invariant and
+`queue::tests::the_tokens_every_lane_holds` hold the statement; this entry
+holds the two reasons, which are what a step widening the lane would have to
+answer.
+
+## 2026-09-18 — analysis of a candidate that may be refused stays in `dev/`, and the rfc moves only on adoption
+
+The Sage's ruling of 2026-09-12 over S40.5, filed on S40's deletion. A form the
+crate may refuse to build is analysis, so its specification is a step of its
+own and its document stays in `dev/` —
+`dev/SHADOW-ROW-REPRESENTATION-ANALYSIS.md` is where the chunked row form was
+specified. The rfc takes the amendment only where the decision adopts the form,
+because the rfc's tables are what the code calls authoritative and a decision
+recorded here does not move them. S40.2 kept the flat form, so nothing was
+adopted and the analysis document is the whole of what the specification left.
+The citation this ruling carried in the plan — `dev/DECISIONS.md`, "a normative
+table is a precondition" — resolved to no entry in either repository, and the
+principle is stated here instead.
+
+## 2026-09-18 — the rfc's 29 % crossing was amended on 2026-09-12, and the clause that left it to Edmond is spent
+
+Supersedes the closing paragraph of "the flat row array stays, and the case for
+building the chunked form is recorded for Edmond" (2026-09-12), which says the
+rfc still carries the 29 % slot-density crossing and that the amendment is
+Edmond's to rule on, raised in `PLAN.md`'s fog. He ruled it the same day —
+refuted text may be amended in place — and `rfc` `8683096` amended
+`model/gc/rc-cycle.md`: the crossing is in met groups rather than in slot
+density, and the paragraph now records the 717 MiB against 762 MiB reading that
+refused the chunked form without a build. Nothing is owed, and the fog line the
+clause pointed at was never written.
+
 ## 2026-09-17 — the collector requests and the mutator consents, and the batch's release is the mutator's trigger
 
 **Ruled by Edmond** (`rfc/dev/DECISIONS.md`, "the collector's batch is the

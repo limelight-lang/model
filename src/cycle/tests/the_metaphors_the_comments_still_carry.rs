@@ -66,6 +66,17 @@ const EXEMPT: [(&str, &str, &str); 9] = [
     ),
 ];
 
+/// A term of more than one word the glossary retires, and the ratified term
+/// beside it for the failure message.
+///
+/// The unit of the three guards is a word: one reads identifiers, one reads
+/// declaration names, and this one reads a word stem in prose. A term of two
+/// words is therefore read by none of them, and `exact test` — retired for
+/// *exact validation* (`rfc/dev/GLOSSARY.md`, "Deprecated terms") — stood 22
+/// times across the tree with nothing red, 9 of them in the crate's own
+/// comments. The exemption table applies here too, keyed on the term.
+const PHRASES: [(&str, &str); 1] = [("exact test", "exact validation")];
+
 /// This file and the two guards beside it, which write every metaphor on
 /// purpose.
 const SELF: [&str; 3] = [
@@ -150,6 +161,23 @@ fn exempt(path: &str, metaphor: &str) -> bool {
 /// Every metaphor a comment of `text` carries outside a citation, as
 /// (line number, metaphor, the comment).
 fn metaphors_in(path: &str, text: &str) -> Vec<(usize, &'static str, String)> {
+    retired_in(path, text, &METAPHORS)
+}
+
+/// Every needle of `needles` a comment of `text` carries outside a citation,
+/// as (line number, needle, the comment).
+///
+/// The needle is matched lowercased and as a substring, so a caller passes
+/// either a word stem or a whole term; [`PHRASES`] is the second caller and
+/// the reason this reads a list rather than [`METAPHORS`] alone. An
+/// unbalanced citation is reported through the same list under the needle
+/// `an unbalanced quote`, because the span it opens is prose no needle
+/// reaches.
+fn retired_in(
+    path: &str,
+    text: &str,
+    needles: &[&'static str],
+) -> Vec<(usize, &'static str, String)> {
     let mut found = Vec::new();
 
     let mut quoted = false;
@@ -176,9 +204,9 @@ fn metaphors_in(path: &str, text: &str) -> Vec<(usize, &'static str, String)> {
 
         quoted = open;
         let prose = prose.to_ascii_lowercase();
-        for metaphor in METAPHORS {
-            if prose.contains(metaphor) && !exempt(path, metaphor) {
-                found.push((number + 1, metaphor, comment.trim().to_owned()));
+        for needle in needles {
+            if prose.contains(needle) && !exempt(path, needle) {
+                found.push((number + 1, *needle, comment.trim().to_owned()));
             }
         }
     }
@@ -229,6 +257,73 @@ fn no_comment_carries_a_metaphor_outside_a_citation() {
         kept.len(),
         kept.join("\n")
     );
+}
+
+/// No comment carries a retired term of two words outside a citation.
+///
+/// Separate from the metaphor test beside it because the failure names the
+/// ratified term rather than the audit's heading: a reader who meets `exact
+/// test` needs the word that replaced it, and the glossary is where that word
+/// was ratified.
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "reads the crate's sources; `opendir` is unavailable under Miri's isolation, \
+              and the abort takes the whole slice with it"
+)]
+fn no_comment_carries_a_retired_term_of_two_words() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(root.as_path(), &mut files);
+    assert!(files.len() > 50, "the source walk found almost nothing");
+
+    let needles: Vec<&'static str> = PHRASES.iter().map(|(retired, _)| *retired).collect();
+    let ratified = |needle: &str| {
+        PHRASES
+            .iter()
+            .find(|(retired, _)| *retired == needle)
+            .map(|(_, ratified)| *ratified)
+            .expect("the needle came from PHRASES")
+    };
+
+    let mut kept = Vec::new();
+    for path in &files {
+        let relative = path.strip_prefix(&root).expect("a path under src/");
+        let name = relative.to_string_lossy().replace('\\', "/");
+        if SELF.contains(&name.as_str()) {
+            continue;
+        }
+
+        let text = fs::read_to_string(path).expect("a source file is readable");
+        for (number, needle, comment) in retired_in(&name, &text, &needles) {
+            kept.push(format!(
+                "{name}:{number}: `{needle}` for `{}` in: {comment}",
+                ratified(needle)
+            ));
+        }
+    }
+
+    assert!(
+        kept.is_empty(),
+        "{} comments carry a term the glossary retires, outside a citation \
+         (`rfc/dev/GLOSSARY.md`, \"Deprecated terms\"):\n{}",
+        kept.len(),
+        kept.join("\n")
+    );
+}
+
+/// A term of two words is read in prose and spared inside a citation, the
+/// same as a one-word metaphor.
+#[test]
+fn the_guard_reads_a_retired_term_and_spares_a_quoted_one() {
+    let source = "\
+/// The colour is a proposal (`rfc/dev/GLOSSARY.md`, \"exact judgement, exact test\").
+/// The exact test reads the component.
+";
+    let found = retired_in("cycle/scan.rs", source, &["exact test"]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, 2);
+    assert_eq!(found[0].1, "exact test");
 }
 
 /// A citation keeps its heading; the sentence around it does not.

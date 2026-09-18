@@ -117,6 +117,14 @@ pub(crate) enum Withdrawn {
 }
 
 /// What the mutator's reading of its own byte found, after acting on it.
+///
+/// **Production branches on [`Reading::Collector`] alone**, in
+/// `gc::ll_gc_maybe_collect` and in
+/// `deferred_slot_reuse::withhold_under_a_trace_or_make_returns`: withholding
+/// is the one behaviour that differs, and every other state returns memory at
+/// once. The four beside it are the byte's states under their own names, so a
+/// case asserts which state the reading met instead of asserting over the raw
+/// byte.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Reading {
     /// This thread has no record: no collector can reach it.
