@@ -15,10 +15,13 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-19 · Active: S37, both open steps blocked on the Phase-D
-corpus: S37.5 measures the turnover and S37.7 the traced share, and a
-synthetic reading is refused for both. The prose sections below are the
-backlog a stage is drawn from while that corpus is missing.
+Updated: 2026-09-19 · Active: S37, whose two open steps were unblocked the same
+day: Edmond ruled that a corpus over `ll-model`'s own heap is not coming and
+test data is what the calibration gets (`dev/DECISIONS.md`, "the calibration
+runs on a parameterized test heap, and the entry names its parameters"). S37.5
+measures the turnover and S37.7 the traced share, both now on a test heap whose
+parameters the entry names. The prose sections below are the backlog a stage is
+drawn from.
 The S36 residue's four allocation sites are closed, the last of them on
 2026-09-19: the three on the exit path (`dev/DECISIONS.md`, "the exit path
 holds no container: the buffer arena is its thread-local, and the static
@@ -278,10 +281,13 @@ stage is what makes a trace affordable rather than what tunes it.
         its harness thread's history".
 
 - [ ] S37.5 The turnover constant, against a corpus   *(after S37.4)*
-      done: the volume the deferred-candidate lane re-offers is measured at the
-        epoch turnover on a corpus, and S37.1's 64-collection turnover is
-        replaced by a number or recorded as confirmed with its measurement; a
-        synthetic reading is refused and the entry says so
+      done: the volume the deferred-candidate lane re-offers at the epoch
+        turnover is measured on a parameterized test heap over `ll-model`'s own
+        blocks, the entry naming every parameter the harness sets — the share of
+        roots that read live inside an epoch above all — and reporting the
+        re-offered volume as a response over them rather than as one figure;
+        S37.1's 64-collection turnover is then replaced or confirmed, with the
+        rule that picks it from a parameter value stated beside it
       tier: T2 · role: Bench
       handoff: split out of the density measurement, now S37.7, by the Sage of
         2026-09-04. The re-offered volume is the count of roots read live
@@ -294,12 +300,21 @@ stage is what makes a trace affordable rather than what tunes it.
         Sage of 2026-09-10 and landed here: a minimum taken over stamped
         members alone rather than over the whole component changes the formula,
         and the corpus reading is what answers it.
+      handoff: **the blocking clause above is retired 2026-09-19** — Edmond
+        ruled that no corpus over `ll-model`'s own heap is coming and the step
+        gets test data. What the refusal guarded stands, which is why the
+        criterion now asks for a response and not a number: the harness sets the
+        live-read rate, so a single figure is that input read back. Naming the
+        parameters and reporting the curve keeps the reading honest about what
+        it depends on.
 - [ ] S37.7 The traced share and `k`, against a corpus
-      done: the share of a touched block's slots that a real collection traces
-        is measured on a booted corpus with the denominator named — occupied
-        slots or all slots — and the pruned-edge share at `k` of 1, 2 and 3 is
-        read off the same instrumented run, which replaces S37.1's provisional
-        `k = 3` with a number or records it as confirmed with its measurement
+      done: the share of a touched block's slots a collection traces is measured
+        on a parameterized test heap over `ll-model`'s own blocks with the
+        denominator named — occupied slots or all slots — and the pruned-edge
+        share at `k` of 1, 2 and 3 is read off the same instrumented run; both
+        are reported as a response over the harness parameters the entry names,
+        and S37.1's provisional `k = 3` is then replaced or confirmed, with the
+        rule that picks it stated beside it
       tier: T2 · role: Bench → Critic
       handoff: what is left of S40.1, whose stage was deleted on 2026-09-18
         with its goal discharged. The synthetic arm is closed and its figures
@@ -309,6 +324,12 @@ stage is what makes a trace affordable rather than what tunes it.
         This arm needs a driver over `ll-model`'s own heap — the recorded corpus
         instruments read PHP's heap, which has no blocks and no slots — so it is
         Phase-D-blocked, as S37.2 is blocked on the compiler.
+      handoff: **the blocking clause above is retired 2026-09-19** — the driver
+        stays required and the corpus behind it does not: Edmond ruled that test
+        data is what the calibration gets. The traced share and the pruned-edge
+        share depend on the graph's shape and on the block layout, so a test
+        heap reads them more honestly than it reads the turnover; the parameters
+        it is built from are named in the entry either way.
 - [x] S37.2 The acyclic gate
       done: an entity of a class the compiler marked acyclic never enters the
         candidate set, the mark reaching `object::stamp_into` through the class

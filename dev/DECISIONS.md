@@ -8,6 +8,23 @@ never edited or deleted.
 
 ---
 
+## 2026-09-19 (second) — the calibration runs on a parameterized test heap, and the entry names its parameters
+
+**Decided (Edmond).** A corpus over `ll-model`'s own heap is not coming, and test
+data is what S37.5 and S37.7 get. The refusal of a synthetic reading in both
+steps' criteria is retired with it.
+
+**Why the criteria changed shape rather than merely dropping the refusal:** what
+the refusal guarded is real. On a built population the harness sets the share of
+roots that read live inside an epoch, so a turnover period measured on it is that
+input read back. Both steps therefore report a **response over named parameters**
+instead of one figure, and the constant is chosen from the response by a rule
+stated beside it. The traced share and the pruned-edge share suffer less, both
+following the graph's shape and the block layout rather than a dialed rate.
+**Cost:** the numbers stand for the workloads the harness builds and say so, and
+a workload the compiler later produces can move them. **Rejected:** keeping both
+steps blocked until a real heap exists, which is what the ruling answers.
+
 ## 2026-09-19 — the epoch counter is the collecting thread's, in its record
 
 **Decided (Edmond, S37.10).** The commit counter the maturation stamp is read
