@@ -11,6 +11,9 @@
 use super::*;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::members::MEMBER_CAPACITY;
+use crate::cycle::queue::verdicts::Verdict;
+use crate::cycle::queue::verdicts::testing::{Posted, post_batch};
+use crate::cycle::testing::Sent;
 use crate::cycle::testing::{long_ring, ring};
 use crate::gc::{ll_gc_collect_cycles, ll_gc_maybe_collect};
 use crate::memory::arena::Arena;
@@ -784,6 +787,19 @@ fn a_collection_reached_from_an_ordinary_teardown_is_refused() {
         "and the poll at the clean point after the teardown collects the ring"
     );
     let _ = ring;
+}
+
+/// The stand-in posts `verdict` for the first `k` roots of R, from a thread
+/// of its own, and answers what it did.
+///
+/// The stand-in collector is `cycle::queue::verdicts::testing::post_batch`,
+/// which claims, posts and releases as the collector's batch does, less the
+/// trace.
+fn stand_in_posts(k: usize, verdict: Verdict) -> Posted {
+    let record = Sent(crate::cycle::mutator_record::this_thread_record());
+    std::thread::spawn(move || unsafe { post_batch(record.into_inner(), k, |_| verdict) })
+        .join()
+        .expect("the stand-in finished")
 }
 
 mod how_a_close_disposes_of_its_roots;

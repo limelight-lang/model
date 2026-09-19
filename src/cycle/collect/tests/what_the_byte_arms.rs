@@ -10,10 +10,8 @@
 //! collector's batch does, less the trace.
 
 use super::*;
-use crate::cycle::queue::verdicts::testing::{Posted, post_batch};
-use crate::cycle::queue::verdicts::{Verdict, verdict_count};
+use crate::cycle::queue::verdicts::verdict_count;
 use crate::cycle::queue::{candidate_count, deferred_count};
-use crate::cycle::testing::Sent;
 use crate::cycle::token::{
     COLLECTOR, FREE, POSTED, Reading, read_and_act_on_this_thread, state, word,
 };
@@ -34,15 +32,6 @@ fn byte() -> u8 {
             .token
             .read()
     }
-}
-
-/// The stand-in posts `verdict` for the first `k` roots of R, from a thread
-/// of its own, and answers what it did.
-fn stand_in_posts(k: usize, verdict: Verdict) -> Posted {
-    let record = Sent(crate::cycle::mutator_record::this_thread_record());
-    std::thread::spawn(move || unsafe { post_batch(record.into_inner(), k, |_| verdict) })
-        .join()
-        .expect("the stand-in finished")
 }
 
 fn reset() {

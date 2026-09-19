@@ -31,6 +31,7 @@ use crate::cycle::collect::InjectedVerdictRace;
 use crate::cycle::collect::collect_under_pressure;
 use crate::cycle::epoch;
 use crate::cycle::mark::take_edges_pruned;
+use crate::cycle::queue::verdicts::{Verdict, discard_standing_verdicts};
 use crate::cycle::queue::{
     candidate_count, deferred_count, deferred_turnover_mirror, refill_spares,
     release_queue_segments, reoffer_deferred_if_epoch_moved,
@@ -750,4 +751,93 @@ fn a_pressure_collections_deferral_sweeps_a_dead_record_out_of_the_lane() {
         mirror
     )));
     assert_eq!(unsafe { ll_gc_collect_cycles() }, 2);
+}
+
+/// A pressure collection whose harvest is torn down defers the verdict
+/// standing in P at the commit count its own reading saw, which is the count
+/// an R-side deferral of the same collection records and one short of the
+/// count its close leaves behind.
+///
+/// **The two sides cannot be read off one lane.** A mirror is written where
+/// the deferred lane goes from empty to occupied
+/// (`crate::cycle::queue::defer_candidates`), and a collection defers out of R
+/// before its close disposes of P, so a case that defers one of each reads the
+/// R side's count and nothing of the P side's. This case leaves R's roots to
+/// the teardown and defers out of P alone.
+///
+/// The crossing is what tells the two readings apart: the counter stands one
+/// short of the turnover, so the commit this collection closes crosses it, and
+/// the later count puts the root a whole epoch out — the root would wait for
+/// 64 collections of this thread's instead of being offered to the next poll.
+#[test]
+fn a_pressure_collection_defers_its_verdict_at_the_count_its_reading_saw() {
+    let _g = test_guard();
+    release_queue_segments();
+    discard_standing_verdicts();
+
+    let mut arena = Arena::new();
+    // Registered first and posted out of R before the ring below is built, so
+    // the stand-in's batch takes this root and the harvest reads the ring.
+    let node = node_class("VerdictMirrorNode", counting_destructor as *const ());
+    let keeper_class = ClassBuilder::new("VerdictMirrorKeeper")
+        .prop("held", true)
+        .build();
+    let (root, keeper) = {
+        let mut context = LLContext { arena: &mut arena };
+        unsafe {
+            (
+                new_constructed(&mut context, node, MemoryCategory::GcHeap),
+                new_constructed(&mut context, keeper_class, MemoryCategory::GcHeap),
+            )
+        }
+    };
+    unsafe {
+        store_prop(&mut arena, keeper, prop_offset(0), root);
+        assert!(!ll_release(root as *mut RcHeader), "the keeper holds it");
+    }
+    assert_eq!(candidate_count(), 1);
+    assert_eq!(stand_in_posts(1, Verdict::ReadLive), Posted::Batch(1));
+    assert_eq!(candidate_count(), 0, "the batch took the root out of R");
+
+    let ring_node = node_class("VerdictMirrorRingNode", counting_destructor as *const ());
+    let _ring = unsafe { ring(&mut arena, [ring_node, ring_node]) };
+    assert_eq!(candidate_count(), 2, "the ring is what the harvest reads");
+
+    assert!(refill_spares());
+    epoch::close_commits_to_one_short_of_the_turnover();
+    let reading = epoch::commits();
+
+    assert_eq!(
+        unsafe { collect_under_pressure() },
+        2,
+        "the ring nothing holds was torn down"
+    );
+    assert_eq!(
+        epoch::commits(),
+        reading + 1,
+        "the teardown's commit closed one"
+    );
+    assert_eq!(deferred_count(), 1, "the root read live went to the lane");
+    assert_eq!(
+        deferred_turnover_mirror(),
+        reading,
+        "the mirror is the count the reading saw, not the one the close left"
+    );
+
+    assert!(
+        reoffer_deferred_if_epoch_moved(epoch::commits()),
+        "the turnover the reading stood in closed with that very commit"
+    );
+    assert_eq!(candidate_count(), 1, "the root is back in the active lane");
+
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+    }
+    assert_eq!(
+        unsafe { ll_gc_collect_cycles() },
+        0,
+        "a completed death is retired at the close, not collected"
+    );
+    assert_eq!(candidate_count(), 0);
 }

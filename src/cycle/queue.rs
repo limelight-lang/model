@@ -1096,10 +1096,10 @@ pub(crate) fn read_batch_of_verdicts() -> Batch {
 /// ones the close cannot dispose of written back into R, and P's front
 /// advances past all of them ([`verdicts`]).
 ///
-/// `at_commits` is the process's commit count as the reading that decided the
-/// marks saw it, and it is recorded only where the deferred lane goes from
-/// empty to occupied — the oldest deferred record is what decides when the
-/// mutator owes a re-offer, as it is for [`defer_candidates`].
+/// `at_commits` is the collecting thread's commit count as the reading that
+/// decided the marks saw it, and it is recorded only where the deferred lane
+/// goes from empty to occupied — the oldest deferred record is what decides
+/// when the mutator owes a re-offer, as it is for [`defer_candidates`].
 ///
 /// **A marked entry stays in the ring when the deferred lane cannot take
 /// it.** The lane grows by a spare block per block it fills, and both cells
@@ -1253,7 +1253,9 @@ pub(crate) unsafe fn retire_candidates() {
 /// path, so that the token's release to `FREE` never leaves a verdict
 /// behind it (`rfc/dev/design/trace-token-handshake.md`, "The fourth
 /// round"). A root the collection never finalized goes back into R as a
-/// registration is; `at_commits` is the mirror a root read live records.
+/// registration is; `at_commits` is the mirror a root read live records, and
+/// the caller passes the count its own reading saw rather than one taken at
+/// the close, as [`defer_candidates`] states.
 ///
 /// # Safety
 /// As [`retire_candidates`].

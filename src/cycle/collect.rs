@@ -164,6 +164,12 @@ struct CollectingThread {
     /// between its rounds and can leave deaths behind after the last, and the
     /// second never ran a pass at all.
     retire_on_drop: Cell<bool>,
+    /// The commit count the last reading of this collection saw, and `None`
+    /// where this collection read no component. The drop's disposition of P
+    /// records it as the deferred lane's mirror, so that a root deferred out
+    /// of P and one deferred out of R in the same collection wait out the same
+    /// epoch (`crate::cycle::queue::defer_candidates`).
+    at_commits: Cell<Option<u64>>,
     /// This thread's token, held from the take through the close: the last
     /// field, so that its release — the field's drop, after the drop body's
     /// retirement pass and the collecting word's clear — is the close's last
@@ -204,6 +210,7 @@ impl CollectingThread {
         Ok(Self {
             record,
             retire_on_drop: Cell::new(true),
+            at_commits: Cell::new(None),
             token,
         })
     }
@@ -212,6 +219,12 @@ impl CollectingThread {
     /// the drop below does not make a second one.
     fn retirement_runs_at_the_close(&self) {
         self.retire_on_drop.set(false);
+    }
+
+    /// Keep `at_commits`, the count a reading of this collection took before
+    /// its own commit counted one more, for the disposition the drop makes.
+    fn its_reading_saw(&self, at_commits: u64) {
+        self.at_commits.set(Some(at_commits));
     }
 }
 
@@ -277,11 +290,17 @@ impl Drop for CollectingThread {
         // the token's release to `FREE` after this never leaves a verdict
         // behind (`crate::cycle::queue::retire_candidates_and_dispose_of_verdicts`).
         if self.retire_on_drop.get() {
-            unsafe {
-                crate::cycle::queue::retire_candidates_and_dispose_of_verdicts(
-                    crate::cycle::epoch::commits(),
-                )
-            };
+            // The mirror is this collection's own reading rather than a count
+            // taken here: its commit has counted itself by this point, and a
+            // root deferred out of P under the later count would wait out a
+            // whole epoch more than one the same collection deferred out of R.
+            // A collection that read nothing counted nothing either, so the
+            // counter is what its reading would have seen.
+            let at_commits = self
+                .at_commits
+                .get()
+                .unwrap_or_else(crate::cycle::epoch::commits);
+            unsafe { crate::cycle::queue::retire_candidates_and_dispose_of_verdicts(at_commits) };
         }
 
         // An arming for P alone made before this collection is spent by it:
@@ -842,7 +861,8 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             NextRound::Stop => break,
         };
 
-        let Some(taken) = (unsafe { tear_down_the_harvest(standing, roots == ALL_ROOTS) }) else {
+        let Some(committed) = (unsafe { tear_down_the_harvest(standing, roots == ALL_ROOTS) })
+        else {
             // Not reachable past a thread's first collection, the workspace
             // being the thread's; armed all the same, because the set in hand
             // is proven garbage this path is leaving.
@@ -850,6 +870,11 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             break;
         };
 
+        if let Some(at_commits) = committed.at_commits {
+            _collecting.its_reading_saw(at_commits);
+        }
+
+        let taken = committed.freed;
         // Always repeat after the external drops: their destructors may enter
         // an arena reset or create further completed candidate deaths. On a
         // refused or resurrected component this is the only retirement.
@@ -989,16 +1014,22 @@ fn note_pressure_roots(_traced: usize) {}
 /// # Safety
 /// As [`collect_under_pressure`]; `standing` is this thread's harvest, taken
 /// under its own collecting flag.
-unsafe fn tear_down_the_harvest(mut standing: HarvestedMembers, whole_lane: bool) -> Option<usize> {
+unsafe fn tear_down_the_harvest(
+    mut standing: HarvestedMembers,
+    whole_lane: bool,
+) -> Option<PressureCommit> {
     if standing.members().entities().is_empty() {
         drop(standing);
-        return Some(0);
+        return Some(PressureCommit {
+            freed: 0,
+            at_commits: None,
+        });
     }
 
     let mut arena = TraceScratchArena::open()?;
-    let taken = unsafe { commit_under_pressure(&mut standing, &mut arena, whole_lane) };
+    let committed = unsafe { commit_under_pressure(&mut standing, &mut arena, whole_lane) };
     arena.reset();
-    Some(taken)
+    Some(committed)
 }
 
 /// What the harvest's ending leaves the pressure loop to do.
@@ -1103,10 +1134,10 @@ struct CommitOutcome {
     freed: usize,
     /// The exact validation's first reading of the set.
     initial: ValidationResult,
-    /// Commits closed process-wide as the reading itself saw them, which is
+    /// Commits this thread has closed as the reading itself saw them, which is
     /// before this commit's own close counted one more. A batch that goes to
     /// the deferred lane waits out the epoch of the reading that found it live,
-    /// not the epoch of the instant its window happens to close.
+    /// rather than the epoch of the instant its window happens to close.
     at_commits: u64,
 }
 
@@ -1153,6 +1184,16 @@ unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> Com
     }
 }
 
+/// What one round of the pressure loop's commit answered.
+struct PressureCommit {
+    /// Entities the teardown freed.
+    freed: usize,
+    /// The commit count the round's reading saw, before its own close counted
+    /// one more, and `None` for a round that read no component and so closed
+    /// no commit.
+    at_commits: Option<u64>,
+}
+
 /// Commit one harvested pressure membership and retire its completed members
 /// before releasing their external children.
 ///
@@ -1176,7 +1217,7 @@ unsafe fn commit_under_pressure(
     standing: &mut HarvestedMembers,
     arena: &mut TraceScratchArena,
     whole_lane: bool,
-) -> usize {
+) -> PressureCommit {
     let mut members = standing.take_members();
     let mut reading = None;
     let outcome = {
@@ -1200,8 +1241,12 @@ unsafe fn commit_under_pressure(
     }
 
     drop(members);
+    let at_commits = reading.map(|(_, at_commits)| at_commits);
     let Some((freed, deferred)) = outcome else {
-        return 0;
+        return PressureCommit {
+            freed: 0,
+            at_commits,
+        };
     };
 
     if early_retirement_enabled() {
@@ -1217,7 +1262,7 @@ unsafe fn commit_under_pressure(
         });
     }
     deferred.drain();
-    freed
+    PressureCommit { freed, at_commits }
 }
 
 /// Run a commit through the completed member frees, leaving only its deferred

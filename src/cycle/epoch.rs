@@ -165,6 +165,19 @@ pub(crate) fn close_a_turnover_of_commits() {
     }
 }
 
+/// Close commits until this thread stands one short of its next turnover, so
+/// that the next commit closed crosses it.
+///
+/// A case about which reading of the counter a collection records takes the
+/// crossing: the reading before the collection's own commit and the one after
+/// it stand in two epochs there, and in the same epoch everywhere else.
+#[cfg(test)]
+pub(crate) fn close_commits_to_one_short_of_the_turnover() {
+    while commits() % COMMITS_PER_EPOCH != COMMITS_PER_EPOCH - 1 {
+        commit_closed();
+    }
+}
+
 /// This thread's pinned epoch, or `None` when it reads the counter.
 #[cfg(test)]
 fn pinned() -> Option<u32> {
