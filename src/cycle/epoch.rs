@@ -165,6 +165,30 @@ pub(crate) fn close_a_turnover_of_commits() {
     }
 }
 
+/// Put this thread's clock at the first commit of a later turnover whose
+/// epoch is not zero, tests only.
+///
+/// A case that stamps across several collections takes this: a stamp of the
+/// epoch before a turnover reads as no stamp after it, and where the harness
+/// thread's counter stands when the case starts is that thread's own history.
+/// Epoch zero is passed over because a record the registry has just handed out
+/// reads zero, so a case that tells two clocks apart by the difference would
+/// tell nothing there. The epoch always moves, so the caller can compare
+/// against the one it read before the call.
+#[cfg(test)]
+pub(crate) fn stand_at_the_start_of_a_nonzero_epoch() {
+    loop {
+        commit_closed();
+        while commits() % COMMITS_PER_EPOCH != 0 {
+            commit_closed();
+        }
+
+        if epoch_of(commits()) != 0 {
+            return;
+        }
+    }
+}
+
 /// Close commits until this thread stands one short of its next turnover, so
 /// that the next commit closed crosses it.
 ///

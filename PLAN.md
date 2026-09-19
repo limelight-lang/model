@@ -261,6 +261,22 @@ stage is what makes a trace affordable rather than what tunes it.
         `hash-folding` 1077, `debug-journal` 1086 ×3, citations 739/0, release,
         bench and doc with no warning; Miri over the case 1 green in 29 s.
 
+- [x] S37.12 The epoch case that its harness thread positions
+      done: `a_collectors_trace_prunes_against_the_owners_epoch` passes from
+        the worst position its harness thread can leave the counter in, one
+        commit short of a turnover, which is red against the case as S37.10
+        wrote it
+      tier: T1 · role: —
+      handoff: the case failed once in 14 `debug-journal` runs at eight threads
+        on 2026-09-19, found in a control run of the tree before S37.11 and
+        reproduced by starting it at the boundary (1 against 2, a stamp written
+        before a crossing read after it).
+        `epoch::stand_at_the_start_of_a_nonzero_epoch` puts the clock at a
+        turnover's first commit, and the case opens at the boundary so that
+        every run reads the alignment. The class and what hid it are
+        `dev/POSTMORTEM.md`, "a case that reads the live epoch is positioned by
+        its harness thread's history".
+
 - [ ] S37.5 The turnover constant, against a corpus   *(after S37.4)*
       done: the volume the deferred-candidate lane re-offers is measured at the
         epoch turnover on a corpus, and S37.1's 64-collection turnover is

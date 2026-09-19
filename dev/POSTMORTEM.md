@@ -7,6 +7,37 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-19 — a case that reads the live epoch is positioned by its harness thread's history
+
+**What happened.** `mark::tests::where_the_descent_stops::`
+`a_collectors_trace_prunes_against_the_owners_epoch`, added by S37.10, closes a
+turnover of commits and then runs three collections, asserting after each that
+the child carries `(epoch::current(), age)`. The counter it starts from is the
+harness thread's, raised by every collection every case before it ran there, so
+where it stands inside the turnover is that thread's history. Within three
+commits of a boundary the loop crosses one: the stamp is written in the epoch
+before the crossing and `current()` is read in the epoch after it, and the case
+fails at 1 against 2. It failed once in 14 `debug-journal` runs at eight
+threads and was green in the other 13.
+
+**Why it was possible.** Closing a turnover moves the epoch, which is what the
+case needs, and leaves the position inside the new turnover exactly where it
+found it, which the case also depends on and never states. A count 64 commits
+past an arbitrary point is as arbitrary as the point.
+
+**Why no test caught it.** The test is the instrument, and its failure rate put
+it inside an accepted one: the gate flake watch above records a heapless-life
+case failing at about this rate under the same command, and the rule for that
+one is to re-run past it. A second flake of another cause reads as the first
+until the failing name is read, and a command whose tail keeps only the result
+line does not keep the name.
+
+**What changed.** `epoch::stand_at_the_start_of_a_nonzero_epoch` puts the clock
+at a turnover's first commit, with 63 commits of room before the next crossing,
+and refuses epoch zero, which a record the registry has just handed out reads.
+The case opens by driving the counter one commit short of a turnover, so every
+run checks the alignment rather than the runs that happen to land there.
+
 ## 2026-09-19 — join-before-create was a property of the clock, and a slot could be created on a stack its last thread was still leaving
 
 **What happened.** S59 gave each collector slot one stack, mapped once and

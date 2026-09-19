@@ -267,8 +267,17 @@ fn a_pinned_threshold_of_one_stops_the_second_collection_at_the_child() {
 fn a_collectors_trace_prunes_against_the_owners_epoch() {
     let _g = test_guard();
     release_queue_segments();
+    // Started from the worst place the harness thread could leave the counter
+    // in, one commit short of a turnover, so that the alignment below is what
+    // every run checks rather than the runs that happen to land there.
+    epoch::close_commits_to_one_short_of_the_turnover();
     let fresh = epoch::current();
-    epoch::close_a_turnover_of_commits();
+    // The clock is put at a turnover's first commit rather than 64 commits
+    // past wherever the harness left it: the three collections below close
+    // three commits, and a stamp written before a turnover reads as no stamp
+    // after it, so a start near a boundary reads the child as unstamped
+    // halfway through the loop.
+    epoch::stand_at_the_start_of_a_nonzero_epoch();
     assert_ne!(
         epoch::current(),
         fresh,
