@@ -20,9 +20,9 @@ day: Edmond ruled that a corpus over `ll-model`'s own heap is not coming and
 test data is what the calibration gets (`dev/DECISIONS.md`, "the calibration
 runs on a parameterized test heap, and the entry names its parameters"). S37.5
 measures the turnover and S37.7 the traced share, both now on a test heap whose
-parameters the entry names; S37.7's two readings were taken on 2026-09-19 and
-it is left open on the choice of `k`, which needs S37.5's turnover, so S37.5
-goes first. The prose sections below are the backlog a stage is
+parameters the entry names. Both steps' readings were taken on 2026-09-19: S37.5 is closed, and
+S37.7 waits on one ruling — the preference between rows spared and recall
+latency, both of which are now measured. The prose sections below are the backlog a stage is
 drawn from.
 The S36 residue's four allocation sites are closed, the last of them on
 2026-09-19: the three on the exit path (`dev/DECISIONS.md`, "the exit path
@@ -282,7 +282,7 @@ stage is what makes a trace affordable rather than what tunes it.
         `dev/POSTMORTEM.md`, "a case that reads the live epoch is positioned by
         its harness thread's history".
 
-- [ ] S37.5 The turnover constant, against a corpus   *(after S37.4)*
+- [x] S37.5 The turnover constant, against a corpus   *(after S37.4)*
       done: the volume the deferred-candidate lane re-offers at the epoch
         turnover is measured on a parameterized test heap over `ll-model`'s own
         blocks, the entry naming every parameter the harness sets — the share of
@@ -332,6 +332,20 @@ stage is what makes a trace affordable rather than what tunes it.
         share depend on the graph's shape and on the block layout, so a test
         heap reads them more honestly than it reads the turnover; the parameters
         it is built from are named in the entry either way.
+      handoff: closed 2026-09-19 with both responses in `dev/BENCHMARKS.md`,
+        "what a turnover re-offers, and what a deferral costs". The volume is
+        `rate × N` records, one per live root per epoch, measured exactly at
+        rates 1, 2, 4 and 8; the recall is `N − d + 1` collections, five cells
+        of six, the sixth being the empty-lane re-offer's one-shot rescue of a
+        thread's first accumulation. The load is
+        `mark::tests::the_volume_a_turnover_reoffers`, and the precondition that
+        cost three shapes to find is that a close with no spare cell keeps the
+        root in the active lane, so the poll refills the spares.
+        **`N` is not replaced:** both costs are linear in it and pull opposite
+        ways — a live root is re-traced once per `N` collections, a dead
+        component waits up to `N` — so the reading gives the exchange rate and
+        the side to pay is Edmond's ruling. Y9's minimum-over-stamped-members
+        question is untouched and goes with the stamp, not with `N`.
       progress 2026-09-19 — both readings are taken and in `dev/BENCHMARKS.md`,
         "the pruned share against a named survival rate". The traced share
         reproduces 2026-09-04 on today's tree. The pruned share is
@@ -342,8 +356,10 @@ stage is what makes a trace affordable rather than what tunes it.
         three runs identical). **What the step still owes is the choice of `k`**:
         the spare falls by one `q` per step of `k`, so the smallest `k` spares
         the most rows and what pays for a larger one is recall, which the
-        turnover prices. The step therefore runs **after S37.5** and closes with
-        its number.
+        turnover prices. S37.5 priced it on 2026-09-19: a component read live
+        waits `N − d + 1` collections, up to 64. So both sides of the trade are
+        measured — rows spared at `1 − k·q`, latency at up to `N` — and what is
+        left is the preference between them, which is Edmond's to state.
 - [x] S37.2 The acyclic gate
       done: an entity of a class the compiler marked acyclic never enters the
         candidate set, the mark reaching `object::stamp_into` through the class

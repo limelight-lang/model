@@ -155,6 +155,13 @@ pub(crate) fn one_turnover_past(commits: u64) -> u64 {
     commits + COMMITS_PER_EPOCH
 }
 
+/// Commits one epoch spans, tests only: a measurement that reports a volume
+/// per turnover states the period it divided by.
+#[cfg(test)]
+pub(crate) fn commits_per_epoch() -> u64 {
+    COMMITS_PER_EPOCH
+}
+
 /// Close as many commits as one epoch spans, tests only: a case that needs
 /// two epochs of one thread's clock drives the counter rather than 64
 /// collections.

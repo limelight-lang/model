@@ -108,4 +108,5 @@ mod where_the_descent_stops;
 // traces it eight times, and the gate runs this suite about a dozen times per
 // commit.
 mod the_pruned_share_against_a_survival_rate;
+mod the_volume_a_turnover_reoffers;
 mod what_the_prune_saves;

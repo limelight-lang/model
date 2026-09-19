@@ -8,6 +8,83 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-19 — S37.5 what a turnover re-offers, and what a deferral costs: `rate × N` records, and `N − d + 1` collections of recall
+
+**Two responses, and one precondition that had to be found first.** The turnover
+period `N` is 64 commits, taken from YRC and never measured. Both figures that
+decide it follow a rate the harness sets, so neither is taken as a single number
+(`dev/DECISIONS.md`, 2026-09-19, "the calibration runs on a parameterized test
+heap, and the entry names its parameters").
+
+**Machine:** dev box, shared with interactive work. **Base:** `82c58dd` plus the
+load, `rustc 1.96.0`, debug build — every figure is a count. **Command:**
+
+```
+cargo test --lib the_volume_a_turnover_reoffers -- --ignored --nocapture
+```
+
+**The precondition.** A close with no spare cell keeps the root in the active
+lane, so a load that never refills the spares reads an empty deferred lane
+whatever it builds — the first three shapes tried here read zero for that reason
+alone. Every poll of this load refills them
+(`cycle::collect::tests::when_the_turnover_reoffers`, "with no spare cell the
+close keeps the root in the active lane").
+
+**The volume.** A component is a ring of two whose member no lane names — its
+creation reference was moved into the root — under a keeper that holds the root.
+`rate` of them are built before every collection and kept alive. The lane's
+occupancy is `rate × collections` exactly, at every rate and every collection:
+
+| collections | rate 1 | 2 | 4 | 8 |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 16 | 32 | 64 | 128 |
+
+So the volume a turnover of `N` splices back is `rate × N`, one record per live
+root per epoch, and at `N` = 64 a thread with one live root arriving per
+collection re-offers 64 records. The splice itself is a chain operation; what
+the volume buys back is a re-trace of every re-offered root at the collection
+after the turnover.
+
+**The recall.** One component is let go at collection `d` of the epoch, and the
+collections until it is taken are counted. `background` is the rate at which
+other live components arrive meanwhile.
+
+| background | `d` | collections waited | `N − d + 1` |
+| ---: | ---: | ---: | ---: |
+| 0 | 1 | 1 | 64 |
+| 0 | 16 | 49 | 49 |
+| 0 | 32 | 33 | 33 |
+| 1 | 1 | 64 | 64 |
+| 1 | 16 | 49 | 49 |
+| 1 | 32 | 33 | 33 |
+
+A deferral costs the rest of the epoch, `N − d + 1` collections, in five cells of
+six. The sixth is the lane's very first accumulation on a thread with nothing
+else registered, which the empty-lane re-offer catches at once and then spends,
+advancing the mirror with it
+(`cycle::queue::reoffer_deferred_when_nothing_else_stands`). That is a one-shot
+rescue and not a bound: a second deferral on the same thread waits like the rest.
+
+**What this says about `N`.** Both costs are linear in it and they pull opposite
+ways: a live root is re-traced once per `N` collections, so a smaller `N` spends
+more tracing, and a dead component waits up to `N` collections, so a larger `N`
+spends more latency. At 64, a thread doing one collection a millisecond recalls
+its garbage in up to 64 ms and re-traces each live root about sixteen times a
+second. Nothing here prefers one end: the reading gives the exchange rate, and
+which side to pay is a ruling.
+
+**Mutations seen red.** The epoch comparison read as a commit comparison
+(`turnover_mirror == commits` for `turnovers_of(...) == turnovers_of(...)`),
+which recalls at the next collection and reads 1 against 64; and the empty-lane
+re-offer disabled, which makes the first cell wait out the epoch and the load's
+own drain fail.
+
+**What this does not say.** Nothing about a real workload's arrival rate or its
+death distribution, both being the parameters. Nothing about time: every figure
+is a count in a debug build. And nothing about a thread that collects under
+memory pressure, whose deferral path is `commit_under_pressure`'s and not this
+one.
+
 ## 2026-09-19 — S37.7 the pruned share against a named survival rate: `1 − k·q`, and every step of `k` costs one `q`
 
 **A response, and not a constant.** A pruned share follows the workload's age
