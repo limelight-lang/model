@@ -8,6 +8,89 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-19 — S37.7 the pruned share against a named survival rate: `1 − k·q`, and every step of `k` costs one `q`
+
+**A response, and not a constant.** A pruned share follows the workload's age
+distribution, and on a built population the harness sets that distribution, so
+one figure taken here would be its own input read back — which is why the
+sibling load of 2026-09-12 reports no share at all. Edmond ruled on 2026-09-19
+that no corpus over this crate's heap is coming and the calibration runs on test
+data (`dev/DECISIONS.md`, "the calibration runs on a parameterized test heap,
+and the entry names its parameters"), so what is recorded is the share against
+the rate that produces it, with the rate named.
+
+**Machine:** dev box, shared with interactive work. **Base:** `e589c3e` plus the
+load, `rustc 1.96.0`, debug build — every figure is a count. **Command:**
+
+```
+cargo test --lib the_pruned_share_against_a_survival_rate -- --ignored --nocapture
+```
+
+**The instrument.** `cycle::mark::pin_threshold` holds the thread's traversal
+age threshold at `k` for the life of a guard, in test builds only;
+`take_edges_pruned` and `take_dispatches_in_mark_phase` are cleared before every
+collection. The epoch is pinned at 0, so no turnover re-offers anything and the
+reading is the prune's alone.
+
+**The load.** Thirty-two units stand at once. A unit is a registered ring of two
+under a keeper with a held ring of 16 hanging off the first root's second
+property — the shape of the 2026-09-12 load — so it offers the trace exactly one
+prunable edge and costs 21 mark rows when that edge is taken, 4 when it is
+pruned. Before every collection the oldest `kills` units are taken apart and as
+many fresh ones built, so the population never changes size and a unit lives
+`32 / kills` collections. The parameter is the retirement rate `q = kills / 32`,
+at 0, 0.125, 0.25 and 0.5. Sixteen collections per load, three loads per `k`,
+each on a thread of its own.
+
+**Read, in the steady state** — the sixteenth collection, and every collection
+past the first life reads the same. Three runs byte for byte identical.
+
+| `k` | `q` = 0 | 0.125 | 0.25 | 0.5 |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 32 (100 %) | 28 (87.5 %) | 24 (75 %) | 16 (50 %) |
+| 2 | 32 (100 %) | 24 (75 %) | 16 (50 %) | 0 |
+| 3 | 32 (100 %) | 20 (62.5 %) | 8 (25 %) | 0 |
+
+Every cell is `max(0, 1 − k·q)` of the standing units, which the case asserts
+rather than prints: a unit is pruned at every collection after the one that
+wrote age `k`, so of the `1/q` collections it lives it is pruned in `1/q − k` of
+them. The mark's rows follow from the same arithmetic, `4 × pruned + 21 ×
+(32 − pruned)`: 128 rows against the 672 an unpruned population costs at
+`q = 0` and `k = 1`, 196 at `q = 0.125`, 264 at 0.25, 400 at 0.5.
+
+**What this says about `k`.** The spare falls by one `q` with every step of `k`,
+so on any workload that retires anything at all `k = 1` spares the most rows and
+`k = 3` the fewest — at `q = 0.25` the prune spares three quarters of the
+population's edges at `k = 1` and one quarter at `k = 3`, and at `q = 0.5` a `k`
+above one prunes nothing whatever. YRC's 3 has no support from this side of the
+trade. What pays for a larger `k` is recall — a component that dies after
+maturing is not registered again until the epoch turns — and this load never
+lets a matured component die unseen, so it prices none of it. **The rule that
+picks `k` is therefore: take the smallest `k` whose recall the turnover can
+carry, the turnover being S37.5's number.** S37.7 stays open on that and now
+runs after S37.5 rather than beside it.
+
+**The traced share, re-read on the same base.** `cycle::density::tests::the_loads`
+on `e589c3e` reproduces the reading of 2026-09-04 cell for cell, so that half of
+S37.7 stands on today's tree with its parameters named — size class, component
+size and arrangement. The dense arm runs 0.1 % of a block's index space at class
+32 with 2 members to 74.7 % at class 128 with 381, occupancy 100 % throughout;
+the sparse arm reads 0.4 % on both denominators at every size and draws 4 blocks
+at 256 members and 6 at 381; the retained arm reports its survivor list whole,
+48 groups met of 48 at 381. The command is
+`cargo test --lib cycle::density::tests::the_loads -- --ignored --nocapture`.
+
+**Mutations seen red.** The maturity test read strictly (`age > k` for
+`age >= k`) and the pinned threshold ignored (`traversal_age_threshold`
+answering the constant): both fail the first asserted cell, `k = 1`, `q = 0`,
+collection 2, at 0 against 32.
+
+**What this does not say.** Nothing about recall, as above. Nothing about a real
+workload's `q`, which is the parameter and not a finding. Nothing about time:
+every figure is a count in a debug build. And nothing about component shape —
+one ring of 16 behind one edge, so the rows a prune spares scale with that ring
+and a workload of shallow components would spare fewer.
+
 ## 2026-09-18 — S37.8 the review's cuts leave the poll where it was
 
 **What was measured.** The poll on a registered thread with nothing to do —

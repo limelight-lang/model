@@ -20,7 +20,9 @@ day: Edmond ruled that a corpus over `ll-model`'s own heap is not coming and
 test data is what the calibration gets (`dev/DECISIONS.md`, "the calibration
 runs on a parameterized test heap, and the entry names its parameters"). S37.5
 measures the turnover and S37.7 the traced share, both now on a test heap whose
-parameters the entry names. The prose sections below are the backlog a stage is
+parameters the entry names; S37.7's two readings were taken on 2026-09-19 and
+it is left open on the choice of `k`, which needs S37.5's turnover, so S37.5
+goes first. The prose sections below are the backlog a stage is
 drawn from.
 The S36 residue's four allocation sites are closed, the last of them on
 2026-09-19: the three on the exit path (`dev/DECISIONS.md`, "the exit path
@@ -330,6 +332,18 @@ stage is what makes a trace affordable rather than what tunes it.
         share depend on the graph's shape and on the block layout, so a test
         heap reads them more honestly than it reads the turnover; the parameters
         it is built from are named in the entry either way.
+      progress 2026-09-19 — both readings are taken and in `dev/BENCHMARKS.md`,
+        "the pruned share against a named survival rate". The traced share
+        reproduces 2026-09-04 on today's tree. The pruned share is
+        `max(0, 1 − k·q)` of the standing population at retirement rate `q`,
+        asserted rather than printed, by the new load
+        `mark::tests::the_pruned_share_against_a_survival_rate` (32 units of a
+        16-member held ring, `q` of 0, 0.125, 0.25 and 0.5, `k` of 1 to 3,
+        three runs identical). **What the step still owes is the choice of `k`**:
+        the spare falls by one `q` per step of `k`, so the smallest `k` spares
+        the most rows and what pays for a larger one is recall, which the
+        turnover prices. The step therefore runs **after S37.5** and closes with
+        its number.
 - [x] S37.2 The acyclic gate
       done: an entity of a class the compiler marked acyclic never enters the
         candidate set, the mark reaching `object::stamp_into` through the class

@@ -107,4 +107,5 @@ mod where_the_descent_stops;
 // ordinary suite: the widest builds a 381-member component per threshold and
 // traces it eight times, and the gate runs this suite about a dozen times per
 // commit.
+mod the_pruned_share_against_a_survival_rate;
 mod what_the_prune_saves;
