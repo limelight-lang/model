@@ -1038,8 +1038,10 @@ unsafe fn serve_the_grant(mutator: &MutatorRecord, slot: usize, threshold: usize
 
     // Declared after the release guard, so that its drop — the reset of
     // the rows, which stand over the mutator's blocks — runs before the
-    // release on the unwind as on the return.
-    let Some(mut arena) = TraceScratchArena::open() else {
+    // release on the unwind as on the return. The epoch is the served
+    // mutator's, not this thread's: the stamps this trace reads were written
+    // by that mutator's own commits (`crate::cycle::epoch`).
+    let Some(mut arena) = (unsafe { TraceScratchArena::open_for_owner(mutator) }) else {
         return Served::Idle;
     };
     unsafe { batch(mutator, &mut arena, threshold, &held.posted) }

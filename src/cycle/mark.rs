@@ -62,11 +62,15 @@
 //! threshold itself. Both are recall paid inside one epoch and neither is a
 //! free (`rfc/model/gc/rc-cycle.md`, "What a commit stamps").
 //!
-//! **The epoch is one reading per call.** It is a division over a
-//! process-global counter (`crate::cycle::epoch::current`), so a reading per
-//! edge would put that on every edge of the trace; two roots of one collection
-//! that read the counter across a turnover prune less than one reading would,
-//! never more.
+//! **The epoch is the arena's, fixed when the trace opened it.** It is a
+//! division over the owning mutator's commit counter
+//! (`crate::cycle::epoch`), so a reading per edge would put that on every edge
+//! of the trace; and the owner is the arena's to name, since a collector
+//! thread traces a graph whose stamps are the served mutator's clock and never
+//! its own thread's (`crate::cycle::arena::TraceScratchArena::open_for_owner`).
+//! Two
+//! roots of one collection that read across a turnover prune less than one
+//! reading would, never more.
 //!
 //! **The trace writes no stamp.** A stamp of another epoch is retired by being
 //! read against the epoch beside it, never by being cleared in place, so
@@ -108,7 +112,6 @@
 
 use crate::cells::{self, CellReader};
 use crate::cycle::arena::{RowLookup, TraceScratchArena};
-use crate::cycle::epoch;
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
 use crate::cycle::stack::WorklistEntry;
@@ -139,9 +142,10 @@ const _: () = assert!(
 /// What one mark reads a stamp against: the collection's epoch, and the age
 /// at which a target of that epoch is an opaque live external.
 ///
-/// Both are read once per [`mark`] call (module doc, "The epoch is one reading
-/// per call"), the threshold being [`TRAVERSAL_AGE_THRESHOLD`] or the value a
-/// test pinned through `pin_threshold`.
+/// The epoch is the arena's, fixed at its open (module doc, "The epoch is the
+/// arena's"); the threshold is read once per [`mark`] call and is
+/// [`TRAVERSAL_AGE_THRESHOLD`] or the value a test pinned through
+/// `pin_threshold`.
 #[derive(Clone, Copy)]
 struct Prune {
     epoch: u32,
@@ -149,9 +153,9 @@ struct Prune {
 }
 
 impl Prune {
-    fn of_this_collection() -> Self {
+    fn of_this_trace(arena: &TraceScratchArena) -> Self {
         Self {
-            epoch: epoch::current(),
+            epoch: arena.epoch(),
             threshold: traversal_age_threshold(),
         }
     }
@@ -264,11 +268,11 @@ pub(crate) unsafe fn mark<R: CellReader>(
     arena: &mut TraceScratchArena,
     root: *mut RcHeader,
 ) -> MarkResult {
-    // Read here rather than taken from the caller: the prune is this module's
-    // rule, so a second caller of `mark` inherits it with no argument to
-    // forget, and the cost of the reading is one per root instead of one per
-    // edge (module doc).
-    let prune = Prune::of_this_collection();
+    // Read off the arena rather than taken as an argument: the prune is this
+    // module's rule, so a second caller of `mark` inherits it with nothing to
+    // forget, and the arena is what knows whose graph this trace walks
+    // (module doc).
+    let prune = Prune::of_this_trace(arena);
     if !unsafe { schedule_root_if_unvisited(arena, root) } {
         return MarkResult::AllocationFailed;
     }
@@ -433,9 +437,10 @@ unsafe fn visit_child<R: CellReader>(
 /// mature, which is why the two loads are in this order and not the reverse.
 ///
 /// # Safety
-/// As [`visit_child`]: `child` is a live published entity header. The byte is
-/// the owning thread's to write and this is that thread, so the stamp read
-/// here is whole (`crate::refcount::read_maturation_stamp`).
+/// As [`visit_child`]: `child` is a live published entity header. The reader
+/// is the owning thread or a collector tracing for it, and the byte is the
+/// owner's to write, so the stamp read here is whole either way
+/// (`crate::refcount::read_maturation_stamp`).
 #[inline]
 unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, prune: Prune) -> bool {
     let stamp = unsafe { read_maturation_stamp(child) };

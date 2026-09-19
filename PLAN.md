@@ -220,6 +220,78 @@ stage is what makes a trace affordable rather than what tunes it.
         the displaced and the occupant. The early return is unobservable
         through the mark, and the case says so instead of claiming the clause.
         Suite 1043 passed, three times.
+- [x] S37.10 The epoch counter is the collecting thread's
+      done: a neighbour's commits move no other thread's epoch, read by a case
+        that is red today against the process-global counter, and a collector's
+        trace prunes against the epoch of the mutator it serves rather than its
+        own, red under a trace that reads its own
+      tier: T2 · role: Critic
+      baseline before the first edit: one relaxed `fetch_add` on a
+        process-global word per commit, one relaxed load of that word per
+        `mark` call and per stamp, and one per safepoint poll for the deferred
+        lane's turnover mirror; no manager allocation on any of those paths and
+        no refusal to model. What the change adds is eight bytes in the
+        record's writer line and one load of that line per batch by the
+        collector; what it removes is a word every collecting thread writes.
+      Critic 2026-09-19: seven findings over the built step. **The deferred
+        lane's liveness closed on itself** — the clock moves only at this
+        thread's own commit, a commit needs a non-empty active lane, and the
+        lane's re-offer was the only thing that could arm an idle thread, so a
+        thread that deferred its last root held those slots until its exit.
+        Accepted: the poll re-offers when the active lane is empty
+        (`queue::reoffer_deferred_when_nothing_else_stands`), read by
+        `an_idle_thread_reoffers_its_deferred_lane_at_the_next_poll`, red with
+        that call removed from the poll. **A record handed out at zero is epoch
+        0, so stamps of its last life read fresh, not stale** — accepted, a new
+        life starts one turnover past the old (`epoch::a_new_lifes_count`), and
+        the decision entry's rationale is corrected. **`mark`'s safety comment
+        claimed the reader is the owning thread**, which this step retired —
+        accepted, it points at `refcount::read_maturation_stamp`'s contract
+        now. **Two `queue` docs still described the global word** — accepted.
+        **The new case asserted `current() != 0`**, which a harness thread at
+        turnover 3 would fail — accepted, it compares against its own reading
+        before the turnover. **A record-less `commit_closed` counts nowhere
+        silently** — accepted, a `debug_assert` names it. **A root deferred out
+        of P records a mirror one commit later than one deferred out of R**,
+        pre-existing and repriced by this step from 64 process-wide commits to
+        64 of one thread's own collections — recorded rather than fixed here,
+        and it is S37.11 below.
+      handoff: `MutatorRecord`'s writer line carries `commits`; `epoch::current`
+        reads this thread's record, `epoch::of_record` a named one, and the
+        trace arena fixes the epoch at its open — `open()` for an in-line
+        collection, `open_for_owner(record)` for the collector, which the
+        worker and the tests' stand-in share, so one mutation covers both
+        (red: 0 edges pruned against 1). The clock moves only at this thread's
+        commit, so the poll re-offers a deferred lane over an empty active one.
+        Gate 1076 ×3 at eight threads, `hash-folding` 1076, `debug-journal`
+        1085 ×3; Miri over `mark::tests::where_the_descent_stops` 5 green,
+        20 s, which runs the collector-thread read of the owner's record.
+      note: Edmond, 2026-09-19, ruling: the counter belongs to the thread where
+        the garbage is collected. No reason recorded with it. What stands
+        beside it, and is the model's rather than the ruling's: the
+        process-global word makes the prune's rate the busiest thread's, so a
+        thread that collects rarely finds every stamp stale at its own next
+        collection and prunes nothing; and the reason the rfc gave for the
+        global word — a component split across two threads' heaps maturing at
+        one rate — describes a shape `rfc/model/gc/rc-cycle.md` forbids, no
+        thread pointing into another thread's blocks. The rfc's
+        `dev/DECISIONS.md` clause is amended with this step.
+- [ ] S37.11 The mirror a verdict-side deferral records
+      done: a root deferred out of P at the close and one deferred out of R in
+        the same collection carry the same turnover mirror, read by a case that
+        defers one of each and re-offers both at one turnover
+      tier: T1 · role: —
+      note: found by the Critic of 2026-09-19 under S37.10, pre-existing.
+        `collect::initial_disposition` reads the count before
+        `Revalidation::close` increments it, while `CollectingThread::drop`
+        reads it after and hands that later count to `compaction`'s
+        verdict-side deferral, so a collection closing at commit 63 records 63
+        for one root and 64 for the other — one whole epoch apart. What made it
+        cheap was the process-global counter: the extra epoch was 64 commits
+        the whole process contributed, and it is now 64 collections of this
+        thread's own. The repair is to carry the collection's own reading to
+        the drop rather than re-read there.
+
 - [ ] S37.5 The turnover constant, against a corpus   *(after S37.4)*
       done: the volume the deferred-candidate lane re-offers is measured at the
         epoch turnover on a corpus, and S37.1's 64-collection turnover is

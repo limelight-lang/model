@@ -395,6 +395,10 @@ pub(crate) unsafe fn traced_from_a_collector_thread<T: Send + 'static>(
 ) -> std::thread::JoinHandle<T> {
     let token = crate::cycle::token::testing::Handed(crate::cycle::token::this_thread_token());
     let root = Sent(root);
+    // The stand-in traces against the owner's clock as the worker does
+    // (`crate::cycle::epoch::of_record`), so a stamp this thread's commits
+    // wrote reads fresh on a thread that has closed none.
+    let owner = Sent(crate::cycle::mutator_record::this_thread_record());
     let (held_sender, held) = std::sync::mpsc::channel();
     let collector = std::thread::spawn(move || {
         assert!(
@@ -425,9 +429,10 @@ pub(crate) unsafe fn traced_from_a_collector_thread<T: Send + 'static>(
 
         let mut read = Some(read);
         let mut answer = None;
+        let owner = owner.into_inner();
         for trace in 0..traces {
-            let mut arena =
-                TraceScratchArena::open().expect("the collector thread drew a workspace");
+            let mut arena = unsafe { TraceScratchArena::open_for_owner(owner) }
+                .expect("the collector thread drew a workspace");
             assert_eq!(
                 unsafe { mark::<crate::cells::AtomicCells>(&mut arena, root) },
                 MarkResult::Complete

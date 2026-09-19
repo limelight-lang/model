@@ -263,7 +263,10 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // would never start. The owner alone compares its full-width mirror and
     // moves the records; arming here lets this same safepoint trace the
     // re-offered roots.
-    if crate::cycle::queue::reoffer_deferred_if_epoch_moved(crate::cycle::epoch::commits()) {
+    let commits = crate::cycle::epoch::commits();
+    if crate::cycle::queue::reoffer_deferred_if_epoch_moved(commits)
+        || crate::cycle::queue::reoffer_deferred_when_nothing_else_stands(commits)
+    {
         arm();
     }
 

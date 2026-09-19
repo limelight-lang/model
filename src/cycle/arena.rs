@@ -318,6 +318,11 @@ pub(crate) struct TraceScratchArena {
     /// Whether a growth was refused by the budget rather than by the pool:
     /// what tells a batch that met its budget from one the pool refused.
     budget_met: bool,
+    /// The epoch the mark prunes against: the clock of the mutator whose
+    /// graph this trace walks, which is the opening thread's own for an
+    /// in-line collection and the served mutator's for a collector thread
+    /// ([`TraceScratchArena::open_for_owner`], `crate::cycle::epoch`).
+    epoch: u32,
     /// The bump cursor into the newest block, and the bytes left in it.
     cursor: *mut u8,
     left: usize,
@@ -387,6 +392,25 @@ impl TraceScratchArena {
     /// workspace at a time, and a second arena opened over a live one ends the
     /// process rather than granting the same bytes twice.
     pub(crate) fn open() -> Option<Self> {
+        Self::open_for(crate::cycle::epoch::current())
+    }
+
+    /// The same, for a trace of `owner`'s graph on a collector thread: the
+    /// mark prunes against that mutator's clock, since the stamps it reads
+    /// were written by that mutator's commits (`crate::cycle::epoch`). The
+    /// workspace is still this thread's.
+    ///
+    /// # Safety
+    /// `owner` is a live record, held for the length of the call by the trace
+    /// token or by the registry's hold.
+    pub(crate) unsafe fn open_for_owner(
+        owner: *const crate::cycle::mutator_record::MutatorRecord,
+    ) -> Option<Self> {
+        Self::open_for(unsafe { crate::cycle::epoch::of_record(owner) })
+    }
+
+    /// The arena of a trace pruning against `epoch`.
+    fn open_for(epoch: u32) -> Option<Self> {
         let base = crate::cycle::queue::lend_workspace_base();
         if base.is_null() {
             return None;
@@ -400,6 +424,7 @@ impl TraceScratchArena {
             drawn: 0,
             block_budget: usize::MAX,
             budget_met: false,
+            epoch,
             cursor: unsafe { payload.add(WORKSPACE_PREFIX_BYTES) },
             left: WORKSPACE_BUMP_BYTES,
             open_capacity: WORKSPACE_BUMP_BYTES,
@@ -1131,6 +1156,12 @@ impl TraceScratchArena {
     /// Whether a growth since the last reset was refused by the budget.
     pub(crate) fn met_its_budget(&self) -> bool {
         self.budget_met
+    }
+
+    /// The epoch this trace's mark prunes against: the clock of the mutator
+    /// whose graph it walks, fixed when the arena was opened.
+    pub(crate) fn epoch(&self) -> u32 {
+        self.epoch
     }
 
     /// The newest array of the touched list, or null while no block has

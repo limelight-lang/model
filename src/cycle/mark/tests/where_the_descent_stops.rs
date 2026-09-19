@@ -253,3 +253,52 @@ fn a_pinned_threshold_of_one_stops_the_second_collection_at_the_child() {
         "the third commit met the grandchild and aged it"
     );
 }
+
+/// A collector thread prunes against the epoch of the mutator it traces for,
+/// which is where the stamps it reads came from. Its own thread closes no
+/// commit of its own, so a trace that read its own clock would find every
+/// stamp of a busy mutator stale and descend into the mature core the prune
+/// exists to stop at.
+///
+/// The two clocks are told apart by a turnover this thread closes before it
+/// stamps anything: its own epoch is one, a thread the registry has just
+/// handed a record to reads zero.
+#[test]
+fn a_collectors_trace_prunes_against_the_owners_epoch() {
+    let _g = test_guard();
+    release_queue_segments();
+    let fresh = epoch::current();
+    epoch::close_a_turnover_of_commits();
+    assert_ne!(
+        epoch::current(),
+        fresh,
+        "this thread's clock stands an epoch past where it began"
+    );
+
+    let class = node_class("PruneForTheOwner");
+    let mut arena = Arena::new();
+    let (members, _keeper, child) = unsafe { a_ring_with_a_child(&mut arena, class) };
+    for age in 1..=3 {
+        assert_eq!(unsafe { ll_gc_collect_cycles() }, 0, "the keeper holds it");
+        assert_eq!(unsafe { stamp_of(child) }, (epoch::current(), age));
+    }
+    take_edges_pruned();
+
+    let pruned = unsafe {
+        crate::cycle::testing::traced_from_a_collector_thread(
+            members[0] as *mut RcHeader,
+            1,
+            None,
+            take_edges_pruned,
+        )
+    }
+    .join()
+    .expect("the collector thread traced");
+
+    assert_eq!(
+        pruned, 1,
+        "the edge into the mature child, read against the owner's epoch"
+    );
+    drop(arena);
+    release_queue_segments();
+}

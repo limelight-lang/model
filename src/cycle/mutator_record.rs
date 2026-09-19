@@ -98,7 +98,9 @@
 
 use std::cell::Cell;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 
 use crate::cycle::token::TraceToken;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
@@ -183,6 +185,15 @@ struct WriterLine {
     /// (`crate::cycle::worker`, "The thread, and the round over the
     /// records").
     freeing_dispositions: AtomicU32,
+    /// Commits this mutator has closed, which is the clock its maturation
+    /// stamps are written and read against (`crate::cycle::epoch`). Counted
+    /// up by the mutator at the close of its own commit and read by the
+    /// collector that traces this mutator's graph, which prunes against the
+    /// owner's epoch and never against its own thread's. A record handed out
+    /// again starts one turnover past where its last life left it
+    /// (`crate::cycle::epoch::a_new_lifes_count`), so no stamp that life wrote
+    /// reads fresh to this one.
+    commits: AtomicU64,
 }
 
 /// The line the collector, the exit and the registry share.
@@ -263,6 +274,7 @@ impl WriterLine {
             p_front_block: AtomicPtr::new(std::ptr::null_mut()),
             collecting: AtomicBool::new(false),
             freeing_dispositions: AtomicU32::new(0),
+            commits: AtomicU64::new(0),
         }
     }
 
@@ -274,6 +286,10 @@ impl WriterLine {
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         self.collecting.store(false, Ordering::Relaxed);
         self.freeing_dispositions.store(0, Ordering::Relaxed);
+        self.commits.store(
+            crate::cycle::epoch::a_new_lifes_count(self.commits.load(Ordering::Relaxed)),
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -419,6 +435,22 @@ impl MutatorRecord {
     #[inline]
     pub(crate) fn clear_collecting(&self) {
         self.writer.collecting.store(false, Ordering::Relaxed);
+    }
+
+    /// Count one commit this mutator closed, on the mutator's own thread.
+    #[inline]
+    pub(crate) fn note_commit(&self) {
+        let commits = self.writer.commits.load(Ordering::Relaxed);
+        self.writer.commits.store(commits + 1, Ordering::Relaxed);
+    }
+
+    /// Commits this mutator has closed since the registry handed the record
+    /// out. Read by the mutator itself and by the collector that traces for
+    /// it, where it is the clock the stamps in that mutator's entities were
+    /// written against.
+    #[inline]
+    pub(crate) fn commits(&self) -> u64 {
+        self.writer.commits.load(Ordering::Relaxed)
     }
 
     /// Note, on the mutator's thread, that the collection its poll fired

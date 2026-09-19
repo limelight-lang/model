@@ -230,7 +230,8 @@ struct MutatorCycleState {
     spares: [Cell<*mut BlockHeader>; SPARE_SEGMENTS],
     /// Full-width commit count as it stood when the deferred lane last became
     /// nonempty or was re-offered. Read against the poll's own count, which is
-    /// what tells a turnover from a commit ([`reoffer_deferred_if_epoch_moved`]).
+    /// what tells a turnover from a commit
+    /// ([`reoffer_deferred_if_epoch_moved`]).
     turnover_mirror: Cell<u64>,
     /// The deferred lane: candidates a later turnover rather than a decrement
     /// offers to a trace again. Written and read by the mutator alone, at a
@@ -1114,11 +1115,11 @@ pub(crate) fn dispose_candidates(batch: Batch, at_commits: u64) {
 /// Move a traced batch whole into this mutator's deferred lane, sweeping out of
 /// that lane the records whose entities completed their deaths on the way.
 ///
-/// `at_commits` is the process's commit count as the reading that found the
-/// component live saw it, and the caller takes it at that instant rather than
-/// letting this read the global: the two collection paths dispose of a batch
-/// on opposite sides of their own commit's increment, and a mirror taken here
-/// would put the same event one whole epoch apart between them. It is recorded
+/// `at_commits` is the collecting thread's commit count as the reading that
+/// found the component live saw it, and the caller takes it at that instant
+/// rather than letting this read the counter: the two collection paths dispose
+/// of a batch on opposite sides of their own commit's increment, and a mirror
+/// taken here would put the same event one whole epoch apart between them. It is recorded
 /// only when the lane goes from empty to occupied — the oldest deferred record
 /// is what decides when the mutator owes a re-offer.
 ///
@@ -1167,11 +1168,14 @@ pub(crate) fn reoffer_deferred_candidates() {
 ///
 /// The caller is the safepoint poll. What the comparison asks is whether a
 /// turnover has closed since the mirror, not whether a commit has: a deferred
-/// record waits out its epoch, and re-offering it at the next commit of any
-/// thread would give back the whole recall the deferral buys. The count is
-/// full-width rather than the header's two epoch bits so that four turnovers
-/// slept through read as four, and the mirror advances only with the
-/// mutator-side move, so a refused collection cannot make the lane disappear.
+/// record waits out its epoch, and re-offering it at this thread's next commit
+/// would give back the whole recall the deferral buys. The count is full-width
+/// rather than the header's two epoch bits so that four turnovers slept
+/// through read as four, and the mirror advances only with the mutator-side
+/// move, so a refused collection cannot make the lane disappear.
+///
+/// This is the ordinary condition; the one that keeps a lane from waiting for
+/// ever is [`reoffer_deferred_when_nothing_else_stands`].
 pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
     let state = mutator_state();
     if state.is_null() {
@@ -1188,6 +1192,44 @@ pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
     mutator_state.turnover_mirror.set(commits);
     reoffer_deferred_candidates();
     true
+}
+
+/// Re-offer the deferred lane at a poll that finds the active lane empty, and
+/// answer whether it moved any records.
+///
+/// **This is what keeps a deferred record from waiting for ever.** The epoch
+/// is the collecting thread's own clock (`crate::cycle::epoch`), and it moves
+/// only when this thread commits a collection, which it does only over a
+/// non-empty active lane (`crate::cycle::collect`, the empty-lane refusal). A
+/// thread that defers its last root and then registers nothing more would hold
+/// every slot in the lane until its exit, since `ll_free` hands back nothing
+/// under a candidate bit ([`defer_candidates`]).
+///
+/// What the early re-offer costs is recall on the re-offered roots, and it is
+/// paid at the moment the trace is cheapest: nothing else stands in the lane,
+/// and every mature target on the way is where the prune stops
+/// (`crate::cycle::mark`). The mirror advances with the move, so the lane is
+/// re-offered once per accumulation rather than at every poll.
+pub(crate) fn reoffer_deferred_when_nothing_else_stands(commits: u64) -> bool {
+    let state = mutator_state();
+    if state.is_null() {
+        return false;
+    }
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    if mutator_state.deferred().is_empty() || !the_active_lane_is_empty(mutator_state) {
+        return false;
+    }
+
+    mutator_state.turnover_mirror.set(commits);
+    reoffer_deferred_candidates();
+    true
+}
+
+/// Whether this mutator's active lane holds nothing: the ring empty and the
+/// overflow buffer with it, which is the shape no collection of this thread's
+/// can start over.
+fn the_active_lane_is_empty(mutator_state: &MutatorCycleState) -> bool {
+    mutator_state.overflow_len.get() == 0 && candidate_ring().is_none_or(|ring| ring.count() == 0)
 }
 
 /// Retire completed deaths at the mutator's exact reading, compacting the ring
@@ -1567,13 +1609,13 @@ pub(crate) fn spare_count() -> usize {
 }
 
 /// The commit count this mutator recorded when its deferred lane last became
-/// nonempty or was re-offered, which is what [`reoffer_deferred_if_epoch_moved`]
-/// compares its argument against.
+/// nonempty or was re-offered, which is what
+/// [`reoffer_deferred_if_epoch_moved`] compares its argument against.
 ///
-/// A case reads it rather than [`crate::cycle::epoch::commits`] because the
-/// counter is process-global: another thread's commit between the deferral and
-/// the reading would make the case's own arithmetic answer about a mirror it
-/// does not hold.
+/// A case reads it rather than [`crate::cycle::epoch::commits`] because a
+/// collection this thread drives between the deferral and the reading moves
+/// the counter and not the mirror, and what the re-offer compares is the
+/// mirror.
 #[cfg(test)]
 pub(crate) fn deferred_turnover_mirror() -> u64 {
     let state = mutator_state();

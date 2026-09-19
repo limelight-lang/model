@@ -1,5 +1,5 @@
-//! The collection epoch: how many commits this process has closed, and the
-//! two-bit stamp a maturation carries.
+//! The collection epoch: how many commits the collecting thread has closed,
+//! and the two-bit stamp a maturation carries.
 //!
 //! A maturation stamp says that the collection of one epoch read a component
 //! as held from outside — its exact validation reading it as externally
@@ -10,26 +10,24 @@
 //! (`rfc/model/gc/rc-cycle.md`, "Decision summary", the age-based pruning
 //! bullet, and `PLAN.md` S37.4, which re-offers the roots the turnover frees).
 //!
-//! **The counter is one process-global full-width word rather than a
-//! per-thread one.** Two threads that collect in the same wall-clock minute
-//! stamp with the same epoch, so a component split across their heaps matures
-//! at one rate; and the full width is what a per-thread mirror compares
-//! against to see a turnover it slept through, which two wrapped bits cannot
-//! answer (`rfc/dev/DECISIONS.md`, closing Y12 clause 8). What the header
-//! carries is the low two bits, because that is what byte 6 can spare
-//! (`crate::refcount::MATURATION_EPOCH_MASK`).
+//! **The clock is the collecting thread's own** (Edmond, 2026-09-19): the
+//! counter is a full-width word in the mutator's record
+//! (`crate::cycle::mutator_record`, the writer line), counted up by that
+//! thread's commits alone. A thread's stamps therefore age at the rate that
+//! thread collects at, where a process-global word would hand the rate to the
+//! busiest thread in the process and leave a thread that collects rarely
+//! reading every stamp of its own as stale. The entities of one mutator are
+//! that mutator's — no thread points into another thread's blocks
+//! (`rfc/model/gc/rc-cycle.md`, the disjointness the token's proof assumes) —
+//! so a collector thread tracing for a mutator reads the epoch out of that
+//! mutator's record and never out of its own thread's
+//! ([`of_record`]). The width is full because a per-thread mirror compares
+//! turnovers against it to see one it slept through, which two wrapped bits
+//! cannot answer; what the header carries is the low two bits, because that is
+//! what byte 6 can spare (`crate::refcount::MATURATION_EPOCH_MASK`).
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
+use crate::cycle::mutator_record::{MutatorRecord, this_thread_record};
 use crate::refcount::MATURATION_EPOCH_MASK;
-
-/// Commits closed since process start, counted by [`commit_closed`].
-///
-/// Relaxed throughout: the value orders nothing, and a collection that reads
-/// it one commit late stamps with the epoch of a moment that has just passed —
-/// which costs recall on a component whose stamp then reads stale a turnover
-/// early, and cannot make a live component look mature.
-static COMMITS: AtomicU64 = AtomicU64::new(0);
 
 /// Commits one epoch spans.
 ///
@@ -57,7 +55,18 @@ pub(crate) fn current() -> u32 {
         return pinned;
     }
 
-    epoch_of(COMMITS.load(Ordering::Relaxed))
+    epoch_of(commits())
+}
+
+/// The epoch the entities of `record`'s mutator were stamped in, for a
+/// collector thread tracing that mutator's graph: the owner's clock, since the
+/// stamps are the owner's commits' (module doc).
+///
+/// # Safety
+/// `record` is a live record, held for the length of the call by the trace
+/// token or by the registry's hold.
+pub(crate) unsafe fn of_record(record: *const MutatorRecord) -> u32 {
+    epoch_of(unsafe { (*record).commits() })
 }
 
 /// Count one commit: a collection has read every component its trace proposed,
@@ -66,9 +75,33 @@ pub(crate) fn current() -> u32 {
 /// The caller is the close of the commit itself
 /// (`crate::cycle::finalization::Revalidation::close`), so a trace that
 /// proposed nothing and a collection that aborted before its finalization
-/// count nothing.
+/// count nothing. It counts into the record of the thread that closed the
+/// commit, and a thread with no record — one that ran no `ll_thread_init`,
+/// and therefore no collection — counts nowhere.
 pub(crate) fn commit_closed() {
-    COMMITS.fetch_add(1, Ordering::Relaxed);
+    let record = this_thread_record();
+    debug_assert!(
+        !record.is_null(),
+        "a commit is closed by a collection, which a registered thread runs"
+    );
+    if record.is_null() {
+        return;
+    }
+
+    unsafe { (*record).note_commit() };
+}
+
+/// The count a record's next life starts from: one turnover past the life
+/// that just ended, so that no stamp the old life wrote reads fresh against
+/// the new one's clock. Zero would not do it — zero is epoch 0, which every
+/// stamp written in the old life's first epoch carries, and a thread that
+/// adopts the dead thread's blocks would prune those entities at its first
+/// collection (`crate::memory::heap`, thread exit and adoption).
+///
+/// The counter is monotone across the record's lives for that reason, and
+/// wraps with the epoch as any stamp four turnovers old does.
+pub(crate) fn a_new_lifes_count(ended_at: u64) -> u64 {
+    ended_at.wrapping_add(COMMITS_PER_EPOCH)
 }
 
 /// Which epoch a given number of closed commits stands in.
@@ -76,13 +109,19 @@ fn epoch_of(commits: u64) -> u32 {
     ((commits / COMMITS_PER_EPOCH) % EPOCHS) as u32
 }
 
-/// Commits closed process-wide.
+/// Commits this thread has closed, and zero for a thread with no record,
+/// which has closed none.
 ///
-/// The mutator queue compares this full-width value with its private mirror at a
-/// safepoint. The low two epoch bits in a header cannot answer whether four
+/// The mutator queue compares this full-width value with its private mirror at
+/// a safepoint. The low two epoch bits in a header cannot answer whether four
 /// turns elapsed while that mutator was asleep.
 pub(crate) fn commits() -> u64 {
-    COMMITS.load(Ordering::Relaxed)
+    let record = this_thread_record();
+    if record.is_null() {
+        return 0;
+    }
+
+    unsafe { (*record).commits() }
 }
 
 /// How many turnovers `commits` closed commits stand past process start.
@@ -98,9 +137,8 @@ pub(crate) fn turnovers_of(commits: u64) -> u64 {
 /// turnover's first commit.
 ///
 /// A case that probes with `commits + 1` is asking a question about the
-/// process-global counter rather than about the queue: at 63 commits past a
-/// turnover the increment crosses one, and every other case's collections move
-/// that counter while this one runs.
+/// counter rather than about the queue: at 63 commits past a turnover the
+/// increment crosses one.
 #[cfg(test)]
 pub(crate) fn one_commit_inside_the_turnover_of(commits: u64) -> u64 {
     commits - commits % COMMITS_PER_EPOCH + 1
@@ -109,12 +147,22 @@ pub(crate) fn one_commit_inside_the_turnover_of(commits: u64) -> u64 {
 /// The commit count one turnover past `commits`, which a case passes to the
 /// mutator poll in place of the counter.
 ///
-/// Driving 64 real commits is what [`pin`] exists to avoid: the counter is
-/// process-global, so a case that closed a turnover would move every other
-/// thread's epoch under it.
+/// Driving 64 real collections is what this spares the case; the counter
+/// itself is left where it stands, so a case that reads a stamp beside this
+/// one reads its own thread's clock unchanged.
 #[cfg(test)]
 pub(crate) fn one_turnover_past(commits: u64) -> u64 {
     commits + COMMITS_PER_EPOCH
+}
+
+/// Close as many commits as one epoch spans, tests only: a case that needs
+/// two epochs of one thread's clock drives the counter rather than 64
+/// collections.
+#[cfg(test)]
+pub(crate) fn close_a_turnover_of_commits() {
+    for _ in 0..COMMITS_PER_EPOCH {
+        commit_closed();
+    }
 }
 
 /// This thread's pinned epoch, or `None` when it reads the counter.
@@ -133,10 +181,10 @@ thread_local! {
 /// Hold this thread's reading of the epoch at `epoch` until the guard is
 /// dropped, so that a case can stamp in a chosen epoch and in the next one.
 ///
-/// A case cannot get there by driving commits: the counter is process-global
-/// and 64 commits move every other thread's epoch under it, which is a flake
-/// in whichever case was reading a stamp at the time. The pin is this thread's
-/// alone and leaves the counter where it stands.
+/// The pin answers for [`current`] alone, which is this thread's reading; a
+/// collector thread reading this thread's record ([`of_record`]) sees the
+/// counter, so a case that drives a collector arranges the epochs through the
+/// counter rather than through a pin.
 #[cfg(test)]
 pub(crate) fn pin(epoch: u32) -> EpochPin {
     let restored = PINNED.with(|cell| cell.replace(Some(epoch)));

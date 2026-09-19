@@ -8,6 +8,44 @@ never edited or deleted.
 
 ---
 
+## 2026-09-19 — the epoch counter is the collecting thread's, in its record
+
+**Decided (Edmond, S37.10).** The commit counter the maturation stamp is read
+against moves from a process-global word to the mutator's own record, where the
+thread that closes a commit counts it. A collector thread tracing for a mutator
+reads that mutator's counter (`cycle::epoch::of_record`, through
+`TraceScratchArena::open_for_owner`), never its own thread's: the stamps it
+meets were written by the owner's commits, and the entities of one mutator are
+that mutator's, no thread pointing into another thread's blocks
+(`rfc/model/gc/rc-cycle.md`, the disjointness the token's proof assumes).
+
+**Why:** the ruling carries no reason of its own. What stands beside it is the
+model's: a shared word hands the maturation rate to the busiest thread in the
+process, so a thread that collects rarely finds every stamp of its own stale at
+its next collection and prunes nothing — the economy S37.1 built is off for
+exactly the quiet thread. The rfc's reason for the shared word, one rate for a
+component split across two threads' heaps, describes a shape the disjointness
+above forbids (`rfc/dev/DECISIONS.md`, "the epoch counter belongs to the thread
+that collects").
+
+**What it costs:** eight bytes in the record's writer line and one load of that
+line per batch by the collector; what it removes is a word every collecting
+thread writes. A record the registry hands out starts **one turnover past**
+where its last life left it rather than at zero: zero is epoch 0, which every
+stamp of that life's first epoch carries, and a thread that adopted the dead
+thread's entity blocks would prune those entities at its first collection. A
+test pin answers for `epoch::current` alone, so a case that drives a collector
+arranges the two clocks through the counter.
+
+**The liveness the shared word used to provide** is replaced rather than
+dropped: the clock now moves only when this thread commits a collection, and a
+collection needs a root in its active lane, so a thread that deferred its last
+root and registered nothing more would hold those slots until its exit. The
+safepoint poll re-offers a deferred lane when the active lane is empty
+(`cycle::queue::reoffer_deferred_when_nothing_else_stands`), which costs recall
+on the re-offered roots at the moment the trace is cheapest. Found by the
+Critic of 2026-09-19 over the built step.
+
 ## 2026-09-19 — the collector thread is born by the OS entry, on a stack its slot keeps, and is woken by a word
 
 **Decided (S59).** The collector's birth was `std::thread::Builder::spawn`,

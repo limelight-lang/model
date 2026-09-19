@@ -8,10 +8,9 @@
 //! the reading that proves the component live, and the commit is counted at
 //! the close.
 //!
-//! The epoch is pinned rather than driven. The counter is process-global, so a
-//! case that closed 64 commits to reach a turnover would move the epoch under
-//! whatever other case was reading a stamp at the time
-//! (`crate::cycle::epoch::pin`).
+//! The epoch is pinned rather than driven: 64 commits is a turnover, and a
+//! case that drove them would spend the collections to say what one pinned
+//! reading says (`crate::cycle::epoch::pin`).
 
 use super::*;
 use crate::cycle::epoch;
@@ -106,10 +105,8 @@ fn a_component_read_live_ages_by_one_at_every_collection() {
 /// The commit that writes the stamps is what carries the process toward the
 /// next epoch, so a collection counts once however many components it read.
 ///
-/// The count is process-global and the assertion is an inequality for that
-/// reason: another thread's case may close a commit between the two readings.
-/// Three commits are driven rather than one so that the reading is not an
-/// inequality another thread can satisfy on this one's behalf.
+/// The count is this thread's record's, so the three commits driven here are
+/// the whole of the difference between the two readings.
 #[test]
 fn every_closed_commit_is_counted_toward_the_turnover() {
     let _g = test_guard();
@@ -133,8 +130,9 @@ fn every_closed_commit_is_counted_toward_the_turnover() {
         unsafe { commit_reading_live(&mut component) };
     }
 
-    assert!(
-        epoch::commits() >= before + 3,
+    assert_eq!(
+        epoch::commits(),
+        before + 3,
         "each commit closed is one commit counted"
     );
 

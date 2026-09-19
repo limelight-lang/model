@@ -20,12 +20,11 @@
 //! refuses the edge into that member, and its root waits for the turnover
 //! (`crate::cycle::mark`, "The mature live core is not descended into").
 //!
-//! **The commit counter is passed rather than driven.** It is process-global,
-//! and 64 commits closed here would move every other case's epoch under it
-//! (`crate::cycle::epoch::pin`). The mutator poll takes the count as its
-//! argument for that reason, so a case reads the mirror the deferral recorded
-//! and answers from it: one commit past that mirror is not a turnover, and one
-//! turnover past it is.
+//! **The commit counter is passed rather than driven.** A turnover is 64
+//! commits, and driving them is 64 collections to reach a reading the argument
+//! states. The mutator poll takes the count as its argument for that reason,
+//! so a case reads the mirror the deferral recorded and answers from it: one
+//! commit past that mirror is not a turnover, and one turnover past it is.
 
 use super::*;
 use crate::cycle::collect::InjectedVerdictRace;
@@ -153,6 +152,67 @@ fn a_matured_ring_that_loses_its_keeper_is_collected_at_the_turnover_and_not_bef
         2,
         "the re-offered roots reach the whole ring"
     );
+    assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
+}
+
+/// A thread whose active lane is empty re-offers its deferred lane at the next
+/// poll, without waiting for a turnover. The clock is the collecting thread's
+/// own and it moves only at a commit of that thread's own collection; a
+/// collection needs a root in the active lane, so a thread that deferred its
+/// last root would hold every slot of that lane until its exit — the whole
+/// recall the deferral buys, taken for ever rather than for an epoch
+/// (`crate::cycle::queue::reoffer_deferred_when_nothing_else_stands`).
+///
+/// The same fixture as the case above, driven by the production poll instead
+/// of by a reading handed to the re-offer.
+#[test]
+fn an_idle_thread_reoffers_its_deferred_lane_at_the_next_poll() {
+    let _g = test_guard();
+    release_queue_segments();
+    let _epoch = epoch::pin(1);
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+
+    let node = node_class("IdleReofferedNode", counting_destructor as *const ());
+    let mut arena = Arena::new();
+    let members = unsafe { ring(&mut arena, [node, node]) };
+    let keeper = {
+        let mut context = LLContext { arena: &mut arena };
+        unsafe {
+            new_constructed(
+                &mut context,
+                keeper_class("IdleReofferedKeeper"),
+                MemoryCategory::GcHeap,
+            )
+        }
+    };
+    unsafe { store_prop(&mut arena, keeper, prop_offset(0), members[0]) };
+    assert!(crate::cycle::queue::refill_spares());
+    assert_eq!(
+        unsafe { collect_with_a_reference_taken_mid_trace(&mut arena, keeper, members[0]) },
+        0,
+        "the reference the store took holds the whole ring"
+    );
+    assert_eq!(deferred_count(), 2);
+    assert_eq!(candidate_count(), 0, "nothing stands in the active lane");
+
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+    }
+    assert_eq!(deferred_count(), 2, "the ring is garbage no lane offers");
+
+    let mirror = deferred_turnover_mirror();
+    assert_eq!(
+        epoch::turnovers_of(crate::cycle::epoch::commits()),
+        epoch::turnovers_of(mirror),
+        "no turnover stands between the deferral and the poll"
+    );
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_maybe_collect() },
+        2,
+        "the poll re-offered the lane and the collection it armed freed the ring"
+    );
+    assert_eq!(deferred_count(), 0);
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
 }
 
