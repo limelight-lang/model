@@ -124,15 +124,19 @@ use crate::refcount::{
 /// traversal age threshold of `rfc/model/gc/rc-cycle.md`, "Candidate
 /// registration and trial deletion".
 ///
-/// 3, provisional after the only published value of the design this rule comes
-/// from (`rfc/model/gc/cycle/questions.md`, Y9: promote age 3). What a real
-/// workload wants is the pruned-edge share at 1, 2 and 3, which `PLAN.md`
-/// S37.7 measures and this constant then takes or keeps.
+/// 1, ruled by Edmond on 2026-09-19 over the two readings of `PLAN.md` S37.7
+/// and S37.5 (`dev/DECISIONS.md`, "the traversal age threshold is one"): the
+/// pruned-edge share is `1 - k * q` at retirement rate `q`, so every step of
+/// the threshold costs one `q` of the population, while what a pruned edge
+/// delays — a component that dies behind it — waits the rest of the epoch
+/// whatever the threshold is. The 3 this constant carried until then was YRC's
+/// published value and was measured nowhere
+/// (`rfc/model/gc/cycle/questions.md`, Y9).
 ///
 /// A threshold above [`MATURATION_AGE_MAX`] would prune nothing, the age
 /// saturating there, so the assertion below is the whole of what the two
 /// numbers owe each other.
-pub(crate) const TRAVERSAL_AGE_THRESHOLD: u32 = 3;
+pub(crate) const TRAVERSAL_AGE_THRESHOLD: u32 = 1;
 
 const _: () = assert!(
     TRAVERSAL_AGE_THRESHOLD <= MATURATION_AGE_MAX,

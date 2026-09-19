@@ -30,7 +30,7 @@ use super::*;
 use crate::cycle::collect::InjectedVerdictRace;
 use crate::cycle::collect::collect_under_pressure;
 use crate::cycle::epoch;
-use crate::cycle::mark::take_edges_pruned;
+use crate::cycle::mark::{TRAVERSAL_AGE_THRESHOLD, take_edges_pruned};
 use crate::cycle::queue::verdicts::{Verdict, discard_standing_verdicts};
 use crate::cycle::queue::{
     candidate_count, deferred_count, deferred_turnover_mirror, refill_spares,
@@ -461,7 +461,7 @@ fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnov
     );
 
     take_edges_pruned();
-    for age in 1..=2 {
+    for age in 1..TRAVERSAL_AGE_THRESHOLD {
         assert_eq!(
             unsafe { ll_gc_collect_cycles() },
             0,
@@ -476,9 +476,17 @@ fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnov
     }
     assert!(refill_spares());
     assert_eq!(unsafe { ll_gc_collect_cycles() }, 0);
-    assert_eq!(unsafe { stamp_of(member) }, (0, 3), "at the threshold");
+    assert_eq!(
+        unsafe { stamp_of(member) },
+        (0, TRAVERSAL_AGE_THRESHOLD),
+        "at the threshold"
+    );
     assert_eq!(candidate_count(), 0);
-    assert_eq!(deferred_count(), 1, "the third reading deferred the root");
+    assert_eq!(
+        deferred_count(),
+        1,
+        "the reading that put the member at the threshold deferred the root"
+    );
     assert_eq!(
         take_edges_pruned(),
         0,

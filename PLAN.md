@@ -19,10 +19,11 @@ Updated: 2026-09-19 · Active: S37, whose two open steps were unblocked the same
 day: Edmond ruled that a corpus over `ll-model`'s own heap is not coming and
 test data is what the calibration gets (`dev/DECISIONS.md`, "the calibration
 runs on a parameterized test heap, and the entry names its parameters"). S37.5
-measures the turnover and S37.7 the traced share, both now on a test heap whose
-parameters the entry names. Both steps' readings were taken on 2026-09-19: S37.5 is closed, and
-S37.7 waits on one ruling — the preference between rows spared and recall
-latency, both of which are now measured. The prose sections below are the backlog a stage is
+measured the turnover and S37.7 the traced share, both on a test heap whose
+parameters the entry names, and both closed the same day; the threshold `k` is
+one by Edmond's ruling over those readings. **Every step of S37 is closed**, so
+what stands between the stage and its deletion (rule 23.1.3) is its own gate:
+the Critic over S37.7's repair, then the Code Reviewer over the stage. The prose sections below are the backlog a stage is
 drawn from.
 The S36 residue's four allocation sites are closed, the last of them on
 2026-09-19: the three on the exit path (`dev/DECISIONS.md`, "the exit path
@@ -309,7 +310,7 @@ stage is what makes a trace affordable rather than what tunes it.
         live-read rate, so a single figure is that input read back. Naming the
         parameters and reporting the curve keeps the reading honest about what
         it depends on.
-- [ ] S37.7 The traced share and `k`, against a corpus
+- [x] S37.7 The traced share and `k`, against a corpus
       done: the share of a touched block's slots a collection traces is measured
         on a parameterized test heap over `ll-model`'s own blocks with the
         denominator named — occupied slots or all slots — and the pruned-edge
@@ -360,6 +361,12 @@ stage is what makes a trace affordable rather than what tunes it.
         waits `N − d + 1` collections, up to 64. So both sides of the trade are
         measured — rows spared at `1 − k·q`, latency at up to `N` — and what is
         left is the preference between them, which is Edmond's to state.
+      handoff: closed 2026-09-19 by Edmond's ruling that the threshold is one
+        (`dev/DECISIONS.md`, "the traversal age threshold is one").
+        `TRAVERSAL_AGE_THRESHOLD` is 1, and the five cases that encoded the 3
+        read the constant instead; the pinned-threshold case pins 2, a value the
+        constant does not carry. Both readings behind the ruling are in
+        `dev/BENCHMARKS.md`, 2026-09-19.
 - [x] S37.2 The acyclic gate
       done: an entity of a class the compiler marked acyclic never enters the
         candidate set, the mark reaching `object::stamp_into` through the class

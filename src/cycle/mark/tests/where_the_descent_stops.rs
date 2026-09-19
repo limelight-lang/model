@@ -46,8 +46,8 @@ unsafe fn a_ring_with_a_child(
     (members, keeper, child)
 }
 
-/// The third commit puts the child at the threshold and the fourth collection
-/// is the one that stops at it.
+/// The commit that puts the child at [`TRAVERSAL_AGE_THRESHOLD`] is followed by
+/// the collection that stops at it.
 ///
 /// What says the descent stopped is a second child built after the third
 /// commit: any collection that reaches the first one reaches it too and stamps
@@ -55,7 +55,7 @@ unsafe fn a_ring_with_a_child(
 /// edges says the same thing from the other side, and it is one — the ring's
 /// own two edges name roots.
 #[test]
-fn the_fourth_collection_stops_at_the_child_the_third_matured() {
+fn the_collection_after_the_one_that_matured_the_child_stops_at_it() {
     let _g = test_guard();
     release_queue_segments();
     let _epoch = epoch::pin(0);
@@ -64,7 +64,7 @@ fn the_fourth_collection_stops_at_the_child_the_third_matured() {
 
     let (members, _keeper, child) = unsafe { a_ring_with_a_child(&mut arena, class) };
     take_edges_pruned();
-    for age in 1..=3 {
+    for age in 1..=TRAVERSAL_AGE_THRESHOLD {
         assert_eq!(
             unsafe { ll_gc_collect_cycles() },
             0,
@@ -94,11 +94,12 @@ fn the_fourth_collection_stops_at_the_child_the_third_matured() {
     );
     // A fixture check and not a discriminator: a commit that had met the child
     // would have written the same saturated stamp back.
-    assert_eq!(unsafe { stamp_of(child) }, (0, 3));
+    assert_eq!(unsafe { stamp_of(child) }, (0, TRAVERSAL_AGE_THRESHOLD));
+    let met_every_collection = (TRAVERSAL_AGE_THRESHOLD + 1).min(MATURATION_AGE_MAX);
     assert_eq!(
         unsafe { ages(&members) },
-        vec![3, 3],
-        "the ring is met at every collection and its age saturates"
+        vec![met_every_collection, met_every_collection],
+        "the ring is met at every collection, and its age climbs until it saturates"
     );
 }
 
@@ -171,7 +172,7 @@ fn a_stamp_of_another_epoch_prunes_no_edge() {
     let (_members, _keeper, child) = {
         let _epoch = epoch::pin(0);
         let built = unsafe { a_ring_with_a_child(&mut arena, class) };
-        for _ in 0..3 {
+        for _ in 0..TRAVERSAL_AGE_THRESHOLD {
             assert_eq!(
                 unsafe { ll_gc_collect_cycles() },
                 0,
@@ -180,7 +181,11 @@ fn a_stamp_of_another_epoch_prunes_no_edge() {
         }
         built
     };
-    assert_eq!(unsafe { stamp_of(child) }, (0, 3), "at the threshold");
+    assert_eq!(
+        unsafe { stamp_of(child) },
+        (0, TRAVERSAL_AGE_THRESHOLD),
+        "at the threshold"
+    );
 
     let _epoch = epoch::pin(1);
     take_edges_pruned();
@@ -198,16 +203,16 @@ fn a_stamp_of_another_epoch_prunes_no_edge() {
 }
 
 /// A pinned threshold moves the collection the descent stops at, and nothing
-/// else: at `k = 1` the first commit puts the child at the threshold and the
-/// second collection is the one that stops at it.
+/// else: at `k = 2` the second commit puts the child at the threshold and the
+/// third collection is the one that stops at it.
 ///
-/// The same reading as [`the_fourth_collection_stops_at_the_child_the_third_matured`]
-/// two commits earlier, which is what the pin exists for: the pruned-edge
-/// count at a `k` the constant does not carry (`PLAN.md` S37.7). The pin is
-/// dropped before the last collection, which reads the constant again and
-/// descends into a child at age 1.
+/// The same reading as [`the_collection_after_the_one_that_matured_the_child_stops_at_it`]
+/// one commit later, which is what the pin exists for: the pruned-edge count at
+/// a `k` the constant does not carry (`PLAN.md` S37.7). The pin is dropped
+/// before the last collection, which reads the constant again — one — and stops
+/// at a child that stands well above it.
 #[test]
-fn a_pinned_threshold_of_one_stops_the_second_collection_at_the_child() {
+fn a_pinned_threshold_of_two_stops_the_third_collection_at_the_child() {
     let _g = test_guard();
     release_queue_segments();
     let _epoch = epoch::pin(0);
@@ -218,34 +223,36 @@ fn a_pinned_threshold_of_one_stops_the_second_collection_at_the_child() {
     let grandchild = unsafe { a_held_object(&mut arena, class) };
     unsafe { store_prop(&mut arena, child, prop_offset(1), grandchild) };
 
-    let pin = pin_threshold(1);
+    let pin = pin_threshold(2);
     take_edges_pruned();
-    assert_eq!(unsafe { ll_gc_collect_cycles() }, 0);
-    assert_eq!(unsafe { stamp_of(child) }, (0, 1));
-    assert_eq!(
-        take_edges_pruned(),
-        0,
-        "the first collection reads the child unstamped"
-    );
+    for age in 1..=2 {
+        assert_eq!(unsafe { ll_gc_collect_cycles() }, 0);
+        assert_eq!(unsafe { stamp_of(child) }, (0, age));
+        assert_eq!(
+            take_edges_pruned(),
+            0,
+            "the collection that leaves the child at {age} read it below the pin"
+        );
+    }
 
     assert_eq!(unsafe { ll_gc_collect_cycles() }, 0);
     assert_eq!(
         take_edges_pruned(),
         1,
-        "the second stops at the child, which the first commit put at the threshold"
+        "the third stops at the child, which the second commit put at the threshold"
     );
     assert_eq!(
         unsafe { stamp_of(grandchild) },
-        (0, 1),
-        "the grandchild keeps the first commit's stamp: nothing behind the child was met"
+        (0, 2),
+        "the grandchild keeps the second commit's stamp: nothing behind the child was met"
     );
 
     drop(pin);
     assert_eq!(unsafe { ll_gc_collect_cycles() }, 0);
     assert_eq!(
         take_edges_pruned(),
-        0,
-        "the constant is 3 again, and a child at age 1 is descended into"
+        1,
+        "the constant is one again, and a child above it is stopped at"
     );
     assert_eq!(
         unsafe { stamp_of(grandchild) },
@@ -287,7 +294,7 @@ fn a_collectors_trace_prunes_against_the_owners_epoch() {
     let class = node_class("PruneForTheOwner");
     let mut arena = Arena::new();
     let (members, _keeper, child) = unsafe { a_ring_with_a_child(&mut arena, class) };
-    for age in 1..=3 {
+    for age in 1..=TRAVERSAL_AGE_THRESHOLD {
         assert_eq!(unsafe { ll_gc_collect_cycles() }, 0, "the keeper holds it");
         assert_eq!(unsafe { stamp_of(child) }, (epoch::current(), age));
     }

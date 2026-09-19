@@ -8,6 +8,30 @@ never edited or deleted.
 
 ---
 
+## 2026-09-19 (third) — the traversal age threshold is one
+
+**Ruled by Edmond**, over the two readings taken the same day. `k` moves from 3
+to 1: a component is left undescended after the first collection that reads it
+live instead of the third.
+
+**Why:** the pruned-edge share is `1 - k * q` at retirement rate `q`
+(`dev/BENCHMARKS.md`, "the pruned share against a named survival rate"), so
+every step of the threshold costs one `q` of the population — on the measured
+load the mark resolves 264 rows of 672 at `k = 1` against 536 at `k = 3`. What a
+pruned edge costs is latency and not memory: a component that dies behind one
+waits `N - d + 1` collections, up to an epoch, whatever the threshold is, and
+`k` changes how many components pay that wait rather than how long it is
+(`dev/BENCHMARKS.md`, "what a turnover re-offers, and what a deferral costs").
+The saving is spent on every collection over a long-lived heap; the latency
+falls on the rarer event of a cycle dying after it matured. **Rejected:** the 3
+this constant carried, which was YRC's published value and was measured nowhere
+(`rfc/model/gc/cycle/questions.md`, Y9). **Cost:** a component read live once is
+treated as long-lived, so more of them are deferred on the evidence of a single
+reading; the bound on the damage is the epoch, and no workload's age
+distribution is known to price it better. **What moved with it:** five cases
+that encoded the 3 now read `TRAVERSAL_AGE_THRESHOLD`, and the pinned-threshold
+case pins 2, a value the constant does not carry.
+
 ## 2026-09-19 (second) — the calibration runs on a parameterized test heap, and the entry names its parameters
 
 **Decided (Edmond).** A corpus over `ll-model`'s own heap is not coming, and test
