@@ -53,9 +53,8 @@
 //! # The thread, and the round over the records
 //!
 //! The elder collector thread is born by [`ensure_thread`] and never at
-//! startup: at the first wake a mutator's poll would send it — a block of
-//! R filled, the poll having a frame that may allocate
-//! (`crate::cycle::queue::signal_the_collector_if_due`) — and at each
+//! startup: at the first wake a mutator's poll would send it — a block of R
+//! filled (`crate::cycle::queue::signal_the_collector_if_due`) — and at each
 //! ending of a pressure collection
 //! (`crate::cycle::collect::collect_under_pressure`), so that a process
 //! that never fills a block and never runs short holds no thread. It starts
@@ -274,9 +273,9 @@ struct Collector {
     /// it at once. Cleared when the thread announces itself alive, so a
     /// wake sent to an empty slot is lost rather than handed to the next
     /// birth as a round nobody asked for.
-    woken: Mutex<bool>,
-    /// What the waits sleep on, notified with every set of the word.
-    wakes: Condvar,
+    wake_pending: Mutex<bool>,
+    /// What the waits sleep on, notified with every set of the wake word.
+    wake_signal: Condvar,
     /// Rounds in a row this collector made no batch and read no mutator at
     /// the threshold, its own count, read by the elder to end an idle
     /// sibling.
@@ -287,8 +286,8 @@ impl Collector {
     const fn unborn() -> Self {
         Self {
             state: AtomicU8::new(UNBORN),
-            woken: Mutex::new(false),
-            wakes: Condvar::new(),
+            wake_pending: Mutex::new(false),
+            wake_signal: Condvar::new(),
             idle_rounds: AtomicUsize::new(0),
         }
     }
@@ -321,12 +320,18 @@ fn collector_cap() -> usize {
 ///
 /// The birth is a thread the OS entry creates on a stack the slot keeps
 /// ([`birth`]), so the path meets no allocation whose refusal is an abort.
+/// **A call that births waits for the slot's last thread first**: the stack
+/// is the slot's, so the birth joins what stood there, which returns once
+/// that thread's teardown is done. A call that births nothing — the common
+/// one, the thread standing — takes no lock and waits for nothing.
 pub(crate) fn ensure_thread() {
     ensure_collector(ELDER);
 }
 
 /// Start the collector of slot `index` unless it stands or is starting, or a
-/// birth was refused inside the interval; true when this call spawned it.
+/// birth was refused inside the interval; true when this call spawned it. A
+/// call that spawns waits for the slot's last thread, as [`ensure_thread`]
+/// says.
 fn ensure_collector(index: usize) -> bool {
     #[cfg(test)]
     if !testing::births_permitted() {
@@ -384,41 +389,45 @@ fn note_refused_birth() {
 /// costs nothing but the round it did not start: the poll leaves its flag
 /// standing and sends again at its next poll
 /// (`crate::cycle::queue::signal_the_collector_if_due`), and a sibling's
-/// first round runs at its birth.
+/// first round runs at its birth. The one wake that answers true and starts
+/// no round of its own is the one sent between [`forget_wakes`] and the
+/// `ALIVE` store of [`begin_the_thread`]: it is cleared there, and the
+/// thread's first round, which runs before its first wait, stands in for
+/// it.
 pub(crate) fn wake(index: usize) -> bool {
     let collector = &COLLECTORS[index];
     *collector
-        .woken
+        .wake_pending
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
-    collector.wakes.notify_all();
+    collector.wake_signal.notify_all();
     is_alive(index)
 }
 
-/// Sleep on slot `index`'s word until a wake or `timeout`, and take the
-/// word either way: a wake that lands as the timeout runs out is spent on
-/// the round that follows rather than kept for the next wait. The thread
+/// Sleep on slot `index`'s wake word until a wake or `timeout`, and take
+/// the word either way: a wake that lands as the timeout runs out is spent
+/// on the round that follows rather than kept for the next wait. The thread
 /// blocks on the condvar and never re-reads the word in a loop of its own,
 /// which is what lets it make progress under Miri's weak-memory emulation
 /// (`dev/WORKFLOW.md`, Miri, "A test thread waits, it does not spin").
 fn wait_for_a_wake(index: usize, timeout: Duration) {
     let collector = &COLLECTORS[index];
-    let woken = collector
-        .woken
+    let pending = collector
+        .wake_pending
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (mut woken, _) = collector
-        .wakes
-        .wait_timeout_while(woken, timeout, |woken| !*woken)
+    let (mut pending, _) = collector
+        .wake_signal
+        .wait_timeout_while(pending, timeout, |pending| !*pending)
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *woken = false;
+    *pending = false;
 }
 
-/// Clear slot `index`'s word, so that a wake sent while no thread stood is
-/// not the next thread's first wait ended.
+/// Clear slot `index`'s wake word, so that a wake sent while no thread
+/// stood is not the next thread's first wait ended.
 fn forget_wakes(index: usize) {
     *COLLECTORS[index]
-        .woken
+        .wake_pending
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
 }
@@ -428,9 +437,12 @@ fn is_alive(index: usize) -> bool {
     COLLECTORS[index].state.load(Ordering::Acquire) == ALIVE
 }
 
-/// Whether slot `index` holds no thread at all: none born, one ended, or
-/// one whose birth was refused. A slot between its spawn and its init is
-/// neither.
+/// Whether slot `index` holds no thread of the crate's: none born, one
+/// ended, or one whose birth was refused. A slot between its spawn and its
+/// init is neither. An ended thread's OS thread may still stand — the word
+/// goes unborn on the thread itself, before glibc's teardown and while the
+/// slot still holds it to be joined ([`birth`]) — so this answers who reads
+/// the mutators of the slot and never whether a stack is free.
 fn has_no_thread(index: usize) -> bool {
     COLLECTORS[index].state.load(Ordering::Acquire) == UNBORN
 }
@@ -440,8 +452,7 @@ fn has_no_thread(index: usize) -> bool {
 /// however this returns — a refused base block, a test's retire, the
 /// elder's end, or a panic in a round that unwinds out of here — after the
 /// runtime exit, so that a later birth can happen rather than read a thread
-/// that no longer exists; a wake after the end sets a word the next birth
-/// clears before it announces itself.
+/// that no longer exists.
 fn thread_body(index: usize) {
     if !begin_the_thread(index) {
         return;
@@ -492,10 +503,7 @@ fn thread_body(index: usize) {
 ///
 /// A refused base block is a birth that did not happen
 /// (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is
-/// allocator-issued"), and a call after the interval births again. Past the
-/// draw the word is cleared before the state is stored, so a wake that
-/// follows the state is the first this thread's wait can take, and one sent
-/// to the empty slot is lost.
+/// allocator-issued"), and a call after the interval births again.
 fn begin_the_thread(index: usize) -> bool {
     let started = {
         #[cfg(test)]
@@ -507,6 +515,8 @@ fn begin_the_thread(index: usize) -> bool {
         return false;
     }
 
+    // Before the state, so that the first wake this thread's wait can take
+    // is one sent after the state that wake answers on.
     forget_wakes(index);
     COLLECTORS[index].state.store(ALIVE, Ordering::Release);
     true
@@ -1058,7 +1068,7 @@ impl Drop for WithdrawOnDrop<'_> {
 /// The requests a collector left standing on silent mutators: a fixed array
 /// on the collector thread's frame, read at the checkpoints and withdrawn
 /// when the thread ends. A standing request costs no wait; the consent
-/// wake cannot be lost, since the thread's wake token makes a wake sent
+/// wake cannot be lost, since the slot's wake word makes a wake sent
 /// mid-round end the next wait at once.
 pub(crate) struct Standing {
     slot: usize,

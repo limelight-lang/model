@@ -430,10 +430,13 @@ other five failed in 500 runs. A seventh of the same class,
 `blocks_out` across the child's life with the guard taken, failed twice in
 43 `debug-journal` runs at eight threads on 2026-09-18 (a tree whose source
 changes were comments), the reading one block off, and three times more in
-the 33 runs of that day's later stages, all on the trees of S59 (3 in 21;
-112 against 113 each time) against none in 12 on S58's — a lead for the
-repair, not a finding: a collector life runs `ll_thread_exit` three times
-since S59, its loop's, the trampoline's and the guard's. What would close them is
+the 33 runs of that day's later work, all on trees where the collector's
+birth is a raw thread (3 in 21; 112 against 113 each time) against none in
+12 on the trees before it — a lead for the repair, not a finding: a
+collector life runs `ll_thread_exit` three times since that change, its
+loop's, the trampoline's and the guard's. One further red came on
+2026-09-19, in a run whose name the command's tail did not keep, and seven
+`debug-journal` runs of the same tree after it were green. What would close them is
 a reading of a named thread's figures that outlives the thread, a structure
 rather than a patch; Edmond deferred building it on 2026-09-18 ("fix it
 later"), so the watch stands and the flake is re-run past, and until it is
@@ -673,12 +676,15 @@ Three things about the command itself are load-bearing:
 Known limits: the crate's integer-to-pointer casts put Miri into
 permissive provenance in the most pointer-heavy modules, so a clean run
 is weaker evidence there than elsewhere. Tree Borrows cannot run at all
-until those casts go away — it requires strict provenance. And the
-collector thread's birth (`cycle::worker::birth`) has no Miri coverage by
-construction: Miri models neither a user-provided stack nor `mprotect`, so
-under `cfg(miri)` the thread is the std spawn's and the raw entry's lines —
-the attribute, `pthread_create`, the guard, the join — are executed by the
-suite alone.
+until those casts go away — it requires strict provenance. And the operating system's
+half of the collector thread's birth (`cycle::worker::birth`) has no Miri
+coverage by construction: Miri models neither a user-provided stack nor
+`mprotect`, so under `cfg(miri)` the thread is the std spawn's and the raw
+entry's lines — the attribute, `pthread_create`, the stack and its guard,
+the join — are executed by the suite alone. What Miri does run there is the
+slot protocol above those lines, the same code on every arm: the slot's
+lock from the join through the create to the store, and the wake word the
+waits take.
 
 **A test keeps one raw pointer per object and reuses it**, which is the
 shape generated code actually has. Taking a fresh `&mut` per call retags

@@ -10,6 +10,13 @@
 //! `pthread_create` on unix and `CreateThread` on windows instead, declared
 //! raw as `memory::os` declares `mmap`, with no dependency taken for it.
 //!
+//! **The slot protocol is this module's and the entries are the arms'.**
+//! [`SLOTS`] holds the thread of each slot since its last join, and
+//! [`spawn`] locks the slot, joins what stood in it, creates through
+//! [`platform::create`] and stores what it made; each arm exports its own
+//! [`platform::Thread`], `create`, `join` and `name_this_thread`, and
+//! decides nothing about the order.
+//!
 //! **One stack per slot, mapped once and kept.** On unix the thread runs on
 //! a stack the manager maps through `memory::os` the first time the slot is
 //! born, [`COLLECTOR_STACK_BYTES`] over a guard of [`STACK_GUARD_BYTES`]
@@ -25,12 +32,13 @@
 //! store of the new thread, so a slot that reads `UNBORN` before its
 //! parent has stored the thread — the child's word is its own — is joined
 //! by the next birth all the same, which waits on the mutex for the
-//! store. A join that fails is a refused birth, never a reuse; glibc gives
-//! no such failure for a joinable thread, so that branch has no arm.
+//! store. A join that fails is a refused birth, never a reuse; the failure
+//! glibc documents for a joinable thread is `EDEADLK`, a thread joining
+//! itself, which no caller here can be, so the branch has no arm.
 //! Windows has no user-stack entry, so its thread runs on the stack the OS
 //! gives it, and the join is a wait on the handle.
 //!
-//! **The trampoline ends the life.** Both entries run [`run_the_life`]:
+//! **The trampoline ends the life.** Every entry runs [`run_the_life`]:
 //! `thread_body` under `catch_unwind`, since a panic out of an `extern`
 //! function is an abort; then `ll_thread_exit`, idempotent for the path
 //! that already ran it; then the state word to `UNBORN`, so the slot reads
@@ -46,9 +54,10 @@
 //! raw thread's own lines therefore have no Miri coverage by construction
 //! (`dev/WORKFLOW.md`, "Known limits").
 
+use std::sync::Mutex;
 use std::sync::atomic::Ordering;
 
-use super::{COLLECTORS, UNBORN, thread_body};
+use super::{COLLECTORS, MAX_COLLECTORS, UNBORN, thread_body};
 
 /// The collector thread's stack: 2 MiB, std's default for a spawned thread
 /// and not a measured figure. The suite passes under it in the debug
@@ -68,13 +77,50 @@ pub(crate) const COLLECTOR_STACK_BYTES: usize = 2 * 1024 * 1024;
 #[cfg(all(unix, not(miri)))]
 pub(crate) const STACK_GUARD_BYTES: usize = crate::memory::block_pool::BLOCK_SIZE;
 
+/// `map_aligned` takes the guard as its alignment and asks a multiple of it.
+#[cfg(all(unix, not(miri)))]
+const _: () = assert!(COLLECTOR_STACK_BYTES % STACK_GUARD_BYTES == 0);
+
+/// The collector threads' names by slot, NUL-terminated for the unix arm's
+/// `pthread_setname_np`, whose limit is sixteen bytes with the terminator;
+/// the Miri arm hands std the name without the terminator, which std
+/// refuses.
+#[cfg(any(miri, target_os = "linux", target_os = "android"))]
+const NAMES: [&str; MAX_COLLECTORS] = [
+    "ll-collector\0",
+    "ll-collector-1\0",
+    "ll-collector-2\0",
+    "ll-collector-3\0",
+    "ll-collector-4\0",
+    "ll-collector-5\0",
+    "ll-collector-6\0",
+    "ll-collector-7\0",
+];
+
+/// The thread of each slot since its last join, `None` for a slot whose
+/// thread was joined or never made. The lock is held from a birth's join
+/// through its create to its store, so a join asked for meanwhile waits for
+/// the thread the birth made rather than reading an empty slot.
+static SLOTS: [Mutex<Option<platform::Thread>>; MAX_COLLECTORS] =
+    [const { Mutex::new(None) }; MAX_COLLECTORS];
+
 /// Create slot `index`'s thread, joining the one that stood in the slot
 /// before; true when the thread is running. False is a refused birth: a
 /// stack the operating system would not map, a thread it would not create,
 /// or a previous thread that could not be joined, each left for a later
 /// birth to try again. The caller holds the slot at `STARTING`.
 pub(super) fn spawn(index: usize) -> bool {
-    platform::spawn(index)
+    let mut slot = lock(index);
+    if !join_under(&mut slot) {
+        return false;
+    }
+
+    let Some(thread) = platform::create(index) else {
+        return false;
+    };
+
+    *slot = Some(thread);
+    true
 }
 
 /// Join every slot's thread that stood since the last join, tests only:
@@ -85,7 +131,42 @@ pub(super) fn spawn(index: usize) -> bool {
 /// then, so the pass after the last birth's join is the last.
 #[cfg(test)]
 pub(crate) fn join_every_slot() {
-    while (0..super::MAX_COLLECTORS).fold(false, |joined, index| platform::join(index) || joined) {}
+    while (0..MAX_COLLECTORS).fold(false, |joined, index| join(index) | joined) {}
+}
+
+/// Join the thread that stood in slot `index`, if one does, and answer
+/// whether one did: true is a thread joined, false an empty slot or a join
+/// the operating system refused. Waits on the slot's lock through a birth
+/// in flight, so the thread that birth stores is the one joined.
+#[cfg(test)]
+fn join(index: usize) -> bool {
+    let mut slot = lock(index);
+    let stood = slot.is_some();
+    join_under(&mut slot) && stood
+}
+
+/// Join the thread `slot` holds under its lock; true when the slot holds no
+/// unjoined thread afterwards, which an empty slot does trivially. A join
+/// the operating system refused puts the thread back for the next attempt.
+fn join_under(slot: &mut Option<platform::Thread>) -> bool {
+    let Some(thread) = slot.take() else {
+        return true;
+    };
+
+    if let Err(thread) = platform::join(thread) {
+        *slot = Some(thread);
+        return false;
+    }
+
+    true
+}
+
+/// Slot `index`'s thread under its lock, a poisoned lock read through: the
+/// panic of a case that held it says nothing about the thread inside.
+fn lock(index: usize) -> std::sync::MutexGuard<'static, Option<platform::Thread>> {
+    SLOTS[index]
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Makes the next birth's stack read as refused by the operating system,
@@ -97,9 +178,9 @@ pub(crate) static REFUSE_NEXT_STACK: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Makes the next `pthread_create` read as refused — `EAGAIN`, the refusal
-/// a short process meets — tests only, after the stack was granted. It
-/// names the create and nothing else; the guard's `mprotect` has no such
-/// arm, its failure being one no test can order.
+/// a process out of threads meets — tests only, after the stack was
+/// granted. It names the create and nothing else; the guard's `mprotect`
+/// has no such arm, its failure being one no test can order.
 #[cfg(all(test, unix, not(miri)))]
 pub(crate) static REFUSE_NEXT_CREATE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -117,10 +198,8 @@ pub(crate) fn stack_base_of(index: usize) -> usize {
 /// word to unborn after it.
 pub(super) fn run_the_life(index: usize) {
     platform::name_this_thread(index);
-    // A panic in a round unwinds out of `thread_body` and is caught here
-    // rather than at the entry, which is `extern` and would abort; the
-    // case that raised it reads the word, which goes unborn below whether
-    // the life ended by its loop or by the panic.
+    // The word below goes unborn whether the life ended by its loop or by
+    // a panic, and the case that raised the panic reads it.
     let _ = std::panic::catch_unwind(|| thread_body(index));
     // Idempotent for the loop's own ending, which ran it already; on the
     // unwind this is the exit, and it runs here on the thread rather than in
@@ -134,14 +213,13 @@ pub(super) fn run_the_life(index: usize) {
 #[cfg(all(unix, not(miri)))]
 mod platform {
     use std::ffi::{c_char, c_int, c_void};
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{COLLECTOR_STACK_BYTES, STACK_GUARD_BYTES, run_the_life};
 
     /// `pthread_t`: an unsigned long on glibc and musl, a pointer on
     /// macOS — one word on every unix this builds for.
-    type PthreadT = usize;
+    pub(super) type Thread = usize;
 
     /// An opaque `pthread_attr_t`, oversized: 56 bytes on glibc and musl
     /// x86_64, 64 on macOS, and `pthread_attr_init` writes the whole of the
@@ -161,77 +239,43 @@ mod platform {
             stack_size: usize,
         ) -> c_int;
         fn pthread_create(
-            thread: *mut PthreadT,
+            thread: *mut Thread,
             attr: *const PthreadAttr,
             start: extern "C" fn(*mut c_void) -> *mut c_void,
             argument: *mut c_void,
         ) -> c_int;
-        fn pthread_join(thread: PthreadT, result: *mut *mut c_void) -> c_int;
+        fn pthread_join(thread: Thread, result: *mut *mut c_void) -> c_int;
         fn mprotect(address: *mut c_void, length: usize, protection: c_int) -> c_int;
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        fn pthread_self() -> PthreadT;
+        fn pthread_self() -> Thread;
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        fn pthread_setname_np(thread: PthreadT, name: *const c_char) -> c_int;
+        fn pthread_setname_np(thread: Thread, name: *const c_char) -> c_int;
     }
 
-    /// The thread of a slot since its last join, and the stack the slot
-    /// keeps across its lives (zero until the first birth maps it).
-    struct Slot {
-        thread: Mutex<Option<PthreadT>>,
-        stack: AtomicUsize,
-    }
-
-    static SLOTS: [Slot; super::super::MAX_COLLECTORS] = [const {
-        Slot {
-            thread: Mutex::new(None),
-            stack: AtomicUsize::new(0),
-        }
-    }; super::super::MAX_COLLECTORS];
-
-    /// The thread names, NUL-terminated for `pthread_setname_np`, whose
-    /// limit is sixteen bytes with the terminator.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    const NAMES: [&[u8]; super::super::MAX_COLLECTORS] = [
-        b"ll-collector\0",
-        b"ll-collector-1\0",
-        b"ll-collector-2\0",
-        b"ll-collector-3\0",
-        b"ll-collector-4\0",
-        b"ll-collector-5\0",
-        b"ll-collector-6\0",
-        b"ll-collector-7\0",
-    ];
+    /// The stack each slot keeps across its lives, zero until the slot's
+    /// first birth maps it.
+    static STACKS: [AtomicUsize; super::MAX_COLLECTORS] =
+        [const { AtomicUsize::new(0) }; super::MAX_COLLECTORS];
 
     extern "C" fn trampoline(argument: *mut c_void) -> *mut c_void {
         run_the_life(argument as usize);
         std::ptr::null_mut()
     }
 
-    pub(super) fn spawn(index: usize) -> bool {
-        // The slot's lock from the join to the store: a join of this slot
-        // made meanwhile waits here for the thread to be stored, so the
-        // stack is never handed to a second thread while the first is on
-        // it, whenever the first's own word says unborn.
-        let mut slot = SLOTS[index]
-            .thread
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !join_under(&mut slot) {
-            return false;
-        }
-
+    /// The thread of slot `index` on the slot's own stack, or `None` for a
+    /// stack the operating system would not map and a thread it would not
+    /// create. The caller holds the slot.
+    pub(super) fn create(index: usize) -> Option<Thread> {
         let stack = stack_of(index);
         if stack.is_null() {
-            return false;
+            return None;
         }
 
         let mut attributes = PthreadAttr([0; 128]);
         if unsafe { pthread_attr_init(&raw mut attributes) } != 0 {
-            return false;
+            return None;
         }
 
-        // The stack proper begins above the guard; the guard is the mapping's
-        // lowest bytes.
         let set = unsafe {
             pthread_attr_setstack(
                 &raw mut attributes,
@@ -239,7 +283,7 @@ mod platform {
                 COLLECTOR_STACK_BYTES,
             )
         };
-        let mut thread: PthreadT = 0;
+        let mut thread: Thread = 0;
         #[cfg(test)]
         let refused = super::REFUSE_NEXT_CREATE.swap(false, Ordering::Relaxed);
         #[cfg(not(test))]
@@ -255,44 +299,22 @@ mod platform {
                 )
             } == 0;
         unsafe { pthread_attr_destroy(&raw mut attributes) };
-        if !created {
-            return false;
-        }
-
-        *slot = Some(thread);
-        true
+        created.then_some(thread)
     }
 
-    /// Join the thread that stood in slot `index`, if one does, and answer
-    /// whether one did: true is a thread joined, false an empty slot.
-    /// Waits on the slot's lock through a birth in flight, so the thread
-    /// that birth stores is the one joined.
-    #[cfg(test)]
-    pub(super) fn join(index: usize) -> bool {
-        let mut slot = SLOTS[index]
-            .thread
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let stood = slot.is_some();
-        join_under(&mut slot) && stood
-    }
-
-    /// Join the thread `slot` holds under its lock; true when the slot
-    /// holds no unjoined thread afterwards. A join that fails leaves the
-    /// thread in the slot for the next attempt.
-    fn join_under(slot: &mut Option<PthreadT>) -> bool {
-        let Some(thread) = *slot else { return true };
-        if unsafe { pthread_join(thread, std::ptr::null_mut()) } != 0 {
-            return false;
+    /// Wait for `thread` to be gone, the kernel's word cleared and every TLS
+    /// destructor run; `Err` hands the thread back unjoined.
+    pub(super) fn join(thread: Thread) -> Result<(), Thread> {
+        if unsafe { pthread_join(thread, std::ptr::null_mut()) } == 0 {
+            Ok(())
+        } else {
+            Err(thread)
         }
-
-        *slot = None;
-        true
     }
 
     #[cfg(test)]
     pub(super) fn stack_base_of(index: usize) -> usize {
-        SLOTS[index].stack.load(Ordering::Acquire)
+        STACKS[index].load(Ordering::Acquire)
     }
 
     /// The slot's stack, mapped with its guard on the first call and kept:
@@ -303,8 +325,7 @@ mod platform {
             return std::ptr::null_mut();
         }
 
-        let slot = &SLOTS[index];
-        let mapped = slot.stack.load(Ordering::Acquire);
+        let mapped = STACKS[index].load(Ordering::Acquire);
         if mapped != 0 {
             return mapped as *mut u8;
         }
@@ -322,14 +343,14 @@ mod platform {
 
         // The caller holds the slot at `STARTING`, so no second birth maps
         // beside this one.
-        slot.stack.store(base as usize, Ordering::Release);
+        STACKS[index].store(base as usize, Ordering::Release);
         base
     }
 
     pub(super) fn name_this_thread(index: usize) {
         #[cfg(any(target_os = "linux", target_os = "android"))]
         unsafe {
-            pthread_setname_np(pthread_self(), NAMES[index].as_ptr().cast());
+            pthread_setname_np(pthread_self(), super::NAMES[index].as_ptr().cast());
         }
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let _ = index;
@@ -339,12 +360,12 @@ mod platform {
 #[cfg(all(windows, not(miri)))]
 mod platform {
     use std::ffi::c_void;
-    use std::sync::Mutex;
 
     use super::{COLLECTOR_STACK_BYTES, run_the_life};
 
-    /// A `HANDLE`, kept as a word so the slot's mutex is `Sync`.
-    type Handle = usize;
+    /// A `HANDLE`, kept as a word so the slot's mutex is `Sync`. The stack
+    /// is the OS's: `CreateThread` takes a size and not a caller's memory.
+    pub(super) type Thread = usize;
 
     const STACK_SIZE_PARAM_IS_A_RESERVATION: u32 = 0x0001_0000;
     const INFINITE: u32 = 0xFFFF_FFFF;
@@ -363,26 +384,14 @@ mod platform {
         fn CloseHandle(handle: *mut c_void) -> i32;
     }
 
-    /// The thread of a slot since its last join. The stack is the OS's:
-    /// `CreateThread` takes a size and not a caller's memory.
-    static SLOTS: [Mutex<Option<Handle>>; super::super::MAX_COLLECTORS] =
-        [const { Mutex::new(None) }; super::super::MAX_COLLECTORS];
-
     extern "system" fn trampoline(parameter: *mut c_void) -> u32 {
         run_the_life(parameter as usize);
         0
     }
 
-    pub(super) fn spawn(index: usize) -> bool {
-        // The slot's lock from the join to the store, as the unix arm
-        // holds it.
-        let mut slot = SLOTS[index]
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !join_under(&mut slot) {
-            return false;
-        }
-
+    /// The thread of slot `index` on a stack the OS reserves, or `None` for
+    /// one it would not create. The caller holds the slot.
+    pub(super) fn create(index: usize) -> Option<Thread> {
         let handle = unsafe {
             CreateThread(
                 std::ptr::null_mut(),
@@ -394,36 +403,22 @@ mod platform {
             )
         };
         if handle.is_null() {
-            return false;
+            return None;
         }
 
-        *slot = Some(handle as Handle);
-        true
+        Some(handle as Thread)
     }
 
-    /// Join the thread that stood in slot `index`, if one does, and answer
-    /// whether one did; waits on the slot's lock through a birth in flight.
-    #[cfg(test)]
-    pub(super) fn join(index: usize) -> bool {
-        let mut slot = SLOTS[index]
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let stood = slot.is_some();
-        join_under(&mut slot) && stood
-    }
-
-    /// Wait for the thread `slot` holds and close its handle; a wait that
-    /// fails leaves the handle for the next attempt.
-    fn join_under(slot: &mut Option<Handle>) -> bool {
-        let Some(handle) = *slot else { return true };
-        let handle = handle as *mut c_void;
+    /// Wait for `thread` to be gone and close its handle; `Err` hands the
+    /// handle back unwaited and unclosed.
+    pub(super) fn join(thread: Thread) -> Result<(), Thread> {
+        let handle = thread as *mut c_void;
         if unsafe { WaitForSingleObject(handle, INFINITE) } != WAIT_OBJECT_0 {
-            return false;
+            return Err(thread);
         }
 
         unsafe { CloseHandle(handle) };
-        *slot = None;
-        true
+        Ok(())
     }
 
     /// No name: `SetThreadDescription` takes a wide string, and a name is
@@ -433,62 +428,26 @@ mod platform {
 
 #[cfg(miri)]
 mod platform {
-    use std::sync::Mutex;
-    use std::thread::JoinHandle;
+    use super::{NAMES, run_the_life};
 
-    use super::run_the_life;
+    pub(super) type Thread = std::thread::JoinHandle<()>;
 
-    /// The names the std spawn gives the threads, by slot.
-    const THREAD_NAMES: [&str; super::super::MAX_COLLECTORS] = [
-        "ll-collector",
-        "ll-collector-1",
-        "ll-collector-2",
-        "ll-collector-3",
-        "ll-collector-4",
-        "ll-collector-5",
-        "ll-collector-6",
-        "ll-collector-7",
-    ];
-
-    static HANDLES: [Mutex<Option<JoinHandle<()>>>; super::super::MAX_COLLECTORS] =
-        [const { Mutex::new(None) }; super::super::MAX_COLLECTORS];
-
-    pub(super) fn spawn(index: usize) -> bool {
-        // The slot's lock from the join to the store, as the unix arm
-        // holds it.
-        let mut slot = HANDLES[index]
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        join_under(&mut slot);
-        let Ok(handle) = std::thread::Builder::new()
-            .name(THREAD_NAMES[index].into())
+    /// The thread of slot `index` from std, the instrument's exemption: the
+    /// name without its terminator, which std refuses.
+    pub(super) fn create(index: usize) -> Option<Thread> {
+        std::thread::Builder::new()
+            .name(NAMES[index].trim_end_matches('\0').into())
             .spawn(move || run_the_life(index))
-        else {
-            return false;
-        };
-        *slot = Some(handle);
-        true
+            .ok()
     }
 
-    /// Join the thread that stood in slot `index`, if one does, and answer
-    /// whether one did; waits on the slot's lock through a birth in flight.
-    #[cfg(test)]
-    pub(super) fn join(index: usize) -> bool {
-        let mut slot = HANDLES[index]
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let stood = slot.is_some();
-        join_under(&mut slot);
-        stood
+    /// Wait for `thread` to be gone. A join fails on nothing here: the
+    /// body's panic was caught on the thread.
+    pub(super) fn join(thread: Thread) -> Result<(), Thread> {
+        let _ = thread.join();
+        Ok(())
     }
 
-    fn join_under(slot: &mut Option<JoinHandle<()>>) {
-        if let Some(handle) = slot.take() {
-            // The body's panic was caught on the thread; a join fails on
-            // nothing here.
-            let _ = handle.join();
-        }
-    }
-
+    /// The name is the spawn's, given at the birth.
     pub(super) fn name_this_thread(_index: usize) {}
 }

@@ -450,10 +450,9 @@ pub(crate) fn signal_the_collector_if_due() {
     if crate::cycle::worker::wake(collector) {
         mutator_state.signal_due.set(false);
     } else if collector == crate::cycle::worker::ELDER {
-        // A wake with no thread to receive it births the elder: the poll
-        // has a frame and may allocate, and the collector is the one tracer
-        // of R (`crate::cycle::worker`, "The thread, and the round over the
-        // records"). The flag stands for the next poll's wake.
+        // A wake with no thread to receive it births the elder, the one
+        // tracer of R (`crate::cycle::worker`, "The thread, and the round
+        // over the records"). The flag stands for the next poll's wake.
         crate::cycle::worker::ensure_thread();
     }
 }

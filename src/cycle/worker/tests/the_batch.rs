@@ -414,8 +414,8 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
     let (batched_tell, batched) = std::sync::mpsc::channel::<()>();
     let sent = Sent(record());
-    // The collector waits for each consent as the thread does, on its wake
-    // token, so that neither side spins on the byte (`dev/WORKFLOW.md`,
+    // The collector waits for each consent as the thread does, on the slot's
+    // wake word, so that neither side spins on the byte (`dev/WORKFLOW.md`,
     // Miri, "A test thread waits, it does not spin").
     let collector = std::thread::spawn(move || {
         assert!(crate::memory::heap::ll_thread_init());
@@ -428,7 +428,6 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
                 batched_tell.send(()).expect("the case counts");
             }
             if stopped.try_recv().is_ok() {
-                testing::stand_down_as_the_elder();
                 return batches;
             }
             std::thread::yield_now();

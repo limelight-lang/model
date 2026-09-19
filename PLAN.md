@@ -15,14 +15,17 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-18 · Active: S59; S37 blocked. Every open step of S37 is
+Updated: 2026-09-19 · Active: none; S37 blocked. Every open step of S37 is
 blocked outside this repository or on a corpus: S37.2 waits on the compiler
 that computes the acyclic proof, S37.5 and S37.7 on the Phase-D corpus. The
-prose sections below are the backlog a stage is drawn from while S37 waits;
-S58 closed the three exit-path sites of the S36 residue on 2026-09-18 and is
-deleted, its record `dev/DECISIONS.md`, "the exit path holds no container:
-the buffer arena is its thread-local, and the static registry is a chunk
-closed per life", and S59 takes the fourth, the collector thread's spawn.
+prose sections below are the backlog a stage is drawn from while S37 waits.
+The S36 residue's four allocation sites are closed, the last of them on
+2026-09-19: the three on the exit path (`dev/DECISIONS.md`, "the exit path
+holds no container: the buffer arena is its thread-local, and the static
+registry is a chunk closed per life") and the collector thread's spawn
+(`dev/DECISIONS.md`, "the collector thread is born by the OS entry, on a
+stack its slot keeps, and is woken by a word"). What the residue still
+holds, none of it under that ruling, is the section below.
 
 Review 2026-09-18, second: pass 3 by the Critic over the plan as rewritten
 by S57.7 — its findings and their disposition are in that step. Pass 1 over
@@ -52,7 +55,7 @@ of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
 `dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36 and S38
-through S58 — every number this plan has spent but S37 and S59. A number is never
+through S59 — every number this plan has spent but S37. A number is never
 reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -269,107 +272,6 @@ stage is what makes a trace affordable rather than what tunes it.
         "the ownership mark is the owned store's to move and the holder's
         `dispose` to honour").
 
-## S59 — The collector thread's birth takes its memory from the manager  [in progress]
-
-Goal: the pressure path births a collector thread without an allocation the
-global allocator could refuse into an abort — the fourth and last site S36
-left under the ruling of 2026-09-12 (`dev/DECISIONS.md`, "the reset
-window's memory comes from the manager, and an allocation it cannot get is
-a refusal"). `std::thread::Builder::spawn` builds the thread's name, the
-handle's shared state and the closure's box on the global heap, and
-`worker::ensure_thread` runs it at the end of the first pressure collection,
-on the path where the manager has just refused; `thread::current()` in
-`begin_the_thread` and `Thread::unpark` in `wake` stand on the same `Arc`.
-What replaces them: a per-slot wake word under a condvar, and a thread the
-OS entry creates on a stack the manager maps once per slot and keeps.
-Done when: a birth on the pressure path makes no call into the crate's
-`#[global_allocator]`, read by `allocation_probe` on the spawning thread
-with births permitted (what libc allocates inside `pthread_create` is
-reported by its error code and is not this reading); a refused mapping and
-a refused create are each a refused birth, answered by the birth interval
-like a refused base block; the worker's, the byte arms' and the consent
-cases stay green, the stand-in and the tests' `retire` included;
-`std::thread` is gone from `worker`'s production paths except under
-`cfg(miri)`; the Windows arm leaves `cargo check` against
-`x86_64-pc-windows-gnu` reporting the per-process key's `compile_error!`
-and nothing else, its run the Windows box's; and the closing record names
-what Miri covers, the raw thread's own lines having no Miri coverage by
-construction.
-Notes: `dev/plans/S59.md` — the Critic's pass over the draft and what each
-finding changed.
-
-- [x] S59.1 The wake is the slot's word under a condvar, not a `Thread`
-      done: `Collector` carries a `Mutex<bool>` and a `Condvar` where
-        `handle: Mutex<Option<Thread>>` stood; `wake` sets the word under the
-        mutex unconditionally and answers `state == ALIVE`; the round wait and
-        the consent wait sleep on the condvar with their timeout and take the
-        word; `begin_the_thread` clears the word before it stores `ALIVE`, the
-        stand-in clears it when it takes the slot, and the tests' `retire`
-        sets every slot's word under its mutex before it notifies;
-        `thread::current()` leaves `begin_the_thread`, and the stand-in cases
-        wait on the elder slot's condvar in place of `std::thread::park`. The
-        worker, byte-arms, consent and siblings cases stay green. A case reads
-        that a wake sent before the wait ends the wait at once, red under a
-        wait that sleeps without reading the word first.
-      tier: T2 · role: Critic, one pass over the stage at S59.3
-      handoff: `Collector::{woken, wakes}`, `wake`, `wait_for_a_wake`,
-        `forget_wakes`; the cases
-        `a_wake_sent_before_the_wait_ends_it_at_once_and_is_spent_by_it`
-        (red under a wait that sleeps first, 2.0 s, and under one that leaves
-        the word, 564 ns) and
-        `a_wake_sent_to_an_empty_slot_is_not_the_next_births_second_round`
-        (red under a birth that keeps the word, 2 rounds against 1). Gate:
-        1066 ×3 at eight threads, `hash-folding` 1066, `debug-journal`
-        1075 ×3, release, bench, doc 0 warnings.
-- [x] S59.2 The birth is a raw thread on a stack the slot keeps
-      done: on unix each slot maps its stack once through `memory::os` —
-        `COLLECTOR_STACK_BYTES`, 2 MiB, std's default and not a measured
-        figure, with the lowest page turned `PROT_NONE` by `mprotect` inside
-        the one mapping so the guard turns a wrong figure into a death — and
-        keeps it across the slot's lives, never unmapped, `MAX_COLLECTORS`
-        stacks the bound; a null mapping is a refused birth. The thread is
-        made by `pthread_create` on that stack, joinable, through a
-        128-byte opaque `pthread_attr_t` (56 on glibc and musl, 64 on macOS,
-        stated where it is declared), named from inside by
-        `pthread_setname_np` on linux; the trampoline is an `extern "C"`
-        function taking the slot index that runs `thread_body` under
-        `catch_unwind`, runs `ll_thread_exit`, and stores `UNBORN` after it,
-        so the state goes unborn only after the runtime exit the thread
-        runs itself; the slot keeps the `pthread_t` under a lock a birth
-        holds from the join through the create to the store, so the next
-        birth of the slot and the tests' `retire` join it before creating
-        again whatever the clock — a join that fails is a refused birth,
-        never a reuse. A
-        `pthread_create` that refuses keeps the stack, notes the refused
-        birth and stores `UNBORN`. A red test shows a birth on the pressure
-        path go from the std spawn's global calls to zero on the spawning
-        thread. Under `cfg(miri)` the std spawn stays, the test names it as
-        the instrument's exemption, and `HANDLES` keeps that arm's handles.
-      tier: T2 · role: Critic, one pass over the stage at S59.3
-      handoff: `cycle::worker::birth`, three `platform` arms; the deny case
-        `a_birth_asks_the_global_allocator_for_nothing` read 8 on the std
-        spawn and 0 after; `the_collectors_stack_stands_on_a_guard_the_kernel_refuses_access_to`
-        reads `/proc/self/maps` (red without `mprotect`),
-        `the_collector_thread_is_named_for_the_os` reads `/proc/self/task`
-        (red without the name), `a_refused_stack_is_a_birth_a_later_call_repeats`
-        under `REFUSE_NEXT_STACK`; the miri arm keeps its `JoinHandle` per
-        slot rather than a `HANDLES` list, so the tests' `retire` joins
-        through `birth::join_every_slot` on every arm.
-- [x] S59.3 The Windows arm
-      done: `CreateThread` on the OS's stack, `WaitForSingleObject` and
-        `CloseHandle` for the join, an `extern "system"` trampoline of its
-        own, behind `cfg(windows)` beside the unix arm and declared raw as
-        `memory::os` declares `VirtualAlloc`; `cargo check --lib --target
-        x86_64-pc-windows-gnu` reports the per-process key's `compile_error!`
-        alone, and the run on the Windows box is a backlog line beside the
-        per-process key's.
-      tier: T2 · role: Critic
-      handoff: `cargo check --lib --target x86_64-pc-windows-gnu` reports the
-        per-process key's `compile_error!` and nothing else (the `--tests`
-        check stops earlier, on mimalloc's C build, with no mingw here);
-        `aarch64-unknown-linux-gnu` checks clean. The run: `PLAN.md`,
-        residual, "The collector's birth has no run off Linux".
-
 ---
 
 ## Cross-cutting (every stage)
@@ -567,6 +469,18 @@ live: `archive/pre-rc-cycle`").
   retirement by ruling (`dev/DECISIONS.md`, "the safepoint poll takes the
   free path's road"); the hold it would shorten is at most sixty-three dead
   slots per thread. Comes back when a measured workload shows that hold.
+- [ ] **What S59 named and left, 2026-09-19.** Two branches of the birth have
+  no arm: the guard's `mprotect` failure, which no test can order, and a join
+  that fails, for which glibc documents `EDEADLK` on a self-join alone and no
+  caller here can be one. The stack is 2 MiB because that is std's default,
+  not because anything measured the collector's frames; the probe that would
+  size it is lowering `COLLECTOR_STACK_BYTES` under the worker suite until a
+  run dies on the guard. The guard's own case asserts the slot's mapping is
+  exactly 2 MiB plus its guard, which a later anonymous mapping of at most
+  64 KiB landing at its end and merging with it would break — no source of
+  one was found in the test binary. And a wake that lands in the last instant
+  of a consent wait is neither spent nor remembered, which predates the stage
+  and is bounded by `FALLBACK_INTERVAL_MAX`.
 - [ ] **What S51 named and left, 2026-09-17.** Every non-ignored case runs the
   serves at a request wait of 2 s (`worker::testing::HARNESS_REQUEST_WAIT`),
   a thousand times the crate's 2 ms, so the shipped bound is exercised by the
@@ -661,8 +575,11 @@ live: `archive/pre-rc-cycle`").
 What S36 left without an owner, 2026-09-14. Its sites under the ruling that
 no runtime path may end the process on an allocation the manager could have
 refused (`dev/DECISIONS.md`, "the reset window's memory comes from the
-manager") went to S58, the three on the exit path, and to S59, the collector
-thread's spawn; the rest:
+manager") are closed: the three on the exit path (`dev/DECISIONS.md`, "the
+exit path holds no container: the buffer arena is its thread-local, and the
+static registry is a chunk closed per life") and the collector thread's
+spawn (`dev/DECISIONS.md`, "the collector thread is born by the OS entry, on
+a stack its slot keeps, and is woken by a word"); the rest:
 
 - [ ] **The collection's journal kinds.** `journal/kinds.rs` carries no record
   for a collection's begin or end (`dev/design/debug-modes.md`, §9.5);

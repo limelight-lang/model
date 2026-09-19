@@ -7,6 +7,46 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-19 — join-before-create was a property of the clock, and a slot could be created on a stack its last thread was still leaving
+
+**What happened.** S59 gave each collector slot one stack, mapped once and
+kept across the slot's lives, and made the next birth of the slot join the
+thread that stood there before reusing it. The join read the slot's stored
+thread; the parent stored that thread after `pthread_create` returned, while
+the child stores `UNBORN` into the state word itself, at the end of
+`run_the_life`. Between the create and the parent's store there is a window
+in which the child has already ended — ended by a cap the embedder lowered,
+or by a panic in its first round — and the slot reads unborn with no thread
+recorded. A birth in that window joins nothing and creates a second thread on
+the stack the first was still unwinding off. Nothing in the suite failed.
+
+**Why it was possible.** Two writers publish one fact. The state word is the
+child's and says "this slot may be born again"; the slot's thread is the
+parent's and says "this is what to join first". The design read the first as
+implying the second, because the word is stored last on the child's path —
+which orders the child against itself and says nothing about the parent's
+store, a write on another thread that had not happened yet. The stage's own
+sentence, "the word goes unborn only after the runtime exit the thread runs
+itself", is true and does not carry the ordering the reuse needs.
+
+**Why no test caught it.** The window is the parent's own instructions
+between two calls; no case can order a child's whole life inside it, and a
+second thread on a live stack corrupts nothing deterministic — it writes
+frames under frames, and the suite is green either way. The Critic found it
+by asking which thread writes which word, not by running anything.
+
+**What changed.** The birth holds the slot's mutex from the join through the
+create to the store on every arm, so a join asked for meanwhile waits for the
+thread the birth made rather than reading an empty slot; the order is the
+lock's, not the clock's. The tests' `join_every_slot` passes until one joins
+nothing, because a thread joined in one pass may have birthed a slot the pass
+had already visited.
+
+**The lesson.** A reuse ordered by a word one thread writes needs the word and
+the resource published by the same writer under the same lock. "The word is
+stored last" is an ordering within one thread; it says nothing about a second
+thread's bookkeeping, and the gap between them is where the reuse lands.
+
 ## 2026-09-18 — a per-thread close set at exit outlived the thread's life, and no test could run two lives
 
 **What happened.** S58 closed the static-block registry behind the exit's

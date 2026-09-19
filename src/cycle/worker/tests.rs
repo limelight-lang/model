@@ -159,6 +159,52 @@ fn wait_until(mut reached: impl FnMut() -> bool, within: std::time::Duration) ->
 const A_BIRTH: std::time::Duration =
     std::time::Duration::from_secs(if cfg!(miri) { 900 } else { 10 });
 
+/// The frame a case about the thread's birth starts from: the elder unborn,
+/// this thread's record the only one a round visits, births permitted and
+/// the spawn count zeroed. The returned guard ends the thread with the case.
+fn ready_for_a_birth() -> RetireOnDrop {
+    assert_eq!(testing::thread_state(), ThreadState::Unborn);
+    testing::confine_rounds_to(record());
+    testing::permit_births(true);
+    let end = RetireOnDrop;
+    let _ = testing::take_spawns();
+    end
+}
+
+/// What every refused birth leaves behind: a call inside
+/// [`BIRTH_RETRY_INTERVAL`] spawns nothing, and one after it births the
+/// thread.
+fn the_interval_holds_and_a_call_after_it_births() {
+    ensure_thread();
+    assert_eq!(
+        testing::take_spawns(),
+        0,
+        "a refused birth is not retried at once"
+    );
+    std::thread::sleep(BIRTH_RETRY_INTERVAL);
+    ensure_thread();
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
+        "a call after the interval birthed one"
+    );
+    assert_eq!(testing::take_spawns(), 1);
+}
+
+/// Birth the elder and make its next round panic, returning once the word
+/// reads unborn again: what that leaves is each case's own reading.
+fn a_panicking_round_hands_the_word_back() {
+    ensure_thread();
+    assert!(wait_until(
+        || testing::thread_state() == ThreadState::Alive,
+        A_BIRTH
+    ));
+    testing::panic_at_the_next_visit();
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Unborn, A_BIRTH),
+        "the panic unwound out of the thread and the word went back"
+    );
+}
+
 /// The threshold a case's serve reads at: one entry, the ring of a case
 /// holding a few.
 const ANY_ENTRY: usize = 1;
@@ -189,12 +235,7 @@ fn node_class(name: &str) -> *const crate::class::Class {
 #[test]
 fn the_first_pressure_collection_births_one_thread_whose_rounds_claim_and_release_the_record() {
     let _g = test_guard();
-    let record = record();
-    assert_eq!(testing::thread_state(), ThreadState::Unborn);
-    testing::confine_rounds_to(record);
-    testing::permit_births(true);
-    let _end = RetireOnDrop;
-    let _ = testing::take_spawns();
+    let _end = ready_for_a_birth();
     reset_lanes();
     let _ = testing::take_mutators_served();
     testing::serve_rounds_at(ANY_ENTRY);
@@ -250,12 +291,7 @@ fn the_first_pressure_collection_births_one_thread_whose_rounds_claim_and_releas
 )]
 fn a_birth_asks_the_global_allocator_for_nothing() {
     let _g = test_guard();
-    let record = record();
-    assert_eq!(testing::thread_state(), ThreadState::Unborn);
-    testing::confine_rounds_to(record);
-    testing::permit_births(true);
-    let _end = RetireOnDrop;
-    let _ = testing::take_spawns();
+    let _end = ready_for_a_birth();
 
     let _ = crate::test_support::allocation_probe::take_heap_allocations();
     ensure_thread();
@@ -594,12 +630,7 @@ fn the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_dis
 #[test]
 fn a_refused_base_block_is_a_birth_a_later_call_repeats() {
     let _g = test_guard();
-    let record = record();
-    assert_eq!(testing::thread_state(), ThreadState::Unborn);
-    testing::confine_rounds_to(record);
-    testing::permit_births(true);
-    let _end = RetireOnDrop;
-    let _ = testing::take_spawns();
+    let _end = ready_for_a_birth();
 
     testing::refuse_the_next_births_base_block();
     ensure_thread();
@@ -614,20 +645,7 @@ fn a_refused_base_block_is_a_birth_a_later_call_repeats() {
     );
     assert_eq!(testing::take_spawns(), 1);
 
-    // A call inside the interval spawns nothing; one after it births.
-    ensure_thread();
-    assert_eq!(
-        testing::take_spawns(),
-        0,
-        "a refused birth is not retried at once"
-    );
-    std::thread::sleep(BIRTH_RETRY_INTERVAL);
-    ensure_thread();
-    assert!(
-        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
-        "a call after the interval birthed one"
-    );
-    assert_eq!(testing::take_spawns(), 1);
+    the_interval_holds_and_a_call_after_it_births();
 }
 
 /// A stack the operating system refuses is a birth that did not happen,
@@ -638,12 +656,7 @@ fn a_refused_base_block_is_a_birth_a_later_call_repeats() {
 #[test]
 fn a_refused_stack_is_a_birth_a_later_call_repeats() {
     let _g = test_guard();
-    let record = record();
-    assert_eq!(testing::thread_state(), ThreadState::Unborn);
-    testing::confine_rounds_to(record);
-    testing::permit_births(true);
-    let _end = RetireOnDrop;
-    let _ = testing::take_spawns();
+    let _end = ready_for_a_birth();
 
     super::birth::REFUSE_NEXT_STACK.store(true, Ordering::Relaxed);
     ensure_thread();
@@ -654,19 +667,7 @@ fn a_refused_stack_is_a_birth_a_later_call_repeats() {
     );
     assert_eq!(testing::take_spawns(), 0);
 
-    ensure_thread();
-    assert_eq!(
-        testing::take_spawns(),
-        0,
-        "a refused birth is not retried at once"
-    );
-    std::thread::sleep(BIRTH_RETRY_INTERVAL);
-    ensure_thread();
-    assert!(
-        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
-        "a call after the interval birthed one"
-    );
-    assert_eq!(testing::take_spawns(), 1);
+    the_interval_holds_and_a_call_after_it_births();
 }
 
 /// A create the operating system refuses, after the stack was granted, is
@@ -676,12 +677,7 @@ fn a_refused_stack_is_a_birth_a_later_call_repeats() {
 #[test]
 fn a_refused_create_is_a_birth_a_later_call_repeats() {
     let _g = test_guard();
-    let record = record();
-    assert_eq!(testing::thread_state(), ThreadState::Unborn);
-    testing::confine_rounds_to(record);
-    testing::permit_births(true);
-    let _end = RetireOnDrop;
-    let _ = testing::take_spawns();
+    let _end = ready_for_a_birth();
 
     super::birth::REFUSE_NEXT_CREATE.store(true, Ordering::Relaxed);
     ensure_thread();
@@ -697,19 +693,7 @@ fn a_refused_create_is_a_birth_a_later_call_repeats() {
     );
     assert_eq!(testing::take_spawns(), 0);
 
-    ensure_thread();
-    assert_eq!(
-        testing::take_spawns(),
-        0,
-        "a refused birth is not retried at once"
-    );
-    std::thread::sleep(BIRTH_RETRY_INTERVAL);
-    ensure_thread();
-    assert!(
-        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
-        "a call after the interval birthed one"
-    );
-    assert_eq!(testing::take_spawns(), 1);
+    the_interval_holds_and_a_call_after_it_births();
 }
 
 /// The word goes unborn after the runtime exit the thread runs itself, on
@@ -726,16 +710,7 @@ fn the_word_goes_unborn_after_the_threads_own_runtime_exit() {
     let _end = RetireOnDrop;
     let _ = testing::take_exits_before_the_word();
 
-    ensure_thread();
-    assert!(wait_until(
-        || testing::thread_state() == ThreadState::Alive,
-        A_BIRTH
-    ));
-    testing::panic_at_the_next_visit();
-    assert!(
-        wait_until(|| testing::thread_state() == ThreadState::Unborn, A_BIRTH),
-        "the panic unwound out of the thread and the word went back"
-    );
+    a_panicking_round_hands_the_word_back();
     let exits = testing::take_exits_before_the_word();
     assert!(
         (1..usize::MAX).contains(&exits),
@@ -796,7 +771,6 @@ fn a_wake_sent_before_the_wait_ends_it_at_once_and_is_spent_by_it() {
     let before = Instant::now();
     wait_for_a_wake(ELDER, Duration::from_millis(100));
     let slept_out = before.elapsed();
-    testing::stand_down_as_the_elder();
 
     assert!(
         ended_by_the_wake < Duration::from_millis(500),
@@ -848,16 +822,7 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
     let _end = RetireOnDrop;
     let _ = testing::take_spawns();
 
-    ensure_thread();
-    assert!(wait_until(
-        || testing::thread_state() == ThreadState::Alive,
-        A_BIRTH
-    ));
-    testing::panic_at_the_next_visit();
-    assert!(
-        wait_until(|| testing::thread_state() == ThreadState::Unborn, A_BIRTH),
-        "the panic unwound out of the thread and the word went back"
-    );
+    a_panicking_round_hands_the_word_back();
 
     // Which is what lets the next call birth again.
     ensure_thread();

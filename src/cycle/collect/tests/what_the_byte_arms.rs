@@ -287,7 +287,6 @@ fn a_request_is_consented_to_at_the_poll_and_at_a_slot_free() {
             }
             granted_tell.send(()).expect("the case waits");
             token.release_claim(ELDER, false);
-            crate::cycle::worker::testing::stand_down_as_the_elder();
         });
 
         // The request stands before the consent.

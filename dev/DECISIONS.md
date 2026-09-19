@@ -8,6 +8,71 @@ never edited or deleted.
 
 ---
 
+## 2026-09-19 — the collector thread is born by the OS entry, on a stack its slot keeps, and is woken by a word
+
+**Decided (S59).** The collector's birth was `std::thread::Builder::spawn`,
+which builds the thread's name, the handle's shared state and the closure's
+box on the global heap, and `worker::ensure_thread` runs at the end of the
+pressure collection on which the manager has just refused; `thread::current()`
+and `Thread::unpark` stood on the same handle. That is the fourth and last
+site of the ruling of 2026-09-12 ("the reset window's memory comes from the
+manager, and an allocation it cannot get is a refusal"). The thread is made by
+`pthread_create` on unix and `CreateThread` on windows now, declared raw as
+`memory::os` declares `mmap`, and a birth on the pressure path makes no call
+into the crate's `#[global_allocator]` — read by `allocation_probe` on the
+spawning thread, 8 calls before and 0 after. What libc allocates inside
+`pthread_create` is reported by its error code rather than by that probe.
+
+**The wake is a word per slot under a condvar**, taking the `park` token's
+place. `wake` sets the word under the slot's mutex whoever the sender is and
+answers `state == ALIVE`, so a wake sent before a wait ends it at once; the
+round wait and the consent wait sleep on the condvar with their timeout and
+take the word either way. The birth clears the word before it stores `ALIVE`,
+where the handle used to be published, so a wake sent to an empty slot is lost
+rather than handed to the next thread as a round nobody asked for. Setting the
+word only while the slot reads alive was refused: `end_idle_siblings` wakes an
+`ENDING` sibling, and the tests' `retire` sets its flag outside every lock, so
+a thread between its check and its wait would lose the wake it is waiting for.
+
+**One stack per slot, mapped once and kept for the process's life.** The
+manager maps 2 MiB over a 64 KiB `PROT_NONE` guard in one mapping through
+`memory::os`, and the slot keeps it across its lives: a birth after the first
+makes one join and one create and no `mmap`, and the process holds at most
+`MAX_COLLECTORS` of them. Unmapping at a rebirth was refused as the dearer
+shape — it buys back memory a later birth immediately re-maps, and a slot that
+never lives again holds 2 MiB the process would hold anyway for its zombie.
+The stack figure is std's default rather than a measured one, and the guard
+is what makes it honest: a frame past the low end dies on it instead of
+writing into whatever the OS mapped below. 2 MiB and 64 KiB are a `const`
+assert apart, since `map_aligned` asks a multiple of its alignment.
+
+**The slot's lock runs from the join through the create to the store**, and
+that order is the protocol rather than the clock's gift; the reason is
+`dev/POSTMORTEM.md`, "join-before-create was a property of the clock". A join
+that fails is a refused birth and never a reuse of the stack.
+
+**The state word goes unborn on the thread itself, after its own runtime
+exit.** The trampoline runs `thread_body` under `catch_unwind`, then
+`ll_thread_exit`, then the word — so a slot that reads unborn has run the
+exit the thread owes, and what follows the word is glibc's teardown with the
+exit guard's own pass among the TLS destructors, over a thread with nothing
+left. A join at the next birth waits on that too, which is why the join is
+the birth's and not the reader's.
+
+**Off the futex unixes the locks are still an allocation, and that is
+recorded rather than fixed.** On macOS and the BSDs other than freebsd,
+openbsd and dragonfly, std's `Mutex` boxes itself on first use, so the slot's
+wake word, the slot lock and `REFUSED_AT` would each allocate once on the
+first pressure collection there. The crate's targets are linux and windows,
+both futex-backed; a build for the others owes those locks a first touch off
+the pressure path, or a futex the crate declares itself.
+
+**Why:** a refusal the manager reports is a refusal the runtime can answer —
+the birth interval retries it like a refused base block — while an allocation
+the global allocator refuses is an abort of the process. The birth was the
+one place left where the pressure path, which exists because memory ran out,
+asked for memory in a way that could end the process.
+
 ## 2026-09-18 — the exit path holds no container: the buffer arena is its thread-local, and the static registry is a chunk closed per life
 
 **Decided (S58).** Three sites on the thread's exit path allocated through

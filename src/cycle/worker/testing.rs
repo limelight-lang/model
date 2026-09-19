@@ -390,9 +390,7 @@ pub(crate) fn retire() {
         let _ = super::wake(index);
     }
     // A thread that panicked in a round is joined all the same: the panic
-    // was caught on the thread, the case that raised it reads its word, and
-    // a panic raised inside this drop during an unwind would end the whole
-    // binary.
+    // was caught on the thread, and the case that raised it reads its word.
     super::birth::join_every_slot();
 
     super::forget_refused_birth();
@@ -409,13 +407,12 @@ pub(crate) fn retire() {
 
 /// Take the elder's slot for the calling thread, so that a consent's wake
 /// of slot [`ELDER`] reaches a stand-in collector: a stand-in that waits on
-/// the slot's word until the grant ([`wait_for_the_elders_wake`]), rather
-/// than spinning on the byte, makes progress under Miri's weak-memory
+/// the slot's wake word until the grant ([`wait_for_the_elders_wake`]),
+/// rather than spinning on the byte, makes progress under Miri's weak-memory
 /// emulation, where a spinning reader can read the old value for a very
-/// long time. The word is cleared as the thread's own birth clears it, so a
-/// wake sent to the empty slot is not the stand-in's first wait ended.
-/// Given back by [`stand_down_as_the_elder`]; a case that calls this has no
-/// collector thread born.
+/// long time. The word is cleared here as the thread's own birth clears it.
+/// The caller has no collector thread born, and gives the slot back by
+/// returning: what a late wake left is the next birth's to clear.
 pub(crate) fn stand_in_as_the_elder() {
     assert_eq!(
         thread_state(),
@@ -425,12 +422,8 @@ pub(crate) fn stand_in_as_the_elder() {
     super::forget_wakes(ELDER);
 }
 
-/// Leave the elder's slot as a thread's end leaves it: the word a late wake
-/// set stays for the next birth's clear.
-pub(crate) fn stand_down_as_the_elder() {}
-
-/// Sleep on the elder slot's word until a wake or `timeout`, taking the
-/// word, as the thread's own waits do.
+/// Sleep on the elder slot's wake word until a wake or `timeout`, taking
+/// the word, as the thread's own waits do.
 pub(crate) fn wait_for_the_elders_wake(timeout: std::time::Duration) {
     super::wait_for_a_wake(ELDER, timeout);
 }
