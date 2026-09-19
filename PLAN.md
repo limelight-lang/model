@@ -15,10 +15,10 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-19 · Active: none; S37 blocked. Every open step of S37 is
-blocked outside this repository or on a corpus: S37.2 waits on the compiler
-that computes the acyclic proof, S37.5 and S37.7 on the Phase-D corpus. The
-prose sections below are the backlog a stage is drawn from while S37 waits.
+Updated: 2026-09-19 · Active: S37, both open steps blocked on the Phase-D
+corpus: S37.5 measures the turnover and S37.7 the traced share, and a
+synthetic reading is refused for both. The prose sections below are the
+backlog a stage is drawn from while that corpus is missing.
 The S36 residue's four allocation sites are closed, the last of them on
 2026-09-19: the three on the exit path (`dev/DECISIONS.md`, "the exit path
 holds no container: the buffer arena is its thread-local, and the static
@@ -148,7 +148,7 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
 
 ---
 
-## S37 — Maturation and the two class gates  [blocked: the compiler, the Phase-D corpus]
+## S37 — Maturation and the two class gates  [blocked: the Phase-D corpus]
 
 Goal: the trace stops following the whole heap. On a booted Laravel corpus the
 subgraph reachable from a median candidate root is 381 of 381 objects, so this
@@ -252,20 +252,31 @@ stage is what makes a trace affordable rather than what tunes it.
         This arm needs a driver over `ll-model`'s own heap — the recorded corpus
         instruments read PHP's heap, which has no blocks and no slots — so it is
         Phase-D-blocked, as S37.2 is blocked on the compiler.
-- [ ] S37.2 The acyclic gate
+- [x] S37.2 The acyclic gate
       done: an entity of a class the compiler marked acyclic never enters the
         candidate set, the mark reaching `object::stamp_into` through the class
         descriptor and landing at bit 8, and a red test shows an entity of an
         unmarked class still registers
       tier: T2 · role: —
-      handoff: the proof is the compiler's and never this crate's — the
-        field-type closure over declared property types, with `mixed`, `array`,
-        an untyped property, `#[AllowDynamicProperties]`, `__set` and a
-        reflection write all conservative edges to anything
+      note: read as blocked on the compiler until 2026-09-19, when Edmond
+        named the reading wrong — the runtime honours a bit, and what fills it
+        is the compiler's business. The proof stays the compiler's: the
+        field-type closure over declared property types, with `mixed`,
+        `array`, an untyped property, `#[AllowDynamicProperties]`, `__set` and
+        a reflection write all conservative edges to anything
         (`rfc/model/memory/static-lifetimes.md`, "Level A — Acyclic classes").
-        What is left here is the channel: which class flag carries the answer
-        and where `stamp_into` reads it. Blocked on the compiler, and listed so
-        the dependency is visible rather than discovered.
+      handoff: `class::CLASS_ACYCLIC` (bit 6) and `ClassBuilder::acyclic`;
+        `object::acyclic_gate_of` copies it into the instance's
+        `refcount::ACYCLIC_GATE` at `stamp_into`, so the candidate gate reads
+        one header word rather than dereferencing the class, and both object
+        factories share it. The case is
+        `object::tests::what_the_factory_stamps::`
+        `a_class_proven_acyclic_stamps_the_gate_into_its_instances`, red under
+        a factory that stamps nothing (gate 0 against 256) and under one that
+        stamps every class (the unproven arm, 256 against 0). `template.rs`
+        builds its Object-kind entity without reading the class flags, so a
+        template class marked acyclic would not carry the gate — conservative,
+        and left alone rather than branching the template path.
 - [x] S37.3 The ownership mark
       handoff: `memory::barrier::store_ptr_owned` / `store_box_owned` move the
         mark and `object::ll_owned_child_die` honours it (`dev/DECISIONS.md`,

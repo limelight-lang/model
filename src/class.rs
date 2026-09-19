@@ -54,6 +54,21 @@ pub const CLASS_TEMPLATE: u32 = 1 << 4;
 /// cells outside itself carries one flag and one group of five").
 pub const CLASS_OUTSIDE_CELLS: u32 = 1 << 5;
 
+/// No instance of this class can take part in a reference cycle, so no
+/// instance is ever a cycle candidate: the factory copies this into the
+/// instance's [`crate::refcount::ACYCLIC_GATE`] and the candidate gate reads
+/// it there, one header load rather than a class dereference on the release
+/// path.
+///
+/// **The compiler decides it, never this crate.** The proof is the field-type
+/// closure over the class's declared property types, and an untyped, `mixed`
+/// or `array` property, `#[AllowDynamicProperties]`, `__set` and a reflection
+/// write are each a conservative edge to anything
+/// (`rfc/model/memory/static-lifetimes.md`, "Level A — Acyclic classes"). A
+/// class the compiler says nothing about carries a clear flag, which is the
+/// conservative answer: its instances register as candidates and are traced.
+pub const CLASS_ACYCLIC: u32 = 1 << 6;
+
 /// No `__destruct`.
 pub const NO_DESTRUCT_SLOT: u32 = u32::MAX;
 
@@ -465,6 +480,14 @@ impl ClassBuilder {
     /// a template's values are counted by its shape, not by this class.
     pub fn template(mut self) -> Self {
         self.flags |= CLASS_TEMPLATE;
+        self
+    }
+
+    /// The compiler's acyclic proof ([`CLASS_ACYCLIC`]). The linker sets it
+    /// from the descriptor the compiler emitted; nothing in this crate
+    /// derives it, and a class built without it is traced as any other.
+    pub fn acyclic(mut self) -> Self {
+        self.flags |= CLASS_ACYCLIC;
         self
     }
 

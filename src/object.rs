@@ -148,6 +148,19 @@ pub unsafe fn ll_object_new(
     unsafe { stamp_into(mem, class, size, category) }
 }
 
+/// [`crate::refcount::ACYCLIC_GATE`] when `class` carries the compiler's
+/// proof ([`crate::class::CLASS_ACYCLIC`]), and nothing when it does not.
+///
+/// # Safety
+/// `class` must be a linked descriptor.
+unsafe fn acyclic_gate_of(class: *const Class) -> u32 {
+    if unsafe { Class::flags_of(class) } & crate::class::CLASS_ACYCLIC == 0 {
+        return 0;
+    }
+
+    crate::refcount::ACYCLIC_GATE
+}
+
 /// The factory's initialization half, shared with the construct-into-cell
 /// path (`rfc/model/memory/bulk-operations.md`): zero the body, set the
 /// class word, publish the header last.
@@ -170,7 +183,12 @@ unsafe fn stamp_into(
     // No `DESTRUCTOR_PENDING` here: the flag is set by `object_constructed`.
     // Object is the zero kind field, so this contributes no bits; it is
     // written out to keep the factory's produced kind explicit.
-    let extra = crate::refcount::EntityKind::Object.to_flags();
+    //
+    // The acyclic gate is the compiler's proof about the class, carried into
+    // the instance so that the candidate gate reads one header word on the
+    // release path instead of dereferencing the class
+    // (`crate::refcount::ACYCLIC_GATE`).
+    let extra = crate::refcount::EntityKind::Object.to_flags() | unsafe { acyclic_gate_of(class) };
     unsafe {
         // Zero-fill the property region in one pass: a null pointer is
         // uninitialized, an all-zero Box is `null` (`(0, 0)`), a zero

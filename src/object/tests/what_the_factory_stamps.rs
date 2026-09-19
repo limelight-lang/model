@@ -5,6 +5,7 @@
 //! stamp, and the C entry point takes the category as a `u32`.
 
 use super::*;
+use crate::refcount::ACYCLIC_GATE;
 
 #[test]
 fn new_stamps_header_class_and_null_props() {
@@ -248,5 +249,52 @@ fn abi_object_new_takes_the_category_as_u32() {
             unsafe { crate::refcount::entity_category(obj) },
             MemoryCategory::RequestArena
         );
+    });
+}
+
+/// The compiler's acyclic proof reaches the instance at its birth: a class
+/// marked [`crate::class::CLASS_ACYCLIC`] stamps [`ACYCLIC_GATE`] into every
+/// instance's
+/// header, where the candidate gate reads it, so a non-final release of such
+/// an instance registers no cycle candidate. A class the compiler says
+/// nothing about is the conservative case and registers one.
+#[test]
+fn a_class_proven_acyclic_stamps_the_gate_into_its_instances() {
+    let _g = crate::memory::block_pool::test_guard();
+    let proven = ClassBuilder::new("ProvenAcyclic")
+        .prop("x", true)
+        .acyclic()
+        .build();
+    let unproven = ClassBuilder::new("UnprovenAcyclic").prop("x", true).build();
+
+    with_ctx(|ctx| unsafe {
+        for (class, gate, admissions, case) in [
+            (
+                proven,
+                ACYCLIC_GATE,
+                0,
+                "a class the compiler proved acyclic",
+            ),
+            (unproven, 0, 1, "a class it says nothing about"),
+        ] {
+            let obj = new_constructed(ctx, class, MemoryCategory::GcHeap);
+            assert_eq!(
+                crate::refcount::entity_flags(obj) & ACYCLIC_GATE,
+                gate,
+                "{case}: the gate the factory stamped"
+            );
+
+            // The gate sits on the non-zero decrement, so the entity needs a
+            // second holder to lose.
+            crate::refcount::take_admissions();
+            ll_retain(obj as *mut RcHeader);
+            assert!(!ll_release(obj as *mut RcHeader), "one holder is left");
+            assert_eq!(
+                crate::refcount::take_admissions(),
+                admissions,
+                "{case}: candidates the release registered"
+            );
+            assert!(ll_release(obj as *mut RcHeader), "the last holder leaves");
+        }
     });
 }
