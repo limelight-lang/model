@@ -834,6 +834,7 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
 }
 
 mod the_batch;
+mod the_quiet_thread;
 mod the_reading_before_the_claim;
 mod the_siblings;
 mod under_stress;

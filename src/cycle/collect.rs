@@ -829,6 +829,20 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     #[cfg(test)]
     PRESSURE_COLLECTIONS.with(|count| count.set(count.get() + 1));
 
+    // A ring whose root stands in the deferred lane is garbage this
+    // collection would otherwise never see: a thread short of memory with
+    // nothing in its active lane reads `Traced::Nothing`. So the lane is
+    // spliced back into R first — a splice and no turnover. At this epoch
+    // the trace finds every ring whose members are all registered and every
+    // dead-in-place slot standing in the lane; a ring behind a mature member
+    // is the collector's request to expose (`crate::cycle::queue`,
+    // `answer_a_turnover_request`), because a turnover per refused
+    // allocation would re-trace the lane's whole closure with no lower
+    // bound.
+    if crate::cycle::queue::deferred_lane_is_occupied() {
+        crate::cycle::queue::reoffer_deferred_candidates();
+    }
+
     let mut freed = 0;
     let mut roots = ALL_ROOTS;
     loop {

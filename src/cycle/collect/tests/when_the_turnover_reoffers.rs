@@ -31,11 +31,13 @@ use crate::cycle::collect::InjectedVerdictRace;
 use crate::cycle::collect::collect_under_pressure;
 use crate::cycle::epoch;
 use crate::cycle::mark::{TRAVERSAL_AGE_THRESHOLD, take_edges_pruned};
+use crate::cycle::mutator_record::{request_a_turnover_for_test, this_thread_record};
 use crate::cycle::queue::verdicts::{Verdict, discard_standing_verdicts};
 use crate::cycle::queue::{
     candidate_count, deferred_count, deferred_turnover_mirror, refill_spares,
     release_queue_segments, reoffer_deferred_if_epoch_moved,
 };
+use crate::cycle::row::take_dispatches_in_mark_phase;
 use crate::cycle::testing::{move_prop, ring_with_a_spare_property, stamp_of};
 use crate::refcount::{
     entity_refcount, is_registered_candidate, mutator_flags, read_maturation_stamp,
@@ -158,24 +160,28 @@ fn a_matured_ring_that_loses_its_keeper_is_collected_at_the_turnover_and_not_bef
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
 }
 
-/// A thread whose active lane is empty re-offers its deferred lane at the next
-/// poll, without waiting for a turnover. The clock is the collecting thread's
-/// own and it moves only at a commit of that thread's own collection; a
-/// collection needs a root in the active lane, so a thread that deferred its
-/// last root would hold every slot of that lane until its exit — the whole
-/// recall the deferral buys, taken for ever rather than for an epoch
-/// (`crate::cycle::queue::reoffer_deferred_when_nothing_else_stands`).
+/// A thread whose roots all stand in the deferred lane runs no collection on
+/// its own polls. The clock is the thread's own and moves at its commits, a
+/// collection needs a root in the active lane, and the poll re-offers the lane
+/// only when the counter crossed a turnover — which, on a thread that
+/// registers nothing, is where the collector's request moves it
+/// (`crate::cycle::epoch::jump_to_the_next_turnover`). Sixty-four polls of
+/// such a thread leave the counter, the lane and the mark where they were;
+/// the poll after the request turns the epoch, splices the lane and takes the
+/// ring. This inverts the contract the case held until 2026-09-21, when the
+/// poll re-offered an empty-active-lane thread's lane at once and collected at
+/// every safepoint (`dev/DECISIONS.md`, "a quiet thread's turnover is the
+/// collector's to ask for").
 ///
-/// The same fixture as the case above, driven by the production poll instead
-/// of by a reading handed to the re-offer.
+/// The same fixture as the case above, driven by the production poll.
 #[test]
-fn an_idle_thread_reoffers_its_deferred_lane_at_the_next_poll() {
+fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_turnover() {
     let _g = test_guard();
     release_queue_segments();
-    let _epoch = epoch::pin(1);
+    epoch::stand_at_the_start_of_a_nonzero_epoch();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
 
-    let node = node_class("IdleReofferedNode", counting_destructor as *const ());
+    let node = node_class("IdleLaneNode", counting_destructor as *const ());
     let mut arena = Arena::new();
     let members = unsafe { ring(&mut arena, [node, node]) };
     let keeper = {
@@ -183,7 +189,7 @@ fn an_idle_thread_reoffers_its_deferred_lane_at_the_next_poll() {
         unsafe {
             new_constructed(
                 &mut context,
-                keeper_class("IdleReofferedKeeper"),
+                keeper_class("IdleLaneKeeper"),
                 MemoryCategory::GcHeap,
             )
         }
@@ -204,18 +210,150 @@ fn an_idle_thread_reoffers_its_deferred_lane_at_the_next_poll() {
     }
     assert_eq!(deferred_count(), 2, "the ring is garbage no lane offers");
 
-    let mirror = deferred_turnover_mirror();
+    let commits = epoch::commits();
+    let _ = take_dispatches_in_mark_phase();
+    for _ in 0..epoch::commits_per_epoch() {
+        assert_eq!(
+            unsafe { crate::gc::ll_gc_maybe_collect() },
+            0,
+            "a poll of a thread with nothing in its active lane collects nothing"
+        );
+    }
     assert_eq!(
-        epoch::turnovers_of(crate::cycle::epoch::commits()),
-        epoch::turnovers_of(mirror),
-        "no turnover stands between the deferral and the poll"
+        epoch::commits(),
+        commits,
+        "sixty-four polls moved the counter by nothing"
     );
+    assert_eq!(
+        deferred_count(),
+        2,
+        "the lane stands where the deferral left it"
+    );
+    assert_eq!(take_dispatches_in_mark_phase(), 0, "no mark ran");
+    assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 0);
+
+    // The collector's request after X, stood in for by the harness: the next
+    // poll moves the counter to the next turnover's first commit, splices the
+    // lane back and the collection it arms takes the ring.
+    request_a_turnover_for_test(this_thread_record());
     assert_eq!(
         unsafe { crate::gc::ll_gc_maybe_collect() },
         2,
-        "the poll re-offered the lane and the collection it armed freed the ring"
+        "the poll after the request re-offered the lane and freed the ring"
+    );
+    assert_eq!(
+        epoch::turnovers_of(epoch::commits()),
+        epoch::turnovers_of(commits) + 1,
+        "the request moved the clock by one turnover"
+    );
+    assert_eq!(
+        epoch::commits() % epoch::commits_per_epoch(),
+        1,
+        "to the turnover's first commit, plus the collection's own close"
+    );
+    assert!(
+        !unsafe { (*this_thread_record()).turnover_is_requested() },
+        "the answering poll took the request down"
     );
     assert_eq!(deferred_count(), 0);
+    assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
+
+    // A second accumulation on the same thread: the polls after it move
+    // nothing again, which is what a request left standing would break.
+    let members = unsafe { ring(&mut arena, [node, node]) };
+    let keeper = {
+        let mut context = LLContext { arena: &mut arena };
+        unsafe {
+            new_constructed(
+                &mut context,
+                keeper_class("IdleLaneKeeperAgain"),
+                MemoryCategory::GcHeap,
+            )
+        }
+    };
+    unsafe { store_prop(&mut arena, keeper, prop_offset(0), members[0]) };
+    assert!(crate::cycle::queue::refill_spares());
+    assert_eq!(
+        unsafe { collect_with_a_reference_taken_mid_trace(&mut arena, keeper, members[0]) },
+        0
+    );
+    assert_eq!(deferred_count(), 2);
+    let commits = epoch::commits();
+    for _ in 0..epoch::commits_per_epoch() {
+        assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    }
+    assert_eq!(
+        epoch::commits(),
+        commits,
+        "no request stood, so no poll jumped"
+    );
+    assert_eq!(deferred_count(), 2);
+
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+    }
+    request_a_turnover_for_test(this_thread_record());
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_maybe_collect() },
+        2,
+        "the ring went back"
+    );
+}
+
+/// A pressure collection takes a dead ring whose root stands in the deferred
+/// lane: the lane is spliced back into R before the trace, at this epoch and
+/// with no turnover — a thread short of memory with nothing in its active lane
+/// would otherwise read nothing to trace. The splice finds every ring whose
+/// members are all registered; a ring behind a mature member stays the
+/// collector's request to expose, because a turnover per refused allocation
+/// would re-trace the lane's whole closure without a lower bound.
+#[test]
+fn a_pressure_collection_splices_the_deferred_lane_and_turns_no_epoch() {
+    let _g = test_guard();
+    release_queue_segments();
+    epoch::stand_at_the_start_of_a_nonzero_epoch();
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+
+    let node = node_class("PressureLaneNode", counting_destructor as *const ());
+    let mut arena = Arena::new();
+    let members = unsafe { ring(&mut arena, [node, node]) };
+    let keeper = {
+        let mut context = LLContext { arena: &mut arena };
+        unsafe {
+            new_constructed(
+                &mut context,
+                keeper_class("PressureLaneKeeper"),
+                MemoryCategory::GcHeap,
+            )
+        }
+    };
+    unsafe { store_prop(&mut arena, keeper, prop_offset(0), members[0]) };
+    assert!(crate::cycle::queue::refill_spares());
+    assert_eq!(
+        unsafe { collect_with_a_reference_taken_mid_trace(&mut arena, keeper, members[0]) },
+        0,
+        "the reference the store took holds the whole ring"
+    );
+    assert_eq!(deferred_count(), 2);
+    assert_eq!(candidate_count(), 0, "nothing stands in the active lane");
+
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+    }
+    let commits = epoch::commits();
+    assert_eq!(
+        unsafe { collect_under_pressure() },
+        2,
+        "the pressure collection spliced the lane and took the ring"
+    );
+    assert_eq!(deferred_count(), 0, "the splice emptied the lane");
+    assert_eq!(
+        epoch::turnovers_of(epoch::commits()),
+        epoch::turnovers_of(commits),
+        "and turned no epoch: the collection's own commit is the clock's only move"
+    );
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
 }
 
@@ -574,6 +712,120 @@ fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnov
         "a stamp of another epoch prunes nothing, and the trace reaches the whole ring"
     );
     assert_eq!(take_edges_pruned(), 0);
+    assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
+}
+
+/// A ring behind a mature member no lane names dies at the poll after the
+/// collector's request. The polls before it offer and free nothing: the ring's
+/// root stands deferred, and a re-trace would stop at the member's stamp,
+/// which is this epoch's. The poll after the request moves the counter to the
+/// next turnover's first commit, which retires the stamp, splices the lane
+/// back, and the collection it arms descends into the member and takes the
+/// ring whole (`crate::cycle::epoch::jump_to_the_next_turnover`).
+///
+/// The same shape as the case above, matured under a keeper by
+/// `TRAVERSAL_AGE_THRESHOLD` collections with the spare cells empty and one
+/// with them refilled, which is the reading that defers the root.
+#[test]
+fn a_quiet_threads_ring_behind_a_mature_member_dies_at_the_poll_after_the_request() {
+    let _g = test_guard();
+    release_queue_segments();
+    epoch::stand_at_the_start_of_a_nonzero_epoch();
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+
+    let node = node_class("QuietRingNode", counting_destructor as *const ());
+    let mut arena = Arena::new();
+    let (root, member, keeper) = {
+        let mut context = LLContext { arena: &mut arena };
+        unsafe {
+            (
+                new_constructed(&mut context, node, MemoryCategory::GcHeap),
+                new_constructed(&mut context, node, MemoryCategory::GcHeap),
+                new_constructed(
+                    &mut context,
+                    keeper_class("QuietRingKeeper"),
+                    MemoryCategory::GcHeap,
+                ),
+            )
+        }
+    };
+    unsafe {
+        move_prop(root, prop_offset(0), member);
+        store_prop(&mut arena, member, prop_offset(0), root);
+        store_prop(&mut arena, keeper, prop_offset(0), root);
+        assert!(
+            !ll_release(root as *mut RcHeader),
+            "the member and the keeper hold the root"
+        );
+    }
+    assert_eq!(candidate_count(), 1, "the release registered the root");
+
+    take_edges_pruned();
+    for _ in 1..=TRAVERSAL_AGE_THRESHOLD {
+        assert_eq!(
+            unsafe { ll_gc_collect_cycles() },
+            0,
+            "the keeper holds the ring"
+        );
+        assert_eq!(
+            candidate_count(),
+            1,
+            "with no spare cell the close keeps the root in the active lane"
+        );
+    }
+    assert!(refill_spares());
+    assert_eq!(
+        unsafe { ll_gc_collect_cycles() },
+        0,
+        "the keeper still holds the ring"
+    );
+    assert_eq!(
+        take_edges_pruned(),
+        1,
+        "the reading stopped at the mature member"
+    );
+    assert_eq!(deferred_count(), 1, "and deferred the root");
+    assert_eq!(candidate_count(), 0);
+
+    // The keeper lets go: the ring is garbage, its root stands deferred, and the
+    // member's stamp is this epoch's.
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+    }
+    let commits = epoch::commits();
+    for _ in 0..3 {
+        assert_eq!(
+            unsafe { crate::gc::ll_gc_maybe_collect() },
+            0,
+            "a poll before the request frees nothing"
+        );
+    }
+    assert_eq!(deferred_count(), 1, "the root stands deferred");
+    assert_eq!(epoch::commits(), commits, "and the counter has not moved");
+    assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 0);
+
+    request_a_turnover_for_test(this_thread_record());
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_maybe_collect() },
+        2,
+        "the poll after the request turned the epoch and the collection took the ring"
+    );
+    assert_eq!(
+        take_edges_pruned(),
+        0,
+        "the turnover retired the member's stamp, so the descent reached it"
+    );
+    assert_eq!(
+        epoch::turnovers_of(epoch::commits()),
+        epoch::turnovers_of(commits) + 1
+    );
+    assert_eq!(
+        epoch::commits() % epoch::commits_per_epoch(),
+        1,
+        "the jump lands on the turnover's first commit, and the close adds one"
+    );
+    assert_eq!(deferred_count(), 0);
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
 }
 

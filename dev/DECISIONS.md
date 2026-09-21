@@ -8,6 +8,72 @@ never edited or deleted.
 
 ---
 
+## 2026-09-21 — a quiet thread's turnover is the collector's to ask for, and the poll re-offers only on a turnover
+
+**Ruled by the Sage of 2026-09-21 in two rounds with a Critic between, and
+accepted by Edmond the same day**, who refused the algorithm it replaces.
+Supersedes by name the last paragraph of "the epoch counter is the collecting
+thread's, in its record" (the empty-lane re-offer as the liveness the shared
+word provided) and the idle-thread sentence of "the traversal age threshold is
+one" ("on an idle thread the poll re-offers it at once").
+
+**What.** `reoffer_deferred_when_nothing_else_stands` is deleted; the poll
+re-offers the deferred lane only when its counter crossed a turnover. The
+collector's round, after a serve that reached nothing, asks for a turnover once
+X has passed since its last stamp of that record — a byte on the record's token
+line, an instant on its reader line — and a serve that found the mutator's own
+clock moving (a batch, a token held, `POSTED`) restamps and asks nothing. The
+mutator's poll, under an open gate and before the token read, with the lane
+occupied, the byte set and no collector holding the token, clears the byte and
+moves its own counter to the next turnover's first commit; the turnover
+comparison then splices and arms as it always did. The fill of an empty lane
+clears the byte and sets the collector's signal, so the elder is born at the
+poll's tail and never inside a collection. The pressure path splices the lane
+before its trace, with no turnover.
+
+**Why.** The per-poll re-offer remembered nothing, so a thread whose only
+standing roots were deferred collected at every safepoint — a pruned trace each
+and a full re-trace of its live core every 64 of them — for as long as those
+roots lived (`dev/BENCHMARKS.md`, "S37.5 what a turnover re-offers, and what a
+deferral costs", the idle cells; `dev/POSTMORTEM.md`, 2026-09-21). What the
+shared word had provided was an external clock, and its replacement is external
+too: the collector's request. Kept whole: the counter is the mutator's alone
+(Y12 clause 1); the collector requests and the mutator consents (2026-09-17);
+the two birth doors; the registration path; `N` and `k`.
+
+**Rejected.** A once-per-accumulation flag: on a quiet thread the lane goes
+empty to occupied at the close of the re-offer's own collection, so the flag
+either clears itself and the defect stands, or never clears and the liveness
+hole reopens. A mutator-side clock: a time read against a 7.5 ns poll. A
+turnover per pressure collection: an un-pruned trace of the lane's closure per
+refused allocation, with no lower bound. An X tied to the round's adaptive
+interval: it shortens on other threads' batches and would hand the quiet
+thread's rate to the busiest thread, the defect the per-thread counter removed.
+
+**Cost.** One un-pruned trace of the lane's closure per X per quiet thread with
+live deferred roots, 381 objects on the corpus median; up to X of latency for an
+all-registered dead ring or a dead-in-place slot standing in the lane, where the
+replaced tree found them at the next poll by collecting at every poll; one byte
+and one word in the record, the layout asserts standing; one load per poll of a
+line already loaded, on polls that find the lane occupied (S60.6: 8.1–8.5 ns
+against 7.0–7.8). The fill's signal rises at the close of every quiet
+thread's re-trace now, and a process whose elder the operating system refuses
+to spawn pays the refused birth at every poll of every thread with an occupied
+lane until `BIRTH_RETRY_INTERVAL` (`dev/BENCHMARKS.md`, S60.6's first attempt:
+115–240 ns a poll). A thread whose own commits moved its clock since the last
+stamp is restamped and not asked (the Critic of 2026-09-21 over the built
+step): its stamps age on their own, and a request on top would re-trace its
+lane once per X for nothing.
+X's default is 8 s, borrowed from V8's memory reducer and not measured
+(`dev/RESEARCH.md`, "the idle-GC timers of five runtimes"); the embedder sets
+it through `ll_gc_set_quiet_interval`, in milliseconds, zero restoring the
+default. The case `an_idle_thread_reoffers_its_deferred_lane_at_the_next_poll`
+inverted its contract and became
+`an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_turnover`,
+a test-contract change made on Edmond's acceptance. The threshold-one serve of
+R after X is a step of its own (`PLAN.md`, "A quiet thread's garbage is taken
+after X").
+
 ## 2026-09-19 (third) — the traversal age threshold is one
 
 **Ruled by Edmond**, over the two readings taken the same day. `k` moves from 3
@@ -26,7 +92,9 @@ epoch, on a thread whose active lane keeps filling; on an idle thread the poll
 re-offers it at once and the prune reads it live at every re-trace until the
 epoch turns, the same wait, where below the threshold the re-trace takes it at
 once (`dev/BENCHMARKS.md`, "what a turnover re-offers, and what a deferral
-costs", the idle cells re-read 2026-09-21). So `k` changes how many components
+costs", the idle cells re-read 2026-09-21; *the idle sentence is superseded by
+2026-09-21, "a quiet thread's turnover is the collector's to ask for": on an
+idle thread the wait is X*). So `k` changes how many components
 pay that wait rather than how long it is. The saving is spent on every
 re-trace of a mature core; the latency falls on the rarer event of a cycle
 dying after it matured. The ruling prefers the saving; the slope above is the
@@ -92,7 +160,9 @@ root and registered nothing more would hold those slots until its exit. The
 safepoint poll re-offers a deferred lane when the active lane is empty
 (`cycle::queue::reoffer_deferred_when_nothing_else_stands`), which costs recall
 on the re-offered roots at the moment the trace is cheapest. Found by the
-Critic of 2026-09-19 over the built step.
+Critic of 2026-09-19 over the built step. *(This paragraph is superseded by
+2026-09-21, "a quiet thread's turnover is the collector's to ask for": the
+re-offer remembered nothing and collected at every poll.)*
 
 ## 2026-09-19 — the collector thread is born by the OS entry, on a stack its slot keeps, and is woken by a word
 

@@ -33,14 +33,12 @@
 //! (`crate::cycle::queue`), so nothing offers the ring to a trace until the lane
 //! is re-offered. On a thread whose active lane keeps filling that is the
 //! turnover, `N − d + 1` collections later. On a thread with nothing else
-//! registered the poll re-offers the lane at once
-//! (`crate::cycle::queue::reoffer_deferred_when_nothing_else_stands`), and what
-//! the re-trace reads is the prune's: the ring's mature member is not descended
-//! into, the root reads live and is deferred again, at every poll, until the
-//! thread's own commits turn the epoch over — the same `N − d + 1`. Below the
-//! threshold the re-trace descends and takes the ring at once, which is what the
-//! `(0, 1)` cell reads at a threshold of 3. The background rate tells the
-//! two lanes apart; the threshold is what the idle cell depends on.
+//! registered no commit of its own moves the clock: the wait is X, the quiet
+//! interval after which the collector asks for a turnover
+//! (`crate::cycle::worker`, "The quiet thread"), and the poll after the request
+//! takes the ring — one collection, whatever `d`. The harness stands in for the
+//! collector's request, so the idle cells read that one collection and say
+//! nothing about X's length; the background rate tells the two lanes apart.
 //!
 //! # The precondition both readings need
 //!
@@ -53,9 +51,10 @@ use std::ptr;
 
 use super::*;
 use crate::cycle::epoch::{self, commits_per_epoch, stand_at_the_start_of_a_nonzero_epoch};
+use crate::cycle::mutator_record::{request_a_turnover_for_test, this_thread_record};
 use crate::cycle::queue::{
-    deferred_count, refill_spares, release_queue_segments, reoffer_deferred_if_epoch_moved,
-    reoffer_deferred_when_nothing_else_stands,
+    answer_a_turnover_request, deferred_count, refill_spares, release_queue_segments,
+    reoffer_deferred_if_epoch_moved,
 };
 use crate::cycle::row::take_edge_dispatches;
 use crate::cycle::testing::{move_prop, on_a_fresh_thread};
@@ -137,15 +136,14 @@ fn drain() {
 }
 
 /// One safepoint and the collection behind it, in the order `gc::poll` takes
-/// them: the epoch-driven re-offer first, the empty-lane one behind it.
+/// them: the collector's request answered, then the turnover comparison.
 fn poll_and_collect() -> usize {
     // A close with no spare cell keeps the root in the active lane, so the
     // deferral this load reads needs the spares topped up
     // (`cycle::collect::tests::when_the_turnover_reoffers`).
     let _ = refill_spares();
-    let commits = epoch::commits();
-    let _ = reoffer_deferred_if_epoch_moved(commits)
-        || reoffer_deferred_when_nothing_else_stands(commits);
+    answer_a_turnover_request();
+    let _ = reoffer_deferred_if_epoch_moved(epoch::commits());
     let collected = unsafe { ll_gc_collect_cycles() };
     let _ = take_edge_dispatches();
     collected
@@ -199,8 +197,13 @@ fn a_recall_delay(death_at: usize, background: usize) -> usize {
     }
 
     // The keeper lets go. The ring holds itself, so nothing is freed here; the
-    // deferred record is what keeps a collection from seeing it.
+    // deferred record is what keeps a collection from seeing it. A thread with
+    // no background never turns its own epoch: the harness makes the request
+    // the collector would make after X.
     unsafe { let_go(&mut arena, dying) };
+    if background == 0 {
+        request_a_turnover_for_test(this_thread_record());
+    }
 
     let mut waited = 0;
     let collected = loop {
@@ -252,9 +255,9 @@ fn the_lane_grows_by_the_rate_live_roots_arrive() {
 }
 
 /// What a deferral costs the component that dies behind it: the rest of the
-/// epoch, on a thread whose active lane keeps filling because nothing offers
-/// the ring before the turnover, and on one with nothing else registered
-/// because every re-trace reads the ring live through the prune.
+/// epoch on a thread whose active lane keeps filling, because nothing offers
+/// the ring before the turnover; and X on one with nothing else registered,
+/// read here as the one collection after the collector's request.
 #[test]
 #[ignore = "a measurement, recorded in dev/BENCHMARKS.md; run with --ignored"]
 fn a_deferred_death_waits_for_the_traffic_behind_it() {
@@ -265,12 +268,13 @@ fn a_deferred_death_waits_for_the_traffic_behind_it() {
         for death_at in DEATHS_AT {
             let waited = on_a_fresh_thread(move || a_recall_delay(death_at, background));
             println!("  {background:<11} {death_at:<9} {waited}");
-            // The idle cells read the threshold rather than the lane: the
-            // re-offer at every poll puts the root back at once, and the trace
-            // stops at the mature member until the epoch turns. At a threshold
-            // of 3 the `(0, 1)` cell read 1, the member being descended into at
-            // age 1; at 1 it waits like every other cell.
-            let expected = commits_per_epoch() as usize - death_at + 1;
+            // The idle cells read the request rather than the lane: the poll
+            // after it turns the epoch and takes the ring, whatever `d`.
+            let expected = if background == 0 {
+                1
+            } else {
+                commits_per_epoch() as usize - death_at + 1
+            };
             assert_eq!(
                 waited, expected,
                 "background {background}, death at {death_at}: collections waited"

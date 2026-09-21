@@ -16,12 +16,13 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-21 · Active: S60, opened the same day S37 went: its gate found
-the empty-lane re-offer collecting at every poll of a quiet thread, Edmond called
-the algorithm unacceptable, and the Sage ruled the replacement in two rounds with
-a Critic between (the reports are the session's scratchpad; the ruling is the
-`dev/DECISIONS.md` entry S60.5 writes). Edmond accepted the mechanism on
-2026-09-21 and refused 1 s as X's default. The destination's last mile — the
+Updated: 2026-09-21 · Active: S60, every step closed the day it opened: the
+S37 gate found the empty-lane re-offer collecting at every poll of a quiet
+thread, Edmond called the algorithm unacceptable, the Sage ruled the
+replacement in two rounds with a Critic between (`dev/DECISIONS.md`, "a quiet
+thread's turnover is the collector's to ask for"), Edmond accepted it and set
+X at V8's 8 s over the 1 s proposed. What stands between S60 and its deletion
+is the Code Reviewer over the stage (rule 23.1.3). The destination's last mile — the
 compiler that links this crate — is outside this plan: `rfc/BACKLOG.md`, "The
 big one", and the front end in `limelight`.
 
@@ -124,7 +125,7 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   failure is reportable, would remove it if `pthread_setspecific` allocates
   nothing per thread — which nobody has read, on any target. Named when the
   reserve's first touch was decided on 2026-08-29 and priced nowhere since.
-## S60 — The quiet thread's turnover  [in progress]
+## S60 — The quiet thread's turnover  [done]
 
 Goal: a thread whose roots are all parked runs no collection on its own polls;
 its parked garbage is found when the collector asks for a turnover after X.
@@ -138,21 +139,41 @@ the same day; the analogues for X are `dev/RESEARCH.md`, "the idle-GC timers of
 five runtimes"; X's default figure is Edmond's, the 1 s the Sage proposed
 refused as too frequent.
 
-- [ ] S60.1 The request byte and the instant on the mutator's record
+- [x] S60.1 The request byte and the instant on the mutator's record
       done: `MutatorRecord` carries an `AtomicU8` request byte on the token line
         and an `AtomicU64` instant (nanoseconds from a process base) on the
         reader line, both zero at `take_record` and read by `lines_are_fresh`,
         `offset_of!(reader) == 64` still asserted, with a `#[cfg(test)]` store
         of the byte from the harness thread
       tier: T2 · role: Critic
-- [ ] S60.2 The collector asks for a turnover after X
+      Critic 2026-09-21 (over S60.1–S60.4 together): the serve's outcome alone
+        does not say whether the mutator's clock moved — a thread collecting
+        in line between rounds read `Idle` and was asked every X on top of its
+        own turnovers. Accepted: `commits_seen` beside the instant, written at
+        every stamp, and the ask requires the clock to stand.
+      handoff: `mutator_record.rs`, `turnover_requested` on the token line,
+        `served_at` and `commits_seen` on the reader line; the re-take case
+        `a_retaken_record_starts_with_fresh_lines` was seen red before the
+        reset was written. Commit S60's.
+- [x] S60.2 The collector asks for a turnover after X
       done: `worker::read_one_record` restamps the instant on a batch and, on a
         serve that made no batch with X elapsed since the instant, stores the
         request byte and restamps; X is `quiet_interval()` — the ABI's value if
         set, else the crate default Edmond names — with a `worker::testing`
         override; the ABI setter stands beside `ll_gc_set_collector_cap`
       tier: T2 · role: Critic
-- [ ] S60.3 The poll jumps to the next turnover on the request, and the per-poll re-offer goes
+      Critic 2026-09-21: the millisecond setter truncated past 2^64 ns
+        (accepted, `try_from` saturates); the first quiet-thread case's two
+        serves inside a 1 ms X could straddle a preemption (accepted, a
+        minute for those two, a millisecond for the sleep); "The quiet
+        thread" was cited as a section `worker.rs` did not have (accepted,
+        the section written).
+      handoff: `worker::ask_for_a_turnover_if_quiet` after every serve,
+        `QUIET_INTERVAL` 8 s borrowed from V8 (Edmond, 2026-09-21;
+        `dev/RESEARCH.md`, "the idle-GC timers of five runtimes"),
+        `ll_gc_set_quiet_interval(millis)`; the cases are
+        `worker/tests/the_quiet_thread.rs`, four.
+- [x] S60.3 The poll jumps to the next turnover on the request, and the per-poll re-offer goes
       done: under an open gate and before the token read, a poll with a
         non-empty deferred lane and the byte set, the token not reading
         `COLLECTOR`, clears the byte, stores `commits − commits % N + N` through
@@ -165,13 +186,34 @@ refused as too frequent.
         fixture dies at the poll after the harness's byte — and the old idle
         case is renamed and inverted as Edmond's contract change
       tier: T2 · role: Critic
-- [ ] S60.4 The pressure path splices the lane without a jump
+      Critic 2026-09-21: `TraceToken::request`'s failure ordering was relaxed,
+        so a standing request answered on the free path read a grant with no
+        acquire partner for the consent's release — the jumped counter could
+        be missed by the batch (accepted, the failure is acquire); the two red
+        cases pinned the jump's direction and not its target, and a byte never
+        cleared kept both green (accepted: `commits % N == 1` after the
+        answering poll, the byte asserted clear, and a second accumulation
+        polled sixty-four times). No finding on the free path's consent, the
+        destructor's poll under a closed gate, or the fill's signal reaching
+        the poll's tail.
+      handoff: `gc.rs`'s poll reads the gate once and, behind it with the lane
+        occupied, `queue::answer_a_turnover_request` then
+        `reoffer_deferred_if_epoch_moved(commits())`; `epoch::jump_to_the_next_turnover`;
+        `defer_entry`'s empty-to-occupied branch clears the byte and signals.
+        Both cases seen red on the unmodified poll (2 against 0 at the first
+        poll; 69 against 66 commits). `an_idle_thread_reoffers_its_deferred_lane_at_the_next_poll`
+        is `an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_turnover`.
+- [x] S60.4 The pressure path splices the lane without a jump
       done: `collect_under_pressure` re-offers a non-empty deferred lane before
         `trace_and_harvest` by splice alone, and a case shows a dead
-        all-registered ring parked in the lane taken by the pressure collection
-        at the old epoch
+        all-registered ring standing in the lane taken by the pressure
+        collection at the old epoch
       tier: T1 · role: —
-- [ ] S60.5 The sentences, the journals and the rfc
+      handoff: `collect.rs`, before the pressure loop; the case
+        `a_pressure_collection_splices_the_deferred_lane_and_turns_no_epoch`,
+        red at 0 against 2 before the splice. A refusal after the splice
+        leaves the lane's roots in R for the repeat S40.4 priced.
+- [x] S60.5 The sentences, the journals and the rfc
       done: every sentence the ruling lists as false once a request advances the
         counter is rewritten — `epoch.rs`, `mutator_record.rs`, `queue.rs`, the
         rfc's Y9 and Y12 clause 8, and `rfc/model/gc/rc-cycle.md` "Concurrency"
@@ -185,11 +227,27 @@ refused as too frequent.
         after-X backlog line absorbs the idle-thread sentence of "What S37 named
         and left", and the threshold-one serve becomes a line of its own
       tier: T1 · role: —
-- [ ] S60.6 What the poll costs with a lane standing
+      handoff: `dev/DECISIONS.md`, "a quiet thread's turnover is the
+        collector's to ask for"; the rfc's Y9, Y12 clause 8 and
+        `dev/design/trace-token-handshake.md` carry the request (commit in
+        `rfc`); the threshold-one serve stays inside the after-X line as its
+        remaining half rather than a line of its own.
+- [x] S60.6 What the poll costs with a lane standing
       done: `what_the_poll_costs` recorded in both arms in `dev/BENCHMARKS.md` —
         the empty lane against S37.8's figure, one deferred record standing as
         an absolute figure
       tier: T1 · role: Bench
+      handoff: `dev/BENCHMARKS.md`, "S60.6 what the poll costs with a deferred
+        record standing": 6.95–7.83 ns empty, 8.13–8.46 ns occupied; the first
+        attempt's 115–240 ns was the harness's refused birth on the fill's
+        signal, taken by hand since.
+      gate 2026-09-21: 1083 ×4, `hash-folding` 1083, `debug-journal` 1092 in
+        three of four runs — the second run failed
+        `the_siblings::a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idle`
+        at its wait for the sibling's birth, in a run that took 19 s where
+        the others took 6–10 s; 12 of 12 alone afterwards, and a fourth full
+        run green. Not repaired and not recorded as accepted: Edmond's call
+        whether it is the box's load or S60's round.
 
 ---
 
@@ -364,13 +422,7 @@ live: `archive/pre-rc-cycle`").
   re-offer), and both are measured on the test heap (`dev/BENCHMARKS.md`,
   "S37.5 what a turnover re-offers, and what a deferral costs"). Which side
   pays is Edmond's to state; the ruling goes to `dev/DECISIONS.md` and
-  `epoch::COMMITS_PER_EPOCH` moves with it. The idle thread's price, found by
-  the Critic of 2026-09-21: `queue::reoffer_deferred_when_nothing_else_stands`
-  remembers no re-offer, so a thread whose only standing roots are deferred
-  collects at every poll for as long as those roots live: a pruned trace
-  each, and a full re-trace of its live core every `N`. Whether that is the
-  liveness the per-thread clock is paid for or a defect the after-X line
-  below absorbs is Edmond's to say. Y9's minimum-over-stamped-members
+  `epoch::COMMITS_PER_EPOCH` moves with it. Y9's minimum-over-stamped-members
   question (whether a component's age is the minimum over its stamped
   members alone or over all of them, refused for the stamp's step by the Sage
   of 2026-09-10) changes no prune at `k = 1`, where every stamped component is
@@ -406,17 +458,22 @@ live: `archive/pre-rc-cycle`").
   refuses the shape is recorded in `dev/DECISIONS.md`.
 - [ ] **A quiet thread's garbage is taken after X.** Edmond, 2026-09-18: the
   GC takes a thread's garbage of its own accord once some time X has passed.
-  Today a collector serves a mutator whose R holds `worker::SOFT_THRESHOLD`
-  (64) records or more, the round's threshold is constant in the working
-  build (`worker::threshold_for_rounds`), the timer sets the rounds' cadence
-  and not their threshold, and a thread below the threshold, under no pressure and making
-  no explicit fire keeps its cycle garbage until it crosses the threshold or
-  exits (`cycle::collect::tests::what_the_byte_arms::`
+  S60 built the half that turns a quiet thread's deferred lane over: the
+  collector's round asks after X (`worker::quiet_interval`, 8 s by default,
+  `ll_gc_set_quiet_interval` the embedder's dial) and the poll answers. What
+  is left is R: a collector serves a mutator whose R holds
+  `worker::SOFT_THRESHOLD` (64) records or more, the round's threshold is
+  constant in the working build (`worker::threshold_for_rounds`), and a thread
+  below the threshold, under no pressure and making no explicit fire keeps
+  its cycle garbage until it crosses the threshold or exits
+  (`cycle::collect::tests::what_the_byte_arms::`
   `an_unarmed_poll_leaves_a_completed_death_registered`). The cheapest form
-  leaves the poll alone: a round serves a mutator it has not served for X at
-  a threshold of one. X is not a crate constant — it comes from the pressure
-  path or from an rfc ABI (`dev/DECISIONS.md`, "the safepoint poll takes the
-  free path's road").
+  leaves the poll alone: a round serves such a mutator at a threshold of one
+  once X has passed since the instant S60 stamps on its record. Its tail is
+  unpriced: a thread with one entry in R that polls nothing within
+  `REQUEST_WAIT` is marked silent, its request stands on the collector's
+  frame up to `STANDING_CAPACITY`, and a standing request opens a
+  foreign-holder window on the thread the moment it wakes.
 - [ ] **An occupant of a retained block freed from another thread inside the
   reset that retained it.** `retained::occupant_freed` subtracts from the low
   half of a count word whose high half holds the pins, so a free arriving

@@ -48,10 +48,10 @@ collector–mutator memory protocol of 2026-09-09 and its review are in
   | `arena` | `TraceScratchArena`, the collection's bump over the thread's workspace and into pooled blocks; `ensure_row`, `find_initialized_row` | `cycle::collect` |
   | `shadow` | the row: two bits of colour over thirty of working count; a block's array of rows, zeroed a group of eight at a time | `arena`, `mark`, `scan`, `maturation`, `membership`, `deferred_slot_reuse`, `worker` |
   | `row` | `resolve_edge_target`: which row a traced edge resolves to, by the block's kind | `trace`, `mark`, `scan`, `maturation`, `membership`, `worker` |
-  | `epoch` | the collecting thread's count of closed commits, kept in its record, and the two-bit epoch a maturation stamp carries, `(commits / 64) % 4`; a collector thread reads the record of the mutator it traces for | `cycle::finalization`, `cycle::mark` through the trace arena, `cycle::collect` and `gc`'s poll for the turnover mirror |
+  | `epoch` | the collecting thread's clock, kept in its record — its closed commits, moved to the next turnover at its poll on the collector's request after X — and the two-bit epoch a maturation stamp carries, `(commits / 64) % 4`; a collector thread reads the record of the mutator it traces for | `cycle::finalization`, `cycle::mark` through the trace arena, `cycle::collect`, `gc`'s poll for the turnover mirror and the jump, `cycle::worker`'s round for the request |
   | `token` | the per-thread trace token: one byte of five states, taken by compare-and-swap, held by the mutator through its collection and by a collector for one batch, waited on through a mutex (`rfc/dev/design/trace-token-handshake.md`) | `cycle::collect`, `cycle::worker`, `gc`'s poll, `deferred_slot_reuse` at a free |
   | `mutator_record` | the 256-byte record the token stands in — four lines, the collector's and the mutator's words of the two rings — carved from GC-metadata blocks the process keeps | `heap::ll_thread_init` and `ll_thread_exit`, `cycle::token`, `queue`, `collect`, `worker` |
-  | `worker` | the collector threads: the elder and its siblings, the timer, the round over the records named to a collector, and the batch for one mutator — request, consent, peek, trace through `cells::AtomicCells`, post into P, release to `POSTED`; `worker::birth` is the thread's creation by the OS entry on a stack the slot keeps, and its join | `cycle::collect`'s pressure path, `gc`'s poll through `cycle::queue` |
+  | `worker` | the collector threads: the elder and its siblings, the timer, the round over the records named to a collector, and the batch for one mutator — request, consent, peek, trace through `cells::AtomicCells`, post into P, release to `POSTED` — and, after a serve that reached nothing for X (`quiet_interval`, 8 s unless `ll_gc_set_quiet_interval` says otherwise), the request for a turnover of the mutator's epoch; `worker::birth` is the thread's creation by the OS entry on a stack the slot keeps, and its join | `cycle::collect`'s pressure path, `gc`'s poll through `cycle::queue` |
   | `mark` | trial deletion over the rows; the prune that stops at a mature stamped target no queue names, with `pin_threshold` for a test at another `k` | `cycle::trace`, `cycle::worker` |
   | `scan` | the classification: live spreads, zero reads as potentially unreachable, a reached row is raised | `cycle::trace`, `cycle::worker` |
   | `trace` | both phases over one batch in the order the rows require: every root marks before any root scans; the collector thread runs the same two phases in `worker::trace` | `cycle::collect` |
@@ -99,7 +99,7 @@ collector–mutator memory protocol of 2026-09-09 and its review are in
   (`refcount::tests::the_candidate_gate`).
 - GC C ABI and the safepoint: `src/gc.rs` — `ll_gc_collect_cycles`,
   `ll_gc_maybe_collect`, `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`,
-  `ll_gc_set_collector_cap`; the poll's duties in order are
+  `ll_gc_set_collector_cap`, `ll_gc_set_quiet_interval`; the poll's duties in order are
   `dev/ARCHITECTURE.md`'s `gc` row and `cycle::queue`'s module doc, "What the
   poll does for this module".
 - Static blocks and thread exit: `src/static_block.rs` — the per-thread

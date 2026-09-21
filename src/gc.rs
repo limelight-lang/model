@@ -246,10 +246,32 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // (`crate::cycle::queue::refill_and_drain`).
     crate::cycle::queue::refill_and_drain();
 
+    // The gate, read once: a poll inside a teardown, a reset or a collection
+    // fires nothing, and an arming made under it stands for the next clean
+    // poll (`dev/DECISIONS.md`, "a fire point inside a teardown collects
+    // nothing, and the runtime enforces it").
+    let open = crate::cycle::collect::may_collect();
+
+    // The deferred lane's turnover, under an open gate and before the token
+    // is read. The owner alone moves its clock and its records: the
+    // collector's request for a turnover is answered by a jump of the
+    // counter, and the full-width comparison against the mirror then reads
+    // it as any turnover; arming here lets this same safepoint trace the
+    // re-offered roots. The jump is stored before the token is read: the
+    // consent's release swap orders every store this thread made before it —
+    // the jumped counter among them — before the collector's acquire read
+    // of the grant, so a batch granted at this poll prunes against the
+    // turned epoch (`crate::cycle::token`, `crate::cycle::worker`).
+    if open && crate::cycle::queue::deferred_lane_is_occupied() {
+        crate::cycle::queue::answer_a_turnover_request();
+        if crate::cycle::queue::reoffer_deferred_if_epoch_moved(crate::cycle::epoch::commits()) {
+            arm();
+        }
+    }
+
     // The byte, read by the one reading the slot free entry makes too, and
-    // before the gate: a request is consented to and `POSTED` arms whether
-    // or not this poll may fire, an arming made under a closed gate standing
-    // for the next clean poll (`crate::cycle::token`).
+    // whatever the gate: a request is consented to and `POSTED` arms whether
+    // or not this poll may fire (`crate::cycle::token`).
     let reading = crate::cycle::token::read_and_act_on_this_thread();
 
     // And the returns a foreign trace left this thread withholding, made
@@ -258,24 +280,7 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // (`crate::cycle::deferred_slot_reuse`).
     unsafe { crate::cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace() };
 
-    // A ring whose root sits in the deferred lane can be this thread's only
-    // garbage, so it cannot wait for a collection that an empty active queue
-    // would never start. The owner alone compares its full-width mirror and
-    // moves the records; arming here lets this same safepoint trace the
-    // re-offered roots.
-    let commits = crate::cycle::epoch::commits();
-    if crate::cycle::queue::reoffer_deferred_if_epoch_moved(commits)
-        || crate::cycle::queue::reoffer_deferred_when_nothing_else_stands(commits)
-    {
-        arm();
-    }
-
-    // The gate before the arming: a poll inside a teardown, a reset or a
-    // collection cannot fire, and it leaves the arming standing for the next
-    // poll at a clean point rather than spending it on a refusal
-    // (`dev/DECISIONS.md`, "a fire point inside a teardown collects nothing,
-    // and the runtime enforces it").
-    if !crate::cycle::collect::may_collect() {
+    if !open {
         return 0;
     }
 
@@ -333,6 +338,17 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_gc_set_collector_cap(cap: usize) {
     crate::cycle::worker::set_collector_cap(cap);
+}
+
+/// ABI: set how long a thread that registers no candidates and reaches no
+/// batch is left before the collector asks it to turn its epoch over and
+/// re-trace the roots it deferred, in milliseconds; zero restores the crate's
+/// default (`crate::cycle::worker`, "The quiet thread"). The embedder's
+/// dial over how long garbage behind a deferred root may wait on a quiet
+/// thread. Callable at any time from any thread; the next round reads it.
+#[unsafe(no_mangle)]
+pub extern "C" fn ll_gc_set_quiet_interval(millis: u64) {
+    crate::cycle::worker::set_quiet_interval(std::time::Duration::from_millis(millis));
 }
 
 /// ABI: serve the collector's checkpoint now. The compiler emits it once

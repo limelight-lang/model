@@ -8,6 +8,56 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-21 — S60.6 what the poll costs with a deferred record standing: 8.1–8.5 ns against 7.0–7.8 ns for the empty lane, which S37.8's figure still holds
+
+**Two arms of `cycle::collect::tests::what_the_poll_costs`.** The empty arm is
+S37.8's probe unchanged — unarmed, queue empty, byte `FREE` — and answers
+whether the poll's rewiring (the gate read once, the deferred lane's test and
+the turnover request answered before the token read; `dev/DECISIONS.md`, "a
+quiet thread's turnover is the collector's to ask for") moved it. The second
+arm stands one live ring's two roots in the deferred lane under a keeper and
+polls with no request made: the lane's occupancy off the base block's control
+line, the request byte off the record's token line, the turnover comparison
+against the mirror. It is an absolute figure: the tree before this entry
+re-offered such a lane at every poll and collected, so it has no comparable
+arm.
+
+**Machine:** dev box, shared with interactive work. **Base:** `46d1d4c` plus
+S60.1–S60.4, `rustc 1.96.0`, release build, `cargo test --release --lib --
+what_the_poll_costs --ignored --nocapture`, four runs of nine rounds of
+200,000 polls, the minimum beside the median.
+
+| arm | run 1 | 2 | 3 | 4 | minimum |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| empty lane, median | 9.65 | 7.40 | 7.38 | 7.63 | — |
+| empty lane, min | 7.83 | 7.04 | 6.95 | 7.12 | **6.95 ns** |
+| one deferred record, median | 9.03 | 8.46 | 8.52 | 8.51 | — |
+| one deferred record, min | 8.46 | 8.13 | 8.33 | 8.15 | **8.13 ns** |
+
+**The reading.** The empty arm is where S37.8 left it: 6.95–7.83 ns minimum
+against S37.8's 7.46–7.61, inside the 1.5–3 % floor an identical binary's
+repeated runs show (the first run's 9.65 ns median is the process's first
+measurement, dropped by the method and printed here because the minimum
+column is what is read). The occupied arm costs 1.1–1.3 ns more per poll: two
+loads and a comparison on lines the poll already touches, and no branch the
+empty arm does not take.
+
+**What the first attempt read, and why it is not the figure.** With the fill's
+signal left standing — the close that fills an empty lane signals the
+collector, and the harness births none to receive it — the occupied arm read
+115–240 ns: every poll ran `signal_the_collector_if_due` into the refused
+birth. Production births the elder at that first poll and the wake takes the
+flag down; the arm takes the flag by hand
+(`queue::take_the_signal_for_test`) for that reason. A process whose elder
+the operating system refuses to spawn would pay that path once per poll
+until `BIRTH_RETRY_INTERVAL` lets the next attempt through — a reading of the
+harness, recorded because it is what a refused birth costs the poll.
+
+**What this does not say.** Nothing about the request's own cost — the byte is
+stored once per X per quiet thread by the collector and read here unset —
+nor about the un-pruned trace the turnover buys, which is a collection and
+not a poll. Nothing about time under load: an unloaded box, one thread.
+
 ## 2026-09-19 — S37.5 what a turnover re-offers, and what a deferral costs: `rate × N` records, and `N − d + 1` collections of recall
 
 **Two responses, and one precondition that had to be found first.** The turnover
@@ -78,6 +128,10 @@ every cell. That cell is the one observation in either instrument of a death
 read live behind a prune, and it moves with the threshold: at 3 the ring was
 taken at the next re-trace, at 1 it waits the epoch. On an idle thread the wait
 is paid in collections, one per poll, until the epoch turns.
+*(Amended 2026-09-21, second: the per-poll re-offer is deleted by the ruling
+"a quiet thread's turnover is the collector's to ask for"; the idle cells now
+read one collection after the collector's request, which the harness makes,
+and say nothing about X's length. The busy cells stand.)*
 
 **What this says about `N`.** Both costs are linear in it and they pull opposite
 ways: a live root is re-traced once per `N` collections, so a smaller `N` spends

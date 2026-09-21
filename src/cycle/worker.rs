@@ -50,6 +50,22 @@
 //! waits for when it needs its token is one batch's trace, bounded by the
 //! blocks rather than by the roots.
 //!
+//! # The quiet thread
+//!
+//! A mutator's epoch moves at its own commits (`crate::cycle::epoch`), and
+//! a thread that registers nothing commits nothing: its deferred lane would
+//! wait for a turnover that never comes. So the round asks. After a serve
+//! that reached nothing, with the mutator's clock where the collector last
+//! stamped it and [`QUIET_INTERVAL`] passed since that stamp, the collector
+//! stores a request byte on the record's token line
+//! ([`MutatorRecord::request_a_turnover`]) and restamps; the mutator's poll
+//! answers by moving its own clock to the next turnover and re-offering the
+//! lane (`crate::cycle::queue::answer_a_turnover_request`). A serve that
+//! made a batch, or found the token held, or found the clock moved,
+//! restamps and asks nothing: those stamps age on their own
+//! (`dev/DECISIONS.md`, "a quiet thread's turnover is the collector's to ask
+//! for").
+//!
 //! # The thread, and the round over the records
 //!
 //! The elder collector thread is born by [`ensure_thread`] and never at
@@ -119,8 +135,8 @@
 //! landing beside a slot's rebirth resolves at the token like any two
 //! claims.
 
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::cells::AtomicCells;
@@ -219,6 +235,25 @@ const FALLBACK_INTERVAL_MIN: Duration = Duration::from_millis(10);
 /// threshold that reaches no poll waits for a round nobody signalled.
 const FALLBACK_INTERVAL_MAX: Duration = Duration::from_secs(1);
 
+/// How long a mutator that reaches no batch is left before the collector asks
+/// it for a turnover of its epoch, so that a component that became garbage
+/// while its root stood in the deferred lane is found on a thread that
+/// registers nothing (`crate::cycle::epoch`, the jump). 8 s, borrowed from
+/// V8's memory reducer, which collects a mutator that went quiet after the
+/// same delay; not measured here, and the field runs from that to Go's two
+/// minutes (`dev/RESEARCH.md`, "the idle-GC timers of five runtimes"). The
+/// embedder's figure replaces it ([`set_quiet_interval`]).
+const QUIET_INTERVAL: Duration = Duration::from_secs(8);
+
+/// The embedder's quiet interval in nanoseconds, or zero for
+/// [`QUIET_INTERVAL`].
+static QUIET_INTERVAL_SET: AtomicU64 = AtomicU64::new(0);
+
+/// The instant every record's serve stamp counts from, fixed by the first
+/// serve of the process; a stamp is nanoseconds past it, never zero, zero
+/// being a record no serve has stamped.
+static SERVE_CLOCK_BASE: OnceLock<Instant> = OnceLock::new();
+
 /// How long after a refused birth the pressure path waits before it spawns
 /// again: a process that stays short of memory collects at every refused
 /// allocation, and without the wait it would spawn a thread per refusal.
@@ -309,6 +344,58 @@ pub(crate) fn set_collector_cap(cap: usize) {
 
 fn collector_cap() -> usize {
     COLLECTOR_CAP.load(Ordering::Relaxed)
+}
+
+/// Set the embedder's quiet interval: how long a mutator that reaches no
+/// batch is left before the collector asks it for a turnover. Zero restores
+/// the crate's [`QUIET_INTERVAL`].
+pub(crate) fn set_quiet_interval(interval: Duration) {
+    let nanos = u64::try_from(interval.as_nanos()).unwrap_or(u64::MAX);
+    QUIET_INTERVAL_SET.store(nanos, Ordering::Relaxed);
+}
+
+/// The quiet interval in force: a case's, the embedder's, or the crate's.
+fn quiet_interval() -> Duration {
+    #[cfg(test)]
+    if let Some(interval) = testing::quiet_interval() {
+        return interval;
+    }
+
+    match QUIET_INTERVAL_SET.load(Ordering::Relaxed) {
+        0 => QUIET_INTERVAL,
+        nanos => Duration::from_nanos(nanos),
+    }
+}
+
+/// Nanoseconds since [`SERVE_CLOCK_BASE`], at least one.
+fn serve_clock_now() -> u64 {
+    let base = SERVE_CLOCK_BASE.get_or_init(Instant::now);
+    (Instant::now().duration_since(*base).as_nanos() as u64).max(1)
+}
+
+/// The quiet thread (module doc): after a serve, restamp the record when the
+/// mutator's own clock is moving — a batch, a token the mutator or another
+/// collector holds, or a commit of its own since the last stamp — and, on a
+/// serve that reached nothing with the clock standing, ask for a turnover
+/// once [`quiet_interval`] has passed since the last stamp. The first serve
+/// of a life stamps and asks nothing: X is counted from a reading, never
+/// from the record's birth. The mutator answers at its next poll
+/// (`crate::gc`, the poll; `crate::cycle::epoch::jump_to_the_next_turnover`).
+fn ask_for_a_turnover_if_quiet(record: &MutatorRecord, served: Served) {
+    let now = serve_clock_now();
+    let last = record.served_at();
+    if !matches!(served, Served::Idle | Served::Unanswered)
+        || last == 0
+        || !record.clock_stood_since_the_stamp()
+    {
+        record.note_served_at(now);
+        return;
+    }
+
+    if now - last >= quiet_interval().as_nanos() as u64 {
+        record.request_a_turnover();
+        record.note_served_at(now);
+    }
 }
 
 /// Start the elder collector thread unless the process has one already, one
@@ -765,6 +852,7 @@ unsafe fn read_one_record(
     }
 
     let served = unsafe { serve(record, index, threshold, standing) };
+    ask_for_a_turnover_if_quiet(unsafe { &*record }, served);
     outcome.made_a_batch |= standing.take_batches_served() > 0;
     match served {
         Served::Batch { backlog: true, .. } => {

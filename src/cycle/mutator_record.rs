@@ -116,6 +116,16 @@ pub(crate) struct MutatorRecord {
     /// mutator's candidates and the entities the trace reaches, and by the
     /// mutator around its own.
     pub(crate) token: TraceToken,
+    /// The collector's request for a turnover of this mutator's epoch, read
+    /// beside the token byte at every poll that finds the deferred lane
+    /// non-empty (`crate::gc`, the poll; `crate::cycle::queue`, the deferred
+    /// lane): stored by the collector's round when this mutator has been
+    /// quiet for X (`crate::cycle::worker`), cleared by the mutator at the
+    /// poll that jumps its clock and at the fill of an empty lane. Relaxed on
+    /// both sides: nothing is published beside it, and a request the fill
+    /// cleared or the poll read late costs one turnover early or one poll
+    /// late, never a wrong free.
+    turnover_requested: AtomicU8,
     /// The next free record, meaningful while this one is on the registry's
     /// free list and written under its lock alone.
     free_link: Cell<*mut MutatorRecord>,
@@ -161,6 +171,17 @@ struct ReaderLine {
     /// requests). Cleared when a request is served, and with the line at a
     /// re-take.
     silent: AtomicBool,
+    /// When the collector last served this mutator, in nanoseconds since the
+    /// base `crate::cycle::worker` fixes at its first round; zero before any
+    /// serve. A serve that made a batch restamps it, and a serve that made
+    /// none with X elapsed asks for a turnover and restamps. The collector's
+    /// own word, so relaxed.
+    served_at: AtomicU64,
+    /// The mutator's clock as the collector last stamped it, beside the
+    /// instant: a clock that moved since is a thread whose stamps age on
+    /// their own, and it is restamped rather than asked. The collector's own
+    /// word, so relaxed.
+    commits_seen: AtomicU64,
 }
 
 /// The line the mutator writes: where it registers into R, where it reads
@@ -185,10 +206,13 @@ struct WriterLine {
     /// (`crate::cycle::worker`, "The thread, and the round over the
     /// records").
     freeing_dispositions: AtomicU32,
-    /// Commits this mutator has closed, which is the clock its maturation
-    /// stamps are written and read against (`crate::cycle::epoch`). Counted
-    /// up by the mutator at the close of its own commit and read by the
-    /// collector that traces this mutator's graph, which prunes against the
+    /// This mutator's clock, which its maturation stamps are written and
+    /// read against (`crate::cycle::epoch`): the commits it has closed,
+    /// moved to the next turnover's first commit at its poll on the
+    /// collector's request ([`MutatorRecord::turnover_requested`]). Written
+    /// by the mutator alone, at its commit's close and at that poll, and
+    /// read by the collector that traces this mutator's graph, which prunes
+    /// against the
     /// owner's epoch and never against its own thread's. A record handed out
     /// again starts one turnover past where its last life left it
     /// (`crate::cycle::epoch::a_new_lifes_count`), so no stamp that life wrote
@@ -252,6 +276,8 @@ impl ReaderLine {
             batch: AtomicUsize::new(0),
             freeing_dispositions_seen: AtomicU32::new(0),
             silent: AtomicBool::new(false),
+            served_at: AtomicU64::new(0),
+            commits_seen: AtomicU64::new(0),
         }
     }
 
@@ -264,6 +290,8 @@ impl ReaderLine {
         self.batch.store(0, Ordering::Relaxed);
         self.freeing_dispositions_seen.store(0, Ordering::Relaxed);
         self.silent.store(false, Ordering::Relaxed);
+        self.served_at.store(0, Ordering::Relaxed);
+        self.commits_seen.store(0, Ordering::Relaxed);
     }
 }
 
@@ -343,6 +371,7 @@ impl MutatorRecord {
     const fn taken() -> Self {
         Self {
             token: TraceToken::new_held(),
+            turnover_requested: AtomicU8::new(0),
             free_link: Cell::new(std::ptr::null_mut()),
             #[cfg(test)]
             pinned: AtomicBool::new(false),
@@ -417,6 +446,50 @@ impl MutatorRecord {
         self.reader.silent.store(silent, Ordering::Relaxed);
     }
 
+    /// When the collector last served this mutator ([`ReaderLine::served_at`]).
+    #[inline]
+    pub(crate) fn served_at(&self) -> u64 {
+        self.reader.served_at.load(Ordering::Relaxed)
+    }
+
+    /// Stamp the serve's instant ([`ReaderLine::served_at`]) and the clock as
+    /// it stands ([`ReaderLine::commits_seen`]), on the collector's thread.
+    #[inline]
+    pub(crate) fn note_served_at(&self, nanos: u64) {
+        self.reader.served_at.store(nanos, Ordering::Relaxed);
+        self.reader
+            .commits_seen
+            .store(self.commits(), Ordering::Relaxed);
+    }
+
+    /// Whether the mutator's clock stands where the collector last stamped
+    /// it ([`ReaderLine::commits_seen`]): no commit of its own since.
+    #[inline]
+    pub(crate) fn clock_stood_since_the_stamp(&self) -> bool {
+        self.reader.commits_seen.load(Ordering::Relaxed) == self.commits()
+    }
+
+    /// Ask this mutator for a turnover of its epoch
+    /// ([`MutatorRecord::turnover_requested`]), on the collector's thread.
+    #[inline]
+    pub(crate) fn request_a_turnover(&self) {
+        self.turnover_requested.store(1, Ordering::Relaxed);
+    }
+
+    /// Whether the collector asked for a turnover, on the mutator's thread.
+    #[inline]
+    pub(crate) fn turnover_is_requested(&self) -> bool {
+        self.turnover_requested.load(Ordering::Relaxed) != 0
+    }
+
+    /// Take the request down, on the mutator's thread: at the poll that acts
+    /// on it, and at the fill of an empty deferred lane, where a request made
+    /// against the last accumulation is stale.
+    #[inline]
+    pub(crate) fn clear_turnover_request(&self) {
+        self.turnover_requested.store(0, Ordering::Relaxed);
+    }
+
     /// Whether the mutator is collecting in line: the word is the mutator's
     /// own, so relaxed.
     #[inline]
@@ -442,6 +515,14 @@ impl MutatorRecord {
     pub(crate) fn note_commit(&self) {
         let commits = self.writer.commits.load(Ordering::Relaxed);
         self.writer.commits.store(commits + 1, Ordering::Relaxed);
+    }
+
+    /// Move the clock to `commits`, on the mutator's own thread: the
+    /// collector's turnover request answered
+    /// (`crate::cycle::epoch::jump_to_the_next_turnover`).
+    #[inline]
+    pub(crate) fn jump_commits_to(&self, commits: u64) {
+        self.writer.commits.store(commits, Ordering::Relaxed);
     }
 
     /// Commits this mutator has closed since the registry handed the record
@@ -781,6 +862,9 @@ fn take_record() -> *mut MutatorRecord {
             (*released).reader.reset();
             (*released).writer.reset();
             (*released).hold.collector.store(0, Ordering::Relaxed);
+            // A request made against the last life's lane is stale, and the
+            // next life's first fill would clear it anyway.
+            (*released).clear_turnover_request();
             // Last, with release: the next reading's take is what sees the
             // lines above as reset.
             (*released).hold.reading.store(0, Ordering::Release);
@@ -906,12 +990,23 @@ pub(crate) fn refuse_record_draws(refuse: bool) {
 /// too: set, it is the mutator's gate, and the exit would wait behind it.
 #[cfg(test)]
 pub(crate) fn scribble_lines_for_test(record: *mut MutatorRecord) {
-    unsafe { (*record).reader.batch.store(7, Ordering::Relaxed) };
+    unsafe {
+        (*record).reader.batch.store(7, Ordering::Relaxed);
+        (*record).reader.served_at.store(7, Ordering::Relaxed);
+        (*record).turnover_requested.store(1, Ordering::Relaxed);
+    }
 }
 
-/// Whether `record`'s reader and writer lines hold what a fresh life starts
-/// with: R's words and the batch size empty, the collecting word clear, and
-/// P's two words naming one block.
+/// Store the turnover request into `record` from the harness thread, standing
+/// in for the collector's round after X.
+#[cfg(test)]
+pub(crate) fn request_a_turnover_for_test(record: *mut MutatorRecord) {
+    unsafe { (*record).request_a_turnover() };
+}
+
+/// Whether `record`'s lines hold what a fresh life starts with: R's words,
+/// the batch size, the serve instant and the turnover request empty, the
+/// collecting word clear, and P's two words naming one block.
 #[cfg(test)]
 pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
     let reader = unsafe { &(*record).reader };
@@ -919,6 +1014,8 @@ pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
     let p_block = reader.p_tail_block.load(Ordering::Relaxed);
     reader.r_front_block.load(Ordering::Relaxed).is_null()
         && reader.batch.load(Ordering::Relaxed) == 0
+        && reader.served_at.load(Ordering::Relaxed) == 0
+        && unsafe { !(*record).turnover_is_requested() }
         && writer.r_tail_block.load(Ordering::Relaxed).is_null()
         && !writer.collecting.load(Ordering::Relaxed)
         && !p_block.is_null()

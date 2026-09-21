@@ -16,7 +16,8 @@ fn an_epoch_spans_sixty_four_commits() {
     assert_eq!(epoch_of(COMMITS_PER_EPOCH * EPOCHS), 0);
 }
 
-/// The counter moves at a closed commit and at nothing else, and by one: the
+/// The counter moves at a closed commit by one, and at nothing else a
+/// collection does: the
 /// word is this thread's record's, so no other case's collection stands
 /// between the two readings.
 #[test]

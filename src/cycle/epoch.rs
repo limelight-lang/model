@@ -12,11 +12,15 @@
 //!
 //! **The clock is the collecting thread's own** (Edmond, 2026-09-19): the
 //! counter is a full-width word in the mutator's record
-//! (`crate::cycle::mutator_record`, the writer line), counted up by that
-//! thread's commits alone. A thread's stamps therefore age at the rate that
-//! thread collects at, where a process-global word would hand the rate to the
-//! busiest thread in the process and leave a thread that collects rarely
-//! reading every stamp of its own as stale. The entities of one mutator are
+//! (`crate::cycle::mutator_record`, the writer line), written by that thread
+//! alone: counted up by its commits, and moved to the next turnover's first
+//! commit at its poll when the collector asked for a turnover after X
+//! ([`jump_to_the_next_turnover`]). A thread's stamps therefore age at the
+//! rate that thread collects at, where a process-global word would hand the
+//! rate to the busiest thread in the process and leave a thread that
+//! collects rarely reading every stamp of its own as stale; a thread that
+//! collects not at all is turned over by the collector's request. The
+//! entities of one mutator are
 //! that mutator's — no thread points into another thread's blocks
 //! (`rfc/model/gc/rc-cycle.md`, the disjointness the token's proof assumes) —
 //! so a collector thread tracing for a mutator reads the epoch out of that
@@ -77,10 +81,8 @@ pub(crate) unsafe fn of_record(record: *const MutatorRecord) -> u32 {
 ///
 /// The caller is the close of the commit itself
 /// (`crate::cycle::finalization::Revalidation::close`). A trace that proposed
-/// nothing still opens and closes a finalization and counts, which is what
-/// turns an idle thread's epoch over while it re-traces its deferred roots
-/// (`crate::cycle::queue::reoffer_deferred_when_nothing_else_stands`); a
-/// collection that aborted before its finalization counts nothing. It counts
+/// nothing still opens and closes a finalization and counts; a collection
+/// that aborted before its finalization counts nothing. It counts
 /// into the record of the thread that closed the commit, and a thread with no
 /// record — one that ran no `ll_thread_init`, and therefore no collection —
 /// counts nowhere.
@@ -95,6 +97,28 @@ pub(crate) fn commit_closed() {
     }
 
     unsafe { (*record).note_commit() };
+}
+
+/// Move this thread's clock to the next turnover's first commit, at the poll
+/// that answers the collector's request for a turnover
+/// (`crate::cycle::mutator_record::MutatorRecord::turnover_is_requested`):
+/// every stamp of the epoch that was current reads as none at the next
+/// trace, and the poll's turnover comparison reads one turnover moved. The
+/// first commit of the turnover rather than any later one, so that the
+/// collection this poll arms cannot cross a second turnover at its own
+/// close. The mutator's own store into its own word, as a commit's is; a
+/// thread with no record has no lane to re-offer and jumps nothing.
+pub(crate) fn jump_to_the_next_turnover() {
+    let record = this_thread_record();
+    if record.is_null() {
+        return;
+    }
+
+    let commits = unsafe { (*record).commits() };
+    let first_of_the_next = commits
+        .wrapping_sub(commits % COMMITS_PER_EPOCH)
+        .wrapping_add(COMMITS_PER_EPOCH);
+    unsafe { (*record).jump_commits_to(first_of_the_next) };
 }
 
 /// The count a record's next life starts from: one turnover past the life
@@ -115,7 +139,8 @@ fn epoch_of(commits: u64) -> u32 {
     ((commits / COMMITS_PER_EPOCH) % EPOCHS) as u32
 }
 
-/// Commits this thread has closed, and zero for a thread with no record,
+/// This thread's clock: the commits it has closed, moved to the next
+/// turnover on the collector's request; zero for a thread with no record,
 /// which has closed none.
 ///
 /// The mutator queue compares this full-width value with its private mirror at

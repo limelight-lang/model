@@ -12,7 +12,7 @@
 //! reads as a wrong count.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -124,6 +124,27 @@ pub(crate) fn threshold_for_rounds() -> Option<usize> {
     match ROUNDS_THRESHOLD.load(Ordering::Relaxed) {
         0 => None,
         entries => Some(entries),
+    }
+}
+
+/// The quiet interval the thread's rounds ask a turnover at, in
+/// nanoseconds, or zero for the module's own: a case that reads the ask
+/// sets it below its own wait.
+static QUIET_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Ask a turnover of a quiet mutator after `interval`, or after the
+/// module's own for `None`.
+pub(crate) fn ask_turnovers_after(interval: Option<std::time::Duration>) {
+    QUIET_NANOS.store(
+        interval.map_or(0, |interval| interval.as_nanos() as u64),
+        Ordering::Relaxed,
+    );
+}
+
+pub(crate) fn quiet_interval() -> Option<std::time::Duration> {
+    match QUIET_NANOS.load(Ordering::Relaxed) {
+        0 => None,
+        nanos => Some(std::time::Duration::from_nanos(nanos)),
     }
 }
 
