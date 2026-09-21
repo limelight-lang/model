@@ -246,8 +246,8 @@ field is lent to):
   thread-exit drain deliberately leaves it standing. `OWNERSHIP_MARK` is
   moved by the barrier's owned store (`memory::barrier::store_ptr_owned`)
   and read again by `object::ll_default_dispose`, which destroys a marked
-  child with its holder; `ACYCLIC_GATE` has no writer, and the step that
-  gives it one is S37.2;
+  child with its holder; `ACYCLIC_GATE` is written once, by
+  `object::stamp_into` from the class's `CLASS_ACYCLIC`;
 - bit 11, `IS_ESCAPEE` — repurposes the refcount as the escapee
   hold-count (see invariant 5);
 - bit 12, weak gate (`HAS_WEAK_REFERENCES`) — lent to `weak`; death

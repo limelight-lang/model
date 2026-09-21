@@ -1139,9 +1139,11 @@ pub(crate) fn defer_candidates(mut batch: Batch, at_commits: u64) {
     compaction::compact(Some(at_commits), true, Some(batch.verdicts));
 }
 
-/// Re-offer every deferred record: at a mutator poll whose epoch moved, and
-/// before each round of the exit's collection, which is the thread's last
-/// turnover (`crate::cycle::collect::collect_before_exit`).
+/// Re-offer every deferred record: at a mutator poll whose epoch moved or
+/// whose active lane is empty ([`reoffer_deferred_if_epoch_moved`],
+/// [`reoffer_deferred_when_nothing_else_stands`]), and before each round of
+/// the exit's collection, which is the thread's last turnover
+/// (`crate::cycle::collect::collect_before_exit`).
 ///
 /// The caller owns the epoch comparison. The move is a splice of the lane's
 /// blocks into R after the tail block, with no copy and no block drawn
@@ -1177,21 +1179,10 @@ pub(crate) fn reoffer_deferred_candidates() {
 /// This is the ordinary condition; the one that keeps a lane from waiting for
 /// ever is [`reoffer_deferred_when_nothing_else_stands`].
 pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
-    let state = mutator_state();
-    if state.is_null() {
-        return false;
-    }
-    let mutator_state = unsafe { mutator_state_ref(state) };
-    if mutator_state.deferred().is_empty()
-        || crate::cycle::epoch::turnovers_of(mutator_state.turnover_mirror.get())
-            == crate::cycle::epoch::turnovers_of(commits)
-    {
-        return false;
-    }
-
-    mutator_state.turnover_mirror.set(commits);
-    reoffer_deferred_candidates();
-    true
+    reoffer_deferred_when(commits, |mutator_state| {
+        crate::cycle::epoch::turnovers_of(mutator_state.turnover_mirror.get())
+            != crate::cycle::epoch::turnovers_of(commits)
+    })
 }
 
 /// Re-offer the deferred lane at a poll that finds the active lane empty, and
@@ -1208,15 +1199,28 @@ pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
 /// What the early re-offer costs is recall on the re-offered roots, and it is
 /// paid at the moment the trace is cheapest: nothing else stands in the lane,
 /// and every mature target on the way is where the prune stops
-/// (`crate::cycle::mark`). The mirror advances with the move, so the lane is
-/// re-offered once per accumulation rather than at every poll.
+/// (`crate::cycle::mark`). Nothing here remembers a re-offer: a root the
+/// re-offered trace reads live is deferred again, the active lane is empty
+/// again, and the next poll re-offers it again, so a thread whose only
+/// standing roots are deferred collects at every poll, its own commits
+/// turning the epoch over every `N` of them (`dev/BENCHMARKS.md`, "S37.5 what a turnover
+/// re-offers, and what a deferral costs", the idle cells; `PLAN.md`, "A
+/// quiet thread's garbage is taken after X"). The mirror moves with the
+/// re-offer so that the turnover's own re-offer does not repeat it.
 pub(crate) fn reoffer_deferred_when_nothing_else_stands(commits: u64) -> bool {
+    reoffer_deferred_when(commits, the_active_lane_is_empty)
+}
+
+/// The body the two re-offers share: nothing for a thread without a record or
+/// with an empty deferred lane, and otherwise the mirror set to `commits` and
+/// the lane moved when `condition` holds of this mutator's state.
+fn reoffer_deferred_when(commits: u64, condition: impl FnOnce(&MutatorCycleState) -> bool) -> bool {
     let state = mutator_state();
     if state.is_null() {
         return false;
     }
     let mutator_state = unsafe { mutator_state_ref(state) };
-    if mutator_state.deferred().is_empty() || !the_active_lane_is_empty(mutator_state) {
+    if mutator_state.deferred().is_empty() || !condition(mutator_state) {
         return false;
     }
 

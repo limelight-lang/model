@@ -8,7 +8,7 @@
 //! component that lost its last external reference while it was mature is
 //! traced again instead of being pruned for ever
 //! (`rfc/model/gc/rc-cycle.md`, "Decision summary", the age-based pruning
-//! bullet, and `PLAN.md` S37.4, which re-offers the roots the turnover frees).
+//! bullet; the re-offer is `crate::cycle::queue::reoffer_deferred_if_epoch_moved`).
 //!
 //! **The clock is the collecting thread's own** (Edmond, 2026-09-19): the
 //! counter is a full-width word in the mutator's record
@@ -31,9 +31,12 @@ use crate::refcount::MATURATION_EPOCH_MASK;
 
 /// Commits one epoch spans.
 ///
-/// 64, provisional after YRC's only published value; what a real workload
-/// wants is `PLAN.md` S37.5's measurement, which replaces this number or
-/// records it as confirmed.
+/// 64, YRC's published value (`rfc/model/gc/cycle/questions.md`, Y9), which no
+/// reading has replaced: the lane re-offers `rate × N` records per turnover and
+/// a component that dies behind a deferral waits up to `N` collections, so a
+/// reading gives an exchange rate and the side to pay is a ruling
+/// (`dev/BENCHMARKS.md`, "S37.5 what a turnover re-offers, and what a deferral
+/// costs"; `PLAN.md`, "What S37 named and left").
 const COMMITS_PER_EPOCH: u64 = 64;
 
 /// Epochs the header's field tells apart, past which the count wraps.
@@ -73,11 +76,14 @@ pub(crate) unsafe fn of_record(record: *const MutatorRecord) -> u32 {
 /// and the stamps of the ones it proved live are written.
 ///
 /// The caller is the close of the commit itself
-/// (`crate::cycle::finalization::Revalidation::close`), so a trace that
-/// proposed nothing and a collection that aborted before its finalization
-/// count nothing. It counts into the record of the thread that closed the
-/// commit, and a thread with no record — one that ran no `ll_thread_init`,
-/// and therefore no collection — counts nowhere.
+/// (`crate::cycle::finalization::Revalidation::close`). A trace that proposed
+/// nothing still opens and closes a finalization and counts, which is what
+/// turns an idle thread's epoch over while it re-traces its deferred roots
+/// (`crate::cycle::queue::reoffer_deferred_when_nothing_else_stands`); a
+/// collection that aborted before its finalization counts nothing. It counts
+/// into the record of the thread that closed the commit, and a thread with no
+/// record — one that ran no `ll_thread_init`, and therefore no collection —
+/// counts nowhere.
 pub(crate) fn commit_closed() {
     let record = this_thread_record();
     debug_assert!(

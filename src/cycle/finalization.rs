@@ -40,8 +40,10 @@
 //! [`crate::cycle::maturation`]'s, which runs earlier in the same commit and
 //! under the same epoch. Neither producer stamps a row one by one: the age is
 //! the component-wide minimum plus one on both, and what differs is only how
-//! the component is identified. The token a live root keeps is still offered
-//! to every collection; moving it to the deferred lane is `PLAN.md` S37.6.
+//! the component is identified. The record a live root keeps goes to the
+//! deferred lane at the close rather than back to every collection
+//! ([`crate::cycle::queue`], `DEFERRED_MARK`; `dev/DECISIONS.md`, "the
+//! deferred lane is a side exit of the compaction pass").
 //!
 //! # The order is the type's rather than the caller's
 //!

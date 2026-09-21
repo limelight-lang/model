@@ -5,7 +5,8 @@
 //! three answers go three ways: a root whose entity the teardown freed is
 //! retired and gives its slot back, a root this collection read live waits in
 //! the deferred lane until the turnover, and every other root is offered to
-//! the next collection out of the active lane (`PLAN.md` S37.6).
+//! the next collection out of the active lane (`dev/DECISIONS.md`, "the
+//! deferred lane is a side exit of the compaction pass").
 //!
 //! **The lane a root stands in is read through two figures, never one.**
 //! `candidate_count` answers the active lane alone and `deferred_count` the

@@ -14,16 +14,23 @@ never edited or deleted.
 to 1: a component is left undescended after the first collection that reads it
 live instead of the third.
 
-**Why:** the pruned-edge share is `1 - k * q` at retirement rate `q`
-(`dev/BENCHMARKS.md`, "the pruned share against a named survival rate"), so
-every step of the threshold costs one `q` of the population — on the measured
-load the mark resolves 264 rows of 672 at `k = 1` against 536 at `k = 3`. What a
-pruned edge costs is latency and not memory: a component that dies behind one
-waits `N - d + 1` collections, up to an epoch, whatever the threshold is, and
-`k` changes how many components pay that wait rather than how long it is
-(`dev/BENCHMARKS.md`, "what a turnover re-offers, and what a deferral costs").
-The saving is spent on every collection over a long-lived heap; the latency
-falls on the rarer event of a cycle dying after it matured. **Rejected:** the 3
+**Why (the readings, as amended 2026-09-21):** on the measured load, whose
+every unit lives exactly `1 / q` collections, so that its ages are uniform over
+one life, the pruned-edge share is `1 - k * q`
+at retirement rate `q`, and on any age distribution it falls as `k` rises
+(`dev/BENCHMARKS.md`, "the pruned share against a named survival rate") — at
+`q = 0.25` the mark resolves 264 rows of 672 at `k = 1` against 536 at
+`k = 3`. What a pruned edge costs is latency and not memory: a component that
+dies behind one waits for the turnover, `N - d + 1` collections, up to an
+epoch, on a thread whose active lane keeps filling; on an idle thread the poll
+re-offers it at once and the prune reads it live at every re-trace until the
+epoch turns, the same wait, where below the threshold the re-trace takes it at
+once (`dev/BENCHMARKS.md`, "what a turnover re-offers, and what a deferral
+costs", the idle cells re-read 2026-09-21). So `k` changes how many components
+pay that wait rather than how long it is. The saving is spent on every
+re-trace of a mature core; the latency falls on the rarer event of a cycle
+dying after it matured. The ruling prefers the saving; the slope above is the
+load's lifetime and not a property of the prune. **Rejected:** the 3
 this constant carried, which was YRC's published value and was measured nowhere
 (`rfc/model/gc/cycle/questions.md`, Y9). **Cost:** a component read live once is
 treated as long-lived, so more of them are deferred on the evidence of a single

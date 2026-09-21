@@ -2,7 +2,8 @@
 
 Destination: `ll-model` is the runtime the compiler links — the memory
 manager, the object model and the cycle collector built to the `rfc`'s
-design and calibrated on a Phase-D corpus.
+design and calibrated on parameterized test heaps, each reading naming its
+parameters.
 
 Implementation plan, re-sorted last on 2026-07-24 against the object-layout
 redesign of 2026-07-22.
@@ -15,26 +16,41 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-19 · Active: S37, whose two open steps were unblocked the same
-day: Edmond ruled that a corpus over `ll-model`'s own heap is not coming and
-test data is what the calibration gets (`dev/DECISIONS.md`, "the calibration
-runs on a parameterized test heap, and the entry names its parameters"). S37.5
-measured the turnover and S37.7 the traced share, both on a test heap whose
-parameters the entry names, and both closed the same day; the threshold `k` is
-one by Edmond's ruling over those readings. **Every step of S37 is closed**, so
-what stands between the stage and its deletion (rule 23.1.3) is its own gate:
-the Critic over S37.7's repair, then the Code Reviewer over the stage. The prose sections below are the backlog a stage is
-drawn from.
-The S36 residue's four allocation sites are closed, the last of them on
-2026-09-19: the three on the exit path (`dev/DECISIONS.md`, "the exit path
-holds no container: the buffer arena is its thread-local, and the static
-registry is a chunk closed per life") and the collector thread's spawn
-(`dev/DECISIONS.md`, "the collector thread is born by the OS entry, on a
-stack its slot keeps, and is woken by a word"). What the residue still
-holds, none of it under that ruling, is the section below.
+Updated: 2026-09-21 · Active: none. S37 went on 2026-09-21 with its thirteen
+steps closed and its gate paid: the Critic over S37.7's repair, whose findings
+are `dev/POSTMORTEM.md`, "a constant moved, and the ignored load that reads it
+kept the old number as its expectation", and the Code Reviewer over the stage.
+What it left is "What S37 named and left" below. The next stage is drawn from
+the backlog below by the session that opens it, numbered S60, and agreed with
+Edmond first (rule 23.3). The destination's last mile — the compiler that links
+this crate — is outside this plan: `rfc/BACKLOG.md`, "The big one", and the
+front end in `limelight`.
+
+Review 2026-09-21: overdue by a day, the hook reading `dev/PLAN.md` and never
+this file. Pass 1, code `c58d49f..128cefc` against the thresholds, 203
+functions touched: `heap::ll_thread_init` at 59 code lines,
+`collect::collect_under_pressure` at 51, depth 3 in `mark::mark`'s tracer
+closure and `static_block::run_thread_exit_teardown`, two test helpers and six
+`#[test]` bodies at depth 3; the cuts are the backlog line "The review's cuts
+of 2026-09-21". Pass 2: the period's algorithms are Edmond's rulings, so a
+simpler form is a premise change for him. Pass 3, the plan against its
+destination: "calibrated on a Phase-D corpus" was refuted by the ruling of
+2026-09-19 (second) and is amended to that ruling's terms; the five backlog
+lines that waited on the corpus or on a workload are re-stated on the test
+heap; the bounded sweep's line, the futex paragraph of the birth's line, the
+accelerator sentence and the header's copy of the S36 residue repeated a
+journal entry or each other and are cut; the language-runtime, Phase-D,
+proxy, interceptor and provenance lines named work no stage of this crate
+can be drawn from and go, the per-structure line folds into the telemetry
+line; the fog line on a cross-arena store, overtaken by the rulings of
+2026-09-13, becomes a test debt below, and the three fog lines the `rfc`
+owes moved to `rfc/dev/PLAN.md`'s fog. S37's own gate ran the same day and
+found the ignored turnover load red at the new threshold
+(`dev/POSTMORTEM.md`, 2026-09-21).
 
 Review 2026-09-18, second: pass 3 by the Critic over the plan as rewritten
-by S57.7 — its findings and their disposition are in that step. Pass 1 over
+by S57.7 — its findings and their disposition were in that step, deleted with
+S57 the same day. Pass 1 over
 the period's code is void, the period's only source changes being comments;
 pass 2 likewise.
 
@@ -43,7 +59,8 @@ Review 2026-09-18: the first one recorded here, and overdue — the hook reads
 period. Code of 2026-09-15 to 2026-09-17 (`abfba48..c58d49f`) against the
 thresholds: eleven places, the largest `worker::serve` at 80 code lines where
 the same function was 42 before the slice, `collect::collect_under_pressure` at
-79 and control depth 4, `worker::thread_body` at 77; they are S37.8 below. Two
+79 and control depth 4, `worker::thread_body` at 77; they became S37.8, closed 2026-09-18
+(`dev/BENCHMARKS.md`, "S37.8 the review's cuts leave the poll where it was"). Two
 proposed deletions were refused — `make_withheld_returns_before_the_retry`
 states a precondition its callee's `# Safety` does not and carries two callers,
 and deleting `collect_off_the_poll` moves a contract paragraph into `gc.rs` and
@@ -53,16 +70,15 @@ finding. The plan lost S40, whose goal was discharged on 2026-09-12, ten closed
 steps, the obituary of nine deleted stages, two fog lines and a cross-cutting
 section duplicated 640 lines from its twin; the nine orphan debts that cut would
 have dropped were filed first, in `dev/DECISIONS.md` (four entries),
-`dev/POSTMORTEM.md`, `dev/WORKFLOW.md`, `dev/RESEARCH.md` and S37.5's
-`handoff:`.
+`dev/POSTMORTEM.md`, `dev/WORKFLOW.md`, `dev/RESEARCH.md` and, since S37 went,
+the backlog line "What S37 named and left".
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S36 and S38
-through S59 — every number this plan has spent but S37. A number is never
-reissued, so a
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S59, every
+number this plan has spent. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
 drawn from.
@@ -74,33 +90,17 @@ the model cannot answer itself). The pre-change baseline the step would erase
 refusal model — is recorded in the step before the first edit; a red test is
 seen failing; the Critic reviews the repair and its mutations before the step
 is checked, and its findings are recorded in the step. This applies to every
-step of S37; one broad review does not waive a later step's gate. The rest of
+step of a cycle-GC stage; one broad review does not waive a later step's gate. The rest of
 the routine — the gate, Miri in slices, the citation checks — is
 `dev/WORKFLOW.md`.
 
 ## Fog
 
 A line here is an unresolved question rather than a step: it carries no
-criterion, and it leaves when it gets one or when it is ruled on. Three of
-the lines end in a sentence the `rfc` owes — which destructors "ran
+criterion, and it leaves when it gets one or when it is ruled on. The three
+lines that ended in a sentence the `rfc` owes — which destructors "ran
 anywhere" counts, the object handed to a survivor, the exit's safepoint word
-— and they stand here until that repository's plan takes them.
-
-- **What a reset owes an arena entity that belongs to another arena.**
-  `store_category_barrier` keys on the memory category alone, so a store of
-  one request arena's entity into another's object takes neither the escape
-  arm nor the COW copy: the slot holds the pointer raw. A destructor run
-  inside arena A's reset can resolve and reset arena B, and B's
-  `count_children` then meets A's entity as an ordinary `RequestArena`
-  child — `is_arena_entity` reads the category too. A non-COW child is
-  admitted to B's survivor chain and promoted out of A early, which is
-  conservative; a COW child has its count raised by B's counting pass while
-  the edge behind that `+1` is recorded in **B's** log and freed with it, so
-  A's reconciliation subtracts a reference a promoted holder still holds.
-  Raised by the Critic of 2026-09-13 over the COW reconciliation's rows,
-  which neither create the shape nor widen it: the premise verified is the barrier's, and whether
-  two request arenas can name each other's entities at all is the question
-  under it.
+— moved to `rfc/dev/PLAN.md`'s fog on 2026-09-21.
 
 - **Whether a survivor list should prefer a block this reset has already
   retained.** `Arena::alloc_preferring` tries the described block's tail, the
@@ -114,290 +114,17 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   which `release_emptied` already recurses through. Raised by the Critic of
   2026-09-13 over the survivor-list grouping, and priced nowhere.
 
-- **What a process-wide `pthread_key` would buy the reserve draw.** Four
-  thread-locals of this crate carry drop glue, and the first touch of one
-  registers a TLS destructor whose failure ends the process rather than
-  reporting (`dev/DECISIONS.md`, "what the first touch of a thread-local with
-  drop glue may cost"). `ll_thread_init` touches all four, so the death is
+- **What a process-wide `pthread_key` would buy the reserve draw.** The
+  thread-locals of this crate that carry drop glue — the census test
+  `critical::tests::where_the_first_touch_happens` lists them — register a
+  TLS destructor at their first touch whose failure ends the process rather
+  than reporting (`dev/DECISIONS.md`, "what the first touch of a thread-local
+  with drop glue may cost"). `ll_thread_init` touches every one, so the death is
   deterministic in place; the class itself is still there for a thread that
   never runs init. A guard on a key taken once at process start, where a
   failure is reportable, would remove it if `pthread_setspecific` allocates
   nothing per thread — which nobody has read, on any target. Named when the
   reserve's first touch was decided on 2026-08-29 and priced nowhere since.
-- **Which destructors "a destructor ran anywhere" counts.**
-  `rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 5 gates
-  the second reading on a destructor having run anywhere in the commit, and
-  `cycle::finalization` reads that as a member's pending `__destruct` at step
-  4, which is what `DestructorPass` records. The other reading is any user destructor at all, the
-  external children of a component's teardown included — and those run without
-  touching the flag, which `cycle::finalization`'s
-  `a_child_of_a_dying_member_runs_its_destructor_inside_the_release` shows. The
-  skip is sound under the first reading by the induction written at
-  `Revalidation::revalidate`; which reading the specification means is
-  unresolved, and it is `rfc`'s sentence to sharpen.
-
-- **An object handed to a survivor by a destructor of the same batch still
-  runs its own `__destruct`.** The settle loop drains a round's destructor
-  entries before the re-trace, so `$survivor->keep = $this->y` in one body
-  does not spare `y`'s body later in the same batch: `y` is promoted
-  already-destructed, its later `dispose` finding `DESTRUCTOR_RAN` and
-  skipping. Zend would not destruct it, `y` never having become
-  unreachable. Named by the Critic of 2026-09-12 over the re-trace; whether the
-  rfc's "survives already-destructed" paragraph admits it is the rfc's
-  sentence to write.
-- A destructor's `ll_thread_exit` waits for the thread's top
-  (`memory::heap::thread_exit_pending`), and nothing tells the code above
-  the destructor that a request stands: whether the emitted safepoint reads
-  that word and unwinds on it, and under what name the ABI carries it, is the
-  rfc's to say (`dev/DECISIONS.md`, "an exit requested inside a collection
-  runs at the thread's top").
-
----
-
-## S37 — Maturation and the two class gates  [blocked: the Phase-D corpus]
-
-Goal: the trace stops following the whole heap. On a booted Laravel corpus the
-subgraph reachable from a median candidate root is 381 of 381 objects, so this
-stage is what makes a trace affordable rather than what tunes it.
-
-- [x] S37.0 The commit stamps the live components it read   *(before S37.1)*
-      handoff: `cycle::maturation`, from `commit_before_drops` after
-        `Finalization::begin`; the ruling and its refusals are `dev/DECISIONS.md`,
-        "the live population is stamped by component".
-- [x] S37.6 The close disposes of a batch per root   *(after S37.0, before S37.1)*
-      handoff: `queue::DEFERRED_MARK`, written by
-        `ActiveTrace::mark_roots_for_deferral` and masked off by
-        `compaction::stage_entry`; the lane is a side exit of the compaction
-        pass (`dev/DECISIONS.md`, "the deferred lane is a side exit of the
-        compaction pass").
-- [x] S37.1 The maturation stamp is an edge-side prune
-      handoff: `cycle::mark::visit_child` stops at a target stamped with this
-        collection's epoch at `TRAVERSAL_AGE_THRESHOLD` (3) that no queue
-        names; `take_edges_pruned` counts the cut; `k = 3` and the
-        64-collection turnover are S37.5's and S37.7's to measure
-        (`dev/DECISIONS.md`, "the edge-side prune cannot tear down a live
-        component").
-- [x] S37.4 The deferred-candidate buffer and the turnover re-offer
-      handoff: `queue::defer_candidates` and `reoffer_deferred_if_epoch_moved`,
-        the cases `cycle/collect/tests/when_the_turnover_reoffers.rs`
-        (`dev/DECISIONS.md`, "the deferred lane holds a registered root";
-        YRC's 56 % is `dev/RESEARCH.md`, 2026-09-18).
-- [x] S37.8 The review's simplifications in the collector's own modules
-      handoff: eight functions cut under fifty code lines and nine helpers
-        lifted, the poll unmoved at 7.46–7.61 ns (`dev/BENCHMARKS.md`, "S37.8
-        the review's cuts leave the poll where it was").
-- [x] S37.9 The owned store's refusal, and the plain store's
-      done: a refused `store_ptr_owned` leaves the displaced entity's mark, the
-        slot and both counts as they were, driven by a real refusal — the
-        escape copy of a COW value the pool will not give a block for — and the
-        same case proves which allocation was refused rather than asserting a
-        `false` that any early return could produce; the plain `store_ptr`'s
-        refusal takes a case of the same shape beside it
-      tier: T1 · role: — (tests only: no production line changed, and the two
-        cases are read by the mutations below rather than by a reviewer)
-      note: the debt S37.3 named and left, moved here out of the residual list
-        on 2026-09-18. What blocked it then was the instrument: `force_oom`
-        refuses a **pool block**, and a copy that fits the thread's current
-        block asks the pool for nothing. A copy larger than `BLOCK_PAYLOAD`
-        does not help either — the large half draws on the OS and the flag does
-        not reach it
-        (`memory/large_entity/tests/the_two_halves_are_separate_populations.rs`).
-        What is left is to make the copy the first allocation of its size class
-        on a thread of its own, where the refusal is a block draw.
-      correction 2026-09-18: "the first allocation of its size class on a
-        thread of its own" is not enough, and the first form of both cases was
-        flaky for it — whether a fresh thread's init left room in that class is
-        the pool's warmth on the day, so the store succeeded whenever the suite
-        ran before it. The cases empty the class first, with the copy's own
-        call, through `barrier::tests::fill_the_class_until_refused`, and give
-        every slot back after the window.
-      handoff: `barrier/tests/the_owned_store.rs::`
-        `a_refused_copy_leaves_the_mark_the_slot_and_the_counts_alone` and
-        `the_ordinary_store.rs::a_refused_store_leaves_the_slot_and_the_count_alone`,
-        each on a thread of its own under a block budget of zero, with the
-        pool-request count read back so the refusal is named as a block draw
-        rather than assumed from a `false`. Three mutations run: the budget
-        raised so nothing refuses (both red), the retain kept instead of given
-        back on the refusal (both red, count 2 against 1), and the slot written
-        before the refusal returns (both red). A fourth stayed green and is
-        recorded in the case itself — moving the mark before the store's answer
-        is read changes nothing, because a refused store leaves the slot
-        holding what it held, so `move_ownership_mark` sees one entity as both
-        the displaced and the occupant. The early return is unobservable
-        through the mark, and the case says so instead of claiming the clause.
-        Suite 1043 passed, three times.
-- [x] S37.10 The epoch counter is the collecting thread's
-      handoff: the counter is `MutatorRecord`'s writer-line word, read by
-        `epoch::current` for this thread and by `epoch::of_record` for the
-        mutator a collector serves; the ruling and what it costs are
-        `dev/DECISIONS.md`, "the epoch counter is the collecting thread's, in
-        its record".
-- [x] S37.11 The mirror a verdict-side deferral records
-      done: a root deferred out of P at the close and one deferred out of R in
-        the same collection carry the same turnover mirror, read by a case that
-        defers one of each and re-offers both at one turnover
-      tier: T1 · role: —
-      correction 2026-09-19: that criterion cannot be read off one lane, and a
-        case meeting it passes against the defect as well. The mirror is
-        written where the deferred lane goes from empty to occupied
-        (`queue::defer_entry`), and a collection defers out of R before its
-        close disposes of P, so one lane holding both records carries the R
-        side's count and nothing of the P side's. What discriminates is a
-        collection that defers out of P alone, with the R side's reading named
-        as the count it must record.
-      note: found by the Critic of 2026-09-19 under S37.10, pre-existing.
-        `collect::initial_disposition` reads the count before
-        `Revalidation::close` increments it, while `CollectingThread::drop`
-        reads it after and hands that later count to `compaction`'s
-        verdict-side deferral, so a collection closing at commit 63 records 63
-        for one root and 64 for the other — one whole epoch apart. What made it
-        cheap was the process-global counter: the extra epoch was 64 commits
-        the whole process contributed, and it is now 64 collections of this
-        thread's own. The repair is to carry the collection's own reading to
-        the drop rather than re-read there.
-      handoff: `CollectingThread` carries `at_commits`, the count the last
-        reading of its collection saw, and its drop records that instead of
-        reading the counter again; the pressure loop takes it out of
-        `PressureCommit`, which is what `commit_under_pressure` answers now.
-        The case is `when_the_turnover_reoffers::`
-        `a_pressure_collection_defers_its_verdict_at_the_count_its_reading_saw`,
-        with the counter driven one short of the turnover
-        (`epoch::close_commits_to_one_short_of_the_turnover`): red before the
-        edit at 64 against 63, one whole epoch. Gate 1077 ×3 at eight threads,
-        `hash-folding` 1077, `debug-journal` 1086 ×3, citations 739/0, release,
-        bench and doc with no warning; Miri over the case 1 green in 29 s.
-
-- [x] S37.12 The epoch case that its harness thread positions
-      done: `a_collectors_trace_prunes_against_the_owners_epoch` passes from
-        the worst position its harness thread can leave the counter in, one
-        commit short of a turnover, which is red against the case as S37.10
-        wrote it
-      tier: T1 · role: —
-      handoff: the case failed once in 14 `debug-journal` runs at eight threads
-        on 2026-09-19, found in a control run of the tree before S37.11 and
-        reproduced by starting it at the boundary (1 against 2, a stamp written
-        before a crossing read after it).
-        `epoch::stand_at_the_start_of_a_nonzero_epoch` puts the clock at a
-        turnover's first commit, and the case opens at the boundary so that
-        every run reads the alignment. The class and what hid it are
-        `dev/POSTMORTEM.md`, "a case that reads the live epoch is positioned by
-        its harness thread's history".
-
-- [x] S37.5 The turnover constant, against a corpus   *(after S37.4)*
-      done: the volume the deferred-candidate lane re-offers at the epoch
-        turnover is measured on a parameterized test heap over `ll-model`'s own
-        blocks, the entry naming every parameter the harness sets — the share of
-        roots that read live inside an epoch above all — and reporting the
-        re-offered volume as a response over them rather than as one figure;
-        S37.1's 64-collection turnover is then replaced or confirmed, with the
-        rule that picks it from a parameter value stated beside it
-      tier: T2 · role: Bench
-      handoff: split out of the density measurement, now S37.7, by the Sage of
-        2026-09-04. The re-offered volume is the count of roots read live
-        inside one epoch that are still registered at the turnover, and on a
-        synthetic population the harness chooses the rate at which a root reads
-        live, so the number is its own input read back. The step needs S37.4's
-        buffer and a corpus, and the corpus is Phase-D-blocked in the same way
-        S37.7 is.
-        Y9's formula carries a question of its own, refused for S37.0 by the
-        Sage of 2026-09-10 and landed here: a minimum taken over stamped
-        members alone rather than over the whole component changes the formula,
-        and the corpus reading is what answers it.
-      handoff: **the blocking clause above is retired 2026-09-19** — Edmond
-        ruled that no corpus over `ll-model`'s own heap is coming and the step
-        gets test data. What the refusal guarded stands, which is why the
-        criterion now asks for a response and not a number: the harness sets the
-        live-read rate, so a single figure is that input read back. Naming the
-        parameters and reporting the curve keeps the reading honest about what
-        it depends on.
-- [x] S37.7 The traced share and `k`, against a corpus
-      done: the share of a touched block's slots a collection traces is measured
-        on a parameterized test heap over `ll-model`'s own blocks with the
-        denominator named — occupied slots or all slots — and the pruned-edge
-        share at `k` of 1, 2 and 3 is read off the same instrumented run; both
-        are reported as a response over the harness parameters the entry names,
-        and S37.1's provisional `k = 3` is then replaced or confirmed, with the
-        rule that picks it stated beside it
-      tier: T2 · role: Bench → Critic
-      handoff: what is left of S40.1, whose stage was deleted on 2026-09-18
-        with its goal discharged. The synthetic arm is closed and its figures
-        are in `dev/BENCHMARKS.md`, 2026-09-04 and 2026-09-12; the instrument
-        is the `#[cfg(test)]` walk over the touched list plus
-        `note_phase_boundary` in `trace_batch`, whose release body is empty.
-        This arm needs a driver over `ll-model`'s own heap — the recorded corpus
-        instruments read PHP's heap, which has no blocks and no slots — so it is
-        Phase-D-blocked, as S37.2 is blocked on the compiler.
-      handoff: **the blocking clause above is retired 2026-09-19** — the driver
-        stays required and the corpus behind it does not: Edmond ruled that test
-        data is what the calibration gets. The traced share and the pruned-edge
-        share depend on the graph's shape and on the block layout, so a test
-        heap reads them more honestly than it reads the turnover; the parameters
-        it is built from are named in the entry either way.
-      handoff: closed 2026-09-19 with both responses in `dev/BENCHMARKS.md`,
-        "what a turnover re-offers, and what a deferral costs". The volume is
-        `rate × N` records, one per live root per epoch, measured exactly at
-        rates 1, 2, 4 and 8; the recall is `N − d + 1` collections, five cells
-        of six, the sixth being the empty-lane re-offer's one-shot rescue of a
-        thread's first accumulation. The load is
-        `mark::tests::the_volume_a_turnover_reoffers`, and the precondition that
-        cost three shapes to find is that a close with no spare cell keeps the
-        root in the active lane, so the poll refills the spares.
-        **`N` is not replaced:** both costs are linear in it and pull opposite
-        ways — a live root is re-traced once per `N` collections, a dead
-        component waits up to `N` — so the reading gives the exchange rate and
-        the side to pay is Edmond's ruling. Y9's minimum-over-stamped-members
-        question is untouched and goes with the stamp, not with `N`.
-      progress 2026-09-19 — both readings are taken and in `dev/BENCHMARKS.md`,
-        "the pruned share against a named survival rate". The traced share
-        reproduces 2026-09-04 on today's tree. The pruned share is
-        `max(0, 1 − k·q)` of the standing population at retirement rate `q`,
-        asserted rather than printed, by the new load
-        `mark::tests::the_pruned_share_against_a_survival_rate` (32 units of a
-        16-member held ring, `q` of 0, 0.125, 0.25 and 0.5, `k` of 1 to 3,
-        three runs identical). **What the step still owes is the choice of `k`**:
-        the spare falls by one `q` per step of `k`, so the smallest `k` spares
-        the most rows and what pays for a larger one is recall, which the
-        turnover prices. S37.5 priced it on 2026-09-19: a component read live
-        waits `N − d + 1` collections, up to 64. So both sides of the trade are
-        measured — rows spared at `1 − k·q`, latency at up to `N` — and what is
-        left is the preference between them, which is Edmond's to state.
-      handoff: closed 2026-09-19 by Edmond's ruling that the threshold is one
-        (`dev/DECISIONS.md`, "the traversal age threshold is one").
-        `TRAVERSAL_AGE_THRESHOLD` is 1, and the five cases that encoded the 3
-        read the constant instead; the pinned-threshold case pins 2, a value the
-        constant does not carry. Both readings behind the ruling are in
-        `dev/BENCHMARKS.md`, 2026-09-19.
-- [x] S37.2 The acyclic gate
-      done: an entity of a class the compiler marked acyclic never enters the
-        candidate set, the mark reaching `object::stamp_into` through the class
-        descriptor and landing at bit 8, and a red test shows an entity of an
-        unmarked class still registers
-      tier: T2 · role: —
-      note: read as blocked on the compiler until 2026-09-19, when Edmond
-        named the reading wrong — the runtime honours a bit, and what fills it
-        is the compiler's business. The proof stays the compiler's: the
-        field-type closure over declared property types, with `mixed`,
-        `array`, an untyped property, `#[AllowDynamicProperties]`, `__set` and
-        a reflection write all conservative edges to anything
-        (`rfc/model/memory/static-lifetimes.md`, "Level A — Acyclic classes").
-      handoff: `class::CLASS_ACYCLIC` (bit 6) and `ClassBuilder::acyclic`;
-        `object::acyclic_gate_of` copies it into the instance's
-        `refcount::ACYCLIC_GATE` at `stamp_into`, so the candidate gate reads
-        one header word rather than dereferencing the class, and both object
-        factories share it. The case is
-        `object::tests::what_the_factory_stamps::`
-        `a_class_proven_acyclic_stamps_the_gate_into_its_instances`, red under
-        a factory that stamps nothing (gate 0 against 256) and under one that
-        stamps every class (the unproven arm, 256 against 0). `template.rs`
-        builds its Object-kind entity without reading the class flags, so a
-        template class marked acyclic would not carry the gate — conservative,
-        and left alone rather than branching the template path.
-- [x] S37.3 The ownership mark
-      handoff: `memory::barrier::store_ptr_owned` / `store_box_owned` move the
-        mark and `object::ll_owned_child_die` honours it (`dev/DECISIONS.md`,
-        "the ownership mark is the owned store's to move and the holder's
-        `dispose` to honour").
-
 ---
 
 ## Cross-cutting (every stage)
@@ -518,21 +245,13 @@ live: `archive/pre-rc-cycle`").
   customer, the mutator whose gate is closed, is answered null today and draws
   nothing, because which runtime progress operations a reserve would fund is
   what the ABI does not yet name (`rfc/model/memory/critical-reserve.md`,
-  "Mutator progress while collection is unavailable"). The collector-thread
-  accelerator this entry used to carry is void (`dev/DECISIONS.md`, "the free
-  path's reading of the token is fenced against the take, and the accelerator
-  question of 2026-09-15 is void").
+  "Mutator progress while collection is unavailable").
 - [ ] **The birth count and the unique-owner policy.** The text went with the
   file on 2026-08-26 and is on `archive/pre-rc-cycle`; two composition stubs
   in `rfc/model/gc/pure-destructors.md` still cite it. The move rule is owed a
-  home outside `rfc` by the ruling of 2026-08-23. Gated on a Phase D
-  measurement of the share of dynamic publications with compiler-provable
-  targets.
-- [ ] **Per-structure GC memory, behind a feature.** Which structure holds
-  collection's logical bytes is not carried in a production build (Edmond,
-  2026-09-01); the breakdown is an axis A feature designed with
-  `dev/design/debug-modes.md` §8, and what it needs before it is built is a
-  question that wants it.
+  home outside `rfc` by the ruling of 2026-08-23. Gated on the compiler: the
+  share of dynamic publications with compiler-provable targets is its figure
+  to give.
 - [ ] **Pure destructors, and the hand-off drain.** Proposed by Edmond
   2026-08-18; the analysis is `rfc/model/gc/pure-destructors.md` with the
   2026-08-23 amendment that withdraws the collector-side free. The
@@ -551,17 +270,74 @@ live: `archive/pre-rc-cycle`").
   comment is corrected to say what it does prove (`dev/WORKFLOW.md`, Miri).
 - [ ] **Strategy 1, the typed vector.** No producer, so the 1 → 2 transition
   waits on one (`dev/DECISIONS.md`, 2026-08-13).
-- [ ] **The rest of the language runtime.** Seven are in `rfc/BACKLOG.md`:
-  exceptions, actors, closures, enums, generators and fibers, resources,
-  generics; `rfc/stdlib/README.md` and `rfc/io/README.md` are placeholders.
-- [ ] **Phase D, the vertical slice** — hello-world through the whole stack,
-  PHP to IR to executable, on the simplest memory setup. It validates the
-  central bet and unblocks every calibration item here; it waits on the
-  execution-pipeline decisions (`rfc/BACKLOG.md`, "The big one") and on the
-  C++/LLVM front end, both outside this crate.
 
 ## Residual / carried-over items
 
+- [ ] **The review's cuts of 2026-09-21.** Pass 1 of the review over
+  `c58d49f..128cefc`, measured by script over the 203 functions the hunks
+  touch: `memory::heap::ll_thread_init` at 59 code lines (the unstarted life's
+  unwind and the heap-funding tail each become a function);
+  `cycle::collect::collect_under_pressure` at 51 (the round's tail after
+  `freed += taken` becomes `after_a_round`); depth 3 in `cycle::mark::mark`'s
+  tracer closure (`refused = refused || !visit_child(..)`, a hot path, so with
+  the poll bench) and in `static_block::run_thread_exit_teardown`
+  (`pop_the_newest` lifted out of the loop); the helpers
+  `cycle::testing::traced_from_a_collector_thread` and
+  `the_metaphors_the_comments_still_carry::retired_in` at depth 3; and six
+  `#[test]` bodies at depth 3, one of which
+  (`critical::tests::where_the_first_touch_happens`) carries the fifth copy of
+  a directory walker four other source-reading tests carry.
+  done: each place under its threshold or recorded as kept with the reason,
+  the poll unmoved, in the form of `dev/BENCHMARKS.md`, "S37.8 the review's
+  cuts leave the poll where it was".
+- [ ] **What S37 named and left, 2026-09-21.** The turnover period `N` is
+  YRC's 64 and was not replaced: it is Y9's dial
+  (`rfc/model/gc/cycle/questions.md`, Y9), both costs are linear in it and
+  pull opposite ways (a live root is re-traced once per `N` collections, a
+  component that dies behind a prune waits up to `N − d + 1` for its
+  re-offer), and both are measured on the test heap (`dev/BENCHMARKS.md`,
+  "S37.5 what a turnover re-offers, and what a deferral costs"). Which side
+  pays is Edmond's to state; the ruling goes to `dev/DECISIONS.md` and
+  `epoch::COMMITS_PER_EPOCH` moves with it. The idle thread's price, found by
+  the Critic of 2026-09-21: `queue::reoffer_deferred_when_nothing_else_stands`
+  remembers no re-offer, so a thread whose only standing roots are deferred
+  collects at every poll for as long as those roots live: a pruned trace
+  each, and a full re-trace of its live core every `N`. Whether that is the
+  liveness the per-thread clock is paid for or a defect the after-X line
+  below absorbs is Edmond's to say. Y9's minimum-over-stamped-members
+  question (whether a component's age is the minimum over its stamped
+  members alone or over all of them, refused for the stamp's step by the Sage
+  of 2026-09-10) changes no prune at `k = 1`, where every stamped component is
+  at the threshold; it reopens with any `k` above 1 and reads off
+  `mark::tests::the_pruned_share_against_a_survival_rate` under
+  `pin_threshold` when it does. And `template.rs` builds its Object-kind
+  entity without reading the class flags, so a template class the compiler
+  marks acyclic does not carry `ACYCLIC_GATE` — conservative, and left until
+  a template class is marked.
+- [ ] **The citation check does not read the journals.** `dev/tools/citations.py`
+  walks `src/`, `benches/`, `docs/` and the three maps, so a journal entry
+  citing a plan line by its title is checked by nobody, and two are dead
+  already: `dev/DECISIONS.md` 2026-09-15 cites the backlog line "A root the
+  worker read live is never deferred" and 2026-09-18 the stage "The collector
+  thread's spawn allocates through the global allocator", neither in this
+  file (found by the Critic of 2026-09-21). done: the journals join the
+  checker's population, its total moving with them, and the two citations
+  are re-pointed at what replaced their targets or cut.
+- [ ] **A store of one request arena's entity into another's object.**
+  `store_category_barrier` keys on the memory category alone, so the slot
+  holds the pointer raw, neither the escape arm nor the COW copy taken; a
+  destructor run inside arena A's reset can resolve and reset arena B, whose
+  `count_children` then meets A's entity as an ordinary child — a non-COW
+  child is promoted out of A early, which is conservative, and a COW child
+  has its count raised by B's pass while the edge behind that `+1` is
+  recorded in B's log and freed with it, so A's reconciliation subtracts a
+  reference a promoted holder still holds. Raised by the Critic of 2026-09-13
+  over the COW reconciliation's rows; the rulings of the same day take a
+  reset nested in another arena's as ordinary (`dev/DECISIONS.md`, "one
+  arena is reset once at a time on a thread, and a second entry is refused").
+  done: one red test builds the store and resets B inside a destructor of
+  A's reset, or a demonstration that the barrier or the reconciliation
+  refuses the shape is recorded in `dev/DECISIONS.md`.
 - [ ] **A quiet thread's garbage is taken after X.** Edmond, 2026-09-18: the
   GC takes a thread's garbage of its own accord once some time X has passed.
   Today a collector serves a mutator whose R holds `worker::SOFT_THRESHOLD`
@@ -588,13 +364,6 @@ live: `archive/pre-rc-cycle`").
   done: one red test reaches the free from a second thread inside the reset,
   or a demonstration that the shape is unreachable is recorded in
   `dev/DECISIONS.md`.
-- [ ] **A bounded sweep of R, when a workload asks for it.** Built and taken
-  out on 2026-09-18 (`0ceb364`, reverted the same day): `BlockSweep` over one
-  block of the ring, retiring completed deaths in place. Not built because
-  the `POSTED` fire already compacts R whole and the unarmed poll runs no
-  retirement by ruling (`dev/DECISIONS.md`, "the safepoint poll takes the
-  free path's road"); the hold it would shorten is at most sixty-three dead
-  slots per thread. Comes back when a measured workload shows that hold.
 - [ ] **What S59 named and left, 2026-09-19.** Two branches of the birth have
   no arm: the guard's `mprotect` failure, which no test can order, and a join
   that fails, for which glibc documents `EDEADLK` on a self-join alone and no
@@ -670,12 +439,6 @@ live: `archive/pre-rc-cycle`").
   fence lands before its ARM64 price"). The measurement is
   `benches/lifecycle.rs`'s create/release pair on an ARM64 box, both arms in
   one session, before that build ships.
-- [ ] **Slot-typed pointer stores for provenance.** A box cell's +8 word is
-  stored and read as an integer, so the bytes carry no provenance and Miri
-  runs the pointer-heavy modules under permissive provenance
-  (`dev/WORKFLOW.md`, Miri, "Known limits"); an `AtomicPtr` at every writer
-  would keep it, at a cost nobody has priced (`rfc/dev/DECISIONS.md`, "A1
-  closes on a discriminating word", the withdrawn provenance clause).
 - [ ] **The per-process key's Windows randomness source.** `hash/process_key`
   is unix-only, `#[cfg(not(unix))]` a `compile_error!` naming this gap, until
   a session on the Windows box adds the source (`BCryptGenRandom` or an
@@ -685,14 +448,10 @@ live: `archive/pre-rc-cycle`").
   that type-checks against `x86_64-pc-windows-gnu` and has run nowhere, and
   a unix arm whose `pthread_setname_np` is declared for linux and android
   alone; the aarch64 target checks clean and has run nowhere. The Windows
-  run waits on the same session as the key above. On the unixes std backs
-  its `Mutex` and `Condvar` with pthread rather than a futex — macOS and
-  the BSDs but freebsd, openbsd and dragonfly — the lock boxes itself on
-  its first use, so the collector slots' wake words, the slot locks and
-  `REFUSED_AT` would each make one global allocation on the first pressure
-  collection there: the birth's deny reading is linux's and windows's, and
-  a build for those targets owes the locks a first touch outside the
-  pressure path or a futex the crate declares itself.
+  run waits on the same session as the key above; what a build for the
+  non-futex unixes owes the locks first is in `dev/DECISIONS.md`, "the
+  collector thread is born by the OS entry, on a stack its slot keeps, and
+  is woken by a word".
 - [ ] **No ABI entry creates or mounts an arena.** An external caller can
   build an `LLContext` and reach the store barrier, but every `*mut Arena` in
   the crate is made by Rust code inside tests; an embedder needs that entry
@@ -742,7 +501,7 @@ have to be measured first, and none is measured here.
   `deferred_free.rs` on `archive/pre-rc-cycle`. Nothing drives the path
   today — the crate is single-mutator, and the callers are
   `heap::tests::frees_arriving_from_another_thread` and whatever reaches the
-  raw C ABI from another thread. Order: a program that frees another
+  raw C ABI from another thread. Order: a test heap that frees another
   thread's objects in bulk, then a measurement, then this.
 - [ ] **Reallocate in place when the class does not change.** `stdapi::ll_realloc`
   allocates, copies and frees on every call, so 40 bytes to 48 costs a block,
@@ -776,22 +535,21 @@ have to be measured first, and none is measured here.
   benchmarks — a reading, not a measurement.
 - [ ] **Return memory to the OS, and cache huge mappings.** A region is an OS
   mapping since `8208815` and `os::unmap` is used by the large-run path, so
-  the item needs a workload, not a mechanism: rpmalloc decommits free pages
+  the item needs a reading on a test heap, not a mechanism: rpmalloc decommits free pages
   past a per-type threshold and caches freed huge mappings in a 32-slot cache
   evicted by age; ours never come back and `LARGE_RUN` unmaps on every free.
-- [ ] Buffer *K* and memory-pressure mode thresholds — blocked on D: they need
-  real workloads (`rfc/model/memory/buffers.md`).
-- [ ] Per-block dense/sparse reset threshold calibration — blocked on D for
-  the same reason (`rfc/model/memory/arena-reset.md`).
+- [ ] Buffer *K*, the memory-pressure mode thresholds
+  (`rfc/model/memory/buffers.md`) and the per-block dense/sparse reset
+  threshold (`rfc/model/memory/arena-reset.md`) stand on borrowed numbers; by
+  the ruling of 2026-09-19 (second) they are read on a parameterized test
+  heap when a stage takes them, the entry naming the parameters.
 
-Object model, deferred by design:
+Object model, deferred by design: the interception proxy and the vtable-slot
+interceptors are `rfc/model/classes.md`'s deferred questions, and no stage of
+this crate is drawn from them before the rfc answers.
 
-- [ ] General interception Proxy — transparent method interception on an
-  existing target without touching its class; prerequisite for
-  proxy-mediated movability. Needs a mechanism discussion.
-- [ ] Binary-level class interceptors (vtable-slot patching) — check whether
-  this is the same mechanism as the deferred CHA-style optimistic
-  devirtualization (`rfc/model/classes.md`, Deferred).
 - [ ] Allocation telemetry layer 2 / debug mode — full design in
   `dev/design/debug-modes.md`, build order its section 10; item 1, the event
-  journal, is built, the rest unscheduled.
+  journal, is built, the rest unscheduled, the per-structure breakdown of
+  collection's logical bytes (§8, an axis A feature; Edmond, 2026-09-01: not
+  in a production build) among it.

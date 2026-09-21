@@ -2,8 +2,7 @@
 //!
 //! The design is `rfc/model/gc/rc-cycle.md` and is normative; this module
 //! is its implementation, the in-line collection whole and the collector
-//! threads beside it ([`worker`]), with the maturation prune still
-//! `PLAN.md` S37's. Nothing
+//! threads beside it ([`worker`]), the maturation prune included ([`mark`]).
 //! [`collect`] is the order the rest of them run in, and the two ABI entries
 //! of `crate::gc` are its callers. **Candidates are gathered by the mutator**
 //! — [`queue`] takes one from every non-final decrement — so that when a trace

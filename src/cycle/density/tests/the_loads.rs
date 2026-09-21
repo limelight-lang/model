@@ -19,8 +19,9 @@
 //! measured — is where the heap placed those entities across blocks and
 //! which of each block's slots the trace's own arithmetic then met.
 //!
-//! It is not a corpus reading. A corpus arm needs a driver over this
-//! crate's heap and is blocked with Phase D (`PLAN.md` S37.7).
+//! It is not a corpus reading: the calibration runs on test heaps by ruling
+//! (`dev/DECISIONS.md`, "the calibration runs on a parameterized test heap,
+//! and the entry names its parameters").
 
 use super::*;
 

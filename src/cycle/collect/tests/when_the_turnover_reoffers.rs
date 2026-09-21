@@ -102,7 +102,9 @@ fn a_matured_ring_that_loses_its_keeper_is_collected_at_the_turnover_and_not_bef
     // The close's deferral takes a segment for the deferred lane's head out of
     // the spare cells, and `release_queue_segments` left them empty: without
     // one the marked records fall back to the active lane, which is the
-    // fallback S37.6 owns and a different case's subject.
+    // refused spare's fallback and a different case's subject
+    // (`dev/DECISIONS.md`, "the deferred lane is a side exit of the compaction pass, and a
+    // refused spare sends the root back to the active lane").
     assert!(crate::cycle::queue::refill_spares());
     assert_eq!(
         unsafe { collect_with_a_reference_taken_mid_trace(&mut arena, keeper, members[0]) },
@@ -410,17 +412,21 @@ fn a_bounded_pressure_round_defers_nothing_it_did_not_read() {
 /// until the turnover, whose epoch retires the stamp and lets the ring die
 /// (`crate::cycle::mark`, "The mature live core is not descended into").
 ///
-/// The member is matured under a keeper through three collections with the
-/// spare cells empty, so each close's deferral falls back to the active lane
-/// and the same root is offered to every reading — the fallback S37.6 owns,
-/// standing in for the three fresh roots a real population would meet the
-/// component through; the stamp is the same, because the unit stamped is the
-/// component (`crate::cycle::maturation`). The cells are refilled before the third collection, whose
-/// deferral is real, and the reading the case is about is then made from the
-/// shape it is ordinary in: a garbage ring outside whose member points into
-/// this one, the ring's own root standing in the deferred lane where the
-/// third reading left it. The outside ring dies at that reading and this one
-/// does not, which is the recall the prune costs.
+/// The member is matured under a keeper by `TRAVERSAL_AGE_THRESHOLD`
+/// collections with the spare cells empty, so each close's deferral falls
+/// back to the active lane and the same root is offered again — the refused
+/// spare's fallback
+/// (`dev/DECISIONS.md`, "the deferred lane is a side exit of the compaction
+/// pass, and a refused spare sends the root back to the active lane"),
+/// standing in for the fresh root a real population would meet the component
+/// through; the stamp is the same, because the unit stamped is the component
+/// (`crate::cycle::maturation`). The cells are refilled before the collection
+/// after that, which stops at the member and defers the root for real, and
+/// the reading the case is about is then made from the shape it is ordinary
+/// in: a garbage ring outside whose member points into this one, the ring's
+/// own root standing in the deferred lane where the deferring reading left it.
+/// The outside ring dies at that reading and this one does not, which is the
+/// recall the prune costs.
 #[test]
 fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnover() {
     let _g = test_guard();
@@ -461,7 +467,7 @@ fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnov
     );
 
     take_edges_pruned();
-    for age in 1..TRAVERSAL_AGE_THRESHOLD {
+    for age in 1..=TRAVERSAL_AGE_THRESHOLD {
         assert_eq!(
             unsafe { ll_gc_collect_cycles() },
             0,
@@ -469,28 +475,34 @@ fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnov
         );
         assert_eq!(unsafe { stamp_of(member) }, (0, age));
         assert_eq!(
+            take_edges_pruned(),
+            0,
+            "below the threshold the member is descended into"
+        );
+        assert_eq!(
             candidate_count(),
             1,
             "with no spare cell the close keeps the root in the active lane"
         );
+        assert_eq!(deferred_count(), 0);
     }
+
     assert!(refill_spares());
-    assert_eq!(unsafe { ll_gc_collect_cycles() }, 0);
     assert_eq!(
-        unsafe { stamp_of(member) },
-        (0, TRAVERSAL_AGE_THRESHOLD),
-        "at the threshold"
+        unsafe { ll_gc_collect_cycles() },
+        0,
+        "the keeper still holds the ring"
+    );
+    assert_eq!(
+        take_edges_pruned(),
+        1,
+        "at the threshold the member is not descended into"
     );
     assert_eq!(candidate_count(), 0);
     assert_eq!(
         deferred_count(),
         1,
-        "the reading that put the member at the threshold deferred the root"
-    );
-    assert_eq!(
-        take_edges_pruned(),
-        0,
-        "below the threshold the member is descended into"
+        "the reading that stopped at the member deferred the root"
     );
     assert!(
         !is_registered_candidate(unsafe { mutator_flags(member as *mut RcHeader) }),
@@ -532,7 +544,7 @@ fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnov
     assert_eq!(
         deferred_count(),
         1,
-        "the ring's root stands where the third reading left it"
+        "the ring's root stands where the deferring reading left it"
     );
     assert_eq!(
         unsafe { entity_refcount(root) },

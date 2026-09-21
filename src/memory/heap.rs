@@ -3089,7 +3089,7 @@ pub(crate) unsafe fn collector_block_slots(block: *mut u8) -> u32 {
 }
 
 /// How many of an entity block's slots are occupied, which is the second
-/// denominator of a traced-slot density (`PLAN.md` S37.7).
+/// denominator of a traced-slot density (`crate::cycle::density`).
 ///
 /// `used` and no census of the slots themselves. The two differ, and the
 /// difference is the point: `used` drops at a slot's physical return, so a

@@ -34,7 +34,9 @@ collector–mutator memory protocol of 2026-09-09 and its review are in
   `cycle::collect` is the order one collection runs the modules below in, on
   both of its paths, and `cycle::worker` is the collector thread beside it.
   What the group may not know is `dev/ARCHITECTURE.md`'s `cycle` row; what
-  is not built is `PLAN.md` S37. The deleted `rc-walk`, `rc-trace` and
+  is not built, the compiler's side of the acyclic gate and a ruling on the
+  turnover period, is `PLAN.md`, "What S37 named and left". The deleted
+  `rc-walk`, `rc-trace` and
   `rc-satb` are on the branch `archive/pre-rc-cycle` (`src/lib.rs`'s module
   doc; `dev/DECISIONS.md`, 2026-08-26). Where each part is:
 
@@ -91,7 +93,8 @@ collector–mutator memory protocol of 2026-09-09 and its review are in
   `may_become_a_candidate`, five "this bit is zero" conditions read on the
   non-final decrement; what it admits goes to `cycle::queue::register_candidate`.
   The ownership mark is moved by `memory::barrier::store_ptr_owned` and read
-  by `object::ll_default_dispose`; the acyclic proof has no writer. Each
+  by `object::ll_default_dispose`; the acyclic proof is the class's
+  `CLASS_ACYCLIC`, copied into the instance at `object::stamp_into`. Each
   condition is proved live by a `#[cfg(test)]` counter
   (`refcount::tests::the_candidate_gate`).
 - GC C ABI and the safepoint: `src/gc.rs` — `ll_gc_collect_cycles`,

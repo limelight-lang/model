@@ -7,6 +7,42 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-21 — a constant moved, and the ignored load that reads it kept the old number as its expectation
+
+**What happened.** The ruling of 2026-09-19 moved `TRAVERSAL_AGE_THRESHOLD`
+from 3 to 1. The five cases that encoded 3 were re-pointed at the constant and
+the gate ran green, but `mark::tests::the_volume_a_turnover_reoffers`, an
+`#[ignore]` load, kept an expectation the old threshold had produced: its
+`(background 0, death at 1)` cell expected 1 collection, explained as a one-shot
+rescue by the empty-lane re-offer. At a threshold of 1 the cell reads 64, and
+the load was red on the pushed tree for two days. The explanation was wrong at
+either threshold: `queue::reoffer_deferred_when_nothing_else_stands` remembers
+no re-offer, so an idle thread re-traces its deferred roots at every poll, and
+what the cell had measured at 3 was the re-trace descending into a member
+below the threshold. The ruling's entry inherited the misreading as "waits …
+whatever the threshold is".
+
+**Why it was possible.** An ignored load is run by hand and recorded once; the
+constant it reads moved in a commit whose gate cannot see it, and nothing
+tied the constant to the loads that had produced the figures the ruling rests
+on. The explanation was written from the number rather than from the poll,
+and it read plausibly because the doc of the re-offer said "once per
+accumulation", which the code never did.
+
+**Why no test caught it.** The load is `#[ignore]`, so the gate does not run
+it; the case that pins the re-offer's behaviour reads the lane's occupancy, not
+the poll count; and the doc comment was the only statement of the once-per
+claim, which no test reads.
+
+**What changed.** The load asserts `N − d + 1` in every cell and says why the
+idle cells read the threshold; the two entries and the ruling's reasoning are
+amended in place with the date (`dev/BENCHMARKS.md`, "S37.5 what a turnover
+re-offers, and what a deferral costs"; `dev/DECISIONS.md`, "the traversal age
+threshold is one"); the re-offer's doc states what it does per poll, and the
+per-poll collection on an idle thread is a question in `PLAN.md`, "What S37
+named and left". The rule this leaves: a commit that moves a constant an
+ignored load reads re-runs that load and cites the run.
+
 ## 2026-09-19 — a case that reads the live epoch is positioned by its harness thread's history
 
 **What happened.** `mark::tests::where_the_descent_stops::`

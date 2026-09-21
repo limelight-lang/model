@@ -1,5 +1,6 @@
 //! The share of prunable edges the prune refuses, as a response to a named
-//! survival rate, at `k` of 1, 2 and 3 (`PLAN.md` S37.7).
+//! survival rate, at `k` of 1, 2 and 3 (`dev/BENCHMARKS.md`, "S37.7 the pruned
+//! share against a named survival rate").
 //!
 //! Ignored in the ordinary suite and run by hand:
 //!
@@ -29,8 +30,11 @@
 //!
 //! Before every collection the oldest `kills` units are taken apart and the
 //! same number of fresh ones is built, so the population size never moves and
-//! a unit lives exactly `UNITS / kills` collections. The survival rate is
-//! `q = kills / UNITS`, and it is the one parameter of this load.
+//! a unit lives exactly `UNITS / kills` collections. The retirement rate
+//! `q = kills / UNITS` is the one parameter of this load; the survival rate
+//! the name refers to is `1 - q`, and the population's age distribution is
+//! fixed with it — uniform over `0..1 / q` — which is what makes the share
+//! linear in `k` here and not on every heap.
 //!
 //! A unit is pruned at every collection after the one that wrote age `k`
 //! (`super::what_the_prune_saves`), so of the `L = 1 / q` collections it lives
@@ -61,10 +65,18 @@ const UNITS: usize = 32;
 /// that the whole run stays inside a debug build's patience.
 const MEMBERS: usize = 16;
 
-/// Units retired before each collection, and with `UNITS` the survival rate
+/// Units retired before each collection, and with `UNITS` the retirement rate
 /// `q`. Zero is the population that never dies; 16 is half of it, where a
 /// unit lives two collections and no `k` above one can prune at all.
 const KILLS: [usize; 4] = [0, 4, 8, 16];
+
+/// Rows the mark resolves for a unit whose entry edge it pruned: the two
+/// roots and the registered ring's two edges, whatever the held ring's size.
+const ROWS_OF_A_PRUNED_UNIT: usize = 4;
+
+/// Rows the mark resolves for a unit it descended into: the pruned unit's four
+/// and the `MEMBERS + 1` the entry edge reaches, the sibling load's `n + 5`.
+const ROWS_OF_AN_UNPRUNED_UNIT: usize = ROWS_OF_A_PRUNED_UNIT + MEMBERS + 1;
 
 /// Collections per load. Twice the longest life below (eight collections at
 /// four kills), so the steady state is reached and then read for as long
@@ -222,6 +234,12 @@ fn every_collection_reads_as_constructed(threshold: u32, kills: usize, readings:
         assert_eq!(
             reading.pruned, expected,
             "k = {threshold}, kills = {kills}, collection {collection}: edges pruned"
+        );
+        // The rows follow the same arithmetic (`super::what_the_prune_saves`).
+        assert_eq!(
+            reading.mark_rows,
+            expected * ROWS_OF_A_PRUNED_UNIT + (UNITS - expected) * ROWS_OF_AN_UNPRUNED_UNIT,
+            "k = {threshold}, kills = {kills}, collection {collection}: rows the mark resolved"
         );
     }
 }

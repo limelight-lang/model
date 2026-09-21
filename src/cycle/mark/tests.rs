@@ -103,10 +103,10 @@ mod what_a_dead_root_is_worth;
 mod what_the_trace_subtracts;
 mod where_the_descent_stops;
 
-// The loads S37.7 records at `k` of 1, 2 and 3, which are ignored in the
-// ordinary suite: the widest builds a 381-member component per threshold and
-// traces it eight times, and the gate runs this suite about a dozen times per
-// commit.
+// The loads behind the threshold's ruling (`dev/DECISIONS.md`, "the traversal
+// age threshold is one"), ignored in the ordinary suite: the widest builds a
+// 381-member component at each `k` of 1, 2 and 3 and traces it eight times,
+// and the gate runs this suite about a dozen times per commit.
 mod the_pruned_share_against_a_survival_rate;
 mod the_volume_a_turnover_reoffers;
 mod what_the_prune_saves;

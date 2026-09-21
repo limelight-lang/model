@@ -59,11 +59,25 @@ other live components arrive meanwhile.
 | 1 | 32 | 33 | 33 |
 
 A deferral costs the rest of the epoch, `N − d + 1` collections, in five cells of
-six. The sixth is the lane's very first accumulation on a thread with nothing
-else registered, which the empty-lane re-offer catches at once and then spends,
-advancing the mirror with it
-(`cycle::queue::reoffer_deferred_when_nothing_else_stands`). That is a one-shot
-rescue and not a bound: a second deferral on the same thread waits like the rest.
+six, and the sixth reads the threshold rather than the lane. On a thread with
+nothing else registered the poll re-offers the lane at every safepoint:
+`cycle::queue::reoffer_deferred_when_nothing_else_stands` remembers no re-offer,
+so a root the re-trace reads live is deferred again and the next poll moves it
+again, and what the idle cells measure is what each re-trace reads. At `d` of
+16 and 32 the member is mature, the prune stops at it, the root reads live, and
+the ring waits for the thread's own commits to turn the epoch: the same
+`N − d + 1`. At `d` of 1 the member stood at age 1, below the threshold of 3 the
+base carried, so the re-trace descended and took the ring at once: 1.
+*(Amended 2026-09-21: the entry first explained that cell as a one-shot rescue
+by the empty-lane re-offer, which the Critic of that day refuted by reading the
+poll — the re-offer is per poll, and the cell is the threshold's.)*
+
+**Re-read 2026-09-21 at a threshold of 1** (base `128cefc`, the ruling below,
+same command): the `(0, 1)` cell reads 64, and the load asserts `N − d + 1` in
+every cell. That cell is the one observation in either instrument of a death
+read live behind a prune, and it moves with the threshold: at 3 the ring was
+taken at the next re-trace, at 1 it waits the epoch. On an idle thread the wait
+is paid in collections, one per poll, until the epoch turns.
 
 **What this says about `N`.** Both costs are linear in it and they pull opposite
 ways: a live root is re-traced once per `N` collections, so a smaller `N` spends
@@ -81,9 +95,9 @@ own drain fail.
 
 **What this does not say.** Nothing about a real workload's arrival rate or its
 death distribution, both being the parameters. Nothing about time: every figure
-is a count in a debug build. And nothing about a thread that collects under
-memory pressure, whose deferral path is `commit_under_pressure`'s and not this
-one.
+is a count in a debug build. Nothing about the threshold beyond the one idle
+cell above. And nothing about a thread that collects under memory pressure,
+whose deferral path is `commit_under_pressure`'s and not this one.
 
 ## 2026-09-19 — S37.7 the pruned share against a named survival rate: `1 − k·q`, and every step of `k` costs one `q`
 
@@ -133,7 +147,9 @@ rather than prints: a unit is pruned at every collection after the one that
 wrote age `k`, so of the `1/q` collections it lives it is pruned in `1/q − k` of
 them. The mark's rows follow from the same arithmetic, `4 × pruned + 21 ×
 (32 − pruned)`: 128 rows against the 672 an unpruned population costs at
-`q = 0` and `k = 1`, 196 at `q = 0.125`, 264 at 0.25, 400 at 0.5.
+`q = 0` and `k = 1`, 196 at `q = 0.125`, 264 at 0.25, 400 at 0.5 — printed
+and unasserted at first, asserted per cell since 2026-09-21, when the run on
+`128cefc` read every cell as the arithmetic says.
 
 **What this says about `k`.** The spare falls by one `q` with every step of `k`,
 so on any workload that retires anything at all `k = 1` spares the most rows and
@@ -146,6 +162,19 @@ lets a matured component die unseen, so it prices none of it. **The rule that
 picks `k` is therefore: take the smallest `k` whose recall the turnover can
 carry, the turnover being S37.5's number.** S37.7 stays open on that and now
 runs after S37.5 rather than beside it.
+
+**What the rule can pick (Critic of 2026-09-21).** Read with the recall entry,
+which found the wait the same at every `d` on a busy thread, the rule above
+picks nothing but 1: the saving side is arithmetic — on any age distribution
+the pruned share falls as `k` rises — and the cost side as a function of `k`
+was taken at one cell alone. The `1 − k·q` slope is the harness's uniform
+lifetime, `(L − k)/L` at `L = 1/q`; a memoryless population would read
+`(1 − q)^k`, geometric rather than linear (arithmetic, not a reading). What
+would price `k` is the false-live rate, how
+often a component read live `k` times is garbage before the next trace, and
+the one observation of it in either instrument is the recall entry's idle
+`(0, 1)` cell. `k = 1` stands as the ruling's preference for the saving over
+the wait, not as a slope this load measured in the mechanism.
 
 **The traced share, re-read on the same base.** `cycle::density::tests::the_loads`
 on `e589c3e` reproduces the reading of 2026-09-04 cell for cell, so that half of
@@ -163,10 +192,15 @@ answering the constant): both fail the first asserted cell, `k = 1`, `q = 0`,
 collection 2, at 0 against 32.
 
 **What this does not say.** Nothing about recall, as above. Nothing about a real
-workload's `q`, which is the parameter and not a finding. Nothing about time:
-every figure is a count in a debug build. And nothing about component shape —
-one ring of 16 behind one edge, so the rows a prune spares scale with that ring
-and a workload of shallow components would spare fewer.
+workload's `q`, which is the parameter and not a finding, nor about its age
+distribution, which the load fixes as uniform over one life and which sets the
+shape of the response. Nothing about time: every figure is a count in a debug
+build. And nothing about component shape — one ring of 16 behind one edge, so
+the rows a prune spares scale with that ring and a workload of shallow
+components would spare fewer. Nor about production's schedule: the load
+re-offers every deferred root before every collection, where production
+re-traces a deferred root at the turnover, at the exit's rounds, and at every
+poll of a thread with nothing else registered.
 
 ## 2026-09-18 — S37.8 the review's cuts leave the poll where it was
 

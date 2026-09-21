@@ -4,10 +4,11 @@
 //! The stamps here are written by real collections rather than by hand. What
 //! the prune reads is the other half of `crate::cycle::maturation`'s
 //! arithmetic, and a stamp a fixture wrote would leave the two halves agreeing
-//! only in this file: the threshold is three, an age is one more than the
-//! component's youngest member, so the third commit is the one that puts a
-//! live child at the threshold and the fourth collection is the first that can
-//! stop at it (`rfc/model/gc/cycle/questions.md`, Y9).
+//! only in this file: the threshold is [`TRAVERSAL_AGE_THRESHOLD`], an age is
+//! one more than the component's youngest member, so the commit numbered by
+//! the threshold is the one that puts a live child at it and the collection
+//! after that is the first that can stop there
+//! (`rfc/model/gc/cycle/questions.md`, Y9).
 //!
 //! The pruned-edge count is read through [`take_edges_pruned`], which clears
 //! as it answers, so every reading below names the collections between it and
@@ -128,14 +129,14 @@ fn a_ring_at_the_threshold_is_collected_at_the_trace_that_meets_it() {
     let keeper = unsafe { a_held_object(&mut arena, class) };
     unsafe { store_prop(&mut arena, keeper, prop_offset(1), members[0]) };
 
-    for _ in 0..3 {
+    for _ in 0..TRAVERSAL_AGE_THRESHOLD {
         assert_eq!(
             unsafe { ll_gc_collect_cycles() },
             0,
             "the keeper holds them"
         );
     }
-    assert_eq!(unsafe { ages(&members) }, vec![3, 3]);
+    assert_eq!(unsafe { ages(&members) }, vec![TRAVERSAL_AGE_THRESHOLD; 2]);
 
     // The keeper lets go. The decrement registers nothing new — the bit has
     // stood since the ring spent its creation references — and what is left is
@@ -208,7 +209,8 @@ fn a_stamp_of_another_epoch_prunes_no_edge() {
 ///
 /// The same reading as [`the_collection_after_the_one_that_matured_the_child_stops_at_it`]
 /// one commit later, which is what the pin exists for: the pruned-edge count at
-/// a `k` the constant does not carry (`PLAN.md` S37.7). The pin is dropped
+/// a `k` the constant does not carry (`dev/BENCHMARKS.md`, "S37.7 the pruned
+/// share against a named survival rate"). The pin is dropped
 /// before the last collection, which reads the constant again — one — and stops
 /// at a child that stands well above it.
 #[test]

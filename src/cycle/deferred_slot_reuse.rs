@@ -637,7 +637,7 @@ impl ActiveTrace {
     ///
     /// **The rows are read here because here is where they still stand.** The
     /// close sweeps them, and past that a root's colour cannot be recovered at
-    /// any price (`PLAN.md` S37.6).
+    /// any price (`dev/DECISIONS.md`, "the deferred lane is a side exit of the compaction pass").
     pub(crate) fn mark_roots_for_deferral(&mut self, externally_referenced: bool) -> usize {
         let batch = self
             .batch

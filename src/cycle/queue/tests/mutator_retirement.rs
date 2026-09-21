@@ -285,7 +285,8 @@ fn an_unwind_in_final_retirement_lowers_the_collection_gate() {
 /// The pass the rest of this file exercises defers nothing — it is given
 /// `None` — so the arm that appends to the deferred lane, and the boundary
 /// behind it, are reached by nothing else
-/// (`PLAN.md` S37.6, and the Critic round of 2026-09-10 that named the hole).
+/// (`dev/DECISIONS.md`, "the deferred lane is a side exit of the compaction pass",
+/// and the Critic round of 2026-09-10 that named the hole).
 #[test]
 fn a_deferring_pass_survives_an_unwind_at_each_of_its_boundaries() {
     let _g = test_guard();

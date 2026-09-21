@@ -124,23 +124,27 @@ use crate::refcount::{
 /// traversal age threshold of `rfc/model/gc/rc-cycle.md`, "Candidate
 /// registration and trial deletion".
 ///
-/// 1, ruled by Edmond on 2026-09-19 over the two readings of `PLAN.md` S37.7
-/// and S37.5 (`dev/DECISIONS.md`, "the traversal age threshold is one"): the
-/// pruned-edge share is `1 - k * q` at retirement rate `q`, so every step of
-/// the threshold costs one `q` of the population, while what a pruned edge
-/// delays — a component that dies behind it — waits the rest of the epoch
-/// whatever the threshold is. The 3 this constant carried until then was YRC's
-/// published value and was measured nowhere
-/// (`rfc/model/gc/cycle/questions.md`, Y9).
+/// 1, ruled by Edmond on 2026-09-19 (`dev/DECISIONS.md`, "the traversal age
+/// threshold is one"): the pruned-edge share falls as `k` rises on any age
+/// distribution, and what a prune costs is a wait of up to `N` collections on
+/// the rarer component that dies behind it; the ruling takes the saving. The
+/// two readings are `dev/BENCHMARKS.md`, "S37.7 the pruned share against a
+/// named survival rate" and "S37.5 what a turnover re-offers, and what a
+/// deferral costs".
 ///
 /// A threshold above [`MATURATION_AGE_MAX`] would prune nothing, the age
-/// saturating there, so the assertion below is the whole of what the two
-/// numbers owe each other.
+/// saturating there, and a threshold of zero would prune every unstamped
+/// target while the epoch is zero, which `pin_threshold` refuses too; the
+/// assertions below are the whole of what the numbers owe each other.
 pub(crate) const TRAVERSAL_AGE_THRESHOLD: u32 = 1;
 
 const _: () = assert!(
     TRAVERSAL_AGE_THRESHOLD <= MATURATION_AGE_MAX,
     "a threshold above the age field's bound prunes no edge at all"
+);
+const _: () = assert!(
+    TRAVERSAL_AGE_THRESHOLD >= 1,
+    "a threshold of zero prunes every unstamped target of epoch zero"
 );
 
 /// What one mark reads a stamp against: the collection's epoch, and the age
@@ -186,14 +190,14 @@ thread_local! {
 
 /// Hold this thread's threshold at `threshold` until the guard is dropped, so
 /// that a measurement can read the pruned-edge count at a `k` the constant
-/// does not carry (`PLAN.md` S37.7).
+/// does not carry (`dev/BENCHMARKS.md`, "S37.7 the pruned share against a named survival rate").
 ///
 /// The pin is this thread's alone and moves no constant: a mark on another
 /// thread reads [`TRAVERSAL_AGE_THRESHOLD`] as before.
 ///
 /// # Panics
-/// Outside `1..=MATURATION_AGE_MAX`: zero would prune every stamped target of
-/// the epoch, and a value past the field's bound prunes nothing.
+/// Outside `1..=MATURATION_AGE_MAX`: zero would prune every unstamped target
+/// while the epoch is zero, and a value past the field's bound prunes nothing.
 #[cfg(test)]
 pub(crate) fn pin_threshold(threshold: u32) -> ThresholdPin {
     assert!(
@@ -458,7 +462,8 @@ unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, prune: Prune
 /// The counter is the trace's own and not the density instrument's: what it
 /// reports is an event no final row state records, a target the mark did not
 /// meet being indistinguishable from one no edge named
-/// (`PLAN.md` S37.7, whose pruned-edge share this is the built form of).
+/// (the pruned-edge share of `dev/BENCHMARKS.md`, "S37.7 the pruned share
+/// against a named survival rate" is read from it).
 #[inline]
 fn note_edge_pruned() {
     #[cfg(test)]

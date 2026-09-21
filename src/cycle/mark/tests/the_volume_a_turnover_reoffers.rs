@@ -1,5 +1,6 @@
 //! What the epoch turnover re-offers, and what a deferral costs the component
-//! that dies behind it (`PLAN.md` S37.5).
+//! that dies behind it (`dev/BENCHMARKS.md`, "S37.5 what a turnover re-offers,
+//! and what a deferral costs").
 //!
 //! Ignored in the ordinary suite and run by hand:
 //!
@@ -29,12 +30,17 @@
 //!
 //! One component is let go at collection `d` of the epoch. Its record stands in
 //! the deferred lane and a decrement adds no second record while it stands
-//! (`crate::cycle::queue`), so the ring is garbage no collection sees until the
-//! lane is re-offered — `N − d + 1` collections later. The one exception is the
-//! lane's very first accumulation on a thread with nothing else registered,
-//! which the empty-lane re-offer catches at once and then spends
-//! (`crate::cycle::queue::reoffer_deferred_when_nothing_else_stands`); the
-//! background rate is the parameter that tells the two apart.
+//! (`crate::cycle::queue`), so nothing offers the ring to a trace until the lane
+//! is re-offered. On a thread whose active lane keeps filling that is the
+//! turnover, `N − d + 1` collections later. On a thread with nothing else
+//! registered the poll re-offers the lane at once
+//! (`crate::cycle::queue::reoffer_deferred_when_nothing_else_stands`), and what
+//! the re-trace reads is the prune's: the ring's mature member is not descended
+//! into, the root reads live and is deferred again, at every poll, until the
+//! thread's own commits turn the epoch over — the same `N − d + 1`. Below the
+//! threshold the re-trace descends and takes the ring at once, which is what the
+//! `(0, 1)` cell reads at a threshold of 3. The background rate tells the
+//! two lanes apart; the threshold is what the idle cell depends on.
 //!
 //! # The precondition both readings need
 //!
@@ -146,10 +152,10 @@ fn poll_and_collect() -> usize {
 }
 
 /// The deferred lane's occupancy per collection, with `rate` live components
-/// built before every one: each is deferred at the collection that finds its
-/// member at the threshold, so the lane grows by `rate` a collection once the
-/// first cohort has matured, and the volume a turnover of `N` re-offers is
-/// that line read at `N`.
+/// built before every one: each is deferred at its first collection, read live
+/// through its keeper, so the lane grows by `rate` a collection from the
+/// first, and the volume a turnover of `N` re-offers is that line read at
+/// `N`.
 fn an_arrival_curve(rate: usize) -> Vec<(usize, usize)> {
     release_queue_segments();
     stand_at_the_start_of_a_nonzero_epoch();
@@ -245,9 +251,10 @@ fn the_lane_grows_by_the_rate_live_roots_arrive() {
     }
 }
 
-/// What a deferral costs the component that dies behind it: one collection on
-/// a thread with nothing else registered, and the rest of the epoch on one
-/// whose active lane keeps filling.
+/// What a deferral costs the component that dies behind it: the rest of the
+/// epoch, on a thread whose active lane keeps filling because nothing offers
+/// the ring before the turnover, and on one with nothing else registered
+/// because every re-trace reads the ring live through the prune.
 #[test]
 #[ignore = "a measurement, recorded in dev/BENCHMARKS.md; run with --ignored"]
 fn a_deferred_death_waits_for_the_traffic_behind_it() {
@@ -258,15 +265,12 @@ fn a_deferred_death_waits_for_the_traffic_behind_it() {
         for death_at in DEATHS_AT {
             let waited = on_a_fresh_thread(move || a_recall_delay(death_at, background));
             println!("  {background:<11} {death_at:<9} {waited}");
-            // The empty-lane re-offer spends itself on the lane's first
-            // accumulation and then advances the mirror with it, so it catches
-            // only a thread whose very first deferral is the one that died
-            // (`cycle::queue::reoffer_deferred_when_nothing_else_stands`).
-            let expected = if (background, death_at) == (0, 1) {
-                1
-            } else {
-                commits_per_epoch() as usize - death_at + 1
-            };
+            // The idle cells read the threshold rather than the lane: the
+            // re-offer at every poll puts the root back at once, and the trace
+            // stops at the mature member until the epoch turns. At a threshold
+            // of 3 the `(0, 1)` cell read 1, the member being descended into at
+            // age 1; at 1 it waits like every other cell.
+            let expected = commits_per_epoch() as usize - death_at + 1;
             assert_eq!(
                 waited, expected,
                 "background {background}, death at {death_at}: collections waited"

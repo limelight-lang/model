@@ -1,6 +1,6 @@
 //! The edges the prune refuses and the rows the mark no longer resolves, at
 //! `k` of 1, 2 and 3, on a load whose answer is fixed by construction
-//! (`PLAN.md` S37.7, the synthetic pruning arm).
+//! (`dev/BENCHMARKS.md`, "S40.1 the prune read against the built producer").
 //!
 //! Ignored in the ordinary suite and run by hand:
 //!
@@ -35,11 +35,13 @@
 //! The collection at which the prune takes effect, the edges it refuses and
 //! the rows the mark no longer resolves, read off `take_edges_pruned` and
 //! `take_dispatches_in_mark_phase`; both are cleared before every collection.
-//! A *share* on this load is the harness's own liveness schedule read back,
-//! and a production `k` waits on the corpus arm (`PLAN.md` S37.7). What the
-//! run calibrates is the instrument that arm will read, at each `k` the age
-//! field can hold, against the producer the crate has built rather than
-//! against a simulation of it (`dev/BENCHMARKS.md`, 2026-09-09, withdrawn).
+//! A *share* on this load is the harness's own liveness schedule read back;
+//! the share as a response to a named rate is the sibling load
+//! `the_pruned_share_against_a_survival_rate`, and the production `k` is one
+//! by ruling (`dev/DECISIONS.md`, "the traversal age threshold is one"). What this run
+//! calibrates is the instrument the sibling reads, at each `k` the age field
+//! can hold, against the producer the crate has built rather than against a
+//! simulation of it (`dev/BENCHMARKS.md`, 2026-09-09, withdrawn).
 
 use std::ptr;
 

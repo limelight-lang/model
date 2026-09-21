@@ -10,8 +10,9 @@ commit (`dev/WORKFLOW.md`).
 
 The diagrams show the implementation, not the destination. The in-line
 `rc-cycle` path and the collector thread beside it are both built and both
-drawn; what is not built — the acyclic gate's compiler channel, the corpus
-figures behind the prune's constants — is `PLAN.md` S37's. The deleted
+drawn; what is not built is outside the crate: the compiler's proof that
+fills `CLASS_ACYCLIC`, and a ruling on the turnover period
+(`PLAN.md`, "What S37 named and left"). The deleted
 `rc-walk` and `rc-trace` structures remain on `archive/pre-rc-cycle`, not in
 this picture.
 

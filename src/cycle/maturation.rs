@@ -4,7 +4,7 @@
 //! A collection that reads a component as held from outside proves it live for
 //! this collection, and the stamp is what a later trace reads instead of
 //! descending into it (`rfc/model/gc/cycle/questions.md`, Y9). Two populations
-//! answer that description and only one of them had a producer. A set the scan
+//! answer that description. A set the scan
 //! proposed as unreachable whose exact validation disagreed is stamped by
 //! [`crate::cycle::finalization`]; the rows the scan coloured
 //! [`Color::Live`] — the mature live core the descent is meant to stop at —

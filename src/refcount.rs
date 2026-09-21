@@ -99,8 +99,9 @@ pub const ARENA_RESET_MARK: u32 = 1 << 7;
 /// class's declared property types, and an untyped, `mixed` or `array`
 /// property is a conservative edge to anything
 /// (`rfc/model/memory/static-lifetimes.md`, "Level A — Acyclic classes").
-/// The crate honours the bit and has no producer for it, which is S37.2's:
-/// how a class carries the compiler's answer to `object::stamp_into`.
+/// The class carries the compiler's answer as [`crate::class::CLASS_ACYCLIC`],
+/// and `object::stamp_into` copies it here; nothing in this crate proves a
+/// class acyclic.
 pub const ACYCLIC_GATE: u32 = 1 << 8;
 
 /// A compiler-proven slot holds this entity: the store into that slot moved
