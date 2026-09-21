@@ -432,6 +432,20 @@ live: `archive/pre-rc-cycle`").
   entity without reading the class flags, so a template class the compiler
   marks acyclic does not carry `ACYCLIC_GATE` — conservative, and left until
   a template class is marked.
+- [ ] **The sibling's birth that missed its wait once in four journal runs.**
+  `the_siblings::a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idle`
+  failed at `wait_until(collector_state(1) == Alive, A_BIRTH)` in the second
+  of S60's four `debug-journal` runs on 2026-09-21, a run that took 19 s
+  where the others took 6–10 s; 12 of 12 alone afterwards and a fourth full
+  run green (Edmond, 2026-09-21: investigate rather than accept). Two
+  readings to separate: the box's load stretching the birth past `A_BIRTH`,
+  and S60's round — the serve stamp, the clock comparison and the request
+  byte now run on every record of every round — moving what the second
+  backlog round does before it births. done: the failing run is reproduced
+  under a named load or the case is seen red with S60's round and green
+  without it, and either the wait is re-stated against what it measures or
+  the round's change is repaired; the class goes to `dev/POSTMORTEM.md` if a
+  mechanism is found, and to `dev/WORKFLOW.md`'s flake watch if only the load.
 - [ ] **The citation check does not read the journals.** `dev/tools/citations.py`
   walks `src/`, `benches/`, `docs/` and the three maps, so a journal entry
   citing a plan line by its title is checked by nobody, and two are dead
