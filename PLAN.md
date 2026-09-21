@@ -16,15 +16,14 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-21 · Active: none. S37 went on 2026-09-21 with its thirteen
-steps closed and its gate paid: the Critic over S37.7's repair, whose findings
-are `dev/POSTMORTEM.md`, "a constant moved, and the ignored load that reads it
-kept the old number as its expectation", and the Code Reviewer over the stage.
-What it left is "What S37 named and left" below. The next stage is drawn from
-the backlog below by the session that opens it, numbered S60, and agreed with
-Edmond first (rule 23.3). The destination's last mile — the compiler that links
-this crate — is outside this plan: `rfc/BACKLOG.md`, "The big one", and the
-front end in `limelight`.
+Updated: 2026-09-21 · Active: S60, opened the same day S37 went: its gate found
+the empty-lane re-offer collecting at every poll of a quiet thread, Edmond called
+the algorithm unacceptable, and the Sage ruled the replacement in two rounds with
+a Critic between (the reports are the session's scratchpad; the ruling is the
+`dev/DECISIONS.md` entry S60.5 writes). Edmond accepted the mechanism on
+2026-09-21 and refused 1 s as X's default. The destination's last mile — the
+compiler that links this crate — is outside this plan: `rfc/BACKLOG.md`, "The
+big one", and the front end in `limelight`.
 
 Review 2026-09-21: overdue by a day, the hook reading `dev/PLAN.md` and never
 this file. Pass 1, code `c58d49f..128cefc` against the thresholds, 203
@@ -125,6 +124,73 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   failure is reportable, would remove it if `pthread_setspecific` allocates
   nothing per thread — which nobody has read, on any target. Named when the
   reserve's first touch was decided on 2026-08-29 and priced nowhere since.
+## S60 — The quiet thread's turnover  [in progress]
+
+Goal: a thread whose roots are all parked runs no collection on its own polls;
+its parked garbage is found when the collector asks for a turnover after X.
+Done when: sixty-four polls of an idle thread with a deferred lane move neither
+its counter nor its lane and run no mark; a request byte the collector set makes
+the next poll turn the epoch, splice the lane and take a dead ring behind a
+mature member; `what_the_poll_costs`'s empty-lane arm reads at or under S37.8's
+7.46–7.61 ns.
+Notes: the ruling is the Sage's of 2026-09-21, second round, accepted by Edmond
+the same day; the analogues for X are `dev/RESEARCH.md`, "the idle-GC timers of
+five runtimes"; X's default figure is Edmond's, the 1 s the Sage proposed
+refused as too frequent.
+
+- [ ] S60.1 The request byte and the instant on the mutator's record
+      done: `MutatorRecord` carries an `AtomicU8` request byte on the token line
+        and an `AtomicU64` instant (nanoseconds from a process base) on the
+        reader line, both zero at `take_record` and read by `lines_are_fresh`,
+        `offset_of!(reader) == 64` still asserted, with a `#[cfg(test)]` store
+        of the byte from the harness thread
+      tier: T2 · role: Critic
+- [ ] S60.2 The collector asks for a turnover after X
+      done: `worker::read_one_record` restamps the instant on a batch and, on a
+        serve that made no batch with X elapsed since the instant, stores the
+        request byte and restamps; X is `quiet_interval()` — the ABI's value if
+        set, else the crate default Edmond names — with a `worker::testing`
+        override; the ABI setter stands beside `ll_gc_set_collector_cap`
+      tier: T2 · role: Critic
+- [ ] S60.3 The poll jumps to the next turnover on the request, and the per-poll re-offer goes
+      done: under an open gate and before the token read, a poll with a
+        non-empty deferred lane and the byte set, the token not reading
+        `COLLECTOR`, clears the byte, stores `commits − commits % N + N` through
+        `epoch::jump_to_the_next_turnover` and hands the re-read counter to
+        `reoffer_deferred_if_epoch_moved`; `defer_entry`'s empty-to-occupied
+        branch clears the byte and sets `signal_due`;
+        `reoffer_deferred_when_nothing_else_stands`, `the_active_lane_is_empty`
+        and the poll's second arm are deleted; both red cases of the ruling are
+        seen red first — sixty-four polls move nothing, and the mature-member
+        fixture dies at the poll after the harness's byte — and the old idle
+        case is renamed and inverted as Edmond's contract change
+      tier: T2 · role: Critic
+- [ ] S60.4 The pressure path splices the lane without a jump
+      done: `collect_under_pressure` re-offers a non-empty deferred lane before
+        `trace_and_harvest` by splice alone, and a case shows a dead
+        all-registered ring parked in the lane taken by the pressure collection
+        at the old epoch
+      tier: T1 · role: —
+- [ ] S60.5 The sentences, the journals and the rfc
+      done: every sentence the ruling lists as false once a request advances the
+        counter is rewritten — `epoch.rs`, `mutator_record.rs`, `queue.rs`, the
+        rfc's Y9 and Y12 clause 8, and `rfc/model/gc/rc-cycle.md` "Concurrency"
+        and `rfc/dev/design/trace-token-handshake.md` checked for a sentence
+        that gives the token line one byte;
+        `the_volume_a_turnover_reoffers`'s idle cells read X; the S37.5 idle
+        paragraph of `dev/BENCHMARKS.md` amended with the date; one new
+        `dev/DECISIONS.md` entry supersedes by name the 2026-09-19 liveness
+        paragraph and the k = 1 entry's idle sentence and records the inverted
+        case as Edmond's, X's default and the splice-only pressure path; the
+        after-X backlog line absorbs the idle-thread sentence of "What S37 named
+        and left", and the threshold-one serve becomes a line of its own
+      tier: T1 · role: —
+- [ ] S60.6 What the poll costs with a lane standing
+      done: `what_the_poll_costs` recorded in both arms in `dev/BENCHMARKS.md` —
+        the empty lane against S37.8's figure, one deferred record standing as
+        an absolute figure
+      tier: T1 · role: Bench
+
 ---
 
 ## Cross-cutting (every stage)

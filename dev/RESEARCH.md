@@ -503,3 +503,35 @@ turnover it re-offers at is provisional after YRC's own values
 (`dev/DECISIONS.md`, "maturation is Y9's edge-side prune…"), and what a real
 workload saves is owed at S37.5 on a corpus. Quoted as YRC's number, never as
 this crate's.
+
+## 2026-09-21 — the idle-GC timers of five runtimes, for the quiet thread's X
+
+Read at source on 2026-09-21, each file at its `master`/`main` head of that
+day, for the question S60 asks: after how long does a runtime collect a
+mutator that allocates nothing and triggers nothing, and what does the timer
+protect against. Verified by `grep` over the fetched file, not from a summary.
+
+| runtime | timer | default | condition | source |
+|---|---|---|---|---|
+| Go | `forcegcperiod` | 2 min | "maximum time between garbage collections. If we go this long without a garbage collection, one is forced to run"; sysmon sleeps `forcegcperiod / 2` | `src/runtime/proc.go` |
+| HotSpot G1 | `G1PeriodicGCInterval` | 0, off | ms since the previous GC; cancelled when `getloadavg()` 1 m exceeds `G1PeriodicGCSystemLoadThreshold` (0, off) | `gc/g1/g1_globals.hpp` |
+| HotSpot Shenandoah | `ShenandoahGuaranteedGCInterval` | 5 min | "useful when large idle intervals are present, where GC can run without stealing time from active application"; young 5 min, old 10 min | `gc/shenandoah/shenandoah_globals.hpp` |
+| HotSpot ZGC | `ZCollectionInterval` | 0, off | seconds, "Force GC at a fixed time interval"; `ZProactive` on by default is a heap-growth rule, not a timer | `gc/z/z_globals.hpp` |
+| V8 | memory reducer | 8 s after the allocation rate drops (`memory_reducer_delay_ms`), at most 2 GCs (`memory_reducer_gc_count`) 500 ms apart (`kShortDelayMs`); a watchdog GC at 100 s without one (`kWatchdogDelayMs`) | `HasLowAllocationRate()` — the mutator went quiet | `src/flags/flag-definitions.h`, `src/heap/memory-reducer.cc` |
+
+What each protects against. Go's and Shenandoah's timers bound how long a
+process that stopped allocating keeps garbage it will never trigger a
+collection for — finalizers, memory returned to the OS. G1's and ZGC's are off
+by default: their triggers are allocation and occupancy, and a periodic cycle
+is the operator's choice. V8's memory reducer is the nearest in shape to S60's
+X: it detects the transition from allocating to quiet and collects the garbage
+the quiet phase left, on a delay, a bounded number of times, with a long
+watchdog behind it.
+
+What applies here. The field's range for "collect a quiet mutator" runs from
+8 s (V8) through 100 s (V8's watchdog) and 2 min (Go) to 5 min (Shenandoah);
+nothing runs at 1 s. S60's X guards a narrower thing than any of these — a
+component that became garbage while its root was parked, on a thread that
+registers nothing — and its cost per X is one un-pruned trace of the lane's
+closure, so the memory side, not the CPU side, is what a longer X spends. The
+figure is Edmond's; the entry records the range and the sources.
