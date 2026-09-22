@@ -8,6 +8,58 @@ never edited or deleted.
 
 ---
 
+## 2026-09-22 — a take's unanswered request stands on the record, and the ring under the token decides the batch's form
+
+**The Sage's ruling, `Final`, on Edmond's delegation** ("на вопрос отвечает
+мудрец"): the question was whether the take of a standing R
+(`dev/design/a-standing-r-is-taken-after-n-rounds.md`) is built as its fifth
+form had it, withdrawing at the consent deadline, or leaves its request
+standing now that a standing request lives on the record. Nothing is built
+yet; the design carries the ruled form and the stage is unopened.
+
+**What.** The take's request is the threshold path's: the record pushed onto
+the standing list, one swap `FREE → REQUESTED|slot`, `REQUEST_WAIT` for the
+consent. A mutator that consents inside the wait is batched; one that does
+not is asleep, its request stays on the byte, its record stays in the list,
+and the serve answers `Served::Unanswered`. The sleeper is served at the
+checkpoint that reads its consent — its own first poll or slot free, one
+stranger's batch away at most. No flag distinguishes a take inside
+`wait_for_consent`, `answer_the_withdrawal`, `serve_the_grant` or
+`Standing::checkpoint`. Three precisions the built list forces: the batch's
+form is read off the ring under the grant (`has_at_least(threshold)`), not
+off the request's origin, which is exact because R only grows under a
+standing request — every path that drains R takes `MUTATOR` over the request
+first, a refusal — so a checkpoint serves either kind blind; `standing_since`
+restarts at the end of every batch rather than when the request lands, or the
+round after a long-standing request's service would read the write-back as a
+ring an interval overdue; and the word goes on the hold line, the reader
+line being full since the link pair took its last sixteen bytes.
+
+**Why it fulfils Edmond's "a sleeping thread is left alone" rather than
+contradicting it.** Under the standing form nothing touches the thread while
+it sleeps — no wake, no trace, no reading of its ring — and its garbage is
+taken once it is awake, which is when the fifth form would have taken it too
+had a visit fallen inside its waking. "Until the next interval" was the retry
+cadence of a form that had to withdraw, because standing requests lived in a
+sixteen-entry array on the collector's frame; that array is gone and the
+reason with it. What Edmond refused and what stays refused is the no-wait
+form, in which a working mutator consents and withholds until the collector
+comes round: here the wait stands, a working mutator is batched inside 2 ms,
+and only a sleeper's request stands. His refusal of the morning — the
+reverted `7cc91b9`, whose message carries it — is retired by its own reason,
+and this entry is the record of that.
+
+**The prices, both stated.** The withdrawal form costs 2 ms per sleeping
+sub-threshold mutator per interval inside the round, for as long as they
+sleep: a thousand parked threads make a two-second round every interval. The
+standing form costs that once per standing request, and adds the
+checkpoint's pass — one load per standing entry per byte event on the slot,
+a thousand parked threads making a pass of the order of 100 µs, an estimate
+and not a measurement, which the building stage measures with a parked-thread
+arm.
+
+---
+
 ## 2026-09-22 — the standing request lives on the record, the checkpoint serves one grant, and no count is capped
 
 Edmond accepted, after a Sage's ruling, a Critic's six findings and the

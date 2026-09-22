@@ -1,8 +1,10 @@
 # A standing R is taken after an interval
 
-Accepted 2026-09-22 as the final algorithm; fifth form, the
+Accepted 2026-09-22 as the final algorithm; sixth form, the
 algorithm as Edmond ruled it after the Critic's two rounds and repaired to
-a third
+a third, with the sleeper's arm as the Sage ruled it the same evening
+(`dev/DECISIONS.md`, "a take's unanswered request stands on the record, and
+the ring under the token decides the batch's form")
 (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
 collector's own, and no request count is capped"). Not built, not normative,
 and no stage opened for the build — `PLAN.md`, "A quiet thread's garbage is
@@ -20,8 +22,11 @@ ring reads non-empty, grown meanwhile or not, it takes the ring as an
 ordinary batch. The word measures the collector's visits and not the ring's
 history: a ring emptied and refilled between two visits inherits the
 instant, and is taken up to one interval early, once. A mutator that
-does not consent to the take's request inside the consent wait is asleep and
-is left alone until the next interval. The mutator's side does not change:
+does not consent to the take's request inside the consent wait is asleep: the
+request stays on its byte and its record stays in the collector's standing
+list, so nothing touches the thread while it sleeps and its ring is taken at
+its own first poll or slot free after waking, at the checkpoint that reads
+the consent. The mutator's side does not change:
 it registers into R, signals a filled block, reads its byte at a poll or a
 slot free, consents, and disposes of P after `POSTED`, as for any batch.
 
@@ -33,8 +38,8 @@ a pressure collection's ending — and the timer's wait after any batch is
 10 ms, so a count of rounds would hand the standing mutator's rate to the
 busiest thread, the form the S60 ruling refused for the deferred lane.
 
-What the rule accepts: a sleeping thread's garbage is not taken until it
-reaches the threshold, collects under pressure, or exits; a working thread
+What the rule accepts: a sleeping thread's garbage is not taken while it
+sleeps; a working thread
 pays one batch per interval while its sub-threshold ring is non-empty —
 a mutator registering one candidate a second is taken every four seconds
 with a handful of entries — and nothing else new.
@@ -48,8 +53,9 @@ after X of the mutator's clock standing, R is taken after
 
 ## The word on the record
 
-One word on the reader line of `MutatorRecord`, the collector's line, in the
-16 bytes the line has spare (48 of 64 used; the layout asserts stand):
+One word on the hold line of `MutatorRecord`, which has 62 of its 64 bytes
+spare and is already the collector's per-visit write target; the reader line
+is full since the standing list's link pair took its last 16 bytes:
 
 - `standing_since: AtomicU64` — the serve clock's reading (nanoseconds
   since `SERVE_CLOCK_BASE`, the clock `served_at` uses, never zero) at the
@@ -57,8 +63,8 @@ One word on the reader line of `MutatorRecord`, the collector's line, in the
   standing ring.
 
 The collector's own word, written by the collector the record names and read
-by no mutator, so relaxed; reset with the line at a re-take
-(`ReaderLine::reset`). Two collectors never read one record — a record moves
+by no mutator, so relaxed; cleared where the registry clears the hold line at
+a re-take. Two collectors never read one record — a record moves
 between collectors only through the handover — and the instant is the
 process's clock, so a record handed over keeps its standing.
 
@@ -82,46 +88,53 @@ makes, returning the span and whether the front block is the tail block;
    record and shared with the turnover ask's reading after the serve.
 
 The take is the serve of today from the P-room test on — the room read, the
-request by one swap from `FREE`, the wait for consent, the batch under the
-grant, the release — with four differences, carried by a `take_anyway` flag
-that `serve` sets from branch 3 and passes through `wait_for_consent`,
-`answer_the_withdrawal`, `serve_the_grant` and `batch`; the threshold stays
-the round's, and the grant arm of `answer_a_refused_request` and
-`Standing::checkpoint` keep their threshold form, since neither is a take:
+record pushed onto the standing list, the request by one swap from `FREE`,
+the wait for consent, the batch under the grant, the release — and no flag is
+threaded through it. What a take does differently lives at two places only,
+branch 3 above and the batch's form inside `batch`, so `wait_for_consent`,
+`answer_the_withdrawal`, `serve_the_grant`, `answer_a_refused_request`'s
+grant arm and `Standing::checkpoint` are the built ones and need no kind of
+request to reason about:
 
-- **The instant restarts when the request lands.** At `token.request`'s
-  `Ok`, hit or miss to come, `standing_since` takes the clock's reading
-  now, so the next take of this ring is an interval away whatever this one
-  does. A request refused at the swap — `POSTED`, `MUTATOR`, another
-  collector's — leaves the instant, and the take is tried again next round.
-  Without the restart the round ten milliseconds after a take would read a
-  write-back, or a registration inside the window, as a ring past its
-  interval and take it again at the round's cadence.
+- **The instant restarts at the batch, not at the request's landing.** At
+  the end of every batch — a take's and a threshold batch's alike, branch 1
+  zeroing the word at the next visit anyway — `standing_since` takes the
+  clock's reading, so the write-back and whatever the window registered are
+  an interval away. A request that stood while its owner slept must not
+  restart the instant at its landing: the round after its service would then
+  read the write-back as a ring an interval overdue. A request refused at
+  the swap — `POSTED`, `MUTATOR`, another collector's — leaves the instant,
+  and the take is tried again next round; a record already linked answers
+  `Served::Unanswered` at branch 3 without a swap, the instant left as it
+  is.
 
-- **The batch is the ring whole, and K is left alone.** `batch` clamps K to
-  P's room and to what R holds and sizes the next K from this batch's
-  outcome; under `take_anyway` the clamp is R's count as the peek reads it,
-  at most 63, and `size_the_next_batch` is not called. A take must feed K
+- **The ring under the token decides the batch's form, not the request's
+  origin.** `batch` reads `has_at_least(threshold)` under the grant, before
+  the peek: at or above the threshold it is today's batch — K's clamp,
+  `size_the_next_batch`, the backlog reading — and below it the ring is
+  taken whole, the clamp R's count as the peek reads it, at most 63, with
+  `size_the_next_batch` not called. The reading is exact because R only
+  grows under a standing request: every path that drains R takes `MUTATOR`
+  over the request first, which is a refusal. So a threshold request never
+  meets a sub-threshold ring at its grant, a take whose ring crossed the
+  threshold while its owner slept is served as the threshold batch it now
+  is, and the checkpoint, which cannot know which kind of request it
+  serves, needs no kind of its own. A take must feed K
   neither way: four takes of three live roots each would double K toward
   `BATCH_BOUND` and hand the thread's first real batch to the budget whole,
   every root `Unwalked`; a K halved to one would take a ring of three one
   root per round.
-- **An unanswered request is the end of the take.** A mutator that
-  consents inside `REQUEST_WAIT` (2 ms) is batched; one that does not is
-  asleep: the request is withdrawn, the withdrawal's read-back answered as
-  today's is for every value but the silent mark — under `take_anyway`
-  `answer_the_withdrawal` stores no mark — and the serve returns
-  `Served::Idle`. The take reads no silent mark and leaves no request
-  standing; the grant clears the mark as every grant does, which is right,
-  a consenting thread being not silent. The wait itself is today's: its
-  early return on a stranger's wake runs `Standing::checkpoint` and notes
-  the consumed wake as any wait does, so a silent mutator of the threshold
-  path that consented during a take's wait is served at that checkpoint and
-  not left withholding until the next. The standing requests are the
-  threshold path's, and their bounded array is filed for replacement
-  (`dev/DECISIONS.md`, the entry above; `PLAN.md`, "The standing request
-  moves to the record"); the take leaves a request on the record with no
-  wait only when that stage has given a request that home.
+- **An unanswered request stands, as the threshold path's does.** A mutator
+  that consents inside `REQUEST_WAIT` (2 ms) is batched; one that does not
+  is asleep: the request stays on the byte, the record stays in the standing
+  list it was pushed into before the swap, and the serve answers
+  `Served::Unanswered`. The sleeper is served at the checkpoint that reads
+  its consent — its own first poll or slot free after waking, one stranger's
+  batch away at most — and the round pays one wait per standing request and
+  none thereafter, where a withdrawal at the deadline would have cost 2 ms
+  per sleeping sub-threshold mutator per interval inside the round. The
+  wait itself is today's: its early return on a stranger's wake runs
+  `Standing::checkpoint` and notes the consumed wake as any wait does.
 - **The backlog reading is unchanged.** `batch` answers
   `Served::Batch { backlog }` by `has_at_least(threshold)` after the batch,
   against the round's threshold; a take of a ring below sixty-four leaves
@@ -136,30 +149,24 @@ the write-back and what the mutator registered since, and branch 2 or 3
 takes it from there: a write-back stands as any non-empty ring does, and is
 taken an interval later if it still stands.
 
-After a take that missed the consent, the ring stands as it was; the next
-round reads branch 3 with the instant just reset.
+After a take whose consent has not come, the ring stands as it was and the
+request stands on the byte; the next round reads branch 3, finds the record
+linked, and answers `Served::Unanswered` without a swap.
 
 ## Interactions
 
 **The turnover request (S60).** `ask_for_a_turnover_if_quiet` runs after
-every serve and restamps `served_at` and `commits_seen` for a serve that
-made a batch, by fiat. A take must not be that serve: a take whose roots all
-read live leaves the mutator a collection over P that closes `EmptyLane`
-with no commit, so the clock stands, and a take every interval would
-restamp every interval — for a drip of one live candidate a second the ask
-would never reach X and the lane the takes fill would be turned over by
-pressure or exit alone, the two halves of the mechanism cancelling on the
-thread the rule is for. So a take's outcome reaches the ask as a serve that
-reached the ring and not the clock: the restamp is decided by
-`clock_stood_since_the_stamp` alone, and a take whose roots were proposed
-moves the clock at the mutator's poll and is restamped at the next visit. A
-take that missed the consent returns `Served::Idle` and feeds the ask as an
-idle serve does: with the clock standing and X elapsed a turnover request is
-left for the sleeper's first poll, as today's idle path leaves one. The
-same fiat restamp stands in the built S60 rule for a threshold batch whose
-verdicts all read live — a thread batched more often than X with all-live
-batches is never asked — and is filed outside this stage (`PLAN.md`, "A
-batch that moved no clock restamps the turnover ask").
+every serve, and since `2183b6a` the restamp is decided by
+`clock_stood_since_the_stamp` alone — what the serve reached decides nothing
+(`dev/DECISIONS.md`, "a quiet thread's turnover is the collector's to ask
+for", amended 2026-09-22). The take needs that rule and nothing more: a take
+whose roots all read live leaves the mutator a collection over P that closes
+`EmptyLane` with no commit, so the clock stands and the ask keeps counting,
+where a restamp per take would have kept a drip of one live candidate a
+second from ever reaching X and left the lane the takes fill to pressure or
+exit. A take whose roots were proposed moves the clock at the mutator's poll
+and is restamped at the next visit. A take waiting for a consent answers
+`Served::Unanswered` and feeds the ask as any unanswered serve does.
 
 A root the take read live is deferred at the close, so the take gives a
 thread that had no deferred lane one, and from then on the S60 ask turns
@@ -195,18 +202,17 @@ window over the standing roots' closure under `TRACE_BLOCK_BUDGET` — the
 closure of a median candidate on the corpus of 2026-08-25 is the heap, 381
 objects — and one collection over P at its next poll.
 
-On the collector, a term the rule's "left alone" does not make free: a
-sleeping mutator with a non-empty sub-threshold ring costs its collector a
-full `REQUEST_WAIT` of waiting, inside the round, once per interval — the
-threshold path spares the second wait by the silent mark, which the take
-refuses. Sixty-four pool threads parked with a handful of candidates each
-lengthen one round in four seconds by 128 ms; a thousand make that round
-two seconds, and every producing mutator visited later in it waits that
-long for its batch. What removes the term is the filed stage that gives a
-request a home on the record: a take could then leave its request without
-a wait, served at the checkpoints as the threshold path's are today. Until
-then the embedder's off switch is the interval at `u64::MAX` milliseconds. Then, once the take has deferred a live
-root, the S60 term: one in-line collection per X while the roots live, which
+On the collector, one `REQUEST_WAIT` per standing request and none after it:
+a sleeping mutator pays its collector 2 ms once, when the take's request
+first goes onto its byte, and then stands until it wakes. A thousand parked
+threads cost one two-second round once, where a withdrawal at each deadline
+would have cost that round every interval for as long as they sleep. The
+term the standing form adds instead is the checkpoint's pass — one load per
+standing entry per byte event on the slot, and the list holds every parked
+sub-threshold thread, so a thousand of them make a pass a thousand cold-line
+loads, of the order of 100 µs, an estimate and not a measurement. The
+building stage measures it with a parked-thread arm. Then, once the take has
+deferred a live root, the S60 term: one in-line collection per X while the roots live, which
 a thread that never reached the threshold did not pay before this rule. For
 live candidates the rule is that recurring term and nothing gained; for dead
 ones it is the memory of the standing ring returned an interval after it
@@ -232,9 +238,15 @@ collector's thread and is not the mutator's time.
 - **The mutator's poll tracing its own sub-threshold R.** Edmond's five
   lines of 2026-09-17: the mutator does not collect its roots itself except
   under memory shortage.
-- **A standing request for a take, or a silent mark set by a take's miss.**
-  A sleeping thread is left alone until the next interval; the standing
-  requests and the mark are the threshold path's.
+- **A withdrawal at the take's deadline** (the fifth form, and Edmond's
+  refusal of the morning of 2026-09-22, made when standing requests lived in
+  a sixteen-entry array on the collector's frame). The array is gone, the
+  record is where a standing request lives, and the reason the refusal
+  rested on with it; the Sage ruled the standing form the same evening on
+  Edmond's delegation. What he refused and what stands refused is the
+  no-wait form, in which a working mutator consents and withholds until the
+  collector comes round: the wait stays, and only a sleeper's request
+  stands.
 - **A take under K.** K is the collector's estimate for a producing
   mutator's batches; a take of three would double it toward the budget, and
   a K of one would take a ring of three one root per round.
