@@ -629,6 +629,7 @@ pub(crate) fn retire() {
     let _ = take_passes();
     let _ = take_releases_unserved();
     let _ = take_refused_requests();
+    read_traced_batches(false);
 }
 
 /// Take the elder's slot for the calling thread, so that a consent's wake

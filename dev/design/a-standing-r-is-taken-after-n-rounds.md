@@ -90,6 +90,10 @@ makes, returning the span and whether the front block is the tail block;
    here without a swap, the instant left as it is: the record is in the
    standing list for the checkpoints, and a failed compare-and-swap per
    round per sleeping mutator is what the standing form exists to spare.
+   That answer is given after the P-room test rather than before it, so a
+   standing record whose P has no room answers `Served::Idle` instead: the
+   round reads the two the same way (`worker::read_one_record` matches them
+   in one arm), and P's room is where every other serve stops as well.
 
 The reading is the front block's alone, so "R holds the threshold" is true
 of any ring with an entry past a front block read out, whatever the count

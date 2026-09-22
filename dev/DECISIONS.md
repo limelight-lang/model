@@ -28,8 +28,8 @@ for a release nobody makes.
 
 **What is built.** `hand_over_half` reads `is_standing()` and leaves such a
 record with the collector whose request stands on it, which replaces the
-derivation with the invariant's own test; the rfc's clause is amended to
-that in S64.6. Beside it, the invariant gains the check that catches the
+derivation with the invariant's own test; the rfc's clause was amended to
+that on 2026-09-22, at the stage's close (`rfc/dev/design/trace-token-handshake.md`, "(a)"). Beside it, the invariant gains the check that catches the
 next break: one byte on the record's hold line, the collector's slot index
 plus one while the record is linked and zero otherwise, written by that
 collector alone beside the link pair, and `debug_assert`ed by

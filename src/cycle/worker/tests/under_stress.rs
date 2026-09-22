@@ -725,23 +725,6 @@ fn a_pressure_collection_fired_by_a_waking_sleeper_ends_within_one_batch() {
     drop(held);
 }
 
-/// Take a standing ring after `interval` for the probe, and after the
-/// module's own again when the guard drops.
-struct StandingInterval;
-
-impl StandingInterval {
-    fn of(interval: Duration) -> Self {
-        testing::take_standing_after(Some(interval));
-        Self
-    }
-}
-
-impl Drop for StandingInterval {
-    fn drop(&mut self) {
-        testing::take_standing_after(None);
-    }
-}
-
 /// Candidates a sub-threshold sleeper holds: below [`SOFT_THRESHOLD`], so
 /// that no round serves it until the take, and enough that the take has
 /// something to carry.

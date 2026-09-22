@@ -1006,6 +1006,11 @@ fn take_record() -> *mut MutatorRecord {
             (*released).writer.reset();
             (*released).hold.collector.store(0, Ordering::Relaxed);
             (*released).hold.standing_since.store(0, Ordering::Relaxed);
+            // The stamp of the list the record last stood in: cleared by the
+            // unlink already, and cleared again here because a record whose
+            // life ended under a standing request is unlinked by its
+            // collector's pass and not by this path.
+            (*released).hold.standing_slot.store(0, Ordering::Relaxed);
             // The token line's request byte, which neither reset above
             // reaches: a request made against the last life's lane is stale.
             (*released).clear_turnover_request();
@@ -1100,7 +1105,7 @@ pub(crate) fn link_for_test(record: *mut MutatorRecord, slot: usize, linked: boo
     let mutator = unsafe { &*record };
     let (next, prev) = (mutator.standing_next(), mutator.standing_prev());
     if linked {
-        mutator.note_standing_slot(u8::try_from(slot).expect("a collector slot index") + 1);
+        mutator.note_standing_slot(slot as u8 + 1);
         next.store(record, Ordering::Release);
         prev.store(record, Ordering::Release);
     } else {
@@ -1189,6 +1194,7 @@ pub(crate) fn scribble_lines_for_test(record: *mut MutatorRecord) {
         (*record).reader.batch.store(7, Ordering::Relaxed);
         (*record).reader.served_at.store(7, Ordering::Relaxed);
         (*record).hold.standing_since.store(7, Ordering::Relaxed);
+        (*record).hold.standing_slot.store(7, Ordering::Relaxed);
         (*record).turnover_requested.store(1, Ordering::Relaxed);
     }
 }
@@ -1201,9 +1207,9 @@ pub(crate) fn request_a_turnover_for_test(record: *mut MutatorRecord) {
 }
 
 /// Whether `record`'s lines hold what a fresh life starts with: R's words,
-/// the batch size, the serve instant, the standing instant and the turnover
-/// request empty, the collecting word clear, and P's two words naming one
-/// block.
+/// the batch size, the serve instant, the standing instant, the standing
+/// list's stamp and the turnover request empty, the collecting word clear,
+/// and P's two words naming one block.
 #[cfg(test)]
 pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
     let reader = unsafe { &(*record).reader };
@@ -1213,6 +1219,7 @@ pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
         && reader.batch.load(Ordering::Relaxed) == 0
         && reader.served_at.load(Ordering::Relaxed) == 0
         && unsafe { (*record).hold.standing_since.load(Ordering::Relaxed) == 0 }
+        && unsafe { (*record).hold.standing_slot.load(Ordering::Relaxed) == 0 }
         && unsafe { !(*record).turnover_is_requested() }
         && writer.r_tail_block.load(Ordering::Relaxed).is_null()
         && !writer.collecting.load(Ordering::Relaxed)

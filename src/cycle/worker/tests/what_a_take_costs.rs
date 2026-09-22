@@ -388,9 +388,9 @@ fn selected(shape: Shape, arm: &str) -> bool {
     }
 }
 
-/// The middle and the smallest of the samples: the smallest is the arm with
-/// the least interference, and the two answer differently when the box is
-/// loaded (`dev/BENCHMARKS.md`, "the statistic that decides the answer").
+/// The middle of the samples, the arm sorted in place. The smallest is read
+/// beside it at the printout, the two answering differently on a loaded box
+/// (`dev/BENCHMARKS.md`, "the statistic that decides the answer").
 fn median(samples: &mut [Duration]) -> Duration {
     samples.sort();
     samples[samples.len() / 2]

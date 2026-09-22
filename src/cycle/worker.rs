@@ -91,7 +91,7 @@
 //! by the collector's own reading off the front block, and each whose R has
 //! stood non-empty below that threshold for the standing interval in force
 //! — [`STANDING_INTERVAL`] unless the embedder replaced it
-//! ([`standing_interval`]) — by [`this_rounds_reading_of_the_ring`];
+//! ([`standing_interval`]) — by [`decide_the_branch_and_stamp_the_instant`];
 //! nothing but a test ends the thread.
 //!
 //! **A wake starts a round and decides nothing else** (`rfc/dev/DECISIONS.md`,
@@ -330,6 +330,10 @@ static REFUSED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 /// most this. The slot index is what a mutator's record names its collector
 /// by ([`MutatorRecord::collector`]).
 pub(crate) const MAX_COLLECTORS: usize = 8;
+
+// The stamp a standing list puts on its records is the slot index plus one
+// in a byte ([`Standing::stamp`]).
+const _: () = assert!(MAX_COLLECTORS < u8::MAX as usize);
 
 /// The elder's slot: the collector the pressure path births, that every
 /// fresh record is named to, and that ends idle siblings.
@@ -794,9 +798,10 @@ fn birth_a_sibling(from: usize) -> Option<usize> {
 /// once ([`Standing::backlogged`]); renaming it would put the elder's
 /// standing request on a record a sibling reclaims, and the sibling's
 /// [`Standing::forget`] would splice a record out of a list that is not
-/// its own (`rfc/dev/design/trace-token-handshake.md`, "(a)": an owner is
-/// handed to a sibling only while unlinked). What it costs to leave it is
-/// one round of that mutator's work with this collector.
+/// its own (`rfc/dev/design/trace-token-handshake.md`, "The two sides": a
+/// record is renamed to another collector or freed only while unlinked).
+/// What it costs to leave it is one round of that mutator's work with this
+/// collector.
 fn hand_over_half(backlogged: &Backlogged, to: usize) {
     for record in backlogged.iter().skip(1).step_by(2) {
         let record = unsafe { &**record };
@@ -1046,7 +1051,7 @@ unsafe fn read_one_record(
 /// mutator to collect, and to `FREE` when it posted nothing. `threshold`
 /// is the count of R, read before any request, at which the mutator is
 /// served outright; below it the serve goes on only for a ring that has
-/// stood an interval ([`this_rounds_reading_of_the_ring`]), and the round
+/// stood an interval ([`decide_the_branch_and_stamp_the_instant`]), and the round
 /// passes [`SOFT_THRESHOLD`]. `now` is the round's one reading of the serve
 /// clock for this record, the instant a standing ring is measured against
 /// and the one the turnover ask reads after the serve. `slot` is the
@@ -1097,8 +1102,8 @@ pub(crate) unsafe fn serve(
 
     // Work first, and the collector's own memory, before any request — by
     // loads alone, since nothing of the mutator's may be written under no
-    // claim, and off the front block alone (`Reader::has_at_least` says
-    // why): whether R holds the threshold, P's room off its index words,
+    // claim, and off the front block alone (`Reader::front_block_reading`
+    // says why): the ring's one reading, P's room off its index words,
     // and the workspace this thread's. The figures are an idle test and not
     // the clamp: the clamp is re-read under the token. The blocks read are
     // held for the reading, since a mutator exiting meanwhile returns them
@@ -1112,14 +1117,14 @@ pub(crate) unsafe fn serve(
     let hold = HandBackOnDrop(record);
     #[cfg(test)]
     testing::between_the_take_and_the_reading();
-    let ring = unsafe { Reader::new(mutator.candidate_ring()) }.front_block_reading();
+    let reading = unsafe { Reader::new(mutator.candidate_ring()) }.front_block_reading();
     let room = unsafe { VerdictWriter::open(mutator) }.room_by_loads();
-    let reading = this_rounds_reading_of_the_ring(mutator, ring, threshold, now);
-    if reading == RingRound::Leaves || room == 0 {
+    let branch = decide_the_branch_and_stamp_the_instant(mutator, reading, threshold, now);
+    if branch == RingRound::Leaves || room == 0 {
         return Served::Idle;
     }
 
-    if reading == RingRound::Takes && mutator.is_standing() {
+    if branch == RingRound::Takes && mutator.is_standing() {
         // A take's request from an earlier round stands on the byte, and
         // the swap would only read it back: the record is in the list for
         // the checkpoints, and the instant stands as it is until the grant
@@ -1198,13 +1203,13 @@ enum RingRound {
 ///
 /// The instant is the collector's word on the record's hold line, read and
 /// written here under the reading hold ([`MutatorRecord::standing_since`]).
-fn this_rounds_reading_of_the_ring(
+fn decide_the_branch_and_stamp_the_instant(
     mutator: &MutatorRecord,
-    ring: Option<crate::ring::FrontBlockReading>,
+    reading: Option<crate::ring::FrontBlockReading>,
     threshold: usize,
     now: u64,
 ) -> RingRound {
-    let stands = ring.filter(|ring| ring.holds_at_least(1));
+    let stands = reading.filter(|reading| reading.holds_at_least(1));
     let Some(ring) = stands else {
         mutator.note_standing_since(0);
         return RingRound::Leaves;
@@ -1246,11 +1251,11 @@ unsafe fn answer_a_refused_request(
     slot: usize,
     threshold: usize,
     standing: &mut Standing,
-    reading: HandBackOnDrop,
+    hold: HandBackOnDrop,
 ) -> Served {
     if state(seen) == POSTED {
         standing.forget(mutator);
-        drop(reading);
+        drop(hold);
         return Served::Posted;
     }
 
@@ -1258,7 +1263,7 @@ unsafe fn answer_a_refused_request(
         // This collector's own request, still standing on a sleeping
         // mutator: neither a batch nor work, round after round; the record
         // stays in the list.
-        drop(reading);
+        drop(hold);
         return Served::Unanswered;
     }
 
@@ -1266,12 +1271,12 @@ unsafe fn answer_a_refused_request(
         // This collector's own grant: a standing request consented to
         // between [`serve`]'s checkpoint and its request, served here and
         // taken out of the list.
-        drop(reading);
+        drop(hold);
         return unsafe { serve_the_grant(mutator, slot, threshold, standing) };
     }
 
     standing.forget(mutator);
-    drop(reading);
+    drop(hold);
     Served::TokenHeld
 }
 
@@ -1436,7 +1441,7 @@ unsafe fn serve_the_grant(
             // under it, and one an unwind ended each opened the window a
             // take costs, and an instant left standing across any of them
             // would have the next round take again at its own cadence
-            // ([`this_rounds_reading_of_the_ring`]). Under the grant, which is
+            // ([`decide_the_branch_and_stamp_the_instant`]). Under the grant, which is
             // where the word may be written, and before the release, which
             // is what ends it.
             self.mutator.note_standing_since(serve_clock_now());
@@ -1548,13 +1553,14 @@ impl Standing {
     /// This list's stamp for a record it holds: the slot index plus one, so
     /// that zero is a record in no list ([`MutatorRecord::standing_slot`]).
     fn stamp(&self) -> u8 {
-        u8::try_from(self.slot).expect("a collector slot index") + 1
+        self.slot as u8 + 1
     }
 
     /// Keep `record`'s request standing: appended at the tail, or left where
     /// it stands when already linked — a stale entry whose byte moved on
-    /// between a pass's read and the walk's request. The stores are in the
-    /// list's order: `next` first, the word the registry reads.
+    /// between a pass's read and the walk's request. The stamp goes down
+    /// before the link, and of the link words `next` is first, the word the
+    /// registry reads.
     fn push(&mut self, record: *mut MutatorRecord) {
         let mutator = unsafe { &*record };
         if !mutator.standing_next().load(Ordering::Relaxed).is_null() {
@@ -1627,10 +1633,14 @@ impl Standing {
         mutator
             .standing_prev()
             .store(std::ptr::null_mut(), Ordering::Relaxed);
+        // The stamp before the release, as `push` stamps before the link: the
+        // registry's gate is the `next` word, so a record whose stamp is
+        // cleared after it would already be another life's, and the clear
+        // would land in a list that is not this one's.
+        mutator.note_standing_slot(0);
         mutator
             .standing_next()
             .store(std::ptr::null_mut(), Ordering::Release);
-        mutator.note_standing_slot(0);
     }
 
     /// The record after `record` in the list, or null past the last.
@@ -1747,6 +1757,14 @@ impl Standing {
 
     /// Whether a pass read a mutator of the list collecting in line since
     /// the round last asked, and forget it.
+    ///
+    /// "Since the round last asked" and not "this round": the fold is
+    /// [`read_one_record`]'s, so a round whose walk reads no record — every
+    /// record of the registry named elsewhere — carries what its opening
+    /// checkpoint read to the next round, as `batches_served` and the
+    /// backlog do. The cost is that round's timer, which lengthens where the
+    /// checkpoint's batch would have shortened it (`PLAN.md`, "What S64
+    /// named and left").
     fn take_saw_work(&mut self) -> bool {
         std::mem::replace(&mut self.saw_work, false)
     }
@@ -1864,15 +1882,20 @@ unsafe fn batch(
         }
     } else {
         // One short of the threshold, which a sub-threshold ring cannot
-        // exceed as of the reading above. Saturating for a threshold of
-        // zero, which no caller passes and which would otherwise clamp at
-        // `usize::MAX`.
+        // exceed as of the reading above. Saturating because a threshold of
+        // zero reaches this arm for a ring with no front block, where the
+        // peek takes nothing anyway, and `0 - 1` would clamp at `usize::MAX`
+        // instead.
         threshold.saturating_sub(1)
     };
     let take = verdicts.room().min(clamp);
     if take == 0 {
         return Served::Idle;
     }
+    debug_assert!(
+        threshold <= BATCH_BOUND,
+        "the copy below is bounded by the threshold as well as by K"
+    );
     arena.budget_blocks(budget_for_this_batch());
     let copy = arena.alloc(take * size_of::<usize>()) as *mut usize;
     assert!(

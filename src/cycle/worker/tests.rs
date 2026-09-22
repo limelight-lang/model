@@ -159,6 +159,26 @@ fn wait_until(mut reached: impl FnMut() -> bool, within: std::time::Duration) ->
 const A_BIRTH: std::time::Duration =
     std::time::Duration::from_secs(if cfg!(miri) { 900 } else { 10 });
 
+/// Take a standing ring after `interval` while the guard stands, and after
+/// the module's own again when it drops — the dial of two case files and of
+/// the probe, so that a case which fails between the setter and its own
+/// restore leaves no interval behind it
+/// (`worker::testing::take_standing_after`).
+struct StandingInterval;
+
+impl StandingInterval {
+    fn of(interval: std::time::Duration) -> Self {
+        testing::take_standing_after(Some(interval));
+        Self
+    }
+}
+
+impl Drop for StandingInterval {
+    fn drop(&mut self) {
+        testing::take_standing_after(None);
+    }
+}
+
 /// Birth the elder over `records`, its wait between rounds the timer's own,
 /// and wait for its first round.
 fn born_over(records: &[*mut MutatorRecord]) {

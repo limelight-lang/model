@@ -14,23 +14,6 @@ use super::*;
 use crate::cycle::testing::long_ring;
 use crate::cycle::worker::testing::HeldRequestWait;
 
-/// Take at `interval` for the case, and at the module's own again when the
-/// guard drops.
-struct StandingInterval;
-
-impl StandingInterval {
-    fn of(interval: Duration) -> Self {
-        testing::take_standing_after(Some(interval));
-        Self
-    }
-}
-
-impl Drop for StandingInterval {
-    fn drop(&mut self) {
-        testing::take_standing_after(None);
-    }
-}
-
 /// Zero for the embedder's interval when the guard drops: a case that
 /// failed between the setter and its own zero would otherwise leave every
 /// later case's rounds taking at its figure.
@@ -93,9 +76,11 @@ const THRESHOLD: usize = 4;
 /// Members of a ring that stands below the threshold.
 const STANDING_RING: usize = 2;
 
-/// One serve of `record` by the case's thread, as a round of this
-/// collector's makes it.
-fn serve_on_this_thread(record: *mut MutatorRecord, standing: &mut Standing) -> Served {
+/// One serve of `record` by the case's thread, inside the walk `standing`
+/// stands for: the count of expired waits carries from serve to serve, which
+/// is what the bound is read on. A serve that stands in for a round of its
+/// own is `the_standing_list`'s `serve_as_its_own_round`.
+fn serve_within_one_walk(record: *mut MutatorRecord, standing: &mut Standing) -> Served {
     unsafe { serve(record, SLOT, THRESHOLD, standing, serve_clock_now()) }
 }
 
@@ -115,7 +100,7 @@ fn a_ring_below_the_threshold_is_taken_an_interval_after_it_first_stood() {
     let mut standing = Standing::new(SLOT);
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle,
         "the visit that first reads the ring takes nothing"
     );
@@ -128,7 +113,7 @@ fn a_ring_below_the_threshold_is_taken_an_interval_after_it_first_stood() {
     let before_the_take = serve_clock_now();
     assert!(
         matches!(
-            serve_on_this_thread(mutator.record, &mut standing),
+            serve_within_one_walk(mutator.record, &mut standing),
             Served::Batch {
                 roots: STANDING_RING,
                 ..
@@ -168,7 +153,7 @@ fn a_ring_at_the_threshold_leaves_no_instant_to_count() {
     let record = unsafe { &*mutator.record };
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle
     );
     assert_ne!(record.standing_since(), 0, "the sub-threshold ring stands");
@@ -178,7 +163,7 @@ fn a_ring_at_the_threshold_leaves_no_instant_to_count() {
         let _ = unsafe { long_ring(arena, class.into_inner(), THRESHOLD) };
     });
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Unanswered,
         "the ring reaches the threshold and the sleeper does not answer"
     );
@@ -211,7 +196,7 @@ fn a_ring_read_empty_clears_the_instant() {
     let record = unsafe { &*mutator.record };
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle
     );
     assert_ne!(record.standing_since(), 0, "the sub-threshold ring stands");
@@ -221,7 +206,7 @@ fn a_ring_read_empty_clears_the_instant() {
         crate::gc::ll_gc_collect_cycles();
     });
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle,
         "an empty ring is an idle round"
     );
@@ -258,13 +243,13 @@ fn what_a_take_leaves_stands_its_own_interval_from_the_batch() {
     let record = unsafe { &*mutator.record };
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle
     );
     std::thread::sleep(Duration::from_millis(3));
     let before_the_take = serve_clock_now();
     assert!(matches!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Batch { .. }
     ));
     let stamped_by_the_batch = record.standing_since();
@@ -291,7 +276,7 @@ fn what_a_take_leaves_stands_its_own_interval_from_the_batch() {
     });
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle,
         "the ring that stands after the take is inside its own interval"
     );
@@ -322,12 +307,12 @@ fn a_take_already_standing_is_answered_without_a_swap() {
     let record = unsafe { &*mutator.record };
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle
     );
     std::thread::sleep(Duration::from_millis(3));
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Unanswered,
         "the take's request stands on a mutator that never reads its byte"
     );
@@ -336,7 +321,7 @@ fn a_take_already_standing_is_answered_without_a_swap() {
     let _ = testing::take_refused_requests();
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Unanswered,
         "and the next round answers the standing request"
     );
@@ -376,7 +361,7 @@ fn a_grant_that_makes_no_batch_restarts_the_instant() {
     let record = unsafe { &*mutator.record };
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle
     );
     std::thread::sleep(Duration::from_millis(3));
@@ -396,7 +381,7 @@ fn a_grant_that_makes_no_batch_restarts_the_instant() {
     }));
     let before_the_take = serve_clock_now();
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle,
         "the grant found R drained under it"
     );
@@ -461,12 +446,12 @@ fn a_take_leaves_the_batch_size_where_it_found_it() {
     assert_eq!(record.batch_size(), 0, "no batch has sized K yet");
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle
     );
     std::thread::sleep(Duration::from_millis(3));
     assert!(matches!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Batch {
             roots: STANDING_RING,
             ..
@@ -503,12 +488,12 @@ fn a_ring_that_crossed_the_threshold_under_a_standing_take_is_a_threshold_batch(
     let record = unsafe { &*mutator.record };
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle
     );
     std::thread::sleep(Duration::from_millis(3));
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Unanswered,
         "the take's request stands on the sleeping mutator"
     );
@@ -562,13 +547,13 @@ fn a_take_is_clamped_by_the_ring_and_not_by_k() {
     record.set_batch_size(1);
 
     assert_eq!(
-        serve_on_this_thread(mutator.record, &mut standing),
+        serve_within_one_walk(mutator.record, &mut standing),
         Served::Idle
     );
     std::thread::sleep(Duration::from_millis(3));
     assert!(
         matches!(
-            serve_on_this_thread(mutator.record, &mut standing),
+            serve_within_one_walk(mutator.record, &mut standing),
             Served::Batch { roots: 3, .. }
         ),
         "the ring whole, three roots, against a K of one"
@@ -608,7 +593,7 @@ fn a_round_spends_no_more_than_its_bound_of_expired_waits() {
     // The visit that reads each ring standing, and the interval after it.
     for sleeper in &sleepers {
         assert_eq!(
-            serve_on_this_thread(sleeper.record, &mut standing),
+            serve_within_one_walk(sleeper.record, &mut standing),
             Served::Idle
         );
     }
@@ -617,7 +602,7 @@ fn a_round_spends_no_more_than_its_bound_of_expired_waits() {
     let walk = std::time::Instant::now();
     for sleeper in &sleepers {
         assert_eq!(
-            serve_on_this_thread(sleeper.record, &mut standing),
+            serve_within_one_walk(sleeper.record, &mut standing),
             Served::Unanswered,
             "every request stands on a mutator that never reads its byte"
         );
@@ -665,7 +650,7 @@ fn the_bound_on_expired_waits_is_one_walks() {
     let mut standing = Standing::new(SLOT);
     for sleeper in &sleepers {
         assert_eq!(
-            serve_on_this_thread(sleeper.record, &mut standing),
+            serve_within_one_walk(sleeper.record, &mut standing),
             Served::Idle
         );
     }
@@ -673,14 +658,14 @@ fn the_bound_on_expired_waits_is_one_walks() {
 
     for sleeper in sleepers.iter().take(EXPIRED_WAITS_PER_ROUND) {
         assert_eq!(
-            serve_on_this_thread(sleeper.record, &mut standing),
+            serve_within_one_walk(sleeper.record, &mut standing),
             Served::Unanswered
         );
     }
 
     let past_the_bound = std::time::Instant::now();
     assert_eq!(
-        serve_on_this_thread(sleepers[EXPIRED_WAITS_PER_ROUND].record, &mut standing),
+        serve_within_one_walk(sleepers[EXPIRED_WAITS_PER_ROUND].record, &mut standing),
         Served::Unanswered
     );
     assert!(
@@ -691,7 +676,7 @@ fn the_bound_on_expired_waits_is_one_walks() {
     standing.start_a_round();
     let next_round = std::time::Instant::now();
     assert_eq!(
-        serve_on_this_thread(sleepers[EXPIRED_WAITS_PER_ROUND + 1].record, &mut standing),
+        serve_within_one_walk(sleepers[EXPIRED_WAITS_PER_ROUND + 1].record, &mut standing),
         Served::Unanswered
     );
     assert!(
@@ -751,7 +736,7 @@ fn the_bound_covers_the_threshold_path_too() {
 
     for sleeper in sleepers.iter().take(EXPIRED_WAITS_PER_ROUND) {
         assert_eq!(
-            serve_on_this_thread(sleeper.record, &mut standing),
+            serve_within_one_walk(sleeper.record, &mut standing),
             Served::Unanswered,
             "a ring at the threshold is requested and waited for"
         );
@@ -759,7 +744,7 @@ fn the_bound_covers_the_threshold_path_too() {
 
     let past_the_bound = std::time::Instant::now();
     assert_eq!(
-        serve_on_this_thread(sleepers[EXPIRED_WAITS_PER_ROUND].record, &mut standing),
+        serve_within_one_walk(sleepers[EXPIRED_WAITS_PER_ROUND].record, &mut standing),
         Served::Unanswered
     );
     assert!(

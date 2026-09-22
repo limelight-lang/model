@@ -112,7 +112,7 @@ impl Sleeper {
 /// one of them rather than on the first
 /// [`super::super::EXPIRED_WAITS_PER_ROUND`]. What the bound does within
 /// one walk is `the_take_after_an_interval`'s.
-fn serve_on_this_thread(record: *mut MutatorRecord, standing: &mut Standing) -> Served {
+fn serve_as_its_own_round(record: *mut MutatorRecord, standing: &mut Standing) -> Served {
     standing.start_a_round();
     unsafe { serve(record, SLOT, 1, standing, serve_clock_now()) }
 }
@@ -121,6 +121,10 @@ fn serve_on_this_thread(record: *mut MutatorRecord, standing: &mut Standing) -> 
 /// one served once the sleepers answer, one per pass, the rest released
 /// without a batch and pushed again with no wait, in the walk's order.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "twenty-one interpreted threads: killed at 50 minutes in a               process of its own, twice on 2026-09-22; the list's link,               unlink and stamp are covered under Miri by the cases above"
+)]
 fn twenty_sleepers_stand_and_are_all_served_on_waking() {
     let _g = test_guard();
     reset_lanes();
@@ -133,7 +137,7 @@ fn twenty_sleepers_stand_and_are_all_served_on_waking() {
 
     for sleeper in &sleepers {
         assert_eq!(
-            serve_on_this_thread(sleeper.record(), &mut standing),
+            serve_as_its_own_round(sleeper.record(), &mut standing),
             Served::Unanswered
         );
         assert_eq!(
@@ -152,7 +156,7 @@ fn twenty_sleepers_stand_and_are_all_served_on_waking() {
         assert_eq!(sleeper.byte(), word(COLLECTOR, SLOT));
     }
     assert_eq!(
-        serve_on_this_thread(sleepers[0].record(), &mut standing),
+        serve_as_its_own_round(sleepers[0].record(), &mut standing),
         Served::Idle,
         "the pass served this one, whose R its own reading then found empty"
     );
@@ -171,7 +175,7 @@ fn twenty_sleepers_stand_and_are_all_served_on_waking() {
     // list's order is the walk's and not the release's.
     for sleeper in sleepers[1..].iter().rev() {
         assert_eq!(
-            serve_on_this_thread(sleeper.record(), &mut standing),
+            serve_as_its_own_round(sleeper.record(), &mut standing),
             Served::Unanswered
         );
         assert!(!unsafe { &*sleeper.record() }.was_released_unserved());
@@ -192,7 +196,7 @@ fn twenty_sleepers_stand_and_are_all_served_on_waking() {
         }
         let standing_before = standing.standing_for_test();
         for sleeper in &sleepers {
-            let _ = serve_on_this_thread(sleeper.record(), &mut standing);
+            let _ = serve_as_its_own_round(sleeper.record(), &mut standing);
         }
         let posted: Vec<usize> = sleepers
             .iter()
@@ -236,7 +240,7 @@ fn a_record_that_exited_under_a_standing_request_is_handed_out_after_the_pass() 
     let record = sleeper.record();
     let mut standing = Standing::new(SLOT);
     assert_eq!(
-        serve_on_this_thread(record, &mut standing),
+        serve_as_its_own_round(record, &mut standing),
         Served::Unanswered
     );
     assert!(sleeper.is_standing());
@@ -257,7 +261,7 @@ fn a_record_that_exited_under_a_standing_request_is_handed_out_after_the_pass() 
     // passes and drops the record that moved on.
     let _ = testing::take_passes();
     assert_eq!(
-        serve_on_this_thread(super::record(), &mut standing),
+        serve_as_its_own_round(super::record(), &mut standing),
         Served::Idle,
         "this thread's own R is empty"
     );
@@ -301,7 +305,7 @@ fn a_refused_request_unlinks_before_the_readings_hold_goes() {
     }));
 
     assert_eq!(
-        serve_on_this_thread(record, &mut standing),
+        serve_as_its_own_round(record, &mut standing),
         Served::TokenHeld
     );
     assert!(
@@ -334,7 +338,7 @@ fn a_consent_between_the_reading_and_the_request_is_served_with_the_record_unlin
     let record = sleeper.record();
     let mut standing = Standing::new(SLOT);
     assert_eq!(
-        serve_on_this_thread(record, &mut standing),
+        serve_as_its_own_round(record, &mut standing),
         Served::Unanswered
     );
     assert!(sleeper.is_standing());
@@ -353,7 +357,7 @@ fn a_consent_between_the_reading_and_the_request_is_served_with_the_record_unlin
         consented.recv().expect("the sleeper consented");
     }));
     let _ = testing::take_passes();
-    let served = serve_on_this_thread(record, &mut standing);
+    let served = serve_as_its_own_round(record, &mut standing);
     assert!(
         matches!(served, Served::Batch { .. }),
         "the grant read back at the request was served: {served:?}"
@@ -383,7 +387,7 @@ fn a_checkpoint_passes_once_per_byte_event_and_not_per_serve() {
     let sleeper = Sleeper::start(class);
     let mut standing = Standing::new(SLOT);
     assert_eq!(
-        serve_on_this_thread(sleeper.record(), &mut standing),
+        serve_as_its_own_round(sleeper.record(), &mut standing),
         Served::Unanswered
     );
     let _ = testing::take_passes();
@@ -391,7 +395,7 @@ fn a_checkpoint_passes_once_per_byte_event_and_not_per_serve() {
 
     for _ in 0..5 {
         assert_eq!(
-            serve_on_this_thread(super::record(), &mut standing),
+            serve_as_its_own_round(super::record(), &mut standing),
             Served::Idle
         );
     }
@@ -400,7 +404,7 @@ fn a_checkpoint_passes_once_per_byte_event_and_not_per_serve() {
 
     sleeper.read_the_byte();
     assert_eq!(
-        serve_on_this_thread(super::record(), &mut standing),
+        serve_as_its_own_round(super::record(), &mut standing),
         Served::Idle
     );
     assert_eq!(testing::take_passes(), 1, "the consent admitted one pass");
@@ -536,7 +540,7 @@ fn a_checkpoints_batch_carries_its_backlog_to_the_round() {
     let mut standing = Standing::new(SLOT);
 
     assert_eq!(
-        serve_on_this_thread(sleeper.record(), &mut standing),
+        serve_as_its_own_round(sleeper.record(), &mut standing),
         Served::Unanswered
     );
     sleeper.read_the_byte();
@@ -573,7 +577,7 @@ fn a_pass_reads_a_refusal_of_a_standing_request_as_work() {
     let sleeper = Sleeper::start(class);
     let mut standing = Standing::new(SLOT);
     assert_eq!(
-        serve_on_this_thread(sleeper.record(), &mut standing),
+        serve_as_its_own_round(sleeper.record(), &mut standing),
         Served::Unanswered
     );
     assert!(!standing.saw_work, "nothing read yet");
@@ -610,6 +614,10 @@ fn a_pass_reads_a_refusal_of_a_standing_request_as_work() {
 fn a_record_stands_in_the_rounds_backlog_once() {
     let _g = test_guard();
     let mut backlogged = Backlogged::default();
+    // Addresses rather than records: `Backlogged` compares its entries and
+    // never reads through one. A load added to `push` or `drain_into` makes
+    // this case undefined behaviour rather than a failure, so it gets a
+    // record of its own that day.
     let first = 1 as *mut MutatorRecord;
     let second = 2 as *mut MutatorRecord;
     backlogged.push(first);
@@ -632,8 +640,8 @@ fn a_record_stands_in_the_rounds_backlog_once() {
 /// request standing on it, and both hold at the round's end. Renaming it
 /// then would leave the elder's request on a record a sibling reclaims,
 /// and the sibling's own list would splice a record out of the elder's
-/// (`rfc/dev/design/trace-token-handshake.md`, "(a)": an owner is handed to
-/// a sibling only while unlinked).
+/// (`rfc/dev/design/trace-token-handshake.md`, "The two sides": a record is
+/// renamed to another collector or freed only while unlinked).
 #[test]
 fn the_handover_leaves_a_record_a_request_stands_on() {
     let _g = test_guard();
@@ -645,7 +653,7 @@ fn the_handover_leaves_a_record_a_request_stands_on() {
 
     // The elder's request stands on the first record and on no other.
     assert_eq!(
-        serve_on_this_thread(standing_on.record(), &mut standing),
+        serve_as_its_own_round(standing_on.record(), &mut standing),
         Served::Unanswered
     );
     assert!(unsafe { &*standing_on.record() }.is_standing());
@@ -741,7 +749,7 @@ fn a_round_reads_the_work_a_checkpoint_saw() {
     // The request the round's checkpoint will read back stands on the
     // mutator that then takes its own token.
     assert_eq!(
-        serve_on_this_thread(collecting.record(), &mut standing),
+        serve_as_its_own_round(collecting.record(), &mut standing),
         Served::Unanswered
     );
     let (let_go, wait_here) = std::sync::mpsc::channel::<()>();
@@ -796,7 +804,7 @@ fn a_round_can_carry_a_backlog_for_a_record_it_then_leaves_linked() {
     let mut standing = Standing::new(SLOT);
 
     assert_eq!(
-        serve_on_this_thread(sleeper.record(), &mut standing),
+        serve_as_its_own_round(sleeper.record(), &mut standing),
         Served::Unanswered
     );
     sleeper.read_the_byte();

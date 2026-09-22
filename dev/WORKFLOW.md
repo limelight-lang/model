@@ -455,11 +455,13 @@ contract genuinely moved. Those cannot be told apart silently — ask.
 
 The one sanctioned exception is an environment that physically cannot
 express what the test checks, marked narrowly and still running
-everywhere else: `#[cfg_attr(miri, ignore = "...")]` stands on 50 tests
-across 23 files as of 2026-09-18, counted by `cfg_attr(\s*miri,` over `src/`.
+everywhere else: `#[cfg_attr(miri, ignore = "...")]` stands on 52 tests
+across 25 files as of 2026-09-22, counted by `cfg_attr(\s*miri,` over `src/`.
 The classes the rule sanctions are a dispatch-table comparison of function
-identity, which Miri does not model, and a test that reads a source file or
-spawns a child process, which its isolation refuses; each attribute states its
+identity, which Miri does not model, a test that reads a source file or
+spawns a child process, which its isolation refuses, and a case whose width
+Miri cannot afford — `the_standing_list::twenty_sleepers_stand_and_are_all_served_on_waking`,
+twenty-one interpreted threads, killed at 50 minutes twice on 2026-09-22; each attribute states its
 own reason in place. Assertions stay untouched. A case whose body names an
 item that exists on no Miri build — the collector's stack and its refusal
 injections, `cfg(not(miri))` in `cycle::worker::birth` — is compiled out with

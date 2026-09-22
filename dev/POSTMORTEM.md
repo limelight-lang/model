@@ -7,6 +7,58 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-22 — a safety property derived from one mechanism, and a second mechanism that reached the same state
+
+**What happened.** The standing list rests on one rule: a record is renamed
+to another collector, or handed to a new thread, only while it is unlinked.
+For the handover to a sibling the rule was not checked — it was *derived*:
+`hand_over_half` moves the records the round batched, a batch unlinks the
+record it serves, so a handed record is unlinked by construction. The
+derivation was written down three times: in the `rfc`'s handshake, "(a)"; in
+this crate's `dev/design/the-standing-request-lives-on-the-record.md`; and
+beside the record's link pair.
+
+S64.4 then made a checkpoint's batch report its backlog to the round
+(`dev/DECISIONS.md`, "a checkpoint carries its batch's backlog and a refusal
+it read out to the round"). From that commit a record can stand in the
+round's backlog and be linked at the same time: the checkpoint's batch
+unlinks it, the walk reaches it later in the same round and leaves a fresh
+request standing on it. `hand_over_half` renamed whatever the round had
+remembered, so the elder's standing request rode to a sibling, and the
+sibling's own `Standing::forget` would splice that record out of a list that
+was not its own — cutting or joining two lists where the record is an end.
+The stage's Critic found it by reading the derivation against the new
+mechanism; no test failed, and none could, since the state needs three busy
+mutators and a birth. Repaired in `5083784`: the handover reads
+`is_standing()` and leaves such a record where it is, at one more round of
+that mutator's work with the elder.
+
+**Root cause.** The property was true of the state the mechanism of the day
+could produce, and it was recorded as a property of the *mechanism* — "the
+handover moves batched records, which are unlinked" — rather than of the
+state — "a record is renamed only while unlinked, and the link is what says
+so". A derivation phrased that way has no trigger: the new mechanism was
+built by its own step, with its own cases and its own ruling, and nothing in
+it named the handover.
+
+**Why it was not caught.** Three copies of the derivation and none of them a
+check. The suite has no case with two collectors and a record linked at a
+round's end, because the birth needs two backlogged mutators and the
+handover needs a birth; and the take's no-swap arm, built one step later,
+made the state quieter still — a linked record is answered without a swap,
+so the walk that used to recover such a grant no longer reads it.
+
+**What now.** The invariant is stated as a property of the state and the
+link is what says so (`dev/DECISIONS.md`, "a record is renamed only while
+unlinked, and the list's slot stamp is what says so"; the stamp is the
+debug-build check that a record stands in one list only). The three copies
+were repaired to the state's wording, the `rfc`'s "(a)" last, on 2026-09-22.
+The general rule this leaves: **a safety property derived from what one
+mechanism can produce is re-derived when another mechanism reaches the same
+state, and the place to look is every copy of the derivation** — a copy that
+names a mechanism is where the rot starts, because the mechanism it names is
+not the one that changed.
+
 ## 2026-09-22 — a wake inside the other mutator's tick meets a backlog of one
 
 **What happened.**

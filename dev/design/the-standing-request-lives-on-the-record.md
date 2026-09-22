@@ -63,8 +63,11 @@ start waits; the skipped record stays on the free list until its
 collector's next pass drops it — one round at most, since the exit's take
 from `REQUESTED|c` is a refusal that wakes slot c. The invariant, stated at
 the field: a record's link words are written by the collector its record
-names, and a record is renamed only while unlinked — `hand_over_half` moves
-only batched records, which are unlinked before their batch; `reclaims`
+names, and a record is renamed only while unlinked — `hand_over_half` reads
+`is_standing()` and skips a record a request stands on, the carried backlog
+having made a record both batched and linked at a round's end
+(`dev/DECISIONS.md`, "a record is renamed only while unlinked, and the
+list's slot stamp is what says so"); `reclaims`
 takes only a slot reading `UNBORN`, stored after that thread's `Standing`
 dropped; the registry renames only what the gate saw unlinked.
 

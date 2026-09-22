@@ -16,7 +16,22 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-22 · Active: S64. S63 went on 2026-09-22, the day after
+Updated: 2026-09-22 · Active: none — the next stage is Edmond's to name.
+S64 went on 2026-09-22, the day its design was accepted: a mutator whose
+candidate ring stands non-empty below the serve threshold has it taken as an
+ordinary batch once `STANDING_INTERVAL` of the collector's own clock has
+passed, an unanswered take leaves its request standing on the record, the
+batch's form is read off the ring under the grant, and a round's spending on
+consent waits that expire is capped (`dev/DECISIONS.md`, the four entries of
+2026-09-22; `dev/design/a-standing-r-is-taken-after-n-rounds.md`; the `rfc`
+states the take at `rfc/model/gc/rc-cycle.md`, "Signals"). Its six steps closed with their
+Critics, three Sage rulings and the Code Reviewer over the stage, whose one
+defect — the handover renaming a record a standing request was linked on —
+is `dev/POSTMORTEM.md`, "a safety property derived from one mechanism, and a
+second mechanism that reached the same state"; the figures are
+`dev/BENCHMARKS.md`, "what sleeping sub-threshold threads cost a round",
+"what a take costs by the shape of its roots" and "a second producer behind
+the sleeping threads". S63 went on 2026-09-22, the day after
 its design: the collector's standing requests live on the records as a list
 with no capacity, read at a checkpoint only after a byte event and serving
 one grant per pass, the silent mark gone (`dev/DECISIONS.md`, "the standing
@@ -142,289 +157,6 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   failure is reportable, would remove it if `pthread_setspecific` allocates
   nothing per thread — which nobody has read, on any target. Named when the
   reserve's first touch was decided on 2026-08-29 and priced nowhere since.
-## S64 — A standing R is taken after an interval  [in progress]
-
-Goal: a mutator whose candidate ring stands non-empty below the serve
-threshold has it taken as an ordinary batch once an interval of the
-collector's own has passed, and no round spends more than a bounded number
-of consent waits on mutators that do not answer — the algorithm of
-`dev/design/a-standing-r-is-taken-after-n-rounds.md`, sixth form, with the
-two rulings of 2026-09-22 in `dev/DECISIONS.md`: "a take's unanswered
-request stands on the record, and the ring under the token decides the
-batch's form" and "the consent wait stays on both paths, and a round's
-spending on expired waits is capped", both accepted by Edmond.
-Done when: a sub-threshold ring standing non-empty for `STANDING_INTERVAL`
-is batched by the round, the embedder's dial sets the interval, an
-unanswered take leaves its request standing and is served at a checkpoint,
-the batch's form is read off the ring under the grant, a round's expired
-waits are capped, the parked-thread arm is measured into
-`dev/BENCHMARKS.md`, and the `rfc` states the take.
-Notes: the mutator's side changes in nothing. `wait_for_consent`,
-`answer_the_withdrawal`, `serve_the_grant`, `answer_a_refused_request` and
-`Standing::checkpoint` are the built ones and carry no kind of request: what
-a take does differently lives at branch 3 of the round and inside `batch`.
-Every step is a cycle-GC step: the baseline recorded, a red test seen, the
-Critic over the repair.
-
-- [x] S64.1 The word and the interval dial
-      done: `standing_since` stands on the hold line and is cleared where
-        the registry clears that line at a re-take, the layout asserts
-        standing; `STANDING_INTERVAL` is 4 s, `ll_gc_set_standing_interval`
-        sets it and zero restores the crate's, as `ll_gc_set_quiet_interval`
-        does; a case reads the dial from the ABI and one from the harness
-        override
-      tier: T2 · role: Critic
-      baseline: 1124 tests listed, the record 256 bytes with the hold line
-        holding two of its 64, the embedder's dials `ll_gc_set_collector_cap`
-        and `ll_gc_set_quiet_interval`; red seen at
-        `a_retaken_record_starts_with_fresh_lines`, which failed until the
-        clear in `take_record` landed. Three mutations redden the two new
-        cases: the embedder's word ignored, the override's arm deleted, the
-        ABI reading its argument as nanoseconds.
-      Critic 2026-09-22: seven findings, six accepted and applied. The ABI's
-        doc promised a reader the round has not got — the sentence names the
-        figure instead. The field's contract listed a batched ring among the
-        zeros while the same paragraph stamps the word at a batch's end — the
-        zero list is now a ring read empty, one at the threshold, and a
-        record just handed out. The contract named no window for the word,
-        and the design's shared clock reading points the next step at the
-        turnover ask, which runs under neither the reading hold nor the grant
-        — the contract now names both as the only places it is touched.
-        `take_standing_after(Some(ZERO))` read as no override — a zero is
-        stored as one nanosecond. The design document, the ruling and this
-        plan's header still called the algorithm unbuilt with no stage — all
-        three amended. `scribble_lines_for_test`'s new sentence called the
-        `collector` word the exit's and the registry's — dropped; the clear
-        of that word at a re-take is read by no case and stays uncovered,
-        since a scribbled slot index is repaired by a live round rather than
-        by the take. Refused, with the reason: `size_of::<HoldLine>() == 64`
-        pins no offset and holds by `repr(align(64))` alone — kept for the
-        name a failure gets, and the step claims the line's size and nothing
-        more.
-- [x] S64.2 The round's third branch
-      done: `Reader::front_block_reading` answers the span and whether the
-        front block is the tail block in the loads `has_at_least` already
-        makes; the round's test is the three branches — at the threshold as
-        today with the word zeroed, empty with the word zeroed, below the
-        threshold taking the clock's reading or continuing to the take once
-        the interval has passed; `standing_since` restarts at the end of
-        every batch, and a case shows the write-back of a take not taken
-        again at the round's cadence; one case reaches the take by running
-        rounds against an override of a millisecond, so that a round reading
-        `STANDING_INTERVAL` past the three-level dial is red rather than
-        green (the Critic of S64.1)
-      tier: T2 · role: Critic
-      baseline: 1126 tests listed; a sub-threshold ring answered
-        `Served::Idle` at every round, one `has_at_least` pass per record
-        under the reading hold and one clock reading per record in the
-        turnover ask. Red seen at
-        `a_ring_below_the_threshold_is_taken_an_interval_after_it_first_stood`,
-        which stood at `Idle` until the branch landed. Seven mutations
-        redden the seven new cases: the round reading `STANDING_INTERVAL`
-        past the dial, the restamp deleted, branch 1's clear deleted,
-        branch 2's clear deleted, the grant's restamp deleted, the ask
-        reading a clock of its own, and the dial's two arms.
-      Critic 2026-09-22: seven findings, six accepted and applied, one
-        accepted as a document repair. The restamp hung on a batch that
-        posted, so a grant whose workspace the pool refused, one whose peek
-        found R drained between the reading and the request, and one an
-        unwind ended each left the instant overdue and had the next round
-        take again at its own cadence — the stamp moved into the grant's
-        release guard, the design's bullet amended to the release, and a
-        case takes a grant over a ring drained under it. The design's "a
-        record already linked answers without a swap" was not built, which
-        cost a failed compare-and-swap per sleeping mutator per round — the
-        take's branch answers `Served::Unanswered` for a linked record, the
-        threshold path keeps its swap for the grant a checkpoint may have
-        left, and a case reads the harness's count of refused requests. The
-        word's contract said it is read under the hold or the grant "and
-        nowhere else" while the new cases read it off both — the contract
-        names the case standing in for the collector. The write-back case
-        drove a mutator whose own polls could drain R under the reading it
-        asserts on — the disposition runs by hand and the case is named for
-        what it shows. Nothing ran a real round, so the clock reading the
-        round shares between the take and the turnover ask had no case — a
-        case runs `round` over a confined record and reads the two words
-        equal. `has_at_least`'s over-read, which answers true for any count
-        when the front block is not the tail block, makes branch 1 serve a
-        mutator holding one candidate past a front block read out: today's
-        behaviour, not repairable without following a link the pre-claim
-        reading may not follow, and written into the design as the
-        exception to the threshold's sparing. Minor and applied: a
-        131-column doc line rewrapped, the claim that only the round serves
-        a sub-threshold mutator corrected for the checkpoint,
-        `serve_clock_now` private again behind a test-only wrapper,
-        `FrontBlockReading`'s fields private with `holds_at_least` the one
-        question, and the first case gives its memory back as the others
-        do.
-- [x] S64.3 The batch's form under the grant
-      done: `batch` reads `has_at_least(threshold)` under the grant before
-        the peek — at or above it today's batch, below it the ring whole
-        with K untouched and `size_the_next_batch` not called; a case takes
-        a sub-threshold ring whole with K unmoved, and one serves as a
-        threshold batch a ring that crossed the threshold while its owner
-        slept
-      tier: T2 · role: Critic → Sage
-      baseline: 1133 tests listed; every batch clamped by K and every batch
-        sizing K, a take included. Red seen at
-        `a_take_leaves_the_batch_size_where_it_found_it`, which read K at
-        128 where the take must leave it at zero. Four mutations redden the
-        new cases: `size_the_next_batch` called unconditionally, the
-        threshold reading forced false, the take's clamp cut to one root,
-        and the take's clamp put back on K.
-      Critic 2026-09-22: six findings. Accepted and applied: no case pinned
-        the clamp, both takes reading a K of zero where the two branches
-        compute the same figure — a case sets K to one over a ring of three
-        and reads three roots, and the mutation that puts the clamp back on
-        K reddens it. The exactness claim named `MUTATOR` as what keeps a
-        path off R, which is not what excludes the compaction behind a
-        `POSTED` byte and is not the state the reading is made in — the
-        paragraph names the grant and the mutator's withholding instead.
-        "The ring whole", "the clamp its own count" and "reads K neither
-        way" each claimed more than the code did — the clamp is named as
-        one short of the threshold, P's room is named as what can leave a
-        part of the ring standing, and K is now read in the threshold
-        branch alone. A take can answer a backlog when the mutator fills R
-        during the trace, which the design said never happens — the design
-        names the exception and what it costs, since the thread is then
-        producing at the rate a sibling exists for. The assert's message and
-        the `saturating_sub` guard say what they mean. Escalated: the take
-        is clamped at the threshold rather than at K and sizes K neither
-        way, so a mutator whose deep graph has driven K down has up to 63
-        roots taken at once and every one returned `Unwalked` — a price no
-        ruling names.
-      Sage 2026-09-22: the take stands as built. `Final`. The budget is
-        spent by the union of the roots' closures rather than by their
-        number, so on the one measured shape a take of 63 roots costs the
-        rows one root costs; where a single closure meets the budget K is
-        one already and every threshold batch is unwalked too. What an
-        unwalked take costs over a completed one is the live roots' closures
-        traced at this poll instead of at the next X, never a second trace.
-        A bounded span is K's rule under another name and is refused by
-        Edmond's own reason; a split batch would reopen "no colour of an
-        abandoned trace is a verdict". The ruling is in `dev/DECISIONS.md`,
-        "a take's trace is budgeted as one batch's, and an unwalked take
-        shifts the mutator's trace rather than adding one", and it obliges
-        the disjoint-closure arm of S64.5. No premise of Edmond's moves.
-- [x] S64.4 The cap on a round's expired waits
-      done: a counter on `Standing`, reset at the round's start, counts the
-        waits of this walk that expired unanswered, and past
-        `EXPIRED_WAITS_PER_ROUND` every later request that lands is left
-        standing at once through the arm a released-unserved record takes; a
-        case over `EXPIRED_WAITS_PER_ROUND + 1` sleepers at a 300 ms wait
-        ends inside `(EXPIRED_WAITS_PER_ROUND + 0.5) × 300 ms` with every
-        request standing; the checkpoint carries its batch's backlog and a
-        refusal it read out to the round, which past the cap is where both
-        readings are made
-      tier: T2 · role: Critic → Sage
-      baseline: 1138 tests listed; a walk waited `REQUEST_WAIT` for every
-        request it landed, and `Round.backlogged` and `Round.saw_work` were
-        the walk's own readings alone. Red seen at
-        `a_round_spends_no_more_than_its_bound_of_expired_waits`, whose
-        three sleepers cost 900 ms against its 750 ms bound. Eight
-        mutations redden the new cases: the bound never reached, the
-        expired wait uncounted, the round's reset deleted, the gate moved
-        inside the take's branch, the checkpoint's backlog push deleted,
-        the round's drain deleted, the pass's refusal reading deleted, and
-        the backlog's dedup deleted.
-      Critic 2026-09-22: six findings. Three accepted and escalated, three
-        accepted and applied. Applied: `the_standing_list`'s sweep of
-        twenty sleepers silently lost its wait on eighteen of them, the cap
-        firing after the second — each of that module's serves now starts
-        its own walk, which is what one serve there stands in for, and the
-        case reads the wait on all twenty again; every case of the cap drove
-        the take's branch, so the gate could have moved inside it unnoticed
-        — a case at the threshold, which no interval gates, reads the bound
-        too; and the comments claimed a bound on the round's length that the
-        counter does not have. Escalated: past the cap the round reads no
-        backlog and births no sibling, it reads no refusal and ends a busy
-        sibling, and a wait the collector spent on a stranger's grant is
-        charged to the mutator.
-      Sage 2026-09-22: `Final`. The checkpoint carries both readings out —
-        `Standing::backlogged` filled from the grant's `Batch { backlog }`
-        and `Standing::saw_work` from a pass that reads `MUTATOR`, both
-        folded into the round at `read_one_record`, with `Backlogged::push`
-        made idempotent because one round can now read a mutator's backlog
-        twice. The charge for a wait spent on a stranger's grant stands: the
-        deadline is on the mutator's cadence, and exempting it would disarm
-        the cap on the load it exists for. A time budget in place of the
-        count is refused as the no-wait form for the tail of the walk. The
-        bound's claim is amended to what the counter has. The ruling is
-        `dev/DECISIONS.md`, "a checkpoint carries its batch's backlog and a
-        refusal it read out to the round"; it retires the fourth reason of
-        the cap's own ruling, which stands on the other three, and moves no
-        premise of Edmond's.
-- [x] S64.5 What the take and the cap cost
-      done: the parked-thread arm — 64 and 1,000 parked sub-threshold
-        threads beside one active mutator, the active mutator's batch
-        interval and the round's length read against their number, the null
-        arm the cap at `usize::MAX`, the active mutator behind the sleeping
-        threads in carve order with its released-unserved count and whether
-        a second active mutator behind them births a sibling — the cost of
-        one take on the corpus
-        named by the design's "Cost", and the disjoint-closure arm the
-        Sage's ruling of 2026-09-22 obliges: 63 roots each the root of a
-        one-per-block ring, the take's `complete`, and the mutator's
-        collection over P after it — roots traced, blocks drawn,
-        instructions, wall — against the same ring collected in line at X,
-        which is the floor; a figure above that floor goes into the comments
-        of `TRACE_BLOCK_BUDGET` and `STANDING_INTERVAL` as the first
-        measured bound on either, and reopens nothing. The take's own cost is read
-        on the test heap's corpus shape, the 381-member component, no corpus
-        driver being on the way (Edmond, 2026-09-19, and his word of
-        2026-09-22 on this clause). All of it in `dev/BENCHMARKS.md`;
-        `EXPIRED_WAITS_PER_ROUND` either changes or is recorded as kept with
-        the readings
-      tier: T2 · role: —
-      handoff: two probes, both in `dev/BENCHMARKS.md` — "what a take costs by
-        the shape of its roots" and "a second producer behind the sleeping
-        threads". The take's cost is read in
-        `cycle::worker::tests::what_a_take_costs`, three arms per shape
-        (take, floor, control) with the collector retired before the timed
-        collection, and its hardware arm is `dev/tools/take_perf.sh`; what the
-        collector's own trace did is read at the seam in `batch` through
-        `worker::testing::take_traced_batches`, which records nothing until a
-        case arms it. The disjoint take stops at the budget's eighth block and
-        costs the mutator 0.32 % more instructions than the in-line collection
-        of the same rings, inside the null pair's spread; the overlapping take
-        completes in 16 µs and costs the mutator 34,500 instructions, the round
-        trip over 63 verdicts. Both constants keep their figures and carry the
-        bound in their comments; `EXPIRED_WAITS_PER_ROUND` keeps 2, the second
-        producer's sibling born in the same two or three rounds capped or not.
-- [ ] S64.6 The rfc, the maps and the stage's review
-      done: the `rfc` states the take where it states the signals and the
-        threshold, and its handshake's "(a)" says the handover leaves a
-        linked record with the collector whose request stands on it;
-        `dev/ARCHITECTURE.md` and `dev/INDEX.md` name the branch; the Miri
-        slice of the S63–S64 block is run and recorded; the Code Reviewer
-        over the stage (rule 23.1.3), its findings applied
-      tier: T1 · role: Code Reviewer
-      Critic 2026-09-22, over the whole stage on Edmond's request, the
-        stronger model: one defect and four claim repairs. The defect is
-        the handover renaming a record the elder's request stands on, which
-        the carried backlog made reachable — repaired in `5083784`, its
-        case seen failing first, and the Sage ruled on the form. The claims:
-        the batch's form is read off the ring and the request's origin is
-        not asked to agree with it, a mutator collecting in line between the
-        round's pre-claim reading and its request being free to drain R;
-        `saw_work` is a mutator holding its own token, not one at the
-        threshold; the clamp is one entry short of the threshold; the module
-        doc names the interval in force rather than the crate's constant.
-        The benchmark entry read spawns per arm instead of inferring them,
-        and both probes were re-run.
-      Sage 2026-09-22: `Final`, four points. The skip is the right form and
-        the stage owes the list's slot stamp with its two refusals — built
-        (`dev/DECISIONS.md`, "a record is renamed only while unlinked, and
-        the list's slot stamp is what says so"). One round-level case is
-        owed and the `saw_work` fold's mutation is to be run — the mutation
-        left the suite green, so both cases were built:
-        `a_round_can_carry_a_backlog_for_a_record_it_then_leaves_linked`
-        and `a_round_reads_the_work_a_checkpoint_saw`. The Miri slice of the
-        S63–S64 block is named test by test and runs on a frozen tree after
-        the two cases, about 36 tests in four processes, an hour budgeted.
-        S64.5 closes with two probes, and the design's "per take on the
-        corpus" clause is Edmond's to reword, no corpus driver being on the
-        way (his ruling of 2026-09-19).
 
 ## Cross-cutting (every stage)
 
@@ -670,6 +402,25 @@ live: `archive/pre-rc-cycle`").
   done: one red test reaches the free from a second thread inside the reset,
   or a demonstration that the shape is unreachable is recorded in
   `dev/DECISIONS.md`.
+- [ ] **The twenty-sleeper case has no Miri run, 2026-09-22.**
+  `the_standing_list::twenty_sleepers_stand_and_are_all_served_on_waking` was
+  killed at 50 minutes in a process of its own, twice on the day it was
+  written, and now carries `cfg_attr(miri, ignore)` with that reason. What it
+  covers over the other thirteen cases of its file is the list at twenty
+  entries — the order of service across passes — and that is the part no Miri
+  run has read. Either the case takes a width under `cfg(miri)`, four
+  sleepers standing in for twenty, or the sleepers stop being threads: a
+  stand-in that moves the byte without a thread would let Miri run the whole
+  order. Neither is priced.
+- [ ] **What S64 named and left, 2026-09-22.** A round whose walk reads no
+  record carries its opening checkpoint's readings — `batches_served`,
+  `saw_work` and the backlog — to the next round, since the fold is
+  `read_one_record`'s and nothing drains them after `for_each_record`. The
+  round reports no batch and its timer lengthens where the checkpoint's batch
+  would have shortened it; `batches_served` has had the shape since S63 and
+  S64 put two more fields in it. A drain after the walk closes all three and
+  needs a case over a collector whose records are all named elsewhere. Found
+  by the stage's Code Reviewer, 2026-09-22.
 - [ ] **What S64.5 named and left, 2026-09-22.** Three arms the take's
   measurement did not build. A pool that sleeps and wakes, where every round
   clears and re-makes the standing requests, is the population

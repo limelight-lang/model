@@ -399,7 +399,15 @@ block of R, on an owner's consent to a request it left standing, on a
 pressure collection, or on its timer. A round walks the records named to it
 (`mutator_record`) and, for an owner whose R holds the threshold or more and
 whose byte reads `FREE`, requests the token — `REQUESTED|s` — and waits a
-bound for the owner's consent, given at its next poll or slot free; a
+bound for the owner's consent, given at its next poll or slot free. An owner
+whose R reads non-empty and below the threshold is left alone until it has
+stood so for `STANDING_INTERVAL` of the collector's own clock, the instant
+of the round that first read it that way kept in `standing_since` on the
+record's hold line; the round after the interval takes the ring by the same
+path, clamped to one entry short of the threshold
+(`dev/design/a-standing-r-is-taken-after-n-rounds.md`). One walk begins at
+most `EXPIRED_WAITS_PER_ROUND` waits that expire, and past that bound every
+further request it lands is left standing at once; a
 collecting owner's byte reads `MUTATOR` and the request's swap fails on it
 (path 5). A request the owner did not answer inside the bound stays on the
 byte, and the record stands in the collector's standing list, threaded
