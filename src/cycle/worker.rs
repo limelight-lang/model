@@ -1679,6 +1679,11 @@ impl Standing {
     /// Whether this walk has spent its bound of expired waits, so that a
     /// request landing now is left standing without one.
     fn spent_its_waits(&self) -> bool {
+        #[cfg(test)]
+        if let Some(cap) = testing::expired_waits_cap() {
+            return self.expired_waits >= cap;
+        }
+
         self.expired_waits >= EXPIRED_WAITS_PER_ROUND
     }
 

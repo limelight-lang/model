@@ -8,6 +8,76 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-22 — S64.5 what sleeping sub-threshold threads cost a round: the cap holds its tail at 4.5 ms where 1,000 of them cost 2.1 s
+
+The take of a standing ring (`dev/design/a-standing-r-is-taken-after-n-rounds.md`)
+requests every sub-threshold mutator whose ring has stood an interval, and a
+mutator that does not answer inside `REQUEST_WAIT` costs the walk that wait.
+The bound on a walk's expired waits, `EXPIRED_WAITS_PER_ROUND`, is what keeps
+a population of sleeping threads from paying that wait each
+(`dev/DECISIONS.md`, "the consent wait stays on both paths, and a round's
+spending on expired waits is capped"). Two probes of
+`worker/tests/under_stress.rs`, each arm run with the bound in force and
+again with it lifted to `usize::MAX`, which is the round before the cap.
+
+**Machine:** the dev box, WSL2, shared with interactive work; load average
+0.76–1.11 at the runs' start. **Build:** release, one probe at a time,
+`--ignored --test-threads=1`. **Tree:** `4661fa4` plus the two probes.
+**Dials:** the crate's request wait (2 ms), the standing interval overridden
+to 50 ms so that the takes fall inside the arm, the sleepers' rings three
+candidates each, the active mutator's rings 64.
+
+*The round, and an active mutator ahead of the sleepers in carve order*
+(`what_sleeping_sub_threshold_threads_cost_the_round_and_the_active_mutator`):
+its batch interval is the median of 20 samples after 4 of warm-up, the round
+the median and the maximum of the arm's 25–36 rounds.
+
+| sleeping threads | bound | batch interval | round, median | round, longest |
+|---|---|---|---|---|
+| 0 | 2 | 10.98 ms | 0.85 ms | 1.05 ms |
+| 0 | off | 10.99 ms | 0.80 ms | 1.36 ms |
+| 64 | 2 | 10.97 ms | 0.90 ms | 4.77 ms |
+| 64 | off | 10.98 ms | 0.86 ms | 135.15 ms |
+| 1,000 | 2 | 11.19 ms | 1.05 ms | 4.53 ms |
+| 1,000 | off | 11.23 ms | 1.07 ms | 2.105 s |
+
+*A producer behind the sleepers* (`what_a_producer_behind_the_sleeping_threads_waits_for_its_batch`),
+its record carved after theirs so that the walk reaches it last: each sample
+is one ring of 64 registered and the wall until the mutator's own poll freed
+it, which is the round reaching it, the batch, and the collection over P.
+
+| sleeping threads | bound | service, median of 8 | service, longest |
+|---|---|---|---|
+| 0 | 2 | 11.11 ms | 21.73 ms |
+| 0 | off | 11.05 ms | 21.87 ms |
+| 64 | 2 | 11.45 ms | 22.26 ms |
+| 64 | off | 11.20 ms | 149.30 ms |
+| 1,000 | 2 | 11.93 ms | 22.80 ms |
+| 1,000 | off | 12.26 ms | 1.622 s |
+
+**What the figures say.** The cost is in the tail and not in the median: the
+takes of a sleeping population fall in one round per interval, and every
+round after it meets requests that already stand and waits nothing. That one
+round is what the bound holds — 4.5–4.8 ms at both populations, against
+135 ms at 64 sleeping threads and 2.105 s at 1,000, which is the arithmetic
+of one wait each. A producer behind them pays the same round: its worst
+service is 22 ms with the bound and 149 ms or 1.622 s without it, while its
+median service, 11–12 ms, is its own polling cadence and moves with neither.
+Releases-unserved were zero in every arm, and no sibling was born in any of
+them — one producer offers no second backlogged mutator for a birth to count.
+
+**`EXPIRED_WAITS_PER_ROUND` is kept at 2.** The readings bound the round's
+spending on mutators that never answer at the bound times the wait plus the
+walk, 4.5–4.8 ms measured against 4 ms of arithmetic, and nothing in them
+asks for a different figure; a larger bound buys batches only from mutators
+that answer late, which these arms do not build.
+
+**What these arms are not.** The sleeping threads here stay asleep, so each
+pays its wait once and stands from then on. The population the bound was
+ruled for is a pool that sleeps and wakes, where the requests are cleared and
+re-made every round; that arm is not built, and its figure is not estimated
+here.
+
 ## 2026-09-22 — S63.3 the sleeper probes on the standing list: the same figures as on the array
 
 The standing array of sixteen entries on the collector's frame became a list

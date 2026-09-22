@@ -424,6 +424,24 @@ pub(crate) fn take_refused_requests() -> usize {
     REFUSED_REQUESTS.swap(0, Ordering::Relaxed)
 }
 
+/// The bound on a walk's expired consent waits for the probes, or zero for
+/// the module's own: the null arm of the cap's measurement sets it to
+/// `usize::MAX`, which is the round before the cap.
+static EXPIRED_WAITS_CAP: AtomicUsize = AtomicUsize::new(0);
+
+/// Bound a walk's expired waits at `waits`, or at the module's own for
+/// `None`.
+pub(crate) fn cap_expired_waits_at(waits: Option<usize>) {
+    EXPIRED_WAITS_CAP.store(waits.unwrap_or(0), Ordering::Relaxed);
+}
+
+pub(crate) fn expired_waits_cap() -> Option<usize> {
+    match EXPIRED_WAITS_CAP.load(Ordering::Relaxed) {
+        0 => None,
+        waits => Some(waits),
+    }
+}
+
 /// The serve clock a round reads once per record, for a case outside this
 /// module that serves a record itself ([`super::serve`]'s `now`).
 pub(crate) fn serve_clock_now() -> u64 {
@@ -549,6 +567,7 @@ pub(crate) fn retire() {
     wait_between_rounds_for(None);
     ask_turnovers_after(None);
     take_standing_after(None);
+    cap_expired_waits_at(None);
     super::set_collector_cap(super::DEFAULT_COLLECTOR_CAP);
     super::set_quiet_interval(std::time::Duration::ZERO);
     super::set_standing_interval(std::time::Duration::ZERO);

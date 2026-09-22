@@ -81,12 +81,19 @@ struct Sleeper {
 
 impl Sleeper {
     fn start(class: *const Class) -> Self {
+        Self::start_with(class, RING)
+    }
+
+    /// A sleeper whose ring holds `members`: `RING` for the sleepers of the
+    /// handshake's probes, fewer than [`SOFT_THRESHOLD`] for the ones only
+    /// the take reaches.
+    fn start_with(class: *const Class, members: usize) -> Self {
         let (reader, pipe) = std::io::pipe().expect("a pipe");
         let freed = Arc::new(AtomicUsize::new(0));
         let mutator = Mutator::start_polling(freed.clone());
         let class = Sent(class);
         mutator.run(move |arena| {
-            let _ = unsafe { long_ring(arena, class.into_inner(), RING) };
+            let _ = unsafe { long_ring(arena, class.into_inner(), members) };
         });
         mutator.send(move |_| {
             let mut reader = reader;
@@ -121,9 +128,14 @@ impl Sleeper {
 
     /// Wake the sleeper and wait until its polls freed its ring.
     fn release_and_collect(&mut self) {
+        self.release_and_collect_ring_of(RING);
+    }
+
+    /// Wake the sleeper and wait until its polls freed a ring of `members`.
+    fn release_and_collect_ring_of(&mut self, members: usize) {
         self.wake();
         assert!(
-            wait_until(|| self.freed() >= RING, A_BIRTH),
+            wait_until(|| self.freed() >= members, A_BIRTH),
             "the woken sleeper was served and freed its ring"
         );
     }
@@ -724,4 +736,277 @@ fn a_pressure_collection_fired_by_a_waking_sleeper_ends_within_one_batch() {
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, RING);
     testing::retire();
     drop(held);
+}
+
+/// Take a standing ring after `interval` for the probe, and after the
+/// module's own again when the guard drops.
+struct StandingInterval;
+
+impl StandingInterval {
+    fn of(interval: Duration) -> Self {
+        testing::take_standing_after(Some(interval));
+        Self
+    }
+}
+
+impl Drop for StandingInterval {
+    fn drop(&mut self) {
+        testing::take_standing_after(None);
+    }
+}
+
+/// Candidates a sub-threshold sleeper holds: below [`SOFT_THRESHOLD`], so
+/// that no round serves it until the take, and enough that the take has
+/// something to carry.
+const STANDING_RING: usize = 3;
+
+const _: () = assert!(STANDING_RING < SOFT_THRESHOLD);
+
+/// Sleeping sub-threshold threads the take's arm stands beside the active
+/// mutator: the design's figures.
+const SLEEPING_THREADS: [usize; 3] = [0, 64, 1_000];
+
+/// What one arm of the take's measurement read.
+struct StandingArm {
+    sleepers: usize,
+    capped: bool,
+    batch_interval: Duration,
+    round: Duration,
+    longest_round: Duration,
+    rounds: usize,
+    standing: usize,
+    until_all_stand: Option<Duration>,
+    releases_unserved: usize,
+}
+
+/// The active mutator's batch interval and the rounds' length beside
+/// `sleepers` sleeping threads whose rings stand below the threshold, with
+/// the walk's bound of expired waits in force or lifted. The active
+/// mutator is this thread, whose record the registry carved before the
+/// sleepers', so the walk reaches it first; the sleepers' rings are taken
+/// once the interval has passed and their requests stand from then on.
+fn the_take_beside(
+    sleepers: usize,
+    capped: bool,
+    interval: Duration,
+    class: *const Class,
+) -> StandingArm {
+    // Both dials are set per arm: `testing::retire` at the arm's end puts
+    // the module's own figures back, so an arm that inherited them would
+    // count its interval in the crate's four seconds.
+    testing::take_standing_after(Some(interval));
+    testing::cap_expired_waits_at(if capped { None } else { Some(usize::MAX) });
+    let mut asleep: Vec<Sleeper> = (0..sleepers)
+        .map(|_| Sleeper::start_with(class, STANDING_RING))
+        .collect();
+    // No confinement: the walk reads every record, which is what the
+    // sleepers' number is being read against.
+    born_over(&[]);
+
+    let mut arena = Arena::new();
+    let mut collections = crate::gc::verdict_collections_on_this_thread();
+    let mut last = Instant::now();
+    let mut intervals = Vec::with_capacity(SAMPLES);
+    for sample in 0..SAMPLES {
+        let _ = unsafe { long_ring(&mut arena, class, RING) };
+        let freed = loop {
+            let freed = unsafe { crate::gc::ll_gc_maybe_collect() };
+            if crate::gc::verdict_collections_on_this_thread() > collections {
+                collections += 1;
+                break freed;
+            }
+
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(freed, RING, "the collection over P freed the ring");
+        let now = Instant::now();
+        if sample >= WARM_UP {
+            intervals.push(now - last);
+        }
+
+        last = now;
+    }
+
+    // How long the rounds take to reach every sleeper: a take's request on
+    // a sleeping mutator stands from the round that makes it, so the count
+    // of standing records is the count the rounds have reached, and the
+    // walk's bound is what paces it.
+    let waiting_for_all = Instant::now();
+    let all_stand = wait_until(
+        || {
+            asleep
+                .iter()
+                .all(|sleeper| unsafe { &*sleeper.record() }.is_standing())
+        },
+        A_BIRTH,
+    );
+    let until_all_stand = all_stand.then(|| waiting_for_all.elapsed());
+    let standing = asleep
+        .iter()
+        .filter(|sleeper| unsafe { &*sleeper.record() }.is_standing())
+        .count();
+
+    let mut rounds: Vec<Duration> = testing::take_round_times()
+        .into_iter()
+        .filter_map(|(start, end)| end.map(|end| end - start))
+        .collect();
+    let longest_round = rounds.iter().copied().max().unwrap_or_default();
+    let releases_unserved = testing::take_releases_unserved();
+    for sleeper in &mut asleep {
+        sleeper.release_and_collect_ring_of(STANDING_RING);
+    }
+
+    testing::retire();
+    testing::cap_expired_waits_at(None);
+    drop(asleep);
+    StandingArm {
+        sleepers,
+        capped,
+        batch_interval: median(&mut intervals),
+        round: median(&mut rounds),
+        longest_round,
+        rounds: rounds.len(),
+        standing,
+        until_all_stand,
+        releases_unserved,
+    }
+}
+
+#[test]
+#[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
+fn what_sleeping_sub_threshold_threads_cost_the_round_and_the_active_mutator() {
+    let _g = test_guard();
+    let _record = record();
+    let _end = RetireOnDrop;
+    reset_lanes();
+    let _wait = testing::HeldRequestWait::crate_own();
+    // Short of the crate's four seconds, so that the sleepers' rings are
+    // taken inside the arm rather than after it, and long against the
+    // timer's cadence, so that a take is one round's work and not every
+    // round's.
+    let interval = Duration::from_millis(50);
+    let _interval = StandingInterval::of(interval);
+    let class = node_class("StressStandingSleeperNode");
+
+    for sleepers in SLEEPING_THREADS {
+        for capped in [true, false] {
+            let arm = the_take_beside(sleepers, capped, interval, class);
+            println!(
+                "take beside sleepers: {} sleeping sub-threshold threads, cap {}, \
+                 batch interval {:?} (median of {}), round {:?} (median of {} rounds), \
+                 longest round {:?}, {} standing, all standing after {:?}, \
+                 releases unserved {}",
+                arm.sleepers,
+                if arm.capped { "2" } else { "off" },
+                arm.batch_interval,
+                SAMPLES - WARM_UP,
+                arm.round,
+                arm.rounds,
+                arm.longest_round,
+                arm.standing,
+                arm.until_all_stand,
+                arm.releases_unserved,
+            );
+        }
+    }
+}
+
+/// Samples of a producer's service behind the sleepers: each is one ring
+/// registered and the wall until the mutator's own poll freed it, which is
+/// the round reaching it plus the batch and the collection over P.
+const SERVICE_SAMPLES: usize = 8;
+
+/// What the producer behind the sleeping threads waited for its service.
+struct ServiceArm {
+    sleepers: usize,
+    capped: bool,
+    service: Duration,
+    longest_service: Duration,
+    spawns: usize,
+    releases_unserved: usize,
+}
+
+/// A mutator that registers a ring and waits for its own poll to free it,
+/// started after `sleepers` sleeping sub-threshold threads so that the
+/// registry's carve order puts it behind them and the walk reaches it last.
+fn the_producer_behind(
+    sleepers: usize,
+    capped: bool,
+    interval: Duration,
+    class: *const Class,
+) -> ServiceArm {
+    testing::take_standing_after(Some(interval));
+    testing::cap_expired_waits_at(if capped { None } else { Some(usize::MAX) });
+    let mut asleep: Vec<Sleeper> = (0..sleepers)
+        .map(|_| Sleeper::start_with(class, STANDING_RING))
+        .collect();
+    let freed = Arc::new(AtomicUsize::new(0));
+    let producer = Mutator::start_polling(freed.clone());
+    born_over(&[]);
+    let _ = testing::take_spawns();
+
+    let mut samples = Vec::with_capacity(SERVICE_SAMPLES);
+    for sample in 0..SERVICE_SAMPLES {
+        let sent = Sent(class);
+        let registered = Instant::now();
+        producer.run(move |arena| {
+            let _ = unsafe { long_ring(arena, sent.into_inner(), RING) };
+        });
+        let target = (sample + 1) * RING;
+        assert!(
+            wait_until(|| freed.load(Ordering::Relaxed) >= target, A_BIRTH),
+            "the producer's poll freed the ring it registered"
+        );
+        samples.push(registered.elapsed());
+    }
+
+    let spawns = testing::take_spawns();
+    let releases_unserved = testing::take_releases_unserved();
+    for sleeper in &mut asleep {
+        sleeper.release_and_collect_ring_of(STANDING_RING);
+    }
+
+    testing::retire();
+    testing::cap_expired_waits_at(None);
+    drop(producer);
+    drop(asleep);
+    ServiceArm {
+        sleepers,
+        capped,
+        longest_service: samples.iter().copied().max().unwrap_or_default(),
+        service: median(&mut samples),
+        spawns,
+        releases_unserved,
+    }
+}
+
+#[test]
+#[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
+fn what_a_producer_behind_the_sleeping_threads_waits_for_its_batch() {
+    let _g = test_guard();
+    let _record = record();
+    let _end = RetireOnDrop;
+    reset_lanes();
+    let _wait = testing::HeldRequestWait::crate_own();
+    let interval = Duration::from_millis(50);
+    let _interval = StandingInterval::of(interval);
+    let class = node_class("StressProducerBehindNode");
+
+    for sleepers in SLEEPING_THREADS {
+        for capped in [true, false] {
+            let arm = the_producer_behind(sleepers, capped, interval, class);
+            println!(
+                "producer behind sleepers: {} sleeping sub-threshold threads, cap {}, \
+                 service {:?} (median of {}), longest {:?}, spawns {}, \
+                 releases unserved {}",
+                arm.sleepers,
+                if arm.capped { "2" } else { "off" },
+                arm.service,
+                SERVICE_SAMPLES,
+                arm.longest_service,
+                arm.spawns,
+                arm.releases_unserved,
+            );
+        }
+    }
 }
