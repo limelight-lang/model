@@ -16,7 +16,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-22 · Active: S62, a design stage. S61 went on 2026-09-22, the day it opened:
+Updated: 2026-09-22 · Active: S63; S62, a design stage, is done and waits on nothing. S61 went on 2026-09-22, the day it opened:
 the sibling-birth red of the journal gate was the harness's stand-in for a
 disposition racing the round it stands in for, found by stretching the other
 mutator's tick and repaired by clearing every mutator's `POSTED` by hand
@@ -255,6 +255,53 @@ anyway, and the collector decides.
         inside the round until the standing request has a home on the
         record. Building it is a stage of its own, not opened.
 
+## S63 — The standing request lives on the record  [in progress]
+
+Goal: no count of standing requests is capped, a consented mutator's window
+is bounded by one stranger's batch whatever the number of threads, and the
+mutator's side is untouched — the algorithm of
+`dev/design/the-standing-request-lives-on-the-record.md`, accepted
+2026-09-22 (`dev/DECISIONS.md`, "the standing request lives on the record,
+the checkpoint serves one grant, and no count is capped").
+Done when: `worker::Standing` is a head over a list threaded through the
+records with no capacity, the silent mark's "missed a wait" meaning is
+gone, a checkpoint walks only on a byte event and serves one grant, the
+registry refuses a linked record, the six tests the design owes are green
+with the gate, and the `rfc`'s handshake document states the new form.
+Notes: the mutator's `token.rs` state machine, `read_and_act_on_this_thread`,
+the poll and the free path change in nothing; the only `token.rs` edit is
+the wake entry the consent and the refusal call. Every step is a cycle-GC
+step: the baseline recorded, a red test seen, the Critic over the repair.
+
+- [ ] S63.1 The words: the link pair and the released byte on the reader
+      line, the sequence number on the collector's slot
+      done: `ReaderLine` carries `standing_next`, `standing_prev`,
+        `released_unserved` with the layout asserts standing; `reset`
+        clears the byte, leaves the links and debug-asserts them null;
+        `first_free_record` skips a linked record and a case shows the take
+        falling through to a carve; `Collector` carries `byte_wakes`, and
+        `wake_for_the_byte` is what `consent` and `take_unless`'s refusal
+        call, a case reading the number move on each and on nothing else
+      tier: T2 · role: Critic
+- [ ] S63.2 The list and the checkpoint
+      done: `Standing` is the head pair with `push` (idempotent, at the
+        tail), `forget` (O(1), no-op unlinked) and the gated pass — no walk
+        without a byte event, the whole list read, every grant but the first
+        released to `FREE` and marked, the first unlinked and served; the
+        expired wait pushes instead of withdrawing; `serve` pushes a marked
+        record with no wait; every entry to `serve_the_grant` is unlinked;
+        the drop withdraws and unlinks; `STANDING_CAPACITY`, `silent`,
+        `is_silent`, `note_silent` and the "past the capacity" arm are gone;
+        the six owed cases green; `what_the_byte_arms`' moved assertions
+        re-stated as the design says and nothing else of the suite changed
+      tier: T2 · role: Critic
+- [ ] S63.3 The handshake document and the journals
+      done: `rfc/dev/design/trace-token-handshake.md`'s collector paragraph,
+        "Cost", the third round's bound, timing (a) and E7 state the new
+        form; `dev/ARCHITECTURE.md` and `dev/INDEX.md` name the list; the
+        S51.5 sleeper probe re-run and its figure recorded beside the old
+      tier: T1 · role: —
+
 ---
 
 ## Cross-cutting (every stage)
@@ -475,20 +522,6 @@ live: `archive/pre-rc-cycle`").
   the restamp after a batch is decided by the clock, a case shows a thread
   batched all-live every X/2 asked after X, and the S60 entry's "a serve
   that made a batch restamps" is amended with the date.
-- [ ] **The standing request moves to the record.** Edmond, 2026-09-22:
-  the collector's array of requests left standing on silent mutators —
-  `worker::Standing`, `STANDING_CAPACITY` of 16 on the thread's frame, "not
-  a measured figure" — is the wrong mechanism, because the number of mutator
-  threads is not known in advance and a fixed count cannot bound anything
-  (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
-  collector's own, and no request count is capped"). A standing request
-  belongs to the mutator's own record, where the turnover request already
-  stands; the array, its capacity, its two checkpoints and the "past the
-  capacity, withdrawn at once" arm go with it, and
-  `rfc/dev/design/trace-token-handshake.md`'s standing-array paragraphs
-  follow. done: no request count is capped anywhere in `worker`, a case
-  shows more silent mutators than the old capacity all served on waking,
-  and the handshake document names the record as the request's home.
 - [ ] **A quiet thread's garbage is taken after X.** Edmond, 2026-09-18: the
   GC takes a thread's garbage of its own accord once some time X has passed.
   The half that turns a quiet thread's deferred lane over is built: the

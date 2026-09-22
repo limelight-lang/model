@@ -8,6 +8,49 @@ never edited or deleted.
 
 ---
 
+## 2026-09-22 — the standing request lives on the record, the checkpoint serves one grant, and no count is capped
+
+Edmond accepted, after a Sage's ruling, a Critic's six findings and the
+Sage's amendments to each, the algorithm in
+`dev/design/the-standing-request-lives-on-the-record.md`; the build is
+`PLAN.md`, S63, and the `rfc`'s handshake follows it.
+
+**Decided.** The collector's wait for a mutator's consent stays; a request
+the mutator did not answer inside the wait is not withdrawn but stays on the
+byte, and the record joins a doubly linked circular list threaded through
+the records — two link words on the reader line, no capacity — in place of
+the sixteen-entry array on the collector's frame. A checkpoint walks the
+list only when a consent or a refusal has moved a sequence number on the
+collector's slot since its last pass, reads the whole list, releases every
+grant but the first without a batch, then serves the first; a mutator so
+released is marked on its record and its next request is pushed with no
+wait. The registry hands out no record whose link words read linked; every
+grant is served on an unlinked record; the drop at the collector's end
+withdraws and unlinks every entry. The mutator's side changes in nothing.
+The silent mark in the meaning "missed a wait" goes; what stays is one byte
+in the meaning "released without a batch", the collector's alone.
+
+**Why.** The window of a consented mutator is bounded by what the collector
+is doing when the consent lands — parked on that byte, inside a stranger's
+batch, or walking a queue of earlier consents — and only the wait puts it in
+the first state for a working mutator, which answers at its first free or
+poll. The forms without a wait were refused: one queues the consents (the
+i-th withholds i batches) and adds a store to the free path; the other
+doubles a working mutator's window whenever its neighbour has a batch and
+withdraws before a mutator polling at 100 µs–1 ms answered. The one-grant
+rule keeps a burst of wakers from queuing once the cap is gone: the last of
+n withholds one stranger's batch, not n. The cap goes because the number of
+mutator threads is unknown, and because as built it strands the
+seventeenth.
+
+**Cost.** Sixteen bytes and one on the reader line, a sequence number per
+collector slot; O(1) per checkpoint without a byte event, one pass of one
+load per entry per event; a lockstep burst of n wakers is served over n of
+their events, each window at most one stranger's batch. The bounds and the
+refused forms are the design document's.
+
+---
+
 ## 2026-09-22 — a standing R is taken after an interval of the collector's own, and no request count is capped
 
 Two rulings of Edmond's, given in the design review of `PLAN.md` S62
