@@ -1,8 +1,8 @@
 # A standing R is taken after an interval
 
-Design under review, opened 2026-09-22 (`PLAN.md`, S62); fifth form, the
-algorithm as Edmond ruled it after the Critic's two rounds and repaired to
-a third
+Design under review, opened 2026-09-22 (`PLAN.md`, S62); sixth form, the
+algorithm as Edmond ruled it after the Critic's two rounds, repaired to a
+third, and the sleeper's backoff added at his word
 (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
 collector's own, and no request count is capped"). Not built, not normative;
 the `rfc` moves on adoption.
@@ -54,6 +54,12 @@ One word on the reader line of `MutatorRecord`, the collector's line, in the
   since `SERVE_CLOCK_BASE`, the clock `served_at` uses, never zero) at the
   round that first read R non-empty and below the threshold; zero for no
   standing ring.
+- `take_misses: AtomicU8` — takes in a row this mutator did not consent to,
+  at most `TAKE_BACKOFF_LIMIT` (4): the next take waits
+  `STANDING_INTERVAL << take_misses`, so a sleeper is asked at 4, 8, 16, 32
+  and then every 64 s. A take that consented, and a ring read empty or at
+  the threshold, zero it. In the 3 bytes of padding after `silent`, or the
+  spare 8; either way the asserts stand.
 
 The collector's own word, written by the collector the record names and read
 by no mutator, so relaxed; reset with the line at a re-take
@@ -76,9 +82,10 @@ makes, returning the span and whether the front block is the tail block;
 2. R is empty — idle, as today; `standing_since` is zeroed.
 3. R holds fewer than the threshold. If `standing_since` is zero it takes
    the serve clock's reading now and the serve returns `Served::Idle`. If
-   `now − standing_since ≥ STANDING_INTERVAL` the serve continues to the
-   take; otherwise it returns `Served::Idle`. The clock is read once per
-   record and shared with the turnover ask's reading after the serve.
+   `now − standing_since ≥ STANDING_INTERVAL << take_misses` the serve
+   continues to the take; otherwise it returns `Served::Idle`. The clock is
+   read once per record and shared with the turnover ask's reading after
+   the serve.
 
 The take is the serve of today from the P-room test on — the room read, the
 request by one swap from `FREE`, the wait for consent, the batch under the
@@ -109,8 +116,11 @@ the round's, and the grant arm of `answer_a_refused_request` and
   consents inside `REQUEST_WAIT` (2 ms) is batched; one that does not is
   asleep: the request is withdrawn, the withdrawal's read-back answered as
   today's is for every value but the silent mark — under `take_anyway`
-  `answer_the_withdrawal` stores no mark — and the serve returns
-  `Served::Idle`. The take reads no silent mark and leaves no request
+  `answer_the_withdrawal` stores no mark and counts a miss instead — and
+  the serve returns `Served::Idle`. The miss doubles this mutator's next
+  interval, up to `TAKE_BACKOFF_LIMIT` doublings (Edmond, 2026-09-22: the
+  quiet mutator is polled less often, so the wait is no one else's
+  problem); a consent zeroes the count. The take reads no silent mark and leaves no request
   standing; the grant clears the mark as every grant does, which is right,
   a consenting thread being not silent. The wait itself is today's: its
   early return on a stranger's wake runs `Standing::checkpoint` and notes
@@ -194,17 +204,17 @@ window over the standing roots' closure under `TRACE_BLOCK_BUDGET` — the
 closure of a median candidate on the corpus of 2026-08-25 is the heap, 381
 objects — and one collection over P at its next poll.
 
-On the collector, a term the rule's "left alone" does not make free: a
-sleeping mutator with a non-empty sub-threshold ring costs its collector a
-full `REQUEST_WAIT` of waiting, inside the round, once per interval — the
-threshold path spares the second wait by the silent mark, which the take
-refuses. Sixty-four pool threads parked with a handful of candidates each
-lengthen one round in four seconds by 128 ms; a thousand make that round
-two seconds, and every producing mutator visited later in it waits that
-long for its batch. What removes the term is the filed stage that gives a
-request a home on the record: a take could then leave its request without
-a wait, served at the checkpoints as the threshold path's are today. Until
-then the embedder's off switch is the interval at `u64::MAX` milliseconds. Then, once the take has deferred a live
+On the collector, a sleeping mutator with a non-empty sub-threshold ring
+costs its collector a full `REQUEST_WAIT` of waiting, inside the round, at
+each take it does not answer — and the backoff makes those takes rarer:
+sixty-four pool threads parked with a handful of candidates each lengthen
+one round by 128 ms at 4 s, again at 8, 16 and 32, and then one round a
+minute, against 128 ms in every fourth second without the backoff; a
+thousand such threads cost a two-second round once a minute at the limit.
+A producing mutator visited later in such a round waits that long for its
+batch, which is the residue the backoff leaves and the measurement below
+reads. The embedder's off switch is the interval at `u64::MAX`
+milliseconds. Then, once the take has deferred a live
 root, the S60 term: one in-line collection per X while the roots live, which
 a thread that never reached the threshold did not pay before this rule. For
 live candidates the rule is that recurring term and nothing gained; for dead
@@ -234,6 +244,13 @@ collector's thread and is not the mutator's time.
 - **A standing request for a take, or a silent mark set by a take's miss.**
   A sleeping thread is left alone until the next interval; the standing
   requests and the mark are the threshold path's.
+- **A take that leaves its request on the byte with no wait**, the consent
+  pushing the record onto a per-collector stack served at the checkpoints:
+  Edmond, 2026-09-22 — a mutator that consented is in the window and gives
+  no memory back until the collector reaches it, and the collector may be
+  long in coming; the same reason he did not take that form for the
+  threshold path. The backoff on the take's misses is what keeps the wait
+  from costing the other mutators instead.
 - **A take under K.** K is the collector's estimate for a producing
   mutator's batches; a take of three would double it toward the budget, and
   a K of one would take a ring of three one root per round.
