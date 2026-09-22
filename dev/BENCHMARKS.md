@@ -8,6 +8,123 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-22 — the mix: what the mutator pays a take falls with the live share of its ring, and the whole sweep's readings
+
+Two arms fixed the ends of the scale — every root dead, every root live. This
+one sweeps between them. The shape is 63 components of six members, dense, so
+that all 63 closures fit the trace's block budget together and only the mix
+differs between the arms; a keeper holds the first `live_rings` of them, and
+the sweep is 0, 16, 32, 47 and 63 live of 63. The case is
+`cycle::worker::tests::what_a_take_costs`, whose four earlier shapes are run
+beside the five mixes and are quoted again here, so that one table holds every
+reading of the take's cost.
+
+**What the case had to be repaired for first.** A take is clamped by P's room
+as well as by the threshold, and P's room walks down its one block by the
+roots of every take, so now and then a batch carried 8 roots where the ring
+held 63 — and the mutator's collection over that batch prices a different
+take. Such a sample is now recognised (the batches' roots against the ring's)
+and re-taken, after it is finished so that the heap goes back whatever it
+took. The figures below are whole takes only. The same reading says something
+about the runtime and not only about the case: **a take of a standing ring is
+not a promise to take the ring, and a ring wider than P's room is served over
+several rounds.**
+
+**Machine:** the dev box, WSL2, shared with interactive work; load average
+3.2–3.8 at the hardware run's start, 1.0 at the wall run's. **Build:**
+release, `--test-threads=1`. The wall is an unpinned run of the whole case,
+the hardware figures are `dev/tools/take_perf.sh`, one process per arm pinned
+to CPU 2 under `perf stat --control`, two runs quoted A / B, the sixteen
+counted collections divided out. **Commands:**
+
+```
+cargo test --release --lib -- --ignored what_a_take_costs --test-threads=1 --nocapture
+cargo test --release --lib --no-run
+PERF=/usr/lib/linux-tools-6.8.0-134/perf dev/tools/take_perf.sh out.csv 2 2
+```
+
+*Per collection of the mutator's, every shape and arm of the case:*
+
+| shape | arm | instructions | cycles | L1D misses | wall, median | wall, least |
+|---|---|---|---|---|---|---|
+| overlapping | take | 1,009,021 / 1,008,990 | 335,207 / 339,218 | 5,298 / 5,253 | 56.3 µs | 49.4 µs |
+| overlapping | baseline | 1,007,555 / 1,007,555 | 250,434 / 258,045 | 4,512 / 4,667 | 39.9 µs | 39.1 µs |
+| overlapping | control | 1,007,523 / 1,007,523 | 272,617 / 257,414 | 5,481 / 4,600 | 40.7 µs | 39.9 µs |
+| disjoint | take | 8,909,722 / 8,909,818 | 2,780,928 / 2,840,911 | 39,187 / 39,466 | 462.6 µs | 424.9 µs |
+| disjoint | baseline | 8,908,260 / 8,908,260 | 2,763,032 / 4,369,859 | 39,507 / 45,234 | 449.8 µs | 400.5 µs |
+| disjoint | control | 8,908,260 / 8,908,260 | 3,013,653 / 3,080,510 | 40,243 / 40,313 | 457.8 µs | 392.7 µs |
+| overlapping-live | take | 15,333 / 15,397 | 47,280 / 51,898 | 423 / 424 | 6.5 µs | 5.5 µs |
+| overlapping-live | baseline | 658,863 / 658,799 | 169,868 / 180,726 | 4,092 / 4,087 | 32.1 µs | 29.8 µs |
+| overlapping-live | control | 658,926 / 658,831 | 167,428 / 157,824 | 4,072 / 4,057 | 34.4 µs | 30.9 µs |
+| disjoint-live | take | 2,872,554 / 2,872,745 | 1,483,219 / 1,367,973 | 20,163 / 20,106 | 230.9 µs | 205.3 µs |
+| disjoint-live | baseline | 2,853,251 / 2,853,378 | 1,943,589 / 1,237,065 | 21,879 / 19,582 | 311.7 µs | 171.1 µs |
+| disjoint-live | control | 2,853,252 / 2,853,283 | 1,847,712 / 1,474,589 | 20,689 / 20,116 | 367.0 µs | 211.2 µs |
+| mixed-0 | take | 1,002,126 / 1,002,126 | 369,781 / 355,766 | 5,339 / 5,458 | 87.0 µs | 70.7 µs |
+| mixed-0 | baseline | 1,000,533 / 1,000,501 | 265,374 / 260,193 | 4,638 / 4,506 | 56.0 µs | 52.9 µs |
+| mixed-0 | control | 1,000,532 / 1,000,469 | 264,685 / 255,219 | 4,425 / 4,531 | 53.0 µs | 52.5 µs |
+| mixed-16 | take | 814,202 / 814,297 | 373,756 / 342,833 | 3,723 / 3,414 | 81.8 µs | 62.2 µs |
+| mixed-16 | baseline | 968,896 / 968,865 | 299,181 / 296,056 | 4,592 / 4,491 | 77.6 µs | 59.4 µs |
+| mixed-16 | control | 968,896 / 968,865 | 294,447 / 294,338 | 4,630 / 4,542 | 79.7 µs | 56.7 µs |
+| mixed-32 | take | 573,966 / 573,903 | 255,528 / 265,271 | 1,475 / 1,544 | 61.8 µs | 44.2 µs |
+| mixed-32 | baseline | 928,274 / 928,210 | 277,136 / 400,133 | 3,866 / 5,808 | 71.2 µs | 51.1 µs |
+| mixed-32 | control | 928,337 / 928,337 | 275,637 / 280,064 | 3,850 / 3,909 | 70.8 µs | 51.9 µs |
+| mixed-47 | take | 306,489 / 306,489 | 168,069 / 173,198 | 874 / 949 | 35.8 µs | 28.2 µs |
+| mixed-47 | baseline | 853,502 / 853,374 | 274,804 / 248,883 | 3,980 / 3,850 | 62.2 µs | 46.5 µs |
+| mixed-47 | control | 853,629 / 853,628 | 249,793 / 247,551 | 3,833 / 3,844 | 62.4 µs | 46.1 µs |
+| mixed-63 | take | 15,417 / 15,259 | 63,145 / 45,496 | 500 / 459 | 7.5 µs | 6.5 µs |
+| mixed-63 | baseline | 676,947 / 676,947 | 172,110 / 176,884 | 3,977 / 3,995 | 40.8 µs | 38.9 µs |
+| mixed-63 | control | 677,010 / 676,915 | 177,582 / 176,492 | 4,018 / 3,992 | 45.5 µs | 39.3 µs |
+
+*What the census read of the mutator's collection over the mixes*, the take
+arm against the baseline. Every ending is `TornDown` where anything was
+freed and `NothingProposed` at 63 live:
+
+| live rings | take: roots attempted | take: rows met | baseline: roots | baseline: rows |
+|---|---|---|---|---|
+| 0 | 63 | 378 | 63 | 378 |
+| 16 | 47 | 282 | 63 | 378 |
+| 32 | 31 | 186 | 63 | 378 |
+| 47 | 16 | 96 | 63 | 378 |
+| 63 | 0 | 0 | 63 | 378 |
+
+**What the figures say.**
+
+- **The mutator's collection after a take walks the dead roots and nothing
+  else.** The census reads 63 − `live_rings` roots attempted at every step of
+  the sweep, against 63 in every baseline: a root the collector read live
+  costs the mutator no walk at all, and one it proposed costs the walk of that
+  component. The instructions follow: 1,002,126 at none live, 814,202 at a
+  quarter, 573,966 at a half, 306,489 at three quarters, 15,417 at all — a
+  fall of 294,000 to 268,000 per sixteen live rings, against an error bar of
+  nought to 130 instructions between the baseline and its control.
+- **The saving against collecting in line is the live share, a little
+  discounted.** 0.2 % dearer at none live, then 16 %, 38 %, 64 % and 97.7 %
+  cheaper at a quarter, a half, three quarters and all — where the live share
+  is 25.4 %, 50.8 %, 74.6 % and 100 %. The discount is the teardown, which is
+  the mutator's either way.
+- **In cycles the split starts paying between a quarter and a half live.**
+  The take costs 39 % more cycles at none live and 24 % more at a quarter,
+  then 8 % fewer at a half, 34 % fewer at three quarters and 65 % fewer at
+  all. The instructions cross at once and the cycles do not, because what the
+  take leaves the mutator is the part that misses cache: the verdicts and the
+  rows another core has just written.
+- **The wall agrees with the cycles**, 87 µs against 53 at none live, 62
+  against 47 at three quarters, 7.5 against 39 at all.
+- **`TRACE_BLOCK_BUDGET` still decides the whole thing.** Every mix above
+  fits inside it. The `disjoint-live` shape is the same question asked past
+  it: 63 live roots, the trace abandoned at the eighth block, every root
+  unwalked, and the mutator walks all 315 rows for 0.68 % more than it would
+  have spent alone. A take that meets the budget saves nothing whatever the
+  mix.
+
+**What this sweep is not.** The mix is over roots of a standing ring, each
+root its own component of six; it does not vary the component's size, the
+depth of the closure or the share of a component that is live, and the rings
+of one arm are all the same shape. What a workload's candidate rings hold is
+still unmeasured over this crate, there being no corpus driver (Edmond,
+2026-09-19). The figures give the curve between the two ends, not the point a
+workload sits at.
+
 ## 2026-09-22 — the live-roots arm: inside the block budget a take saves the mutator 43 of every 44 instructions, past it none
 
 The garbage arms of "what a take costs by the shape of its roots" could not

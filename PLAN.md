@@ -431,9 +431,11 @@ live: `archive/pre-rc-cycle`").
   round in flight beside it costs is unmeasured. Neither moves a constant on
   its own: what each would price is the tail of a round and not the take. The
   third arm, a take of live roots, was built the same evening
-  (`dev/BENCHMARKS.md`, "the live-roots arm"); what it leaves open is the mix
-  — a ring is all live or all dead in the probe, and what a workload's rings
-  hold is unmeasured over this crate.
+  (`dev/BENCHMARKS.md`, "the live-roots arm"), and the mix between the two
+  ends after it ("the mix", the same journal): what the mutator pays falls
+  with the live share of its ring, and the sweep holds every reading of the
+  case. What no arm fixes is the point a workload sits at, there being no
+  corpus driver.
 - [ ] **What S59 named and left, 2026-09-19.** Two branches of the birth have
   no arm: the guard's `mprotect` failure, which no test can order, and a join
   that fails, for which glibc documents `EDEADLK` on a self-join alone and no

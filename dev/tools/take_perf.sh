@@ -39,7 +39,12 @@ for run in $(seq 1 "$RUNS"); do
     for arm in overlapping:take overlapping:baseline overlapping:control \
                disjoint:take disjoint:baseline disjoint:control \
                overlapping-live:take overlapping-live:baseline overlapping-live:control \
-               disjoint-live:take disjoint-live:baseline disjoint-live:control; do
+               disjoint-live:take disjoint-live:baseline disjoint-live:control \
+               mixed-0:take mixed-0:baseline mixed-0:control \
+               mixed-16:take mixed-16:baseline mixed-16:control \
+               mixed-32:take mixed-32:baseline mixed-32:control \
+               mixed-47:take mixed-47:baseline mixed-47:control \
+               mixed-63:take mixed-63:baseline mixed-63:control; do
         run_arm "$arm" "$run"
     done
 done

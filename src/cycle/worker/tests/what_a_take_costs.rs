@@ -75,6 +75,11 @@ const MEMBER_PROPS: usize = (MEMBER_CLASS_BYTES - 16) / 16;
 const SAMPLES: usize = 21;
 const WARM_UP: usize = 5;
 
+/// Samples a short take may cost an arm before the case gives up: P's room
+/// walks down its block by the roots of every take, so a short one is
+/// followed by a whole one as soon as the block wraps.
+const SHORT_TAKE_RETRIES: usize = 4;
+
 /// The standing interval the arms run under: short of the crate's four
 /// seconds so that the take falls inside the arm, and long against the
 /// timer's cadence so that it is one round's work.
@@ -96,9 +101,10 @@ struct Shape {
     /// Objects of the members' class allocated after each member, which is
     /// what puts one member in every block.
     fillers: usize,
-    /// Whether a keeper holds each ring's first member, which makes the
-    /// component live and the take's verdicts `ReadLive`.
-    live: bool,
+    /// How many of the rings a keeper holds, counted from the first: those
+    /// components are live and their verdicts read live, the rest are
+    /// garbage and theirs read proposed. The mix is what this number sweeps.
+    live_rings: usize,
 }
 
 impl Shape {
@@ -110,10 +116,15 @@ impl Shape {
         self.rings * self.members
     }
 
-    /// What the timed collection frees: a garbage ring whole, and nothing at
-    /// all of a live one — its roots go to the deferred lane.
-    fn freed_by_the_collection(&self) -> usize {
-        if self.live { 0 } else { self.members() }
+    /// The members of the rings a keeper holds, which no collection frees.
+    fn live_members(&self) -> usize {
+        self.live_rings * self.members
+    }
+
+    /// The members of the rings nothing holds, which the arm's own
+    /// collection frees.
+    fn dead_members(&self) -> usize {
+        self.members() - self.live_members()
     }
 }
 
@@ -126,7 +137,7 @@ const OVERLAPPING: Shape = Shape {
     members: COMPONENT,
     roots_per_ring: ROOTS,
     fillers: 0,
-    live: false,
+    live_rings: 0,
 };
 
 /// Every root the root of a ring of its own, one member per block: the sum
@@ -138,7 +149,7 @@ const DISJOINT: Shape = Shape {
     members: RING_MEMBERS,
     roots_per_ring: 1,
     fillers: slots_per_block(MEMBER_CLASS_BYTES) - 1,
-    live: false,
+    live_rings: 0,
 };
 
 /// The same two shapes with a keeper on every ring: the trace reads every
@@ -147,15 +158,46 @@ const DISJOINT: Shape = Shape {
 /// live" names and the garbage shapes cannot show.
 const OVERLAPPING_LIVE: Shape = Shape {
     name: "overlapping-live",
-    live: true,
+    live_rings: OVERLAPPING.rings,
     ..OVERLAPPING
 };
 
 const DISJOINT_LIVE: Shape = Shape {
     name: "disjoint-live",
-    live: true,
+    live_rings: DISJOINT.rings,
     ..DISJOINT
 };
+
+/// Members of each ring of the mixed shapes: six, so that the 63 components
+/// hold 378 objects — the corpus's median closure cut into 63 pieces — and
+/// their rows, dense, fit the trace's budget with no block drawn, which is
+/// what leaves the mix as the only thing the arms differ in.
+const MIXED_MEMBERS: usize = 6;
+
+/// One mix: 63 components of [`MIXED_MEMBERS`], `live_rings` of them held by
+/// a keeper. A root of a live component comes back `ReadLive` and costs the
+/// mutator's collection nothing; a root of a dead one comes back proposed
+/// and costs it the exact validation and the teardown of that component.
+const fn mixed(name: &'static str, live_rings: usize) -> Shape {
+    Shape {
+        name,
+        rings: ROOTS,
+        members: MIXED_MEMBERS,
+        roots_per_ring: 1,
+        fillers: 0,
+        live_rings,
+    }
+}
+
+/// The sweep: none, a quarter, a half, three quarters and all of the rings
+/// live, the counts rounded to whole rings of 63.
+const MIXED: [Shape; 5] = [
+    mixed("mixed-0", 0),
+    mixed("mixed-16", 16),
+    mixed("mixed-32", 32),
+    mixed("mixed-47", 47),
+    mixed("mixed-63", 63),
+];
 
 const _: () = assert!(OVERLAPPING.rings * OVERLAPPING.roots_per_ring == ROOTS);
 const _: () = assert!(DISJOINT.rings * DISJOINT.roots_per_ring == ROOTS);
@@ -174,9 +216,9 @@ unsafe fn build(arena: &mut Arena, class: *const Class, shape: Shape) -> Built {
     let arena_ptr: *mut Arena = arena;
     let mut context = LLContext { arena };
     let mut fillers = Vec::with_capacity(shape.rings * shape.members * shape.fillers);
-    let mut keepers = Vec::with_capacity(if shape.live { shape.rings } else { 0 });
+    let mut keepers = Vec::with_capacity(shape.live_rings);
     let mut members = Vec::with_capacity(shape.members());
-    for _ in 0..shape.rings {
+    for index in 0..shape.rings {
         let ring: Vec<*mut Object> = (0..shape.members)
             .map(|_| unsafe {
                 let member = new_constructed(&mut context, class, MemoryCategory::GcHeap);
@@ -200,7 +242,7 @@ unsafe fn build(arena: &mut Arena, class: *const Class, shape: Shape) -> Built {
                 );
             }
 
-            if shape.live {
+            if index < shape.live_rings {
                 // The keeper keeps its own creation reference, so nothing
                 // registers it and the trace never reaches it; its edge is
                 // the reference from outside that the trial deletion cannot
@@ -230,8 +272,10 @@ struct Built {
     /// One per ring of a live shape, holding the ring's first member; empty
     /// for a garbage shape.
     keepers: Vec<*mut Object>,
-    /// Every member of every ring, which a live shape's teardown takes apart
-    /// by hand; a garbage shape's are freed by the arm's own collection.
+    /// Every member of every ring. The teardown takes apart the ones whose
+    /// slots still read live: what the arm's own collection freed is what it
+    /// freed, and the case asserts the two add up rather than assuming which
+    /// is which.
     members: Vec<*mut Object>,
 }
 
@@ -250,22 +294,36 @@ struct Built {
 /// # Safety
 /// `built` came from [`build`] on this thread, `arena` is this thread's, and
 /// no collection is running.
-unsafe fn let_the_rings_go(arena: &mut Arena, built: &Built) {
+unsafe fn let_the_rings_go(arena: &mut Arena, built: &Built) -> usize {
     let arena_ptr: *mut Arena = arena;
     unsafe {
         for &keeper in &built.keepers {
             store_prop(arena_ptr, keeper, prop_offset(0), std::ptr::null_mut());
         }
 
-        for &member in &built.members {
+        // The survivors: the members the arm's collection did not free. A
+        // freed slot is read by the crate's own reader rather than inferred
+        // from the shape, since what a mixed commit frees is the reading the
+        // arm exists to take. Nothing allocates between the collection and
+        // here, so a slot that reads dead is not another object's yet.
+        let alive: Vec<*mut Object> = built
+            .members
+            .iter()
+            .copied()
+            .filter(|&member| {
+                crate::refcount::slot_state(member as *mut RcHeader)
+                    == crate::refcount::SlotState::Live
+            })
+            .collect();
+        for &member in &alive {
             ll_retain(member as *mut RcHeader);
         }
 
-        for &member in &built.members {
+        for &member in &alive {
             store_prop(arena_ptr, member, prop_offset(0), std::ptr::null_mut());
         }
 
-        for &member in &built.members {
+        for &member in &alive {
             assert!(ll_release(member as *mut RcHeader), "the member's last");
             ll_object_die(member);
         }
@@ -277,6 +335,8 @@ unsafe fn let_the_rings_go(arena: &mut Arena, built: &Built) {
             );
             ll_object_die(keeper);
         }
+
+        alive.len()
     }
 }
 
@@ -352,7 +412,7 @@ fn a_take(
     class: *const Class,
     reading: Reading,
     control: &mut Option<Control>,
-) -> (Vec<testing::TracedBatch>, Collected) {
+) -> (Vec<testing::TracedBatch>, Collected, bool) {
     let mut arena = Arena::new();
     let built = unsafe { build(&mut arena, class, shape) };
     assert_eq!(
@@ -382,13 +442,26 @@ fn a_take(
     let collected = the_collection(reading, control, || unsafe {
         crate::gc::ll_gc_maybe_collect()
     });
-    assert_eq!(
-        collected.freed,
-        shape.freed_by_the_collection(),
-        "the collection over P freed what the shape's liveness leaves it"
-    );
-    if shape.live {
-        unsafe { let_the_rings_go(&mut arena, &built) };
+    // A take is clamped by P's room as well as by the threshold, and P's
+    // room walks down its one block from sample to sample, so now and then a
+    // batch carries fewer roots than the ring holds. Such a sample prices a
+    // different take and is re-taken; it is finished first, so that the heap
+    // goes back whatever it took.
+    let taken: usize = batches.iter().map(|batch| batch.roots).sum();
+    let whole = taken == shape.roots();
+    let dismantled = unsafe { let_the_rings_go(&mut arena, &built) };
+    if whole {
+        assert_eq!(
+            (collected.freed, dismantled),
+            (shape.dead_members(), shape.live_members()),
+            "the collection over P freed the dead rings and the teardown took the live ones"
+        );
+    } else {
+        assert_eq!(
+            collected.freed + dismantled,
+            shape.members(),
+            "a short take's sample gave every member back all the same"
+        );
     }
 
     unsafe { kill(built.fillers) };
@@ -398,7 +471,7 @@ fn a_take(
     // member it decrements (`cycle::testing::dismantle_ring`), so R would
     // carry the last sample's dead members into the next one's reading.
     reset_lanes();
-    (batches, collected)
+    (batches, collected, whole)
 }
 
 /// One sample of the baseline: the same rings, no collector, and the
@@ -421,15 +494,12 @@ fn collected_in_line(
     let collected = the_collection(reading, control, || unsafe {
         crate::gc::ll_gc_collect_cycles()
     });
+    let dismantled = unsafe { let_the_rings_go(&mut arena, &built) };
     assert_eq!(
-        collected.freed,
-        shape.freed_by_the_collection(),
-        "the collection over R freed what the shape's liveness leaves it"
+        (collected.freed, dismantled),
+        (shape.dead_members(), shape.live_members()),
+        "the collection over R freed the dead rings and the teardown took the live ones"
     );
-    if shape.live {
-        unsafe { let_the_rings_go(&mut arena, &built) };
-    }
-
     unsafe { kill(built.fillers) };
     drop(arena);
     reset_lanes();
@@ -549,13 +619,23 @@ fn the_arm(
     Vec<Duration>,
     Vec<testing::TracedBatch>,
     census::CollectionReport,
+    usize,
 ) {
     let mut walls = Vec::with_capacity(SAMPLES);
     let mut traced = Vec::new();
     for sample in 0..SAMPLES {
         let collected = match arm {
             Arm::Take => {
-                let (batches, collected) = a_take(shape, class, Reading::Wall, control);
+                let mut taken = None;
+                for _ in 0..SHORT_TAKE_RETRIES {
+                    let (batches, collected, whole) = a_take(shape, class, Reading::Wall, control);
+                    if whole {
+                        taken = Some((batches, collected));
+                        break;
+                    }
+                }
+
+                let (batches, collected) = taken.expect("a take carried the ring whole");
                 if sample >= WARM_UP {
                     traced.extend(batches);
                 }
@@ -570,10 +650,26 @@ fn the_arm(
     }
 
     let counted = match arm {
-        Arm::Take => a_take(shape, class, Reading::Census, &mut None).1,
+        Arm::Take => {
+            let mut taken = None;
+            for _ in 0..SHORT_TAKE_RETRIES {
+                let (_, collected, whole) = a_take(shape, class, Reading::Census, &mut None);
+                if whole {
+                    taken = Some(collected);
+                    break;
+                }
+            }
+
+            taken.expect("a take carried the ring whole")
+        }
         Arm::Baseline | Arm::Control => collected_in_line(shape, class, Reading::Census, &mut None),
     };
-    (walls, traced, counted.report.expect("the census was armed"))
+    (
+        walls,
+        traced,
+        counted.report.expect("the census was armed"),
+        counted.freed,
+    )
 }
 
 #[test]
@@ -594,22 +690,29 @@ fn what_a_take_costs_by_the_shape_of_its_roots() {
         builder.build()
     };
 
-    for shape in [OVERLAPPING, DISJOINT, OVERLAPPING_LIVE, DISJOINT_LIVE] {
+    let shapes = [OVERLAPPING, DISJOINT, OVERLAPPING_LIVE, DISJOINT_LIVE]
+        .into_iter()
+        .chain(MIXED);
+    for shape in shapes {
         for arm in [Arm::Take, Arm::Baseline, Arm::Control] {
             if !selected(shape, arm.name()) {
                 continue;
             }
 
-            let (mut walls, traced, report) = the_arm(arm, shape, class, &mut control);
+            let (mut walls, traced, report, freed) = the_arm(arm, shape, class, &mut control);
             let smallest = walls.iter().copied().min().expect("the arm has samples");
             println!(
                 "{} over the {} shape: the mutator's collection {:?}, least {:?} \
-                 (of {} samples); the collector's batches {:?}; the census reads {}",
+                 (of {} samples), freeing {} of the shape's {} members, {} of which \
+                 stand in live rings; the collector's batches {:?}; the census reads {}",
                 arm.name(),
                 shape.name,
                 median(&mut walls),
                 smallest,
                 SAMPLES - WARM_UP,
+                freed,
+                shape.members(),
+                shape.live_members(),
                 traced,
                 census_line(&report),
             );

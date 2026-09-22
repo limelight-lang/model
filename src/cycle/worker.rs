@@ -228,7 +228,9 @@ const _: () =
 /// the 658,832 of collecting the same rings in line; a take whose closure
 /// passes it is abandoned after 75 to 157 µs of the collector's time, and
 /// the mutator meets the same rows itself for 0.68 % more than it would have
-/// spent without the take.
+/// spent without the take — whatever share of the ring is live
+/// (`dev/BENCHMARKS.md`, "the mix"). Inside the bound that share is what the
+/// mutator saves: it walks the roots the trace proposed and no others.
 const TRACE_BLOCK_BUDGET: usize = 8;
 
 /// Entries a mutator's R holds at or above which a round takes a batch from
