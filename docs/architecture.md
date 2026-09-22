@@ -468,7 +468,7 @@ alt R below the threshold or byte not FREE\n(a collecting owner holds MUTATOR th
   worker -> worker : skip this owner
 else
   worker -> token : REQUESTED|s, and a bounded wait (REQUEST_WAIT)
-  mutator -> token : consent at the next poll or slot free\n(COLLECTOR|s), or refuse; a silent owner's\nrequest is withdrawn at the bound
+  mutator -> token : consent at the next poll or slot free\n(COLLECTOR|s), or refuse; a request not answered\ninside the bound stands on the byte, the record in the\ncollector's standing list, and is served at a checkpoint
   worker -> R : peek up to K entries from behind\nthe writer, clamped to P's room
   worker -> worker : mark + scan through AtomicCells\non its own arena, under a block budget
   worker -> P : one verdict per root, in R's order

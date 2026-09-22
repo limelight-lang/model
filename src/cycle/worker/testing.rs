@@ -371,9 +371,9 @@ pub(crate) fn byte_wakes_of(index: usize) -> usize {
 }
 
 /// Passes the checkpoints made over a standing list — walks, not
-/// checkpoints — since a case last asked, and grants released without a
-/// batch by them.
+/// checkpoints — since a case last asked.
 static PASSES: AtomicUsize = AtomicUsize::new(0);
+/// Grants the passes released without a batch since a case last asked.
 static RELEASED_UNSERVED: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn note_pass() {

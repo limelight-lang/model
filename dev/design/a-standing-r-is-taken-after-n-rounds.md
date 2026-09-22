@@ -1,11 +1,12 @@
 # A standing R is taken after an interval
 
-Design under review, opened 2026-09-22 (`PLAN.md`, S62); fifth form, the
+Accepted 2026-09-22 as the final algorithm; fifth form, the
 algorithm as Edmond ruled it after the Critic's two rounds and repaired to
 a third
 (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
-collector's own, and no request count is capped"). Not built, not normative;
-the `rfc` moves on adoption.
+collector's own, and no request count is capped"). Not built, not normative,
+and no stage opened for the build — `PLAN.md`, "A quiet thread's garbage is
+taken after X", is the owner; the `rfc` moves on adoption.
 
 ## The rule
 

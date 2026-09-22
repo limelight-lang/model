@@ -121,26 +121,6 @@ fn a_reused_record_is_claimable_once_its_next_thread_has_initialised() {
     pin_for_test(next_record, false);
 }
 
-/// A thread that asks the registry for `record` by name, and answers whether
-/// it got it; a refused name falls through to a carve, so the thread starts
-/// either way.
-fn a_thread_asking_for(record: *mut MutatorRecord) -> bool {
-    let sent = Sent(record);
-    std::thread::spawn(move || {
-        let wanted = sent.into_inner();
-        take_this_record_for_test(wanted);
-        assert!(
-            crate::memory::heap::ll_thread_init(),
-            "the pool served the asking thread"
-        );
-        let got = this_thread_record() == wanted;
-        crate::memory::heap::ll_thread_exit();
-        got
-    })
-    .join()
-    .expect("the asking thread finished")
-}
-
 /// A record a collector's request stands on — its link pair non-null — is
 /// not handed out again until that collector's pass drops it: the registry
 /// walks past it to the next free record or carves one, so no thread start

@@ -14,7 +14,7 @@
 
 use super::*;
 use crate::class::Class;
-use crate::cycle::mutator_record::{link_for_test, pin_for_test, take_this_record_for_test};
+use crate::cycle::mutator_record::{a_thread_asking_for, link_for_test, pin_for_test};
 use crate::cycle::testing::long_ring;
 use crate::cycle::token::{
     COLLECTOR, FREE, POSTED, REQUESTED, read_and_act_on_this_thread, state, word,
@@ -92,12 +92,11 @@ fn serve_on_this_thread(record: *mut MutatorRecord, standing: &mut Standing) -> 
     unsafe { serve(record, SLOT, 1, standing) }
 }
 
-/// Twenty sleepers — more than the array this list replaced held — all
-/// left standing by one sweep of requests, and every one served once the
-/// sleepers answer, one per pass, the rest released without a batch and
-/// pushed again with no wait, in the order they stood.
+/// Twenty sleepers, all left standing by one sweep of requests, and every
+/// one served once the sleepers answer, one per pass, the rest released
+/// without a batch and pushed again with no wait, in the walk's order.
 #[test]
-fn more_sleepers_than_the_old_array_held_stand_and_are_all_served_on_waking() {
+fn twenty_sleepers_stand_and_are_all_served_on_waking() {
     let _g = test_guard();
     reset_lanes();
     let _wait = HeldRequestWait::of(Duration::from_millis(2));
@@ -143,8 +142,9 @@ fn more_sleepers_than_the_old_array_held_stand_and_are_all_served_on_waking() {
     }
 
     // The released are asleep again to the walk: their requests are pushed
-    // with no wait, the mark cleared.
-    for sleeper in &sleepers[1..] {
+    // with no wait, the mark cleared. This walk runs backwards, so that the
+    // list's order is the walk's and not the release's.
+    for sleeper in sleepers[1..].iter().rev() {
         assert_eq!(
             serve_on_this_thread(sleeper.record(), &mut standing),
             Served::Unanswered
@@ -154,8 +154,9 @@ fn more_sleepers_than_the_old_array_held_stand_and_are_all_served_on_waking() {
     }
     assert_eq!(standing.standing_for_test().len(), 19);
 
-    // Round after round: the standing consent, one served per pass, in the
-    // order they stood.
+    // Round after round: the standing consent, one served per pass, the
+    // list's head first — the last pushed above — and then in the walk's
+    // order, which every re-push after a release follows.
     sleepers[0].poll();
     let mut served_in_order = Vec::new();
     for _ in 0..19 {
@@ -183,7 +184,9 @@ fn more_sleepers_than_the_old_array_held_stand_and_are_all_served_on_waking() {
         served_in_order.push(posted[0]);
         sleepers[posted[0]].poll();
     }
-    assert_eq!(served_in_order, (1..20).collect::<Vec<_>>());
+    let mut expected = vec![19];
+    expected.extend(1..19);
+    assert_eq!(served_in_order, expected);
     assert!(standing.standing_for_test().is_empty());
     assert_eq!(testing::take_outcomes().batches, 19);
 
@@ -238,25 +241,6 @@ fn a_record_that_exited_under_a_standing_request_is_handed_out_after_the_pass() 
     assert!(a_thread_asking_for(record), "and handed out");
     pin_for_test(record, false);
     reset_lanes();
-}
-
-/// A thread that asks the registry for `record` by name, and answers whether
-/// it got it; a refused name falls through to a carve.
-fn a_thread_asking_for(record: *mut MutatorRecord) -> bool {
-    let sent = Sent(record);
-    std::thread::spawn(move || {
-        let wanted = sent.into_inner();
-        take_this_record_for_test(wanted);
-        assert!(
-            crate::memory::heap::ll_thread_init(),
-            "the pool served the asking thread"
-        );
-        let got = mutator_record::this_thread_record() == wanted;
-        crate::memory::heap::ll_thread_exit();
-        got
-    })
-    .join()
-    .expect("the asking thread finished")
 }
 
 /// A consent that lands between the serve's reading hold and its request:
@@ -419,13 +403,13 @@ fn a_push_appends_and_a_forget_unlinks_from_any_place() {
             .all(|&record| unsafe { &*record }.is_standing())
     );
 
-    standing.forget(records[1]);
+    standing.forget(unsafe { &*records[1] });
     assert_eq!(standing.standing_for_test(), vec![records[0], records[2]]);
     assert!(!unsafe { &*records[1] }.is_standing());
-    standing.forget(records[1]);
-    standing.forget(records[0]);
+    standing.forget(unsafe { &*records[1] });
+    standing.forget(unsafe { &*records[0] });
     assert_eq!(standing.standing_for_test(), vec![records[2]]);
-    standing.forget(records[2]);
+    standing.forget(unsafe { &*records[2] });
     assert!(standing.standing_for_test().is_empty());
     assert!(
         records
@@ -436,8 +420,8 @@ fn a_push_appends_and_a_forget_unlinks_from_any_place() {
     standing.push(records[2]);
     standing.push(records[0]);
     assert_eq!(standing.standing_for_test(), vec![records[2], records[0]]);
-    standing.forget(records[0]);
-    standing.forget(records[2]);
+    standing.forget(unsafe { &*records[0] });
+    standing.forget(unsafe { &*records[2] });
 
     link_for_test(records[0], true);
     assert!(

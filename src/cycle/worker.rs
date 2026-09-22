@@ -873,7 +873,7 @@ fn round(index: usize, threshold: usize, standing: &mut Standing) -> Round {
 /// The note is read whatever the serve answers — a free-list record has a
 /// count equal to the copy, and a record between threads answers one
 /// spurious shortening at most. A batch served at a checkpoint inside the
-/// serve counts as this round's too, which is what the standing array's
+/// serve counts as this round's too, which is what the standing list's
 /// count carries out.
 ///
 /// # Safety
@@ -923,8 +923,9 @@ unsafe fn read_one_record(
 /// in a loop on the byte alone — the wait's return is not an answer — and
 /// a refusal or a life ended inside it is the withdrawal's read-back
 /// ([`crate::cycle::token::Withdrawn`]). Past the deadline the request is
-/// not withdrawn: it stays on the byte and the record joins the collector's
-/// standing list ([`Standing`]), to be served at a checkpoint
+/// not withdrawn: it stays on the byte, the record in the collector's
+/// standing list ([`Standing`]) since before the request was made, to be
+/// served at a checkpoint
 /// ([`Standing::checkpoint`]) once the mutator answers — at its first slot
 /// free or poll after waking, at most one stranger's batch away — or
 /// withdrawn when the thread ends. A mutator a checkpoint released without
@@ -1026,7 +1027,7 @@ unsafe fn answer_a_refused_request(
     standing: &mut Standing,
 ) -> Served {
     if state(seen) == POSTED {
-        standing.forget(std::ptr::from_ref(mutator).cast_mut());
+        standing.forget(mutator);
         return Served::Posted;
     }
 
@@ -1044,15 +1045,15 @@ unsafe fn answer_a_refused_request(
         return unsafe { serve_the_grant(mutator, slot, threshold, standing) };
     }
 
-    standing.forget(std::ptr::from_ref(mutator).cast_mut());
+    standing.forget(mutator);
     Served::TokenHeld
 }
 
 /// Wait out [`REQUEST_WAIT`] for the mutator's consent to the request
 /// [`serve`] just made, and answer: the grant is served; a refusal or a
 /// life ended is the withdrawal's read-back ([`answer_the_withdrawal`]);
-/// the deadline leaves the request standing on the byte and pushes the
-/// record onto the list.
+/// the deadline leaves the request standing on the byte, the record in the
+/// list since before the request.
 ///
 /// The wait is on the byte alone, its own return being no answer; a return
 /// before the deadline that is not the grant runs the second checkpoint and
@@ -1152,7 +1153,7 @@ unsafe fn answer_the_withdrawal(
     };
     // No request stands after a withdrawal that landed or a refusal: the
     // record leaves the list.
-    standing.forget(std::ptr::from_ref(mutator).cast_mut());
+    standing.forget(mutator);
     outcome
 }
 
@@ -1170,7 +1171,7 @@ unsafe fn serve_the_grant(
     threshold: usize,
     standing: &mut Standing,
 ) -> Served {
-    standing.forget(std::ptr::from_ref(mutator).cast_mut());
+    standing.forget(mutator);
     // Released on the unwind too: a collector that panicked under the claim
     // would otherwise leave the mutator's wait forever; the posted fact is
     // set before the first post, so the unwind's release says what the
@@ -1228,7 +1229,7 @@ impl Drop for WithdrawOnDrop<'_> {
 
 /// The requests a collector left standing on the bytes of mutators that did
 /// not answer inside the wait: a doubly linked list threaded through the
-/// records ([`MutatorRecord::standing_links`]), its two ends on the
+/// records ([`MutatorRecord::standing_next`], [`MutatorRecord::standing_prev`]), its two ends on the
 /// collector thread's frame, with no capacity — the number of mutators is
 /// nobody's to know in advance (`dev/DECISIONS.md`, "the standing request
 /// lives on the record, the checkpoint serves one grant, and no count is
@@ -1271,20 +1272,19 @@ impl Standing {
     /// between a pass's read and the walk's request. The stores are in the
     /// list's order: `next` first, the word the registry reads.
     fn push(&mut self, record: *mut MutatorRecord) {
-        let (next, prev) = unsafe { &*record }.standing_links();
-        if !next.load(Ordering::Relaxed).is_null() {
+        let mutator = unsafe { &*record };
+        if !mutator.standing_next().load(Ordering::Relaxed).is_null() {
             return;
         }
 
-        next.store(record, Ordering::Release);
+        mutator.standing_next().store(record, Ordering::Release);
         if self.last.is_null() {
-            prev.store(record, Ordering::Relaxed);
+            mutator.standing_prev().store(record, Ordering::Relaxed);
             self.first = record;
         } else {
-            prev.store(self.last, Ordering::Relaxed);
+            mutator.standing_prev().store(self.last, Ordering::Relaxed);
             unsafe { &*self.last }
-                .standing_links()
-                .0
+                .standing_next()
                 .store(record, Ordering::Relaxed);
         }
         self.last = record;
@@ -1294,43 +1294,56 @@ impl Standing {
     /// first, `prev` second, `next` last, with a release, so that the
     /// registry's acquire load of `next` sees the record unlinked only once
     /// it is.
-    fn forget(&mut self, record: *mut MutatorRecord) {
-        let (next, prev) = unsafe { &*record }.standing_links();
-        let n = next.load(Ordering::Relaxed);
-        if n.is_null() {
+    fn forget(&mut self, mutator: &MutatorRecord) {
+        let record = std::ptr::from_ref(mutator).cast_mut();
+        let next_record = mutator.standing_next().load(Ordering::Relaxed);
+        if next_record.is_null() {
             return;
         }
 
-        let p = prev.load(Ordering::Relaxed);
-        let is_first = p == record;
-        let is_last = n == record;
+        let prev_record = mutator.standing_prev().load(Ordering::Relaxed);
+        let is_first = prev_record == record;
+        let is_last = next_record == record;
         if is_first {
-            self.first = if is_last { std::ptr::null_mut() } else { n };
+            self.first = if is_last {
+                std::ptr::null_mut()
+            } else {
+                next_record
+            };
         } else {
-            unsafe { &*p }
-                .standing_links()
-                .0
-                .store(if is_last { p } else { n }, Ordering::Relaxed);
+            unsafe { &*prev_record }.standing_next().store(
+                if is_last { prev_record } else { next_record },
+                Ordering::Relaxed,
+            );
         }
         if is_last {
-            self.last = if is_first { std::ptr::null_mut() } else { p };
+            self.last = if is_first {
+                std::ptr::null_mut()
+            } else {
+                prev_record
+            };
         } else {
-            unsafe { &*n }
-                .standing_links()
-                .1
-                .store(if is_first { n } else { p }, Ordering::Relaxed);
+            unsafe { &*next_record }.standing_prev().store(
+                if is_first { next_record } else { prev_record },
+                Ordering::Relaxed,
+            );
         }
-        prev.store(std::ptr::null_mut(), Ordering::Relaxed);
-        next.store(std::ptr::null_mut(), Ordering::Release);
+        mutator
+            .standing_prev()
+            .store(std::ptr::null_mut(), Ordering::Relaxed);
+        mutator
+            .standing_next()
+            .store(std::ptr::null_mut(), Ordering::Release);
     }
 
     /// The record after `record` in the list, or null past the last.
     fn after(record: *mut MutatorRecord) -> *mut MutatorRecord {
-        let n = unsafe { &*record }
-            .standing_links()
-            .0
-            .load(Ordering::Relaxed);
-        if n == record { std::ptr::null_mut() } else { n }
+        let next_record = unsafe { &*record }.standing_next().load(Ordering::Relaxed);
+        if next_record == record {
+            std::ptr::null_mut()
+        } else {
+            next_record
+        }
     }
 
     /// Read every standing request once, when a byte event has happened
@@ -1364,7 +1377,7 @@ impl Standing {
             let mutator = unsafe { &*cursor };
             let seen = mutator.token.read();
             if seen != requested {
-                self.forget(cursor);
+                self.forget(mutator);
                 if seen == granted {
                     if kept.is_null() {
                         kept = cursor;
@@ -1428,11 +1441,11 @@ impl Drop for Standing {
         let mut cursor = self.first;
         while !cursor.is_null() {
             let following = Self::after(cursor);
-            let token = unsafe { &(*cursor).token };
-            if token.withdraw(self.slot) == Withdrawn::Granted {
-                token.release_claim(self.slot, false);
+            let mutator = unsafe { &*cursor };
+            if mutator.token.withdraw(self.slot) == Withdrawn::Granted {
+                mutator.token.release_claim(self.slot, false);
             }
-            self.forget(cursor);
+            self.forget(mutator);
             cursor = following;
         }
     }

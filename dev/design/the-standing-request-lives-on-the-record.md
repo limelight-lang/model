@@ -2,10 +2,11 @@
 
 Accepted 2026-09-22 (`dev/DECISIONS.md`, "the standing request lives on the
 record, the checkpoint serves one grant, and no count is capped"): the Sage's
-ruling, attacked by a Critic, amended by the Sage, accepted by Edmond. Not
-built; the build is `PLAN.md`, S63. The `rfc`'s handshake
-(`rfc/dev/design/trace-token-handshake.md`) is rewritten to this when S63
-lands, and is normative from then.
+ruling, attacked by a Critic, amended by the Sage, accepted by Edmond. Built
+the same day, as `worker::Standing` and the link pair on the reader line of
+`MutatorRecord`; the `rfc`'s handshake
+(`rfc/dev/design/trace-token-handshake.md`) is rewritten to this and is
+normative. This document keeps the argument and the refused forms.
 
 ## What changes and what does not
 
@@ -31,7 +32,7 @@ withdrawn within nanoseconds every round until an entry frees.
 
 On the reader line of `MutatorRecord`, the collector's line, in the sixteen
 bytes at 48–64 and the one at 28 that `silent`'s removal leaves (the layout
-asserts stand, to be confirmed by the build):
+asserts stand):
 
 - `standing_next`, `standing_prev: AtomicPtr<MutatorRecord>` — the link
   pair of a doubly linked intrusive list whose two end pointers stand on
@@ -107,7 +108,7 @@ and only then the request — linked before the request lands, so that an
 exit which takes the request finds the record in the list and the
 registry's gate holds it (linking after the wait would let the exit's
 refusal, the free list and a new life's take all run between the byte read
-and the link; the S63.2 Critic's finding). `TraceToken::request`'s success
+and the link; the Critic's finding of 2026-09-22 over the list). `TraceToken::request`'s success
 is `AcqRel` for the same reason: the exit's take synchronizes with it, and
 the registry's acquire load of `next` then sees the link. Every outcome
 that leaves no request standing unlinks: the refusal's `POSTED` and
@@ -132,7 +133,7 @@ list.
 
 **The drop**, at the thread's end and on the unwind: for each entry,
 withdraw; a `Granted` read-back is released with no batch; then unlink.
-The S62 take (`dev/design/a-standing-r-is-taken-after-n-rounds.md`) and the
+The take of a standing R (`dev/design/a-standing-r-is-taken-after-n-rounds.md`) and the
 unwind guard are unchanged: the take withdraws at its deadline and leaves
 nothing standing, by Edmond's rule.
 
@@ -145,7 +146,8 @@ A mutator that answers inside the wait: its own batch. A sleeper consenting
 from a standing request: the stranger's batch in progress at its consent,
 plus its own if it is the head at the next pass; otherwise it is released at
 that pass and re-requested without a wait within one round, and served at
-the pass where it is the head — by FIFO, after every entry released before
+the pass where it is the head — in the walk's order, which is fixed across
+rounds since a released record is pushed again at the walk's next request to
 it, so in a lockstep burst of n the last is served at its n-th event, each
 window at most one stranger's batch. A blocked take or an exit waits at most
 one stranger's batch plus, if served, its own; the release is real for it
@@ -219,8 +221,14 @@ and stays.
 
 ## Not established from the files
 
+The link is published to the registry's gate by the request that follows it,
+whose release the exit's take reads; a link followed by a request that
+failed is published by nothing until its unlink, a gap of the memory model
+that no hardware here produces (`PLAN.md`, "What the standing list named and
+left, 2026-09-22").
+
 (The reader line's layout, 64 bytes with the pair and the byte, is a
-`const` assert since S63.1.) No writer of the byte outside `token.rs` and its three test-only writers
+`const` assert in `mutator_record`.) No writer of the byte outside `token.rs` and its three test-only writers
 was read; another would need the byte wake. "No listed record is renamed"
 rests on `hand_over_half` reading only `backlogged`, on `reclaims` taking
 only `UNBORN` slots, and on `catch_unwind` in `run_the_life` under the test

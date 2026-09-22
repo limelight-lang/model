@@ -16,7 +16,20 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-22 · Active: S63; S62, a design stage, is done and waits on nothing. S61 went on 2026-09-22, the day it opened:
+Updated: 2026-09-22 · Active: none. S63 went on 2026-09-22, the day after
+its design: the collector's standing requests live on the records as a list
+with no capacity, read at a checkpoint only after a byte event and serving
+one grant per pass, the silent mark gone (`dev/DECISIONS.md`, "the standing
+request lives on the record, the checkpoint serves one grant, and no count is
+capped"; `dev/design/the-standing-request-lives-on-the-record.md`, the
+`rfc`'s handshake document amended); its three steps closed with their
+Critics and the Code Reviewer paid, the two sleeper probes re-run
+(`dev/BENCHMARKS.md`, "the sleeper probes on the standing list"). S62 went
+with it, a design stage: the take of a standing R after an interval of the
+collector's own is the accepted algorithm, not built and no stage opened
+(`dev/DECISIONS.md`, "a standing R is taken after an interval of the
+collector's own, and no request count is capped";
+`dev/design/a-standing-r-is-taken-after-n-rounds.md`). S61 went on 2026-09-22, the day it opened:
 the sibling-birth red of the journal gate was the harness's stand-in for a
 disposition racing the round it stands in for, found by stretching the other
 mutator's tick and repaired by clearing every mutator's `POSTED` by hand
@@ -129,236 +142,6 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   failure is reportable, would remove it if `pthread_setspecific` allocates
   nothing per thread — which nobody has read, on any target. Named when the
   reserve's first touch was decided on 2026-08-29 and priced nowhere since.
-## S62 — A standing R is taken after N rounds  [done]
-
-Goal: the second half of "A quiet thread's garbage is taken after X" has an
-algorithm Edmond has accepted or a list of questions only he can answer —
-the collector's own take of a candidate ring that stands non-empty below the
-threshold for N of its rounds, the mutator's side unchanged.
-Done when: `dev/design/a-standing-r-is-taken-after-n-rounds.md` has been
-through two Critic rounds, every finding answered by a repair or a refusal
-with its reason, the findings neither could answer ruled by the Sage, and
-the document ends either as the final algorithm or as the questions to
-Edmond; the chain is Edmond's of 2026-09-22 (Critic → repair → Sage if no
-answer → Critic → repair → Sage if questions remain → Edmond).
-Notes: a design stage — no code, no bench, no rfc edit; the rfc moves on
-adoption (`dev/DECISIONS.md`, "analysis of a candidate that may be refused
-stays in `dev/`, and the rfc moves only on adoption"). The rule in one line,
-Edmond's: below the threshold the collector does not collect too often, but
-after three or four of its intervals with the ring standing it collects
-anyway, and the collector decides.
-
-- [x] S62.1 The algorithm written
-      done: the document states the rule, the words on the record, the
-        round's reading, the serve at a threshold of one, the silent
-        mutator's cost, the interactions with the turnover request, the
-        siblings, the timer and the pressure path, the refused forms and the
-        open points
-      tier: T2 · role: —
-      handoff: `dev/design/a-standing-r-is-taken-after-n-rounds.md`, first
-        form; two open points, the silent mutator and the count's unit.
-- [x] S62.2 Critic, round one, and the repairs
-      done: every finding of the first Critic pass is repaired in the
-        document or refused with its reason in this step's role line; a
-        finding with neither goes to the Sage and its ruling is `Final`
-      tier: T2 · role: Critic → Sage
-      Critic 2026-09-22 round 1: a count of rounds is not "intervals" —
-        rounds are wake-driven and 10 ms apart after a batch, so four rounds
-        take the dripping mutator the threshold spares, and the S60 ruling
-        rejected an X tied to the adaptive interval by name (accepted: a
-        floor of 4 s on the serve clock from the instant the ring was first
-        seen unchanged; the reading of "interval" is question 1 to Edmond);
-        a standing request for a take lets blocked sub-threshold threads
-        fill the 16-entry array and starve a producing silent mutator
-        (accepted: a silent mutator is not taken; question 3); the identity
-        test needed a third word and the tail-index equality is fooled by a
-        pack (accepted: the block copy dropped with the argument why none
-        is needed, and the clock's stamp joins the change test; the
-        no-commit retirement named as a one-round residual); the cost
-        omitted the recurring in-line trace per X of the roots read live
-        (accepted, in Cost and in the measurement plan); an `AtomicU8` count
-        with no saturation (moot, the count is gone); the threshold
-        parameter's reach into `batch` and the checkpoints turns a leftover
-        into a backlog (accepted: the parameter goes, `batch` reads the
-        threshold itself, the take is a local flag); P without room and the
-        count (accepted: the standing stands, the take waits a round); the
-        ring needs a reader returning the front block's words (accepted,
-        `Reader::front_block_reading`); "same non-empty R" is a reading to
-        confirm (question 2). No finding went to the Sage: each had a repair
-        or a question for Edmond.
-      handoff: the document's second form; three questions in "Open".
-- [x] S62.3 Critic, round two, and the repairs
-      done: as S62.2 over the repaired document; a finding with no answer
-        goes to the Sage
-      tier: T2 · role: Critic → Sage
-      Critic 2026-09-22 round 2: a take whose consent missed the wait marked
-        the mutator silent, and the mark clears only on a grant, so one late
-        answer excluded the running thread the rule is for, for the record's
-        life (accepted: the take's withdrawal marks nothing and restarts the
-        standing; question 3 re-stated); branches 1 and 2 zeroed the instant
-        and kept the index, so a fresh ring at the old index met a zero
-        instant and was taken at once (accepted: a zero instant is a change,
-        and the index is cleared to `usize::MAX`); the take fed K's sizing —
-        four takes of three doubled K to 1024, a K of one took a ring of
-        three a root per round (accepted: the take's clamp is R's count and
-        the sizing is skipped); "a take's close counts a commit" is false
-        for verdicts all read live (accepted: the sentences rest on the
-        restamp and the tail move); the drip is spared only while the lane
-        is empty, S60's X collection tracing R whole otherwise (accepted, in
-        the standing's argument, the interactions and the cost); dropping
-        the threshold parameter re-aims `the_batch`'s clamp cases for no
-        runtime change (accepted: the parameter stays, the take passes the
-        round's threshold); the first measured term was the collector's
-        time, not the mutator's (accepted: the withheld frees and the
-        collection over P); "the tail index is the count" invites storing
-        the span (accepted, struck). The narrow window between branch 3's
-        clock read and the round's restamp joins the named residuals. No
-        finding went to the Sage.
-      handoff: the document's third form; three questions in "Open",
-        the third re-stated.
-      Edmond 2026-09-22, on the three questions: the interval is the
-        collector's own time, a parameter of the ABI; once the interval
-        has passed the ring's length no longer matters, so "non-empty" and
-        not "unchanged"; a sleeping thread is left alone, and no count of
-        requests may be capped — the 16-entry standing array is wrong as a
-        mechanism and is filed as its own stage. The fourth form is the
-        rule in those terms (`dev/DECISIONS.md`, "a standing R is taken
-        after an interval of the collector's own, and no request count is
-        capped").
-      Critic 2026-09-22 round 3 (over the fourth form, at Edmond's word):
-        a take restamps the turnover ask by fiat as any batch does, and an
-        all-live take moves no clock, so a drip taken every interval is
-        never asked for a turnover and the two halves cancel (accepted: the
-        take's restamp is decided by the clock alone; the same hole in the
-        built S60 rule is the backlog line "A batch that moved no clock
-        restamps the turnover ask"); a hit left the instant standing, so a
-        write-back ten milliseconds later was re-taken at the round's
-        cadence (accepted: the instant restarts when the request lands,
-        hit or miss); a sleeping mutator costs its collector a 2 ms wait per
-        interval, serially inside the round, which the silent mark spares
-        the threshold path and the take refuses (accepted as a cost: named,
-        measured with a round-length term and an off value, and the record
-        stage named as what removes it); four wordings an implementer would
-        have to guess — the checkpoints under a take's wait, the miss's
-        `Served`, the grant clearing the mark, the flag's reach (accepted,
-        each stated); the rule's sentence claimed the ring's history where
-        the word knows the collector's visits (accepted, amended). No
-        finding went to the Sage.
-- [x] S62.4 The final algorithm, or the questions to Edmond
-      done: the document's "Open" section is empty and the rest is the
-        algorithm as ruled, or "Open" lists the questions only Edmond can
-        answer with a proposed answer to each, and Edmond has been shown
-        which of the two it is
-      tier: T1 · role: —
-      handoff: the fifth form is the final algorithm, "Open" empty; the
-        one price Edmond is told with it is the sleeper's 2 ms per interval
-        inside the round until the standing request has a home on the
-        record. Building it is a stage of its own, not opened.
-
-## S63 — The standing request lives on the record  [in progress]
-
-Goal: no count of standing requests is capped, a consented mutator's window
-is bounded by one stranger's batch whatever the number of threads, and the
-mutator's side is untouched — the algorithm of
-`dev/design/the-standing-request-lives-on-the-record.md`, accepted
-2026-09-22 (`dev/DECISIONS.md`, "the standing request lives on the record,
-the checkpoint serves one grant, and no count is capped").
-Done when: `worker::Standing` is a head over a list threaded through the
-records with no capacity, the silent mark's "missed a wait" meaning is
-gone, a checkpoint walks only on a byte event and serves one grant, the
-registry refuses a linked record, the six tests the design owes are green
-with the gate, and the `rfc`'s handshake document states the new form.
-Notes: the mutator's `token.rs` state machine, `read_and_act_on_this_thread`,
-the poll and the free path change in nothing; the only `token.rs` edit is
-the wake entry the consent and the refusal call. Every step is a cycle-GC
-step: the baseline recorded, a red test seen, the Critic over the repair.
-
-- [x] S63.1 The words: the link pair and the released byte on the reader
-      line, the sequence number on the collector's slot
-      done: `ReaderLine` carries `standing_next`, `standing_prev`,
-        `released_unserved` with the layout asserts standing; `reset`
-        clears the byte, leaves the links and debug-asserts them null;
-        `first_free_record` skips a linked record and a case shows the take
-        falling through to a carve; `Collector` carries `byte_wakes`, and
-        `wake_for_the_byte` is what `consent` and `take_unless`'s refusal
-        call, a case reading the number move on each and on nothing else
-      tier: T2 · role: Critic
-      baseline: the reader line 48 of 64 bytes; the registry's gate one
-        acquire load of the hold word; a consent one release swap and one
-        wake; a refusal one acquire swap and one wake.
-      Critic 2026-09-22: "`next != null` is linked" gated a two-word state
-        with no store order, so the registry could hand out a record between
-        an unlink's two stores or under a push in flight (accepted: `next`
-        is the first word a link writes and the last an unlink clears, in
-        the field's contract and in `link_for_test`); the head sentinel on
-        the frame was a `*mut MutatorRecord` to two stack words (accepted:
-        self-terminated ends, the design amended); the token case named
-        slot 5, which its neighbour refuses a request on under the parallel
-        harness (accepted: slot 7, the reason at the constant); the number's
-        stated reason missed the collector's own withdrawal (accepted); the
-        gate was duplicated across the cfg arms so production's arm ran
-        under no test (accepted, lifted); plan-step numbers in the three
-        `expect` reasons (refused: `dev/WORKFLOW.md`, "How a debt is
-        written", names that form as the self-reporting one); the reset's
-        abort from `ll_thread_init` holds as the crate's form once the
-        order stands. Asides left as they are: `a_thread_asking_for` now
-        exists in two test modules with differing bodies; "a spare" for the
-        hold line in the record tests' module doc is older than this step.
-      handoff: `ReaderLine::standing_next`/`standing_prev`/`released_unserved`
-        and their accessors, `link_for_test`; `first_free_record` reads
-        `stands_in_no_list`; `Collector::byte_wakes`, `wake_for_the_byte`,
-        `testing::byte_wakes_of`. Both cases seen red (the reset's assert
-        aborting with the gate cut; "the consent moved it" with the plain
-        wake).
-- [x] S63.2 The list and the checkpoint
-      done: `Standing` is the head pair with `push` (idempotent, at the
-        tail), `forget` (O(1), no-op unlinked) and the gated pass — no walk
-        without a byte event, the whole list read, every grant but the first
-        released to `FREE` and marked, the first unlinked and served; the
-        expired wait pushes instead of withdrawing; `serve` pushes a marked
-        record with no wait; every entry to `serve_the_grant` is unlinked;
-        the drop withdraws and unlinks; `STANDING_CAPACITY`, `silent`,
-        `is_silent`, `note_silent` and the "past the capacity" arm are gone;
-        the six owed cases green; `what_the_byte_arms`' moved assertions
-        re-stated as the design says and nothing else of the suite changed
-      tier: T2 · role: Critic
-      baseline: `Standing` sixteen entries on the frame, `push` false past
-        them, `checkpoint` a full read of the array at every request and
-        every wait return, the deadline a withdrawal and a silent mark, the
-        next request to a marked mutator pushed with no wait.
-      Critic 2026-09-22: the record was linked after the wait, so an exit
-        taking the request, the free list and a new life's take could all
-        run between the byte read and the link, and the registry's gate
-        gated nothing (accepted: the push precedes the request, every
-        outcome that leaves no request standing unlinks, and `request`'s
-        success is `AcqRel` so the exit's take synchronizes with the link);
-        `REQUEST_WAIT`'s doc and `under_stress.rs`'s prose described the
-        withdrawal and the mark (accepted); the burst case's `Served::Idle`
-        rests on one batch taking the ring whole (accepted: the `const`
-        assert `under_stress.rs` carries). Holds: the store order, the
-        pass's cursor against `forget`, the byte-event gate's window,
-        `Standing::new`'s load, the released mark's staleness, the drop's
-        order, the round-start batch's counting, the cases' shared wait.
-        What the six cases do not pin: "no wait for a released one" is the
-        cleared mark, not time; a burst inside a held batch is
-        `under_stress.rs`'s ignored probe.
-      handoff: `worker::Standing` is the end pair over the records' link
-        pairs, `push`/`forget`/`after`/`checkpoint`, the round-start
-        checkpoint; the deadline leaves the request; `silent` is gone;
-        `worker/tests/the_standing_list.rs`, six cases; two seen red with
-        the byte-event gate cut, the "release the rest" cut hangs the
-        harness instead. Gate: 1091 ×4, folding, journal 4 runs — one red of
-        the flake watch's `a_heapless_life_gives_back_the_blocks`, twice in
-        this step's runs, the watch amended.
-- [ ] S63.3 The handshake document and the journals
-      done: `rfc/dev/design/trace-token-handshake.md`'s collector paragraph,
-        "Cost", the third round's bound, timing (a) and E7 state the new
-        form; `dev/ARCHITECTURE.md` and `dev/INDEX.md` name the list; the
-        S51.5 sleeper probe re-run and its figure recorded beside the old
-      tier: T1 · role: —
-
----
-
 ## Cross-cutting (every stage)
 
 - The old collectors are reachable at `archive/pre-rc-cycle` and nowhere else.
@@ -571,8 +354,9 @@ live: `archive/pre-rc-cycle`").
   clock did not move and the stamp says it did. A thread at the threshold
   batched more often than X with all-live batches is never asked for a
   turnover, and its deferred lane waits for pressure or exit. Found by the
-  Critic over S62's fourth form, 2026-09-22, as the same hole a take would
-  open; the design decides the take's restamp by
+  Critic over the take design's fourth form
+  (`dev/design/a-standing-r-is-taken-after-n-rounds.md`), 2026-09-22, as
+  the same hole a take would open; the design decides the take's restamp by
   `clock_stood_since_the_stamp` alone, and the batch's is this line. done:
   the restamp after a batch is decided by the clock, a case shows a thread
   batched all-live every X/2 asked after X, and the S60 entry's "a serve
@@ -593,11 +377,16 @@ live: `archive/pre-rc-cycle`").
   `an_unarmed_poll_leaves_a_completed_death_registered`). The cheapest form
   leaves the poll alone: a round serves such a mutator at a threshold of one
   once X has passed since the instant the round stamps on its record
-  (`MutatorRecord::served_at`). Its tail is
-  unpriced: a thread with one entry in R that polls nothing within
-  `REQUEST_WAIT` is marked silent, its request stands on the collector's
-  frame up to `STANDING_CAPACITY`, and a standing request opens a
-  foreign-holder window on the thread the moment it wakes.
+  (`MutatorRecord::served_at`). The algorithm
+  is accepted and not built: `dev/design/a-standing-r-is-taken-after-n-rounds.md`
+  (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
+  collector's own, and no request count is capped") — the take after an
+  interval of the collector's own, an ABI dial, of a ring standing non-empty,
+  a sleeping thread left alone. A thread with one entry in R that polls
+  nothing within `REQUEST_WAIT` leaves its request standing on its record in
+  the collector's list, and a standing request opens a foreign-holder window
+  on the thread the moment it wakes, bounded by one stranger's batch
+  (`dev/design/the-standing-request-lives-on-the-record.md`).
 - [ ] **An occupant of a retained block freed from another thread inside the
   reset that retained it.** `retained::occupant_freed` subtracts from the low
   half of a count word whose high half holds the pins, so a free arriving
@@ -611,6 +400,22 @@ live: `archive/pre-rc-cycle`").
   done: one red test reaches the free from a second thread inside the reset,
   or a demonstration that the shape is unreachable is recorded in
   `dev/DECISIONS.md`.
+- [ ] **What the standing list named and left, 2026-09-22.** The registry's
+  gate reads a record's link word with one acquire load, and what publishes
+  the link is the request the collector makes after it, whose release the
+  exit's take reads. A link followed by a request that failed — the exit took
+  `FREE` first — is published by nothing: in the memory model the new life's
+  gate may read the link as null while the collector's `forget` is still to
+  write the record's link words, and a collector the new life is named to may
+  push it meanwhile, two lists in one chain. The exit, the free list, the
+  registry's take and the new life's first serve would all have to complete
+  inside the nanoseconds between the push and the failed swap while a retired
+  store stays invisible, which no hardware here produces and no run can
+  demonstrate; the Code Reviewer of 2026-09-22 rated it a gap in the
+  argument and not a reachable defect, and the field's doc states it
+  (`MutatorRecord`, `standing_next`). What would close it is a publication
+  of the link that the exit's path reads before the record reaches the free
+  list, which a swap that fails writes nothing for; no form is priced.
 - [ ] **What S59 named and left, 2026-09-19.** Two branches of the birth have
   no arm: the guard's `mprotect` failure, which no test can order, and a join
   that fails, for which glibc documents `EDEADLK` on a self-join alone and no

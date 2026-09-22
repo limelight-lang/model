@@ -401,7 +401,17 @@ pressure collection, or on its timer. A round walks the records named to it
 whose byte reads `FREE`, requests the token — `REQUESTED|s` — and waits a
 bound for the owner's consent, given at its next poll or slot free; a
 collecting owner's byte reads `MUTATOR` and the request's swap fails on it
-(path 5). Under `COLLECTOR|s` it
+(path 5). A request the owner did not answer inside the bound stays on the
+byte, and the record stands in the collector's standing list, threaded
+through the records by a link pair on each collector line with no capacity
+(`worker::Standing`); the list is read at the collector's checkpoints — the
+round's start, before every request, after every return of the wait — and
+only after a consent or a refusal moved the slot's byte-event number, one
+grant served per pass and every other grant released to `FREE` without a
+batch, so a sleeper that wakes is served within one stranger's batch of its
+consent whatever the number of threads, and the registry hands out no
+record while it is linked (`dev/design/the-standing-request-lives-on-the-record.md`).
+Under `COLLECTOR|s` it
 peeks up to K entries from behind R's writer, clamped to P's room, traces
 them through `cells::AtomicCells` on its own arena under a block budget,
 posts one verdict per root into P in R's order, advances R past them by a

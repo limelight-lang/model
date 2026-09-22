@@ -8,6 +8,37 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-22 — S63.3 the sleeper probes on the standing list: the same figures as on the array
+
+The standing array of sixteen entries on the collector's frame became a list
+threaded through the records, with no capacity, a checkpoint that walks only
+after a consent or a refusal, and one grant served per pass
+(`dev/design/the-standing-request-lives-on-the-record.md`). The two sleeper
+probes of 2026-09-17 (below, "S51.5 the token handshake's instruments") were
+re-run on the list's tree, `9460ae2`, release build, one case at a time under
+the crate's own request wait, at a load average of 2.1–2.6:
+
+- *A sleeper.* Blocked 2 s on the pipe: 7 rounds while blocked, 7
+  `Unanswered` — the first round's request made with the wait and left
+  standing, each later round's request failing on its own `REQUESTED|0` and
+  waiting nothing — no batch and no grant, its byte `REQUESTED|0` before the
+  pipe was written; after the write its ring was batched and collected
+  3.32 ms later, inside one round, the 64 freed by its own disposition.
+  On 2026-09-17: 7 rounds, 7 `Unanswered`, 3.46 ms.
+- *Sleepers beside an active mutator.* The active mutator's interval between
+  two collections over P, median of 20 after 4 of warm-up: alone 11.02,
+  11.12, 11.09 ms over three runs; beside three sleepers standing with their
+  rings at the threshold, 11.10 ms — inside the runs' spread. On 2026-09-17:
+  alone 10.71, 11.09, 11.05 ms, beside 11.09 ms.
+
+What the probes can tell apart is unchanged by the list: a standing request
+costs the round no wait on either form, and a sleeper's service after its
+first poll is one checkpoint away on either. What the list changes — the
+seventeenth sleeper, and a burst of wakers inside one held batch — the six
+cases of `worker/tests/the_standing_list.rs` pin as counts, not as time;
+the held-batch probe `under_stress.rs` carries is the window bound's
+instrument and stands as it was.
+
 ## 2026-09-21 — S60.6 what the poll costs with a deferred record standing: 8.1–8.5 ns against 7.0–7.8 ns for the empty lane, which S37.8's figure still holds
 
 **Two arms of `cycle::collect::tests::what_the_poll_costs`.** The empty arm is
