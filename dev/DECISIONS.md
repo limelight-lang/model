@@ -97,8 +97,8 @@ line with its blocked corpus arm.
 whether the take of a standing R
 (`dev/design/a-standing-r-is-taken-after-n-rounds.md`) is built as its fifth
 form had it, withdrawing at the consent deadline, or leaves its request
-standing now that a standing request lives on the record. Nothing is built
-yet; the design carries the ruled form and the stage is unopened.
+standing now that a standing request lives on the record. The design carries
+the ruled form, and `PLAN.md`'s S64 builds it.
 
 **What.** The take's request is the threshold path's: the record pushed onto
 the standing list, one swap `FREE → REQUESTED|slot`, `REQUEST_WAIT` for the

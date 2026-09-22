@@ -351,6 +351,20 @@ pub extern "C" fn ll_gc_set_quiet_interval(millis: u64) {
     crate::cycle::worker::set_quiet_interval(std::time::Duration::from_millis(millis));
 }
 
+/// ABI: set how long a mutator's candidate ring may stand non-empty below
+/// the collector's serve threshold before the round takes it as an ordinary
+/// batch, in milliseconds; zero restores the crate's default
+/// (`dev/design/a-standing-r-is-taken-after-n-rounds.md`). The embedder's
+/// dial over how long the garbage a thread registers at a rate below the
+/// threshold waits, against one batch's window per interval on a thread
+/// that keeps registering. Callable at any time from any thread: the
+/// figure a round compares a standing ring's instant against is this one
+/// from the call on.
+#[unsafe(no_mangle)]
+pub extern "C" fn ll_gc_set_standing_interval(millis: u64) {
+    crate::cycle::worker::set_standing_interval(std::time::Duration::from_millis(millis));
+}
+
 /// ABI: serve the collector's checkpoint now. The compiler emits it once
 /// **after** a run of [`ll_release_batch`](crate::refcount::ll_release_batch)
 /// calls (a scope exit), paired with one [`ll_gc_checkpoint_ack`] before the

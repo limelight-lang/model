@@ -26,7 +26,7 @@ capped"; `dev/design/the-standing-request-lives-on-the-record.md`, the
 Critics and the Code Reviewer paid, the two sleeper probes re-run
 (`dev/BENCHMARKS.md`, "the sleeper probes on the standing list"). S62 went
 with it, a design stage: the take of a standing R after an interval of the
-collector's own is the accepted algorithm, not built and no stage opened
+collector's own is the accepted algorithm, and S64 below builds it
 (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
 collector's own, and no request count is capped";
 `dev/design/a-standing-r-is-taken-after-n-rounds.md`). S61 went on 2026-09-22, the day it opened:
@@ -166,7 +166,7 @@ a take does differently lives at branch 3 of the round and inside `batch`.
 Every step is a cycle-GC step: the baseline recorded, a red test seen, the
 Critic over the repair.
 
-- [ ] S64.1 The word and the interval dial
+- [x] S64.1 The word and the interval dial
       done: `standing_since` stands on the hold line and is cleared where
         the registry clears that line at a re-take, the layout asserts
         standing; `STANDING_INTERVAL` is 4 s, `ll_gc_set_standing_interval`
@@ -174,6 +174,33 @@ Critic over the repair.
         does; a case reads the dial from the ABI and one from the harness
         override
       tier: T2 · role: Critic
+      baseline: 1124 tests listed, the record 256 bytes with the hold line
+        holding two of its 64, the embedder's dials `ll_gc_set_collector_cap`
+        and `ll_gc_set_quiet_interval`; red seen at
+        `a_retaken_record_starts_with_fresh_lines`, which failed until the
+        clear in `take_record` landed. Three mutations redden the two new
+        cases: the embedder's word ignored, the override's arm deleted, the
+        ABI reading its argument as nanoseconds.
+      Critic 2026-09-22: seven findings, six accepted and applied. The ABI's
+        doc promised a reader the round has not got — the sentence names the
+        figure instead. The field's contract listed a batched ring among the
+        zeros while the same paragraph stamps the word at a batch's end — the
+        zero list is now a ring read empty, one at the threshold, and a
+        record just handed out. The contract named no window for the word,
+        and the design's shared clock reading points the next step at the
+        turnover ask, which runs under neither the reading hold nor the grant
+        — the contract now names both as the only places it is touched.
+        `take_standing_after(Some(ZERO))` read as no override — a zero is
+        stored as one nanosecond. The design document, the ruling and this
+        plan's header still called the algorithm unbuilt with no stage — all
+        three amended. `scribble_lines_for_test`'s new sentence called the
+        `collector` word the exit's and the registry's — dropped; the clear
+        of that word at a re-take is read by no case and stays uncovered,
+        since a scribbled slot index is repaired by a live round rather than
+        by the take. Refused, with the reason: `size_of::<HoldLine>() == 64`
+        pins no offset and holds by `repr(align(64))` alone — kept for the
+        name a failure gets, and the step claims the line's size and nothing
+        more.
 - [ ] S64.2 The round's third branch
       done: `Reader::front_block_reading` answers the span and whether the
         front block is the tail block in the loads `has_at_least` already
@@ -182,7 +209,10 @@ Critic over the repair.
         threshold taking the clock's reading or continuing to the take once
         the interval has passed; `standing_since` restarts at the end of
         every batch, and a case shows the write-back of a take not taken
-        again at the round's cadence
+        again at the round's cadence; one case reaches the take by running
+        rounds against an override of a millisecond, so that a round reading
+        `STANDING_INTERVAL` past the three-level dial is red rather than
+        green (the Critic of S64.1)
       tier: T2 · role: Critic
 - [ ] S64.3 The batch's form under the grant
       done: `batch` reads `has_at_least(threshold)` under the grant before
@@ -437,8 +467,8 @@ live: `archive/pre-rc-cycle`").
   `an_unarmed_poll_leaves_a_completed_death_registered`). The cheapest form
   leaves the poll alone: a round serves such a mutator at a threshold of one
   once X has passed since the instant the round stamps on its record
-  (`MutatorRecord::served_at`). The algorithm
-  is accepted and not built: `dev/design/a-standing-r-is-taken-after-n-rounds.md`
+  (`MutatorRecord::served_at`). The algorithm is accepted and S64 builds it:
+  `dev/design/a-standing-r-is-taken-after-n-rounds.md`
   (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
   collector's own, and no request count is capped") — the take after an
   interval of the collector's own, an ABI dial, of a ring standing non-empty,

@@ -250,6 +250,22 @@ const QUIET_INTERVAL: Duration = Duration::from_secs(8);
 /// [`QUIET_INTERVAL`].
 static EMBEDDERS_QUIET_INTERVAL_NANOS: AtomicU64 = AtomicU64::new(0);
 
+/// How long a mutator's candidate ring may stand non-empty below the
+/// round's threshold before the round takes it as an ordinary batch
+/// (`dev/design/a-standing-r-is-taken-after-n-rounds.md`). 4 s, and not a
+/// measured figure: what it bounds is how long the entities a ring of
+/// fewer than [`SOFT_THRESHOLD`] candidates names wait on a thread that
+/// never reaches the threshold, against one batch's foreign-holder window
+/// per interval on a thread that registers a candidate now and then. The
+/// collector's own time, read against the serve clock, so a mutator's rate
+/// moves it neither way; the embedder's figure replaces it
+/// ([`set_standing_interval`]).
+const STANDING_INTERVAL: Duration = Duration::from_secs(4);
+
+/// The embedder's standing interval in nanoseconds, or zero for
+/// [`STANDING_INTERVAL`].
+static EMBEDDERS_STANDING_INTERVAL_NANOS: AtomicU64 = AtomicU64::new(0);
+
 /// The instant every record's serve stamp counts from, fixed by the first
 /// serve of the process; a stamp is nanoseconds past it, never zero, zero
 /// being a record no serve has stamped.
@@ -375,6 +391,34 @@ fn quiet_interval() -> Duration {
 
     match EMBEDDERS_QUIET_INTERVAL_NANOS.load(Ordering::Relaxed) {
         0 => QUIET_INTERVAL,
+        nanos => Duration::from_nanos(nanos),
+    }
+}
+
+/// Set the embedder's standing interval: how long a sub-threshold ring may
+/// stand non-empty before the round takes it. Zero restores the crate's
+/// [`STANDING_INTERVAL`].
+pub(crate) fn set_standing_interval(interval: Duration) {
+    let nanos = u64::try_from(interval.as_nanos()).unwrap_or(u64::MAX);
+    EMBEDDERS_STANDING_INTERVAL_NANOS.store(nanos, Ordering::Relaxed);
+}
+
+/// The standing interval in force: a case's, the embedder's, or the crate's.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the round's third branch is the first reader of the interval"
+    )
+)]
+fn standing_interval() -> Duration {
+    #[cfg(test)]
+    if let Some(interval) = testing::standing_interval() {
+        return interval;
+    }
+
+    match EMBEDDERS_STANDING_INTERVAL_NANOS.load(Ordering::Relaxed) {
+        0 => STANDING_INTERVAL,
         nanos => Duration::from_nanos(nanos),
     }
 }

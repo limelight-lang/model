@@ -99,7 +99,8 @@ collector–mutator memory protocol of 2026-09-09 and its review are in
   (`refcount::tests::the_candidate_gate`).
 - GC C ABI and the safepoint: `src/gc.rs` — `ll_gc_collect_cycles`,
   `ll_gc_maybe_collect`, `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`,
-  `ll_gc_set_collector_cap`, `ll_gc_set_quiet_interval`; the poll's duties in order are
+  `ll_gc_set_collector_cap`, `ll_gc_set_quiet_interval`,
+  `ll_gc_set_standing_interval`; the poll's duties in order are
   `dev/ARCHITECTURE.md`'s `gc` row and `cycle::queue`'s module doc, "What the
   poll does for this module".
 - Static blocks and thread exit: `src/static_block.rs` — the per-thread

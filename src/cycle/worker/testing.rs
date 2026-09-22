@@ -148,6 +148,29 @@ pub(crate) fn quiet_interval() -> Option<std::time::Duration> {
     }
 }
 
+/// The interval the thread's rounds take a standing sub-threshold ring
+/// after, in nanoseconds, or zero for the module's own: a case that reads
+/// the take sets it below its own wait.
+static STANDING_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Take a standing sub-threshold ring after `interval`, or after the
+/// module's own for `None`. A zero interval is stored as one nanosecond,
+/// so that a case asking for the take at the next visit reads as an
+/// override and not as the module's own figure.
+pub(crate) fn take_standing_after(interval: Option<std::time::Duration>) {
+    STANDING_NANOS.store(
+        interval.map_or(0, |interval| (interval.as_nanos() as u64).max(1)),
+        Ordering::Relaxed,
+    );
+}
+
+pub(crate) fn standing_interval() -> Option<std::time::Duration> {
+    match STANDING_NANOS.load(Ordering::Relaxed) {
+        0 => None,
+        nanos => Some(std::time::Duration::from_nanos(nanos)),
+    }
+}
+
 /// The wait after every round, in milliseconds, or zero for the timer's
 /// own: a case that reads what a wake does sets it above its own wait.
 static WAIT_MILLIS: AtomicUsize = AtomicUsize::new(0);
@@ -509,8 +532,10 @@ pub(crate) fn retire() {
     serve_rounds_at(0);
     wait_between_rounds_for(None);
     ask_turnovers_after(None);
+    take_standing_after(None);
     super::set_collector_cap(super::DEFAULT_COLLECTOR_CAP);
     super::set_quiet_interval(std::time::Duration::ZERO);
+    super::set_standing_interval(std::time::Duration::ZERO);
     let _ = take_rounds();
     let _ = take_round_times();
     let _ = take_outcomes();

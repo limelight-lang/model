@@ -6,9 +6,9 @@ a third, with the sleeper's arm as the Sage ruled it the same evening
 (`dev/DECISIONS.md`, "a take's unanswered request stands on the record, and
 the ring under the token decides the batch's form")
 (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
-collector's own, and no request count is capped"). Not built, not normative,
-and no stage opened for the build — `PLAN.md`, "A quiet thread's garbage is
-taken after X", is the owner; the `rfc` moves on adoption.
+collector's own, and no request count is capped"). Built by `PLAN.md`'s
+S64, opened 2026-09-22, whose steps are where a part of it stands or does
+not; not normative until the `rfc` states the take at the stage's close.
 
 ## The rule
 

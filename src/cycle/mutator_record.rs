@@ -272,6 +272,25 @@ struct HoldLine {
     /// compare-and-swap, the exit's leave one too; the hand-back and the
     /// registry store.
     reading: AtomicU8,
+    /// The serve clock's reading at the round that first read this
+    /// mutator's candidate ring non-empty and below the round's threshold,
+    /// in nanoseconds since the base `crate::cycle::worker` fixes at the
+    /// process's first serve; zero for a ring the round counts no interval
+    /// for — one it read empty or at the threshold, and one whose record
+    /// the registry has just handed out. The round takes such a ring as an
+    /// ordinary batch at the first visit the standing interval of
+    /// `crate::cycle::worker` or more after that reading, and stamps the
+    /// word again at the end of every batch
+    /// (`dev/design/a-standing-r-is-taken-after-n-rounds.md`, "The round").
+    /// On this line rather than the reader's, which is full since the
+    /// standing list's link pair took its last sixteen bytes. Read and
+    /// written under the reading hold or under this collector's grant,
+    /// which is where the round's reading and the batch's end stand, and
+    /// nowhere else: outside both, a record between the hand-back and the
+    /// registry's clear belongs to whichever thread takes it next. Written
+    /// by the collector the record names and read by no mutator, so
+    /// relaxed; cleared with the line at a re-take.
+    standing_since: AtomicU64,
     /// The collector thread this mutator is named to, as a slot index of
     /// `crate::cycle::worker`'s: zero is the elder, and a fresh record's.
     /// Written by a collector at a handover and read by the mutator's poll,
@@ -372,6 +391,7 @@ impl WriterLine {
 // is atomic, which is what lets a record be reached from two threads.
 unsafe impl Sync for MutatorRecord {}
 
+const _: () = assert!(size_of::<HoldLine>() == 64);
 const _: () = assert!(size_of::<MutatorRecord>() == 256);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, reader) == 64);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, writer) == 128);
@@ -426,6 +446,7 @@ impl MutatorRecord {
             writer: WriterLine::empty(),
             hold: HoldLine {
                 reading: AtomicU8::new(0),
+                standing_since: AtomicU64::new(0),
                 collector: AtomicU8::new(0),
             },
         }
@@ -936,6 +957,7 @@ fn take_record() -> *mut MutatorRecord {
             (*released).reader.reset();
             (*released).writer.reset();
             (*released).hold.collector.store(0, Ordering::Relaxed);
+            (*released).hold.standing_since.store(0, Ordering::Relaxed);
             // The token line's request byte, which neither reset above
             // reaches: a request made against the last life's lane is stale.
             (*released).clear_turnover_request();
@@ -1100,18 +1122,22 @@ pub(crate) fn refuse_record_draws(refuse: bool) {
     REFUSE_DRAWS.with(|cell| cell.set(refuse));
 }
 
-/// Write into `record`'s reader line, for a case that reads whether a
-/// re-take empties it: the batch size, which is the one word of the two
-/// lines no exit reads. The four block words are left alone, because the
+/// Write into `record`'s lines, for a case that reads whether a re-take
+/// empties them: the batch size and the serve instant, which are words no
+/// exit reads, the turnover request, and the standing instant on the hold
+/// line. The four block words are left alone, because the
 /// exit reads both rings through them and a scribbled pointer would be
 /// followed; they are nulled by the rings' dismantle before the record goes
 /// back, which is what the reset repeats. The collecting word is left alone
 /// too: set, it is the mutator's gate, and the exit would wait behind it.
+/// The hold line's reading word is left alone for the same reason: it is
+/// what the registry's gate reads to tell a held record from a free one.
 #[cfg(test)]
 pub(crate) fn scribble_lines_for_test(record: *mut MutatorRecord) {
     unsafe {
         (*record).reader.batch.store(7, Ordering::Relaxed);
         (*record).reader.served_at.store(7, Ordering::Relaxed);
+        (*record).hold.standing_since.store(7, Ordering::Relaxed);
         (*record).turnover_requested.store(1, Ordering::Relaxed);
     }
 }
@@ -1124,8 +1150,9 @@ pub(crate) fn request_a_turnover_for_test(record: *mut MutatorRecord) {
 }
 
 /// Whether `record`'s lines hold what a fresh life starts with: R's words,
-/// the batch size, the serve instant and the turnover request empty, the
-/// collecting word clear, and P's two words naming one block.
+/// the batch size, the serve instant, the standing instant and the turnover
+/// request empty, the collecting word clear, and P's two words naming one
+/// block.
 #[cfg(test)]
 pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
     let reader = unsafe { &(*record).reader };
@@ -1134,6 +1161,7 @@ pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
     reader.r_front_block.load(Ordering::Relaxed).is_null()
         && reader.batch.load(Ordering::Relaxed) == 0
         && reader.served_at.load(Ordering::Relaxed) == 0
+        && unsafe { (*record).hold.standing_since.load(Ordering::Relaxed) == 0 }
         && unsafe { !(*record).turnover_is_requested() }
         && writer.r_tail_block.load(Ordering::Relaxed).is_null()
         && !writer.collecting.load(Ordering::Relaxed)
