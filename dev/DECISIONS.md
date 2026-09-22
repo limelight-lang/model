@@ -38,16 +38,6 @@ stands. This is a change to the built handshake and is filed as its own
 stage (`PLAN.md`, "The standing request moves to the record"); S62's take
 leaves no request standing and reads no silent mark.
 
-**The sleeper is polled less often, not left a request.** Offered the form
-in which no request waits at all — the request stays on the byte, the
-consent pushes the record onto the collector's stack, the checkpoints serve
-it — Edmond refused it for the take as he had for the threshold path: a
-mutator that consented is inside the foreign-holder window and gives no
-memory back until the collector reaches it, and the collector may be long in
-coming. What makes the take's 2 ms wait on a sleeper no one else's problem
-is a backoff per mutator: every take it does not answer doubles its next
-interval, up to a limit, and a consent or an empty ring resets it.
-
 ---
 
 ## 2026-09-21 — a quiet thread's turnover is the collector's to ask for, and the poll re-offers only on a turnover
