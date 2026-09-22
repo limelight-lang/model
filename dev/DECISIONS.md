@@ -12,8 +12,9 @@ never edited or deleted.
 
 **The Sage's ruling, `Final`, on Edmond's second question of the evening** —
 whether the consent wait is worth having at all, once an unanswered request
-stands on the record and a checkpoint serves it. Nothing is built; the
-answer is a rule for the take's stage and a change the threshold path owes.
+stands on the record and a checkpoint serves it — **accepted by Edmond the
+same evening**. Nothing is built; the answer is a rule for the take's stage
+and a change the threshold path owes.
 
 **What.** `serve` requests and waits `REQUEST_WAIT` for every mutator it
 means to serve, take or threshold alike. A counter on `Standing`, reset at
@@ -92,7 +93,8 @@ line with its blocked corpus arm.
 ## 2026-09-22 — a take's unanswered request stands on the record, and the ring under the token decides the batch's form
 
 **The Sage's ruling, `Final`, on Edmond's delegation** ("на вопрос отвечает
-мудрец"): the question was whether the take of a standing R
+мудрец"), **and Edmond accepted it the same evening**: the question was
+whether the take of a standing R
 (`dev/design/a-standing-r-is-taken-after-n-rounds.md`) is built as its fifth
 form had it, withdrawing at the consent deadline, or leaves its request
 standing now that a standing request lives on the record. Nothing is built
