@@ -105,6 +105,11 @@
 //! that reaches no poll; a mutator below the threshold is served by the
 //! round that reads its ring an interval overdue, and by the checkpoint
 //! that answers such a take's consent when the mutator was asleep at it.
+//! A walk spends at most [`EXPIRED_WAITS_PER_ROUND`] consent waits on
+//! mutators that do not answer; past that every request it lands is left
+//! standing at once, for the checkpoint that reads the consent, and that
+//! checkpoint carries the batch's backlog and a refusal it read back to
+//! the round ([`Standing::backlogged`], [`Standing::saw_work`]).
 //! The interval adapts between [`FALLBACK_INTERVAL_MIN`] and
 //! [`FALLBACK_INTERVAL_MAX`]: the minimum after a round that made a batch,
 //! so that a backlog above the threshold drains at a batch per minimum,
@@ -159,7 +164,7 @@ use crate::cycle::queue::verdicts::{Verdict, VerdictWriter};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::scan::{ScanResult, scan};
 use crate::cycle::shadow::{self, Color};
-use crate::cycle::token::{COLLECTOR, POSTED, REQUESTED, Withdrawn, state, word};
+use crate::cycle::token::{COLLECTOR, MUTATOR, POSTED, REQUESTED, Withdrawn, state, word};
 use crate::refcount::RcHeader;
 use crate::ring::{BLOCK_ENTRIES, Reader};
 
@@ -177,7 +182,9 @@ pub(crate) enum Served {
     /// The request stands unanswered: the mutator reached no slot free and
     /// no poll inside the wait, or its request stood from an earlier round
     /// already, or a pass released it without a batch and this round's
-    /// request was pushed with no wait. Neither a batch nor work; the
+    /// request was pushed with no wait, or this walk had spent its bound of
+    /// expired waits ([`EXPIRED_WAITS_PER_ROUND`]) and the request was
+    /// landed without one. Neither a batch nor work; the
     /// request is served at a checkpoint when the mutator answers.
     Unanswered,
     /// Nothing was taken: before any claim — R below the threshold, P
@@ -256,6 +263,22 @@ const QUIET_INTERVAL: Duration = Duration::from_secs(8);
 /// The embedder's quiet interval in nanoseconds, or zero for
 /// [`QUIET_INTERVAL`].
 static EMBEDDERS_QUIET_INTERVAL_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// How many consent waits one walk of the records may spend on mutators
+/// that do not answer: past it, every request the walk lands afterwards is
+/// left standing at once and served at a checkpoint when its mutator wakes
+/// (`dev/DECISIONS.md`, "the consent wait stays on both paths, and a
+/// round's spending on expired waits is capped"). Two, a placeholder and
+/// not a measured figure.
+///
+/// What it bounds is the round's spending on mutators that never answer: a
+/// walk begins at most this many waits that expire, each spanning at most
+/// [`REQUEST_WAIT`] plus the tail of one batch begun inside it. A working
+/// mutator's consent or refusal costs its own latency instead, at most the
+/// wait and once per mutator per round, which is the wait's price and not
+/// the cap's. What the bound is paid with is the batches a walk gives up by
+/// not waiting for a mutator that would have answered late.
+const EXPIRED_WAITS_PER_ROUND: usize = 2;
 
 /// How long a mutator's candidate ring may stand non-empty below the
 /// round's threshold before the round takes it as an ordinary batch
@@ -853,12 +876,33 @@ impl Default for Backlogged {
 }
 
 impl Backlogged {
-    /// Remember `record`, or drop it once the array is full.
+    /// Remember `record` once, or drop it when it is here already or the
+    /// array is full. Once, because a round reads a mutator's backlog at a
+    /// checkpoint and again at the walk's own batch — the mutator having
+    /// disposed of the first between them — and a birth asks for two
+    /// mutators at the threshold rather than one counted twice.
     fn push(&mut self, record: *mut MutatorRecord) {
+        if self.records[..self.len].contains(&record) {
+            return;
+        }
+
         if self.len < BACKLOGGED_REMEMBERED {
             self.records[self.len] = record;
             self.len += 1;
         }
+    }
+
+    /// Move what this one holds into `into`, emptying it.
+    fn drain_into(&mut self, into: &mut Backlogged) {
+        if self.len == 0 {
+            return;
+        }
+
+        for record in self.records[..self.len].iter() {
+            into.push(*record);
+        }
+
+        self.len = 0;
     }
 
     fn len(&self) -> usize {
@@ -876,12 +920,16 @@ struct Round {
     /// Some mutator was served a batch.
     made_a_batch: bool,
     /// Some mutator read at the threshold was not served: its token held, or
-    /// it collecting in line.
+    /// it collecting in line. Read by the walk where it waits out the
+    /// refusal, and by the checkpoint's pass where the walk did not wait
+    /// ([`Standing::saw_work`]).
     saw_work: bool,
     /// Some mutator's poll noted a disposition that freed something since the
     /// last round.
     read_a_freeing_disposition: bool,
-    /// The mutators still at the threshold after their batches.
+    /// The mutators still at the threshold after their batches, from the
+    /// walk's own batches and from the checkpoints' ([`Standing::backlogged`]),
+    /// each standing once.
     backlogged: Backlogged,
 }
 
@@ -896,6 +944,7 @@ fn round(index: usize, threshold: usize, standing: &mut Standing) -> Round {
     // served before any record is read, and a record that exited under a
     // standing request is unlinked for the registry whether or not this
     // round serves anything.
+    standing.start_a_round();
     standing.checkpoint(threshold);
     mutator_record::for_each_record(|record| {
         if record == own || !reclaims(index, unsafe { &*record }) {
@@ -940,6 +989,8 @@ unsafe fn read_one_record(
     let served = unsafe { serve(record, index, threshold, standing, now) };
     ask_for_a_turnover_if_quiet(unsafe { &*record }, now);
     outcome.made_a_batch |= standing.take_batches_served() > 0;
+    outcome.saw_work |= standing.take_saw_work();
+    standing.take_backlogged(&mut outcome.backlogged);
     match served {
         Served::Batch { backlog: true, .. } => {
             outcome.made_a_batch = true;
@@ -981,7 +1032,10 @@ unsafe fn read_one_record(
 /// free or poll after waking, at most one stranger's batch away — or
 /// withdrawn when the thread ends. A mutator a checkpoint released without
 /// a batch ([`MutatorRecord::was_released_unserved`]) is pushed at once,
-/// with no wait. The checkpoints are where the collector commits time:
+/// with no wait, and so is every request this walk lands after
+/// [`EXPIRED_WAITS_PER_ROUND`] of its waits have run out unanswered
+/// ([`Standing::spent_its_waits`]): a walk pays the bound once, whatever
+/// the registry's count of sleeping mutators. The checkpoints are where the collector commits time:
 /// at the round's start, before every request, here, and after every
 /// return of the wait (`rfc/dev/design/trace-token-handshake.md`, "The two
 /// sides", the collector, and the second and third rounds;
@@ -1067,6 +1121,14 @@ pub(crate) unsafe fn serve(
         // Asleep again by the time the walk reached it, as a mutator a
         // pass released without a batch is: no wait, the request stands.
         mutator.note_released_unserved(false);
+        return Served::Unanswered;
+    }
+
+    if standing.spent_its_waits() {
+        // This walk has waited out its bound on mutators that did not
+        // answer ([`EXPIRED_WAITS_PER_ROUND`]): the request stays on the
+        // byte and the record in the list, for the checkpoint that reads
+        // the consent, and the walk goes on to the next record.
         return Served::Unanswered;
     }
 
@@ -1193,7 +1255,15 @@ impl Drop for HandBackOnDrop {
 /// [`serve`] just made, and answer: the grant is served; a refusal or a
 /// life ended is the withdrawal's read-back ([`answer_the_withdrawal`]);
 /// the deadline leaves the request standing on the byte, the record in the
-/// list since before the request.
+/// list since before the request, and counts against this walk's bound
+/// ([`EXPIRED_WAITS_PER_ROUND`]). Only a deadline counts: a consent, a
+/// refusal or a grant read back is a mutator that answered, whatever it
+/// answered, and counts nothing. The deadline is absolute from the
+/// request, so a wait whose loop served a stranger's grant charges this
+/// mutator all the same: a byte still reading `REQUESTED|slot` a whole
+/// wait after the request is a mutator that reached no poll and no slot
+/// free in it, whatever the collector did meanwhile, and a consent that
+/// lands during that batch is read back as the grant here.
 ///
 /// The wait is on the byte alone, its own return being no answer; a return
 /// before the deadline that is not the grant runs the second checkpoint and
@@ -1247,6 +1317,7 @@ unsafe fn wait_for_consent(
         let now = Instant::now();
         if now >= deadline {
             request.standing = false;
+            standing.note_an_expired_wait();
             return Served::Unanswered;
         }
 
@@ -1405,6 +1476,23 @@ pub(crate) struct Standing {
     /// Whether a wait inside a round returned early and served nothing, so
     /// that the sleep after the round is skipped once.
     consumed_a_wake: bool,
+    /// Consent waits of this walk that ran out with the request unanswered,
+    /// counted from the round's start ([`Standing::start_a_round`]): past
+    /// [`EXPIRED_WAITS_PER_ROUND`] the walk stops waiting and leaves every
+    /// later request standing at once.
+    expired_waits: usize,
+    /// Whether a pass read a listed mutator collecting in line: work this
+    /// round rather than idleness, which the walk reads for itself only
+    /// where it waits out a refusal ([`note_idleness`]).
+    saw_work: bool,
+    /// The mutators a checkpoint's batch left at the threshold, carried to
+    /// the round that drains them ([`read_one_record`]). A batch the walk
+    /// did not make reads its own backlog, and every batch of a mutator
+    /// past the walk's bound of waits is one, so without this the round
+    /// reads no backlog at all on the records behind a cycling sleeper and
+    /// no sibling is ever born (`dev/DECISIONS.md`, "a checkpoint carries
+    /// its batch's backlog and a refusal it read out to the round").
+    backlogged: Backlogged,
 }
 
 impl Standing {
@@ -1416,6 +1504,9 @@ impl Standing {
             byte_wakes_seen: COLLECTORS[slot].byte_wakes.load(Ordering::Acquire),
             batches_served: 0,
             consumed_a_wake: false,
+            expired_waits: 0,
+            saw_work: false,
+            backlogged: Backlogged::default(),
         }
     }
 
@@ -1529,6 +1620,14 @@ impl Standing {
             let mutator = unsafe { &*cursor };
             let seen = mutator.token.read();
             if seen != requested {
+                if state(seen) == MUTATOR {
+                    // The mutator took its token over this request and is
+                    // collecting in line: work this round, and the reading
+                    // the walk makes for itself only where it waits out the
+                    // refusal ([`note_idleness`]).
+                    self.saw_work = true;
+                }
+
                 self.forget(mutator);
                 if seen == granted {
                     if kept.is_null() {
@@ -1551,13 +1650,52 @@ impl Standing {
         let outcome = unsafe { serve_the_grant(&*kept, self.slot, threshold, self) };
         #[cfg(test)]
         testing::note_served(outcome);
+        if matches!(outcome, Served::Batch { backlog: true, .. }) {
+            // The batch left the mutator at the threshold. The walk that
+            // would have read that for itself is elsewhere — past its bound
+            // of waits, or between rounds — so the reading is carried to
+            // the round that drains it, which is what a sibling's birth
+            // counts ([`Standing::backlogged`]).
+            self.backlogged.push(kept);
+        }
+
         let served = usize::from(matches!(outcome, Served::Batch { .. }));
         self.batches_served += served;
         served
     }
 
+    /// Start a walk of the records: the waits this walk may spend are its
+    /// own, so that a round pays the bound at most once however many
+    /// sleeping mutators the registry holds.
+    fn start_a_round(&mut self) {
+        self.expired_waits = 0;
+    }
+
+    /// A consent wait that ran out with the request left standing.
+    fn note_an_expired_wait(&mut self) {
+        self.expired_waits += 1;
+    }
+
+    /// Whether this walk has spent its bound of expired waits, so that a
+    /// request landing now is left standing without one.
+    fn spent_its_waits(&self) -> bool {
+        self.expired_waits >= EXPIRED_WAITS_PER_ROUND
+    }
+
     fn take_batches_served(&mut self) -> usize {
         std::mem::replace(&mut self.batches_served, 0)
+    }
+
+    /// Whether a pass read a mutator of the list collecting in line since
+    /// the round last asked, and forget it.
+    fn take_saw_work(&mut self) -> bool {
+        std::mem::replace(&mut self.saw_work, false)
+    }
+
+    /// Move the backlog the passes read into the round's, emptying the
+    /// carried one.
+    fn take_backlogged(&mut self, into: &mut Backlogged) {
+        self.backlogged.drain_into(into);
     }
 
     /// Batches the checkpoints made since the round last asked, left as

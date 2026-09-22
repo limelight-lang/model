@@ -165,7 +165,12 @@ request to reason about:
   does not bound. The Sage's ruling of 2026-09-22 (`dev/DECISIONS.md`, "the
   consent wait stays on both paths, and a round's spending on expired waits
   is capped") carries what the wait buys, what the cap costs, the arm that
-  sizes the constant and the case the build owes.
+  sizes the constant and the case the build owes. What the bound bounds is
+  the round's spending on mutators that never answer — at most
+  `EXPIRED_WAITS_PER_ROUND` waits that expire, each spanning a wait plus the
+  tail of one batch begun inside it — and not the round's length: a working
+  mutator's consent or refusal costs its own latency and counts nothing,
+  which is the wait's price rather than the cap's.
 - **The backlog reading is unchanged.** `batch` answers
   `Served::Batch { backlog }` by `has_at_least(threshold)` after the batch,
   against the round's threshold; a take of a ring below sixty-four leaves
@@ -176,7 +181,12 @@ request to reason about:
   answers a backlog and votes for a sibling as any batch does. That thread
   is producing at the rate the siblings exist for; what it does not get is
   K sized by that batch, the form having been read before the peek (S64.3,
-  the Critic of 2026-09-22).
+  the Critic of 2026-09-22). A batch made at a checkpoint reads its own
+  backlog too, and the checkpoint carries it to the round that visits the
+  record next, since past the cap every batch of a mutator behind a
+  sleeping one is a checkpoint's and the round would otherwise read no
+  backlog and birth no sibling (`dev/DECISIONS.md`, "a checkpoint carries
+  its batch's backlog and a refusal it read out to the round").
 
 After a take the verdicts stand in P and R's front has advanced past the
 batch; the mutator's next poll or slot free arms the collection over P, whose

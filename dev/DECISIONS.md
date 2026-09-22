@@ -8,6 +8,86 @@ never edited or deleted.
 
 ---
 
+## 2026-09-22 — a checkpoint carries its batch's backlog and a refusal it read out to the round
+
+**The Sage's ruling, `Final`**, on the three costs the Critic of S64.4
+raised against the cap on a round's expired waits, and on a fourth the
+Critic proposed to repair by redefining the cap. One sentence of the
+accepted cap ruling is retired by the first repair and that ruling stands on
+its other reasons; no premise of Edmond's moves.
+
+**What the round was losing.** `Round.backlogged` was filled by the walk's
+own `Served::Batch { backlog }` and by nothing else, and `Round.saw_work` by
+the refusal the walk reads inside its consent wait. Past the cap the walk
+answers `Served::Unanswered` for every remaining record, so every batch
+those mutators get is a checkpoint's, and `Standing::checkpoint` kept the
+count and threw the `Served` value away. A collector whose registry holds two
+threads that sleep and wake between jobs ahead of its producers in carve
+order therefore reads no backlog at all and never births a sibling, and a
+sibling whose mutators collect in line is read idle eight rounds running —
+the doubling interval makes that about 2.3 s, arithmetic from the constants —
+and ended by the elder. The blindness is older than the cap, a woken
+sleeper's batch having been a checkpoint's since S63; the cap widens it from
+sleepers to every producer behind a sleeping one.
+
+**What is built.** `Standing` carries both readings out of the pass:
+`backlogged`, the existing sixteen-pointer array on the collector thread's
+frame, pushed when the grant's outcome is `Batch { backlog: true }`, and
+`saw_work`, one byte, set when the pass reads a listed record's byte at
+`MUTATOR`. `read_one_record` folds them into the round beside
+`take_batches_served`. `Backlogged::push` skips a record it holds already,
+because one round can now read a mutator's backlog at a checkpoint and again
+at the walk's batch, and a birth asks for two mutators at the threshold
+rather than one counted twice. The reading of a refusal is in flight on both
+paths alike — the pass reads `MUTATOR` only while the collection runs, as the
+walk's request fails on it only then — so `note_idleness`'s contract is now
+true on both.
+
+**What it retires.** The cap ruling's fourth reason for keeping the consent
+wait — the walk's backlog reading being "the only thing that fills
+`Round.backlogged`, so with no wait no sibling is ever born" — stops being
+true, and "kills the backlog reading" drops out of its refusal of the no-wait
+form. The wait stands on the three reasons that remain: a window of the
+mutator's own batch instead of a stranger's plus its own, one consent per
+batch, n batches per walk over n producing mutators. Edmond's refusal of the
+no-wait form by name is untouched.
+
+**Refused.** Not counting a wait whose loop served a stranger's grant: the
+deadline is absolute from the request because the bound is on the mutator's
+cadence, not on the collector's attention — a byte still at `REQUESTED|slot`
+a whole `REQUEST_WAIT` after the request is a mutator that reached no poll
+and no slot free in it, whatever the collector did meanwhile, and a consent
+that lands during that batch is read back as the grant and served. Exempting
+such waits would disarm the cap on a busy collector, which is the load it
+exists for. A time budget charged by every wait however it ended, in place of
+the count of expired ones: a consent or a refusal at the end of a wait is a
+working mutator answering inside it, the wait's own accepted price, and a
+budget would hand the sleeper's treatment to every working mutator past the
+round's first few milliseconds — the no-wait form for the tail of the walk,
+which Edmond refused by name. Rotating the walk's start to spread the
+starvation: it reads no backlog anywhere instead of nowhere behind the
+sleepers.
+
+**The bound, as it now reads.** A walk begins at most
+`EXPIRED_WAITS_PER_ROUND` waits that expire, each spanning at most
+`REQUEST_WAIT` plus the tail of one batch begun inside it; a working
+mutator's consent or refusal costs its own latency, at most the wait, once
+per mutator per round. The earlier claim that the cap bounds the round's
+length is replaced by that: a wait ended by a refusal costs the walk its time
+and counts nothing, and no figure exists for the tail of a working mutator's
+answer inside the wait — `dev/BENCHMARKS.md`'s "W's tail" is the arm that
+would show it and it is blocked on the corpus.
+
+**Cost.** 136 bytes and one byte on the collector thread's frame, at most
+sixteen pointer compares per checkpoint batch that reads a backlog, one
+length test and one byte read per record the round visits. S64.5's
+parked-thread arm gains a placement rule rather than an arm: the active
+mutator sits behind the sleeping threads in carve order, and the arm records
+its released-unserved count and whether a second active mutator behind the
+same sleepers births a sibling.
+
+---
+
 ## 2026-09-22 — a take's trace is budgeted as one batch's, and an unwalked take shifts the mutator's trace rather than adding one
 
 **The Sage's ruling, `Final`**, on the finding the Critic of `PLAN.md`

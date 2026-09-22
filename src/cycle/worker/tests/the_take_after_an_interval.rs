@@ -579,3 +579,199 @@ fn a_take_is_clamped_by_the_ring_and_not_by_k() {
         crate::gc::ll_gc_maybe_collect();
     });
 }
+
+/// A round spends at most `EXPIRED_WAITS_PER_ROUND` consent waits on
+/// mutators that do not answer: past the bound every request that lands is
+/// left standing at once, to be served at a checkpoint when its mutator
+/// wakes. Without the bound a pool of threads that sleep and wake in turn
+/// costs the round one wait per thread per interval, which the standing
+/// form does not bound by itself.
+#[test]
+fn a_round_spends_no_more_than_its_bound_of_expired_waits() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_millis(1));
+    let wait = Duration::from_millis(300);
+    let _wait = HeldRequestWait::of(wait);
+    let sleepers: Vec<Mutator> = (0..EXPIRED_WAITS_PER_ROUND + 1)
+        .map(|index| {
+            let class = Sent(node_class(&format!("ExpiredWaitNode{index}")));
+            let mutator = Mutator::start_idling_with(|_| {});
+            mutator.run(move |arena| {
+                let _ = unsafe { long_ring(arena, class.into_inner(), STANDING_RING) };
+            });
+            mutator
+        })
+        .collect();
+    let mut standing = Standing::new(SLOT);
+
+    // The visit that reads each ring standing, and the interval after it.
+    for sleeper in &sleepers {
+        assert_eq!(
+            serve_on_this_thread(sleeper.record, &mut standing),
+            Served::Idle
+        );
+    }
+    std::thread::sleep(Duration::from_millis(3));
+
+    let walk = std::time::Instant::now();
+    for sleeper in &sleepers {
+        assert_eq!(
+            serve_on_this_thread(sleeper.record, &mut standing),
+            Served::Unanswered,
+            "every request stands on a mutator that never reads its byte"
+        );
+    }
+    let spent = walk.elapsed();
+    assert!(
+        sleepers
+            .iter()
+            .all(|sleeper| unsafe { &*sleeper.record }.is_standing()),
+        "and every record is in the list for the checkpoints"
+    );
+    assert!(
+        spent < wait.mul_f32(EXPIRED_WAITS_PER_ROUND as f32 + 0.5),
+        "the walk spent {spent:?} on waits, past its bound of \
+         {EXPIRED_WAITS_PER_ROUND}"
+    );
+
+    drop(standing);
+    for sleeper in &sleepers {
+        sleeper.run(|_| unsafe {
+            crate::gc::ll_gc_collect_cycles();
+        });
+    }
+}
+
+/// The bound is one walk's: the next round pays it again, so a mutator
+/// that slept through one round's requests is waited for at the next.
+#[test]
+fn the_bound_on_expired_waits_is_one_walks() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_millis(1));
+    let wait = Duration::from_millis(50);
+    let _wait = HeldRequestWait::of(wait);
+    let sleepers: Vec<Mutator> = (0..EXPIRED_WAITS_PER_ROUND + 2)
+        .map(|index| {
+            let class = Sent(node_class(&format!("OneWalksBoundNode{index}")));
+            let mutator = Mutator::start_idling_with(|_| {});
+            mutator.run(move |arena| {
+                let _ = unsafe { long_ring(arena, class.into_inner(), STANDING_RING) };
+            });
+            mutator
+        })
+        .collect();
+    let mut standing = Standing::new(SLOT);
+    for sleeper in &sleepers {
+        assert_eq!(
+            serve_on_this_thread(sleeper.record, &mut standing),
+            Served::Idle
+        );
+    }
+    std::thread::sleep(Duration::from_millis(3));
+
+    for sleeper in sleepers.iter().take(EXPIRED_WAITS_PER_ROUND) {
+        assert_eq!(
+            serve_on_this_thread(sleeper.record, &mut standing),
+            Served::Unanswered
+        );
+    }
+
+    let past_the_bound = std::time::Instant::now();
+    assert_eq!(
+        serve_on_this_thread(sleepers[EXPIRED_WAITS_PER_ROUND].record, &mut standing),
+        Served::Unanswered
+    );
+    assert!(
+        past_the_bound.elapsed() < wait / 2,
+        "the request past the bound waits for nothing"
+    );
+
+    standing.start_a_round();
+    let next_round = std::time::Instant::now();
+    assert_eq!(
+        serve_on_this_thread(sleepers[EXPIRED_WAITS_PER_ROUND + 1].record, &mut standing),
+        Served::Unanswered
+    );
+    assert!(
+        next_round.elapsed() >= wait.mul_f32(0.8),
+        "and the next walk waits out its own bound again"
+    );
+
+    drop(standing);
+    for sleeper in &sleepers {
+        sleeper.run(|_| unsafe {
+            crate::gc::ll_gc_collect_cycles();
+        });
+    }
+}
+
+/// The round's start is where the walk's count of expired waits is
+/// cleared: a collector whose last round spent its bound waits again at
+/// the next, however long it slept between them.
+#[test]
+fn a_round_starts_with_its_waits_unspent() {
+    let _g = test_guard();
+    let mut standing = Standing::new(SLOT);
+    for _ in 0..EXPIRED_WAITS_PER_ROUND {
+        standing.note_an_expired_wait();
+    }
+    assert!(standing.spent_its_waits());
+
+    // No record is named to this slot, so the round reads none and its
+    // start is all the case is after.
+    let _ = round(SLOT, THRESHOLD, &mut standing);
+    assert!(
+        !standing.spent_its_waits(),
+        "the round's start cleared the walk's count"
+    );
+}
+
+/// The bound is over the walk and not over the take: a mutator read at the
+/// threshold, which no interval gates, is left standing at once past the
+/// bound as a take's mutator is.
+#[test]
+fn the_bound_covers_the_threshold_path_too() {
+    let _g = test_guard();
+    reset_lanes();
+    let wait = Duration::from_millis(50);
+    let _wait = HeldRequestWait::of(wait);
+    let sleepers: Vec<Mutator> = (0..EXPIRED_WAITS_PER_ROUND + 1)
+        .map(|index| {
+            let class = Sent(node_class(&format!("ThresholdBoundNode{index}")));
+            let mutator = Mutator::start_idling_with(|_| {});
+            mutator.run(move |arena| {
+                let _ = unsafe { long_ring(arena, class.into_inner(), THRESHOLD) };
+            });
+            mutator
+        })
+        .collect();
+    let mut standing = Standing::new(SLOT);
+
+    for sleeper in sleepers.iter().take(EXPIRED_WAITS_PER_ROUND) {
+        assert_eq!(
+            serve_on_this_thread(sleeper.record, &mut standing),
+            Served::Unanswered,
+            "a ring at the threshold is requested and waited for"
+        );
+    }
+
+    let past_the_bound = std::time::Instant::now();
+    assert_eq!(
+        serve_on_this_thread(sleepers[EXPIRED_WAITS_PER_ROUND].record, &mut standing),
+        Served::Unanswered
+    );
+    assert!(
+        past_the_bound.elapsed() < wait / 2,
+        "and the one past the bound stands without a wait of its own"
+    );
+    assert!(unsafe { &*sleepers[EXPIRED_WAITS_PER_ROUND].record }.is_standing());
+
+    drop(standing);
+    for sleeper in &sleepers {
+        sleeper.run(|_| unsafe {
+            crate::gc::ll_gc_collect_cycles();
+        });
+    }
+}

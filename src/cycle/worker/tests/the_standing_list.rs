@@ -91,7 +91,14 @@ impl Sleeper {
     }
 }
 
+/// One serve of `record` on the case's thread, each standing in for a
+/// round's visit of its own: the walk's count of expired waits starts
+/// empty, so a case that sweeps twenty sleepers reads the wait on every
+/// one of them rather than on the first
+/// [`super::super::EXPIRED_WAITS_PER_ROUND`]. What the bound does within
+/// one walk is `the_take_after_an_interval`'s.
 fn serve_on_this_thread(record: *mut MutatorRecord, standing: &mut Standing) -> Served {
+    standing.start_a_round();
     unsafe { serve(record, SLOT, 1, standing, serve_clock_now()) }
 }
 
@@ -492,4 +499,114 @@ fn a_push_appends_and_a_forget_unlinks_from_any_place() {
         sleeper.end();
     }
     reset_lanes();
+}
+
+/// A batch made at a checkpoint reads its own backlog, and the round that
+/// visits the record afterwards reads it out of the list's carried one:
+/// the walk that would have made the reading for itself is elsewhere —
+/// past its bound of waits, or between rounds — and a birth counts what
+/// the round read (`dev/DECISIONS.md`, "a checkpoint carries its batch's
+/// backlog and a refusal it read out to the round").
+#[test]
+fn a_checkpoints_batch_carries_its_backlog_to_the_round() {
+    let _g = test_guard();
+    reset_lanes();
+    let _wait = HeldRequestWait::of(Duration::from_millis(2));
+    let class = node_class("CarriedBacklogNode");
+    let sleeper = Sleeper::start(class);
+    let record = unsafe { &*sleeper.record() };
+    // One root per batch, so the batch the checkpoint makes leaves the
+    // rest of the ring behind it.
+    record.set_batch_size(1);
+    let mut standing = Standing::new(SLOT);
+
+    assert_eq!(
+        serve_on_this_thread(sleeper.record(), &mut standing),
+        Served::Unanswered
+    );
+    sleeper.read_the_byte();
+    assert_eq!(standing.checkpoint(1), 1, "the pass served the grant");
+    assert_eq!(
+        standing.backlogged.len(),
+        1,
+        "and kept the mutator the batch left at the threshold"
+    );
+
+    // The round that visits the record reads it out: the serve itself
+    // answers `Posted`, the mutator not having disposed of the batch.
+    record.name_to_collector(SLOT);
+    testing::confine_rounds_to(sleeper.record());
+    let outcome = round(SLOT, 1, &mut standing);
+    assert_eq!(outcome.backlogged.len(), 1, "the round read the backlog");
+    assert_eq!(standing.backlogged.len(), 0, "and the list carries none");
+
+    testing::confine_rounds_to_records(&[]);
+    record.name_to_collector(ELDER);
+    sleeper.poll();
+    sleeper.end();
+}
+
+/// A mutator that takes its token over a standing request is collecting in
+/// line: the pass reads that and the round counts it as work, so a sibling
+/// whose mutators all collect in line is not read idle and ended.
+#[test]
+fn a_pass_reads_a_refusal_of_a_standing_request_as_work() {
+    let _g = test_guard();
+    reset_lanes();
+    let _wait = HeldRequestWait::of(Duration::from_millis(2));
+    let class = node_class("PassWorkNode");
+    let sleeper = Sleeper::start(class);
+    let mut standing = Standing::new(SLOT);
+    assert_eq!(
+        serve_on_this_thread(sleeper.record(), &mut standing),
+        Served::Unanswered
+    );
+    assert!(!standing.saw_work, "nothing read yet");
+
+    // The mutator's own claim over the standing request, held until the
+    // case lets it go, so that the pass reads `MUTATOR` rather than the
+    // `FREE` a finished collection leaves.
+    let (let_go, wait_here) = std::sync::mpsc::channel::<()>();
+    let (took, taken) = std::sync::mpsc::channel::<()>();
+    sleeper.mutator.send(move |_| {
+        let claim = crate::cycle::token::HeldToken::take();
+        took.send(()).expect("the case waits");
+        let _ = wait_here.recv();
+        drop(claim);
+    });
+    taken.recv().expect("the mutator took its claim");
+
+    assert_eq!(standing.checkpoint(1), 0, "no grant to serve");
+    assert!(
+        standing.take_saw_work(),
+        "the pass read the mutator collecting in line"
+    );
+    assert!(!standing.take_saw_work(), "and the reading is taken once");
+
+    let_go.send(()).expect("the mutator waits");
+    sleeper.end();
+}
+
+/// A record the round reads a backlog for twice — once carried out of a
+/// checkpoint's batch, once by the walk's own — stands in the round's
+/// backlog once: a birth asks for two mutators at the threshold, and one
+/// counted twice is not two.
+#[test]
+fn a_record_stands_in_the_rounds_backlog_once() {
+    let _g = test_guard();
+    let mut backlogged = Backlogged::default();
+    let first = 1 as *mut MutatorRecord;
+    let second = 2 as *mut MutatorRecord;
+    backlogged.push(first);
+    backlogged.push(first);
+    assert_eq!(backlogged.len(), 1);
+    backlogged.push(second);
+    assert_eq!(backlogged.len(), 2);
+
+    let mut carried = Backlogged::default();
+    carried.push(first);
+    carried.push(2 as *mut MutatorRecord);
+    carried.drain_into(&mut backlogged);
+    assert_eq!(backlogged.len(), 2, "the drain adds no repeat");
+    assert_eq!(carried.len(), 0, "and empties what it carried");
 }

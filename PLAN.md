@@ -306,20 +306,62 @@ Critic over the repair.
         "a take's trace is budgeted as one batch's, and an unwalked take
         shifts the mutator's trace rather than adding one", and it obliges
         the disjoint-closure arm of S64.5. No premise of Edmond's moves.
-- [ ] S64.4 The cap on a round's expired waits
+- [x] S64.4 The cap on a round's expired waits
       done: a counter on `Standing`, reset at the round's start, counts the
         waits of this walk that expired unanswered, and past
         `EXPIRED_WAITS_PER_ROUND` every later request that lands is left
         standing at once through the arm a released-unserved record takes; a
         case over `EXPIRED_WAITS_PER_ROUND + 1` sleepers at a 300 ms wait
         ends inside `(EXPIRED_WAITS_PER_ROUND + 0.5) × 300 ms` with every
-        request standing
-      tier: T2 · role: Critic
+        request standing; the checkpoint carries its batch's backlog and a
+        refusal it read out to the round, which past the cap is where both
+        readings are made
+      tier: T2 · role: Critic → Sage
+      baseline: 1138 tests listed; a walk waited `REQUEST_WAIT` for every
+        request it landed, and `Round.backlogged` and `Round.saw_work` were
+        the walk's own readings alone. Red seen at
+        `a_round_spends_no_more_than_its_bound_of_expired_waits`, whose
+        three sleepers cost 900 ms against its 750 ms bound. Eight
+        mutations redden the new cases: the bound never reached, the
+        expired wait uncounted, the round's reset deleted, the gate moved
+        inside the take's branch, the checkpoint's backlog push deleted,
+        the round's drain deleted, the pass's refusal reading deleted, and
+        the backlog's dedup deleted.
+      Critic 2026-09-22: six findings. Three accepted and escalated, three
+        accepted and applied. Applied: `the_standing_list`'s sweep of
+        twenty sleepers silently lost its wait on eighteen of them, the cap
+        firing after the second — each of that module's serves now starts
+        its own walk, which is what one serve there stands in for, and the
+        case reads the wait on all twenty again; every case of the cap drove
+        the take's branch, so the gate could have moved inside it unnoticed
+        — a case at the threshold, which no interval gates, reads the bound
+        too; and the comments claimed a bound on the round's length that the
+        counter does not have. Escalated: past the cap the round reads no
+        backlog and births no sibling, it reads no refusal and ends a busy
+        sibling, and a wait the collector spent on a stranger's grant is
+        charged to the mutator.
+      Sage 2026-09-22: `Final`. The checkpoint carries both readings out —
+        `Standing::backlogged` filled from the grant's `Batch { backlog }`
+        and `Standing::saw_work` from a pass that reads `MUTATOR`, both
+        folded into the round at `read_one_record`, with `Backlogged::push`
+        made idempotent because one round can now read a mutator's backlog
+        twice. The charge for a wait spent on a stranger's grant stands: the
+        deadline is on the mutator's cadence, and exempting it would disarm
+        the cap on the load it exists for. A time budget in place of the
+        count is refused as the no-wait form for the tail of the walk. The
+        bound's claim is amended to what the counter has. The ruling is
+        `dev/DECISIONS.md`, "a checkpoint carries its batch's backlog and a
+        refusal it read out to the round"; it retires the fourth reason of
+        the cap's own ruling, which stands on the other three, and moves no
+        premise of Edmond's.
 - [ ] S64.5 What the take and the cap cost
       done: the parked-thread arm — 64 and 1,000 parked sub-threshold
         threads beside one active mutator, the active mutator's batch
         interval and the round's length read against their number, the null
-        arm the cap at `usize::MAX` — the cost of one take on the corpus
+        arm the cap at `usize::MAX`, the active mutator behind the sleeping
+        threads in carve order with its released-unserved count and whether
+        a second active mutator behind them births a sibling — the cost of
+        one take on the corpus
         named by the design's "Cost", and the disjoint-closure arm the
         Sage's ruling of 2026-09-22 obliges: 63 roots each the root of a
         one-per-block ring, the take's `complete`, and the mutator's
