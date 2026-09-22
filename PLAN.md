@@ -16,7 +16,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-22 · Active: none. S63 went on 2026-09-22, the day after
+Updated: 2026-09-22 · Active: S64. S63 went on 2026-09-22, the day after
 its design: the collector's standing requests live on the records as a list
 with no capacity, read at a checkpoint only after a byte event and serving
 one grant per pass, the silent mark gone (`dev/DECISIONS.md`, "the standing
@@ -142,6 +142,80 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   failure is reportable, would remove it if `pthread_setspecific` allocates
   nothing per thread — which nobody has read, on any target. Named when the
   reserve's first touch was decided on 2026-08-29 and priced nowhere since.
+## S64 — A standing R is taken after an interval  [in progress]
+
+Goal: a mutator whose candidate ring stands non-empty below the serve
+threshold has it taken as an ordinary batch once an interval of the
+collector's own has passed, and no round spends more than a bounded number
+of consent waits on mutators that do not answer — the algorithm of
+`dev/design/a-standing-r-is-taken-after-n-rounds.md`, sixth form, with the
+two rulings of 2026-09-22 in `dev/DECISIONS.md`: "a take's unanswered
+request stands on the record, and the ring under the token decides the
+batch's form" and "the consent wait stays on both paths, and a round's
+spending on expired waits is capped", both accepted by Edmond.
+Done when: a sub-threshold ring standing non-empty for `STANDING_INTERVAL`
+is batched by the round, the embedder's dial sets the interval, an
+unanswered take leaves its request standing and is served at a checkpoint,
+the batch's form is read off the ring under the grant, a round's expired
+waits are capped, the parked-thread arm is measured into
+`dev/BENCHMARKS.md`, and the `rfc` states the take.
+Notes: the mutator's side changes in nothing. `wait_for_consent`,
+`answer_the_withdrawal`, `serve_the_grant`, `answer_a_refused_request` and
+`Standing::checkpoint` are the built ones and carry no kind of request: what
+a take does differently lives at branch 3 of the round and inside `batch`.
+Every step is a cycle-GC step: the baseline recorded, a red test seen, the
+Critic over the repair.
+
+- [ ] S64.1 The word and the interval dial
+      done: `standing_since` stands on the hold line and is cleared where
+        the registry clears that line at a re-take, the layout asserts
+        standing; `STANDING_INTERVAL` is 4 s, `ll_gc_set_standing_interval`
+        sets it and zero restores the crate's, as `ll_gc_set_quiet_interval`
+        does; a case reads the dial from the ABI and one from the harness
+        override
+      tier: T2 · role: Critic
+- [ ] S64.2 The round's third branch
+      done: `Reader::front_block_reading` answers the span and whether the
+        front block is the tail block in the loads `has_at_least` already
+        makes; the round's test is the three branches — at the threshold as
+        today with the word zeroed, empty with the word zeroed, below the
+        threshold taking the clock's reading or continuing to the take once
+        the interval has passed; `standing_since` restarts at the end of
+        every batch, and a case shows the write-back of a take not taken
+        again at the round's cadence
+      tier: T2 · role: Critic
+- [ ] S64.3 The batch's form under the grant
+      done: `batch` reads `has_at_least(threshold)` under the grant before
+        the peek — at or above it today's batch, below it the ring whole
+        with K untouched and `size_the_next_batch` not called; a case takes
+        a sub-threshold ring whole with K unmoved, and one serves as a
+        threshold batch a ring that crossed the threshold while its owner
+        slept
+      tier: T2 · role: Critic
+- [ ] S64.4 The cap on a round's expired waits
+      done: a counter on `Standing`, reset at the round's start, counts the
+        waits of this walk that expired unanswered, and past
+        `EXPIRED_WAITS_PER_ROUND` every later request that lands is left
+        standing at once through the arm a released-unserved record takes; a
+        case over `EXPIRED_WAITS_PER_ROUND + 1` sleepers at a 300 ms wait
+        ends inside `(EXPIRED_WAITS_PER_ROUND + 0.5) × 300 ms` with every
+        request standing
+      tier: T2 · role: Critic
+- [ ] S64.5 What the take and the cap cost
+      done: the parked-thread arm — 64 and 1,000 parked sub-threshold
+        threads beside one active mutator, the active mutator's batch
+        interval and the round's length read against their number, the null
+        arm the cap at `usize::MAX` — and the cost of one take on the corpus
+        named by the design's "Cost", both in `dev/BENCHMARKS.md`;
+        `EXPIRED_WAITS_PER_ROUND` either changes or is recorded as kept with
+        the readings
+      tier: T2 · role: —
+- [ ] S64.6 The rfc, the maps and the stage's review
+      done: the `rfc` states the take where it states the signals and the
+        threshold; `dev/ARCHITECTURE.md` and `dev/INDEX.md` name the branch;
+        the Code Reviewer over the stage (rule 23.1.3), its findings applied
+      tier: T1 · role: Code Reviewer
+
 ## Cross-cutting (every stage)
 
 - The old collectors are reachable at `archive/pre-rc-cycle` and nowhere else.
