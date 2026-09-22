@@ -277,8 +277,11 @@ live candidates the rule is that recurring term and nothing gained; for dead
 ones it is the memory of the standing ring returned an interval after it
 appeared instead of at the threshold, at pressure, or at exit.
 
-What the building stage measures first, per take on the corpus: what the
-mutator pays — the frees withheld during the take's window and the in-line
+What the building stage measures first, per take on the test heap's corpus
+shape — the 381-member component `dev/BENCHMARKS.md` builds, there being no
+corpus driver over this crate's heap and none coming (Edmond, 2026-09-19:
+calibration runs on test data, and he confirmed the re-aiming of this
+paragraph on 2026-09-22): what the mutator pays — the frees withheld during the take's window and the in-line
 collection over P after `POSTED` (an exact trace of the proposed and
 unwalked roots, `EmptyLane` when all read live) — the recurring in-line
 collection per X once the thread has a lane, and the round's length against

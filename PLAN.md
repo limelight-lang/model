@@ -369,8 +369,10 @@ Critic over the repair.
         instructions, wall — against the same ring collected in line at X,
         which is the floor; a figure above that floor goes into the comments
         of `TRACE_BLOCK_BUDGET` and `STANDING_INTERVAL` as the first
-        measured bound on either, and reopens nothing. All of it in
-        `dev/BENCHMARKS.md`;
+        measured bound on either, and reopens nothing. The take's own cost is read
+        on the test heap's corpus shape, the 381-member component, no corpus
+        driver being on the way (Edmond, 2026-09-19, and his word of
+        2026-09-22 on this clause). All of it in `dev/BENCHMARKS.md`;
         `EXPIRED_WAITS_PER_ROUND` either changes or is recorded as kept with
         the readings
       tier: T2 · role: —
