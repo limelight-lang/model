@@ -310,7 +310,7 @@ step: the baseline recorded, a red test seen, the Critic over the repair.
         `testing::byte_wakes_of`. Both cases seen red (the reset's assert
         aborting with the gate cut; "the consent moved it" with the plain
         wake).
-- [ ] S63.2 The list and the checkpoint
+- [x] S63.2 The list and the checkpoint
       done: `Standing` is the head pair with `push` (idempotent, at the
         tail), `forget` (O(1), no-op unlinked) and the gated pass — no walk
         without a byte event, the whole list read, every grant but the first
@@ -322,6 +322,34 @@ step: the baseline recorded, a red test seen, the Critic over the repair.
         the six owed cases green; `what_the_byte_arms`' moved assertions
         re-stated as the design says and nothing else of the suite changed
       tier: T2 · role: Critic
+      baseline: `Standing` sixteen entries on the frame, `push` false past
+        them, `checkpoint` a full read of the array at every request and
+        every wait return, the deadline a withdrawal and a silent mark, the
+        next request to a marked mutator pushed with no wait.
+      Critic 2026-09-22: the record was linked after the wait, so an exit
+        taking the request, the free list and a new life's take could all
+        run between the byte read and the link, and the registry's gate
+        gated nothing (accepted: the push precedes the request, every
+        outcome that leaves no request standing unlinks, and `request`'s
+        success is `AcqRel` so the exit's take synchronizes with the link);
+        `REQUEST_WAIT`'s doc and `under_stress.rs`'s prose described the
+        withdrawal and the mark (accepted); the burst case's `Served::Idle`
+        rests on one batch taking the ring whole (accepted: the `const`
+        assert `under_stress.rs` carries). Holds: the store order, the
+        pass's cursor against `forget`, the byte-event gate's window,
+        `Standing::new`'s load, the released mark's staleness, the drop's
+        order, the round-start batch's counting, the cases' shared wait.
+        What the six cases do not pin: "no wait for a released one" is the
+        cleared mark, not time; a burst inside a held batch is
+        `under_stress.rs`'s ignored probe.
+      handoff: `worker::Standing` is the end pair over the records' link
+        pairs, `push`/`forget`/`after`/`checkpoint`, the round-start
+        checkpoint; the deadline leaves the request; `silent` is gone;
+        `worker/tests/the_standing_list.rs`, six cases; two seen red with
+        the byte-event gate cut, the "release the rest" cut hangs the
+        harness instead. Gate: 1091 ×4, folding, journal 4 runs — one red of
+        the flake watch's `a_heapless_life_gives_back_the_blocks`, twice in
+        this step's runs, the watch amended.
 - [ ] S63.3 The handshake document and the journals
       done: `rfc/dev/design/trace-token-handshake.md`'s collector paragraph,
         "Cost", the third round's bound, timing (a) and E7 state the new

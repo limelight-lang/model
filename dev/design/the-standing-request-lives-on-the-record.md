@@ -102,21 +102,33 @@ Checkpoints run at the round's start, before every request (the top of
 `serve`), and after every wait return inside `wait_for_consent` that was
 not the grant.
 
-**The serve.** Checkpoint; the pre-claim reading as today; the request. On
-a refusal, `answer_a_refused_request` as today, its grant arm unlinking
-before the serve. On success: if the record is marked `released_unserved`,
-clear the mark, push, answer `Unanswered` with no wait — a released mutator
-is asleep again by the time the walk reaches it, and a wait per released
-worker would cost a broadcast-woken pool n²·W/2 of collector time. Else
-`wait_for_consent`.
+**The serve.** Checkpoint; the pre-claim reading as today; then the push,
+and only then the request — linked before the request lands, so that an
+exit which takes the request finds the record in the list and the
+registry's gate holds it (linking after the wait would let the exit's
+refusal, the free list and a new life's take all run between the byte read
+and the link; the S63.2 Critic's finding). `TraceToken::request`'s success
+is `AcqRel` for the same reason: the exit's take synchronizes with it, and
+the registry's acquire load of `next` then sees the link. Every outcome
+that leaves no request standing unlinks: the refusal's `POSTED` and
+`TokenHeld` arms, the withdrawal's `Withdrawn`, `TakenByTheMutator` and
+`MovedOn` arms, and `serve_the_grant`'s top; the refusal's own-request arm
+leaves the record linked, as it is. On the request's success: if the
+record is marked `released_unserved`, clear the mark and answer
+`Unanswered` with no wait — a released mutator is asleep again by the time
+the walk reaches it, and a wait per released worker would cost a
+broadcast-woken pool n²·W/2 of collector time. Else `wait_for_consent`.
 
-**The wait.** The loop as today; the grant arm unlinks before
-`serve_the_grant`; a read neither grant nor request goes to
-`answer_the_withdrawal`, whose `Granted` arm unlinks before serving and
-whose `Withdrawn` arm answers `Unanswered` and marks nothing. At the
-deadline: clear `WithdrawOnDrop.standing`, push, answer `Unanswered`; the
-byte stays `REQUESTED|c`. Every entry to `serve_the_grant` is on an
-unlinked record, so an unwind inside the batch leaves a consistent list.
+**The wait.** The loop as today; the grant arm serves through
+`serve_the_grant`, which unlinks first; a read neither grant nor request
+goes to `answer_the_withdrawal`. At the deadline: clear
+`WithdrawOnDrop.standing` and answer `Unanswered`; the byte stays
+`REQUESTED|c` and the record stays linked. The in-wait checkpoint can serve
+the waited mutator itself when its consent lands between the loop's read
+and the pass; the loop's next read then finds it moved on and the withdrawal
+answers `Idle`, the batch already counted. Every entry to `serve_the_grant`
+is on an unlinked record, so an unwind inside the batch leaves a consistent
+list.
 
 **The drop**, at the thread's end and on the unwind: for each entry,
 withdraw; a `Granted` read-back is released with no batch; then unlink.

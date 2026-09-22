@@ -164,10 +164,10 @@ pub(crate) enum Served {
     /// brings the timer back.
     Posted,
     /// The request stands unanswered: the mutator reached no slot free and
-    /// no poll inside the wait, or was silent already. Neither a batch nor
-    /// work; the request is served at a checkpoint when the mutator
-    /// answers, or, past the standing array's capacity, was withdrawn for
-    /// this round.
+    /// no poll inside the wait, or its request stood from an earlier round
+    /// already, or a pass released it without a batch and this round's
+    /// request was pushed with no wait. Neither a batch nor work; the
+    /// request is served at a checkpoint when the mutator answers.
     Unanswered,
     /// Nothing was taken: before any claim — R below the threshold, P
     /// without room, the record under another collector's reading — under
@@ -214,18 +214,14 @@ pub(crate) const SOFT_THRESHOLD: usize = INITIAL_BATCH;
 
 const _: () = assert!(SOFT_THRESHOLD <= BATCH_BOUND);
 
-/// How long a collector waits for a mutator that answered its last request
-/// to consent to this one, before it withdraws. Not a measured figure: it
-/// lands above the tail of the interval between two polls or slot frees of
-/// a running mutator on the corpus, which bench measures
+/// How long a collector waits for a mutator to consent to a request before
+/// it leaves the request standing on the byte and moves on. Not a measured
+/// figure: it lands above the tail of the interval between two polls or
+/// slot frees of a running mutator on the corpus, which bench measures
 /// (`rfc/dev/design/trace-token-handshake.md`, "Cost"); a mutator blocked
-/// past it is marked silent and its next request stands with no wait.
+/// past it is asleep, its request stands until it answers, and the next
+/// round's request fails on the standing one and waits nothing.
 const REQUEST_WAIT: Duration = Duration::from_millis(2);
-
-/// Requests to silent mutators a collector keeps standing at once, on its
-/// own frame; a silent mutator past the capacity is skipped that round. Not
-/// a measured figure.
-const STANDING_CAPACITY: usize = BACKLOGGED_REMEMBERED;
 
 /// The fallback timer's minimum: the wait after a round that made a batch or
 /// read a freeing disposition. Not a measured figure.
@@ -581,7 +577,7 @@ fn thread_body(index: usize) {
     let collector = &COLLECTORS[index];
     let mut interval = FALLBACK_INTERVAL_MIN;
     let mut backlog_rounds = 0;
-    // The requests this collector left standing on silent mutators, on this
+    // The requests this collector left standing on sleeping mutators, on this
     // frame for the thread's life; the drop withdraws them.
     let mut standing = Standing::new(index);
     while !retiring() && collector.state.load(Ordering::Relaxed) == ALIVE {
@@ -850,6 +846,11 @@ struct Round {
 fn round(index: usize, threshold: usize, standing: &mut Standing) -> Round {
     let own = mutator_record::this_thread_record();
     let mut outcome = Round::default();
+    // The round's first checkpoint: a consent that came between rounds is
+    // served before any record is read, and a record that exited under a
+    // standing request is unlinked for the registry whether or not this
+    // round serves anything.
+    standing.checkpoint(threshold);
     mutator_record::for_each_record(|record| {
         if record == own || !reclaims(index, unsafe { &*record }) {
             return;
@@ -917,20 +918,23 @@ unsafe fn read_one_record(
 /// **The request is one swap `FREE → REQUESTED|slot`**, and every other
 /// value is a skip: `MUTATOR` a mutator collecting in line, `POSTED` one
 /// that has not disposed of the last batch, `REQUESTED` or `COLLECTOR`
-/// another collector's. A mutator that answered its last request is waited
-/// for up to [`REQUEST_WAIT`], in a loop on the byte alone — the wait's
-/// return is not an answer — and past the deadline the request is withdrawn, the
-/// withdrawal's read-back deciding what stood there meanwhile
-/// ([`crate::cycle::token::Withdrawn`]). A mutator that did not answer its
-/// last request is silent ([`MutatorRecord::is_silent`]): its request is
-/// made and left standing on the collector's frame, with no wait, and is
-/// served at a checkpoint ([`Standing::checkpoint`]) once the mutator
-/// answers — at its first slot free or poll after waking, at most one
-/// stranger's batch away — or withdrawn when the thread ends. The
-/// checkpoints are the two places the collector commits time: before every
-/// request, here, and after every return of the wait
-/// (`rfc/dev/design/trace-token-handshake.md`, "The two sides", the
-/// collector, and the second and third rounds).
+/// another collector's — its own `REQUESTED|slot` a request still standing
+/// from an earlier round. The mutator is waited for up to [`REQUEST_WAIT`],
+/// in a loop on the byte alone — the wait's return is not an answer — and
+/// a refusal or a life ended inside it is the withdrawal's read-back
+/// ([`crate::cycle::token::Withdrawn`]). Past the deadline the request is
+/// not withdrawn: it stays on the byte and the record joins the collector's
+/// standing list ([`Standing`]), to be served at a checkpoint
+/// ([`Standing::checkpoint`]) once the mutator answers — at its first slot
+/// free or poll after waking, at most one stranger's batch away — or
+/// withdrawn when the thread ends. A mutator a checkpoint released without
+/// a batch ([`MutatorRecord::was_released_unserved`]) is pushed at once,
+/// with no wait. The checkpoints are where the collector commits time:
+/// at the round's start, before every request, here, and after every
+/// return of the wait (`rfc/dev/design/trace-token-handshake.md`, "The two
+/// sides", the collector, and the second and third rounds;
+/// `dev/design/the-standing-request-lives-on-the-record.md`, "The
+/// collector").
 ///
 /// Runs on a collector thread, which holds a base block of its own for the
 /// workspace the batch's trace opens (`crate::memory::heap::ll_thread_init`).
@@ -945,7 +949,7 @@ pub(crate) unsafe fn serve(
     standing: &mut Standing,
 ) -> Served {
     let mutator = unsafe { &*record };
-    // The checkpoint before the request: a silent mutator that consented
+    // The checkpoint before the request: a sleeping mutator that consented
     // since the last one is served ahead of any stranger.
     standing.checkpoint(threshold);
 
@@ -983,20 +987,21 @@ pub(crate) unsafe fn serve(
         return Served::Idle;
     }
 
+    // Linked before the request lands, so that an exit which takes the
+    // request finds the record already in the list and the registry's gate
+    // holds it; every outcome that leaves no request standing unlinks it.
+    // Linking after the wait would let the exit's refusal, the free list
+    // and a new life's take all run between the byte read and the link.
+    standing.push(record);
     if let Err(seen) = mutator.token.request(slot) {
-        return unsafe {
-            answer_a_refused_request(mutator, seen, record, slot, threshold, standing)
-        };
+        return unsafe { answer_a_refused_request(mutator, seen, slot, threshold, standing) };
     }
 
-    if mutator.is_silent() {
-        return if standing.push(record) {
-            Served::Unanswered
-        } else {
-            // Past the array's capacity the request is withdrawn at once,
-            // and the mutator skipped this round.
-            unsafe { answer_the_withdrawal(mutator, slot, threshold) }
-        };
+    if mutator.was_released_unserved() {
+        // Asleep again by the time the walk reached it, as a mutator a
+        // pass released without a batch is: no wait, the request stands.
+        mutator.note_released_unserved(false);
+        return Served::Unanswered;
     }
 
     unsafe { wait_for_consent(mutator, slot, threshold, standing) }
@@ -1007,49 +1012,55 @@ pub(crate) unsafe fn serve(
 ///
 /// The refusal's value names who holds the byte: a batch of this mutator's
 /// own that nothing has disposed of, this collector's request still standing
-/// on a silent mutator, this collector's grant — consented to between the
-/// checkpoint and the request, so the array forgets the standing entry and
-/// the grant is served here — or any other holder, which is a skip.
+/// on a sleeping mutator, this collector's grant — consented to between the
+/// checkpoint and the request, so the grant is served here and the record
+/// taken out of the list — or any other holder, which is a skip.
 ///
 /// # Safety
 /// As [`serve`], and `seen` is the value that refusal read back.
 unsafe fn answer_a_refused_request(
     mutator: &MutatorRecord,
     seen: u8,
-    record: *mut MutatorRecord,
     slot: usize,
     threshold: usize,
     standing: &mut Standing,
 ) -> Served {
     if state(seen) == POSTED {
+        standing.forget(std::ptr::from_ref(mutator).cast_mut());
         return Served::Posted;
     }
 
     if seen == word(REQUESTED, slot) {
-        // This collector's own request, still standing on a silent
-        // mutator: neither a batch nor work, round after round.
+        // This collector's own request, still standing on a sleeping
+        // mutator: neither a batch nor work, round after round; the record
+        // stays in the list.
         return Served::Unanswered;
     }
 
     if seen == word(COLLECTOR, slot) {
         // This collector's own grant: a standing request consented to
-        // between [`serve`]'s checkpoint and its request, served here
-        // and forgotten by the array.
-        standing.forget(record);
-        return unsafe { serve_the_grant(mutator, slot, threshold) };
+        // between [`serve`]'s checkpoint and its request, served here and
+        // taken out of the list.
+        return unsafe { serve_the_grant(mutator, slot, threshold, standing) };
     }
 
+    standing.forget(std::ptr::from_ref(mutator).cast_mut());
     Served::TokenHeld
 }
 
 /// Wait out [`REQUEST_WAIT`] for the mutator's consent to the request
-/// [`serve`] just made, and answer: the grant is served, and anything else
-/// — a refusal, a life ended, or the deadline — is the withdrawal's
-/// read-back ([`answer_the_withdrawal`]).
+/// [`serve`] just made, and answer: the grant is served; a refusal or a
+/// life ended is the withdrawal's read-back ([`answer_the_withdrawal`]);
+/// the deadline leaves the request standing on the byte and pushes the
+/// record onto the list.
 ///
 /// The wait is on the byte alone, its own return being no answer; a return
 /// before the deadline that is not the grant runs the second checkpoint and
-/// remembers a wake it may have consumed.
+/// remembers a wake it may have consumed. That checkpoint can serve this
+/// very mutator, whose record is linked and whose consent landed between
+/// the loop's read and the pass: the loop's next read then finds `POSTED`
+/// or `FREE`, the withdrawal reads a record moved on, and the batch is
+/// already counted among the checkpoints'.
 ///
 /// # Safety
 /// As [`serve`], and this collector's request stands on `mutator`.
@@ -1084,10 +1095,18 @@ unsafe fn wait_for_consent(
         // Anything but the standing request is an answer: the grant above,
         // or a refusal or a life ended, which the withdrawal's read-back
         // names without waiting out the bound.
-        let now = Instant::now();
-        if seen != requested || now >= deadline {
+        if seen != requested {
             request.standing = false;
-            return unsafe { answer_the_withdrawal(mutator, slot, threshold) };
+            return unsafe { answer_the_withdrawal(mutator, slot, threshold, standing) };
+        }
+
+        // The deadline: the mutator is asleep, and the request stays on the
+        // byte for its waking, the record in the list — linked before the
+        // request — for the checkpoints.
+        let now = Instant::now();
+        if now >= deadline {
+            request.standing = false;
+            return Served::Unanswered;
         }
 
         wait_for_a_wake(slot, deadline - now);
@@ -1102,41 +1121,56 @@ unsafe fn wait_for_consent(
         }
     }
 
-    unsafe { serve_the_grant(mutator, slot, threshold) }
+    unsafe { serve_the_grant(mutator, slot, threshold, standing) }
 }
 
 /// Withdraw collector `slot`'s request from `mutator` and answer by the
-/// read-back: a grant is served, a withdrawal that landed marks the mutator
-/// silent, a take by the mutator is its refusal, and a record moved on —
-/// `FREE`, or another slot's value — is idle to this serve, the collector
-/// holding nothing of it.
+/// read-back: a grant is served, a withdrawal that landed is a mutator
+/// unanswered, a take by the mutator is its refusal, and a record moved on
+/// — `FREE`, or another slot's value — is idle to this serve, the
+/// collector holding nothing of it.
 ///
 /// # Safety
 /// The calling collector made the request `REQUESTED|slot` on `mutator`.
-unsafe fn answer_the_withdrawal(mutator: &MutatorRecord, slot: usize, threshold: usize) -> Served {
-    match mutator.token.withdraw(slot) {
-        Withdrawn::Granted => unsafe { serve_the_grant(mutator, slot, threshold) },
-        Withdrawn::Withdrawn => {
-            mutator.note_silent(true);
-            Served::Unanswered
+unsafe fn answer_the_withdrawal(
+    mutator: &MutatorRecord,
+    slot: usize,
+    threshold: usize,
+    standing: &mut Standing,
+) -> Served {
+    let outcome = match mutator.token.withdraw(slot) {
+        Withdrawn::Granted => {
+            return unsafe { serve_the_grant(mutator, slot, threshold, standing) };
         }
+        Withdrawn::Withdrawn => Served::Unanswered,
         Withdrawn::TakenByTheMutator => {
             #[cfg(test)]
             testing::note_refusal();
             Served::TokenHeld
         }
         Withdrawn::MovedOn => Served::Idle,
-    }
+    };
+    // No request stands after a withdrawal that landed or a refusal: the
+    // record leaves the list.
+    standing.forget(std::ptr::from_ref(mutator).cast_mut());
+    outcome
 }
 
-/// Serve a grant this collector holds: the arena opened, the batch under
-/// `COLLECTOR|slot`, the arena's reset, the release — to `POSTED` when the
-/// batch posted, and to `FREE` at once when the pool refuses the workspace,
-/// which is `Idle`.
+/// Serve a grant this collector holds: the record taken out of the standing
+/// list first, so that an unwind inside the batch leaves the list whole;
+/// then the arena opened, the batch under `COLLECTOR|slot`, the arena's
+/// reset, the release — to `POSTED` when the batch posted, and to `FREE` at
+/// once when the pool refuses the workspace, which is `Idle`.
 ///
 /// # Safety
 /// The calling collector holds `mutator`'s token as `COLLECTOR|slot`.
-unsafe fn serve_the_grant(mutator: &MutatorRecord, slot: usize, threshold: usize) -> Served {
+unsafe fn serve_the_grant(
+    mutator: &MutatorRecord,
+    slot: usize,
+    threshold: usize,
+    standing: &mut Standing,
+) -> Served {
+    standing.forget(std::ptr::from_ref(mutator).cast_mut());
     // Released on the unwind too: a collector that panicked under the claim
     // would otherwise leave the mutator's wait forever; the posted fact is
     // set before the first post, so the unwind's release says what the
@@ -1158,7 +1192,6 @@ unsafe fn serve_the_grant(mutator: &MutatorRecord, slot: usize, threshold: usize
         posted: std::cell::Cell::new(false),
     };
     crate::cycle::token::note_traced_mutator(std::ptr::from_ref(mutator).cast_mut());
-    mutator.note_silent(false);
     #[cfg(test)]
     testing::note_grant();
 
@@ -1193,15 +1226,27 @@ impl Drop for WithdrawOnDrop<'_> {
     }
 }
 
-/// The requests a collector left standing on silent mutators: a fixed array
-/// on the collector thread's frame, read at the checkpoints and withdrawn
-/// when the thread ends. A standing request costs no wait; the consent
-/// wake cannot be lost, since the slot's wake word makes a wake sent
-/// mid-round end the next wait at once.
+/// The requests a collector left standing on the bytes of mutators that did
+/// not answer inside the wait: a doubly linked list threaded through the
+/// records ([`MutatorRecord::standing_links`]), its two ends on the
+/// collector thread's frame, with no capacity — the number of mutators is
+/// nobody's to know in advance (`dev/DECISIONS.md`, "the standing request
+/// lives on the record, the checkpoint serves one grant, and no count is
+/// capped"). Read at the checkpoints, withdrawn when the thread ends. A
+/// standing request costs no wait; the consent wake cannot be lost, since
+/// the slot's wake word makes a wake sent mid-round end the next wait at
+/// once, and the slot's byte-event number ([`Collector::byte_wakes`]) says
+/// whether a checkpoint has anything to read.
 pub(crate) struct Standing {
     slot: usize,
-    entries: [*mut MutatorRecord; STANDING_CAPACITY],
-    len: usize,
+    /// The first and the last record of the list, null when it is empty;
+    /// the ends are self-terminated, the first's `prev` and the last's
+    /// `next` naming themselves.
+    first: *mut MutatorRecord,
+    last: *mut MutatorRecord,
+    /// The slot's byte-event number as the last pass read it: a checkpoint
+    /// that reads the same number has no byte to re-read.
+    byte_wakes_seen: usize,
     /// Batches the checkpoints made since the round last asked.
     batches_served: usize,
     /// Whether a wait inside a round returned early and served nothing, so
@@ -1213,73 +1258,137 @@ impl Standing {
     pub(crate) fn new(slot: usize) -> Self {
         Self {
             slot,
-            entries: [std::ptr::null_mut(); STANDING_CAPACITY],
-            len: 0,
+            first: std::ptr::null_mut(),
+            last: std::ptr::null_mut(),
+            byte_wakes_seen: COLLECTORS[slot].byte_wakes.load(Ordering::Acquire),
             batches_served: 0,
             consumed_a_wake: false,
         }
     }
 
-    /// Keep `record`'s request standing; false past the capacity.
-    fn push(&mut self, record: *mut MutatorRecord) -> bool {
-        if self.len == STANDING_CAPACITY {
-            return false;
+    /// Keep `record`'s request standing: appended at the tail, or left where
+    /// it stands when already linked — a stale entry whose byte moved on
+    /// between a pass's read and the walk's request. The stores are in the
+    /// list's order: `next` first, the word the registry reads.
+    fn push(&mut self, record: *mut MutatorRecord) {
+        let (next, prev) = unsafe { &*record }.standing_links();
+        if !next.load(Ordering::Relaxed).is_null() {
+            return;
         }
 
-        self.entries[self.len] = record;
-        self.len += 1;
-        true
+        next.store(record, Ordering::Release);
+        if self.last.is_null() {
+            prev.store(record, Ordering::Relaxed);
+            self.first = record;
+        } else {
+            prev.store(self.last, Ordering::Relaxed);
+            unsafe { &*self.last }
+                .standing_links()
+                .0
+                .store(record, Ordering::Relaxed);
+        }
+        self.last = record;
     }
 
-    /// Read every standing request once, one acquire load each, and serve
-    /// the ones consented to: `COLLECTOR|slot` is served now, `REQUESTED|slot`
-    /// left standing, and anything else — `MUTATOR`, `FREE`, another slot's
-    /// value — is a record moved on, whose entry is dropped. Answers how
-    /// many batches it made.
+    /// Take `record` out of the list, if it stands: the neighbours' words
+    /// first, `prev` second, `next` last, with a release, so that the
+    /// registry's acquire load of `next` sees the record unlinked only once
+    /// it is.
+    fn forget(&mut self, record: *mut MutatorRecord) {
+        let (next, prev) = unsafe { &*record }.standing_links();
+        let n = next.load(Ordering::Relaxed);
+        if n.is_null() {
+            return;
+        }
+
+        let p = prev.load(Ordering::Relaxed);
+        let is_first = p == record;
+        let is_last = n == record;
+        if is_first {
+            self.first = if is_last { std::ptr::null_mut() } else { n };
+        } else {
+            unsafe { &*p }
+                .standing_links()
+                .0
+                .store(if is_last { p } else { n }, Ordering::Relaxed);
+        }
+        if is_last {
+            self.last = if is_first { std::ptr::null_mut() } else { p };
+        } else {
+            unsafe { &*n }
+                .standing_links()
+                .1
+                .store(if is_first { n } else { p }, Ordering::Relaxed);
+        }
+        prev.store(std::ptr::null_mut(), Ordering::Relaxed);
+        next.store(std::ptr::null_mut(), Ordering::Release);
+    }
+
+    /// The record after `record` in the list, or null past the last.
+    fn after(record: *mut MutatorRecord) -> *mut MutatorRecord {
+        let n = unsafe { &*record }
+            .standing_links()
+            .0
+            .load(Ordering::Relaxed);
+        if n == record { std::ptr::null_mut() } else { n }
+    }
+
+    /// Read every standing request once, when a byte event has happened
+    /// since the last pass, and serve one: `REQUESTED|slot` is left
+    /// standing; anything else — `MUTATOR`, `FREE`, another slot's value —
+    /// is a record moved on, taken out of the list; of the grants
+    /// `COLLECTOR|slot` the first read is served after the pass, and every
+    /// other is released with no batch and marked
+    /// ([`MutatorRecord::note_released_unserved`]), so that a burst of
+    /// wakers withholds one stranger's batch each and not a queue of them.
+    /// Answers how many batches it made.
     fn checkpoint(&mut self, threshold: usize) -> usize {
+        if self.first.is_null() {
+            return 0;
+        }
+
+        let wakes = COLLECTORS[self.slot].byte_wakes.load(Ordering::Acquire);
+        if wakes == self.byte_wakes_seen {
+            return 0;
+        }
+
+        self.byte_wakes_seen = wakes;
+        #[cfg(test)]
+        testing::note_pass();
         let requested = word(REQUESTED, self.slot);
         let granted = word(COLLECTOR, self.slot);
-        let mut served = 0;
-        let mut index = 0;
-        while index < self.len {
-            let record = self.entries[index];
-            let mutator = unsafe { &*record };
+        let mut kept: *mut MutatorRecord = std::ptr::null_mut();
+        let mut cursor = self.first;
+        while !cursor.is_null() {
+            let following = Self::after(cursor);
+            let mutator = unsafe { &*cursor };
             let seen = mutator.token.read();
-            if seen == requested {
-                index += 1;
-                continue;
-            }
-
-            self.remove(index);
-            if seen == granted {
-                let outcome = unsafe { serve_the_grant(mutator, self.slot, threshold) };
-                #[cfg(test)]
-                testing::note_served(outcome);
-                if let Served::Batch { .. } = outcome {
-                    served += 1;
+            if seen != requested {
+                self.forget(cursor);
+                if seen == granted {
+                    if kept.is_null() {
+                        kept = cursor;
+                    } else {
+                        mutator.note_released_unserved(true);
+                        mutator.token.release_claim(self.slot, false);
+                        #[cfg(test)]
+                        testing::note_release_unserved();
+                    }
                 }
             }
+            cursor = following;
         }
 
+        if kept.is_null() {
+            return 0;
+        }
+
+        let outcome = unsafe { serve_the_grant(&*kept, self.slot, threshold, self) };
+        #[cfg(test)]
+        testing::note_served(outcome);
+        let served = usize::from(matches!(outcome, Served::Batch { .. }));
         self.batches_served += served;
         served
-    }
-
-    /// Drop `record`'s entry, if it stands: the request was served by the
-    /// walk itself.
-    fn forget(&mut self, record: *mut MutatorRecord) {
-        if let Some(index) = self.entries[..self.len]
-            .iter()
-            .position(|&entry| entry == record)
-        {
-            self.remove(index);
-        }
-    }
-
-    fn remove(&mut self, index: usize) {
-        self.len -= 1;
-        self.entries[index] = self.entries[self.len];
-        self.entries[self.len] = std::ptr::null_mut();
     }
 
     fn take_batches_served(&mut self) -> usize {
@@ -1293,20 +1402,38 @@ impl Standing {
         self.batches_served
     }
 
+    /// The records standing in the list, first to last.
+    #[cfg(test)]
+    pub(crate) fn standing_for_test(&self) -> Vec<*mut MutatorRecord> {
+        let mut records = Vec::new();
+        let mut cursor = self.first;
+        while !cursor.is_null() {
+            records.push(cursor);
+            cursor = Self::after(cursor);
+        }
+        records
+    }
+
     fn take_consumed_a_wake(&mut self) -> bool {
         std::mem::replace(&mut self.consumed_a_wake, false)
     }
 }
 
 impl Drop for Standing {
-    /// The withdrawal of every standing request, at the thread's end: a
-    /// grant read back is released without a batch.
+    /// The withdrawal of every standing request, at the thread's end and on
+    /// the unwind: a grant read back is released without a batch, and every
+    /// record is taken out of the list, so that none reaches the registry
+    /// linked to a frame that is gone.
     fn drop(&mut self) {
-        for &record in &self.entries[..self.len] {
-            let token = unsafe { &(*record).token };
+        let mut cursor = self.first;
+        while !cursor.is_null() {
+            let following = Self::after(cursor);
+            let token = unsafe { &(*cursor).token };
             if token.withdraw(self.slot) == Withdrawn::Granted {
                 token.release_claim(self.slot, false);
             }
+            self.forget(cursor);
+            cursor = following;
         }
     }
 }

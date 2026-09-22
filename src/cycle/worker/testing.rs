@@ -370,6 +370,30 @@ pub(crate) fn byte_wakes_of(index: usize) -> usize {
     super::COLLECTORS[index].byte_wakes.load(Ordering::Acquire)
 }
 
+/// Passes the checkpoints made over a standing list — walks, not
+/// checkpoints — since a case last asked, and grants released without a
+/// batch by them.
+static PASSES: AtomicUsize = AtomicUsize::new(0);
+static RELEASED_UNSERVED: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn note_pass() {
+    PASSES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn note_release_unserved() {
+    RELEASED_UNSERVED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Passes since the last call, and zero the count.
+pub(crate) fn take_passes() -> usize {
+    PASSES.swap(0, Ordering::Relaxed)
+}
+
+/// Grants released without a batch since the last call, and zero the count.
+pub(crate) fn take_releases_unserved() -> usize {
+    RELEASED_UNSERVED.swap(0, Ordering::Relaxed)
+}
+
 /// Threads spawned since a case last asked.
 static SPAWNS: AtomicUsize = AtomicUsize::new(0);
 
@@ -447,6 +471,8 @@ pub(crate) fn retire() {
     let _ = take_round_times();
     let _ = take_outcomes();
     let _ = take_backlog_rounds_without_a_birth();
+    let _ = take_passes();
+    let _ = take_releases_unserved();
 }
 
 /// Take the elder's slot for the calling thread, so that a consent's wake
@@ -497,7 +523,7 @@ pub(crate) fn consent_while<T>(collector: JoinHandle<T>) -> T {
 /// The request wait the serves use under the harness: the crate's own
 /// bound is a placeholder sized for a running mutator, and a harness thread
 /// consenting between yields on a loaded box misses it, which would read
-/// as a silent mutator in a case about something else. A case about the
+/// as a sleeping mutator in a case about something else. A case about the
 /// bound itself holds its own ([`HeldRequestWait`]).
 pub(crate) const HARNESS_REQUEST_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -511,7 +537,7 @@ fn request_wait_for_tests(wait: std::time::Duration) {
 /// A request wait held for one case — the crate's own, or one the case is
 /// about — and the harness's put back when the guard drops, on the unwind
 /// too, so that a failed case leaves no short wait for the cases after it
-/// to read as a silent mutator.
+/// to read as a sleeping mutator.
 pub(crate) struct HeldRequestWait;
 
 impl HeldRequestWait {

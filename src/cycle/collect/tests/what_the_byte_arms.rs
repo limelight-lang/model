@@ -300,10 +300,14 @@ fn a_request_is_consented_to_at_the_poll_and_at_a_slot_free() {
     reset();
 }
 
-/// A silent mutator: its request is left standing with no wait, and served
-/// at the collector's next checkpoint once it consents.
+/// A sleeping mutator: the request it did not answer inside the wait stays
+/// on its byte, the next round's request finds its own standing there and
+/// waits nothing, and the collector's checkpoint serves the grant once the
+/// mutator consents
+/// (`dev/design/the-standing-request-lives-on-the-record.md`, "The
+/// collector").
 #[test]
-fn a_silent_mutators_request_stands_and_is_served_at_a_checkpoint() {
+fn a_sleeping_mutators_request_stands_and_is_served_at_a_checkpoint() {
     let _g = test_guard();
     reset();
     assert!(crate::cycle::queue::refill_spares());
@@ -329,17 +333,8 @@ fn a_silent_mutators_request_stands_and_is_served_at_a_checkpoint() {
         }
     });
 
-    // This thread consents to nothing: the first serve waits its bound,
-    // withdraws and marks the mutator silent.
-    serve_tell.send(()).expect("the collector loops");
-    assert_eq!(
-        served.recv().expect("the collector answered"),
-        (crate::cycle::worker::Served::Unanswered, 0)
-    );
-    assert!(unsafe { &*crate::cycle::mutator_record::this_thread_record() }.is_silent());
-    assert_eq!(state(byte()), FREE, "withdrawn");
-
-    // The second serve leaves its request standing with no wait.
+    // This thread consents to nothing: the first serve waits its bound and
+    // leaves the request standing on the byte.
     serve_tell.send(()).expect("the collector loops");
     assert_eq!(
         served.recv().expect("the collector answered"),
@@ -348,7 +343,20 @@ fn a_silent_mutators_request_stands_and_is_served_at_a_checkpoint() {
     assert_eq!(
         state(byte()),
         word(crate::cycle::token::REQUESTED, ELDER),
-        "standing"
+        "standing past the wait"
+    );
+
+    // The second serve's own request fails on the standing one and waits
+    // nothing.
+    serve_tell.send(()).expect("the collector loops");
+    assert_eq!(
+        served.recv().expect("the collector answered"),
+        (crate::cycle::worker::Served::Unanswered, 0)
+    );
+    assert_eq!(
+        state(byte()),
+        word(crate::cycle::token::REQUESTED, ELDER),
+        "still standing"
     );
 
     // The mutator answers, and the next serve's checkpoint serves the grant
@@ -360,7 +368,6 @@ fn a_silent_mutators_request_stands_and_is_served_at_a_checkpoint() {
         served.recv().expect("the collector answered"),
         (crate::cycle::worker::Served::Idle, 1)
     );
-    assert!(!unsafe { &*crate::cycle::mutator_record::this_thread_record() }.is_silent());
     assert_eq!(verdict_count(), 2);
     drop(serve_tell);
     collector.join().expect("the collector finished");

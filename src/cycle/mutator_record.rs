@@ -173,12 +173,6 @@ struct ReaderLine {
     /// difference is a disposition that freed something since the last
     /// round ([`MutatorRecord::note_freeing_disposition`]).
     freeing_dispositions_seen: AtomicU32,
-    /// Whether this mutator left the collector's last request unanswered
-    /// past its wait: the collector's own mark, so that its next request
-    /// stands without a wait (`crate::cycle::worker`, the standing
-    /// requests). Cleared when a request is served, and with the line at a
-    /// re-take.
-    silent: AtomicBool,
     /// Whether the collector's checkpoint released this mutator's grant
     /// without a batch — one grant is served per pass, the rest let go —
     /// so that the collector's next request to it is pushed onto the
@@ -312,7 +306,6 @@ impl ReaderLine {
             p_tail_block: AtomicPtr::new(std::ptr::null_mut()),
             batch: AtomicUsize::new(0),
             freeing_dispositions_seen: AtomicU32::new(0),
-            silent: AtomicBool::new(false),
             released_unserved: AtomicU8::new(0),
             served_at: AtomicU64::new(0),
             commits_seen: AtomicU64::new(0),
@@ -336,7 +329,6 @@ impl ReaderLine {
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         self.batch.store(0, Ordering::Relaxed);
         self.freeing_dispositions_seen.store(0, Ordering::Relaxed);
-        self.silent.store(false, Ordering::Relaxed);
         self.released_unserved.store(0, Ordering::Relaxed);
         self.served_at.store(0, Ordering::Relaxed);
         self.commits_seen.store(0, Ordering::Relaxed);
@@ -481,24 +473,10 @@ impl MutatorRecord {
         self.reader.batch.store(roots, Ordering::Relaxed);
     }
 
-    /// Whether the collector marked this mutator silent
-    /// ([`ReaderLine::silent`]); the collector's own line, so relaxed.
-    #[inline]
-    pub(crate) fn is_silent(&self) -> bool {
-        self.reader.silent.load(Ordering::Relaxed)
-    }
-
-    /// Mark or clear the silent note ([`ReaderLine::silent`]).
-    #[inline]
-    pub(crate) fn note_silent(&self, silent: bool) {
-        self.reader.silent.store(silent, Ordering::Relaxed);
-    }
-
     /// Whether a checkpoint released this mutator's grant without a batch
     /// ([`ReaderLine::released_unserved`]); the collector's own line, so
     /// relaxed.
     #[inline]
-    #[expect(dead_code, reason = "the checkpoint that reads it is S63.2's")]
     pub(crate) fn was_released_unserved(&self) -> bool {
         self.reader.released_unserved.load(Ordering::Relaxed) != 0
     }
@@ -506,7 +484,6 @@ impl MutatorRecord {
     /// Note or clear the release without a batch
     /// ([`ReaderLine::released_unserved`]).
     #[inline]
-    #[expect(dead_code, reason = "the checkpoint that writes it is S63.2's")]
     pub(crate) fn note_released_unserved(&self, released: bool) {
         self.reader
             .released_unserved
@@ -524,10 +501,6 @@ impl MutatorRecord {
     /// The link pair, for the collector's list alone
     /// (`crate::cycle::worker::Standing`).
     #[inline]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the list that threads them is S63.2's")
-    )]
     pub(crate) fn standing_links(&self) -> (&AtomicPtr<MutatorRecord>, &AtomicPtr<MutatorRecord>) {
         (&self.reader.standing_next, &self.reader.standing_prev)
     }

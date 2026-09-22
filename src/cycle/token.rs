@@ -231,7 +231,12 @@ impl TraceToken {
         state(self.read()) == COLLECTOR
     }
 
-    /// Ask, as collector `slot`, to trace: one swap `FREE → REQUESTED|slot`.
+    /// Ask, as collector `slot`, to trace: one swap `FREE → REQUESTED|slot`,
+    /// a release as well as an acquire on success, so that the link the
+    /// collector wrote into its standing list before the request is seen by
+    /// the registry through the exit's take of the request
+    /// (`crate::cycle::worker::Standing`; `crate::cycle::mutator_record`,
+    /// [`first_free_record`](crate::cycle::mutator_record)).
     /// The byte the swap read back on a refusal, which the caller acts on:
     /// `POSTED` is a mutator that has not disposed of the last batch, and
     /// every other value a holder or another collector's request. The failure
@@ -244,7 +249,7 @@ impl TraceToken {
             .compare_exchange(
                 FREE,
                 word(REQUESTED, slot),
-                Ordering::Acquire,
+                Ordering::AcqRel,
                 Ordering::Acquire,
             )
             .map(|_| ())

@@ -50,7 +50,8 @@ const A_WAKES_DELAY: Duration = Duration::from_millis(50);
 
 /// Rings the active mutator registers per interval sample, and the leading
 /// samples dropped as warm-up: the first rounds pay each sleeper's one
-/// waited request before the sleeper is marked silent.
+/// waited request, after which its request stands and the rounds' own
+/// requests fail on it with no wait.
 const SAMPLES: usize = 24;
 const WARM_UP: usize = 4;
 
@@ -535,7 +536,7 @@ fn a_wake_landing_inside_a_round_starts_the_next_round_without_the_timer() {
     assert!(outcomes.unanswered >= 2, "{outcomes:?}");
     assert_eq!(outcomes.batches, 0, "{outcomes:?}");
 
-    // The second round left the request standing on the now silent
+    // The second round's request failed on the one standing on the sleeping
     // stranger and the thread sleeps; the stranger's consent lands between
     // rounds, and the third round starts at once and serves it.
     assert_eq!(state(byte_of(stranger.record)), REQUESTED, "standing");
