@@ -37,7 +37,9 @@ run_arm() {
 echo "arm,run,event,value,running" > "$OUT"
 for run in $(seq 1 "$RUNS"); do
     for arm in overlapping:take overlapping:baseline overlapping:control \
-               disjoint:take disjoint:baseline disjoint:control; do
+               disjoint:take disjoint:baseline disjoint:control \
+               overlapping-live:take overlapping-live:baseline overlapping-live:control \
+               disjoint-live:take disjoint-live:baseline disjoint-live:control; do
         run_arm "$arm" "$run"
     done
 done

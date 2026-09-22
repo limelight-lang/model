@@ -8,6 +8,100 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-22 — the live-roots arm: inside the block budget a take saves the mutator 43 of every 44 instructions, past it none
+
+The garbage arms of "what a take costs by the shape of its roots" could not
+show what the split is for: over a dead ring the collector's verdicts are a
+shortlist the mutator must re-derive, so it traces the component again
+whatever the take did. This arm gives every ring a keeper, so that the trace
+reads all 63 roots live, and asks what the mutator's collection over P costs
+then. The same case is
+`cycle::worker::tests::what_a_take_costs`, two shapes more —
+`overlapping-live` and `disjoint-live` — in the same three arms, the take,
+the same rings collected in line with no take, and that baseline a second
+time as the error bar.
+
+**The fixture changed with them, and it moves the garbage arms' figures.**
+Each sample now ends with `reset_lanes`, because a live shape's teardown
+nulls every edge and each null store registers the member it decrements, so
+R would carry one sample's dead members into the next one's reading. With
+the queue reset between samples the take's own term over a garbage ring is
+1,495 to 1,562 instructions rather than the 28,800 to 34,500 of the entry
+below: the arm that kept its queue across samples charged the take with the
+verdict ring the sample before it had left, which only the take arm fills.
+The wall and the cycles are unchanged by the reset, and so is every
+conclusion the entry below draws from them.
+
+**Machine:** the dev box, WSL2, shared with interactive work; load average
+0.9–1.0. **Build:** release, `--test-threads=1`; the wall from an unpinned
+run of the whole case, the hardware figures from `dev/tools/take_perf.sh`,
+one process per arm pinned to CPU 2, two runs quoted A / B, the sixteen
+counted collections divided out.
+
+*Per collection of the mutator's:*
+
+| shape | arm | instructions | cycles | wall, median | wall, least |
+|---|---|---|---|---|---|
+| overlapping | take | 1,009,117 / 1,009,085 | 348,406 / 320,204 | 54.3 µs | 50.5 µs |
+| overlapping | baseline | 1,007,523 / 1,007,587 | 254,208 / 251,919 | 38.7 µs | 37.8 µs |
+| overlapping | control | 1,007,555 / 1,007,523 | 256,985 / 252,895 | 37.3 µs | 36.6 µs |
+| disjoint | take | 8,909,755 / 8,909,755 | 2,819,267 / 2,855,638 | 457.5 µs | 408.0 µs |
+| disjoint | baseline | 8,908,260 / 8,908,260 | 2,874,021 / 2,742,805 | 414.6 µs | 382.1 µs |
+| disjoint | control | 8,908,260 / 8,908,229 | 2,744,256 / 2,732,541 | 437.2 µs | 388.7 µs |
+| overlapping-live | take | 15,365 / 15,555 | 57,293 / 55,278 | 6.6 µs | 5.5 µs |
+| overlapping-live | baseline | 658,832 / 658,800 | 160,065 / 155,001 | 30.5 µs | 29.1 µs |
+| overlapping-live | control | 658,832 / 658,832 | 164,284 / 156,653 | 31.3 µs | 30.1 µs |
+| disjoint-live | take | 2,872,618 / 2,872,586 | 1,348,780 / 1,531,056 | 202.1 µs | 171.3 µs |
+| disjoint-live | baseline | 2,853,251 / 2,853,251 | 1,322,104 / 1,233,904 | 195.0 µs | 163.2 µs |
+| disjoint-live | control | 2,853,283 / 2,853,283 | 1,348,072 / 1,294,461 | 207.0 µs | 183.7 µs |
+
+*What the census read of the mutator's collection:*
+
+| shape | arm | roots attempted | rows met | ending |
+|---|---|---|---|---|
+| overlapping-live | take | 0 | 0 | `NothingProposed` |
+| overlapping-live | baseline | 63 | 381 | `NothingProposed` |
+| disjoint-live | take | 63 | 315 | `NothingProposed` |
+| disjoint-live | baseline | 63 | 315 | `NothingProposed` |
+
+*What the collector's own trace did*, sixteen takes per shape:
+`overlapping-live` 63 roots, complete, no block drawn, 20.6 to 36.1 µs;
+`disjoint-live` 63 roots, abandoned at the budget's eighth block, 75 to
+157 µs.
+
+**What the figures say.**
+
+- **A take whose trace completes over live roots leaves the mutator nothing
+  to do.** Its collection over P attempts no root and meets no row — the
+  census reads zero for both — and costs 15,365 instructions against the
+  658,832 the same thread spends collecting the same rings in line: 2.3 % of
+  the work, a saving of 643,000 instructions per take, against an error bar
+  of nought to 32 instructions between the baseline and its control. In wall
+  it is 6.6 µs against 30.5 µs, and the difference is smaller than in
+  instructions because what the take leaves is all cache misses: 57,293
+  cycles for 15,365 instructions, a fifth of an instruction per cycle.
+- **Past the block budget it saves nothing.** The disjoint take is abandoned
+  at eight blocks, every root comes back `Unwalked`, and the mutator meets
+  the same 315 rows over the same 315 blocks it would have met anyway, for
+  19,350 instructions more than collecting in line — 0.68 %. What decides
+  whether the split pays is therefore [`TRACE_BLOCK_BUDGET`] and the shape of
+  the heap under it, not the take.
+- **Over garbage the take is nearly free in instructions and dear in
+  cycles.** 1,495 to 1,562 instructions per take, about 25 a verdict, against
+  94,000 more cycles on the overlapping shape — 37 %, and 15.6 µs of wall.
+  The instructions say the round trip over P is small; the cycles say the
+  mutator pays for tearing down a component another core has just walked.
+- **The collector buys the mutator's saving with its own time**, 20.6 to
+  36.1 µs of trace for the 24 µs the mutator does not spend. On one core that
+  is a loss; the split exists because the two cores are different.
+
+**What this arm is not.** It fixes the two ends of a scale and measures
+neither the middle nor the mix: a ring is either all live or all dead here,
+and what a workload's candidate rings actually hold is unmeasured over this
+crate, there being no corpus driver (Edmond, 2026-09-19). The figures bound
+what the split can pay — everything, when the closure fits the budget and the
+roots live — and what it can cost — 0.68 %, when the closure does not.
+
 ## 2026-09-22 — S64.5 a second producer behind the sleeping threads: the sibling is born inside three rounds at both cap settings
 
 The cap's ruling left one question open: whether a round that spends its two
@@ -50,7 +144,7 @@ is zero in all twelve readings, so no grant was dropped on the way.
 costs the birth nothing measurable, the capped arms reaching it in the same
 two or three rounds as the uncapped ones.
 
-## 2026-09-22 — S64.5 what a take costs by the shape of its roots: an unwalked take adds 0.3 % to the mutator's collection, a walked one 34,500 instructions
+## 2026-09-22 — S64.5 what a take costs by the shape of its roots: an unwalked take shifts the mutator's trace rather than adding one
 
 The budget ruling holds a take's trace to [`TRACE_BLOCK_BUDGET`] blocks of the
 collector's arena and says that an unwalked take shifts the mutator's trace
@@ -129,11 +223,14 @@ blocks drawn, one exact validation over 315 members, ending `TornDown`.
   exactly by the collection over P, which is the design's own reading of the
   take's cost, and the census confirms it — the same roots, the same rows, the
   same touched blocks in both arms.
-- **What the take costs the mutator is the round trip over P**, 28,800
-  instructions on the disjoint shape and 34,500 on the overlapping one for the
-  same 63 verdicts, about 500 instructions a verdict. Against the overlapping
-  shape's collection that is 3.4 %, and against the disjoint shape's 0.32 %:
-  the term is fixed by the roots and the collection it is charged to is not.
+- **What the take costs the mutator beyond the trace is a fixed term**,
+  28,800 instructions on the disjoint shape and 34,500 on the overlapping one
+  for the same 63 verdicts — 3.4 % of the overlapping collection and 0.32 %
+  of the disjoint one. **Most of that term is the arm's own residue, not the
+  take**: each sample here kept the queue the sample before it left, and only
+  the take arm fills a verdict ring. Measured again with the queue reset
+  between samples, the term is 1,495 to 1,562 instructions, about 25 a
+  verdict ("the live-roots arm", above).
 - **The cycles are dearer than the instructions on the overlapping shape**,
   +31 % against +3.4 %, with 15 % more L1D misses: the 63 verdicts the mutator
   reads out of P were written by another core, and the 381-member component

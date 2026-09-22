@@ -221,12 +221,14 @@ const _: () =
 /// Blocks a batch's trace may draw above the collector's workspace before it
 /// ends with its roots unwalked. Not a measured figure: what it bounds is
 /// the mutator's wait for its token, and the rfc names the bound and not its
-/// size. What stopping here costs is measured
-/// (`dev/BENCHMARKS.md`, "S64.5 what a take costs by the shape of its
-/// roots"): a take of 63 roots whose closures do not overlap stops at this
-/// block after 63 to 99 µs of the collector's time, and the mutator then
-/// traces the same rows for 0.32 % more instructions than collecting them in
-/// line would have cost it.
+/// size. **What this bound decides is whether the collector's trace is worth
+/// anything to the mutator at all** (`dev/BENCHMARKS.md`, "the live-roots
+/// arm"): a take of 63 live roots whose closure fits here leaves the
+/// mutator's collection over P nothing to walk, 15,365 instructions against
+/// the 658,832 of collecting the same rings in line; a take whose closure
+/// passes it is abandoned after 75 to 157 µs of the collector's time, and
+/// the mutator meets the same rows itself for 0.68 % more than it would have
+/// spent without the take.
 const TRACE_BLOCK_BUDGET: usize = 8;
 
 /// Entries a mutator's R holds at or above which a round takes a batch from
@@ -302,9 +304,9 @@ const EXPIRED_WAITS_PER_ROUND: usize = 2;
 /// collector's own time, read against the serve clock, so a mutator's rate
 /// moves it neither way; the embedder's figure replaces it
 /// ([`set_standing_interval`]). What one take at the interval costs the
-/// mutator is measured (`dev/BENCHMARKS.md`, "S64.5 what a take costs by the
-/// shape of its roots"): the round trip over P, about 500 instructions a
-/// verdict, 28,800 to 34,500 for a full ring of 63.
+/// mutator is measured (`dev/BENCHMARKS.md`, "the live-roots arm"): about 25
+/// instructions a verdict, 1,495 to 1,562 for a full ring of 63, against the
+/// hundreds of thousands the collection it rides on spends.
 const STANDING_INTERVAL: Duration = Duration::from_secs(4);
 
 /// The embedder's standing interval in nanoseconds, or zero for

@@ -44,7 +44,7 @@ use crate::memory::block_pool::test_guard;
 use crate::memory::context::LLContext;
 use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain};
-use crate::test_support::prop_offset;
+use crate::test_support::{prop_offset, store_prop};
 use std::io::{BufRead, BufReader, Write};
 use std::time::{Duration, Instant};
 
@@ -81,8 +81,9 @@ const WARM_UP: usize = 5;
 const INTERVAL: Duration = Duration::from_millis(50);
 
 /// One shape of a take's roots. The members of every ring are linked
-/// through one property and held by nothing else, so a ring is garbage and
-/// the collection that reads it tears it down.
+/// through one property; a garbage ring is held by nothing else and the
+/// collection that reads it tears it down, a live one is held by a keeper
+/// and every verdict over it reads live.
 #[derive(Clone, Copy)]
 struct Shape {
     name: &'static str,
@@ -95,6 +96,9 @@ struct Shape {
     /// Objects of the members' class allocated after each member, which is
     /// what puts one member in every block.
     fillers: usize,
+    /// Whether a keeper holds each ring's first member, which makes the
+    /// component live and the take's verdicts `ReadLive`.
+    live: bool,
 }
 
 impl Shape {
@@ -104,6 +108,12 @@ impl Shape {
 
     fn members(&self) -> usize {
         self.rings * self.members
+    }
+
+    /// What the timed collection frees: a garbage ring whole, and nothing at
+    /// all of a live one — its roots go to the deferred lane.
+    fn freed_by_the_collection(&self) -> usize {
+        if self.live { 0 } else { self.members() }
     }
 }
 
@@ -116,6 +126,7 @@ const OVERLAPPING: Shape = Shape {
     members: COMPONENT,
     roots_per_ring: ROOTS,
     fillers: 0,
+    live: false,
 };
 
 /// Every root the root of a ring of its own, one member per block: the sum
@@ -127,6 +138,23 @@ const DISJOINT: Shape = Shape {
     members: RING_MEMBERS,
     roots_per_ring: 1,
     fillers: slots_per_block(MEMBER_CLASS_BYTES) - 1,
+    live: false,
+};
+
+/// The same two shapes with a keeper on every ring: the trace reads every
+/// root live, and what the take saves the mutator is the walk it does not
+/// have to make — the case the budget ruling's "`EmptyLane` when all read
+/// live" names and the garbage shapes cannot show.
+const OVERLAPPING_LIVE: Shape = Shape {
+    name: "overlapping-live",
+    live: true,
+    ..OVERLAPPING
+};
+
+const DISJOINT_LIVE: Shape = Shape {
+    name: "disjoint-live",
+    live: true,
+    ..DISJOINT
 };
 
 const _: () = assert!(OVERLAPPING.rings * OVERLAPPING.roots_per_ring == ROOTS);
@@ -142,9 +170,12 @@ const _: () = assert!(DISJOINT.rings * DISJOINT.roots_per_ring == ROOTS);
 /// # Safety
 /// A quiescent heap under [`test_guard`], and `class` carries
 /// [`MEMBER_PROPS`] Box properties.
-unsafe fn build(arena: &mut Arena, class: *const Class, shape: Shape) -> Vec<*mut Object> {
+unsafe fn build(arena: &mut Arena, class: *const Class, shape: Shape) -> Built {
+    let arena_ptr: *mut Arena = arena;
     let mut context = LLContext { arena };
     let mut fillers = Vec::with_capacity(shape.rings * shape.members * shape.fillers);
+    let mut keepers = Vec::with_capacity(if shape.live { shape.rings } else { 0 });
+    let mut members = Vec::with_capacity(shape.members());
     for _ in 0..shape.rings {
         let ring: Vec<*mut Object> = (0..shape.members)
             .map(|_| unsafe {
@@ -168,10 +199,85 @@ unsafe fn build(arena: &mut Arena, class: *const Class, shape: Shape) -> Vec<*mu
                     "the ring's edge holds the root, so the release is not the last"
                 );
             }
+
+            if shape.live {
+                // The keeper keeps its own creation reference, so nothing
+                // registers it and the trace never reaches it; its edge is
+                // the reference from outside that the trial deletion cannot
+                // subtract, which is what makes the component live.
+                let keeper = new_constructed(&mut context, class, MemoryCategory::GcHeap);
+                store_prop(arena_ptr, keeper, prop_offset(0), ring[0]);
+                keepers.push(keeper);
+            }
         }
+
+        members.extend(ring);
     }
 
-    fillers
+    Built {
+        fillers,
+        keepers,
+        members,
+    }
+}
+
+/// What [`build`] left the case holding: the objects it must give back by
+/// hand, the collection having no reason to free either.
+struct Built {
+    /// One per slot of every block a member stands in, holding the members
+    /// apart.
+    fillers: Vec<*mut Object>,
+    /// One per ring of a live shape, holding the ring's first member; empty
+    /// for a garbage shape.
+    keepers: Vec<*mut Object>,
+    /// Every member of every ring, which a live shape's teardown takes apart
+    /// by hand; a garbage shape's are freed by the arm's own collection.
+    members: Vec<*mut Object>,
+}
+
+/// Take a live shape's rings apart by hand — the caller's branch, a garbage
+/// shape's rings having gone in the arm's own collection.
+///
+/// By hand and not by a collection: the arm's own collection read the
+/// component live, and a commit ages what it reads, so a later trace prunes
+/// at the members that were never registered and the ring waits for a
+/// turnover it would take the case minutes to reach
+/// (`crate::cycle::mark`, "The mature live core is not descended into").
+/// The three loops are `cycle::testing::dismantle_ring`'s over a slice: every
+/// member retained, so that no edge's null store frees a member the loop is
+/// still walking; every edge nulled; every member released and died.
+///
+/// # Safety
+/// `built` came from [`build`] on this thread, `arena` is this thread's, and
+/// no collection is running.
+unsafe fn let_the_rings_go(arena: &mut Arena, built: &Built) {
+    let arena_ptr: *mut Arena = arena;
+    unsafe {
+        for &keeper in &built.keepers {
+            store_prop(arena_ptr, keeper, prop_offset(0), std::ptr::null_mut());
+        }
+
+        for &member in &built.members {
+            ll_retain(member as *mut RcHeader);
+        }
+
+        for &member in &built.members {
+            store_prop(arena_ptr, member, prop_offset(0), std::ptr::null_mut());
+        }
+
+        for &member in &built.members {
+            assert!(ll_release(member as *mut RcHeader), "the member's last");
+            ll_object_die(member);
+        }
+
+        for &keeper in &built.keepers {
+            assert!(
+                ll_release(keeper as *mut RcHeader),
+                "the keeper's edge is null, so its creation reference is its last"
+            );
+            ll_object_die(keeper);
+        }
+    }
 }
 
 /// Kill what held the members apart. A filler carries its creation
@@ -248,7 +354,7 @@ fn a_take(
     control: &mut Option<Control>,
 ) -> (Vec<testing::TracedBatch>, Collected) {
     let mut arena = Arena::new();
-    let fillers = unsafe { build(&mut arena, class, shape) };
+    let built = unsafe { build(&mut arena, class, shape) };
     assert_eq!(
         candidate_count(),
         shape.roots(),
@@ -278,11 +384,20 @@ fn a_take(
     });
     assert_eq!(
         collected.freed,
-        shape.members(),
-        "the collection over P tore the rings down whole"
+        shape.freed_by_the_collection(),
+        "the collection over P freed what the shape's liveness leaves it"
     );
-    unsafe { kill(fillers) };
+    if shape.live {
+        unsafe { let_the_rings_go(&mut arena, &built) };
+    }
+
+    unsafe { kill(built.fillers) };
     drop(arena);
+    // The next sample starts from the queue this one started from: a live
+    // shape's teardown nulls every edge, and each null store registers the
+    // member it decrements (`cycle::testing::dismantle_ring`), so R would
+    // carry the last sample's dead members into the next one's reading.
+    reset_lanes();
     (batches, collected)
 }
 
@@ -296,7 +411,7 @@ fn collected_in_line(
     control: &mut Option<Control>,
 ) -> Collected {
     let mut arena = Arena::new();
-    let fillers = unsafe { build(&mut arena, class, shape) };
+    let built = unsafe { build(&mut arena, class, shape) };
     assert_eq!(
         candidate_count(),
         shape.roots(),
@@ -308,11 +423,16 @@ fn collected_in_line(
     });
     assert_eq!(
         collected.freed,
-        shape.members(),
-        "the collection over R tore the rings down whole"
+        shape.freed_by_the_collection(),
+        "the collection over R freed what the shape's liveness leaves it"
     );
-    unsafe { kill(fillers) };
+    if shape.live {
+        unsafe { let_the_rings_go(&mut arena, &built) };
+    }
+
+    unsafe { kill(built.fillers) };
     drop(arena);
+    reset_lanes();
     collected
 }
 
@@ -474,7 +594,7 @@ fn what_a_take_costs_by_the_shape_of_its_roots() {
         builder.build()
     };
 
-    for shape in [OVERLAPPING, DISJOINT] {
+    for shape in [OVERLAPPING, DISJOINT, OVERLAPPING_LIVE, DISJOINT_LIVE] {
         for arm in [Arm::Take, Arm::Baseline, Arm::Control] {
             if !selected(shape, arm.name()) {
                 continue;

@@ -412,6 +412,23 @@ cores. The census flake of 2026-08-06 failed 3 in 30, 7 in 40, 6 in 40
 and 9 in 40 that way, and 0 in 60 after the fix under the same load
 (`dev/POSTMORTEM.md`, "an entity killed at refcount 1").
 
+**A second flake class: a margin that is a fraction of a real interval.**
+`worker::tests::the_quiet_thread::`
+`a_thread_batched_all_live_oftener_than_x_is_asked_after_x` failed once in
+five full runs at eight threads on 2026-09-22, at its last assertion ("X
+passed through the batches, and the serve asked"), and passed three of three
+when its group was run alone. The case sleeps `X / 5` in a loop, reads the
+serve clock, asks, and breaks on the first reading past `X − X / 10`; the
+assertion after the break requires that ask to have requested the turnover.
+Two mechanisms can defeat it under load and the run did not separate them:
+the ask's own reading of the clock can fall on the other side of X from the
+loop's if the thread is descheduled by more than `X / 10` between the two,
+and a batch landing between them restamps `served_at`, which the loop tests
+only on the iterations it does not break on. What would separate them is
+printing both readings and the stamp at the break. Until then the red is
+re-run past like the ledger class above, and it is named here so that an
+unnamed red is not read as this one.
+
 **The gate flake watch.** Six cases read the process-wide GC ledger across
 a child thread's whole life, which no per-thread figure can answer, and they
 drift if a third thread draws GC memory in that window:

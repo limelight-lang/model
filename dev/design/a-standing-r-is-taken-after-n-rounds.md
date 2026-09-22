@@ -287,7 +287,10 @@ corpus driver over this crate's heap and none coming (Edmond, 2026-09-19:
 calibration runs on test data, and he confirmed the re-aiming of this
 paragraph on 2026-09-22): what the mutator pays — the frees withheld during the take's window and the in-line
 collection over P after `POSTED` (an exact trace of the proposed and
-unwalked roots, `EmptyLane` when all read live) — the recurring in-line
+unwalked roots; a collection that attempts no root and ends
+`NothingProposed` when all read live, measured in `dev/BENCHMARKS.md`, "the
+live-roots arm", where it costs 15,365 instructions against the 658,832 of
+collecting the same rings in line) — the recurring in-line
 collection per X once the thread has a lane, and the round's length against
 the number of sleeping sub-threshold mutators, each against the memory a
 standing ring holds, at most 63 entries and the entities they name. The

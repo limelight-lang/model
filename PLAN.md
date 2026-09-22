@@ -421,17 +421,19 @@ live: `archive/pre-rc-cycle`").
   S64 put two more fields in it. A drain after the walk closes all three and
   needs a case over a collector whose records are all named elsewhere. Found
   by the stage's Code Reviewer, 2026-09-22.
-- [ ] **What S64.5 named and left, 2026-09-22.** Three arms the take's
-  measurement did not build. A pool that sleeps and wakes, where every round
-  clears and re-makes the standing requests, is the population
+- [ ] **What S64.5 named and left, 2026-09-22.** Two arms the take's
+  measurement still does not build. A pool that sleeps and wakes, where every
+  round clears and re-makes the standing requests, is the population
   `EXPIRED_WAITS_PER_ROUND` was ruled for, and both sleeper probes hold their
   sleepers asleep instead, so each pays its wait once and stands
   (`dev/BENCHMARKS.md`, "what sleeping sub-threshold threads cost a round").
-  A take of live roots posts `ReadLive` and leaves the collection over P an
-  `EmptyLane`, which no arm times. And the mutator's collection is timed with
-  the collector retired, so what a round in flight beside it costs is
-  unmeasured. None of the three moves a constant on its own: what each would
-  price is the tail of a round and not the take.
+  And the mutator's collection is timed with the collector retired, so what a
+  round in flight beside it costs is unmeasured. Neither moves a constant on
+  its own: what each would price is the tail of a round and not the take. The
+  third arm, a take of live roots, was built the same evening
+  (`dev/BENCHMARKS.md`, "the live-roots arm"); what it leaves open is the mix
+  — a ring is all live or all dead in the probe, and what a workload's rings
+  hold is unmeasured over this crate.
 - [ ] **What S59 named and left, 2026-09-19.** Two branches of the birth have
   no arm: the guard's `mprotect` failure, which no test can order, and a join
   that fails, for which glibc documents `EDEADLK` on a self-join alone and no
