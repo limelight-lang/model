@@ -65,7 +65,8 @@ fn wait_for_rounds_of(index: usize, rounds: usize) {
         wait_until(
             || {
                 // As the other mutator's loop does: the `POSTED` a batch
-                // left is cleared, so that the next round batches again.
+                // left is cleared; the clear a wake relies on is
+                // `dispose_by_hand`'s, after this wait returns.
                 unsafe { &*record() }.token.clear_posted_for_test();
                 seen += testing::take_rounds_of(index);
                 seen >= rounds
@@ -74,6 +75,26 @@ fn wait_for_rounds_of(index: usize, rounds: usize) {
         ),
         "collector {index} made {rounds} rounds"
     );
+}
+
+/// Stand in for every mutator's disposition of the last batch before the
+/// next round is woken. A round reads a record still at `POSTED` as neither
+/// a batch nor work, so a backlog read across such a record is one short.
+/// `wait_for_rounds_of` clears the case's byte, but its clear can precede
+/// the batch's post and its take follow the round's note; the other
+/// mutator's loop clears its byte a tick after the batch, and a wake inside
+/// that tick met the second backlog round with a backlog of one
+/// (`dev/POSTMORTEM.md`, "a wake inside the other mutator's tick meets a
+/// backlog of one").
+fn dispose_by_hand(others: &[&Mutator]) {
+    unsafe { &*record() }.token.clear_posted_for_test();
+    for other in others {
+        other.run(|_| {
+            unsafe { &*mutator_record::this_thread_record() }
+                .token
+                .clear_posted_for_test()
+        });
+    }
 }
 
 #[test]
@@ -99,7 +120,12 @@ fn a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idl
     assert_eq!(testing::take_spawns(), 1);
 
     // The birth: the first round's batches left both mutators at the
-    // threshold, the second's too, and the second births the sibling.
+    // threshold, the second's too, and the second births the sibling. The
+    // outcomes are zeroed here so that a red's message carries the second
+    // round's alone (`dev/POSTMORTEM.md`, "a wake inside the other mutator's
+    // tick meets a backlog of one").
+    let _ = testing::take_outcomes();
+    dispose_by_hand(&[&other]);
     assert!(wake(ELDER));
     wait_for_rounds_of(ELDER, 1);
     assert!(
@@ -107,7 +133,12 @@ fn a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idl
             || testing::collector_state(1) == ThreadState::Alive,
             A_BIRTH
         ),
-        "two backlog rounds birthed a sibling"
+        "two backlog rounds birthed a sibling; the second round read {:?}; \
+         now mine at {:#x}, theirs at {:#x}, the last refused birth {:?} ago",
+        testing::take_outcomes(),
+        unsafe { &*record }.token.read(),
+        unsafe { &*other.record }.token.read(),
+        refused_birth_age()
     );
     assert_eq!(testing::take_spawns(), 1);
     assert_eq!(testing::collector_state(2), ThreadState::Unborn);
@@ -244,6 +275,7 @@ fn one_backlogged_mutator_births_no_sibling() {
     // One mutator is read by one collector at a time, so its backlog, however
     // many rounds it outlasts, is no reason for a sibling.
     for _ in 0..2 * BACKLOG_ROUNDS_TO_BIRTH {
+        dispose_by_hand(&[]);
         assert!(wake(ELDER));
         wait_for_rounds_of(ELDER, 1);
     }
@@ -275,15 +307,20 @@ fn a_cap_of_one_births_no_sibling() {
     testing::permit_births(true);
     let _ = testing::take_spawns();
     let _ = testing::take_rounds();
+    let _ = testing::take_backlog_rounds_without_a_birth();
     ensure_thread();
     wait_for_rounds_of(ELDER, 1);
     for _ in 0..BACKLOG_ROUNDS_TO_BIRTH {
+        dispose_by_hand(&[&other]);
         assert!(wake(ELDER));
         wait_for_rounds_of(ELDER, 1);
     }
     std::thread::sleep(A_ROUNDS_ABSENCE);
     assert_eq!(testing::take_spawns(), 1, "the elder alone");
     assert_eq!(testing::collector_state(1), ThreadState::Unborn);
+    // The cap was what refused, and not a round that read no backlog: the
+    // second backlog round reached the birth once and found no slot.
+    assert_eq!(testing::take_backlog_rounds_without_a_birth(), 1);
     assert_eq!(unsafe { &*record }.collector(), ELDER);
     assert_eq!(unsafe { &*other.record }.collector(), ELDER);
 

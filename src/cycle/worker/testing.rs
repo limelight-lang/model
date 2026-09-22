@@ -372,6 +372,21 @@ pub(crate) fn note_spawn() {
     SPAWNS.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Backlog rounds that reached the birth and got no sibling — no slot under
+/// the cap, or a refused spawn — since a case last asked: what tells a
+/// negative case that the cap was reached rather than the backlog never
+/// read.
+static BACKLOG_ROUNDS_WITHOUT_A_BIRTH: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn note_backlog_round_without_a_birth() {
+    BACKLOG_ROUNDS_WITHOUT_A_BIRTH.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Backlog rounds without a birth since the last call, and zero the count.
+pub(crate) fn take_backlog_rounds_without_a_birth() -> usize {
+    BACKLOG_ROUNDS_WITHOUT_A_BIRTH.swap(0, Ordering::Relaxed)
+}
+
 /// The exit sequences the collector thread had run at the instant it stored
 /// its word unborn, as recorded by the thread itself just before the store:
 /// zero is a word stored before the runtime exit.
@@ -426,6 +441,7 @@ pub(crate) fn retire() {
     let _ = take_rounds();
     let _ = take_round_times();
     let _ = take_outcomes();
+    let _ = take_backlog_rounds_without_a_birth();
 }
 
 /// Take the elder's slot for the calling thread, so that a consent's wake

@@ -460,6 +460,16 @@ fn birth_refused_recently() -> bool {
     refused_at.is_some_and(|at| at.elapsed() < BIRTH_RETRY_INTERVAL)
 }
 
+/// How long ago the last birth was refused, or `None` for none since the
+/// last case's retire.
+#[cfg(test)]
+fn refused_birth_age() -> Option<Duration> {
+    REFUSED_AT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .map(|at| at.elapsed())
+}
+
 fn note_refused_birth() {
     let mut refused_at = REFUSED_AT
         .lock()
@@ -629,8 +639,12 @@ fn next_interval(interval: Duration, outcome: &Round) -> Duration {
 /// the backlogged mutators; a cap that refuses the birth leaves the backlog
 /// where it is.
 fn grow_the_siblings(index: usize, backlogged: &Backlogged) {
-    if let Some(sibling) = birth_a_sibling(index) {
-        hand_over_half(backlogged, sibling);
+    match birth_a_sibling(index) {
+        Some(sibling) => hand_over_half(backlogged, sibling),
+        None => {
+            #[cfg(test)]
+            testing::note_backlog_round_without_a_birth();
+        }
     }
 }
 

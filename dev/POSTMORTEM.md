@@ -7,6 +7,83 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-22 — a wake inside the other mutator's tick meets a backlog of one
+
+**What happened.**
+`the_siblings::a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idle`
+failed at its wait for the sibling's birth in 2 of 7 `debug-journal` runs at
+eight threads over 2026-09-21 and 2026-09-22, and in none of the 28 plain and
+`hash-folding` runs beside them. Both red runs took 17–19 s where the others
+took 6–10 s, and the plan's line read the length as a load stretching the
+birth; the length was the wait itself, `A_BIRTH` at 10 s, added to a 7–9 s
+run. Under load — the case, its group and the whole suite pinned to two cores
+under two spinners, 28 runs — it did not fail once.
+
+The case births the sibling from the elder's second backlog round: it wakes
+the elder after the first round's batches and expects the second to batch
+both mutators with a backlog behind each. The other mutator's thread stands
+in for its disposition by clearing `POSTED` in a loop of 1 ms ticks
+(`Mutator::start`), so its byte reads `POSTED` from the first round's batch
+until its next tick. A second round whose request reaches that record inside
+the tick reads `Served::Posted`, neither a batch nor work; the round's backlog
+is one, one births nothing, and the next round is 30 s away
+(`PAST_THE_CASE`), so the 10 s wait fails. With the other mutator's tick
+stretched to 10 ms the case failed 5 of 5 alone, with the same message, and
+the serve trace read `slot 0 served Posted` on the other record; with every
+mutator's `POSTED` cleared by hand before the wake it passed 5 of 5 under the
+same stretch, and 30 of 30 under the gate's own command afterwards.
+
+**What is shown and what is not.** The stretch shows that a request inside
+the window produces this red, not that the gate's window was open: the
+gate's build was never probed. What keeps the window closed in the ordinary
+run is the case's own path after the wake — `wait_for_rounds_of` reads and
+acts on the byte before its first sleep (`wait_until`), which almost always
+precedes the elder's request of the case's record, so the case's consent
+comes one sleep later, the elder waits that millisecond on the case's record,
+and by the time it requests the other's the other's tick has cleared it. The
+red therefore needs a scheduling event of about a millisecond: the other's
+`recv_timeout` waking late, or the elder's request beating the case thread to
+its first byte read. Why that event came in 2 of 7 journal runs and 0 of 28
+plain ones is unexplained — the journal build's slower batches lengthen the
+case's path and should make the race rarer — and the two-core load, which
+should have made a late tick common, gave 0 of 28. A refused sibling birth
+would produce the same message and the same 10 s; nothing observed points at
+one, and nothing excludes it for the gate's two runs. The assertion's message
+carries the second round's outcomes and the age of the last refused birth
+since this entry — the age, because the message is read ten seconds after the
+round, past `BIRTH_RETRY_INTERVAL`, where a "refused recently" word is false
+on every red — so a next red says which.
+
+**Why it was possible.** The case's own record is cleared inside the wait
+loop, but the closure clears and then takes the round count while the elder
+releases and then notes, so a release landing between the two returns with
+the case's record at `POSTED` too; the other mutator's byte is cleared on its
+own thread on its own clock; nothing ordered either against the wake.
+
+**Why no test caught it.** The assertion that fails is the case's own, ten
+seconds after the round that decided it, with no record of what the round
+read. The two negative cases of the file cannot redden on a backlog of one:
+`one_backlogged_mutator_births_no_sibling` has one mutator, so its backlog is
+at most one either way; `a_cap_of_one_births_no_sibling` documents the cap as
+its reason, and a skipped byte never reached the cap, so the race made it
+agree by accident.
+
+**What changed.** `the_siblings::dispose_by_hand` clears every mutator's
+`POSTED` — the case's on its thread, the other's through a job on its own —
+before each wake that expects a backlog round, in all three cases. The cap
+case asserts `testing::take_backlog_rounds_without_a_birth() == 1`, a count
+`worker::grow_the_siblings` keeps of the backlog rounds that reached the
+birth and got no sibling, so the cap is what it tests. The birth case's
+message names the second round's outcomes, both bytes as they stand at the
+failure, and `worker::refused_birth_age()`. The class is the harness's stand-in for a
+disposition racing the round it stands in for, and it has no production seam:
+a mutator at `POSTED` is skipped by design, and its backlog counts one short
+until it polls. To re-arm the loop, set `Mutator::start_idling_with`'s
+`recv_timeout` to 10 ms and run the group alone: without `dispose_by_hand`
+the case reddens at once, with it it stays green.
+
+---
+
 ## 2026-09-21 — a constant moved, and the ignored load that reads it kept the old number as its expectation
 
 **What happened.** The ruling of 2026-09-19 moved `TRAVERSAL_AGE_THRESHOLD`

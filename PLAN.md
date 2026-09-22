@@ -16,14 +16,15 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-22 · Active: none. S60 went on 2026-09-22 with its six
-steps closed and its gate paid: the Critic over S60.1–S60.4, and the Code
-Reviewer over the stage, whose fourteen findings — an accessor's and the
-signal flag's contracts left behind the ruling, a test override with no
-reset in `worker::testing::retire`, the letter X used and defined nowhere in
-the crate, two history sentences, a redundant occupancy guard on the pressure
-path, a restamp assertion a coarse clock could fail — were applied the same
-day. The ruling stands in `dev/DECISIONS.md`, "a quiet thread's turnover is
+Updated: 2026-09-22 · Active: none. S61 went on 2026-09-22, the day it opened:
+the sibling-birth red of the journal gate was the harness's stand-in for a
+disposition racing the round it stands in for, found by stretching the other
+mutator's tick and repaired by clearing every mutator's `POSTED` by hand
+before each backlog wake (`dev/POSTMORTEM.md`, "a wake inside the other
+mutator's tick meets a backlog of one"); the Critic over the diagnosis and
+the Code Reviewer over the stage are paid, and what each found is in that
+entry. S60 went the same morning with its six steps closed and both gates
+paid; its ruling stands in `dev/DECISIONS.md`, "a quiet thread's turnover is
 the collector's to ask for", the figures in `dev/BENCHMARKS.md`, "S60.6 what
 the poll costs with a deferred record standing". The destination's last mile
 — the compiler that links this crate — is outside this plan: `rfc/BACKLOG.md`,
@@ -80,7 +81,7 @@ the backlog line "What S37 named and left".
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S60, every
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S61, every
 number this plan has spent. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -311,23 +312,6 @@ live: `archive/pre-rc-cycle`").
   entity without reading the class flags, so a template class the compiler
   marks acyclic does not carry `ACYCLIC_GATE` — conservative, and left until
   a template class is marked.
-- [ ] **The sibling's birth that missed its wait twice in seven journal runs.**
-  `the_siblings::a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idle`
-  failed at `wait_until(collector_state(1) == Alive, A_BIRTH)` in the second
-  of four `debug-journal` runs on 2026-09-21, a run that took 19 s where the
-  others took 6–10 s, and again in the first of three on 2026-09-22, a run of
-  17.7 s against 7.8 s for the other two; 12 of 12 alone after the first, and
-  every plain and `hash-folding` run of both days green (Edmond, 2026-09-21:
-  investigate rather than accept). Two readings to separate: the box's load
-  stretching the birth past `A_BIRTH`, and the collector's round since
-  2026-09-21 — the serve stamp, the clock comparison and the request byte
-  (`worker::ask_for_a_turnover_if_quiet`) run on every record of every round
-  — moving what the second backlog round does before it births. done: the
-  failing run is reproduced under a named load or the case is seen red with
-  the ask in the round and green without it, and either the wait is
-  re-stated against what it measures or the round's change is repaired; the
-  class goes to `dev/POSTMORTEM.md` if a mechanism is found, and to
-  `dev/WORKFLOW.md`'s flake watch if only the load.
 - [ ] **The citation check does not read the journals.** `dev/tools/citations.py`
   walks `src/`, `benches/`, `docs/` and the three maps, so a journal entry
   citing a plan line by its title is checked by nobody, and two are dead

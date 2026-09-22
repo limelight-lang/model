@@ -436,7 +436,8 @@ birth is a raw thread (3 in 21; 112 against 113 each time) against none in
 collector life runs `ll_thread_exit` three times since that change, its
 loop's, the trampoline's and the guard's. One further red came on
 2026-09-19, in a run whose name the command's tail did not keep, and seven
-`debug-journal` runs of the same tree after it were green. What would close them is
+`debug-journal` runs of the same tree after it were green; on 2026-09-22 it
+was 2 in 38 `debug-journal` runs, one of them under the two-core load recipe. What would close them is
 a reading of a named thread's figures that outlives the thread, a structure
 rather than a patch; Edmond deferred building it on 2026-09-18 ("fix it
 later"), so the watch stands and the flake is re-run past, and until it is
