@@ -8,6 +8,158 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-22 — S64.5 a second producer behind the sleeping threads: the sibling is born inside three rounds at both cap settings
+
+The cap's ruling left one question open: whether a round that spends its two
+expired waits on sleeping mutators still reads the two backlogs a sibling's
+birth counts (`dev/DECISIONS.md`, "the consent wait stays on both paths, and a
+round's spending on expired waits is capped"; the earlier arm of this stage,
+"what sleeping sub-threshold threads cost a round", builds one producer and so
+cannot answer it). The arm is
+`under_stress::whether_two_producers_behind_the_sleeping_threads_birth_a_sibling`:
+two mutators carved after the sleepers, each fed rings of 392 roots — the
+birth case's backlog — and polling between jobs, with the arm holding at most
+two rings of each unfreed so that it registers no faster than the rounds and
+the polls free. The elder walks every record; the arm ends at the first spawn
+or after five seconds of feeding.
+
+**Machine:** the dev box, WSL2, shared with interactive work; load average
+0.8–0.9. **Build:** release, one probe at a time, `--ignored
+--test-threads=1`. **Dials:** the crate's request wait (2 ms), the standing
+interval overridden to 50 ms, the sleepers' rings three candidates each.
+
+| sleeping threads | bound | rounds until the birth, run A / run B | spawns | releases unserved |
+|---|---|---|---|---|
+| 0 | 2 | 3 / 3 | 1 | 0 |
+| 0 | off | 3 / 3 | 1 | 0 |
+| 64 | 2 | 2 / 3 | 1 | 0 |
+| 64 | off | 3 / 3 | 1 | 0 |
+| 1,000 | 2 | 3 / 3 | 1 | 0 |
+| 1,000 | off | 3 / 3 | 1 | 0 |
+
+**What the figures say.** A second producing mutator behind a sleeping
+population is served and counted: every arm births one sibling, inside two or
+three rounds, at both settings of the bound and at every population. The path
+it is counted through is the one the checkpoint ruling built — past the second
+expired wait the walk leaves each further request standing rather than waiting
+on it, a producer that is awake consents at its own poll, and the checkpoint
+carries that batch's backlog back into the round's count. Releases-unserved
+is zero in all twelve readings, so no grant was dropped on the way.
+
+**`EXPIRED_WAITS_PER_ROUND` is kept at 2** by this arm as well: the bound
+costs the birth nothing measurable, the capped arms reaching it in the same
+two or three rounds as the uncapped ones.
+
+## 2026-09-22 — S64.5 what a take costs by the shape of its roots: an unwalked take adds 0.3 % to the mutator's collection, a walked one 34,500 instructions
+
+The budget ruling holds a take's trace to [`TRACE_BLOCK_BUDGET`] blocks of the
+collector's arena and says that an unwalked take shifts the mutator's trace
+rather than adding one (`dev/DECISIONS.md`, "a take's trace is budgeted as one
+batch's, and an unwalked take shifts the mutator's trace rather than adding
+one"). The probe is
+`cycle::worker::tests::what_a_take_costs`, one case over two shapes of the
+same sixty-three roots — the ring a take carries at its largest, one short of
+the threshold:
+
+- **overlapping** — every root inside one component of 381 members, the
+  corpus's median closure: the union of the closures is the closure of one;
+- **disjoint** — every root the root of a ring of five, one member per block,
+  so that the 315 blocks' row arrays ask for 630 KiB against the 512 KiB the
+  budget's eight blocks hold.
+
+Each shape is read in three arms: the **take**, after which the mutator
+collects over P; the **baseline** — the step's "floor" — the same rings
+collected in line over R whole with no take; and the **control**, the baseline
+a second time, whose difference from the first is the error bar. The collector is retired before the timed
+collection in every arm, so that the arms differ in what stands in P and in R
+and in nothing else.
+
+**Machine:** the dev box, WSL2, shared with interactive work; load average
+0.8–0.9 at the runs' start. **Build:** release, `--test-threads=1`. The wall
+figures are from an unpinned run of the whole case; the hardware figures from
+`dev/tools/take_perf.sh`, one process per arm pinned to CPU 2 under `perf stat
+--control`, the counting interval opened by the probe around the timed
+collection alone and the sixteen counted collections divided out below. `perf`
+is the 6.8 build the distribution ships, as S40.3 has it. **Commands:**
+
+```
+cargo test --release --lib -- --ignored what_a_take_costs --test-threads=1 --nocapture
+cargo test --release --lib --no-run
+PERF=/usr/lib/linux-tools-6.8.0-134/perf dev/tools/take_perf.sh out.csv 2 2
+```
+
+*Per collection of the mutator's, the two `perf` runs quoted as A / A:*
+
+| shape | arm | instructions | cycles | L1D misses | wall, median | wall, least |
+|---|---|---|---|---|---|---|
+| overlapping | take | 1,042,219 / 1,042,049 | 341,875 / 338,420 | 5,887 / 5,832 | 49.1 µs | 46.1 µs |
+| overlapping | baseline | 1,007,523 / 1,007,587 | 261,531 / 256,239 | 5,056 / 5,094 | 38.2 µs | 37.9 µs |
+| overlapping | control | 1,007,460 / 1,007,619 | 259,511 / 260,468 | 5,067 / 5,065 | 37.7 µs | 37.5 µs |
+| disjoint | take | 8,937,045 / 8,936,982 | 2,801,197 / 2,731,541 | 39,596 / 39,550 | 425.9 µs | 399.7 µs |
+| disjoint | baseline | 8,908,229 / 8,908,229 | 2,704,286 / 2,701,187 | 38,612 / 38,568 | 411.1 µs | 381.0 µs |
+| disjoint | control | 8,908,260 / 8,908,356 | 2,714,348 / 2,695,700 | 39,265 / 38,449 | 414.8 µs | 392.8 µs |
+
+*What the collector's own trace did*, read at the seam in `batch` by
+`worker::testing::take_traced_batches`, sixteen takes per shape:
+
+| shape | roots | complete | blocks drawn | trace wall |
+|---|---|---|---|---|
+| overlapping | 63 | yes | 0 | 15.7–18.4 µs |
+| disjoint | 63 | no | 8 | 63.0–99.5 µs |
+
+*What the census read of the mutator's collection*, the same in the take arm
+and in the baseline arm of each shape: the overlapping shape 63 roots, 381 rows
+met over one touched block, one row array, no block drawn, one exact
+validation over the commit's 381 members, ending `TornDown`; the disjoint
+shape 63 roots, 315 rows met over 315 touched blocks, 315 row arrays, ten
+blocks drawn, one exact validation over 315 members, ending `TornDown`.
+
+**What the figures say.**
+
+- **The disjoint take is the ruling's case and the ruling holds.** Its trace
+  meets the budget at eight blocks and is abandoned, every root comes back
+  `Unwalked`, and the mutator then traces the same 315 rows over the same 315
+  blocks it would have traced in line. What the take adds to that collection
+  is 28,800 instructions, 0.32 %, against an error bar of 31 to 127
+  instructions between the baseline and its control; in wall the difference,
+  14.9 µs of 411 µs, is inside the 3.7 µs to 11.8 µs the null pair itself
+  spreads over.
+- **The take does not spare the mutator its trace in either shape.** The
+  collector's verdicts are a shortlist: a proposed root is traced again
+  exactly by the collection over P, which is the design's own reading of the
+  take's cost, and the census confirms it — the same roots, the same rows, the
+  same touched blocks in both arms.
+- **What the take costs the mutator is the round trip over P**, 28,800
+  instructions on the disjoint shape and 34,500 on the overlapping one for the
+  same 63 verdicts, about 500 instructions a verdict. Against the overlapping
+  shape's collection that is 3.4 %, and against the disjoint shape's 0.32 %:
+  the term is fixed by the roots and the collection it is charged to is not.
+- **The cycles are dearer than the instructions on the overlapping shape**,
+  +31 % against +3.4 %, with 15 % more L1D misses: the 63 verdicts the mutator
+  reads out of P were written by another core, and the 381-member component
+  stands in one block whose rows that core also touched. On the disjoint shape
+  the same term is 1 to 3.7 %, inside the control's own 0.7 %.
+- **A take of an overlapping closure costs the collector 16 µs and draws no
+  block**: the rows of 381 members in one block fit the workspace, and the
+  budget is not reached. A disjoint take costs it 63 to 99 µs and stops at the
+  budget's eighth block, which is the bound working as specified.
+
+**`TRACE_BLOCK_BUDGET` and `STANDING_INTERVAL` are both kept**, at eight blocks
+and four seconds. The readings bound what either buys: the budget stops a
+disjoint take at eight blocks after 63 to 99 µs of the collector's time, and
+what the mutator pays for the take that stopped is 0.32 % of the collection it
+was going to run anyway. Neither figure asks for another number, and both
+constants' comments now carry the measured bound.
+
+**What these arms are not.** The rings are garbage, so every arm ends in a
+teardown; a take of live roots posts `ReadLive` and the collection over P is
+an `EmptyLane`, which is not measured here. The mutator's collection is timed
+with the collector retired, so the figures leave out whatever a round in
+flight would cost it. The instruction counts are the test binary's, under
+`cfg(test)`, where `row::resolve_edge_target` asserts on every dispatch
+(S40.3); both arms of a shape pay that assertion over the same dispatches, and
+the difference between them is what is quoted.
+
 ## 2026-09-22 — S64.5 what sleeping sub-threshold threads cost a round: the cap holds its tail at 4.5 ms where 1,000 of them cost 2.1 s
 
 The take of a standing ring (`dev/design/a-standing-r-is-taken-after-n-rounds.md`)
@@ -86,8 +238,8 @@ re-made every round; that arm is not built, and its figure is not estimated
 here. Nor is the question the ruling of "a checkpoint carries its batch's
 backlog and a refusal it read out to the round" put to the arm: whether a
 *second* active mutator behind the same sleeping threads births a sibling.
-Neither probe builds a second producer, so the birth is unmeasured and S64.5
-still owes it.
+Neither probe builds a second producer; the arm that does is the entry "S64.5
+a second producer behind the sleeping threads".
 
 ## 2026-09-22 — S63.3 the sleeper probes on the standing list: the same figures as on the array
 

@@ -357,6 +357,13 @@ the collector–mutator protocol of 2026-09-09 and its review.
 `perf stat --control`, twice per cell and the empty interval, into one CSV.
 Build the driver with `--features bench-loads` first.
 
+`dev/tools/take_perf.sh` — the hardware arm of a take's cost
+(`dev/BENCHMARKS.md`, "S64.5 what a take costs by the shape of its roots"):
+each arm of `cycle::worker::tests::what_a_take_costs` in a process of its own,
+pinned to one CPU under `perf stat --control`, the probe opening the counting
+interval around its timed collection alone. Build the test binary with
+`cargo test --release --lib --no-run` first.
+
 `dev/tools/citations.py` — the heading-level citation check, pass 1 of
 `dev/WORKFLOW.md`'s "Checks a grep cannot make": prints every cited
 heading the named document no longer carries, and prints nothing on a

@@ -288,6 +288,57 @@ pub(crate) fn note_refusal() {
     REFUSALS.fetch_add(1, Ordering::Relaxed);
 }
 
+/// What one batch's trace did, for the probe that reads a take's cost by
+/// the shape of its roots (`dev/BENCHMARKS.md`, "S64.5 what a take costs by
+/// the shape of its roots"): the roots the trace walked, whether it ran to
+/// its end, the blocks its arena drew above the workspace, and the wall of
+/// the two phases.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct TracedBatch {
+    pub(crate) roots: usize,
+    pub(crate) complete: bool,
+    pub(crate) blocks: usize,
+    pub(crate) wall: std::time::Duration,
+}
+
+/// Whether a case is reading the batches: off by the module's own, so that
+/// a suite's batches pay one relaxed load and allocate nothing.
+static READING_BATCHES: AtomicBool = AtomicBool::new(false);
+
+/// The batches traced since the last take, in the order the collectors
+/// traced them.
+static TRACED_BATCHES: Mutex<Vec<TracedBatch>> = Mutex::new(Vec::new());
+
+/// Read every batch's trace from here on, or stop reading; either way what
+/// stood is cleared, the reading being one case's.
+pub(crate) fn read_traced_batches(reading: bool) {
+    READING_BATCHES.store(reading, Ordering::Relaxed);
+    batches().clear();
+}
+
+/// Record what a batch's trace did, and do nothing at all while no case is
+/// reading: `reading` is called under the flag alone, since the blocks it
+/// asks the arena for are a walk of the arena's chain.
+pub(crate) fn note_traced_batch(reading: impl FnOnce() -> TracedBatch) {
+    if !READING_BATCHES.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let batch = reading();
+    batches().push(batch);
+}
+
+/// Every batch traced since the last call, in the collectors' own order.
+pub(crate) fn take_traced_batches() -> Vec<TracedBatch> {
+    std::mem::take(&mut batches())
+}
+
+fn batches() -> std::sync::MutexGuard<'static, Vec<TracedBatch>> {
+    TRACED_BATCHES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Every outcome since the last call, and zero the counts.
 pub(crate) fn take_outcomes() -> Outcomes {
     Outcomes {

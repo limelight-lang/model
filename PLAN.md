@@ -354,7 +354,7 @@ Critic over the repair.
         refusal it read out to the round"; it retires the fourth reason of
         the cap's own ruling, which stands on the other three, and moves no
         premise of Edmond's.
-- [ ] S64.5 What the take and the cap cost
+- [x] S64.5 What the take and the cap cost
       done: the parked-thread arm — 64 and 1,000 parked sub-threshold
         threads beside one active mutator, the active mutator's batch
         interval and the round's length read against their number, the null
@@ -376,6 +376,21 @@ Critic over the repair.
         `EXPIRED_WAITS_PER_ROUND` either changes or is recorded as kept with
         the readings
       tier: T2 · role: —
+      handoff: two probes, both in `dev/BENCHMARKS.md` — "what a take costs by
+        the shape of its roots" and "a second producer behind the sleeping
+        threads". The take's cost is read in
+        `cycle::worker::tests::what_a_take_costs`, three arms per shape
+        (take, floor, control) with the collector retired before the timed
+        collection, and its hardware arm is `dev/tools/take_perf.sh`; what the
+        collector's own trace did is read at the seam in `batch` through
+        `worker::testing::take_traced_batches`, which records nothing until a
+        case arms it. The disjoint take stops at the budget's eighth block and
+        costs the mutator 0.32 % more instructions than the in-line collection
+        of the same rings, inside the null pair's spread; the overlapping take
+        completes in 16 µs and costs the mutator 34,500 instructions, the round
+        trip over 63 verdicts. Both constants keep their figures and carry the
+        bound in their comments; `EXPIRED_WAITS_PER_ROUND` keeps 2, the second
+        producer's sibling born in the same two or three rounds capped or not.
 - [ ] S64.6 The rfc, the maps and the stage's review
       done: the `rfc` states the take where it states the signals and the
         threshold, and its handshake's "(a)" says the handover leaves a
@@ -655,6 +670,17 @@ live: `archive/pre-rc-cycle`").
   done: one red test reaches the free from a second thread inside the reset,
   or a demonstration that the shape is unreachable is recorded in
   `dev/DECISIONS.md`.
+- [ ] **What S64.5 named and left, 2026-09-22.** Three arms the take's
+  measurement did not build. A pool that sleeps and wakes, where every round
+  clears and re-makes the standing requests, is the population
+  `EXPIRED_WAITS_PER_ROUND` was ruled for, and both sleeper probes hold their
+  sleepers asleep instead, so each pays its wait once and stands
+  (`dev/BENCHMARKS.md`, "what sleeping sub-threshold threads cost a round").
+  A take of live roots posts `ReadLive` and leaves the collection over P an
+  `EmptyLane`, which no arm times. And the mutator's collection is timed with
+  the collector retired, so what a round in flight beside it costs is
+  unmeasured. None of the three moves a constant on its own: what each would
+  price is the tail of a round and not the take.
 - [ ] **What S59 named and left, 2026-09-19.** Two branches of the birth have
   no arm: the guard's `mprotect` failure, which no test can order, and a join
   that fails, for which glibc documents `EDEADLK` on a self-join alone and no

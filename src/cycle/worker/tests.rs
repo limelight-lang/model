@@ -159,6 +159,22 @@ fn wait_until(mut reached: impl FnMut() -> bool, within: std::time::Duration) ->
 const A_BIRTH: std::time::Duration =
     std::time::Duration::from_secs(if cfg!(miri) { 900 } else { 10 });
 
+/// Birth the elder over `records`, its wait between rounds the timer's own,
+/// and wait for its first round.
+fn born_over(records: &[*mut MutatorRecord]) {
+    testing::confine_rounds_to_records(records);
+    testing::wait_between_rounds_for(None);
+    testing::permit_births(true);
+    let _ = testing::take_rounds();
+    let _ = testing::take_round_times();
+    let _ = testing::take_outcomes();
+    ensure_thread();
+    assert!(
+        wait_until(|| testing::take_rounds() >= 1, A_BIRTH),
+        "the elder was born and made its first round"
+    );
+}
+
 /// The frame a case about the thread's birth starts from: the elder unborn,
 /// this thread's record the only one a round visits, births permitted and
 /// the spawn count zeroed. The returned guard ends the thread with the case.
@@ -840,3 +856,4 @@ mod the_siblings;
 mod the_standing_list;
 mod the_take_after_an_interval;
 mod under_stress;
+mod what_a_take_costs;

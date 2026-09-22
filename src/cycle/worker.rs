@@ -221,7 +221,12 @@ const _: () =
 /// Blocks a batch's trace may draw above the collector's workspace before it
 /// ends with its roots unwalked. Not a measured figure: what it bounds is
 /// the mutator's wait for its token, and the rfc names the bound and not its
-/// size.
+/// size. What stopping here costs is measured
+/// (`dev/BENCHMARKS.md`, "S64.5 what a take costs by the shape of its
+/// roots"): a take of 63 roots whose closures do not overlap stops at this
+/// block after 63 to 99 µs of the collector's time, and the mutator then
+/// traces the same rows for 0.32 % more instructions than collecting them in
+/// line would have cost it.
 const TRACE_BLOCK_BUDGET: usize = 8;
 
 /// Entries a mutator's R holds at or above which a round takes a batch from
@@ -270,8 +275,13 @@ static EMBEDDERS_QUIET_INTERVAL_NANOS: AtomicU64 = AtomicU64::new(0);
 /// that do not answer: past it, every request the walk lands afterwards is
 /// left standing at once and served at a checkpoint when its mutator wakes
 /// (`dev/DECISIONS.md`, "the consent wait stays on both paths, and a
-/// round's spending on expired waits is capped"). Two, a placeholder and
-/// not a measured figure.
+/// round's spending on expired waits is capped"). Two, chosen as a
+/// placeholder and kept by the readings of `dev/BENCHMARKS.md`: it holds a
+/// round's tail at 5.3 ms where 1,000 sleeping threads cost 2.106 s without
+/// it ("what sleeping sub-threshold threads cost a round"), and costs a
+/// second producing mutator behind them nothing measurable, its sibling
+/// born in the same two or three rounds either way ("a second producer
+/// behind the sleeping threads").
 ///
 /// What it bounds is the round's spending on mutators that never answer: a
 /// walk begins at most this many waits that expire, each spanning at most
@@ -291,7 +301,10 @@ const EXPIRED_WAITS_PER_ROUND: usize = 2;
 /// per interval on a thread that registers a candidate now and then. The
 /// collector's own time, read against the serve clock, so a mutator's rate
 /// moves it neither way; the embedder's figure replaces it
-/// ([`set_standing_interval`]).
+/// ([`set_standing_interval`]). What one take at the interval costs the
+/// mutator is measured (`dev/BENCHMARKS.md`, "S64.5 what a take costs by the
+/// shape of its roots"): the round trip over P, about 500 instructions a
+/// verdict, 28,800 to 34,500 for a full ring of 63.
 const STANDING_INTERVAL: Duration = Duration::from_secs(4);
 
 /// The embedder's standing interval in nanoseconds, or zero for
@@ -1875,7 +1888,16 @@ unsafe fn batch(
         return Served::Idle;
     }
 
+    #[cfg(test)]
+    let traced_from = std::time::Instant::now();
     let complete = unsafe { trace(arena, roots) };
+    #[cfg(test)]
+    testing::note_traced_batch(|| testing::TracedBatch {
+        roots: roots.len(),
+        complete,
+        blocks: arena.blocks_held(),
+        wall: traced_from.elapsed(),
+    });
     posted.set(true);
     unsafe { post_the_verdicts(&verdicts, roots, complete) };
 

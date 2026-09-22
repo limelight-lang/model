@@ -10,7 +10,10 @@
 //! batches minus the collections; a wake landing inside a round starts the
 //! next round without the timer; and a sleeper that wakes while the active
 //! mutator is being served is released within one batch of its consent,
-//! as is the pressure collection it fires.
+//! as is the pressure collection it fires. Two producers behind a sleeping
+//! population answer the last question: whether a round that spends its
+//! expired waits on the sleepers still counts the two backlogs a sibling's
+//! birth is made of.
 //!
 //! Every case is a measurement probe, run one at a time in a release
 //! build — `cargo test --release --lib -- --ignored under_stress --test-threads=1`
@@ -139,22 +142,6 @@ impl Sleeper {
             "the woken sleeper was served and freed its ring"
         );
     }
-}
-
-/// Birth the elder over `records`, its wait between rounds the timer's own,
-/// and wait for its first round.
-fn born_over(records: &[*mut MutatorRecord]) {
-    testing::confine_rounds_to_records(records);
-    testing::wait_between_rounds_for(None);
-    testing::permit_births(true);
-    let _ = testing::take_rounds();
-    let _ = testing::take_round_times();
-    let _ = testing::take_outcomes();
-    ensure_thread();
-    assert!(
-        wait_until(|| testing::take_rounds() >= 1, A_BIRTH),
-        "the elder was born and made its first round"
-    );
 }
 
 /// Wait until the elder made `rounds` more rounds, counting across the
@@ -1011,6 +998,167 @@ fn what_a_producer_behind_the_sleeping_threads_waits_for_its_batch() {
                 arm.longest_service,
                 arm.spawns,
                 arm.releases_unserved,
+            );
+        }
+    }
+}
+
+/// Roots a producer registers per job: the backlog of the sibling's birth
+/// case (`the_siblings`), sized so that a round's batches leave the ring at
+/// the threshold behind them, which is what a round reads as a backlog.
+const A_BACKLOG: usize = 6 * INITIAL_BATCH + 8;
+
+/// Rings a producer may hold unfreed before the arm feeds it another: two,
+/// so that its R stands above the threshold across a batch while the arm
+/// registers no faster than the rounds and the producer's own polls free.
+const OUTSTANDING_RINGS: usize = 2;
+
+/// How long the two producers are fed before an arm gives up on a birth:
+/// far over the two backlog rounds a birth takes at the timer's cadence
+/// after the round the sleeping population's requests cost.
+const FEEDING: Duration = Duration::from_secs(5);
+
+/// What the rounds did with two producers behind the sleeping threads.
+struct BirthArm {
+    sleepers: usize,
+    capped: bool,
+    rounds: usize,
+    rounds_until_a_birth: Option<usize>,
+    spawns: usize,
+    releases_unserved: usize,
+    registered: usize,
+}
+
+/// Two mutators carved behind `sleepers` sleeping sub-threshold threads,
+/// each holding a backlog of its own, and the elder over every record:
+/// whether the rounds that reach the two last still read the two backlogs a
+/// sibling's birth counts, and how many rounds that took. A birth and no
+/// birth are both readings — the arm asserts neither, the question being
+/// what the standing requests of a sleeping population do to the count a
+/// round makes (`dev/DECISIONS.md`, "a checkpoint carries its batch's
+/// backlog and a refusal it read out to the round").
+fn two_producers_behind(
+    sleepers: usize,
+    capped: bool,
+    interval: Duration,
+    class: *const Class,
+) -> BirthArm {
+    testing::take_standing_after(Some(interval));
+    testing::cap_expired_waits_at(if capped { None } else { Some(usize::MAX) });
+    let mut asleep: Vec<Sleeper> = (0..sleepers)
+        .map(|_| Sleeper::start_with(class, STANDING_RING))
+        .collect();
+    let freed = [Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0))];
+    let producers = [
+        Mutator::start_polling(freed[0].clone()),
+        Mutator::start_polling(freed[1].clone()),
+    ];
+    born_over(&[]);
+    let _ = testing::take_spawns();
+    let _ = testing::take_rounds();
+
+    let mut registered = [0_usize; 2];
+    let mut rounds = 0;
+    let mut spawns = 0;
+    let mut rounds_until_a_birth = None;
+    let fed_until = Instant::now() + FEEDING;
+    while Instant::now() < fed_until && rounds_until_a_birth.is_none() {
+        for (index, producer) in producers.iter().enumerate() {
+            let outstanding = registered[index] - freed[index].load(Ordering::Relaxed);
+            if outstanding < OUTSTANDING_RINGS * A_BACKLOG {
+                let sent = Sent(class);
+                producer.run(move |arena| {
+                    let _ = unsafe { long_ring(arena, sent.into_inner(), A_BACKLOG) };
+                });
+                registered[index] += A_BACKLOG;
+            }
+        }
+
+        rounds += testing::take_rounds();
+        spawns += testing::take_spawns();
+        if spawns > 0 {
+            rounds_until_a_birth = Some(rounds);
+        }
+
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    // Every ring goes back before the collectors are retired: what a batch
+    // posted the producer's polls have freed already, and the roots still in
+    // R are its own to collect in line.
+    for (index, producer) in producers.iter().enumerate() {
+        let counted = freed[index].clone();
+        producer.run(move |_| {
+            loop {
+                let freed_now = unsafe { crate::gc::ll_gc_collect_cycles() };
+                counted.fetch_add(freed_now, Ordering::Relaxed);
+                if freed_now == 0 {
+                    break;
+                }
+            }
+        });
+    }
+
+    for (index, producer) in producers.iter().enumerate() {
+        let wanted = registered[index];
+        let counted = freed[index].clone();
+        assert!(
+            wait_until(|| counted.load(Ordering::Relaxed) >= wanted, A_BIRTH),
+            "producer {index} gave back the {wanted} roots it registered, \
+             {} of them so far",
+            counted.load(Ordering::Relaxed)
+        );
+        let _ = producer;
+    }
+
+    rounds += testing::take_rounds();
+    spawns += testing::take_spawns();
+    let releases_unserved = testing::take_releases_unserved();
+    for sleeper in &mut asleep {
+        sleeper.release_and_collect_ring_of(STANDING_RING);
+    }
+
+    testing::retire();
+    testing::cap_expired_waits_at(None);
+    drop(producers);
+    drop(asleep);
+    BirthArm {
+        sleepers,
+        capped,
+        rounds,
+        rounds_until_a_birth,
+        spawns,
+        releases_unserved,
+        registered: registered[0] + registered[1],
+    }
+}
+
+#[test]
+#[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
+fn whether_two_producers_behind_the_sleeping_threads_birth_a_sibling() {
+    let _g = test_guard();
+    let _record = record();
+    let _end = RetireOnDrop;
+    reset_lanes();
+    let _wait = testing::HeldRequestWait::crate_own();
+    let interval = Duration::from_millis(50);
+    let _interval = StandingInterval::of(interval);
+    let class = node_class("StressTwoProducersNode");
+
+    for sleepers in SLEEPING_THREADS {
+        for capped in [true, false] {
+            let arm = two_producers_behind(sleepers, capped, interval, class);
+            println!(
+                "two producers behind sleepers: {} sleeping sub-threshold threads, cap {}, \
+                 {} rounds, birth after {:?} rounds, spawns {}, releases unserved {}, \
+                 {} roots registered",
+                arm.sleepers,
+                if arm.capped { "2" } else { "off" },
+                arm.rounds,
+                arm.rounds_until_a_birth,
+                arm.spawns,
+                arm.releases_unserved,
+                arm.registered,
             );
         }
     }
