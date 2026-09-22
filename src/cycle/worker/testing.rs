@@ -365,6 +365,11 @@ pub(crate) fn base_block_budget_for_this_birth() -> Option<crate::memory::block_
         .then(|| crate::memory::block_pool::budget_blocks(0))
 }
 
+/// Slot `index`'s byte-event sequence number as it stands.
+pub(crate) fn byte_wakes_of(index: usize) -> usize {
+    super::COLLECTORS[index].byte_wakes.load(Ordering::Acquire)
+}
+
 /// Threads spawned since a case last asked.
 static SPAWNS: AtomicUsize = AtomicUsize::new(0);
 

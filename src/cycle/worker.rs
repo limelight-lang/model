@@ -316,6 +316,16 @@ struct Collector {
     /// the threshold, its own count, read by the elder to end an idle
     /// sibling.
     idle_rounds: AtomicUsize,
+    /// A sequence number of the byte events on this collector's requests:
+    /// moved by every consent to and every refusal of a request naming this
+    /// slot ([`wake_for_the_byte`]), and by nothing else. The standing
+    /// list's checkpoint walks only when the number moved since its last
+    /// pass, because no standing request's byte leaves `REQUESTED|slot`
+    /// without one of the two or this collector's own withdrawal
+    /// (`crate::cycle::token::TraceToken::withdraw`), which is its own to
+    /// know (`dev/design/the-standing-request-lives-on-the-record.md`, "The
+    /// collector").
+    byte_wakes: AtomicUsize,
 }
 
 impl Collector {
@@ -325,6 +335,7 @@ impl Collector {
             wake_pending: Mutex::new(false),
             wake_signal: Condvar::new(),
             idle_rounds: AtomicUsize::new(0),
+            byte_wakes: AtomicUsize::new(0),
         }
     }
 }
@@ -501,6 +512,16 @@ pub(crate) fn wake(index: usize) -> bool {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
     collector.wake_signal.notify_all();
     is_alive(index)
+}
+
+/// Wake slot `index` for a byte event on one of its requests — the
+/// mutator's consent or its refusal — moving the slot's sequence number
+/// first, with a release the checkpoint's acquire load pairs with. Called
+/// from the mutator's thread by `crate::cycle::token`; every other wake
+/// goes through [`wake`] and moves the number not at all.
+pub(crate) fn wake_for_the_byte(index: usize) -> bool {
+    COLLECTORS[index].byte_wakes.fetch_add(1, Ordering::Release);
+    wake(index)
 }
 
 /// Sleep on slot `index`'s wake word until a wake or `timeout`, and take

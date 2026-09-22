@@ -60,6 +60,11 @@
 //! ([`leave_to_holder_if_held`]), and the hand-back returns what was left;
 //! the registry hands out no record whose hold word is not clear, so a
 //! re-taken record never installs a block over one still held or left.
+//! The same gate reads the standing list's link ([`first_free_record`]): a
+//! record a collector's request stands on past the wait is linked into
+//! that collector's list and is handed out only once its pass has dropped
+//! it, so that one collector's list is never threaded through a record's
+//! next life ([`ReaderLine::standing_next`]).
 //!
 //! # The token is what says whether a record is anyone's
 //!
@@ -174,6 +179,15 @@ struct ReaderLine {
     /// requests). Cleared when a request is served, and with the line at a
     /// re-take.
     silent: AtomicBool,
+    /// Whether the collector's checkpoint released this mutator's grant
+    /// without a batch — one grant is served per pass, the rest let go —
+    /// so that the collector's next request to it is pushed onto the
+    /// standing list with no wait: the mutator is asleep again by the time
+    /// the walk reaches it (`dev/design/the-standing-request-lives-on-the-record.md`,
+    /// "The collector").
+    /// Set and cleared by the collector alone; cleared with the line at a
+    /// re-take.
+    released_unserved: AtomicU8,
     /// When the collector last served this mutator, in nanoseconds since the
     /// base `crate::cycle::worker` fixes at the process's first serve; zero
     /// before any serve. Restamped by every serve that found the mutator's
@@ -186,7 +200,27 @@ struct ReaderLine {
     /// their own, and it is restamped rather than asked. The collector's own
     /// word, so relaxed.
     commits_seen: AtomicU64,
+    /// The link pair of the collector's standing list: the records whose
+    /// request stands on the byte past the wait, a doubly linked list
+    /// threaded through the records with its two end pointers on the
+    /// collector's frame (`crate::cycle::worker::Standing`;
+    /// `dev/design/the-standing-request-lives-on-the-record.md`, "The
+    /// words"). The ends are self-terminated — the last record's `next` and
+    /// the first's `prev` name the record itself — so both words are null
+    /// exactly when the record is in no list, a non-null `next` reads as
+    /// linked, and no pointer names anything but a record. Written by the
+    /// collector the record names and by no mutator, in one order: `next`
+    /// is the first word a link writes and the last an unlink clears, both
+    /// with release, `prev` and the neighbours' words strictly between, so
+    /// that the registry's one acquire load of `next` ([`first_free_record`])
+    /// sees nothing of the link or all of it and a record is renamed only
+    /// while unlinked. Not reset with the line: a reset that nulled a link
+    /// would cut the list behind it.
+    standing_next: AtomicPtr<MutatorRecord>,
+    standing_prev: AtomicPtr<MutatorRecord>,
 }
+
+const _: () = assert!(size_of::<ReaderLine>() == 64);
 
 /// The line the mutator writes: where it registers into R, where it reads
 /// verdicts from P, and whether it is collecting in line.
@@ -279,13 +313,23 @@ impl ReaderLine {
             batch: AtomicUsize::new(0),
             freeing_dispositions_seen: AtomicU32::new(0),
             silent: AtomicBool::new(false),
+            released_unserved: AtomicU8::new(0),
             served_at: AtomicU64::new(0),
             commits_seen: AtomicU64::new(0),
+            standing_next: AtomicPtr::new(std::ptr::null_mut()),
+            standing_prev: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
-    /// Empty the line in place, for a record taken off the free list.
+    /// Empty the line in place, for a record taken off the free list. The
+    /// link pair is left alone: the registry hands out no linked record, so
+    /// both read null here.
     fn reset(&self) {
+        debug_assert!(
+            self.standing_next.load(Ordering::Relaxed).is_null()
+                && self.standing_prev.load(Ordering::Relaxed).is_null(),
+            "a linked record was handed out"
+        );
         self.r_front_block
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         self.p_tail_block
@@ -293,6 +337,7 @@ impl ReaderLine {
         self.batch.store(0, Ordering::Relaxed);
         self.freeing_dispositions_seen.store(0, Ordering::Relaxed);
         self.silent.store(false, Ordering::Relaxed);
+        self.released_unserved.store(0, Ordering::Relaxed);
         self.served_at.store(0, Ordering::Relaxed);
         self.commits_seen.store(0, Ordering::Relaxed);
     }
@@ -447,6 +492,44 @@ impl MutatorRecord {
     #[inline]
     pub(crate) fn note_silent(&self, silent: bool) {
         self.reader.silent.store(silent, Ordering::Relaxed);
+    }
+
+    /// Whether a checkpoint released this mutator's grant without a batch
+    /// ([`ReaderLine::released_unserved`]); the collector's own line, so
+    /// relaxed.
+    #[inline]
+    #[expect(dead_code, reason = "the checkpoint that reads it is S63.2's")]
+    pub(crate) fn was_released_unserved(&self) -> bool {
+        self.reader.released_unserved.load(Ordering::Relaxed) != 0
+    }
+
+    /// Note or clear the release without a batch
+    /// ([`ReaderLine::released_unserved`]).
+    #[inline]
+    #[expect(dead_code, reason = "the checkpoint that writes it is S63.2's")]
+    pub(crate) fn note_released_unserved(&self, released: bool) {
+        self.reader
+            .released_unserved
+            .store(u8::from(released), Ordering::Relaxed);
+    }
+
+    /// Whether this record stands in a collector's standing list
+    /// ([`ReaderLine::standing_next`]): one acquire load, paired with the
+    /// release of the unlink that nulls it.
+    #[inline]
+    pub(crate) fn is_standing(&self) -> bool {
+        !self.reader.standing_next.load(Ordering::Acquire).is_null()
+    }
+
+    /// The link pair, for the collector's list alone
+    /// (`crate::cycle::worker::Standing`).
+    #[inline]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the list that threads them is S63.2's")
+    )]
+    pub(crate) fn standing_links(&self) -> (&AtomicPtr<MutatorRecord>, &AtomicPtr<MutatorRecord>) {
+        (&self.reader.standing_next, &self.reader.standing_prev)
     }
 
     /// When the collector last served this mutator ([`ReaderLine::served_at`]).
@@ -843,6 +926,17 @@ fn blocks_are_the_mutators(record: *mut MutatorRecord) -> bool {
     unsafe { &(*record).hold.reading }.load(Ordering::Acquire) & (READING | R_LEFT | P_LEFT) == 0
 }
 
+/// Whether `record` stands in no collector's standing list: the registry's
+/// second requirement of a record it hands out, so that a record is renamed
+/// only while unlinked and one collector's list is never threaded through
+/// another's. A thread that exited under a standing request leaves its
+/// record linked until that collector's next pass drops it, one round at
+/// most, since the exit's take of the request is a refusal that wakes the
+/// collector (`crate::cycle::token::TraceToken::take_unless`).
+fn stands_in_no_list(record: *mut MutatorRecord) -> bool {
+    !unsafe { &*record }.is_standing()
+}
+
 /// Take a record out of the registry: a released one first, then one carved
 /// out of the head block, then one out of a block drawn for it. Null when
 /// the pool refuses that draw.
@@ -901,10 +995,11 @@ fn take_record() -> *mut MutatorRecord {
 }
 
 /// Unlink and answer the first record of the free list whose blocks are the
-/// mutator's, or null: a record a collector is reading, or holds blocks of
-/// that an exit left, stays on the list until its hand-back. In the test
-/// build a case's pin and its named record narrow the walk further
-/// (`skipped_by_a_case`).
+/// mutator's and which stands in no collector's list, or null: a record a
+/// collector is reading, or holds blocks of that an exit left, stays on the
+/// list until its hand-back, and one a collector's request stands on until
+/// that collector's pass drops it. In the test build a case's pin and its
+/// named record narrow the walk further (`skipped_by_a_case`).
 fn first_free_record(registry: &mut Registry) -> *mut MutatorRecord {
     #[cfg(test)]
     let wanted = TAKE_THIS.with(|cell| cell.replace(std::ptr::null_mut()));
@@ -915,10 +1010,12 @@ fn first_free_record(registry: &mut Registry) -> *mut MutatorRecord {
             return record;
         }
 
+        #[allow(unused_mut, reason = "the test build narrows it further")]
+        let mut skipped = !blocks_are_the_mutators(record) || !stands_in_no_list(record);
         #[cfg(test)]
-        let skipped = !blocks_are_the_mutators(record) || skipped_by_a_case(record, wanted);
-        #[cfg(not(test))]
-        let skipped = !blocks_are_the_mutators(record);
+        {
+            skipped = skipped || skipped_by_a_case(record, wanted);
+        }
         if skipped {
             link = unsafe { (*record).free_link.as_ptr() };
             continue;
@@ -940,6 +1037,22 @@ fn skipped_by_a_case(record: *mut MutatorRecord, wanted: *mut MutatorRecord) -> 
         unsafe { (*record).pinned.load(Ordering::Relaxed) }
     } else {
         record != wanted
+    }
+}
+
+/// Link or unlink `record` by hand, standing in for a collector's list: a
+/// list of one, whose ends name the record itself. The stores are in the
+/// list's order ([`ReaderLine::standing_next`]): `next` first on the link
+/// and last on the unlink.
+#[cfg(test)]
+pub(crate) fn link_for_test(record: *mut MutatorRecord, linked: bool) {
+    let (next, prev) = unsafe { &*record }.standing_links();
+    if linked {
+        next.store(record, Ordering::Release);
+        prev.store(record, Ordering::Release);
+    } else {
+        prev.store(std::ptr::null_mut(), Ordering::Release);
+        next.store(std::ptr::null_mut(), Ordering::Release);
     }
 }
 

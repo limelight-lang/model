@@ -273,7 +273,7 @@ the poll and the free path change in nothing; the only `token.rs` edit is
 the wake entry the consent and the refusal call. Every step is a cycle-GC
 step: the baseline recorded, a red test seen, the Critic over the repair.
 
-- [ ] S63.1 The words: the link pair and the released byte on the reader
+- [x] S63.1 The words: the link pair and the released byte on the reader
       line, the sequence number on the collector's slot
       done: `ReaderLine` carries `standing_next`, `standing_prev`,
         `released_unserved` with the layout asserts standing; `reset`
@@ -283,6 +283,33 @@ step: the baseline recorded, a red test seen, the Critic over the repair.
         `wake_for_the_byte` is what `consent` and `take_unless`'s refusal
         call, a case reading the number move on each and on nothing else
       tier: T2 · role: Critic
+      baseline: the reader line 48 of 64 bytes; the registry's gate one
+        acquire load of the hold word; a consent one release swap and one
+        wake; a refusal one acquire swap and one wake.
+      Critic 2026-09-22: "`next != null` is linked" gated a two-word state
+        with no store order, so the registry could hand out a record between
+        an unlink's two stores or under a push in flight (accepted: `next`
+        is the first word a link writes and the last an unlink clears, in
+        the field's contract and in `link_for_test`); the head sentinel on
+        the frame was a `*mut MutatorRecord` to two stack words (accepted:
+        self-terminated ends, the design amended); the token case named
+        slot 5, which its neighbour refuses a request on under the parallel
+        harness (accepted: slot 7, the reason at the constant); the number's
+        stated reason missed the collector's own withdrawal (accepted); the
+        gate was duplicated across the cfg arms so production's arm ran
+        under no test (accepted, lifted); plan-step numbers in the three
+        `expect` reasons (refused: `dev/WORKFLOW.md`, "How a debt is
+        written", names that form as the self-reporting one); the reset's
+        abort from `ll_thread_init` holds as the crate's form once the
+        order stands. Asides left as they are: `a_thread_asking_for` now
+        exists in two test modules with differing bodies; "a spare" for the
+        hold line in the record tests' module doc is older than this step.
+      handoff: `ReaderLine::standing_next`/`standing_prev`/`released_unserved`
+        and their accessors, `link_for_test`; `first_free_record` reads
+        `stands_in_no_list`; `Collector::byte_wakes`, `wake_for_the_byte`,
+        `testing::byte_wakes_of`. Both cases seen red (the reset's assert
+        aborting with the gate cut; "the consent moved it" with the plain
+        wake).
 - [ ] S63.2 The list and the checkpoint
       done: `Standing` is the head pair with `push` (idempotent, at the
         tail), `forget` (O(1), no-op unlinked) and the gated pass — no walk

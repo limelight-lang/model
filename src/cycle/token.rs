@@ -282,7 +282,7 @@ impl TraceToken {
             .map(|_| {
                 #[cfg(test)]
                 self.consents.fetch_add(1, Ordering::Relaxed);
-                crate::cycle::worker::wake(slot(seen));
+                crate::cycle::worker::wake_for_the_byte(slot(seen));
             })
     }
 
@@ -381,7 +381,7 @@ impl TraceToken {
                 Ok(_) if state(seen) == REQUESTED => {
                     #[cfg(test)]
                     self.refusals.fetch_add(1, Ordering::Relaxed);
-                    crate::cycle::worker::wake(slot(seen));
+                    crate::cycle::worker::wake_for_the_byte(slot(seen));
                     return Some(took);
                 }
                 Ok(_) => return Some(took),

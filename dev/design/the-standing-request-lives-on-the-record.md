@@ -34,11 +34,21 @@ bytes at 48–64 and the one at 28 that `silent`'s removal leaves (the layout
 asserts stand, to be confirmed by the build):
 
 - `standing_next`, `standing_prev: AtomicPtr<MutatorRecord>` — the link
-  pair of a doubly linked, circular, intrusive list. The tail's `next` is
-  the head's address, never null, so `next != null` is "linked" in O(1); an
-  unlinked record has both words null. Written by the collector the record
-  names, read by no mutator; every unlink stores null into both with
-  Release.
+  pair of a doubly linked intrusive list whose two end pointers stand on
+  the collector's frame. The ends are self-terminated: the last record's
+  `next` and the first's `prev` name the record itself, so both words are
+  null exactly when the record is in no list, `next != null` is "linked" in
+  O(1), and no pointer names anything but a record (a head sentinel on the
+  frame would be a `*mut MutatorRecord` to two stack words, dereferenceable
+  by nothing). Written by the collector the record names, read by no
+  mutator, in one order: `next` is the first word a link writes and the
+  last an unlink clears, both with Release, `prev` and the neighbours' words
+  strictly between — so the registry's one Acquire load of `next` sees
+  nothing of the link or all of it, and a record can be renamed only while
+  unlinked. Without that order the registry could hand out a record between
+  an unlink's two stores (the reset's assert fires against a correct
+  registry) or a push's (the record renamed under a link in flight, two
+  lists in one chain).
 - `released_unserved: AtomicU8` — set by the collector when a pass released
   this mutator's grant without a batch; read and cleared by the collector's
   next request to it. The one meaning the byte cannot carry ("this collector
@@ -65,9 +75,9 @@ call it. The block-filled signal, the pressure ending's wake and
 
 ## The collector
 
-`Standing` is the head pair, `byte_wakes_seen`, `batches_served` and
-`consumed_a_wake`, a `thread_body` local passed by `&mut` as today. `push`
-appends at the tail and is idempotent — a linked record is left where it is
+`Standing` is the end pair (first, last), `byte_wakes_seen`,
+`batches_served` and `consumed_a_wake`, a `thread_body` local passed by
+`&mut` as today. `push` appends at the tail and is idempotent — a linked record is left where it is
 (by the invariant it can only be in this list; the case is a stale entry
 whose byte moved `REQUESTED|c → MUTATOR → FREE` between the pass's read and
 the walk's request). `forget` unlinks in O(1) and is a no-op on an unlinked
@@ -197,8 +207,8 @@ and stays.
 
 ## Not established from the files
 
-The reader line's layout is arithmetic from the field list, not compiled.
-No writer of the byte outside `token.rs` and its three test-only writers
+(The reader line's layout, 64 bytes with the pair and the byte, is a
+`const` assert since S63.1.) No writer of the byte outside `token.rs` and its three test-only writers
 was read; another would need the byte wake. "No listed record is renamed"
 rests on `hand_over_half` reading only `backlogged`, on `reclaims` taking
 only `UNBORN` slots, and on `catch_unwind` in `run_the_life` under the test

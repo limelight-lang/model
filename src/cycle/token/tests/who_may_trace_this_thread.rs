@@ -260,6 +260,46 @@ fn a_take_consumes_posted_and_refuses_a_request() {
     token.release();
 }
 
+/// A consent to a request and a refusal of one each move the requesting
+/// slot's byte-event number by one, and a wake of any other kind moves it
+/// not at all: the number is what admits the standing list's pass
+/// (`dev/design/the-standing-request-lives-on-the-record.md`).
+#[test]
+fn a_consent_and_a_refusal_move_the_slots_byte_number_and_a_plain_wake_does_not() {
+    use crate::cycle::token::{REQUESTED, TookFrom, word};
+    use crate::cycle::worker::testing::byte_wakes_of;
+    // A slot no other case of the binary names: the neighbour above refuses
+    // a request on slot 5, and the parallel harness runs both at once.
+    const SLOT: usize = 7;
+    let token = TraceToken::new_held();
+    token.release();
+
+    let before = byte_wakes_of(SLOT);
+    token.request_for_test(word(REQUESTED, SLOT));
+    assert!(token.consent(word(REQUESTED, SLOT)).is_ok());
+    assert_eq!(byte_wakes_of(SLOT), before + 1, "the consent moved it");
+    token.release_claim(SLOT, false);
+
+    token.request_for_test(word(REQUESTED, SLOT));
+    assert_eq!(
+        token.take(),
+        TookFrom::Free,
+        "a take over a request refuses it"
+    );
+    assert_eq!(byte_wakes_of(SLOT), before + 2, "the refusal moved it");
+    token.release();
+
+    assert!(
+        !crate::cycle::worker::wake(SLOT),
+        "no thread stands in the slot"
+    );
+    assert_eq!(
+        byte_wakes_of(SLOT),
+        before + 2,
+        "a plain wake moved nothing"
+    );
+}
+
 /// The path under pressure takes the token at its start, the way the path
 /// off the poll does, so a held token blocks it the same way.
 #[test]
