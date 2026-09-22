@@ -441,3 +441,141 @@ fn one_visits_clock_reading_is_shared_by_the_take_and_the_ask() {
         crate::gc::ll_gc_collect_cycles();
     });
 }
+
+/// A take is over the ring whole and feeds K nothing: K is the collector's
+/// estimate of what a producing mutator offers per batch, and four takes of
+/// three roots each would double it toward the bound and hand the thread's
+/// first real batch to the budget with every root unwalked.
+#[test]
+fn a_take_leaves_the_batch_size_where_it_found_it() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_millis(1));
+    let class = Sent(node_class("TakeUnderKNode"));
+    let mutator = Mutator::start();
+    mutator.run(move |arena| {
+        let _ = unsafe { long_ring(arena, class.into_inner(), STANDING_RING) };
+    });
+    let mut standing = Standing::new(SLOT);
+    let record = unsafe { &*mutator.record };
+    assert_eq!(record.batch_size(), 0, "no batch has sized K yet");
+
+    assert_eq!(
+        serve_on_this_thread(mutator.record, &mut standing),
+        Served::Idle
+    );
+    std::thread::sleep(Duration::from_millis(3));
+    assert!(matches!(
+        serve_on_this_thread(mutator.record, &mut standing),
+        Served::Batch {
+            roots: STANDING_RING,
+            ..
+        }
+    ));
+    assert_eq!(
+        record.batch_size(),
+        0,
+        "the take took the ring whole and left K alone"
+    );
+
+    mutator.run(|_| unsafe {
+        crate::gc::ll_gc_maybe_collect();
+    });
+}
+
+/// The ring under the token decides the batch's form, not the request that
+/// won it: a take whose request stood while its owner slept, and whose
+/// ring crossed the threshold meanwhile, is served as the threshold batch
+/// it now is — K clamped and sized — so that the checkpoint, which cannot
+/// know which kind of request it serves, needs no kind of its own.
+#[test]
+fn a_ring_that_crossed_the_threshold_under_a_standing_take_is_a_threshold_batch() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_millis(1));
+    let _wait = HeldRequestWait::of(Duration::from_millis(2));
+    let class = Sent(node_class("TakeCrossingNode"));
+    let mutator = Mutator::start_idling_with(|_| {});
+    mutator.run(move |arena| {
+        let _ = unsafe { long_ring(arena, class.into_inner(), STANDING_RING) };
+    });
+    let mut standing = Standing::new(SLOT);
+    let record = unsafe { &*mutator.record };
+
+    assert_eq!(
+        serve_on_this_thread(mutator.record, &mut standing),
+        Served::Idle
+    );
+    std::thread::sleep(Duration::from_millis(3));
+    assert_eq!(
+        serve_on_this_thread(mutator.record, &mut standing),
+        Served::Unanswered,
+        "the take's request stands on the sleeping mutator"
+    );
+    assert!(record.is_standing());
+
+    // The ring crosses the threshold while the request stands, and the
+    // mutator then reads its byte and consents.
+    let class = Sent(node_class("TakeCrossingNode"));
+    mutator.run(move |arena| {
+        let _ = unsafe { long_ring(arena, class.into_inner(), THRESHOLD) };
+    });
+    mutator.run(|_| {
+        crate::cycle::token::read_and_act_on_this_thread();
+    });
+
+    assert_eq!(
+        standing.checkpoint(THRESHOLD),
+        1,
+        "the checkpoint served the grant the consent left"
+    );
+    assert_eq!(
+        record.batch_size(),
+        INITIAL_BATCH * 2,
+        "served as a threshold batch, which sizes K by what it completed"
+    );
+
+    mutator.run(|_| {
+        crate::cycle::token::read_and_act_on_this_thread();
+        unsafe { crate::gc::ll_gc_maybe_collect() };
+    });
+    mutator.run(|_| unsafe {
+        crate::gc::ll_gc_collect_cycles();
+    });
+}
+
+/// The take's clamp is the ring, not K: a mutator whose deep graph has
+/// halved K to one has its standing ring taken whole all the same, where a
+/// take under K would carry it off one root per interval.
+#[test]
+fn a_take_is_clamped_by_the_ring_and_not_by_k() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_millis(1));
+    let class = Sent(node_class("TakeUnderAHalvedKNode"));
+    let mutator = Mutator::start();
+    mutator.run(move |arena| {
+        let _ = unsafe { long_ring(arena, class.into_inner(), THRESHOLD - 1) };
+    });
+    let mut standing = Standing::new(SLOT);
+    let record = unsafe { &*mutator.record };
+    record.set_batch_size(1);
+
+    assert_eq!(
+        serve_on_this_thread(mutator.record, &mut standing),
+        Served::Idle
+    );
+    std::thread::sleep(Duration::from_millis(3));
+    assert!(
+        matches!(
+            serve_on_this_thread(mutator.record, &mut standing),
+            Served::Batch { roots: 3, .. }
+        ),
+        "the ring whole, three roots, against a K of one"
+    );
+    assert_eq!(record.batch_size(), 1, "and K where the take found it");
+
+    mutator.run(|_| unsafe {
+        crate::gc::ll_gc_maybe_collect();
+    });
+}

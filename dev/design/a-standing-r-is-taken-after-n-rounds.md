@@ -170,7 +170,13 @@ request to reason about:
   `Served::Batch { backlog }` by `has_at_least(threshold)` after the batch,
   against the round's threshold; a take of a ring below sixty-four leaves
   nothing that reads as a backlog, so a take births no sibling and moves no
-  record in a handover.
+  record in a handover. The exception is a mutator that filled R during the
+  trace: the reading after the advance is of the ring as it stands then, so
+  a thread that registered sixty-four entries inside one take's window
+  answers a backlog and votes for a sibling as any batch does. That thread
+  is producing at the rate the siblings exist for; what it does not get is
+  K sized by that batch, the form having been read before the peek (S64.3,
+  the Critic of 2026-09-22).
 
 After a take the verdicts stand in P and R's front has advanced past the
 batch; the mutator's next poll or slot free arms the collection over P, whose
@@ -231,7 +237,16 @@ per sub-threshold record, the clock read shared with the ask's. On the
 mutator, nothing until the take; the take is one batch's foreign-holder
 window over the standing roots' closure under `TRACE_BLOCK_BUDGET` — the
 closure of a median candidate on the corpus of 2026-08-25 is the heap, 381
-objects — and one collection over P at its next poll.
+objects — and one collection over P at its next poll. The budget is spent
+by the union of the roots' closures rather than by their number, a root
+inside another's closure meeting rows that already say met, so a take of
+sixty-three roots over one shared closure costs the rows one root costs.
+Where the closures do not overlap and their sum meets the budget, every
+root of the take comes back `Unwalked` and the mutator traces them exactly
+at that poll — the trace the X collection over R whole would have run four
+seconds later (`dev/DECISIONS.md`, "a take's trace is budgeted as one
+batch's, and an unwalked take shifts the mutator's trace rather than adding
+one", the Sage's `Final` of 2026-09-22).
 
 On the collector, one `REQUEST_WAIT` per standing request and none after it:
 a sleeping mutator pays its collector 2 ms once, when the take's request

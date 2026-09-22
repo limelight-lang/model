@@ -8,6 +8,74 @@ never edited or deleted.
 
 ---
 
+## 2026-09-22 — a take's trace is budgeted as one batch's, and an unwalked take shifts the mutator's trace rather than adding one
+
+**The Sage's ruling, `Final`**, on the finding the Critic of `PLAN.md`
+S64.3 raised and the model could not close: a take is clamped at one entry
+short of the threshold rather than at K, and it sizes K neither way, so a
+mutator whose deep graph has driven K down has up to 63 roots taken at once,
+the trace meets `TRACE_BLOCK_BUDGET`, and every root comes back
+`Unwalked` for the mutator to trace exactly, in line, at its next poll. The
+cost is one no ruling had priced.
+
+**What stands.** The take keeps the form S64.3 built: the clamp is P's room
+against one short of the threshold, K is neither read nor sized, the batch
+carries one budget, and a trace that meets it posts `Unwalked` for every
+root. No word is added and no width changes.
+
+**Why.** The budget is not spent by roots. `TraceScratchArena::grow` refuses
+the ninth block above the workspace, and what draws blocks is rows — one
+flat array per touched heap block — so a batch spends its budget on the
+union of its roots' closures, measured in distinct heap blocks. A second
+root inside the first one's closure "meets rows that already say met,
+expands nothing twice, and reuses the segments the first root's depth drew"
+(`crate::cycle::mark`). On the one measured shape, the corpus of 2026-08-25,
+the median candidate's closure is the whole live set of 381 objects, so a
+take of 63 roots costs the rows a batch of one root costs, and neither meets
+the budget. Where one root's closure alone meets it, K halves to one and
+every threshold batch is `Unwalked` too, so K buys nothing there and the
+take loses nothing.
+
+What an unwalked take costs the mutator over a completed one, in the one
+regime where they differ — up to 63 closures that do not overlap, each
+under the budget and their sum over it — is a shift and not a second trace:
+a dead root is traced exactly in line whatever the collector's verdict was,
+`Verdict::is_root` being `Proposed | Unwalked`; a root read live is deferred
+and its lane is traced un-pruned at the next X; a root of count zero is
+expanded by nothing. So the delta is the live roots' closures traced at this
+poll instead of at the X collection over R whole four seconds later, and it
+is spared only for a root that dies in between.
+
+**Refused, with the reason.** Bounding the take's span through a word that
+is not K, halving it after a trace that met the budget: in the overlap
+regime a halved span never gets under the budget, so six halvings are six
+intervals of the standing memory held and six collector traces spent before
+the mutator runs the trace it would have run at the first take; and it is
+K's rule under another name, with the interval in the round's place, which
+Edmond's "a K halved to one would take a ring of three one root per round"
+refuses by its own reason. Splitting the batch at the first root that
+exceeds the budget: `trace` marks every root before it scans any, because
+the trial deletion over shared rows needs every subtraction before any
+reading, so the budget is met in the mark, when no root carries a colour
+that is a verdict; a sound prefix would need mark-and-scan per root with a
+reset between, and it would reopen the rfc's "no colour of an abandoned
+trace is a verdict".
+
+**What it obliges.** S64.5 measures the disjoint arm: 63 roots each the root
+of a one-per-block ring, the take's `complete`, and the mutator's collection
+over P after it — roots traced, blocks drawn, instructions, wall — against
+the same ring collected in line at X, which is the accepted floor. A figure
+above that floor goes into the comments of `TRACE_BLOCK_BUDGET` and
+`STANDING_INTERVAL` as the first measured bound on either; it does not
+reopen the take's form.
+
+**Premises.** None of Edmond's move: "a take under K" and "a take must feed
+K neither way" stand and are why the bounded span is refused, and the
+mutator's collection over P after `POSTED` is the accepted mechanism of
+every batch rather than the mutator collecting its roots of its own accord.
+
+---
+
 ## 2026-09-22 — the consent wait stays on both paths, and a round's spending on expired waits is capped
 
 **The Sage's ruling, `Final`, on Edmond's second question of the evening** —

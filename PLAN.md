@@ -257,14 +257,55 @@ Critic over the repair.
         `FrontBlockReading`'s fields private with `holds_at_least` the one
         question, and the first case gives its memory back as the others
         do.
-- [ ] S64.3 The batch's form under the grant
+- [x] S64.3 The batch's form under the grant
       done: `batch` reads `has_at_least(threshold)` under the grant before
         the peek — at or above it today's batch, below it the ring whole
         with K untouched and `size_the_next_batch` not called; a case takes
         a sub-threshold ring whole with K unmoved, and one serves as a
         threshold batch a ring that crossed the threshold while its owner
         slept
-      tier: T2 · role: Critic
+      tier: T2 · role: Critic → Sage
+      baseline: 1133 tests listed; every batch clamped by K and every batch
+        sizing K, a take included. Red seen at
+        `a_take_leaves_the_batch_size_where_it_found_it`, which read K at
+        128 where the take must leave it at zero. Four mutations redden the
+        new cases: `size_the_next_batch` called unconditionally, the
+        threshold reading forced false, the take's clamp cut to one root,
+        and the take's clamp put back on K.
+      Critic 2026-09-22: six findings. Accepted and applied: no case pinned
+        the clamp, both takes reading a K of zero where the two branches
+        compute the same figure — a case sets K to one over a ring of three
+        and reads three roots, and the mutation that puts the clamp back on
+        K reddens it. The exactness claim named `MUTATOR` as what keeps a
+        path off R, which is not what excludes the compaction behind a
+        `POSTED` byte and is not the state the reading is made in — the
+        paragraph names the grant and the mutator's withholding instead.
+        "The ring whole", "the clamp its own count" and "reads K neither
+        way" each claimed more than the code did — the clamp is named as
+        one short of the threshold, P's room is named as what can leave a
+        part of the ring standing, and K is now read in the threshold
+        branch alone. A take can answer a backlog when the mutator fills R
+        during the trace, which the design said never happens — the design
+        names the exception and what it costs, since the thread is then
+        producing at the rate a sibling exists for. The assert's message and
+        the `saturating_sub` guard say what they mean. Escalated: the take
+        is clamped at the threshold rather than at K and sizes K neither
+        way, so a mutator whose deep graph has driven K down has up to 63
+        roots taken at once and every one returned `Unwalked` — a price no
+        ruling names.
+      Sage 2026-09-22: the take stands as built. `Final`. The budget is
+        spent by the union of the roots' closures rather than by their
+        number, so on the one measured shape a take of 63 roots costs the
+        rows one root costs; where a single closure meets the budget K is
+        one already and every threshold batch is unwalked too. What an
+        unwalked take costs over a completed one is the live roots' closures
+        traced at this poll instead of at the next X, never a second trace.
+        A bounded span is K's rule under another name and is refused by
+        Edmond's own reason; a split batch would reopen "no colour of an
+        abandoned trace is a verdict". The ruling is in `dev/DECISIONS.md`,
+        "a take's trace is budgeted as one batch's, and an unwalked take
+        shifts the mutator's trace rather than adding one", and it obliges
+        the disjoint-closure arm of S64.5. No premise of Edmond's moves.
 - [ ] S64.4 The cap on a round's expired waits
       done: a counter on `Standing`, reset at the round's start, counts the
         waits of this walk that expired unanswered, and past
@@ -278,8 +319,16 @@ Critic over the repair.
       done: the parked-thread arm — 64 and 1,000 parked sub-threshold
         threads beside one active mutator, the active mutator's batch
         interval and the round's length read against their number, the null
-        arm the cap at `usize::MAX` — and the cost of one take on the corpus
-        named by the design's "Cost", both in `dev/BENCHMARKS.md`;
+        arm the cap at `usize::MAX` — the cost of one take on the corpus
+        named by the design's "Cost", and the disjoint-closure arm the
+        Sage's ruling of 2026-09-22 obliges: 63 roots each the root of a
+        one-per-block ring, the take's `complete`, and the mutator's
+        collection over P after it — roots traced, blocks drawn,
+        instructions, wall — against the same ring collected in line at X,
+        which is the floor; a figure above that floor goes into the comments
+        of `TRACE_BLOCK_BUDGET` and `STANDING_INTERVAL` as the first
+        measured bound on either, and reopens nothing. All of it in
+        `dev/BENCHMARKS.md`;
         `EXPIRED_WAITS_PER_ROUND` either changes or is recorded as kept with
         the readings
       tier: T2 · role: —
