@@ -376,9 +376,38 @@ Critic over the repair.
       tier: T2 · role: —
 - [ ] S64.6 The rfc, the maps and the stage's review
       done: the `rfc` states the take where it states the signals and the
-        threshold; `dev/ARCHITECTURE.md` and `dev/INDEX.md` name the branch;
-        the Code Reviewer over the stage (rule 23.1.3), its findings applied
+        threshold, and its handshake's "(a)" says the handover leaves a
+        linked record with the collector whose request stands on it;
+        `dev/ARCHITECTURE.md` and `dev/INDEX.md` name the branch; the Miri
+        slice of the S63–S64 block is run and recorded; the Code Reviewer
+        over the stage (rule 23.1.3), its findings applied
       tier: T1 · role: Code Reviewer
+      Critic 2026-09-22, over the whole stage on Edmond's request, the
+        stronger model: one defect and four claim repairs. The defect is
+        the handover renaming a record the elder's request stands on, which
+        the carried backlog made reachable — repaired in `5083784`, its
+        case seen failing first, and the Sage ruled on the form. The claims:
+        the batch's form is read off the ring and the request's origin is
+        not asked to agree with it, a mutator collecting in line between the
+        round's pre-claim reading and its request being free to drain R;
+        `saw_work` is a mutator holding its own token, not one at the
+        threshold; the clamp is one entry short of the threshold; the module
+        doc names the interval in force rather than the crate's constant.
+        The benchmark entry read spawns per arm instead of inferring them,
+        and both probes were re-run.
+      Sage 2026-09-22: `Final`, four points. The skip is the right form and
+        the stage owes the list's slot stamp with its two refusals — built
+        (`dev/DECISIONS.md`, "a record is renamed only while unlinked, and
+        the list's slot stamp is what says so"). One round-level case is
+        owed and the `saw_work` fold's mutation is to be run — the mutation
+        left the suite green, so both cases were built:
+        `a_round_can_carry_a_backlog_for_a_record_it_then_leaves_linked`
+        and `a_round_reads_the_work_a_checkpoint_saw`. The Miri slice of the
+        S63–S64 block is named test by test and runs on a frozen tree after
+        the two cases, about 36 tests in four processes, an hour budgeted.
+        S64.5 closes with two probes, and the design's "per take on the
+        corpus" clause is Edmond's to reword, no corpus driver being on the
+        way (his ruling of 2026-09-19).
 
 ## Cross-cutting (every stage)
 

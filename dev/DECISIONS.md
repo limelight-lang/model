@@ -8,6 +8,45 @@ never edited or deleted.
 
 ---
 
+## 2026-09-22 — a record is renamed only while unlinked, and the list's slot stamp is what says so
+
+**The Sage's ruling, `Final`**, on the defect the stage review found and on
+whether the repair is the right form. No premise of Edmond's moves.
+
+**What broke.** The rfc derives an invariant from a premise
+(`rfc/dev/design/trace-token-handshake.md`, "(a)"): an owner is handed to a
+sibling only while unlinked, *because* the handover moves records batched in
+the round and the batch unlinked them. The checkpoint's carried backlog
+broke the premise — a record the checkpoint's batch remembered is unlinked
+at that moment, and the walk that reaches it later in the same round can
+land a request and re-link it — so `hand_over_half` could rename a record
+the elder's request stands on. What follows is a sibling's `Standing::forget`
+splicing a record out of a list that is not its own: a checkpoint walk cut
+at the wrong record, records left linked that the registry skips forever,
+and a mutator left at `COLLECTOR|elder` whose next in-line collection waits
+for a release nobody makes.
+
+**What is built.** `hand_over_half` reads `is_standing()` and leaves such a
+record with the collector whose request stands on it, which replaces the
+derivation with the invariant's own test; the rfc's clause is amended to
+that in S64.6. Beside it, the invariant gains the check that catches the
+next break: one byte on the record's hold line, the collector's slot index
+plus one while the record is linked and zero otherwise, written by that
+collector alone beside the link pair, and `debug_assert`ed by
+`Standing::push`'s already-linked arm and by `Standing::forget` after its
+null test. Relaxed both ways: every store and every read of it is one
+collector's own thread. A walk from the list's head would answer the same
+question in O(n) and make a checkpoint pass quadratic under Miri, so it is
+refused.
+
+**Cost.** One byte in the hold line's padding, two relaxed stores per link
+and unlink — once per unanswered request, never per round — and two compares
+in a debug build. `link_for_test` takes the slot it stands in for, and two
+refusals are the cases: a record stamped for another slot, spliced out of
+this list or pushed onto it.
+
+---
+
 ## 2026-09-22 — a checkpoint carries its batch's backlog and a refusal it read out to the round
 
 **The Sage's ruling, `Final`**, on the three costs the Critic of S64.4

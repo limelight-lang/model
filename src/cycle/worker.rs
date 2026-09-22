@@ -1532,6 +1532,12 @@ impl Standing {
         }
     }
 
+    /// This list's stamp for a record it holds: the slot index plus one, so
+    /// that zero is a record in no list ([`MutatorRecord::standing_slot`]).
+    fn stamp(&self) -> u8 {
+        u8::try_from(self.slot).expect("a collector slot index") + 1
+    }
+
     /// Keep `record`'s request standing: appended at the tail, or left where
     /// it stands when already linked — a stale entry whose byte moved on
     /// between a pass's read and the walk's request. The stores are in the
@@ -1539,9 +1545,15 @@ impl Standing {
     fn push(&mut self, record: *mut MutatorRecord) {
         let mutator = unsafe { &*record };
         if !mutator.standing_next().load(Ordering::Relaxed).is_null() {
+            debug_assert_eq!(
+                mutator.standing_slot(),
+                self.stamp(),
+                "a record of another collector's list was pushed onto this one"
+            );
             return;
         }
 
+        mutator.note_standing_slot(self.stamp());
         mutator.standing_next().store(record, Ordering::Release);
         if self.last.is_null() {
             mutator.standing_prev().store(record, Ordering::Relaxed);
@@ -1565,6 +1577,12 @@ impl Standing {
         if next_record.is_null() {
             return;
         }
+
+        debug_assert_eq!(
+            mutator.standing_slot(),
+            self.stamp(),
+            "a record of another collector's list was spliced out of this one"
+        );
 
         let prev_record = mutator.standing_prev().load(Ordering::Relaxed);
         let is_first = prev_record == record;
@@ -1599,6 +1617,7 @@ impl Standing {
         mutator
             .standing_next()
             .store(std::ptr::null_mut(), Ordering::Release);
+        mutator.note_standing_slot(0);
     }
 
     /// The record after `record` in the list, or null past the last.

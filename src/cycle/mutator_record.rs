@@ -291,6 +291,17 @@ struct HoldLine {
     /// by the collector the record names and read by no mutator, so
     /// relaxed; cleared with the line at a re-take.
     standing_since: AtomicU64,
+    /// The collector whose standing list this record is in, as its slot
+    /// index plus one, and zero for a record in no list. Written by that
+    /// collector alone, beside the link pair and in the same operations
+    /// ([`crate::cycle::worker::Standing`]), and read by its own debug
+    /// assertions: a list's splice reads the record's words and the
+    /// frame's ends, so a record renamed to another collector while linked
+    /// would be spliced out of a list that is not the splicer's, silently
+    /// in a release build (`rfc/dev/design/trace-token-handshake.md`,
+    /// "(a)"). Relaxed both ways: every store and every read is that one
+    /// collector's own thread.
+    standing_slot: AtomicU8,
     /// The collector thread this mutator is named to, as a slot index of
     /// `crate::cycle::worker`'s: zero is the elder, and a fresh record's.
     /// Written by a collector at a handover and read by the mutator's poll,
@@ -447,6 +458,7 @@ impl MutatorRecord {
             hold: HoldLine {
                 reading: AtomicU8::new(0),
                 standing_since: AtomicU64::new(0),
+                standing_slot: AtomicU8::new(0),
                 collector: AtomicU8::new(0),
             },
         }
@@ -488,6 +500,20 @@ impl MutatorRecord {
     #[inline]
     pub(crate) fn note_standing_since(&self, nanos: u64) {
         self.hold.standing_since.store(nanos, Ordering::Relaxed);
+    }
+
+    /// The collector whose list this record stands in, as a slot index plus
+    /// one, or zero for a record in no list ([`HoldLine::standing_slot`]).
+    #[inline]
+    pub(crate) fn standing_slot(&self) -> u8 {
+        self.hold.standing_slot.load(Ordering::Relaxed)
+    }
+
+    /// Stamp the collector whose list this record now stands in, or zero it
+    /// as the unlink does ([`HoldLine::standing_slot`]).
+    #[inline]
+    pub(crate) fn note_standing_slot(&self, stamp: u8) {
+        self.hold.standing_slot.store(stamp, Ordering::Relaxed);
     }
 
     /// R's two words: the front block on the reader's line, the tail block
@@ -1064,20 +1090,23 @@ fn skipped_by_a_case(record: *mut MutatorRecord, wanted: *mut MutatorRecord) -> 
     }
 }
 
-/// Link or unlink `record` by hand, standing in for a collector's list: a
-/// list of one, whose ends name the record itself. The stores are in the
-/// list's order ([`ReaderLine::standing_next`]): `next` first on the link
-/// and last on the unlink.
+/// Link or unlink `record` by hand, standing in for the list of collector
+/// `slot`: a list of one, whose ends name the record itself. The stores are
+/// in the list's order ([`ReaderLine::standing_next`]): `next` first on the
+/// link and last on the unlink, with the slot's stamp beside them as a
+/// collector's own link makes it.
 #[cfg(test)]
-pub(crate) fn link_for_test(record: *mut MutatorRecord, linked: bool) {
+pub(crate) fn link_for_test(record: *mut MutatorRecord, slot: usize, linked: bool) {
     let mutator = unsafe { &*record };
     let (next, prev) = (mutator.standing_next(), mutator.standing_prev());
     if linked {
+        mutator.note_standing_slot(u8::try_from(slot).expect("a collector slot index") + 1);
         next.store(record, Ordering::Release);
         prev.store(record, Ordering::Release);
     } else {
         prev.store(std::ptr::null_mut(), Ordering::Release);
         next.store(std::ptr::null_mut(), Ordering::Release);
+        mutator.note_standing_slot(0);
     }
 }
 

@@ -8,6 +8,10 @@
 //! refusal is a thread that never starts.
 
 use super::*;
+
+/// The collector slot the by-hand links of this module stand in for: the
+/// elder's, which is where a record of a running process is listed.
+const ELDER_SLOT: usize = 0;
 use crate::cycle::testing::Sent;
 use crate::cycle::token::{HeldToken, collector_is_tracing_this_thread, this_thread_token};
 use crate::memory::block_pool::test_guard;
@@ -135,14 +139,14 @@ fn a_record_standing_in_a_collectors_list_is_not_handed_out_until_unlinked() {
     thread.join().expect("the first thread exited");
     assert!(registry_lists_free(record));
 
-    link_for_test(record, true);
+    link_for_test(record, ELDER_SLOT, true);
     assert!(
         !a_thread_asking_for(record),
         "a linked record is walked past, named or not"
     );
     assert!(registry_lists_free(record), "and stays on the free list");
 
-    link_for_test(record, false);
+    link_for_test(record, ELDER_SLOT, false);
     assert!(
         a_thread_asking_for(record),
         "unlinked, the same record is handed out"

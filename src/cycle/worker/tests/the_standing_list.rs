@@ -45,6 +45,21 @@ struct Sleeper {
 }
 
 impl Sleeper {
+    /// A sleeper whose R holds `rings` rings of `members` each: a batch
+    /// over one of its roots frees that ring alone, where one long ring is
+    /// freed whole by its first root.
+    fn start_with_rings(class: *const Class, rings: usize, members: usize) -> Self {
+        let mutator = Mutator::start_idling_with(|_| {});
+        let class = Sent(class);
+        mutator.run(move |arena| {
+            let class = class.into_inner();
+            for _ in 0..rings {
+                let _ = unsafe { long_ring(arena, class, members) };
+            }
+        });
+        Self { mutator }
+    }
+
     fn start(class: *const Class) -> Self {
         let mutator = Mutator::start_idling_with(|_| {});
         let class = Sent(class);
@@ -486,12 +501,12 @@ fn a_push_appends_and_a_forget_unlinks_from_any_place() {
     standing.forget(unsafe { &*records[0] });
     standing.forget(unsafe { &*records[2] });
 
-    link_for_test(records[0], true);
+    link_for_test(records[0], SLOT, true);
     assert!(
         unsafe { &*records[0] }.is_standing(),
         "the hand link reads as standing"
     );
-    link_for_test(records[0], false);
+    link_for_test(records[0], SLOT, false);
     assert!(!unsafe { &*records[0] }.is_standing());
 
     drop(standing);
@@ -662,4 +677,174 @@ fn the_handover_leaves_a_record_a_request_stands_on() {
     drop(standing);
     standing_on.end();
     free_of_requests.end();
+}
+
+/// The slot a record of another collector's list is stamped with here.
+const OTHER_SLOT: usize = 5;
+
+/// A list's splice reads the record's two words and the frame's two ends,
+/// so a record another collector holds would be spliced out of a list that
+/// is not the splicer's — silently in a release build, and with the
+/// symptoms of a cut list a long way from the cause. The debug build
+/// refuses it at both ends: the splice and the push of a record that reads
+/// linked already.
+#[test]
+#[cfg(debug_assertions)]
+fn a_record_of_another_collectors_list_is_refused_at_both_ends() {
+    let _g = test_guard();
+    reset_lanes();
+    let class = node_class("ForeignListNode");
+    let sleeper = Sleeper::start(class);
+    let record = sleeper.record();
+    let mut standing = Standing::new(SLOT);
+
+    link_for_test(record, OTHER_SLOT, true);
+    let spliced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        standing.forget(unsafe { &*record });
+    }));
+    assert!(
+        spliced.is_err(),
+        "a record of another list is not spliced out of this one"
+    );
+
+    let pushed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        standing.push(record);
+    }));
+    assert!(
+        pushed.is_err(),
+        "nor read as this list's own stale entry when it is pushed again"
+    );
+
+    // Nothing was written by either refusal, so the record is unlinked here
+    // as its own collector would unlink it.
+    link_for_test(record, OTHER_SLOT, false);
+    assert!(!unsafe { &*record }.is_standing());
+    drop(standing);
+    sleeper.end();
+}
+
+/// What the pass read is the round's: a round whose walk never reaches the
+/// mutator collecting in line still answers work, because the checkpoint
+/// that read it hands the reading to the record the walk does visit. That
+/// is what `note_idleness` reads, and a sibling whose mutators all collect
+/// in line is not ended for it.
+#[test]
+fn a_round_reads_the_work_a_checkpoint_saw() {
+    let _g = test_guard();
+    reset_lanes();
+    let _wait = HeldRequestWait::of(Duration::from_millis(2));
+    let class = node_class("RoundReadsWorkNode");
+    let collecting = Sleeper::start(class);
+    let visited = Sleeper::start(class);
+    let mut standing = Standing::new(SLOT);
+
+    // The request the round's checkpoint will read back stands on the
+    // mutator that then takes its own token.
+    assert_eq!(
+        serve_on_this_thread(collecting.record(), &mut standing),
+        Served::Unanswered
+    );
+    let (let_go, wait_here) = std::sync::mpsc::channel::<()>();
+    let (took, taken) = std::sync::mpsc::channel::<()>();
+    collecting.mutator.send(move |_| {
+        let claim = crate::cycle::token::HeldToken::take();
+        took.send(()).expect("the case waits");
+        let _ = wait_here.recv();
+        drop(claim);
+    });
+    taken.recv().expect("the mutator took its claim");
+
+    // The walk reaches the other record alone, so the work the round
+    // answers is the checkpoint's reading and not its own.
+    unsafe { &*visited.record() }.name_to_collector(SLOT);
+    testing::confine_rounds_to(visited.record());
+    let outcome = round(SLOT, 1, &mut standing);
+    assert!(
+        outcome.saw_work,
+        "the round carried the pass's reading of a mutator collecting in line"
+    );
+
+    testing::confine_rounds_to_records(&[]);
+    unsafe { &*visited.record() }.name_to_collector(ELDER);
+    let_go.send(()).expect("the mutator waits");
+    drop(standing);
+    collecting.end();
+    visited.end();
+}
+
+/// One round can leave a record both in its backlog and linked in the
+/// list: the first checkpoint serves the grant a sleeper's consent left
+/// and carries the batch's backlog, and the walk that reaches the same
+/// record afterwards — its verdicts disposed of meanwhile, its byte `FREE`
+/// again — lands a fresh request on it and leaves it standing. That is the
+/// state the handover meets, and it is reachable through `round` and not
+/// only by hand.
+#[test]
+fn a_round_can_carry_a_backlog_for_a_record_it_then_leaves_linked() {
+    let _g = test_guard();
+    reset_lanes();
+    let _wait = HeldRequestWait::of(Duration::from_millis(2));
+    let class = node_class("CarriedAndLinkedNode");
+    // Many small rings rather than one: a batch of one root frees its own
+    // ring alone, so the disposition that follows leaves the rest of R
+    // standing and the walk's request has something to serve.
+    let sleeper = Sleeper::start_with_rings(class, 32, 2);
+    let record = unsafe { &*sleeper.record() };
+    // One root per batch, so the checkpoint's batch leaves the rest of the
+    // ring behind it and its backlog reading is true.
+    record.set_batch_size(1);
+    let mut standing = Standing::new(SLOT);
+
+    assert_eq!(
+        serve_on_this_thread(sleeper.record(), &mut standing),
+        Served::Unanswered
+    );
+    sleeper.read_the_byte();
+
+    // At the walk's reading of this record, the mutator disposes of the
+    // batch the round's first checkpoint made, so the request that follows
+    // lands on `FREE` and stands.
+    let jobs = sleeper.mutator.jobs.clone();
+    testing::at_the_next_reading(Box::new(move || {
+        let (tell, told) = std::sync::mpsc::channel();
+        jobs.send(Box::new(move |_: &mut crate::memory::arena::Arena| {
+            unsafe { crate::gc::ll_gc_maybe_collect() };
+            tell.send(()).expect("the case waits");
+        }))
+        .expect("the mutator thread runs");
+        told.recv().expect("the disposition ran");
+    }));
+
+    record.name_to_collector(SLOT);
+    testing::confine_rounds_to(sleeper.record());
+    let outcome = round(SLOT, 1, &mut standing);
+
+    assert_eq!(
+        outcome.backlogged.len(),
+        1,
+        "the checkpoint's batch left the mutator at the threshold"
+    );
+    assert!(
+        record.is_standing(),
+        "and the walk left a fresh request standing on the same record"
+    );
+
+    // The handover of that round's backlog leaves it where it is.
+    let mut backlogged = Backlogged::default();
+    backlogged.push(crate::cycle::mutator_record::this_thread_record());
+    for carried in outcome.backlogged.iter() {
+        backlogged.push(*carried);
+    }
+    hand_over_half(&backlogged, OTHER_SLOT);
+    assert_eq!(
+        record.collector(),
+        SLOT,
+        "a record of the round's own backlog that a request stands on stays"
+    );
+
+    testing::confine_rounds_to_records(&[]);
+    record.name_to_collector(ELDER);
+    drop(standing);
+    sleeper.poll();
+    sleeper.end();
 }
