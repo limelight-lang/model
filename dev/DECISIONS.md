@@ -8,6 +8,38 @@ never edited or deleted.
 
 ---
 
+## 2026-09-22 — a standing R is taken after an interval of the collector's own, and no request count is capped
+
+Two rulings of Edmond's, given in the design review of `PLAN.md` S62
+(`dev/design/a-standing-r-is-taken-after-n-rounds.md`), recorded as given.
+
+**The take.** The collector visits every mutator's record on its own timer.
+A mutator whose R holds the threshold is served as today. One whose R holds
+fewer is not served at that visit; the collector notes when it first saw
+the ring non-empty, and once an interval of its own has passed with the ring
+still non-empty — whether it grew meanwhile or not, "the length no longer
+matters once the first condition held" — it takes the ring as an ordinary
+batch: the request, the consent wait, the trace, the verdicts into P,
+`POSTED`. A mutator that does not consent inside the wait is asleep and is
+left alone until the next interval. The mutator's side does not change. The
+interval is measured in the collector's own time and not in its rounds
+("своим временем проще"), 4 s by default, set by the embedder through the
+ABI beside the quiet interval. What the rule accepts: a sleeping thread's
+garbage is not taken, and a working thread pays one batch per interval for a
+non-empty sub-threshold ring, nothing else new.
+
+**No hard cap on standing requests.** The collector's array of requests
+left standing on silent mutators, sixteen entries on the thread's frame
+(`worker::STANDING_CAPACITY`, "not a measured figure"), is wrong as a
+mechanism: the number of mutator threads is not known in advance, and a
+fixed count of them cannot be the bound on anything. A standing request
+belongs to the mutator's own record, where the turnover request already
+stands. This is a change to the built handshake and is filed as its own
+stage (`PLAN.md`, "The standing request moves to the record"); S62's take
+leaves no request standing and reads no silent mark.
+
+---
+
 ## 2026-09-21 — a quiet thread's turnover is the collector's to ask for, and the poll re-offers only on a turnover
 
 **Ruled by the Sage of 2026-09-21 in two rounds with a Critic between, and

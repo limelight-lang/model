@@ -16,7 +16,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-22 · Active: none. S61 went on 2026-09-22, the day it opened:
+Updated: 2026-09-22 · Active: S62, a design stage. S61 went on 2026-09-22, the day it opened:
 the sibling-birth red of the journal gate was the harness's stand-in for a
 disposition racing the round it stands in for, found by stretching the other
 mutator's tick and repaired by clearing every mutator's `POSTED` by hand
@@ -129,6 +129,132 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   failure is reportable, would remove it if `pthread_setspecific` allocates
   nothing per thread — which nobody has read, on any target. Named when the
   reserve's first touch was decided on 2026-08-29 and priced nowhere since.
+## S62 — A standing R is taken after N rounds  [done]
+
+Goal: the second half of "A quiet thread's garbage is taken after X" has an
+algorithm Edmond has accepted or a list of questions only he can answer —
+the collector's own take of a candidate ring that stands non-empty below the
+threshold for N of its rounds, the mutator's side unchanged.
+Done when: `dev/design/a-standing-r-is-taken-after-n-rounds.md` has been
+through two Critic rounds, every finding answered by a repair or a refusal
+with its reason, the findings neither could answer ruled by the Sage, and
+the document ends either as the final algorithm or as the questions to
+Edmond; the chain is Edmond's of 2026-09-22 (Critic → repair → Sage if no
+answer → Critic → repair → Sage if questions remain → Edmond).
+Notes: a design stage — no code, no bench, no rfc edit; the rfc moves on
+adoption (`dev/DECISIONS.md`, "analysis of a candidate that may be refused
+stays in `dev/`, and the rfc moves only on adoption"). The rule in one line,
+Edmond's: below the threshold the collector does not collect too often, but
+after three or four of its intervals with the ring standing it collects
+anyway, and the collector decides.
+
+- [x] S62.1 The algorithm written
+      done: the document states the rule, the words on the record, the
+        round's reading, the serve at a threshold of one, the silent
+        mutator's cost, the interactions with the turnover request, the
+        siblings, the timer and the pressure path, the refused forms and the
+        open points
+      tier: T2 · role: —
+      handoff: `dev/design/a-standing-r-is-taken-after-n-rounds.md`, first
+        form; two open points, the silent mutator and the count's unit.
+- [x] S62.2 Critic, round one, and the repairs
+      done: every finding of the first Critic pass is repaired in the
+        document or refused with its reason in this step's role line; a
+        finding with neither goes to the Sage and its ruling is `Final`
+      tier: T2 · role: Critic → Sage
+      Critic 2026-09-22 round 1: a count of rounds is not "intervals" —
+        rounds are wake-driven and 10 ms apart after a batch, so four rounds
+        take the dripping mutator the threshold spares, and the S60 ruling
+        rejected an X tied to the adaptive interval by name (accepted: a
+        floor of 4 s on the serve clock from the instant the ring was first
+        seen unchanged; the reading of "interval" is question 1 to Edmond);
+        a standing request for a take lets blocked sub-threshold threads
+        fill the 16-entry array and starve a producing silent mutator
+        (accepted: a silent mutator is not taken; question 3); the identity
+        test needed a third word and the tail-index equality is fooled by a
+        pack (accepted: the block copy dropped with the argument why none
+        is needed, and the clock's stamp joins the change test; the
+        no-commit retirement named as a one-round residual); the cost
+        omitted the recurring in-line trace per X of the roots read live
+        (accepted, in Cost and in the measurement plan); an `AtomicU8` count
+        with no saturation (moot, the count is gone); the threshold
+        parameter's reach into `batch` and the checkpoints turns a leftover
+        into a backlog (accepted: the parameter goes, `batch` reads the
+        threshold itself, the take is a local flag); P without room and the
+        count (accepted: the standing stands, the take waits a round); the
+        ring needs a reader returning the front block's words (accepted,
+        `Reader::front_block_reading`); "same non-empty R" is a reading to
+        confirm (question 2). No finding went to the Sage: each had a repair
+        or a question for Edmond.
+      handoff: the document's second form; three questions in "Open".
+- [x] S62.3 Critic, round two, and the repairs
+      done: as S62.2 over the repaired document; a finding with no answer
+        goes to the Sage
+      tier: T2 · role: Critic → Sage
+      Critic 2026-09-22 round 2: a take whose consent missed the wait marked
+        the mutator silent, and the mark clears only on a grant, so one late
+        answer excluded the running thread the rule is for, for the record's
+        life (accepted: the take's withdrawal marks nothing and restarts the
+        standing; question 3 re-stated); branches 1 and 2 zeroed the instant
+        and kept the index, so a fresh ring at the old index met a zero
+        instant and was taken at once (accepted: a zero instant is a change,
+        and the index is cleared to `usize::MAX`); the take fed K's sizing —
+        four takes of three doubled K to 1024, a K of one took a ring of
+        three a root per round (accepted: the take's clamp is R's count and
+        the sizing is skipped); "a take's close counts a commit" is false
+        for verdicts all read live (accepted: the sentences rest on the
+        restamp and the tail move); the drip is spared only while the lane
+        is empty, S60's X collection tracing R whole otherwise (accepted, in
+        the standing's argument, the interactions and the cost); dropping
+        the threshold parameter re-aims `the_batch`'s clamp cases for no
+        runtime change (accepted: the parameter stays, the take passes the
+        round's threshold); the first measured term was the collector's
+        time, not the mutator's (accepted: the withheld frees and the
+        collection over P); "the tail index is the count" invites storing
+        the span (accepted, struck). The narrow window between branch 3's
+        clock read and the round's restamp joins the named residuals. No
+        finding went to the Sage.
+      handoff: the document's third form; three questions in "Open",
+        the third re-stated.
+      Edmond 2026-09-22, on the three questions: the interval is the
+        collector's own time, a parameter of the ABI; once the interval
+        has passed the ring's length no longer matters, so "non-empty" and
+        not "unchanged"; a sleeping thread is left alone, and no count of
+        requests may be capped — the 16-entry standing array is wrong as a
+        mechanism and is filed as its own stage. The fourth form is the
+        rule in those terms (`dev/DECISIONS.md`, "a standing R is taken
+        after an interval of the collector's own, and no request count is
+        capped").
+      Critic 2026-09-22 round 3 (over the fourth form, at Edmond's word):
+        a take restamps the turnover ask by fiat as any batch does, and an
+        all-live take moves no clock, so a drip taken every interval is
+        never asked for a turnover and the two halves cancel (accepted: the
+        take's restamp is decided by the clock alone; the same hole in the
+        built S60 rule is the backlog line "A batch that moved no clock
+        restamps the turnover ask"); a hit left the instant standing, so a
+        write-back ten milliseconds later was re-taken at the round's
+        cadence (accepted: the instant restarts when the request lands,
+        hit or miss); a sleeping mutator costs its collector a 2 ms wait per
+        interval, serially inside the round, which the silent mark spares
+        the threshold path and the take refuses (accepted as a cost: named,
+        measured with a round-length term and an off value, and the record
+        stage named as what removes it); four wordings an implementer would
+        have to guess — the checkpoints under a take's wait, the miss's
+        `Served`, the grant clearing the mark, the flag's reach (accepted,
+        each stated); the rule's sentence claimed the ring's history where
+        the word knows the collector's visits (accepted, amended). No
+        finding went to the Sage.
+- [x] S62.4 The final algorithm, or the questions to Edmond
+      done: the document's "Open" section is empty and the rest is the
+        algorithm as ruled, or "Open" lists the questions only Edmond can
+        answer with a proposed answer to each, and Edmond has been shown
+        which of the two it is
+      tier: T1 · role: —
+      handoff: the fifth form is the final algorithm, "Open" empty; the
+        one price Edmond is told with it is the sleeper's 2 ms per interval
+        inside the round until the standing request has a home on the
+        record. Building it is a stage of its own, not opened.
+
 ---
 
 ## Cross-cutting (every stage)
@@ -336,6 +462,33 @@ live: `archive/pre-rc-cycle`").
   done: one red test builds the store and resets B inside a destructor of
   A's reset, or a demonstration that the barrier or the reconciliation
   refuses the shape is recorded in `dev/DECISIONS.md`.
+- [ ] **A batch that moved no clock restamps the turnover ask.**
+  `worker::ask_for_a_turnover_if_quiet` restamps `served_at` for every
+  `Served::Batch` by fiat; a batch whose verdicts all read live leaves the
+  mutator a collection over P that closes `EmptyLane` with no commit, so the
+  clock did not move and the stamp says it did. A thread at the threshold
+  batched more often than X with all-live batches is never asked for a
+  turnover, and its deferred lane waits for pressure or exit. Found by the
+  Critic over S62's fourth form, 2026-09-22, as the same hole a take would
+  open; the design decides the take's restamp by
+  `clock_stood_since_the_stamp` alone, and the batch's is this line. done:
+  the restamp after a batch is decided by the clock, a case shows a thread
+  batched all-live every X/2 asked after X, and the S60 entry's "a serve
+  that made a batch restamps" is amended with the date.
+- [ ] **The standing request moves to the record.** Edmond, 2026-09-22:
+  the collector's array of requests left standing on silent mutators —
+  `worker::Standing`, `STANDING_CAPACITY` of 16 on the thread's frame, "not
+  a measured figure" — is the wrong mechanism, because the number of mutator
+  threads is not known in advance and a fixed count cannot bound anything
+  (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
+  collector's own, and no request count is capped"). A standing request
+  belongs to the mutator's own record, where the turnover request already
+  stands; the array, its capacity, its two checkpoints and the "past the
+  capacity, withdrawn at once" arm go with it, and
+  `rfc/dev/design/trace-token-handshake.md`'s standing-array paragraphs
+  follow. done: no request count is capped anywhere in `worker`, a case
+  shows more silent mutators than the old capacity all served on waking,
+  and the handshake document names the record as the request's home.
 - [ ] **A quiet thread's garbage is taken after X.** Edmond, 2026-09-18: the
   GC takes a thread's garbage of its own accord once some time X has passed.
   The half that turns a quiet thread's deferred lane over is built: the
