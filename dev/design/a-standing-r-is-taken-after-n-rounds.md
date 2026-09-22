@@ -135,6 +135,18 @@ request to reason about:
   per sleeping sub-threshold mutator per interval inside the round. The
   wait itself is today's: its early return on a stranger's wake runs
   `Standing::checkpoint` and notes the consumed wake as any wait does.
+- **The round's spending on expired waits is capped, on both paths.** A
+  counter on `Standing`, reset at the round's start, counts this walk's
+  waits that expired unanswered; past `EXPIRED_WAITS_PER_ROUND`
+  (placeholder 2, not a measured figure) every later request that lands is
+  left standing at once, through the same arm a released-unserved record
+  takes, and served at a checkpoint. A pool of P threads that parks and
+  wakes would otherwise cost up to P × W per interval, one wait per park,
+  which the "one two-second round once" of a permanently parked population
+  does not bound. The Sage's ruling of 2026-09-22 (`dev/DECISIONS.md`, "the
+  consent wait stays on both paths, and a round's spending on expired waits
+  is capped") carries what the wait buys, what the cap costs, the arm that
+  sizes the constant and the case the build owes.
 - **The backlog reading is unchanged.** `batch` answers
   `Served::Batch { backlog }` by `has_at_least(threshold)` after the batch,
   against the round's threshold; a take of a ring below sixty-four leaves

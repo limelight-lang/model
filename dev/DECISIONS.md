@@ -8,6 +8,87 @@ never edited or deleted.
 
 ---
 
+## 2026-09-22 — the consent wait stays on both paths, and a round's spending on expired waits is capped
+
+**The Sage's ruling, `Final`, on Edmond's second question of the evening** —
+whether the consent wait is worth having at all, once an unanswered request
+stands on the record and a checkpoint serves it. Nothing is built; the
+answer is a rule for the take's stage and a change the threshold path owes.
+
+**What.** `serve` requests and waits `REQUEST_WAIT` for every mutator it
+means to serve, take or threshold alike. A counter on `Standing`, reset at
+the round's start, counts the waits of this walk that expired unanswered;
+once it reaches `EXPIRED_WAITS_PER_ROUND` — placeholder 2, not a measured
+figure — every later request of the round that lands is left standing at
+once, through the `Served::Unanswered` arm `serve` already has for a record
+marked released-unserved, and is served at a checkpoint when the mutator
+answers. A consent, a refusal or a grant read back at the swap counts
+nothing; only a deadline does. Nothing else moves: the wait's loop, the
+checkpoint's one grant per pass, the withdrawal guards, the harness
+override, the probes.
+
+**Why the wait stays.** The wait is what tells a working mutator from a
+parked one: the first answers inside it and is served in the same visit, the
+second does not and gets the standing treatment. For the one that answers
+the wait costs the consent's latency and buys four things a measurement
+could refute — a window of its own batch instead of one stranger's batch
+plus its own; one consent per batch instead of one per pass until it is
+first in the list; n batches per walk over n producing mutators instead of
+one grant per byte event, the checkpoint serving one; and the walk's own
+`Served::Batch { backlog }` reading, which is the only thing that fills
+`Round.backlogged` — `read_one_record` folds a checkpoint's batch into
+`made_a_batch` and drops its backlog bit — so with no wait no sibling is
+ever born. The measurement that would refute it: four and eight mutators
+registering rings at full rate, the counts of released-unserved per batch
+and the consent-to-release window against today's figures
+(`dev/BENCHMARKS.md`, "S51.5 the token handshake's instruments", the
+full-rate probe's 2,884 grants for 2,884 batches with no release).
+
+**Why the reason behind the old refusal is transformed rather than
+retired.** The rfc refused request-all because n owners consent within
+microseconds and the i-th withholds i batches
+(`rfc/dev/design/trace-token-handshake.md`, the E5/E6/E8 ruling and the
+second round's (a)). S63's release-the-rest rule bounds each window at one
+stranger's batch, so the queueing is gone — but the i-th working owner now
+consents i times and is served at its i-th event, a round apart, since a
+released record is re-requested at the walk's next visit. For a burst of
+sleepers, who are asleep again when the walk returns, that is the accepted
+bound; for producing mutators it converts queueing into deferral. Edmond's
+own sentence for it is on record: "a mutator that consented gives no memory
+back until the collector reaches it".
+
+**Why a cap is needed even so.** The full wait is paid only by a mutator
+that does not answer, once per standing request; but a pool thread parks and
+wakes, so a pool of P threads costs up to P × W per interval on the take
+path and the same per park on the threshold path. The first ruling's
+"a thousand parked threads cost one two-second round once" holds for threads
+that stay parked, not for a pool that cycles. The cap bounds the round at
+`EXPIRED_WAITS_PER_ROUND × W`, and placing the requests past the cap without
+a wait rather than deferring them to later rounds is what keeps the term one
+round long.
+
+**What the cap costs and what sizes it.** A working mutator requested past
+the cap gets the woken sleeper's treatment: a window of one stranger's batch
+plus its own, and possibly one release without a batch and a re-request at
+the next walk — the bound S63 accepted for wakers. The constant is sized by
+the arm the take's stage already owes: P parked sub-threshold threads (64
+and 1,000) beside one active mutator, the active mutator's batch interval
+and the round's length read against P, the null arm the cap at `usize::MAX`,
+which is today's form. One case is owed with it: a round over
+`EXPIRED_WAITS_PER_ROUND + 1` sleepers at a 300 ms wait ends inside
+`(EXPIRED_WAITS_PER_ROUND + 0.5) × 300 ms` with every request standing.
+
+**Refused.** Dropping the wait for the take alone: that is the no-wait form
+the reverted `7cc91b9` records Edmond refusing by name, and the cap removes
+the same cost without a second request form. Dropping it everywhere: it
+gives every working mutator the sleeper's treatment, kills the backlog
+reading and with it the sibling births, and would take with it the harness
+override, the wake-inside-a-round probe, the byte-arming case's first arm,
+the standing-list cases' held wait, and `dev/BENCHMARKS.md`'s "W's tail"
+line with its blocked corpus arm.
+
+---
+
 ## 2026-09-22 — a take's unanswered request stands on the record, and the ring under the token decides the batch's form
 
 **The Sage's ruling, `Final`, on Edmond's delegation** ("на вопрос отвечает
