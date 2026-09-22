@@ -420,7 +420,9 @@ pub(crate) fn retire() {
     confine_rounds_to_records(&[]);
     serve_rounds_at(0);
     wait_between_rounds_for(None);
+    ask_turnovers_after(None);
     super::set_collector_cap(super::DEFAULT_COLLECTOR_CAP);
+    super::set_quiet_interval(std::time::Duration::ZERO);
     let _ = take_rounds();
     let _ = take_round_times();
     let _ = take_outcomes();

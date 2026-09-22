@@ -52,8 +52,8 @@ fn measure_what_the_poll_costs() {
 /// request made: the lane's occupancy is read off the base block's control
 /// line and the request byte off the record's token line, both lines the
 /// poll touches already. Recorded as an absolute figure beside the empty
-/// arm: the tree before the request re-offered such a lane at every poll and
-/// offers no comparable arm.
+/// arm (`dev/BENCHMARKS.md`, "S60.6 what the poll costs with a deferred
+/// record standing").
 #[test]
 #[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
 fn measure_what_the_poll_costs_with_a_deferred_record_standing() {

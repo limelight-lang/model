@@ -839,9 +839,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     // `answer_a_turnover_request`), because a turnover per refused
     // allocation would re-trace the lane's whole closure with no lower
     // bound.
-    if crate::cycle::queue::deferred_lane_is_occupied() {
-        crate::cycle::queue::reoffer_deferred_candidates();
-    }
+    crate::cycle::queue::reoffer_deferred_candidates();
 
     let mut freed = 0;
     let mut roots = ALL_ROOTS;

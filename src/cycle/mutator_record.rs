@@ -124,7 +124,10 @@ pub(crate) struct MutatorRecord {
     /// poll that jumps its clock and at the fill of an empty lane. Relaxed on
     /// both sides: nothing is published beside it, and a request the fill
     /// cleared or the poll read late costs one turnover early or one poll
-    /// late, never a wrong free.
+    /// late, never a wrong free. A collection of this thread's own between
+    /// the ask and the poll — under pressure, or fired — re-defers the lane
+    /// and so clears the request, and the next ask waits X again: a thread
+    /// whose clock moved is not quiet.
     turnover_requested: AtomicU8,
     /// The next free record, meaningful while this one is on the registry's
     /// free list and written under its lock alone.
@@ -172,10 +175,11 @@ struct ReaderLine {
     /// re-take.
     silent: AtomicBool,
     /// When the collector last served this mutator, in nanoseconds since the
-    /// base `crate::cycle::worker` fixes at its first round; zero before any
-    /// serve. A serve that made a batch restamps it, and a serve that made
-    /// none with X elapsed asks for a turnover and restamps. The collector's
-    /// own word, so relaxed.
+    /// base `crate::cycle::worker` fixes at the process's first serve; zero
+    /// before any serve. Restamped by every serve that found the mutator's
+    /// clock moving, and by the serve that reached nothing with X elapsed
+    /// and asked for a turnover (`crate::cycle::worker`, "The quiet
+    /// thread"). The collector's own word, so relaxed.
     served_at: AtomicU64,
     /// The mutator's clock as the collector last stamped it, beside the
     /// instant: a clock that moved since is a thread whose stamps age on
@@ -212,9 +216,8 @@ struct WriterLine {
     /// collector's request ([`MutatorRecord::turnover_requested`]). Written
     /// by the mutator alone, at its commit's close and at that poll, and
     /// read by the collector that traces this mutator's graph, which prunes
-    /// against the
-    /// owner's epoch and never against its own thread's. A record handed out
-    /// again starts one turnover past where its last life left it
+    /// against the owner's epoch and never against its own thread's. A record
+    /// handed out again starts one turnover past where its last life left it
     /// (`crate::cycle::epoch::a_new_lifes_count`), so no stamp that life wrote
     /// reads fresh to this one.
     commits: AtomicU64,
@@ -525,10 +528,11 @@ impl MutatorRecord {
         self.writer.commits.store(commits, Ordering::Relaxed);
     }
 
-    /// Commits this mutator has closed since the registry handed the record
-    /// out. Read by the mutator itself and by the collector that traces for
-    /// it, where it is the clock the stamps in that mutator's entities were
-    /// written against.
+    /// This mutator's clock: the commits it has closed, moved to the next
+    /// turnover's first commit on the collector's request (the field's
+    /// contract, `WriterLine::commits`). Read by the mutator itself and by
+    /// the collector that traces for it, where it is the clock the stamps in
+    /// that mutator's entities were written against.
     #[inline]
     pub(crate) fn commits(&self) -> u64 {
         self.writer.commits.load(Ordering::Relaxed)
@@ -862,8 +866,8 @@ fn take_record() -> *mut MutatorRecord {
             (*released).reader.reset();
             (*released).writer.reset();
             (*released).hold.collector.store(0, Ordering::Relaxed);
-            // A request made against the last life's lane is stale, and the
-            // next life's first fill would clear it anyway.
+            // The token line's request byte, which neither reset above
+            // reaches: a request made against the last life's lane is stale.
             (*released).clear_turnover_request();
             // Last, with release: the next reading's take is what sees the
             // lines above as reset.

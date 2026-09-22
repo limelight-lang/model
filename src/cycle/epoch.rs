@@ -20,15 +20,15 @@
 //! rate to the busiest thread in the process and leave a thread that
 //! collects rarely reading every stamp of its own as stale; a thread that
 //! collects not at all is turned over by the collector's request. The
-//! entities of one mutator are
-//! that mutator's — no thread points into another thread's blocks
-//! (`rfc/model/gc/rc-cycle.md`, the disjointness the token's proof assumes) —
-//! so a collector thread tracing for a mutator reads the epoch out of that
-//! mutator's record and never out of its own thread's
-//! ([`of_record`]). The width is full because a per-thread mirror compares
-//! turnovers against it to see one it slept through, which two wrapped bits
-//! cannot answer; what the header carries is the low two bits, because that is
-//! what byte 6 can spare (`crate::refcount::MATURATION_EPOCH_MASK`).
+//! entities of one mutator are that mutator's — no thread points into
+//! another thread's blocks (`rfc/model/gc/rc-cycle.md`, the disjointness the
+//! token's proof assumes) — so a collector thread tracing for a mutator
+//! reads the epoch out of that mutator's record and never out of its own
+//! thread's ([`of_record`]). The width is full because a per-thread mirror
+//! compares turnovers against it to see one it slept through, which two
+//! wrapped bits cannot answer; what the header carries is the low two bits,
+//! because that is what byte 6 can spare
+//! (`crate::refcount::MATURATION_EPOCH_MASK`).
 
 use crate::cycle::mutator_record::{MutatorRecord, this_thread_record};
 use crate::refcount::MATURATION_EPOCH_MASK;

@@ -16,15 +16,18 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-21 · Active: S60, every step closed the day it opened: the
-S37 gate found the empty-lane re-offer collecting at every poll of a quiet
-thread, Edmond called the algorithm unacceptable, the Sage ruled the
-replacement in two rounds with a Critic between (`dev/DECISIONS.md`, "a quiet
-thread's turnover is the collector's to ask for"), Edmond accepted it and set
-X at V8's 8 s over the 1 s proposed. What stands between S60 and its deletion
-is the Code Reviewer over the stage (rule 23.1.3). The destination's last mile — the
-compiler that links this crate — is outside this plan: `rfc/BACKLOG.md`, "The
-big one", and the front end in `limelight`.
+Updated: 2026-09-22 · Active: none. S60 went on 2026-09-22 with its six
+steps closed and its gate paid: the Critic over S60.1–S60.4, and the Code
+Reviewer over the stage, whose fourteen findings — an accessor's and the
+signal flag's contracts left behind the ruling, a test override with no
+reset in `worker::testing::retire`, the letter X used and defined nowhere in
+the crate, two history sentences, a redundant occupancy guard on the pressure
+path, a restamp assertion a coarse clock could fail — were applied the same
+day. The ruling stands in `dev/DECISIONS.md`, "a quiet thread's turnover is
+the collector's to ask for", the figures in `dev/BENCHMARKS.md`, "S60.6 what
+the poll costs with a deferred record standing". The destination's last mile
+— the compiler that links this crate — is outside this plan: `rfc/BACKLOG.md`,
+"The big one", and the front end in `limelight`.
 
 Review 2026-09-21: overdue by a day, the hook reading `dev/PLAN.md` and never
 this file. Pass 1, code `c58d49f..128cefc` against the thresholds, 203
@@ -77,7 +80,7 @@ the backlog line "What S37 named and left".
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S59, every
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S60, every
 number this plan has spent. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -125,130 +128,6 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   failure is reportable, would remove it if `pthread_setspecific` allocates
   nothing per thread — which nobody has read, on any target. Named when the
   reserve's first touch was decided on 2026-08-29 and priced nowhere since.
-## S60 — The quiet thread's turnover  [done]
-
-Goal: a thread whose roots are all parked runs no collection on its own polls;
-its parked garbage is found when the collector asks for a turnover after X.
-Done when: sixty-four polls of an idle thread with a deferred lane move neither
-its counter nor its lane and run no mark; a request byte the collector set makes
-the next poll turn the epoch, splice the lane and take a dead ring behind a
-mature member; `what_the_poll_costs`'s empty-lane arm reads at or under S37.8's
-7.46–7.61 ns.
-Notes: the ruling is the Sage's of 2026-09-21, second round, accepted by Edmond
-the same day; the analogues for X are `dev/RESEARCH.md`, "the idle-GC timers of
-five runtimes"; X's default figure is Edmond's, the 1 s the Sage proposed
-refused as too frequent.
-
-- [x] S60.1 The request byte and the instant on the mutator's record
-      done: `MutatorRecord` carries an `AtomicU8` request byte on the token line
-        and an `AtomicU64` instant (nanoseconds from a process base) on the
-        reader line, both zero at `take_record` and read by `lines_are_fresh`,
-        `offset_of!(reader) == 64` still asserted, with a `#[cfg(test)]` store
-        of the byte from the harness thread
-      tier: T2 · role: Critic
-      Critic 2026-09-21 (over S60.1–S60.4 together): the serve's outcome alone
-        does not say whether the mutator's clock moved — a thread collecting
-        in line between rounds read `Idle` and was asked every X on top of its
-        own turnovers. Accepted: `commits_seen` beside the instant, written at
-        every stamp, and the ask requires the clock to stand.
-      handoff: `mutator_record.rs`, `turnover_requested` on the token line,
-        `served_at` and `commits_seen` on the reader line; the re-take case
-        `a_retaken_record_starts_with_fresh_lines` was seen red before the
-        reset was written. Commit S60's.
-- [x] S60.2 The collector asks for a turnover after X
-      done: `worker::read_one_record` restamps the instant on a batch and, on a
-        serve that made no batch with X elapsed since the instant, stores the
-        request byte and restamps; X is `quiet_interval()` — the ABI's value if
-        set, else the crate default Edmond names — with a `worker::testing`
-        override; the ABI setter stands beside `ll_gc_set_collector_cap`
-      tier: T2 · role: Critic
-      Critic 2026-09-21: the millisecond setter truncated past 2^64 ns
-        (accepted, `try_from` saturates); the first quiet-thread case's two
-        serves inside a 1 ms X could straddle a preemption (accepted, a
-        minute for those two, a millisecond for the sleep); "The quiet
-        thread" was cited as a section `worker.rs` did not have (accepted,
-        the section written).
-      handoff: `worker::ask_for_a_turnover_if_quiet` after every serve,
-        `QUIET_INTERVAL` 8 s borrowed from V8 (Edmond, 2026-09-21;
-        `dev/RESEARCH.md`, "the idle-GC timers of five runtimes"),
-        `ll_gc_set_quiet_interval(millis)`; the cases are
-        `worker/tests/the_quiet_thread.rs`, four.
-- [x] S60.3 The poll jumps to the next turnover on the request, and the per-poll re-offer goes
-      done: under an open gate and before the token read, a poll with a
-        non-empty deferred lane and the byte set, the token not reading
-        `COLLECTOR`, clears the byte, stores `commits − commits % N + N` through
-        `epoch::jump_to_the_next_turnover` and hands the re-read counter to
-        `reoffer_deferred_if_epoch_moved`; `defer_entry`'s empty-to-occupied
-        branch clears the byte and sets `signal_due`;
-        `reoffer_deferred_when_nothing_else_stands`, `the_active_lane_is_empty`
-        and the poll's second arm are deleted; both red cases of the ruling are
-        seen red first — sixty-four polls move nothing, and the mature-member
-        fixture dies at the poll after the harness's byte — and the old idle
-        case is renamed and inverted as Edmond's contract change
-      tier: T2 · role: Critic
-      Critic 2026-09-21: `TraceToken::request`'s failure ordering was relaxed,
-        so a standing request answered on the free path read a grant with no
-        acquire partner for the consent's release — the jumped counter could
-        be missed by the batch (accepted, the failure is acquire); the two red
-        cases pinned the jump's direction and not its target, and a byte never
-        cleared kept both green (accepted: `commits % N == 1` after the
-        answering poll, the byte asserted clear, and a second accumulation
-        polled sixty-four times). No finding on the free path's consent, the
-        destructor's poll under a closed gate, or the fill's signal reaching
-        the poll's tail.
-      handoff: `gc.rs`'s poll reads the gate once and, behind it with the lane
-        occupied, `queue::answer_a_turnover_request` then
-        `reoffer_deferred_if_epoch_moved(commits())`; `epoch::jump_to_the_next_turnover`;
-        `defer_entry`'s empty-to-occupied branch clears the byte and signals.
-        Both cases seen red on the unmodified poll (2 against 0 at the first
-        poll; 69 against 66 commits). `an_idle_thread_reoffers_its_deferred_lane_at_the_next_poll`
-        is `an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_turnover`.
-- [x] S60.4 The pressure path splices the lane without a jump
-      done: `collect_under_pressure` re-offers a non-empty deferred lane before
-        `trace_and_harvest` by splice alone, and a case shows a dead
-        all-registered ring standing in the lane taken by the pressure
-        collection at the old epoch
-      tier: T1 · role: —
-      handoff: `collect.rs`, before the pressure loop; the case
-        `a_pressure_collection_splices_the_deferred_lane_and_turns_no_epoch`,
-        red at 0 against 2 before the splice. A refusal after the splice
-        leaves the lane's roots in R for the repeat S40.4 priced.
-- [x] S60.5 The sentences, the journals and the rfc
-      done: every sentence the ruling lists as false once a request advances the
-        counter is rewritten — `epoch.rs`, `mutator_record.rs`, `queue.rs`, the
-        rfc's Y9 and Y12 clause 8, and `rfc/model/gc/rc-cycle.md` "Concurrency"
-        and `rfc/dev/design/trace-token-handshake.md` checked for a sentence
-        that gives the token line one byte;
-        `the_volume_a_turnover_reoffers`'s idle cells read X; the S37.5 idle
-        paragraph of `dev/BENCHMARKS.md` amended with the date; one new
-        `dev/DECISIONS.md` entry supersedes by name the 2026-09-19 liveness
-        paragraph and the k = 1 entry's idle sentence and records the inverted
-        case as Edmond's, X's default and the splice-only pressure path; the
-        after-X backlog line absorbs the idle-thread sentence of "What S37 named
-        and left", and the threshold-one serve becomes a line of its own
-      tier: T1 · role: —
-      handoff: `dev/DECISIONS.md`, "a quiet thread's turnover is the
-        collector's to ask for"; the rfc's Y9, Y12 clause 8 and
-        `dev/design/trace-token-handshake.md` carry the request (commit in
-        `rfc`); the threshold-one serve stays inside the after-X line as its
-        remaining half rather than a line of its own.
-- [x] S60.6 What the poll costs with a lane standing
-      done: `what_the_poll_costs` recorded in both arms in `dev/BENCHMARKS.md` —
-        the empty lane against S37.8's figure, one deferred record standing as
-        an absolute figure
-      tier: T1 · role: Bench
-      handoff: `dev/BENCHMARKS.md`, "S60.6 what the poll costs with a deferred
-        record standing": 6.95–7.83 ns empty, 8.13–8.46 ns occupied; the first
-        attempt's 115–240 ns was the harness's refused birth on the fill's
-        signal, taken by hand since.
-      gate 2026-09-21: 1083 ×4, `hash-folding` 1083, `debug-journal` 1092 in
-        three of four runs — the second run failed
-        `the_siblings::a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idle`
-        at its wait for the sibling's birth, in a run that took 19 s where
-        the others took 6–10 s; 12 of 12 alone afterwards, and a fourth full
-        run green. Not repaired and not recorded as accepted: Edmond's call
-        whether it is the box's load or S60's round.
-
 ---
 
 ## Cross-cutting (every stage)
@@ -432,20 +311,23 @@ live: `archive/pre-rc-cycle`").
   entity without reading the class flags, so a template class the compiler
   marks acyclic does not carry `ACYCLIC_GATE` — conservative, and left until
   a template class is marked.
-- [ ] **The sibling's birth that missed its wait once in four journal runs.**
+- [ ] **The sibling's birth that missed its wait twice in seven journal runs.**
   `the_siblings::a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idle`
   failed at `wait_until(collector_state(1) == Alive, A_BIRTH)` in the second
-  of S60's four `debug-journal` runs on 2026-09-21, a run that took 19 s
-  where the others took 6–10 s; 12 of 12 alone afterwards and a fourth full
-  run green (Edmond, 2026-09-21: investigate rather than accept). Two
-  readings to separate: the box's load stretching the birth past `A_BIRTH`,
-  and S60's round — the serve stamp, the clock comparison and the request
-  byte now run on every record of every round — moving what the second
-  backlog round does before it births. done: the failing run is reproduced
-  under a named load or the case is seen red with S60's round and green
-  without it, and either the wait is re-stated against what it measures or
-  the round's change is repaired; the class goes to `dev/POSTMORTEM.md` if a
-  mechanism is found, and to `dev/WORKFLOW.md`'s flake watch if only the load.
+  of four `debug-journal` runs on 2026-09-21, a run that took 19 s where the
+  others took 6–10 s, and again in the first of three on 2026-09-22, a run of
+  17.7 s against 7.8 s for the other two; 12 of 12 alone after the first, and
+  every plain and `hash-folding` run of both days green (Edmond, 2026-09-21:
+  investigate rather than accept). Two readings to separate: the box's load
+  stretching the birth past `A_BIRTH`, and the collector's round since
+  2026-09-21 — the serve stamp, the clock comparison and the request byte
+  (`worker::ask_for_a_turnover_if_quiet`) run on every record of every round
+  — moving what the second backlog round does before it births. done: the
+  failing run is reproduced under a named load or the case is seen red with
+  the ask in the round and green without it, and either the wait is
+  re-stated against what it measures or the round's change is repaired; the
+  class goes to `dev/POSTMORTEM.md` if a mechanism is found, and to
+  `dev/WORKFLOW.md`'s flake watch if only the load.
 - [ ] **The citation check does not read the journals.** `dev/tools/citations.py`
   walks `src/`, `benches/`, `docs/` and the three maps, so a journal entry
   citing a plan line by its title is checked by nobody, and two are dead
@@ -472,9 +354,11 @@ live: `archive/pre-rc-cycle`").
   refuses the shape is recorded in `dev/DECISIONS.md`.
 - [ ] **A quiet thread's garbage is taken after X.** Edmond, 2026-09-18: the
   GC takes a thread's garbage of its own accord once some time X has passed.
-  S60 built the half that turns a quiet thread's deferred lane over: the
+  The half that turns a quiet thread's deferred lane over is built: the
   collector's round asks after X (`worker::quiet_interval`, 8 s by default,
-  `ll_gc_set_quiet_interval` the embedder's dial) and the poll answers. What
+  `ll_gc_set_quiet_interval` the embedder's dial) and the poll answers
+  (`dev/DECISIONS.md`, "a quiet thread's turnover is the collector's to ask
+  for"). What
   is left is R: a collector serves a mutator whose R holds
   `worker::SOFT_THRESHOLD` (64) records or more, the round's threshold is
   constant in the working build (`worker::threshold_for_rounds`), and a thread
@@ -483,7 +367,8 @@ live: `archive/pre-rc-cycle`").
   (`cycle::collect::tests::what_the_byte_arms::`
   `an_unarmed_poll_leaves_a_completed_death_registered`). The cheapest form
   leaves the poll alone: a round serves such a mutator at a threshold of one
-  once X has passed since the instant S60 stamps on its record. Its tail is
+  once X has passed since the instant the round stamps on its record
+  (`MutatorRecord::served_at`). Its tail is
   unpriced: a thread with one entry in R that polls nothing within
   `REQUEST_WAIT` is marked silent, its request stands on the collector's
   frame up to `STANDING_CAPACITY`, and a standing request opens a

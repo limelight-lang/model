@@ -263,8 +263,11 @@ struct MutatorCycleState {
     /// last signalled — a block of entries, the unit the poll's signal
     /// stands for (`rfc/model/gc/rc-cycle.md`, "Signals"). Set on the
     /// growth path, which is paid for already, and read by nothing on the
-    /// registration path; cleared by the poll when its wake was received,
-    /// and by an in-line collection's reading of R.
+    /// registration path; set again at a collection's close when it fills an
+    /// empty deferred lane, which is what brings the round that asks the
+    /// quiet thread for its turnover (`crate::cycle::worker`, "The quiet
+    /// thread"); cleared by the poll when its wake was received, and by an
+    /// in-line collection's reading of R.
     signal_due: Cell<bool>,
     /// Completed deaths a compaction retired since the poll last asked: the
     /// figure the poll's note to the collector's timer reads beside what a
@@ -431,9 +434,10 @@ unsafe fn append_entry(state: *mut MutatorCycleState, entity: *mut RcHeader) {
     }
 }
 
-/// Signal the collector if a registration filled a block of R since the
-/// last signal was received: the poll's soft signal, which starts a round
-/// and decides nothing about it (`rfc/model/gc/rc-cycle.md`, "Signals").
+/// Signal the collector if a registration filled a block of R, or a
+/// collection's close filled an empty deferred lane, since the last signal
+/// was received: the poll's soft signal, which starts a round and decides
+/// nothing about it (`rfc/model/gc/rc-cycle.md`, "Signals").
 /// The wake goes to the collector the record names
 /// (`crate::cycle::worker::wake` says what a lost one costs; the flag
 /// stands until one is received). A thread with no base block has

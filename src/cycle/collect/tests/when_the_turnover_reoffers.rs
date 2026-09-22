@@ -168,10 +168,8 @@ fn a_matured_ring_that_loses_its_keeper_is_collected_at_the_turnover_and_not_bef
 /// (`crate::cycle::epoch::jump_to_the_next_turnover`). Sixty-four polls of
 /// such a thread leave the counter, the lane and the mark where they were;
 /// the poll after the request turns the epoch, splices the lane and takes the
-/// ring. This inverts the contract the case held until 2026-09-21, when the
-/// poll re-offered an empty-active-lane thread's lane at once and collected at
-/// every safepoint (`dev/DECISIONS.md`, "a quiet thread's turnover is the
-/// collector's to ask for").
+/// ring (`dev/DECISIONS.md`, "a quiet thread's turnover is the collector's to
+/// ask for").
 ///
 /// The same fixture as the case above, driven by the production poll.
 #[test]

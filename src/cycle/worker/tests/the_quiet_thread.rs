@@ -74,7 +74,9 @@ fn a_mutator_whose_clock_moves_is_restamped_and_not_asked() {
     let _x = QuietInterval::of(Duration::from_millis(1));
     let record = unsafe { &*record() };
     record.clear_turnover_request();
-    record.note_served_at(1);
+    // A stamp no clock returns, so that the restamp is read whatever the
+    // clock's tick: a serve inside the base's own tick stamps 1.
+    const STANDING: u64 = u64::MAX;
 
     for served in [
         Served::Batch {
@@ -85,13 +87,24 @@ fn a_mutator_whose_clock_moves_is_restamped_and_not_asked() {
         Served::TokenHeld,
         Served::Posted,
     ] {
-        record.note_served_at(1);
+        record.note_served_at(STANDING);
         ask_for_a_turnover_if_quiet(record, served);
         assert!(
             !record.turnover_is_requested(),
-            "{served:?} asked nothing though the stamp stood since the base"
+            "{served:?} asked nothing though the stamp stood"
         );
-        assert!(record.served_at() > 1, "{served:?} restamped");
+        assert_ne!(record.served_at(), STANDING, "{served:?} restamped");
+    }
+}
+
+/// Zero for the embedder's interval when the guard drops: a case that
+/// failed between the setter and its own zero would otherwise leave every
+/// later case's rounds asking at its figure.
+struct EmbeddersInterval;
+
+impl Drop for EmbeddersInterval {
+    fn drop(&mut self) {
+        set_quiet_interval(Duration::ZERO);
     }
 }
 
@@ -100,6 +113,7 @@ fn a_mutator_whose_clock_moves_is_restamped_and_not_asked() {
 #[test]
 fn the_embedders_interval_replaces_the_default_and_zero_restores_it() {
     let _g = test_guard();
+    let _embedders = EmbeddersInterval;
     testing::ask_turnovers_after(None);
     assert_eq!(quiet_interval(), QUIET_INTERVAL);
     crate::gc::ll_gc_set_quiet_interval(3);

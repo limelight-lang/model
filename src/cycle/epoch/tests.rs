@@ -17,9 +17,8 @@ fn an_epoch_spans_sixty_four_commits() {
 }
 
 /// The counter moves at a closed commit by one, and at nothing else a
-/// collection does: the
-/// word is this thread's record's, so no other case's collection stands
-/// between the two readings.
+/// collection does: the word is this thread's record's, so no other case's
+/// collection stands between the two readings.
 #[test]
 fn a_closed_commit_is_counted() {
     let _g = crate::memory::block_pool::test_guard();

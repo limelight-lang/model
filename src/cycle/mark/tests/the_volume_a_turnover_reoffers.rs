@@ -135,8 +135,11 @@ fn drain() {
     panic!("the load's own garbage outlived eight collections past a turnover");
 }
 
-/// One safepoint and the collection behind it, in the order `gc::poll` takes
-/// them: the collector's request answered, then the turnover comparison.
+/// One safepoint and the collection behind it, in the order the poll
+/// (`crate::gc::ll_gc_maybe_collect`) takes them — the collector's request
+/// answered, then the turnover comparison — with the poll's test of the
+/// lane's occupancy left out: this load's lane is occupied when the request
+/// is made.
 fn poll_and_collect() -> usize {
     // A close with no spare cell keeps the root in the active lane, so the
     // deferral this load reads needs the spares topped up
