@@ -968,35 +968,38 @@ pub(crate) unsafe fn serve(
         return Served::Idle;
     }
 
-    // Handed back on the unwind too: a hold left standing keeps the record
-    // off the registry's free list and its blocks out of the pool for good.
-    struct HandBackOnDrop(*mut MutatorRecord);
-    impl Drop for HandBackOnDrop {
-        fn drop(&mut self) {
-            unsafe { mutator_record::hand_back_reading(self.0) };
-        }
-    }
-    let (has_work, room) = {
-        let _reading = HandBackOnDrop(record);
-        #[cfg(test)]
-        testing::between_the_take_and_the_reading();
-        let has_work = unsafe { Reader::new(mutator.candidate_ring()) }.has_at_least(threshold);
-        let room = unsafe { VerdictWriter::open(mutator) }.room_by_loads();
-        (has_work, room)
-    };
+    let reading = HandBackOnDrop(record);
+    #[cfg(test)]
+    testing::between_the_take_and_the_reading();
+    let has_work = unsafe { Reader::new(mutator.candidate_ring()) }.has_at_least(threshold);
+    let room = unsafe { VerdictWriter::open(mutator) }.room_by_loads();
     if !has_work || room == 0 {
         return Served::Idle;
     }
 
+    #[cfg(test)]
+    testing::between_the_reading_and_the_request();
     // Linked before the request lands, so that an exit which takes the
     // request finds the record already in the list and the registry's gate
     // holds it; every outcome that leaves no request standing unlinks it.
     // Linking after the wait would let the exit's refusal, the free list
     // and a new life's take all run between the byte read and the link.
+    // The reading's hold spans the link and the request: a request that
+    // succeeds publishes the link to the exit's take by its release, and a
+    // request that fails publishes nothing, so there the hold is handed
+    // back only after the unlink — an exit that met the hold leaves its
+    // blocks to the hand-back, and the registry's gate, which reads the
+    // hold word before the link word, is ordered after it.
     standing.push(record);
     if let Err(seen) = mutator.token.request(slot) {
-        return unsafe { answer_a_refused_request(mutator, seen, slot, threshold, standing) };
+        #[cfg(test)]
+        testing::at_a_refused_request();
+        return unsafe {
+            answer_a_refused_request(mutator, seen, slot, threshold, standing, reading)
+        };
     }
+
+    drop(reading);
 
     if mutator.was_released_unserved() {
         // Asleep again by the time the walk reached it, as a mutator a
@@ -1015,7 +1018,9 @@ pub(crate) unsafe fn serve(
 /// own that nothing has disposed of, this collector's request still standing
 /// on a sleeping mutator, this collector's grant — consented to between the
 /// checkpoint and the request, so the grant is served here and the record
-/// taken out of the list — or any other holder, which is a skip.
+/// taken out of the list — or any other holder, which is a skip. `reading`
+/// is the pre-claim reading's hold, handed back here after the unlink where
+/// there is one ([`serve`] says why), and before the grant's batch.
 ///
 /// # Safety
 /// As [`serve`], and `seen` is the value that refusal read back.
@@ -1025,9 +1030,11 @@ unsafe fn answer_a_refused_request(
     slot: usize,
     threshold: usize,
     standing: &mut Standing,
+    reading: HandBackOnDrop,
 ) -> Served {
     if state(seen) == POSTED {
         standing.forget(mutator);
+        drop(reading);
         return Served::Posted;
     }
 
@@ -1035,6 +1042,7 @@ unsafe fn answer_a_refused_request(
         // This collector's own request, still standing on a sleeping
         // mutator: neither a batch nor work, round after round; the record
         // stays in the list.
+        drop(reading);
         return Served::Unanswered;
     }
 
@@ -1042,11 +1050,24 @@ unsafe fn answer_a_refused_request(
         // This collector's own grant: a standing request consented to
         // between [`serve`]'s checkpoint and its request, served here and
         // taken out of the list.
+        drop(reading);
         return unsafe { serve_the_grant(mutator, slot, threshold, standing) };
     }
 
     standing.forget(mutator);
+    drop(reading);
     Served::TokenHeld
+}
+
+/// The pre-claim reading's hold on a record, handed back when dropped — on
+/// the unwind too: a hold left standing keeps the record off the registry's
+/// free list and its blocks out of the pool for good.
+struct HandBackOnDrop(*mut MutatorRecord);
+
+impl Drop for HandBackOnDrop {
+    fn drop(&mut self) {
+        unsafe { mutator_record::hand_back_reading(self.0) };
+    }
 }
 
 /// Wait out [`REQUEST_WAIT`] for the mutator's consent to the request

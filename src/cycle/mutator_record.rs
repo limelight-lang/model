@@ -210,10 +210,11 @@ struct ReaderLine {
     /// that the registry's one acquire load of `next` ([`first_free_record`])
     /// sees nothing of the link or all of it and a record is renamed only
     /// while unlinked. What publishes the link to the gate is the request
-    /// that follows it, whose release the exit's take reads: a link followed
-    /// by a request that failed is unpublished until its unlink, and the
-    /// gate may read it as null meanwhile. Not reset with the line: a reset
-    /// that nulled a link would cut the list behind it.
+    /// that follows it, whose release the exit's take reads, and where the
+    /// request fails the reading's hold ([`HoldLine::reading`]), which
+    /// spans the link and the request and is handed back after the unlink:
+    /// the gate reads the hold word before the link word. Not reset with
+    /// the line: a reset that nulled a link would cut the list behind it.
     standing_next: AtomicPtr<MutatorRecord>,
     standing_prev: AtomicPtr<MutatorRecord>,
 }

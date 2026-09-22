@@ -400,22 +400,6 @@ live: `archive/pre-rc-cycle`").
   done: one red test reaches the free from a second thread inside the reset,
   or a demonstration that the shape is unreachable is recorded in
   `dev/DECISIONS.md`.
-- [ ] **What the standing list named and left, 2026-09-22.** The registry's
-  gate reads a record's link word with one acquire load, and what publishes
-  the link is the request the collector makes after it, whose release the
-  exit's take reads. A link followed by a request that failed — the exit took
-  `FREE` first — is published by nothing: in the memory model the new life's
-  gate may read the link as null while the collector's `forget` is still to
-  write the record's link words, and a collector the new life is named to may
-  push it meanwhile, two lists in one chain. The exit, the free list, the
-  registry's take and the new life's first serve would all have to complete
-  inside the nanoseconds between the push and the failed swap while a retired
-  store stays invisible, which no hardware here produces and no run can
-  demonstrate; the Code Reviewer of 2026-09-22 rated it a gap in the
-  argument and not a reachable defect, and the field's doc states it
-  (`MutatorRecord`, `standing_next`). What would close it is a publication
-  of the link that the exit's path reads before the record reaches the free
-  list, which a swap that fails writes nothing for; no form is priced.
 - [ ] **What S59 named and left, 2026-09-19.** Two branches of the birth have
   no arm: the guard's `mprotect` failure, which no test can order, and a join
   that fails, for which glibc documents `EDEADLK` on a self-join alone and no

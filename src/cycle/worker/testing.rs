@@ -326,25 +326,69 @@ pub(crate) fn between_the_post_and_the_advance() {
     }
 }
 
-/// What the next pre-claim reading runs between its take of the mutator's
-/// blocks and its loads of them, for the case whose mutator exits in that
-/// window; the closure runs on the collector's thread, once.
-static AT_THE_NEXT_READING: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
+/// A closure a case installs at one point of the serve, run there once on
+/// the collector's thread, so that the case acts inside a window the serve
+/// otherwise closes in nanoseconds.
+struct OneShot(Mutex<Option<Box<dyn FnOnce() + Send>>>);
+
+impl OneShot {
+    const fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    fn install(&self, act: Box<dyn FnOnce() + Send>) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(act);
+    }
+
+    fn run(&self) {
+        let act = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(act) = act {
+            act();
+        }
+    }
+}
+
+/// Between the pre-claim reading's take of the mutator's blocks and its
+/// loads of them, for the case whose mutator exits in that window.
+static AT_THE_NEXT_READING: OneShot = OneShot::new();
 
 pub(crate) fn at_the_next_reading(act: Box<dyn FnOnce() + Send>) {
-    *AT_THE_NEXT_READING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(act);
+    AT_THE_NEXT_READING.install(act);
 }
 
 pub(crate) fn between_the_take_and_the_reading() {
-    let act = AT_THE_NEXT_READING
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take();
-    if let Some(act) = act {
-        act();
-    }
+    AT_THE_NEXT_READING.run();
+}
+
+/// Between the reading's loads and the request, for the case whose mutator
+/// takes its token in that window.
+static BEFORE_THE_NEXT_REQUEST: OneShot = OneShot::new();
+
+pub(crate) fn before_the_next_request(act: Box<dyn FnOnce() + Send>) {
+    BEFORE_THE_NEXT_REQUEST.install(act);
+}
+
+pub(crate) fn between_the_reading_and_the_request() {
+    BEFORE_THE_NEXT_REQUEST.run();
+}
+
+/// At the next refused request, before the serve acts on the refusal, for
+/// the case that reads the record's hold at that instant.
+static AT_THE_NEXT_REFUSAL: OneShot = OneShot::new();
+
+pub(crate) fn at_the_next_refusal(act: Box<dyn FnOnce() + Send>) {
+    AT_THE_NEXT_REFUSAL.install(act);
+}
+
+pub(crate) fn at_a_refused_request() {
+    AT_THE_NEXT_REFUSAL.run();
 }
 
 /// Mutators the rounds claimed since the last call, and zero the count.

@@ -14,7 +14,10 @@
 
 use super::*;
 use crate::class::Class;
-use crate::cycle::mutator_record::{a_thread_asking_for, link_for_test, pin_for_test};
+use crate::cycle::mutator_record::{
+    Ring, a_thread_asking_for, link_for_test, pin_for_test, registry_lists_free,
+    ring_left_to_a_holder,
+};
 use crate::cycle::testing::long_ring;
 use crate::cycle::token::{
     COLLECTOR, FREE, POSTED, REQUESTED, read_and_act_on_this_thread, state, word,
@@ -239,6 +242,59 @@ fn a_record_that_exited_under_a_standing_request_is_handed_out_after_the_pass() 
     assert_eq!(testing::take_passes(), 1);
     assert!(!unsafe { &*record }.is_standing(), "dropped by the pass");
     assert!(a_thread_asking_for(record), "and handed out");
+    pin_for_test(record, false);
+    reset_lanes();
+}
+
+/// A request refused by the mutator's own take — its exit inside the
+/// reading — finds the record unlinked before the reading's hold goes: the
+/// ring the exit left to the hold is still the hold's at the refusal, so the
+/// hand-back that puts the record's blocks on their way follows the unlink,
+/// and the registry's gate, which the hand-back orders after, reads the link
+/// words clear. A link followed by a failed request is published by nothing
+/// else (`MutatorRecord::standing_next`).
+#[test]
+fn a_refused_request_unlinks_before_the_readings_hold_goes() {
+    let _g = test_guard();
+    reset_lanes();
+    let _wait = HeldRequestWait::of(Duration::from_millis(2));
+    let class = node_class("RefusedUnderHoldNode");
+    let sleeper = Sleeper::start(class);
+    let record = sleeper.record();
+    let mut standing = Standing::new(SLOT);
+    pin_for_test(record, true);
+
+    // Between the reading's loads and the request: the sleeper's thread
+    // exits, its take of the token the refusal the request meets, its rings
+    // left to the hold.
+    let exiting = Sent(sleeper);
+    testing::before_the_next_request(Box::new(move || {
+        drop(exiting.into_inner());
+    }));
+    let (told, left_at_the_refusal) = std::sync::mpsc::channel::<bool>();
+    let seen = Sent(record);
+    testing::at_the_next_refusal(Box::new(move || {
+        told.send(ring_left_to_a_holder(seen.into_inner(), Ring::Candidates))
+            .expect("the case waits");
+    }));
+
+    assert_eq!(
+        serve_on_this_thread(record, &mut standing),
+        Served::TokenHeld
+    );
+    assert!(
+        left_at_the_refusal
+            .recv()
+            .expect("the refusal ran the hook"),
+        "the exit's ring is still the hold's at the refusal: the hand-back follows the unlink"
+    );
+    assert!(!unsafe { &*record }.is_standing());
+    assert!(standing.standing_for_test().is_empty());
+    assert!(
+        !ring_left_to_a_holder(record, Ring::Candidates),
+        "returned by the hand-back"
+    );
+    assert!(registry_lists_free(record));
     pin_for_test(record, false);
     reset_lanes();
 }

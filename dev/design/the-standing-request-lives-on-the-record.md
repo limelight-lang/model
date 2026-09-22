@@ -110,7 +110,13 @@ registry's gate holds it (linking after the wait would let the exit's
 refusal, the free list and a new life's take all run between the byte read
 and the link; the Critic's finding of 2026-09-22 over the list). `TraceToken::request`'s success
 is `AcqRel` for the same reason: the exit's take synchronizes with it, and
-the registry's acquire load of `next` then sees the link. Every outcome
+the registry's acquire load of `next` then sees the link. A request that
+fails publishes nothing, so the reading's hold spans the push and the
+request and is handed back only after the refusal's unlink: an exit that
+met the hold leaves its blocks to the hand-back, and the gate, which reads
+the hold word before the link word, is ordered after the hand-back and so
+after the unlink (the Code Reviewer's finding of 2026-09-22; the case
+`a_refused_request_unlinks_before_the_readings_hold_goes`). Every outcome
 that leaves no request standing unlinks: the refusal's `POSTED` and
 `TokenHeld` arms, the withdrawal's `Withdrawn`, `TakenByTheMutator` and
 `MovedOn` arms, and `serve_the_grant`'s top; the refusal's own-request arm
@@ -220,12 +226,6 @@ ignored probes stay as they are: they are the window bound's instrument.
 and stays.
 
 ## Not established from the files
-
-The link is published to the registry's gate by the request that follows it,
-whose release the exit's take reads; a link followed by a request that
-failed is published by nothing until its unlink, a gap of the memory model
-that no hardware here produces (`PLAN.md`, "What the standing list named and
-left, 2026-09-22").
 
 (The reader line's layout, 64 bytes with the pair and the byte, is a
 `const` assert in `mutator_record`.) No writer of the byte outside `token.rs` and its three test-only writers
