@@ -61,11 +61,15 @@
 //! collector stores a request byte on the record's token line
 //! ([`MutatorRecord::request_a_turnover`]) and restamps; the mutator's poll
 //! answers by moving its own clock to the next turnover and re-offering the
-//! lane (`crate::cycle::queue::answer_a_turnover_request`). A serve that
-//! made a batch, or found the token held, or found the clock moved,
-//! restamps and asks nothing: those stamps age on their own
-//! (`dev/DECISIONS.md`, "a quiet thread's turnover is the collector's to ask
-//! for").
+//! lane (`crate::cycle::queue::answer_a_turnover_request`). What decides
+//! the restamp is the clock and nothing else: a serve that found it moving
+//! restamps and asks nothing, since those stamps age on their own, and one
+//! that found it standing lets the stamp stand whatever the serve reached.
+//! A batch is no evidence of a moving clock — a batch whose verdicts all
+//! read live leaves the mutator a collection that commits nothing — so a
+//! thread batched oftener than X with all-live batches is asked like any
+//! other quiet thread (`dev/DECISIONS.md`, "a quiet thread's turnover is
+//! the collector's to ask for", amended 2026-09-22).
 //!
 //! # The thread, and the round over the records
 //!
@@ -381,22 +385,21 @@ fn serve_clock_now() -> u64 {
     (Instant::now().duration_since(*base).as_nanos() as u64).max(1)
 }
 
-/// The quiet thread (module doc): after a serve, restamp the record when the
-/// mutator's own clock is moving — a batch, a token the mutator or another
-/// collector holds, verdicts it has not disposed of, or a commit of its own
-/// since the last stamp — and, on a
-/// serve that reached nothing with the clock standing, ask for a turnover
-/// once [`quiet_interval`] has passed since the last stamp. The first serve
-/// of a life stamps and asks nothing: X is counted from a reading, never
-/// from the record's birth. The mutator answers at its next poll
-/// (`crate::gc`, the poll; `crate::cycle::epoch::jump_to_the_next_turnover`).
-fn ask_for_a_turnover_if_quiet(record: &MutatorRecord, served: Served) {
+/// The quiet thread (module doc): after a serve, restamp the record when a
+/// commit of the mutator's own moved its clock since the last stamp, and
+/// otherwise ask for a turnover once [`quiet_interval`] has passed since
+/// that stamp. The clock decides it alone, whatever the serve reached: a
+/// batch says nothing about the clock, its verdicts being all live as often
+/// as not, and a serve that restamped on the strength of one left a thread
+/// batched oftener than X never asked and its deferred lane waiting for
+/// pressure or exit. The first serve of a life stamps and asks nothing: X is
+/// counted from a reading, never from the record's birth. The mutator
+/// answers at its next poll (`crate::gc`, the poll;
+/// `crate::cycle::epoch::jump_to_the_next_turnover`).
+fn ask_for_a_turnover_if_quiet(record: &MutatorRecord) {
     let now = serve_clock_now();
     let last = record.served_at();
-    if !matches!(served, Served::Idle | Served::Unanswered)
-        || last == 0
-        || !record.clock_stood_since_the_stamp()
-    {
+    if last == 0 || !record.clock_stood_since_the_stamp() {
         record.note_served_at(now);
         return;
     }
@@ -891,7 +894,7 @@ unsafe fn read_one_record(
     }
 
     let served = unsafe { serve(record, index, threshold, standing) };
-    ask_for_a_turnover_if_quiet(unsafe { &*record }, served);
+    ask_for_a_turnover_if_quiet(unsafe { &*record });
     outcome.made_a_batch |= standing.take_batches_served() > 0;
     match served {
         Served::Batch { backlog: true, .. } => {

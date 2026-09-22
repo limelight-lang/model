@@ -192,8 +192,10 @@ struct ReaderLine {
     served_at: AtomicU64,
     /// The mutator's clock as the collector last stamped it, beside the
     /// instant: a clock that moved since is a thread whose stamps age on
-    /// their own, and it is restamped rather than asked. The collector's own
-    /// word, so relaxed.
+    /// their own, and it is restamped rather than asked. This word decides
+    /// the restamp by itself — what a serve reached does not, a batch's
+    /// verdicts being all live as often as not. The collector's own word, so
+    /// relaxed.
     commits_seen: AtomicU64,
     /// The link pair of the collector's standing list: the records whose
     /// request stands on the byte past the wait, a doubly linked list

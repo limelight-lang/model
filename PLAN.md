@@ -347,20 +347,6 @@ live: `archive/pre-rc-cycle`").
   done: one red test builds the store and resets B inside a destructor of
   A's reset, or a demonstration that the barrier or the reconciliation
   refuses the shape is recorded in `dev/DECISIONS.md`.
-- [ ] **A batch that moved no clock restamps the turnover ask.**
-  `worker::ask_for_a_turnover_if_quiet` restamps `served_at` for every
-  `Served::Batch` by fiat; a batch whose verdicts all read live leaves the
-  mutator a collection over P that closes `EmptyLane` with no commit, so the
-  clock did not move and the stamp says it did. A thread at the threshold
-  batched more often than X with all-live batches is never asked for a
-  turnover, and its deferred lane waits for pressure or exit. Found by the
-  Critic over the take design's fourth form
-  (`dev/design/a-standing-r-is-taken-after-n-rounds.md`), 2026-09-22, as
-  the same hole a take would open; the design decides the take's restamp by
-  `clock_stood_since_the_stamp` alone, and the batch's is this line. done:
-  the restamp after a batch is decided by the clock, a case shows a thread
-  batched all-live every X/2 asked after X, and the S60 entry's "a serve
-  that made a batch restamps" is amended with the date.
 - [ ] **A quiet thread's garbage is taken after X.** Edmond, 2026-09-18: the
   GC takes a thread's garbage of its own accord once some time X has passed.
   The half that turns a quiet thread's deferred lane over is built: the

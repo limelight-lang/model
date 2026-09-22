@@ -97,7 +97,19 @@ re-offers the deferred lane only when its counter crossed a turnover. The
 collector's round, after a serve that reached nothing, asks for a turnover once
 X has passed since its last stamp of that record — a byte on the record's token
 line, an instant on its reader line — and a serve that found the mutator's own
-clock moving (a batch, a token held, `POSTED`) restamps and asks nothing. The
+clock moving (a batch, a token held, `POSTED`) restamps and asks nothing.
+**Amended 2026-09-22:** the clock alone decides the restamp, and what the
+serve reached decides nothing. A batch is no evidence of a moving clock —
+its verdicts read all live as often as not, and the collection over them
+closes with no commit — so a thread batched oftener than X with all-live
+batches restamped at every round and was never asked, its deferred lane
+left to pressure or exit. Found by the Critic over the take's design
+(`dev/design/a-standing-r-is-taken-after-n-rounds.md`), which decides the
+take's restamp the same way; the case is
+`worker::tests::the_quiet_thread::a_thread_batched_all_live_oftener_than_x_is_asked_after_x`.
+A token held and `POSTED` lose their fiat with the batch: both are answered
+at the mutator's next poll, which is where a turnover request is answered
+too. The
 mutator's poll, under an open gate and before the token read, with the lane
 occupied, the byte set and no collector holding the token, clears the byte and
 moves its own counter to the next turnover's first commit; the turnover
