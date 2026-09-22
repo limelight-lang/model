@@ -134,6 +134,29 @@ lines that ended in a sentence the `rfc` owes — which destructors "ran
 anywhere" counts, the object handed to a survivor, the exit's safepoint word
 — moved to `rfc/dev/PLAN.md`'s fog on 2026-09-21.
 
+- **What to do about a take that meets the block budget**, which is the one
+  regime where the split is a loss to both sides. Measured 2026-09-22
+  (`dev/BENCHMARKS.md`, "the live-roots arm" and "the mix"): inside
+  `TRACE_BLOCK_BUDGET` a take of live roots leaves the mutator's collection
+  nothing to walk, 15,333 instructions against 658,863, and what it saves
+  falls with the live share of the ring; past the budget the collector's
+  trace is abandoned after 75 to 157 µs, every root comes back `Unwalked`,
+  and the mutator walks the same rows itself for 0.68 % more than it would
+  have spent with no take at all. Edmond, 2026-09-22: the mutator should not
+  have to walk them either. Three candidates, priced as far as reading goes
+  and not built: **a larger budget for a take whose mutator is not waiting**
+  — the bound exists to hold the mutator's wait for its token, and a sleeper
+  does not wait, so the question is whether "not waiting" can be read at the
+  moment the budget would be raised; **resuming the trace on a later round**,
+  which trial deletion refuses, its counts being valid only over the snapshot
+  the token holds still, so a suspended trace would have to hold the token and
+  block the mutator, which is what the budget exists to prevent; and **a bit
+  on the hold line saying the last take of this mutator met the budget**, so
+  that the next visit leaves the ring to the mutator's own in-line collection
+  — the cheapest of the three, and it recovers the collector's 75 to 157 µs
+  and the mutator's 0.68 % rather than the whole walk. Edmond decides which,
+  and whether the answer is a stage.
+
 - **Whether a survivor list should prefer a block this reset has already
   retained.** `Arena::alloc_preferring` tries the described block's tail, the
   reset's current block, then a fresh pool block. A bump arena's survivor
