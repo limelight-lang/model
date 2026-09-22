@@ -610,3 +610,56 @@ fn a_record_stands_in_the_rounds_backlog_once() {
     assert_eq!(backlogged.len(), 2, "the drain adds no repeat");
     assert_eq!(carried.len(), 0, "and empties what it carried");
 }
+
+/// A record the handover moves is a record no collector's request stands
+/// on. The carried backlog makes the two meet: a checkpoint's batch
+/// remembers the record, the walk that reaches it afterwards leaves a
+/// request standing on it, and both hold at the round's end. Renaming it
+/// then would leave the elder's request on a record a sibling reclaims,
+/// and the sibling's own list would splice a record out of the elder's
+/// (`rfc/dev/design/trace-token-handshake.md`, "(a)": an owner is handed to
+/// a sibling only while unlinked).
+#[test]
+fn the_handover_leaves_a_record_a_request_stands_on() {
+    let _g = test_guard();
+    reset_lanes();
+    let class = node_class("HandoverStandingNode");
+    let standing_on = Sleeper::start(class);
+    let free_of_requests = Sleeper::start(class);
+    let mut standing = Standing::new(SLOT);
+
+    // The elder's request stands on the first record and on no other.
+    assert_eq!(
+        serve_on_this_thread(standing_on.record(), &mut standing),
+        Served::Unanswered
+    );
+    assert!(unsafe { &*standing_on.record() }.is_standing());
+    assert!(!unsafe { &*free_of_requests.record() }.is_standing());
+
+    // Both stand in a round's backlog, each as the second of a pair, which
+    // is what the handover moves.
+    let mut with_a_request = Backlogged::default();
+    with_a_request.push(free_of_requests.record());
+    with_a_request.push(standing_on.record());
+    hand_over_half(&with_a_request, SLOT);
+    assert_eq!(
+        unsafe { &*standing_on.record() }.collector(),
+        ELDER,
+        "a record a request stands on stays with the collector that made it"
+    );
+
+    let mut without_one = Backlogged::default();
+    without_one.push(standing_on.record());
+    without_one.push(free_of_requests.record());
+    hand_over_half(&without_one, SLOT);
+    assert_eq!(
+        unsafe { &*free_of_requests.record() }.collector(),
+        SLOT,
+        "and a record free of requests is handed over as before"
+    );
+
+    unsafe { &*free_of_requests.record() }.name_to_collector(ELDER);
+    drop(standing);
+    standing_on.end();
+    free_of_requests.end();
+}

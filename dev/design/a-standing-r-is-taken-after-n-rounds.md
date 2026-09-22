@@ -131,14 +131,17 @@ request to reason about:
   origin.** `batch` reads `has_at_least(threshold)` under the grant, before
   the peek: at or above the threshold it is today's batch — K's clamp,
   `size_the_next_batch`, the backlog reading — and below it the ring is
-  taken whole, the clamp R's count as the peek reads it, at most 63, with
-  `size_the_next_batch` not called. The reading is exact because R only
-  grows under a standing request: every path that drains R takes `MUTATOR`
-  over the request first, which is a refusal. So a threshold request never
-  meets a sub-threshold ring at its grant, a take whose ring crossed the
-  threshold while its owner slept is served as the threshold batch it now
-  is, and the checkpoint, which cannot know which kind of request it
-  serves, needs no kind of its own. A take must feed K
+  taken whole, the clamp one entry short of the threshold, which such a ring
+  cannot exceed, with `size_the_next_batch` not called. Under the grant R
+  only grows, every path that drains it taking `MUTATOR` over the claim
+  first; before the grant it may shrink, the mutator being free to collect
+  in line between the round's pre-claim reading and its request. So the two
+  readings are made apart and neither is asked to agree with the other: a
+  take whose ring crossed the threshold while its owner slept is served as
+  the threshold batch it now is, a threshold request over a ring drained
+  under it is served as the take its remainder asks for, and the checkpoint,
+  which cannot know which kind of request it serves, needs no kind of its
+  own. A take must feed K
   neither way: four takes of three live roots each would double K toward
   `BATCH_BOUND` and hand the thread's first real batch to the budget whole,
   every root `Unwalked`; a K halved to one would take a ring of three one

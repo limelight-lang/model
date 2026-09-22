@@ -21,11 +21,16 @@ spending on expired waits is capped"). Two probes of
 again with it lifted to `usize::MAX`, which is the round before the cap.
 
 **Machine:** the dev box, WSL2, shared with interactive work; load average
-0.76–1.11 at the runs' start. **Build:** release, one probe at a time,
-`--ignored --test-threads=1`. **Tree:** `4661fa4` plus the two probes.
-**Dials:** the crate's request wait (2 ms), the standing interval overridden
-to 50 ms so that the takes fall inside the arm, the sleepers' rings three
-candidates each, the active mutator's rings 64.
+3.5 at the runs' start. **Build:** release, one probe at a time,
+`--ignored --test-threads=1`. **Tree:** the stage's, with the handover's
+repair. **Dials:** the crate's request wait (2 ms), the standing interval
+overridden to 50 ms so that the takes fall inside the arm, the sleepers'
+rings three candidates each, the active mutator's rings 64. An earlier run
+of both probes on the tree before that repair, at a load of 0.8–1.1, agreed
+within the spread of the figures below — the capped rounds 4.5–4.8 ms
+against 5.3, the uncapped 135.15 ms and 2.105 s against 136.65 ms and
+2.106 s, the services 21.7–22.8 ms against 21.5–22.7 ms and 149.30 ms and
+1.622 s against 144.93 ms and 1.617 s.
 
 *The round, and an active mutator ahead of the sleepers in carve order*
 (`what_sleeping_sub_threshold_threads_cost_the_round_and_the_active_mutator`):
@@ -34,12 +39,12 @@ the median and the maximum of the arm's 25–36 rounds.
 
 | sleeping threads | bound | batch interval | round, median | round, longest |
 |---|---|---|---|---|
-| 0 | 2 | 10.98 ms | 0.85 ms | 1.05 ms |
-| 0 | off | 10.99 ms | 0.80 ms | 1.36 ms |
-| 64 | 2 | 10.97 ms | 0.90 ms | 4.77 ms |
-| 64 | off | 10.98 ms | 0.86 ms | 135.15 ms |
-| 1,000 | 2 | 11.19 ms | 1.05 ms | 4.53 ms |
-| 1,000 | off | 11.23 ms | 1.07 ms | 2.105 s |
+| 0 | 2 | 11.16 ms | 0.93 ms | 1.20 ms |
+| 0 | off | 11.12 ms | 1.00 ms | 1.17 ms |
+| 64 | 2 | 11.13 ms | 1.00 ms | 5.34 ms |
+| 64 | off | 11.24 ms | 1.00 ms | 136.65 ms |
+| 1,000 | 2 | 11.27 ms | 1.14 ms | 5.32 ms |
+| 1,000 | off | 11.28 ms | 1.16 ms | 2.106 s |
 
 *A producer behind the sleepers* (`what_a_producer_behind_the_sleeping_threads_waits_for_its_batch`),
 its record carved after theirs so that the walk reaches it last: each sample
@@ -48,23 +53,25 @@ it, which is the round reaching it, the batch, and the collection over P.
 
 | sleeping threads | bound | service, median of 8 | service, longest |
 |---|---|---|---|
-| 0 | 2 | 11.11 ms | 21.73 ms |
-| 0 | off | 11.05 ms | 21.87 ms |
-| 64 | 2 | 11.45 ms | 22.26 ms |
-| 64 | off | 11.20 ms | 149.30 ms |
-| 1,000 | 2 | 11.93 ms | 22.80 ms |
-| 1,000 | off | 12.26 ms | 1.622 s |
+| 0 | 2 | 11.03 ms | 21.51 ms |
+| 0 | off | 11.14 ms | 22.22 ms |
+| 64 | 2 | 11.20 ms | 21.99 ms |
+| 64 | off | 12.04 ms | 144.93 ms |
+| 1,000 | 2 | 11.29 ms | 22.70 ms |
+| 1,000 | off | 12.03 ms | 1.617 s |
 
 **What the figures say.** The cost is in the tail and not in the median: the
 takes of a sleeping population fall in one round per interval, and every
 round after it meets requests that already stand and waits nothing. That one
-round is what the bound holds — 4.5–4.8 ms at both populations, against
-135 ms at 64 sleeping threads and 2.105 s at 1,000, which is the arithmetic
-of one wait each. A producer behind them pays the same round: its worst
-service is 22 ms with the bound and 149 ms or 1.622 s without it, while its
-median service, 11–12 ms, is its own polling cadence and moves with neither.
-Releases-unserved were zero in every arm, and no sibling was born in any of
-them — one producer offers no second backlogged mutator for a birth to count.
+round is what the bound holds — 5.3 ms at both populations, against 136.65 ms
+at 64 sleeping threads and 2.106 s at 1,000, which is the arithmetic of one
+wait each. A producer behind them pays the same round: its worst service is
+22 ms with the bound and 144.93 ms or 1.617 s without it, while its median
+service, 11–12 ms, is its own polling cadence and moves with neither.
+Releases-unserved and spawns were read per arm and were zero in every one of
+the twelve; with one producing mutator no round can read the two backlogged
+mutators a birth counts, so the zero is the arithmetic confirmed and not a
+reading that could have come out otherwise.
 
 **`EXPIRED_WAITS_PER_ROUND` is kept at 2.** The readings bound the round's
 spending on mutators that never answer at the bound times the wait plus the
@@ -76,7 +83,11 @@ that answer late, which these arms do not build.
 pays its wait once and stands from then on. The population the bound was
 ruled for is a pool that sleeps and wakes, where the requests are cleared and
 re-made every round; that arm is not built, and its figure is not estimated
-here.
+here. Nor is the question the ruling of "a checkpoint carries its batch's
+backlog and a refusal it read out to the round" put to the arm: whether a
+*second* active mutator behind the same sleeping threads births a sibling.
+Neither probe builds a second producer, so the birth is unmeasured and S64.5
+still owes it.
 
 ## 2026-09-22 — S63.3 the sleeper probes on the standing list: the same figures as on the array
 

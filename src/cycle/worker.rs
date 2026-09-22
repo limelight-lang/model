@@ -89,8 +89,10 @@
 //! again. A round walks every record the registry has carved ([`round`])
 //! and serves each mutator whose R holds [`SOFT_THRESHOLD`] entries or more,
 //! by the collector's own reading off the front block, and each whose R has
-//! stood non-empty below that threshold for [`STANDING_INTERVAL`]
-//! ([`this_rounds_reading_of_the_ring`]); nothing but a test ends the thread.
+//! stood non-empty below that threshold for the standing interval in force
+//! — [`STANDING_INTERVAL`] unless the embedder replaced it
+//! ([`standing_interval`]) — by [`this_rounds_reading_of_the_ring`];
+//! nothing but a test ends the thread.
 //!
 //! **A wake starts a round and decides nothing else** (`rfc/dev/DECISIONS.md`,
 //! "the collector traces on the count it reads itself"; `rfc/model/gc/
@@ -737,9 +739,12 @@ fn grow_the_siblings(index: usize, backlogged: &Backlogged) {
 /// Count this round against collector `index`'s idle rounds, and let the
 /// elder end the siblings that have run out of work.
 ///
-/// A mutator at the threshold this round could not serve is work and not
-/// idleness, so a sibling whose mutator collects in line for a while is not
-/// ended for it.
+/// A mutator this round meant to serve and could not, its own token being
+/// held, is work and not idleness, so a sibling whose mutator collects in
+/// line for a while is not ended for it. The reading is the walk's where it
+/// waited out the refusal and the checkpoint's where it did not, and it
+/// covers a mutator below the threshold as well: a take's request meets the
+/// same claim ([`Round::saw_work`]).
 fn note_idleness(index: usize, outcome: &Round) {
     let collector = &COLLECTORS[index];
     let idle = if outcome.made_a_batch || outcome.saw_work {
@@ -768,9 +773,25 @@ fn birth_a_sibling(from: usize) -> Option<usize> {
 /// Name every second of `backlogged` to `to`: the handover the sibling's
 /// first rounds read, made over the mutators the round read at the threshold
 /// after their batches and no other, so that what moves is work.
+///
+/// A record this collector's request stands on is left where it is, whatever
+/// its place in the list. The rounds may read a mutator's backlog at a
+/// checkpoint, whose batch unlinked it, and leave a request standing on it
+/// at the walk that follows, so a record can be backlogged and linked at
+/// once ([`Standing::backlogged`]); renaming it would put the elder's
+/// standing request on a record a sibling reclaims, and the sibling's
+/// [`Standing::forget`] would splice a record out of a list that is not
+/// its own (`rfc/dev/design/trace-token-handshake.md`, "(a)": an owner is
+/// handed to a sibling only while unlinked). What it costs to leave it is
+/// one round of that mutator's work with this collector.
 fn hand_over_half(backlogged: &Backlogged, to: usize) {
     for record in backlogged.iter().skip(1).step_by(2) {
-        unsafe { &**record }.name_to_collector(to);
+        let record = unsafe { &**record };
+        if record.is_standing() {
+            continue;
+        }
+
+        record.name_to_collector(to);
     }
 }
 
@@ -919,9 +940,10 @@ impl Backlogged {
 struct Round {
     /// Some mutator was served a batch.
     made_a_batch: bool,
-    /// Some mutator read at the threshold was not served: its token held, or
-    /// it collecting in line. Read by the walk where it waits out the
-    /// refusal, and by the checkpoint's pass where the walk did not wait
+    /// Some mutator this round meant to serve was not served because it
+    /// holds its own token: collecting in line, or exiting. Read by the
+    /// walk where it waits out the refusal — of a threshold request or of a
+    /// take's — and by the checkpoint's pass where the walk did not wait
     /// ([`Standing::saw_work`]).
     saw_work: bool,
     /// Some mutator's poll noted a disposition that freed something since the
@@ -1778,12 +1800,16 @@ impl Drop for Standing {
 /// `COLLECTOR|slot` stands, the mutator withholding its frees and its
 /// collections for the window's length, and every path that drains or packs
 /// R — the in-line collection, the pressure path, the exit — takes the
-/// mutator's own claim over a byte this grant holds. Under the grant a ring
-/// can only grow, so a threshold request never meets a sub-threshold ring
-/// here, and a take whose ring crossed the threshold while its owner slept
-/// is served as the threshold batch it now is — which is why neither the
-/// checkpoint nor this function needs to know which kind of request it
-/// serves.
+/// mutator's own claim over a byte this grant holds. Under the grant, then,
+/// a ring can only grow; before it the mutator is free to collect in line
+/// between the round's pre-claim reading and the request, so a request made
+/// at the threshold can meet a ring below it here and is served as the take
+/// the ring now asks for, K neither read nor sized for that batch. Neither
+/// the checkpoint nor this function needs to know which kind of request it
+/// serves, because nothing asks the origin and the ring to agree: a take
+/// whose ring crossed the threshold while its owner slept is the threshold
+/// batch it now is, and a threshold request over a drained ring is the take
+/// its remainder is.
 ///
 /// # Safety
 /// The calling thread holds `mutator`'s token and `mutator` is not collecting

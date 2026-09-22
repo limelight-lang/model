@@ -777,6 +777,7 @@ struct StandingArm {
     standing: usize,
     until_all_stand: Option<Duration>,
     releases_unserved: usize,
+    spawns: usize,
 }
 
 /// The active mutator's batch interval and the rounds' length beside
@@ -802,6 +803,7 @@ fn the_take_beside(
     // No confinement: the walk reads every record, which is what the
     // sleepers' number is being read against.
     born_over(&[]);
+    let _ = testing::take_spawns();
 
     let mut arena = Arena::new();
     let mut collections = crate::gc::verdict_collections_on_this_thread();
@@ -852,6 +854,7 @@ fn the_take_beside(
         .collect();
     let longest_round = rounds.iter().copied().max().unwrap_or_default();
     let releases_unserved = testing::take_releases_unserved();
+    let spawns = testing::take_spawns();
     for sleeper in &mut asleep {
         sleeper.release_and_collect_ring_of(STANDING_RING);
     }
@@ -869,6 +872,7 @@ fn the_take_beside(
         standing,
         until_all_stand,
         releases_unserved,
+        spawns,
     }
 }
 
@@ -895,7 +899,7 @@ fn what_sleeping_sub_threshold_threads_cost_the_round_and_the_active_mutator() {
                 "take beside sleepers: {} sleeping sub-threshold threads, cap {}, \
                  batch interval {:?} (median of {}), round {:?} (median of {} rounds), \
                  longest round {:?}, {} standing, all standing after {:?}, \
-                 releases unserved {}",
+                 releases unserved {}, spawns {}",
                 arm.sleepers,
                 if arm.capped { "2" } else { "off" },
                 arm.batch_interval,
@@ -906,6 +910,7 @@ fn what_sleeping_sub_threshold_threads_cost_the_round_and_the_active_mutator() {
                 arm.standing,
                 arm.until_all_stand,
                 arm.releases_unserved,
+                arm.spawns,
             );
         }
     }
