@@ -688,31 +688,46 @@ impl<'a> Reader<'a> {
         }
     }
 
-    /// Whether at least `entries` stand unread, by loads of the front block
-    /// alone: its span against `entries`, or whether it is the tail block at
-    /// all — a front block that is not the tail block has an entry ahead of
-    /// it, since the front block moves only into a block that was written
-    /// into and the tail block only after a write, and such a ring answers
-    /// true whatever `entries` is (`rfc/model/gc/rc-cycle.md`, "Signals":
-    /// the count is `frontBlock ≠ tailBlock`, or one block's span). No link
-    /// is followed, which is what lets a reader ask this without the token
-    /// while the owner packs the ring and unlinks its surplus: the pack
-    /// moves the tail block back, the unlink takes a block past it out of
-    /// the circle and nulls that block's link, and a walk of the chain from
-    /// a stale tail would read the link of a block that has left. A true
-    /// read against a pack in flight can be stale; the peek under the token
-    /// is what decides. Zero `entries` is true of any ring with a front
-    /// block.
-    pub(crate) fn has_at_least(&self, entries: usize) -> bool {
+    /// What the front block's loads say about the ring, or `None` for a
+    /// ring with no front block, which holds nothing.
+    ///
+    /// The one reading a reader without the token may make, and the reading
+    /// every count it asks for is answered from: no link is followed, which
+    /// is what lets it be made while the owner packs the ring and unlinks
+    /// its surplus — the pack moves the tail block back, the unlink takes a
+    /// block past it out of the circle and nulls that block's link, and a
+    /// walk of the chain from a stale tail would read the link of a block
+    /// that has left. A reading taken against a pack in flight can be
+    /// stale; the peek under the token is what decides.
+    ///
+    /// One reading answers several counts at once, which is why the
+    /// collector's round takes it rather than asking [`Reader::has_at_least`]
+    /// twice: two readings of a growing ring can disagree, and a round that
+    /// read the ring as empty for one question and as standing for the next
+    /// would count an interval for a ring it had just called empty
+    /// (`crate::cycle::worker`, "The thread, and the round over the
+    /// records").
+    pub(crate) fn front_block_reading(&self) -> Option<FrontBlockReading> {
         let front_block = self.0.front_block.load(Ordering::Acquire);
         if front_block.is_null() {
-            return false;
+            return None;
         }
 
         let b = ring(front_block);
         let front = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
         let tail = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
-        span(front, tail) >= entries || front_block != self.0.tail_block.load(Ordering::Acquire)
+        Some(FrontBlockReading {
+            span: span(front, tail),
+            is_the_tail_block: front_block == self.0.tail_block.load(Ordering::Acquire),
+        })
+    }
+
+    /// Whether at least `entries` stand unread, by loads of the front block
+    /// alone ([`Reader::front_block_reading`]). Zero `entries` is true of
+    /// any ring with a front block.
+    pub(crate) fn has_at_least(&self, entries: usize) -> bool {
+        self.front_block_reading()
+            .is_some_and(|reading| reading.holds_at_least(entries))
     }
 
     /// Entries not yet taken, as of the tail the reader sees now: the front
@@ -741,6 +756,33 @@ impl<'a> Reader<'a> {
 
             block = unsafe { (*b).link.next.load(Ordering::Acquire) };
         }
+    }
+}
+
+/// What one pass of a [`Reader`]'s loads says about the ring: the front
+/// block's span, and whether that block is the tail block.
+#[derive(Clone, Copy)]
+pub(crate) struct FrontBlockReading {
+    /// Entries standing in the front block, as of the tail this reading
+    /// saw. Private, and [`FrontBlockReading::holds_at_least`] is the only
+    /// question a reader outside this module may ask of a reading: the span
+    /// is zero for a ring holding a full block ahead of a front block read
+    /// out, so a caller reading it as R's count would take an emptied ring
+    /// for a standing one.
+    span: usize,
+    /// Whether the front block is the tail block. False is a ring with an
+    /// entry ahead of the front block whatever the span says, since the
+    /// front block moves only into a block that was written into and the
+    /// tail block only after a write (`rfc/model/gc/rc-cycle.md`,
+    /// "Signals": the count is `frontBlock ≠ tailBlock`, or one block's
+    /// span).
+    is_the_tail_block: bool,
+}
+
+impl FrontBlockReading {
+    /// Whether this reading holds at least `entries`.
+    pub(crate) fn holds_at_least(&self, entries: usize) -> bool {
+        self.span >= entries || !self.is_the_tail_block
     }
 }
 

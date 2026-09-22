@@ -7,6 +7,11 @@
 
 use super::*;
 
+/// The ask against the clock now, as `read_one_record` makes it.
+fn ask_the_quiet_thread(record: &MutatorRecord) {
+    ask_for_a_turnover_if_quiet(record, serve_clock_now());
+}
+
 /// Ask after `interval` for the case, and after the module's own again when
 /// the guard drops.
 struct QuietInterval;
@@ -37,7 +42,7 @@ fn a_mutator_served_nothing_for_x_is_asked_for_a_turnover() {
     record.clear_turnover_request();
     record.note_served_at(0);
 
-    ask_for_a_turnover_if_quiet(record);
+    ask_the_quiet_thread(record);
     assert!(
         !record.turnover_is_requested(),
         "the first serve of a life stamps and asks nothing"
@@ -45,7 +50,7 @@ fn a_mutator_served_nothing_for_x_is_asked_for_a_turnover() {
     let stamped = record.served_at();
     assert_ne!(stamped, 0, "and it stamped");
 
-    ask_for_a_turnover_if_quiet(record);
+    ask_the_quiet_thread(record);
     assert!(
         !record.turnover_is_requested(),
         "a second serve inside X asks nothing"
@@ -58,7 +63,7 @@ fn a_mutator_served_nothing_for_x_is_asked_for_a_turnover() {
 
     testing::ask_turnovers_after(Some(Duration::from_millis(1)));
     std::thread::sleep(Duration::from_millis(5));
-    ask_for_a_turnover_if_quiet(record);
+    ask_the_quiet_thread(record);
     assert!(
         record.turnover_is_requested(),
         "X passed between two serves that reached nothing"
@@ -85,7 +90,7 @@ fn a_thread_batched_all_live_oftener_than_x_is_asked_after_x() {
 
     // The first serve stamps. Every serve after it is a batch that commits
     // nothing — the mutator's clock stands — a fifth of X apart.
-    ask_for_a_turnover_if_quiet(record);
+    ask_the_quiet_thread(record);
     let stamped = record.served_at();
     assert_ne!(stamped, 0, "the first serve stamped");
     loop {
@@ -93,7 +98,7 @@ fn a_thread_batched_all_live_oftener_than_x_is_asked_after_x() {
         // A tenth of X of margin, so that the serve below is inside X too
         // where this reading was: the two readings are microseconds apart.
         let inside = serve_clock_now() - stamped < (X - X / 10).as_nanos() as u64;
-        ask_for_a_turnover_if_quiet(record);
+        ask_the_quiet_thread(record);
         if !inside {
             break;
         }
@@ -165,13 +170,13 @@ fn a_mutator_whose_own_commits_moved_its_clock_is_not_asked() {
     let record = unsafe { &*record() };
     record.clear_turnover_request();
     record.note_served_at(0);
-    ask_for_a_turnover_if_quiet(record);
+    ask_the_quiet_thread(record);
     let stamped = record.served_at();
     assert_ne!(stamped, 0, "the first serve stamped");
 
     std::thread::sleep(Duration::from_millis(5));
     record.note_commit();
-    ask_for_a_turnover_if_quiet(record);
+    ask_the_quiet_thread(record);
     assert!(
         !record.turnover_is_requested(),
         "a commit of the mutator's own since the stamp is a moving clock, X or no X"

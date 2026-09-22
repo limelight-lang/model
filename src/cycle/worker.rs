@@ -84,8 +84,9 @@
 //! and a call [`BIRTH_RETRY_INTERVAL`] or more after the refusal births
 //! again. A round walks every record the registry has carved ([`round`])
 //! and serves each mutator whose R holds [`SOFT_THRESHOLD`] entries or more,
-//! by the collector's own reading off the front block; nothing but a test
-//! ends the thread.
+//! by the collector's own reading off the front block, and each whose R has
+//! stood non-empty below that threshold for [`STANDING_INTERVAL`]
+//! ([`this_rounds_reading_of_the_ring`]); nothing but a test ends the thread.
 //!
 //! **A wake starts a round and decides nothing else** (`rfc/dev/DECISIONS.md`,
 //! "the collector traces on the count it reads itself"; `rfc/model/gc/
@@ -97,15 +98,17 @@
 //! ending; and the timer. The timer is what serves a mutator whose signal
 //! bought no batch — its token held or it collecting in line at the round,
 //! P without room, the workspace refused — and a mutator at the threshold
-//! that reaches no poll; a mutator below the threshold is served by no
-//! round. The interval adapts between [`FALLBACK_INTERVAL_MIN`] and
+//! that reaches no poll; a mutator below the threshold is served by the
+//! round that reads its ring an interval overdue, and by the checkpoint
+//! that answers such a take's consent when the mutator was asleep at it.
+//! The interval adapts between [`FALLBACK_INTERVAL_MIN`] and
 //! [`FALLBACK_INTERVAL_MAX`]: the minimum after a round that made a batch,
 //! so that a backlog above the threshold drains at a batch per minimum,
 //! and after one that read a mutator's note that the collection its poll
 //! fired freed or retired something
 //! ([`MutatorRecord::take_freeing_disposition_note`]); held after a round
 //! that read a mutator at the threshold and could not serve it; doubled
-//! after a round that read no mutator at the threshold — a mutator at
+//! after a round that read no mutator at the threshold or overdue — a mutator at
 //! `POSTED` or one whose request stands unanswered is neither a batch nor
 //! work, and its note is the way back — so that a process with nothing to
 //! screen costs a wake a second. What a wake with no thread to receive it
@@ -404,13 +407,6 @@ pub(crate) fn set_standing_interval(interval: Duration) {
 }
 
 /// The standing interval in force: a case's, the embedder's, or the crate's.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the round's third branch is the first reader of the interval"
-    )
-)]
 fn standing_interval() -> Duration {
     #[cfg(test)]
     if let Some(interval) = testing::standing_interval() {
@@ -440,8 +436,7 @@ fn serve_clock_now() -> u64 {
 /// counted from a reading, never from the record's birth. The mutator
 /// answers at its next poll (`crate::gc`, the poll;
 /// `crate::cycle::epoch::jump_to_the_next_turnover`).
-fn ask_for_a_turnover_if_quiet(record: &MutatorRecord) {
-    let now = serve_clock_now();
+fn ask_for_a_turnover_if_quiet(record: &MutatorRecord, now: u64) {
     let last = record.served_at();
     if last == 0 || !record.clock_stood_since_the_stamp() {
         record.note_served_at(now);
@@ -937,8 +932,9 @@ unsafe fn read_one_record(
         outcome.read_a_freeing_disposition = true;
     }
 
-    let served = unsafe { serve(record, index, threshold, standing) };
-    ask_for_a_turnover_if_quiet(unsafe { &*record });
+    let now = serve_clock_now();
+    let served = unsafe { serve(record, index, threshold, standing, now) };
+    ask_for_a_turnover_if_quiet(unsafe { &*record }, now);
     outcome.made_a_batch |= standing.take_batches_served() > 0;
     match served {
         Served::Batch { backlog: true, .. } => {
@@ -958,8 +954,12 @@ unsafe fn read_one_record(
 /// consent, make one batch (module doc) under the grant and release —
 /// to `POSTED` when the batch posted verdicts, which is what tells the
 /// mutator to collect, and to `FREE` when it posted nothing. `threshold`
-/// is the count of R, read before any request, below which the mutator is
-/// idle to this serve; the round passes [`SOFT_THRESHOLD`]. `slot` is the
+/// is the count of R, read before any request, at which the mutator is
+/// served outright; below it the serve goes on only for a ring that has
+/// stood an interval ([`this_rounds_reading_of_the_ring`]), and the round
+/// passes [`SOFT_THRESHOLD`]. `now` is the round's one reading of the serve
+/// clock for this record, the instant a standing ring is measured against
+/// and the one the turnover ask reads after the serve. `slot` is the
 /// calling collector's, the name its request writes into the byte.
 ///
 /// **The request is one swap `FREE → REQUESTED|slot`**, and every other
@@ -995,6 +995,7 @@ pub(crate) unsafe fn serve(
     slot: usize,
     threshold: usize,
     standing: &mut Standing,
+    now: u64,
 ) -> Served {
     let mutator = unsafe { &*record };
     // The checkpoint before the request: a sleeping mutator that consented
@@ -1015,13 +1016,25 @@ pub(crate) unsafe fn serve(
         return Served::Idle;
     }
 
-    let reading = HandBackOnDrop(record);
+    let hold = HandBackOnDrop(record);
     #[cfg(test)]
     testing::between_the_take_and_the_reading();
-    let has_work = unsafe { Reader::new(mutator.candidate_ring()) }.has_at_least(threshold);
+    let ring = unsafe { Reader::new(mutator.candidate_ring()) }.front_block_reading();
     let room = unsafe { VerdictWriter::open(mutator) }.room_by_loads();
-    if !has_work || room == 0 {
+    let reading = this_rounds_reading_of_the_ring(mutator, ring, threshold, now);
+    if reading == RingRound::Leaves || room == 0 {
         return Served::Idle;
+    }
+
+    if reading == RingRound::Takes && mutator.is_standing() {
+        // A take's request from an earlier round stands on the byte, and
+        // the swap would only read it back: the record is in the list for
+        // the checkpoints, and the instant stands as it is until the grant
+        // ends (`dev/design/a-standing-r-is-taken-after-n-rounds.md`, "The
+        // round"). Skipped for the take alone — a mutator at the threshold
+        // is worth the swap, which serves a grant that landed between the
+        // checkpoint and the request one pass earlier.
+        return Served::Unanswered;
     }
 
     #[cfg(test)]
@@ -1041,12 +1054,10 @@ pub(crate) unsafe fn serve(
     if let Err(seen) = mutator.token.request(slot) {
         #[cfg(test)]
         testing::at_a_refused_request();
-        return unsafe {
-            answer_a_refused_request(mutator, seen, slot, threshold, standing, reading)
-        };
+        return unsafe { answer_a_refused_request(mutator, seen, slot, threshold, standing, hold) };
     }
 
-    drop(reading);
+    drop(hold);
 
     if mutator.was_released_unserved() {
         // Asleep again by the time the walk reached it, as a mutator a
@@ -1056,6 +1067,63 @@ pub(crate) unsafe fn serve(
     }
 
     unsafe { wait_for_consent(mutator, slot, threshold, standing) }
+}
+
+/// What a round does with the mutator's R, and the three branches are one
+/// reading apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RingRound {
+    /// R holds the round's threshold: the serve of today.
+    Serves,
+    /// R stands below the threshold and has stood an interval: the take.
+    Takes,
+    /// Nothing this round: R empty, or standing inside its interval.
+    Leaves,
+}
+
+/// The round's three branches over R, off the one reading `ring` the serve
+/// made under its hold, with the record's standing instant stamped or
+/// cleared on the way (`dev/design/a-standing-r-is-taken-after-n-rounds.md`,
+/// "The round"; module doc).
+///
+/// A ring at the threshold is the serve of today, and a ring read empty is
+/// an idle round; both leave no interval to count, so the instant is
+/// cleared. A ring standing below the threshold is taken as an ordinary
+/// batch at the first visit [`standing_interval`] or more after the visit
+/// that first read it standing, and that visit is where the instant is
+/// stamped — of the collector's clock, not the mutator's, so that a
+/// mutator's rate moves the take neither way. `now` is the round's one
+/// reading of that clock for this record.
+///
+/// The instant is the collector's word on the record's hold line, read and
+/// written here under the reading hold ([`MutatorRecord::standing_since`]).
+fn this_rounds_reading_of_the_ring(
+    mutator: &MutatorRecord,
+    ring: Option<crate::ring::FrontBlockReading>,
+    threshold: usize,
+    now: u64,
+) -> RingRound {
+    let stands = ring.filter(|ring| ring.holds_at_least(1));
+    let Some(ring) = stands else {
+        mutator.note_standing_since(0);
+        return RingRound::Leaves;
+    };
+
+    if ring.holds_at_least(threshold) {
+        mutator.note_standing_since(0);
+        return RingRound::Serves;
+    }
+
+    match mutator.standing_since() {
+        0 => {
+            mutator.note_standing_since(now);
+            RingRound::Leaves
+        }
+        since if now.saturating_sub(since) >= standing_interval().as_nanos() as u64 => {
+            RingRound::Takes
+        }
+        _ => RingRound::Leaves,
+    }
 }
 
 /// The four-way reading of a request the token refused, as [`serve`]'s
@@ -1245,18 +1313,30 @@ unsafe fn serve_the_grant(
     // set before the first post, so the unwind's release says what the
     // return's would.
     struct ReleaseOnDrop<'a> {
-        token: &'a crate::cycle::token::TraceToken,
+        mutator: &'a MutatorRecord,
         slot: usize,
         posted: std::cell::Cell<bool>,
     }
     impl Drop for ReleaseOnDrop<'_> {
         fn drop(&mut self) {
             crate::cycle::token::note_traced_mutator(std::ptr::null_mut());
-            self.token.release_claim(self.slot, self.posted.get());
+            // The interval a standing ring is taken after is counted from
+            // the end of the grant rather than from a batch that posted: a
+            // grant the workspace refused, one whose peek found R drained
+            // under it, and one an unwind ended each opened the window a
+            // take costs, and an instant left standing across any of them
+            // would have the next round take again at its own cadence
+            // ([`this_rounds_reading_of_the_ring`]). Under the grant, which is
+            // where the word may be written, and before the release, which
+            // is what ends it.
+            self.mutator.note_standing_since(serve_clock_now());
+            self.mutator
+                .token
+                .release_claim(self.slot, self.posted.get());
         }
     }
     let held = ReleaseOnDrop {
-        token: &mutator.token,
+        mutator,
         slot,
         posted: std::cell::Cell::new(false),
     };

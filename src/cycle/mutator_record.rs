@@ -468,6 +468,28 @@ impl MutatorRecord {
         );
     }
 
+    /// The instant a round first read this mutator's candidate ring standing
+    /// non-empty below the round's threshold ([`HoldLine::standing_since`]),
+    /// or zero for a ring no interval is counted for. Read under the reading
+    /// hold or under this collector's grant: outside both, the record may
+    /// be the registry's or another thread's between the load and its use.
+    /// A case standing in for the collector reads it on its own thread,
+    /// where the record's holder is the case.
+    #[inline]
+    pub(crate) fn standing_since(&self) -> u64 {
+        self.hold.standing_since.load(Ordering::Relaxed)
+    }
+
+    /// Stamp the instant this mutator's ring has stood since, or zero for a
+    /// ring no interval is counted for ([`HoldLine::standing_since`]).
+    /// Written under the reading hold or under this collector's grant, and
+    /// nowhere else: outside both, the record may be the registry's or
+    /// another thread's before the store lands.
+    #[inline]
+    pub(crate) fn note_standing_since(&self, nanos: u64) {
+        self.hold.standing_since.store(nanos, Ordering::Relaxed);
+    }
+
     /// R's two words: the front block on the reader's line, the tail block
     /// on the writer's.
     #[inline]

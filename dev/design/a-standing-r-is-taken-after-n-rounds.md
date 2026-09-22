@@ -85,7 +85,20 @@ makes, returning the span and whether the front block is the tail block;
    the serve clock's reading now and the serve returns `Served::Idle`. If
    `now − standing_since ≥ STANDING_INTERVAL` the serve continues to the
    take; otherwise it returns `Served::Idle`. The clock is read once per
-   record and shared with the turnover ask's reading after the serve.
+   record and shared with the turnover ask's reading after the serve. A
+   record whose take's request already stands answers `Served::Unanswered`
+   here without a swap, the instant left as it is: the record is in the
+   standing list for the checkpoints, and a failed compare-and-swap per
+   round per sleeping mutator is what the standing form exists to spare.
+
+The reading is the front block's alone, so "R holds the threshold" is true
+of any ring with an entry past a front block read out, whatever the count
+(`Reader::has_at_least`; `rfc/model/gc/rc-cycle.md`, "Signals"). A mutator
+whose last batch consumed its front block to the entry and that has
+registered one candidate since is therefore served at the next visit rather
+than spared the window for an interval — the exception to the rule's first
+paragraph, unchanged from the threshold serve of today, and not repairable
+without following a link the pre-claim reading may not follow.
 
 The take is the serve of today from the P-room test on — the room read, the
 record pushed onto the standing list, the request by one swap from `FREE`,
@@ -96,11 +109,17 @@ branch 3 above and the batch's form inside `batch`, so `wait_for_consent`,
 grant arm and `Standing::checkpoint` are the built ones and need no kind of
 request to reason about:
 
-- **The instant restarts at the batch, not at the request's landing.** At
-  the end of every batch — a take's and a threshold batch's alike, branch 1
-  zeroing the word at the next visit anyway — `standing_since` takes the
-  clock's reading, so the write-back and whatever the window registered are
-  an interval away. A request that stood while its owner slept must not
+- **The instant restarts where the grant ends, not at the request's
+  landing.** The release of every grant — a take's and a threshold batch's
+  alike, branch 1 zeroing the word at the next visit anyway — stamps
+  `standing_since` with the clock's reading, so the write-back and whatever
+  the window registered are an interval away. The release rather than the
+  batch, because three grants open the window and post nothing: one whose
+  workspace the pool refused, one whose peek found R drained between the
+  round's reading and the request, and one an unwind ended. An instant left
+  standing across any of them has the next round take again at its own
+  cadence, which is the form refused below (S64.2, the Critic of
+  2026-09-22). A request that stood while its owner slept must not
   restart the instant at its landing: the round after its service would then
   read the write-back as a ring an interval overdue. A request refused at
   the swap — `POSTED`, `MUTATOR`, another collector's — leaves the instant,

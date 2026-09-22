@@ -92,7 +92,7 @@ impl Sleeper {
 }
 
 fn serve_on_this_thread(record: *mut MutatorRecord, standing: &mut Standing) -> Served {
-    unsafe { serve(record, SLOT, 1, standing) }
+    unsafe { serve(record, SLOT, 1, standing, serve_clock_now()) }
 }
 
 /// Twenty sleepers, all left standing by one sweep of requests, and every

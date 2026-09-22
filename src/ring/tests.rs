@@ -583,6 +583,10 @@ fn the_work_test_reads_the_front_block_alone() {
     let writer = unsafe { Writer::new(words.slots()) };
     let reader = unsafe { Reader::new(words.slots()) };
     assert!(!reader.has_at_least(1), "no block");
+    assert!(
+        reader.front_block_reading().is_none(),
+        "a ring with no front block has no reading"
+    );
 
     // The first block is found, not filled; the push that leaves a full
     // tail block answers so.
@@ -615,6 +619,14 @@ fn the_work_test_reads_the_front_block_alone() {
         reader.has_at_least(BLOCK_ENTRIES),
         "a front block that is not the tail block is at any threshold"
     );
+    let reading = reader
+        .front_block_reading()
+        .expect("the ring has a front block");
+    assert_eq!(reading.span, 0, "the front block is read out");
+    assert!(
+        !reading.is_the_tail_block,
+        "and an entry stands past it, which is what the count is read from"
+    );
     unsafe { (*ring(front)).link.next.store(next, Ordering::Relaxed) };
 
     // In the tail block the threshold is the block's span.
@@ -626,6 +638,11 @@ fn the_work_test_reads_the_front_block_alone() {
     }
     assert!(reader.has_at_least(3));
     assert!(!reader.has_at_least(4));
+    let reading = reader
+        .front_block_reading()
+        .expect("the ring has a front block");
+    assert_eq!(reading.span, 3);
+    assert!(reading.is_the_tail_block, "one block, written into");
     words.dismantle();
 }
 

@@ -201,7 +201,7 @@ Critic over the repair.
         pins no offset and holds by `repr(align(64))` alone — kept for the
         name a failure gets, and the step claims the line's size and nothing
         more.
-- [ ] S64.2 The round's third branch
+- [x] S64.2 The round's third branch
       done: `Reader::front_block_reading` answers the span and whether the
         front block is the tail block in the loads `has_at_least` already
         makes; the round's test is the three branches — at the threshold as
@@ -214,6 +214,49 @@ Critic over the repair.
         `STANDING_INTERVAL` past the three-level dial is red rather than
         green (the Critic of S64.1)
       tier: T2 · role: Critic
+      baseline: 1126 tests listed; a sub-threshold ring answered
+        `Served::Idle` at every round, one `has_at_least` pass per record
+        under the reading hold and one clock reading per record in the
+        turnover ask. Red seen at
+        `a_ring_below_the_threshold_is_taken_an_interval_after_it_first_stood`,
+        which stood at `Idle` until the branch landed. Seven mutations
+        redden the seven new cases: the round reading `STANDING_INTERVAL`
+        past the dial, the restamp deleted, branch 1's clear deleted,
+        branch 2's clear deleted, the grant's restamp deleted, the ask
+        reading a clock of its own, and the dial's two arms.
+      Critic 2026-09-22: seven findings, six accepted and applied, one
+        accepted as a document repair. The restamp hung on a batch that
+        posted, so a grant whose workspace the pool refused, one whose peek
+        found R drained between the reading and the request, and one an
+        unwind ended each left the instant overdue and had the next round
+        take again at its own cadence — the stamp moved into the grant's
+        release guard, the design's bullet amended to the release, and a
+        case takes a grant over a ring drained under it. The design's "a
+        record already linked answers without a swap" was not built, which
+        cost a failed compare-and-swap per sleeping mutator per round — the
+        take's branch answers `Served::Unanswered` for a linked record, the
+        threshold path keeps its swap for the grant a checkpoint may have
+        left, and a case reads the harness's count of refused requests. The
+        word's contract said it is read under the hold or the grant "and
+        nowhere else" while the new cases read it off both — the contract
+        names the case standing in for the collector. The write-back case
+        drove a mutator whose own polls could drain R under the reading it
+        asserts on — the disposition runs by hand and the case is named for
+        what it shows. Nothing ran a real round, so the clock reading the
+        round shares between the take and the turnover ask had no case — a
+        case runs `round` over a confined record and reads the two words
+        equal. `has_at_least`'s over-read, which answers true for any count
+        when the front block is not the tail block, makes branch 1 serve a
+        mutator holding one candidate past a front block read out: today's
+        behaviour, not repairable without following a link the pre-claim
+        reading may not follow, and written into the design as the
+        exception to the threshold's sparing. Minor and applied: a
+        131-column doc line rewrapped, the claim that only the round serves
+        a sub-threshold mutator corrected for the checkpoint,
+        `serve_clock_now` private again behind a test-only wrapper,
+        `FrontBlockReading`'s fields private with `holds_at_least` the one
+        question, and the first case gives its memory back as the others
+        do.
 - [ ] S64.3 The batch's form under the grant
       done: `batch` reads `has_at_least(threshold)` under the grant before
         the peek — at or above it today's batch, below it the ring whole

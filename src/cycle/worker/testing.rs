@@ -411,7 +411,23 @@ pub(crate) fn at_the_next_refusal(act: Box<dyn FnOnce() + Send>) {
 }
 
 pub(crate) fn at_a_refused_request() {
+    REFUSED_REQUESTS.fetch_add(1, Ordering::Relaxed);
     AT_THE_NEXT_REFUSAL.run();
+}
+
+/// Requests the token refused since the last call, and zero the count: the
+/// figure a case reads to tell a serve that made its swap from one that
+/// answered without it.
+static REFUSED_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn take_refused_requests() -> usize {
+    REFUSED_REQUESTS.swap(0, Ordering::Relaxed)
+}
+
+/// The serve clock a round reads once per record, for a case outside this
+/// module that serves a record itself ([`super::serve`]'s `now`).
+pub(crate) fn serve_clock_now() -> u64 {
+    super::serve_clock_now()
 }
 
 /// Mutators the rounds claimed since the last call, and zero the count.
@@ -542,6 +558,7 @@ pub(crate) fn retire() {
     let _ = take_backlog_rounds_without_a_birth();
     let _ = take_passes();
     let _ = take_releases_unserved();
+    let _ = take_refused_requests();
 }
 
 /// Take the elder's slot for the calling thread, so that a consent's wake
@@ -574,7 +591,15 @@ pub(crate) fn wait_for_the_elders_wake(timeout: std::time::Duration) {
 /// As [`super::serve`].
 pub(crate) unsafe fn serve_alone(record: *mut MutatorRecord) -> super::Served {
     let mut standing = super::Standing::new(super::ELDER);
-    unsafe { super::serve(record, super::ELDER, 1, &mut standing) }
+    unsafe {
+        super::serve(
+            record,
+            super::ELDER,
+            1,
+            &mut standing,
+            super::serve_clock_now(),
+        )
+    }
 }
 
 /// Wait for `collector` as the mutator does: reading its byte — consenting

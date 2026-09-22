@@ -326,7 +326,15 @@ fn a_sleeping_mutators_request_stands_and_is_served_at_a_checkpoint() {
         let record = record.into_inner();
         let mut standing = crate::cycle::worker::Standing::new(ELDER);
         while serve.recv().is_ok() {
-            let outcome = unsafe { crate::cycle::worker::serve(record, ELDER, 1, &mut standing) };
+            let outcome = unsafe {
+                crate::cycle::worker::serve(
+                    record,
+                    ELDER,
+                    1,
+                    &mut standing,
+                    crate::cycle::worker::testing::serve_clock_now(),
+                )
+            };
             served_tell
                 .send((outcome, standing.batches_served_for_test()))
                 .expect("the case waits");
