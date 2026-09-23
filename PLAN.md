@@ -154,14 +154,6 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   which `release_emptied` already recurses through. Raised by the Critic of
   2026-09-13 over the survivor-list grouping, and priced nowhere.
 
-- **Whether an empty revalidation dropped unclosed is still refused.**
-  `Revalidation`'s drop refuses it in every build, and its reason — the
-  commit the close counted — went with the collector's epoch clock (S65.2);
-  a `DestructorPass` with no guard is already let go. Dropping the empty
-  case removes the refusal `what_an_abandoned_finalization_costs::`
-  `an_empty_revalidation_dropped_instead_of_closed_fails` pins, so it is
-  Edmond's (Critic of S65.2, finding 6).
-
 - **What a process-wide `pthread_key` would buy the reserve draw.** The
   thread-locals of this crate that carry drop glue — the census test
   `critical::tests::where_the_first_touch_happens` lists them — register a
@@ -264,8 +256,9 @@ them.
         the S37.5 probe measuring its stand-in — priced in the 2026-09-21
         banner, the probe says what it models. (5) One writer by naming —
         the cell advances by `fetch_add`, the hold-line exemption stated.
-        (6) The empty revalidation's refusal lost its reason — to Edmond,
-        `PLAN.md` fog (rule 4: removing it deletes a pinned test). (7) The
+        (6) The empty revalidation's refusal lost its reason — Edmond,
+        2026-09-23: a test no longer relevant goes; the empty case is let go
+        as an empty `DestructorPass` is, and its test deleted. (7) The
         standing-take design kept the refuted premise — bannered.
       handoff: the cell is `HoldLine::turnovers`, advanced in `worker::`
         `advance_the_epoch_if_due` before the serve; the poll compares

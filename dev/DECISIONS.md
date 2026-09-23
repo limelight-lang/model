@@ -64,6 +64,9 @@ orders the advance before the owner's reading of P, where the other order
 deferred the batch's live roots against the ended epoch for one advance more.
 The pressure path's commit opens its arena on its trace's reading rather than
 reading the cell a second time, so one collection round holds one reading.
+An empty revalidation dropped unclosed is let go, as an empty destructor pass
+is: its refusal guarded the commit count the close kept, and Edmond ruled a
+test whose reason is gone deleted rather than kept.
 
 **Decided under his rule, not by him.** The Sage (third version): the
 mutator retires completed deaths of R by a count, without a trace (his

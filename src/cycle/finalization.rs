@@ -629,19 +629,17 @@ impl Revalidation {
 impl Drop for Revalidation {
     /// The refusal the two values before it make, over whatever is left: a
     /// component unread keeps its guards, and nothing else takes them off. The
-    /// refusal stands with every guard released too, and for an empty commit.
-    /// That part's reason was the commit count the close kept, which went with
-    /// the collector's epoch clock; an empty revalidation dropped unclosed now
-    /// leaves no state wrong, and whether it stays refused is open
-    /// (`PLAN.md`, "Fog").
+    /// refusal stands with every guard released too, since the close's count
+    /// is what proves every guarded member was read again; a revalidation of
+    /// an empty commit guards nothing and is let go, as an empty
+    /// [`DestructorPass`] is.
     fn drop(&mut self) {
-        if self.closed || std::thread::panicking() {
+        if self.closed || self.guarded == 0 || std::thread::panicking() {
             return;
         }
 
         panic!(
-            "a revalidation was dropped instead of closed: the commit left its order, and a \
-             guarded member unread keeps its guard"
+            "a revalidation was dropped instead of closed: a guarded member unread keeps its guard"
         );
     }
 }

@@ -195,36 +195,6 @@ fn a_revalidation_dropped_instead_of_closed_fails() {
     );
 }
 
-/// The close is the commit's last step, so the refusal does not depend on a
-/// guard standing: an empty finalization dropped past its destructor pass
-/// fails the run the same way, where a guard count would have read zero
-/// against zero and let it go.
-#[test]
-#[cfg_attr(
-    miri,
-    ignore = "spawns a child process, which Miri's isolation forbids"
-)]
-fn an_empty_revalidation_dropped_instead_of_closed_fails() {
-    const CHILD: &str = "LL_FINALIZATION_UNCLOSED_EMPTY_REVALIDATION_CHILD";
-    if std::env::var_os(CHILD).is_some() {
-        let _g = test_guard();
-        let pass = Finalization::begin_at_this_threads_epoch()
-            .seal()
-            .destructors();
-        drop(pass.close());
-        return;
-    }
-
-    let output = child_run(
-        "an_empty_revalidation_dropped_instead_of_closed_fails",
-        CHILD,
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("the commit left its order"),
-        "an empty commit ends at the close, so its revalidation is closed or the run fails"
-    );
-}
-
 #[test]
 #[cfg_attr(
     miri,
@@ -252,4 +222,16 @@ fn a_component_read_as_unreachable_and_dropped_with_its_guards_fails() {
         String::from_utf8_lossy(&output.stderr).contains("dropped with its guards on"),
         "the answer carries the guards until the sever states they came off"
     );
+}
+
+/// An empty commit's revalidation guards nothing, so dropping it unclosed is
+/// let go, as an empty destructor pass is: the refusal stands for the guards,
+/// and the count it once also stood for went with the collector's epoch clock.
+#[test]
+fn an_empty_revalidation_dropped_unclosed_is_let_go() {
+    let _g = test_guard();
+    let pass = Finalization::begin_at_this_threads_epoch()
+        .seal()
+        .destructors();
+    drop(pass.close());
 }
