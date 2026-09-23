@@ -45,6 +45,18 @@ amendment, `dev/CYCLE-SPLIT-PACKAGE-3.md` and `-3-LANE.md`). Built as S65.
 - The premise sentences of the package's third version, section 12, are
   accepted whole.
 
+**Amended 2026-09-23, the same evening**, on the Critic over the S65 plan
+(`dev/S65-PLAN-CRITIC.md`, F4; Edmond's yes, "if it raises performance"):
+the parking sentence of section 12 read "the stamp clears the mark", and
+the stamp's list is optional (its cap L, a pool refusal, `waiting`), so a
+root whose retry finished without a list entry kept its mark and was skipped
+untraced once every four epochs. The mark is cleared by an unpark entry the
+collector writes into the chain's second section for every marked root whose
+part finished; the section is at most K entries and the mutator reads it
+whole, so the mutator reads nothing it did not read before. The package's
+answer 8 and sections 7 and 12 are amended in place. The other six findings
+change no premise and are taken into `PLAN.md`'s steps.
+
 **Decided under his rule, not by him.** The Sage (third version): the
 mutator retires completed deaths of R by a count, without a trace (his
 "option 5" of 2026-09-17); returning slots at once under a foreign trace is

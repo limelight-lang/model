@@ -198,11 +198,19 @@ the review chain behind it is `dev/CYCLE-SPLIT-*.md` and
 `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`. Each step is one commit of the package's
 build order (its section 11), with that section's mechanism, red test and
 measurement; the rule of the stage is the owner's: the mutator's performance
-comes first.
+comes first. The Critic over this section (`dev/S65-PLAN-CRITIC.md`,
+2026-09-23) returned seven findings, F1–F7, all taken into the steps below
+and into the package in place; the split itself it left standing. Two of
+them are rules for every step: a step that changes a behaviour the `rfc`
+states carries the `rfc`'s amendment in its done-line (F7, `dev/WORKFLOW.md`,
+"Documentation follows the logic, in the same commit"; the two repositories
+commit together), and no step may lengthen the wait or the withheld memory
+of a mutator under a grant beyond today's until the recall bounds it (F3).
 Done when: the mutator's collection over P traces no `Unwalked` root, no poll
 arms a collection over R whole outside `cap 0`, a recalled grant returns the
-token within N edges and one arena reset, and the poll and the free are where
-`dev/BENCHMARKS.md` S60.6 and S38.3 put them.
+token within N inspected positions, one bounded post and one arena reset,
+and the poll and the free are where `dev/BENCHMARKS.md` S60.6 and S38.3 put
+them.
 
 - [ ] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
       done: the two comments (the module head and `ENTRY_MARK_BITS`) say three
@@ -216,7 +224,9 @@ token within N edges and one arena reset, and the poll and the free are where
         the commit-driven instrument in the seven test files; the red test of
         the quiet thread's defect — real all-live takes oftener than X, the
         lane's mirror moved after X — seen red on today's tree and green
-        after; `what_the_poll_costs` within S60.6
+        after; `what_the_poll_costs` within S60.6; `rfc/model/gc/rc-cycle.md`
+        says the epoch clock is the collector's cell, advanced by its batches
+        or its interval
       tier: T2 · role: Critic
 - [ ] S65.3 A merged lane is taken at the next round, and K doubles only on a
       filled clamp (package commit 1a, in the Critic's form)
@@ -231,21 +241,44 @@ token within N edges and one arena reset, and the poll and the free are where
 - [ ] S65.4 Completed deaths of R are retired by a count (package commit 2)
       done: a count on the candidate arm of `ll_free`, `Arming::Retire` at the
         threshold, the pass on a poll with the gate open and the token free,
-        tracing nothing; its red test red today; the poll unmoved
+        tracing nothing; the pass is `compact(None, false, None)`: it reads R,
+        its overflow and P, and leaves the deferred lane to the turnover as
+        today, so that its work is bounded by R below the threshold and not
+        by the lane (`dev/S65-PLAN-CRITIC.md` F2); its red test red today; beside it a lane of 10⁵ live entries
+        with D deaths in R, the pass's queue-work count no higher than R's
+        length; the poll unmoved
       tier: T2 · role: Critic
 - [ ] S65.5 The trace runs in parts (package commit 3)
       done: a reset to the watermark above the root copy, a `judged` bit, posts
-        per part and `FinishThePosts`; the batch [r1, r3, r2] case posts
-        exactly three verdicts; `disjoint-live` in 63 parts with the mutator's
-        census at 0 roots and 0 rows
+        per part and `FinishThePosts`; the block budget stays one per grant
+        in this step — the reset to the watermark returns the blocks and
+        leaves `drawn` standing, so a grant of K parts reads no more than
+        today's one trace (`dev/S65-PLAN-CRITIC.md` F3; S65.6 lifts it); the
+        batch [r1, r3, r2] case posts exactly three verdicts; `disjoint-live`
+        in 63 parts with the mutator's census at 0 roots and 0 rows; a token
+        requested during the first of 63 parts waits no longer than on
+        today's tree, measured; `rfc/model/gc/rc-cycle.md` says P is posted
+        in the parts' order and R advanced once after the last
       tier: T2 · role: Critic
 - [ ] S65.6 The token's recall (package commit 4)
-      done: `waiting` set in `take_unless`, checked every N edges in both
-        phases through the visitor wrapper; `trace_cells` and
+      done: `waiting` set in `take_unless`, checked every N inspected
+        positions in both phases — a position is a Vector element, a Hash
+        entry, an object field or a hooked cell, counted whether or not it
+        yields a reference, since `counted_box_cell` returns `None` for a
+        scalar and a million-cell scalar array would otherwise be read
+        between two checks (`dev/S65-PLAN-CRITIC.md` F1); `trace_cells` and
         `walk_concurrent` stop on `ControlFlow` (the customers' concurrent
-        walk only, named as their change); the budget's two comments say it
-        bounds the arena; a pressure collection under a grant raised after the
-        mark waits at most N edges and a reset
+        walk only, named as their change); the release after a recall is
+        `FinishThePosts` (at most K verdicts and one advance) and one reset,
+        and the contract names both; the per-part budget of the package's
+        section 7 is switched on here, S65.5's per-grant bound gone; the
+        budget's two comments say it bounds the arena; a pressure collection
+        under a grant raised after the mark waits at most N positions, the
+        posts and a reset — over a scalar Vector of 10⁶ cells, a sparse Hash,
+        an object of null fields and a hooked storage, the interval measured
+        from the request to the release; `rfc/model/gc/rc-cycle.md` states
+        the recall and the handshake document records `waiting` as a hint
+        beside E10
       tier: T2 · role: Critic
 - [ ] S65.7 The marks by stack length (package commit 5)
       done: a length beside each of the three withheld stacks' heads, a limit
@@ -256,30 +289,64 @@ token within N edges and one arena reset, and the poll and the free are where
 - [ ] S65.8 The live core stamped from a list (package commit 6)
       done: one chain per grant of at most L blocks, its head on the hold
         line, stamped at the take from `POSTED` or at the first block or run
-        return under it, dropped under pressure; after a take over
-        `overlapping-live` every member carries the stamp and the next take
-        prunes
+        return under it, dropped under pressure; the collector reads
+        `waiting` every N rows of the touched-list walk that writes the list
+        and leaves the part unstamped when it is set, so that the list adds
+        no unbounded work before the release (`dev/S65-PLAN-CRITIC.md` F1,
+        second instance), with a recall raised inside that walk measured;
+        after a take over `overlapping-live` every member carries the stamp
+        and the next take prunes; the handshake document records the list
+        and the stamp beside E12
       tier: T2 · role: Critic
 - [ ] S65.9 The retry at the ceiling and the parking (package commit 7)
       done: a part failing at B retried at `B_max` in the same grant, once per
         grant; the roots that attempt met parked in the chain's second section
-        with a mark in byte 6 bits 20–22; a 300-block ring judged in one grant
+        with a mark in byte 6 bits 20–22; the second section carries two
+        kinds of entry, park and unpark, and the collector writes an unpark
+        entry for every root it read marked whose part then finished, so
+        that the mark's clearing rides the section the mutator reads whole
+        (at most K entries, one block) and never the optional live list
+        (`dev/S65-PLAN-CRITIC.md` F4; Edmond's yes, 2026-09-23); a section
+        block the pool refuses leaves the mark until a grant with a block,
+        named as the limit; a 300-block ring judged in one grant; x parked,
+        the epoch advanced, the retry finished with the list's allocation
+        refused and separately with L consumed, then four epoch tags on —
+        the old mark gone after the finished retry and no attempt skipped;
+        `rfc/model/classes.md` names bits 20–22 of byte 6 as the parking
+        mark, the owner its writer
       tier: T2 · role: Critic
 - [ ] S65.10 `Unwalked` is no root of the collection over P (package commit 8)
       done: `Verdict::is_root_in(BatchForm)`; P = [`Unwalked` x] writes x back
         into R untraced; under pressure 63 `Unwalked` are still traced; the
-        turnover's `arm()` gone outside `cap 0`
+        turnover's `arm()` gone outside `cap 0`; `rfc/model/gc/rc-cycle.md`
+        states who finds and who judges, and when the mutator searches
       tier: T2 · role: Critic
-- [ ] S65.11 The rfc follows
-      done: `rfc/model/gc/rc-cycle.md` states who finds and who judges, the
-        recall, the parts and P in parts' order; the handshake document
-        records `waiting` as a hint beside E10 and the stamp beside E12;
-        `rfc/model/classes.md` names bits 20–22 of byte 6 as the parking mark
+- [ ] S65.11 The rfc read whole against the stage
+      done: every amendment S65.2–S65.10 made is read in its place with its
+        neighbours — no sentence of `rfc/model/gc/rc-cycle.md`, the handshake
+        document or `rfc/model/classes.md` still describes the budget as the
+        wait's bound, P in R's order, the turnover's collection over R or
+        bits 20–23 as reserve; the citation checker over both repositories
+        with no miss
       tier: T2 · role: Critic
-- [ ] S65.12 The N-mutators-on-N-cores rig, then `cap 0` (package commit 9)
-      done: the rig's three placements measured and recorded; only then the
-        clamp lifted, the elder kept as the clock without takes, and the
-        mutator collecting at its threshold and at the merge under `cap 0`
+- [ ] S65.12 `cap 0`, then the N-mutators-on-N-cores rig (package commit 9)
+      done: the clamp lifted, the elder kept as the clock without takes, and
+        the mutator collecting at its threshold and at the merge under
+        `cap 0`; a cap set to zero at run time is met at the elder's next
+        round: the round withdraws its standing list (the walk of
+        `Standing::drop`, factored), releases a grant it reads back unserved,
+        issues no request and serves no checkpoint while the cap is zero, and
+        a trace already running finishes; a cap set back resumes the takes
+        (`dev/S65-PLAN-CRITIC.md` F5); switched with an unanswered request,
+        a consented grant, a running trace and P posted, and once more with
+        a sibling — no stranded token, no record left linked, P intact, the
+        clock still turning, the takes back after the restore; only with
+        this built is the rig run, its third arm being `cap 0` itself, the
+        in-line collection reclaiming what the collector would have (F6,
+        `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Какие опыты нужны"), each
+        thread placed on a named physical core; the three placements
+        measured and recorded, and the constants L, M, M_b, M_c, D, N, X,
+        N_b read off it
       tier: T2 · role: Critic
 
 ## Then: arrays as a performance problem
