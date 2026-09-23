@@ -230,6 +230,18 @@ struct WriterLine {
     /// (`crate::cycle::worker`, "The thread, and the round over the
     /// records").
     freeing_dispositions: AtomicU32,
+    /// Merges of the deferred lane into R at a turnover, counted up by the
+    /// mutator after each such splice and never cleared within a life,
+    /// wrapping: the collector
+    /// compares it with [`HoldLine::merges_seen`] and takes a ring below the
+    /// threshold at the round after a merge rather than an interval later,
+    /// whether or not the owner packed the merged blocks into one since
+    /// (`crate::cycle::worker`, "The thread, and the round over the
+    /// records"). Stored with release after the splice's own stores, so that
+    /// a round whose acquire load reads a merge reads the spliced ring
+    /// after it. On this line because the round loads [`WriterLine::r_tail_block`]
+    /// beside it.
+    merges: AtomicU32,
 }
 
 /// The line the collector, the exit and the registry share.
@@ -321,6 +333,15 @@ struct HoldLine {
     /// without advancing. The collector's own word, so relaxed; cleared at a
     /// re-take.
     advanced_at: AtomicU64,
+    /// The value of [`WriterLine::merges`] every entry of whose merges the
+    /// collector has accounted for: stored at the end of every grant, with
+    /// the count read under the token before the batch's peek, and at a
+    /// round that read the ring empty, with the count read before the ring.
+    /// A round that reads the ring below the threshold
+    /// and the two counts apart takes it. Read and written where
+    /// [`HoldLine::standing_since`] is, and for the same reason; relaxed,
+    /// the collector's own word; cleared at a re-take.
+    merges_seen: AtomicU32,
 }
 
 /// A collector is reading the rings' blocks under no claim.
@@ -387,6 +408,7 @@ impl WriterLine {
             p_front_block: AtomicPtr::new(std::ptr::null_mut()),
             collecting: AtomicBool::new(false),
             freeing_dispositions: AtomicU32::new(0),
+            merges: AtomicU32::new(0),
         }
     }
 
@@ -398,6 +420,7 @@ impl WriterLine {
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         self.collecting.store(false, Ordering::Relaxed);
         self.freeing_dispositions.store(0, Ordering::Relaxed);
+        self.merges.store(0, Ordering::Relaxed);
     }
 }
 
@@ -467,6 +490,7 @@ impl MutatorRecord {
                 batches_since: AtomicU8::new(0),
                 turnovers: AtomicU64::new(0),
                 advanced_at: AtomicU64::new(0),
+                merges_seen: AtomicU32::new(0),
             },
         }
     }
@@ -507,6 +531,39 @@ impl MutatorRecord {
     #[inline]
     pub(crate) fn note_standing_since(&self, nanos: u64) {
         self.hold.standing_since.store(nanos, Ordering::Relaxed);
+    }
+
+    /// Count one merge of the deferred lane into R ([`WriterLine::merges`]),
+    /// on the mutator's thread, after the splice.
+    #[inline]
+    pub(crate) fn note_a_merge(&self) {
+        let merges = self.writer.merges.load(Ordering::Relaxed);
+        self.writer
+            .merges
+            .store(merges.wrapping_add(1), Ordering::Release);
+    }
+
+    /// The mutator's count of merges ([`WriterLine::merges`]), on the
+    /// collector's thread, loaded before the ring reading it goes with.
+    #[inline]
+    pub(crate) fn merges(&self) -> u32 {
+        self.writer.merges.load(Ordering::Acquire)
+    }
+
+    /// The merges the collector has accounted for ([`HoldLine::merges_seen`]).
+    /// Read under the reading hold or under this collector's grant, as
+    /// [`MutatorRecord::standing_since`] is.
+    #[inline]
+    pub(crate) fn merges_seen(&self) -> u32 {
+        self.hold.merges_seen.load(Ordering::Relaxed)
+    }
+
+    /// Record `merges` as accounted for ([`HoldLine::merges_seen`]). Written
+    /// under the reading hold or under this collector's grant, as
+    /// [`MutatorRecord::note_standing_since`] is.
+    #[inline]
+    pub(crate) fn note_merges_seen(&self, merges: u32) {
+        self.hold.merges_seen.store(merges, Ordering::Relaxed);
     }
 
     /// The collector whose list this record stands in, as a slot index plus
@@ -1030,6 +1087,7 @@ fn take_record() -> *mut MutatorRecord {
             // the batch count restart with the life.
             (*released).hold.batches_since.store(0, Ordering::Relaxed);
             (*released).hold.advanced_at.store(0, Ordering::Relaxed);
+            (*released).hold.merges_seen.store(0, Ordering::Relaxed);
             (*released).hold.new_life.store(1, Ordering::Relaxed);
             // Last, with release: the next reading's take is what sees the
             // lines above as reset.
@@ -1196,9 +1254,9 @@ pub(crate) fn refuse_record_draws(refuse: bool) {
 }
 
 /// Write into `record`'s lines, for a case that reads whether a re-take
-/// empties them: the batch size, which no exit reads, and on the hold line
-/// the standing instant, the list's stamp, the advance's instant and its
-/// batch count. The four block words are left alone, because the
+/// empties them: the batch size, which no exit reads, the merge count, and
+/// on the hold line the standing instant, the list's stamp, the advance's
+/// instant, its batch count and the merges seen. The four block words are left alone, because the
 /// exit reads both rings through them and a scribbled pointer would be
 /// followed; they are nulled by the rings' dismantle before the record goes
 /// back, which is what the reset repeats. The collecting word is left alone
@@ -1213,6 +1271,8 @@ pub(crate) fn scribble_lines_for_test(record: *mut MutatorRecord) {
         (*record).hold.standing_slot.store(7, Ordering::Relaxed);
         (*record).hold.advanced_at.store(7, Ordering::Relaxed);
         (*record).hold.batches_since.store(7, Ordering::Relaxed);
+        (*record).hold.merges_seen.store(7, Ordering::Relaxed);
+        (*record).writer.merges.store(7, Ordering::Relaxed);
     }
 }
 
@@ -1225,8 +1285,8 @@ pub(crate) fn note_new_life_for_test(record: *mut MutatorRecord) {
 
 /// Whether `record`'s lines hold what a fresh life starts with: R's words,
 /// the batch size, the standing instant, the standing list's stamp, the
-/// advance's instant and its batch count empty, the collecting word clear,
-/// and P's two words naming one block.
+/// advance's instant, its batch count, the merge count and the merges seen
+/// empty, the collecting word clear, and P's two words naming one block.
 #[cfg(test)]
 pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
     let reader = unsafe { &(*record).reader };
@@ -1238,6 +1298,8 @@ pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
         && unsafe { (*record).hold.standing_slot.load(Ordering::Relaxed) == 0 }
         && unsafe { (*record).hold.advanced_at.load(Ordering::Relaxed) == 0 }
         && unsafe { (*record).hold.batches_since.load(Ordering::Relaxed) == 0 }
+        && unsafe { (*record).hold.merges_seen.load(Ordering::Relaxed) == 0 }
+        && writer.merges.load(Ordering::Relaxed) == 0
         && writer.r_tail_block.load(Ordering::Relaxed).is_null()
         && !writer.collecting.load(Ordering::Relaxed)
         && !p_block.is_null()

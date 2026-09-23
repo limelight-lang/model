@@ -1169,8 +1169,11 @@ pub(crate) fn defer_candidates(mut batch: Batch, at_turnovers: u64) {
 /// The caller owns the epoch comparison. The move is a splice of the lane's
 /// blocks into R after the tail block, with no copy and no block drawn
 /// (`crate::ring::Writer::splice_after_tail`); it leaves no record in the
-/// deferred lane. A reader that wants the count moved takes
-/// `deferred_count` before the call: nothing is counted here.
+/// deferred lane. A reader that wants the records moved counted takes
+/// `deferred_count` before the call. The merge is not counted here: the
+/// pressure path and the exit trace what they merge at once, and a round
+/// that took those roots again would repeat their trace; the turnover's
+/// merge is counted by [`reoffer_deferred_if_epoch_moved`].
 pub(crate) fn reoffer_deferred_candidates() {
     let state = mutator_state();
     if state.is_null() {
@@ -1197,6 +1200,11 @@ pub(crate) fn reoffer_deferred_candidates() {
 /// clock. A deferred record waits for an advance, which is where its
 /// recall is bought back, and the mirror moves only with the mutator-side
 /// splice, so a refused collection cannot make the lane disappear.
+///
+/// The merge is counted after the splice
+/// (`crate::cycle::mutator_record::MutatorRecord::note_a_merge`), so that
+/// the collector's round takes the merged ring at its next visit however
+/// far below the threshold it reads.
 pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
     let state = mutator_state();
     if state.is_null() {
@@ -1214,6 +1222,7 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
 
     mutator_state.turnover_mirror.set(byte);
     reoffer_deferred_candidates();
+    this_thread_record_ref().note_a_merge();
     true
 }
 

@@ -713,12 +713,20 @@ impl<'a> Reader<'a> {
             return None;
         }
 
+        // The tail block before the front block's tail: a pack moves the tail
+        // block back to the front block only after it stored the packed
+        // tail, with release, so a tail block read as the front block
+        // brings the packed tail with it, and one read before the pack says
+        // the ring is not in one block. The other order can read the tail
+        // before a pack and the tail block after it, and call a packed ring
+        // empty.
+        let is_the_tail_block = front_block == self.0.tail_block.load(Ordering::Acquire);
         let b = ring(front_block);
         let front = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
         let tail = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
         Some(FrontBlockReading {
             span: span(front, tail),
-            is_the_tail_block: front_block == self.0.tail_block.load(Ordering::Acquire),
+            is_the_tail_block,
         })
     }
 
@@ -730,6 +738,18 @@ impl<'a> Reader<'a> {
             .is_some_and(|reading| reading.holds_at_least(entries))
     }
 
+    /// Whether at least `entries` stand unread, by their count rather than by
+    /// the front block's shape: a ring whose front block is read out ahead of
+    /// a block of three answers three, where [`Reader::has_at_least`] answers
+    /// "at the threshold" for any ring of two blocks or more. A walk of the
+    /// chain ([`Reader::unread_up_to`]), so for the token holder or the owner,
+    /// and it stops at the block that reaches `entries`: at most `entries`
+    /// blocks past the front block, since every block ahead of it holds an
+    /// entry.
+    pub(crate) fn has_at_least_by_count(&self, entries: usize) -> bool {
+        self.unread_up_to(entries) >= entries
+    }
+
     /// Entries not yet taken, as of the tail the reader sees now: the front
     /// block's span and every block's between it and the tail block. A walk
     /// of the chain, so for the token holder or the owner, whose exclusion
@@ -737,6 +757,13 @@ impl<'a> Reader<'a> {
     /// circle; a reader without the token asks [`Reader::has_at_least`].
     #[cfg(test)]
     pub(crate) fn unread(&self) -> usize {
+        self.unread_up_to(usize::MAX)
+    }
+
+    /// Entries not yet taken, as `Reader::unread` counts them in a test, the
+    /// walk ended at the first block that brings the count to `limit` or past
+    /// it: the answer is exact below `limit` and at least `limit` otherwise.
+    fn unread_up_to(&self, limit: usize) -> usize {
         let front_block = self.0.front_block.load(Ordering::Acquire);
         if front_block.is_null() {
             return 0;
@@ -750,7 +777,7 @@ impl<'a> Reader<'a> {
             let front = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
             let tail = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
             count += span(front, tail);
-            if block == tail_block {
+            if block == tail_block || count >= limit {
                 return count;
             }
 
@@ -1065,10 +1092,13 @@ impl Drop for Packing<'_> {
             let front = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
             unsafe { self.ring.set_tail(block, front) };
         }
+        // With release, after every tail above: a reading that loads the
+        // tail block as the write block reads the packed tail
+        // ([`Reader::front_block_reading`]).
         self.ring
             .0
             .tail_block
-            .store(self.write_block, Ordering::Relaxed);
+            .store(self.write_block, Ordering::Release);
     }
 }
 

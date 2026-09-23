@@ -123,7 +123,7 @@ fn serve_as_its_own_round(record: *mut MutatorRecord, standing: &mut Standing) -
 #[test]
 #[cfg_attr(
     miri,
-    ignore = "twenty-one interpreted threads: killed at 50 minutes in a               process of its own, twice on 2026-09-22; the list's link,               unlink and stamp are covered under Miri by the cases above"
+    ignore = "twenty-one interpreted threads: killed at 50 minutes in a process of its own, twice on 2026-09-22; the list's link, unlink and stamp are covered under Miri by the cases above"
 )]
 fn twenty_sleepers_stand_and_are_all_served_on_waking() {
     let _g = test_guard();

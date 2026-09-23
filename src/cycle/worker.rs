@@ -44,20 +44,21 @@
 //!
 //! K starts at [`INITIAL_BATCH`], halves after a batch that met the budget
 //! — the budget alone, a pool refusal saying nothing about the batch's size
-//! — and doubles back after a completed one, up to [`BATCH_BOUND`]: under a
+//! — and doubles back after a completed one that took its whole clamp, up
+//! to [`BATCH_BOUND`]: under a
 //! block's capacity, so a batch spans at most two blocks of R, and small
 //! enough that the copy leaves the workspace to the rows. What a mutator
 //! waits for when it needs its token is one batch's trace, bounded by the
 //! blocks rather than by the roots. A take of a standing ring reads K
 //! neither way ([`batch`]): it clamps one entry short of the threshold,
-//! which such a ring cannot exceed, and a run of takes of three roots
-//! would otherwise double K toward the bound on a thread that has produced
-//! no batch at all.
+//! which such a ring cannot exceed, so its clamp is the threshold's rather
+//! than K, and a take that filled it would size K from the threshold on a
+//! thread that has produced no batch at all.
 //!
 //! # The epoch clock
 //!
 //! The collector keeps the epoch clock of every mutator named to it
-//! (`crate::cycle::epoch`). At each visit of a round, after the serve, it
+//! (`crate::cycle::epoch`). At each visit of a round, before the serve, it
 //! advances the record's cell once [`crate::cycle::epoch::BATCHES_PER_EPOCH`]
 //! batches or [`EPOCH_INTERVAL`] of its own clock — X, the rfc's letter for
 //! it (`rfc/model/gc/cycle/questions.md`, Y9) — have passed since the last
@@ -91,8 +92,10 @@
 //! by the collector's own reading off the front block, and each whose R has
 //! stood non-empty below that threshold for the standing interval in force
 //! — [`STANDING_INTERVAL`] unless the embedder replaced it
-//! ([`standing_interval`]) — by [`decide_the_branch_and_stamp_the_instant`];
-//! nothing but a test ends the thread.
+//! ([`standing_interval`]) — or holds a deferred lane its owner has merged
+//! since the collector last accounted for its merges, by
+//! [`decide_the_branch_and_stamp_the_instant`]; nothing but a test ends the
+//! thread.
 //!
 //! **A wake starts a round and decides nothing else** (`rfc/dev/DECISIONS.md`,
 //! "the collector traces on the count it reads itself"; `rfc/model/gc/
@@ -105,8 +108,9 @@
 //! bought no batch — its token held or it collecting in line at the round,
 //! P without room, the workspace refused — and a mutator at the threshold
 //! that reaches no poll; a mutator below the threshold is served by the
-//! round that reads its ring an interval overdue, and by the checkpoint
-//! that answers such a take's consent when the mutator was asleep at it.
+//! round that reads its ring an interval overdue or merged into since the
+//! last grant, and by the checkpoint that answers such a take's consent
+//! when the mutator was asleep at it.
 //! A walk spends at most [`EXPIRED_WAITS_PER_ROUND`] consent waits on
 //! mutators that do not answer; past that every request it lands is left
 //! standing at once, for the checkpoint that reads the consent, and that
@@ -196,7 +200,7 @@ pub(crate) enum Served {
     Idle,
     /// A batch was made: this many roots taken from R, each with a verdict
     /// posted into P, whether their trace completed, and whether R still
-    /// read at the threshold behind it, off the front block under the token.
+    /// held the threshold behind it, by its count under the token.
     Batch {
         roots: usize,
         complete: bool,
@@ -1131,11 +1135,15 @@ pub(crate) unsafe fn serve(
     }
 
     let hold = HandBackOnDrop(record);
+    // The merges before the ring: a merge between the two loads is read in
+    // the ring and missed by the count, which takes the ring a round later;
+    // the other order would record a merge its reading never saw.
+    let merges = mutator.merges();
     #[cfg(test)]
     testing::between_the_take_and_the_reading();
     let reading = unsafe { Reader::new(mutator.candidate_ring()) }.front_block_reading();
     let room = unsafe { VerdictWriter::open(mutator) }.room_by_loads();
-    let branch = decide_the_branch_and_stamp_the_instant(mutator, reading, threshold, now);
+    let branch = decide_the_branch_and_stamp_the_instant(mutator, reading, merges, threshold, now);
     if branch == RingRound::Leaves || room == 0 {
         return Served::Idle;
     }
@@ -1204,36 +1212,50 @@ enum RingRound {
 }
 
 /// The round's three branches over R, off the one reading `ring` the serve
-/// made under its hold, with the record's standing instant stamped or
+/// made under its hold and the mutator's merge count `merges` it loaded
+/// before that reading, with the record's standing instant stamped or
 /// cleared on the way (`dev/design/a-standing-r-is-taken-after-n-rounds.md`,
 /// "The round"; module doc).
 ///
 /// A ring at the threshold is the serve of today, and a ring read empty is
 /// an idle round; both leave no interval to count, so the instant is
-/// cleared. A ring standing below the threshold is taken as an ordinary
-/// batch at the first visit [`standing_interval`] or more after the visit
-/// that first read it standing, and that visit is where the instant is
-/// stamped — of the collector's clock, not the mutator's, so that a
-/// mutator's rate moves the take neither way. `now` is the round's one
+/// cleared, and the empty one accounts for every merge `merges` counts,
+/// since whatever those merges brought has left R. A ring standing below
+/// the threshold is taken at once when the mutator has merged its deferred
+/// lane since the merges last accounted for: the merged roots are the
+/// collector's to trace, and a ring the owner packed into one block reads
+/// below the threshold off its front block
+/// (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F2). Otherwise it is taken
+/// as an ordinary batch at the first visit [`standing_interval`] or more
+/// after the visit that first read it standing, and that visit is where the
+/// instant is stamped — of the collector's clock, not the mutator's, so that
+/// a mutator's rate moves the take neither way. `now` is the round's one
 /// reading of that clock for this record.
 ///
-/// The instant is the collector's word on the record's hold line, read and
-/// written here under the reading hold ([`MutatorRecord::standing_since`]).
+/// The instant and the merges seen are the collector's words on the
+/// record's hold line, read and written here under the reading hold
+/// ([`MutatorRecord::standing_since`], [`MutatorRecord::merges_seen`]).
 fn decide_the_branch_and_stamp_the_instant(
     mutator: &MutatorRecord,
     reading: Option<crate::ring::FrontBlockReading>,
+    merges: u32,
     threshold: usize,
     now: u64,
 ) -> RingRound {
     let stands = reading.filter(|reading| reading.holds_at_least(1));
     let Some(ring) = stands else {
         mutator.note_standing_since(0);
+        mutator.note_merges_seen(merges);
         return RingRound::Leaves;
     };
 
     if ring.holds_at_least(threshold) {
         mutator.note_standing_since(0);
         return RingRound::Serves;
+    }
+
+    if merges != mutator.merges_seen() {
+        return RingRound::Takes;
     }
 
     match mutator.standing_since() {
@@ -1447,6 +1469,10 @@ unsafe fn serve_the_grant(
         mutator: &'a MutatorRecord,
         slot: usize,
         posted: std::cell::Cell<bool>,
+        /// The mutator's merge count as the grant read it, before the
+        /// batch's peek: every merge it counts has its entries in the ring
+        /// the batch reads.
+        merges: u32,
     }
     impl Drop for ReleaseOnDrop<'_> {
         fn drop(&mut self) {
@@ -1459,8 +1485,11 @@ unsafe fn serve_the_grant(
             // would have the next round take again at its own cadence
             // ([`decide_the_branch_and_stamp_the_instant`]). Under the grant, which is
             // where the word may be written, and before the release, which
-            // is what ends it.
+            // is what ends it. The merges the grant read are accounted for
+            // on the same terms: what the batch left of them stands the
+            // interval.
             self.mutator.note_standing_since(serve_clock_now());
+            self.mutator.note_merges_seen(self.merges);
             self.mutator
                 .token
                 .release_claim(self.slot, self.posted.get());
@@ -1470,6 +1499,7 @@ unsafe fn serve_the_grant(
         mutator,
         slot,
         posted: std::cell::Cell::new(false),
+        merges: mutator.merges(),
     };
     crate::cycle::token::note_traced_mutator(std::ptr::from_ref(mutator).cast_mut());
     #[cfg(test)]
@@ -1836,17 +1866,22 @@ impl Drop for Standing {
 
 /// One batch over `mutator`, under its token, on `arena` — the collector's own
 /// memory, reset before the token goes (module doc); `threshold` is what
-/// the batch's form and its backlog reading are read against.
+/// the batch's form and its backlog reading are read against. The form is
+/// read off the front block and the backlog by R's count: a ring the batch
+/// leaves in two blocks reads at the threshold off its front block whatever
+/// the two hold, a merged lane of two behind the batch's last block being
+/// one such (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F7), and a backlog
+/// read that way would vote a sibling's birth for nothing.
 ///
 /// **The ring under the token decides the form, not the request's origin**
 /// (`dev/design/a-standing-r-is-taken-after-n-rounds.md`, "The round"). R
-/// read at the threshold is the batch of today: K's clamp, the sizing of
-/// the next batch, the backlog reading. R read below it is the take of a
-/// standing ring, clamped one entry short of the threshold — an upper
-/// bound on such a ring's count, the front block being the tail block and
-/// holding all of it — with K neither read nor sized, since K is the
-/// collector's estimate of what a producing mutator offers per batch and a
-/// run of takes of three roots would double it toward [`BATCH_BOUND`] on a
+/// read at the threshold is the batch of today: K's clamp and the sizing of
+/// the next batch. R read below it is the take of a standing ring, clamped
+/// one entry short of the threshold — an upper bound on such a ring's
+/// count, the front block being the tail block and holding all of it — with
+/// K neither read nor sized, since K is the collector's estimate of what a
+/// producing mutator offers per batch and the take's clamp is the
+/// threshold's: a take that filled it would size K from the threshold on a
 /// thread that never produced a batch at all. The take is the ring whole
 /// where P has the room for it, and what P's room leaves behind stands a
 /// further interval.
@@ -1888,36 +1923,12 @@ unsafe fn batch(
 ) -> Served {
     let verdicts = unsafe { VerdictWriter::open(mutator) };
     let reader = unsafe { Reader::new(mutator.candidate_ring()) };
-    // The clamp, under the token: P's room cannot move under it, R's count
-    // can only grow.
-    let at_the_threshold = reader.has_at_least(threshold);
-    let clamp = if at_the_threshold {
-        match mutator.batch_size() {
-            0 => INITIAL_BATCH,
-            size => size,
-        }
-    } else {
-        // One short of the threshold, which a sub-threshold ring cannot
-        // exceed as of the reading above. Saturating because a threshold of
-        // zero reaches this arm for a ring with no front block, where the
-        // peek takes nothing anyway, and `0 - 1` would clamp at `usize::MAX`
-        // instead.
-        threshold.saturating_sub(1)
-    };
+    let (at_the_threshold, clamp) = the_form_and_the_clamp(mutator, &reader, threshold);
     let take = verdicts.room().min(clamp);
     if take == 0 {
         return Served::Idle;
     }
-    debug_assert!(
-        threshold <= BATCH_BOUND,
-        "the copy below is bounded by the threshold as well as by K"
-    );
-    arena.budget_blocks(budget_for_this_batch());
-    let copy = arena.alloc(take * size_of::<usize>()) as *mut usize;
-    assert!(
-        !copy.is_null(),
-        "the copy fits the workspace by the bound on K and on the threshold"
-    );
+    let copy = the_copy_in_the_workspace(arena, threshold, take);
 
     // The entries copied out of R, which stay in R until the advance.
     let out = unsafe { std::slice::from_raw_parts_mut(copy, take) };
@@ -1946,13 +1957,13 @@ unsafe fn batch(
     #[cfg(test)]
     testing::between_the_post_and_the_advance();
     drop(advance);
-    let backlog = reader.has_at_least(threshold);
+    let backlog = reader.has_at_least_by_count(threshold);
 
     let met_budget = arena.met_its_budget();
     arena.reset();
     mutator.note_batch();
     if at_the_threshold {
-        size_the_next_batch(mutator, clamp, complete, met_budget);
+        size_the_next_batch(mutator, clamp, roots.len(), complete, met_budget);
     }
 
     Served::Batch {
@@ -1960,6 +1971,52 @@ unsafe fn batch(
         complete,
         backlog,
     }
+}
+
+/// The batch's form and clamp, read under the token, where P's room cannot
+/// move and R's count can only grow ([`batch`]): whether R reads at
+/// `threshold` off its front block, and the clamp that form takes — K, or
+/// one entry short of the threshold, which a ring read below it cannot
+/// exceed as of that reading.
+fn the_form_and_the_clamp(
+    mutator: &MutatorRecord,
+    reader: &Reader,
+    threshold: usize,
+) -> (bool, usize) {
+    if reader.has_at_least(threshold) {
+        let k = match mutator.batch_size() {
+            0 => INITIAL_BATCH,
+            size => size,
+        };
+        return (true, k);
+    }
+
+    // Saturating because a threshold of zero reaches this arm for a ring
+    // with no front block, where the peek takes nothing anyway, and `0 - 1`
+    // would clamp at `usize::MAX` instead.
+    (false, threshold.saturating_sub(1))
+}
+
+/// Room for `take` entries in the batch's workspace, `arena`, with the
+/// batch's budget set on it first; `threshold` is the batch's, which bounds
+/// the copy of a take as K bounds a threshold batch's. Never null, by both
+/// bounds ([`BATCH_BOUND`]).
+fn the_copy_in_the_workspace(
+    arena: &mut TraceScratchArena,
+    threshold: usize,
+    take: usize,
+) -> *mut usize {
+    debug_assert!(
+        threshold <= BATCH_BOUND,
+        "the copy is bounded by the threshold as well as by K"
+    );
+    arena.budget_blocks(budget_for_this_batch());
+    let copy = arena.alloc(take * size_of::<usize>()) as *mut usize;
+    assert!(
+        !copy.is_null(),
+        "the copy fits the workspace by the bound on K and on the threshold"
+    );
+    copy
 }
 
 /// The advance a posted batch owes R, made on the unwind as well: past the
@@ -1997,14 +2054,28 @@ unsafe fn post_the_verdicts(verdicts: &VerdictWriter, roots: &[usize], complete:
     }
 }
 
-/// Size the mutator's next batch from what this one of `size` roots did: a
-/// trace that finished doubles it up to [`BATCH_BOUND`], and one that met
-/// the workspace budget halves it. A trace abandoned for anything else
-/// leaves the size where it stands, the refusal saying nothing about how
-/// much of the heap the batch would have reached.
-fn size_the_next_batch(mutator: &MutatorRecord, size: usize, complete: bool, met_budget: bool) {
+/// Size the mutator's next batch from what this one, clamped to `size` roots
+/// and taking `taken` of them, did: a trace that finished over the whole
+/// clamp doubles it up to [`BATCH_BOUND`], and one that met the workspace
+/// budget halves it. A trace that finished short of its clamp leaves the
+/// size where it stands, the ring or P's room having held no more, which
+/// says nothing of what the mutator offers per batch: a merged lane of three
+/// roots read at the threshold off its blocks would double K at every
+/// turnover of a thread that produces nothing
+/// (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F3). So does a trace
+/// abandoned for anything but the budget, the refusal saying nothing about
+/// how much of the heap the batch would have reached.
+fn size_the_next_batch(
+    mutator: &MutatorRecord,
+    size: usize,
+    taken: usize,
+    complete: bool,
+    met_budget: bool,
+) {
     if complete {
-        mutator.set_batch_size((size * 2).min(BATCH_BOUND));
+        if taken == size {
+            mutator.set_batch_size((size * 2).min(BATCH_BOUND));
+        }
     } else if met_budget {
         mutator.set_batch_size((size / 2).max(1));
     }

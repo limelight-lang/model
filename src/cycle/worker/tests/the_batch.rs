@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// left by an earlier batch is cleared first: these cases batch again
 /// without the collection between that the byte asks for, and dispose of P
 /// by hand at their end.
-fn served_by_a_collector() -> Served {
+pub(super) fn served_by_a_collector() -> Served {
     unsafe { &*record() }.token.clear_posted_for_test();
     let sent = Sent(record());
     testing::consent_while(std::thread::spawn(move || {
@@ -51,12 +51,12 @@ fn node_class(name: &str) -> *const Class {
 
 /// A class with one counted Box property, through which a case holds an
 /// object from outside.
-fn keeper_class(name: &str) -> *const Class {
+pub(super) fn keeper_class(name: &str) -> *const Class {
     ClassBuilder::new(name).prop("kept", true).build()
 }
 
 /// One object of `class` at count one, in this thread's heap.
-unsafe fn object(arena: &mut Arena, class: *const Class) -> *mut Object {
+pub(super) unsafe fn object(arena: &mut Arena, class: *const Class) -> *mut Object {
     let mut context = LLContext { arena };
     unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) }
 }
@@ -75,7 +75,7 @@ unsafe fn completed_death(arena: &mut Arena, class: *const Class) -> *mut RcHead
 
 /// A registered root a keeper holds: the root, and the keeper the case
 /// takes down afterwards.
-unsafe fn kept_root(
+pub(super) unsafe fn kept_root(
     arena: &mut Arena,
     node: *const Class,
     name: &str,
@@ -89,7 +89,7 @@ unsafe fn kept_root(
     (root as *mut RcHeader, keeper)
 }
 
-unsafe fn release_keeper(keeper: *mut Object) {
+pub(super) unsafe fn release_keeper(keeper: *mut Object) {
     unsafe {
         assert!(ll_release(keeper as *mut RcHeader));
         ll_object_die(keeper);
@@ -131,6 +131,8 @@ fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
     let mut expected = Vec::new();
     collect_lane_tokens(&mut expected);
     let batches = unsafe { &*record() }.batches_since_the_advance();
+    // K at R's count, so that the batch takes its whole clamp.
+    unsafe { &*record() }.set_batch_size(5);
 
     assert_eq!(
         served_by_a_collector(),
@@ -162,8 +164,8 @@ fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
     assert_eq!(standing, expected, "every token once, now in P");
     assert_eq!(
         record_batch_size(),
-        INITIAL_BATCH * 2,
-        "a completed batch doubles K"
+        10,
+        "a completed batch that took its clamp doubles K"
     );
 
     // The mutator's poll: the deaths retired and the kept roots deferred up
@@ -213,6 +215,11 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
     );
     assert_eq!(candidate_count(), 3);
     assert_eq!(verdict_count(), INITIAL_BATCH);
+    assert_eq!(
+        record_batch_size(),
+        INITIAL_BATCH * 2,
+        "a batch that took its clamp doubles K"
+    );
 
     // Then P's room: filled to three short of full, the next batch takes
     // three and no more, whatever K says; and a full P takes nothing.
@@ -235,6 +242,11 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
     );
     assert_eq!(candidate_count(), 1);
     assert_eq!(
+        record_batch_size(),
+        INITIAL_BATCH * 2,
+        "a batch P's room cut short of its clamp leaves K"
+    );
+    assert_eq!(
         served_by_a_collector(),
         Served::Idle,
         "a full P takes nothing"
@@ -245,9 +257,7 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
         "and made no claim to find that out"
     );
 
-    // K's bound: a completed batch from the bound stays at it.
     discard_standing_verdicts();
-    unsafe { &*record() }.set_batch_size(BATCH_BOUND);
     assert_eq!(
         served_by_a_collector(),
         Served::Batch {
@@ -256,6 +266,11 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
             backlog: false,
         }
     );
+
+    // K's bound: a completed batch that took its clamp at the bound stays at
+    // it. Sized by hand, since a batch of the bound's thousand roots would
+    // be built for this one reading.
+    size_the_next_batch(unsafe { &*record() }, BATCH_BOUND, BATCH_BOUND, true, false);
     assert_eq!(
         record_batch_size(),
         BATCH_BOUND,

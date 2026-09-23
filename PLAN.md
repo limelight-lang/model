@@ -66,6 +66,23 @@ the poll costs with a deferred record standing". The destination's last mile
 — the compiler that links this crate — is outside this plan: `rfc/BACKLOG.md`,
 "The big one", and the front end in `limelight`.
 
+Review 2026-09-23: on time, found by hand, the hook still blind to this
+plan. Pass 1, code `128cefc..89bb0dc` against the thresholds (a function over
+50 code lines, depth 3, a one-implementation abstraction, a one-caller
+forward), 297 functions touched, 117 of them production: five production
+places — `worker::batch` at 59 lines, cut to 42 by S65.3;
+`Standing::checkpoint` at depth 4; `epoch::of_record` and
+`Standing::take_backlogged`, one-caller forwards; `HandBackOnDrop`, kept as
+the unwind guard `AdvanceOnDrop` already is — and 45 in tests, the cuts
+being the backlog line "The review's cuts of 2026-09-23". Of the 2026-09-21
+list, `collect_under_pressure` grew by one line to exactly 50 and the rest
+stand. A Miri ignore reason with a botched line join was repaired, and the
+backlog line "What S37 named and left", which named
+`epoch::COMMITS_PER_EPOCH`, deleted at S65.2, re-pointed.
+Pass 2: the period's algorithms are Edmond's rulings of 2026-09-23. Pass 3
+is the Critic over the S65 section of the same day (`dev/S65-PLAN-CRITIC.md`);
+the backlog below it was not re-read.
+
 Review 2026-09-21: overdue by a day, the hook reading `dev/PLAN.md` and never
 this file. Pass 1, code `c58d49f..128cefc` against the thresholds, 203
 functions touched: `heap::ll_thread_init` at 59 code lines,
@@ -267,7 +284,7 @@ them.
         8.26–8.36 ns, `dev/BENCHMARKS.md`, "S65.2 the poll with the
         collector's epoch cell". Miri owed at the stage's close for
         `epoch::turn_the_cell_of` and the record's new accessors.
-- [ ] S65.3 A merged lane is taken at the next round, and K doubles only on a
+- [x] S65.3 A merged lane is taken at the next round, and K doubles only on a
       filled clamp (package commit 1a, in the Critic's form)
       done: a `merges` counter on R's writer line bumped beside the splice,
         `merges_seen` on the hold line, the round answering `Takes` when it
@@ -277,6 +294,57 @@ them.
         8 roots moves K from 64 to 128 — seen red today; a packed lane taken
         at the next round; a take over three blocks reports no backlog
       tier: T2 · role: Critic
+      baseline 2026-09-23, `89bb0dc`, before the first edit, by reading: the
+        merge is the lane's `take` and `splice_after_tail`, whose stores are
+        the chain's last link, the old tail block's link and `r_tail_block`;
+        the poll with the lane occupied loads the lane's occupancy and the
+        turnover byte and reaches the merge only when the byte moved, so the
+        steady poll does not run it (6.84–6.99 ns, `dev/BENCHMARKS.md`,
+        "S65.2 the poll", today). The round's pre-claim reading loads
+        `r_front_block`, the front block's two index lines and `r_tail_block`,
+        and P's room; the batch reads its form and, after the commit, its
+        backlog off the front block alone, and doubles K after every
+        completed batch of threshold form, whatever it took. Nothing is
+        allocated and nothing refused on either side. The writer line uses
+        24 bytes of 64, the hold line 40
+      red 2026-09-23 on `89bb0dc`, `cycle::worker::tests::the_merged_lane`:
+        the consenting merge left K at 128 against 64; the packed merged lane
+        read `Idle` against `Batch { roots: 2 }`; the batch over three blocks
+        read `backlog: true`. The rewritten F7 case is a batch of threshold
+        form over a take-sized ring, the form that ring reads as. Two old
+        cases measured K by the ruled-away doubling and now fill their
+        clamp (`the_batch`'s first case, the crossing take's)
+      Critic 2026-09-23: five findings, all taken. (1) The empty arm could
+        record a merge as seen off a reading torn by a pack in flight — the
+        reading loads the tail block before the front block's tail and the
+        pack stores the tail block with release. (2) The pressure path's and
+        the exit's merges counted, re-taking what they had just traced — only
+        `reoffer_deferred_if_epoch_moved` counts, pinned by
+        `only_the_turnovers_merge_is_counted`. (3) The count-before-reading
+        and the grant's count-before-peek orders were unguarded — the hook
+        moved between the two loads, cases
+        `a_merge_between_the_count_and_the_reading_is_taken_a_round_later`
+        and `a_merge_under_a_grant_is_taken_at_the_next_round`. (4) One
+        rewritten K assertion could not fail — the room-cut batch now
+        asserts K kept. (5) Two dead reasons for the take's K, and the rfc's
+        "doubles it back" — rewritten. Mutations, each red on its case:
+        the merge's `Takes`, the grant's record, the count read at the
+        release, the empty arm's record, the two loads swapped, doubling on
+        any completed batch, the backlog off the front block, the count on
+        every splice, no count on the turnover's, the re-take's two resets,
+        the bound on K. Green, no arm reaches them: the pack's release
+        (release and relaxed codegen alike on x86, and no case packs beside
+        a reading), the release/acquire of the count, and the walk's stop
+        at its limit, which costs time only
+      handoff: the count is `WriterLine::merges`, bumped in
+        `queue::reoffer_deferred_if_epoch_moved`; `HoldLine::merges_seen` is
+        written by the grant's release and by a round reading R empty;
+        `batch`'s backlog is `Reader::has_at_least_by_count`. Today's poll
+        still arms AllRoots after the merge, so a drip registered after that
+        collection and before the round is taken a round early, once per X,
+        until S65.10. `rfc/model/gc/rc-cycle.md` amended in the same pair of
+        commits. Miri owed at the stage's close for `Reader::unread_up_to`,
+        the reading's reordered loads and the `the_merged_lane` cases
 - [ ] S65.4 Completed deaths of R are retired by a count (package commit 2)
       done: a count on the candidate arm of `ll_free`, `Arming::Retire` at the
         threshold, the pass on a poll with the gate open and the token free,
@@ -357,8 +425,11 @@ them.
 - [ ] S65.10 `Unwalked` is no root of the collection over P (package commit 8)
       done: `Verdict::is_root_in(BatchForm)`; P = [`Unwalked` x] writes x back
         into R untraced; under pressure 63 `Unwalked` are still traced; the
-        turnover's `arm()` gone outside `cap 0`; `rfc/model/gc/rc-cycle.md`
-        states who finds and who judges, and when the mutator searches
+        turnover's `arm()` gone outside `cap 0`, which makes true the rfc's
+        "the re-offer arms the poll's collection only while the record names
+        no living collector", false of the code since 2026-09-15;
+        `rfc/model/gc/rc-cycle.md` states who finds and who judges, and when
+        the mutator searches
       tier: T2 · role: Critic
 - [ ] S65.11 The rfc read whole against the stage
       done: every amendment S65.2–S65.10 made is read in its place with its
@@ -533,6 +604,19 @@ live: `archive/pre-rc-cycle`").
   done: each place under its threshold or recorded as kept with the reason,
   the poll unmoved, in the form of `dev/BENCHMARKS.md`, "S37.8 the review's
   cuts leave the poll where it was".
+- [ ] **The review's cuts of 2026-09-23.** Pass 1 over `128cefc..89bb0dc`:
+  `Standing::checkpoint` at depth 4 (the pass over one record becomes a
+  function with early returns, the kept grant's serve another);
+  `epoch::of_record` and `Standing::take_backlogged` inlined into their one
+  caller each. In tests, 32 bodies over 50 lines — the largest
+  `the_siblings`' birth-and-handover case at 130 and
+  `when_the_turnover_reoffers`' mature-member case at 128 — and six at depth
+  3 or 4, most of them cut by shared fixtures: a ring deferred behind a
+  keeper (four copies in `when_the_turnover_reoffers.rs`), a keeper's
+  release-and-die pair (eleven), `keeper_class` (five files), the sleepers'
+  start and end in `under_stress.rs`; the three test hooks that forward to
+  one `OneShot` with one caller; the two `EmbeddersInterval` guards.
+  done: each place under its threshold or recorded as kept with the reason.
 - [ ] **What S37 named and left, 2026-09-21.** The turnover period `N` is
   YRC's 64 and was not replaced: it is Y9's dial
   (`rfc/model/gc/cycle/questions.md`, Y9), both costs are linear in it and
@@ -541,7 +625,8 @@ live: `archive/pre-rc-cycle`").
   re-offer), and both are measured on the test heap (`dev/BENCHMARKS.md`,
   "S37.5 what a turnover re-offers, and what a deferral costs"). Which side
   pays is Edmond's to state; the ruling goes to `dev/DECISIONS.md` and
-  `epoch::COMMITS_PER_EPOCH` moves with it. Y9's minimum-over-stamped-members
+  `epoch::BATCHES_PER_EPOCH` moves with it, the count of the collector's
+  batches that replaced the commit count at S65.2, X beside it. Y9's minimum-over-stamped-members
   question (whether a component's age is the minimum over its stamped
   members alone or over all of them, refused for the stamp's step by the Sage
   of 2026-09-10) changes no prune at `k = 1`, where every stamped component is

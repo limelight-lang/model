@@ -510,6 +510,9 @@ fn a_ring_that_crossed_the_threshold_under_a_standing_take_is_a_threshold_batch(
         crate::cycle::token::read_and_act_on_this_thread();
     });
 
+    // K below the ring's six, so that a threshold batch takes its whole
+    // clamp and doubles K, where a take would clamp at three and leave it.
+    record.set_batch_size(THRESHOLD);
     assert_eq!(
         standing.checkpoint(THRESHOLD),
         1,
@@ -517,7 +520,7 @@ fn a_ring_that_crossed_the_threshold_under_a_standing_take_is_a_threshold_batch(
     );
     assert_eq!(
         record.batch_size(),
-        INITIAL_BATCH * 2,
+        THRESHOLD * 2,
         "served as a threshold batch, which sizes K by what it completed"
     );
 
