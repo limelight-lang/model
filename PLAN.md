@@ -16,7 +16,15 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-22 · Active: none — the next stage is Edmond's to name.
+Updated: 2026-09-23 · Active: S65.
+S65 opened on 2026-09-23 from Edmond's rulings of the day: the collector
+finds and the mutator judges, the epoch clock is the collector's, and a
+recall of the token replaces the budget as the bound on the mutator's wait
+(`dev/DECISIONS.md`, "the collector finds and the mutator judges, and a
+recall of the token bounds the mutator's wait instead of the budget"). The
+two fog lines it answers — the take that meets the block budget, and the
+mutator collecting from R while the collector goes on — left the fog with it,
+and the two shipped defects filed that morning are its steps S65.2 and S65.6.
 S64 went on 2026-09-22, the day its design was accepted: a mutator whose
 candidate ring stands non-empty below the serve threshold has it taken as an
 ordinary batch once `STANDING_INTERVAL` of the collector's own clock has
@@ -109,7 +117,7 @@ the backlog line "What S37 named and left".
 of them is in the journals rather than here: `dev/DECISIONS.md` for a
 decision and its reason, `dev/POSTMORTEM.md` for a trap,
 `dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S61, every
+`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S64, every
 number this plan has spent. A number is never reissued, so a
 stage added later sits where it is to be done rather than where its
 number falls, and the prose sections below are the backlog stages are
@@ -133,64 +141,6 @@ criterion, and it leaves when it gets one or when it is ruled on. The three
 lines that ended in a sentence the `rfc` owes — which destructors "ran
 anywhere" counts, the object handed to a survivor, the exit's safepoint word
 — moved to `rfc/dev/PLAN.md`'s fog on 2026-09-21.
-
-- **The mutator collecting from R while the collector goes on collecting
-  roots.** Edmond, 2026-09-23, to be thought through: if the mutator is
-  allowed to collect memory from its queue R, and the collector is at the
-  same time allowed to go on collecting roots, that changes a great deal.
-  Raised while deciding who judges a root whose closure alone exceeds the
-  trace's block budget, after he stated that the mutator collects by itself
-  only under memory shortage (`dev/CYCLE-SPLIT-SYNTHESIS.md` and the
-  documents beside it). The fact it meets today: the token makes the two
-  exclusive — a mutator collecting in line holds `MUTATOR`, and a collector
-  holding it for a batch keeps the mutator's collection waiting
-  (`cycle::token`). Edmond, the same day: a larger budget for the collector
-  is the way out of this, and giving one means removing the reason the
-  budget exists. There are two reasons and the first is the blocker — while
-  the collector traces long, the mutator cannot free memory; solve that
-  blocker and the problem is gone. In the code the blocker has two halves:
-  under a foreign holder every death is withheld and no slot goes back to
-  the allocator (`deferred_slot_reuse::withhold_under_a_foreign_trace`, for
-  the address a trace holds between reading a cell and meeting its row),
-  and the mutator's own collection, pressure included, waits for the token,
-  the rows of both traces standing in the same blocks' row arrays. The
-  second reason is the collector arena's memory, a size and not a block.
-  Two forms, named and not chosen. **A**: the collector hands mutator A's
-  token back when A asks for it and goes on to other mutators; two traces
-  never walk one heap at once, which the token already allows. It removes
-  the wait for the token, and the withheld deaths too if A also asks for
-  the token back when its withheld memory passes a mark; it throws away the
-  trace in flight, so a trace made of complete parts, one closure each,
-  loses less to a recall than a prefix redone after the budget
-  (`dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, variant A, against
-  `dev/CYCLE-SPLIT-SYNTHESIS.md`, step 1). **B**: the collector traces part
-  of A's roots while A collects another part itself. It needs the
-  collector's rows out of the heap blocks' row arrays and a narrower
-  protection of memory than withholding every death — by block, component
-  or generation.
-
-- **What to do about a take that meets the block budget**, which is the one
-  regime where the split is a loss to both sides. Measured 2026-09-22
-  (`dev/BENCHMARKS.md`, "the live-roots arm" and "the mix"): inside
-  `TRACE_BLOCK_BUDGET` a take of live roots leaves the mutator's collection
-  nothing to walk, 15,333 instructions against 658,863, and what it saves
-  falls with the live share of the ring; past the budget the collector's
-  trace is abandoned after 75 to 157 µs, every root comes back `Unwalked`,
-  and the mutator walks the same rows itself for 0.68 % more than it would
-  have spent with no take at all. Edmond, 2026-09-22: the mutator should not
-  have to walk them either. Three candidates, priced as far as reading goes
-  and not built: **a larger budget for a take whose mutator is not waiting**
-  — the bound exists to hold the mutator's wait for its token, and a sleeper
-  does not wait, so the question is whether "not waiting" can be read at the
-  moment the budget would be raised; **resuming the trace on a later round**,
-  which trial deletion refuses, its counts being valid only over the snapshot
-  the token holds still, so a suspended trace would have to hold the token and
-  block the mutator, which is what the budget exists to prevent; and **a bit
-  on the hold line saying the last take of this mutator met the budget**, so
-  that the next visit leaves the ring to the mutator's own in-line collection
-  — the cheapest of the three, and it recovers the collector's 75 to 157 µs
-  and the mutator's 0.68 % rather than the whole walk. Edmond decides which,
-  and whether the answer is a stage.
 
 - **Whether a survivor list should prefer a block this reset has already
   retained.** `Arena::alloc_preferring` tries the described block's tail, the
@@ -234,47 +184,103 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
 - `dev/ARCHITECTURE.md` is the crate's knowledge map and moves with behaviour
   like any other document (`dev/WORKFLOW.md`).
 
-## First: a shipped defect
+## S65 — The collector finds, the mutator judges  [in progress]
 
-- [ ] **The quiet thread's ask never fires on a thread that is batched.**
-  `worker::ask_for_a_turnover_if_quiet` restamps whenever
-  `MutatorRecord::clock_stood_since_the_stamp` is false, and the amendment of
-  2026-09-22 (`dev/DECISIONS.md`, "a quiet thread's turnover is the
-  collector's to ask for") rests on "the collection over them closes with no
-  commit". It does not: every collection that reaches `commit`, one with no
-  member included, closes a finalization and counts a commit
-  (`collect::commit_before_drops` → `Revalidation::close` →
-  `epoch::commit_closed`), and the `overlapping-live` take arm's census
-  ending `NothingProposed` is assigned after that commit
-  (`dev/BENCHMARKS.md`, "the live-roots arm"). So any batch between two
-  visits moves the clock, all-live ones included, and such a thread's
-  deferred lane waits for 64 commits rather than X — about 4.3 minutes at
-  one take per 4 s, by arithmetic. The guarding case,
-  `the_quiet_thread::a_thread_batched_all_live_oftener_than_x_is_asked_after_x`,
-  runs no collection over P and calls `ask_the_quiet_thread` alone, so it
-  passes by construction. Found by the Critic of 2026-09-23
-  (`dev/CYCLE-SPLIT-CRITIC-REVIEW.md`, finding 4), confirmed by reading.
-  Three repairs, none chosen: restamp only when the epoch turned since the
-  stamp (the recommendation — it leaves the commit's meaning alone); count
-  no commit for a collection with no member; restamp on freeing commits.
-  done: a case that runs real collections over all-live verdicts oftener
-  than X is seen red, the repair Edmond picks makes it green, and the
-  amendment's premise sentence is corrected in `dev/DECISIONS.md` and in
-  `worker.rs`'s module doc ("the quiet thread").
-- [ ] **The block budget is documented as a bound on time, and it bounds
-  memory.** `worker.rs`'s module doc says what a mutator waits for when it
-  needs its token is "one batch's trace, bounded by the blocks rather than
-  by the roots", and `TRACE_BLOCK_BUDGET`'s comment that it bounds "the
-  mutator's wait for its token". `TraceScratchArena::grow` is the one place
-  the budget is read, and it runs only when the bump is exhausted, so the
-  work between two draws is bounded by edges: one met array of many cells
-  naming targets already met costs a subtraction per cell and draws no
-  block, and the scan draws only worklist segments. Found by the Critic of
-  2026-09-23 (`dev/CYCLE-SPLIT-CRITIC-REVIEW.md`, finding 7), confirmed by
-  the synthesis. done: both comments say what the budget bounds — the
-  collector arena's blocks — and what bounds the mutator's wait is stated
-  as unbounded in edges, until a recall of the token exists (Fog, the first
-  line).
+Goal: the mutator searches for cycle garbage only when the memory manager
+refuses it or the embedder turned the collector off; in every other case the
+collector finds and the mutator judges what it proposes, and what bounds the
+mutator's wait for its token is a recall rather than the trace's block budget
+(`dev/DECISIONS.md`, "the collector finds and the mutator judges, and a recall
+of the token bounds the mutator's wait instead of the budget"). The design is
+`dev/CYCLE-SPLIT-PACKAGE-3.md` with `dev/CYCLE-SPLIT-PACKAGE-3-LANE.md` as
+amended by its Critic (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F2 and F3);
+the review chain behind it is `dev/CYCLE-SPLIT-*.md` and
+`dev/S64-GC-IMPROVEMENT-ANALYSIS.md`. Each step is one commit of the package's
+build order (its section 11), with that section's mechanism, red test and
+measurement; the rule of the stage is the owner's: the mutator's performance
+comes first.
+Done when: the mutator's collection over P traces no `Unwalked` root, no poll
+arms a collection over R whole outside `cap 0`, a recalled grant returns the
+token within N edges and one arena reset, and the poll and the free are where
+`dev/BENCHMARKS.md` S60.6 and S38.3 put them.
+
+- [ ] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
+      done: the two comments (the module head and `ENTRY_MARK_BITS`) say three
+        bits, eight-aligned promoted survivors being candidates; text in the
+        package's section 10
+      tier: T0 · role: —
+- [ ] S65.2 The epoch cell is the collector's (package commit 1)
+      done: the cell on the record's hold line, advanced at the first of 64
+        batches or X of the collector's clock; the turnover byte has one
+        writer; one epoch reading per collection; `turn_the_cell_of` replaces
+        the commit-driven instrument in the seven test files; the red test of
+        the quiet thread's defect — real all-live takes oftener than X, the
+        lane's mirror moved after X — seen red on today's tree and green
+        after; `what_the_poll_costs` within S60.6
+      tier: T2 · role: Critic
+- [ ] S65.3 A merged lane is taken at the next round, and K doubles only on a
+      filled clamp (package commit 1a, in the Critic's form)
+      done: a `merges` counter on R's writer line bumped beside the splice,
+        `merges_seen` on the hold line, the round answering `Takes` when it
+        moved; `size_the_next_batch` doubles only when the batch took its
+        clamp; a take reads its backlog by the exact count. Red first: the
+        shipped K ratchet — a poll that splices and consents, then a batch of
+        8 roots moves K from 64 to 128 — seen red today; a packed lane taken
+        at the next round; a take over three blocks reports no backlog
+      tier: T2 · role: Critic
+- [ ] S65.4 Completed deaths of R are retired by a count (package commit 2)
+      done: a count on the candidate arm of `ll_free`, `Arming::Retire` at the
+        threshold, the pass on a poll with the gate open and the token free,
+        tracing nothing; its red test red today; the poll unmoved
+      tier: T2 · role: Critic
+- [ ] S65.5 The trace runs in parts (package commit 3)
+      done: a reset to the watermark above the root copy, a `judged` bit, posts
+        per part and `FinishThePosts`; the batch [r1, r3, r2] case posts
+        exactly three verdicts; `disjoint-live` in 63 parts with the mutator's
+        census at 0 roots and 0 rows
+      tier: T2 · role: Critic
+- [ ] S65.6 The token's recall (package commit 4)
+      done: `waiting` set in `take_unless`, checked every N edges in both
+        phases through the visitor wrapper; `trace_cells` and
+        `walk_concurrent` stop on `ControlFlow` (the customers' concurrent
+        walk only, named as their change); the budget's two comments say it
+        bounds the arena; a pressure collection under a grant raised after the
+        mark waits at most N edges and a reset
+      tier: T2 · role: Critic
+- [ ] S65.7 The marks by stack length (package commit 5)
+      done: a length beside each of the three withheld stacks' heads, a limit
+        each, `waiting` stored at the limit with no block; a mutator freeing
+        under a grant recalls it at M and never waits; the withheld-free arm
+        of `what_a_foreign_holder_costs` within its spread
+      tier: T2 · role: Critic
+- [ ] S65.8 The live core stamped from a list (package commit 6)
+      done: one chain per grant of at most L blocks, its head on the hold
+        line, stamped at the take from `POSTED` or at the first block or run
+        return under it, dropped under pressure; after a take over
+        `overlapping-live` every member carries the stamp and the next take
+        prunes
+      tier: T2 · role: Critic
+- [ ] S65.9 The retry at the ceiling and the parking (package commit 7)
+      done: a part failing at B retried at `B_max` in the same grant, once per
+        grant; the roots that attempt met parked in the chain's second section
+        with a mark in byte 6 bits 20–22; a 300-block ring judged in one grant
+      tier: T2 · role: Critic
+- [ ] S65.10 `Unwalked` is no root of the collection over P (package commit 8)
+      done: `Verdict::is_root_in(BatchForm)`; P = [`Unwalked` x] writes x back
+        into R untraced; under pressure 63 `Unwalked` are still traced; the
+        turnover's `arm()` gone outside `cap 0`
+      tier: T2 · role: Critic
+- [ ] S65.11 The rfc follows
+      done: `rfc/model/gc/rc-cycle.md` states who finds and who judges, the
+        recall, the parts and P in parts' order; the handshake document
+        records `waiting` as a hint beside E10 and the stamp beside E12;
+        `rfc/model/classes.md` names bits 20–22 of byte 6 as the parking mark
+      tier: T2 · role: Critic
+- [ ] S65.12 The N-mutators-on-N-cores rig, then `cap 0` (package commit 9)
+      done: the rig's three placements measured and recorded; only then the
+        clamp lifted, the elder kept as the clock without takes, and the
+        mutator collecting at its threshold and at the merge under `cap 0`
+      tier: T2 · role: Critic
 
 ## Then: arrays as a performance problem
 

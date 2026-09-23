@@ -35,7 +35,14 @@ Critic](CYCLE-SPLIT-CRITIC-REVIEW.md), [the synthesis of the two
 analyses](CYCLE-SPLIT-SYNTHESIS.md) (Russian), and [the package — the epoch
 clock kept by the collector, the token's recall, the trace in parts, the live
 core stamped from a list](CYCLE-SPLIT-PACKAGE.md) (Russian) with [its
-Critic](CYCLE-SPLIT-PACKAGE-CRITIC.md), whose findings are not yet answered. The
+Critic](CYCLE-SPLIT-PACKAGE-CRITIC.md), then [the second
+version](CYCLE-SPLIT-PACKAGE-2.md) with [its
+Critic](CYCLE-SPLIT-PACKAGE-2-CRITIC.md), and **[the third
+version](CYCLE-SPLIT-PACKAGE-3.md), the design S65 builds**, with [the lane
+amendment](CYCLE-SPLIT-PACKAGE-3-LANE.md) and [its
+Critic](CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md), whose F2 and F3 are the form
+taken (`dev/DECISIONS.md`, "the collector finds and the mutator judges, and a
+recall of the token bounds the mutator's wait instead of the budget"). The
 collector–mutator memory protocol of 2026-09-09 and its review are in
 `docs/history/`, superseded by the collector thread that was built.
 

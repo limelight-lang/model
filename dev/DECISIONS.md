@@ -8,6 +8,63 @@ never edited or deleted.
 
 ---
 
+## 2026-09-23 — the collector finds and the mutator judges, and a recall of the token bounds the mutator's wait instead of the budget
+
+**Decided (Edmond, 2026-09-23), over the review chain of the day**
+(`dev/CYCLE-SPLIT-*.md`, the package at its third version with the lane
+amendment, `dev/CYCLE-SPLIT-PACKAGE-3.md` and `-3-LANE.md`). Built as S65.
+
+**His rulings, as given.**
+- The mutator's performance comes first; every remaining choice is taken by
+  that rule.
+- Line (3) of his algorithm of 2026-09-17 means: the mutator collects by
+  itself only when the memory manager refuses an allocation — the manager
+  then runs the collection at once, on the mutator's own thread, without the
+  collector — and, accepted today, when the embedder sets
+  `ll_gc_set_collector_cap(0)`. In every other case the collector searches
+  and the mutator judges: it validates exactly and frees what the collector
+  proposes. The shipped turnover collection over R whole
+  (`gc.rs`, `arm()` after `reoffer_deferred_if_epoch_moved`, since
+  2026-09-10) and the mutator's trace of `Unwalked` roots (the Sage's ruling
+  of 2026-09-22, "a take's trace is budgeted as one batch's…") contradict it
+  and go.
+- The epoch clock is the collector's state per mutator, in GC memory.
+- The budget exists because the mutator cannot free memory while the
+  collector holds its token; remove that blocker and the collector can have a
+  far larger budget. The form is a recall: the collector hands the token back
+  when the mutator asks, and moves to other mutators.
+- A root whose closure alone exceeds the budget is retried by the collector
+  with a larger budget; a live core is stamped by the mutator from a list,
+  without a trace.
+- "Too much withheld" is the length of the withheld-deaths stack against a
+  limit M; at M the mutator stores `waiting` and carries on.
+- The stop in hooked cells goes into `OutsideCells::walk_concurrent` alone;
+  `walk_plain`, the mutator's path, is unchanged.
+- The live core made only of candidates, which the prune never cuts, stays:
+  the collector pays for it and the mutator does not.
+- The premise sentences of the package's third version, section 12, are
+  accepted whole.
+
+**Decided under his rule, not by him.** The Sage (third version): the
+mutator retires completed deaths of R by a count, without a trace (his
+"option 5" of 2026-09-17); returning slots at once under a foreign trace is
+refused — the stride is chosen by the kind read at the pop and the class word
+is dereferenced before any re-check, so a slot re-issued to another kind in
+between dereferences garbage; M is not doubled. The model: the epoch cell
+stands on the record's hold line rather than in a separate array (no pointer
+and no second block on the mutator's commit); the lane amendment is taken in
+the form the Critic of the amendment gave (a merge counter on R's writer
+line), and K doubles only when a batch filled its clamp
+(`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F2 and F3).
+
+**Refused, with the reason.** Two traces over one heap at once (form B): it
+needs the collector's rows out of the blocks' row arrays and a finer
+protection of memory than withholding. A ladder of budgets: a budget is a cap,
+not a fill. A bit of P's entry for parking: bit 3 is part of an eight-aligned
+promoted survivor's address.
+
+---
+
 ## 2026-09-22 — a record is renamed only while unlinked, and the list's slot stamp is what says so
 
 **The Sage's ruling, `Final`**, on the defect the stage review found and on
