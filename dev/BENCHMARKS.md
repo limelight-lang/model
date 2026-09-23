@@ -8,6 +8,47 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-23 — S65.5 what a mutator waits for under a take in parts: 15 % longer on `disjoint-live`, 4.3× on wide rings, and its collection over P 30× shorter
+
+**The `wait` arm of `cycle::worker::tests::what_a_take_costs`**, added for
+S65.5: the mutator asks for its token at the start of the take's trace, the
+collector stamps the instant it sees the mutator standing in the token's
+wait, and the mutator stamps the instant it holds the token at `POSTED`; the
+sample is the difference. Two binaries: the base is `9f99837` with the
+instrument alone (the hook, the arm and the shape below), the other the same
+with the batch traced in parts — one root's closure per part on the arena
+reset to a watermark above the copy, one block budget per grant — as built
+on the day and not committed (`dev/DECISIONS.md`, "the trace in parts waits
+for the recall and the stack marks"). A new shape, `disjoint-wide-live`, is
+63 live rings of twenty members, one member per block: each ring's rows
+fit the workspace, the 63 touch 1,260 blocks.
+
+**Machine:** dev box, CPU 3 by `taskset`, the two binaries interleaved over
+two rounds. **Method:** release build, 21 samples per arm, the first five
+dropped; median and least of the sixteen, in µs.
+
+| shape, arm | base, round 1 / 2 | parts, round 1 / 2 |
+| --- | ---: | ---: |
+| `disjoint-live`, wait | 130.9 / 131.2 (least 93.8 / 101.8) | 150.8 / 147.7 (least 111.1 / 113.3) |
+| `disjoint-wide-live`, wait | 169.9 / 158.4 (least 133.5 / 135.2) | 703.5 / 685.7 (least 617.4 / 600.6) |
+| `overlapping-live`, wait | 34.5 / 37.9 (least 23.9 / 27.7) | 36.7 / 37.0 (least 24.9 / 25.2) |
+| `disjoint-live`, the mutator's collection over P | 203.2 / 222.7 (least 165.5 / 188.7) | 6.4 / 7.5 (least 4.1 / 5.8) |
+
+The base's batches on both disjoint shapes met the budget at eight blocks and
+came back unwalked; the census of the mutator's collection read 63 roots
+and 315 rows (1,260 on the wide rings). The parts' batches ran 63 parts,
+drew no block and completed; the census read 0 roots and 0 rows.
+`overlapping-live` is one part on both trees.
+
+**The reading.** A batch's block budget does not bound a wait over parts:
+each part takes the workspace above the watermark anew, and the wide rings
+never draw a block. The 15 % on `disjoint-live` is 20 µs; the scan of every
+later root after each part, 1,953 lookups at 63 roots, is of that size, and
+no arm separates it from the resets. What the parts save the mutator is its
+own trace of the 63 roots, 200 µs. The earlier variant that bounded the
+grant's bytes by raising the watermark over each part's workspace was not
+measured here; it failed a batch of 64 roots sharing blocks in the suite.
+
 ## 2026-09-23 — S65.4 the poll with a fourth arming: unmoved, 7.8–7.9 ns minimum on both trees
 
 **Two arms of `cycle::collect::tests::what_the_poll_costs`, two binaries.**

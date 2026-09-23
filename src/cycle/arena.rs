@@ -71,6 +71,20 @@
 //! which is inside mark and scan, so an aborting collection has not reached
 //! its close.
 //!
+//! # A reset to the watermark
+//!
+//! A collector's batch is to trace its roots in parts, one root's closure at
+//! a time, the rows of one part being nothing to the next. Between two parts
+//! the arena is reset to a watermark fixed above the batch's copy of its
+//! roots ([`TraceScratchArena::set_watermark`]): the rows swept, the three
+//! record chains forgotten, the drawn blocks given back and the bump rewound
+//! to the watermark, so that the copy below it stands until the arena's own
+//! [`TraceScratchArena::reset`]. The blocks drawn and the budget met stand
+//! across it. No batch runs in parts yet: each part has the workspace above
+//! the watermark anew, so a block budget does not bound the parts' wait
+//! (`dev/DECISIONS.md`, "the trace in parts waits for the recall and the
+//! stack marks"), and S65.13 switches the parts on.
+//!
 //! # What it does not hold
 //!
 //! A `Vec`, a `HashMap`, or anything else that reaches the global allocator.
@@ -239,7 +253,8 @@ pub(crate) fn refuse_drop_reservation() -> ArmedInjection {
     ArmedInjection::arm(&REFUSE_DROP_RESERVATION)
 }
 
-/// Arm the injection for **one** reset of this thread ([`ArmedInjection`]).
+/// Arm the injection for **one** reset of this thread, to the workspace or to
+/// the watermark ([`ArmedInjection`]).
 ///
 /// The reset it interrupts is left half-done, which is the state a poisoned
 /// hand-back leaves: the rows are swept and the blocks are still the arena's.
@@ -315,6 +330,11 @@ pub(crate) struct TraceScratchArena {
     /// blocks rather than by roots ([`TraceScratchArena::budget_blocks`]).
     drawn: usize,
     block_budget: usize,
+    /// The bump position [`TraceScratchArena::reset_to_the_watermark`]
+    /// rewinds to, in the workspace, or null while none is set; and the bytes
+    /// below it charged to the ledger, which that reset leaves charged.
+    watermark: *mut u8,
+    published_below_the_watermark: usize,
     /// Whether a growth was refused by the budget rather than by the pool:
     /// what tells a batch that met its budget from one the pool refused.
     budget_met: bool,
@@ -439,6 +459,8 @@ impl TraceScratchArena {
             from_reserve: 0,
             drawn: 0,
             block_budget: usize::MAX,
+            watermark: std::ptr::null_mut(),
+            published_below_the_watermark: 0,
             budget_met: false,
             turnovers,
             epoch,
@@ -798,8 +820,69 @@ impl TraceScratchArena {
         self.left = WORKSPACE_BUMP_BYTES;
         self.open_capacity = WORKSPACE_BUMP_BYTES;
 
+        self.watermark = std::ptr::null_mut();
+        self.published_below_the_watermark = 0;
+
         fire_injected_reset_failure();
 
+        self.give_the_blocks_back();
+        self.drawn = 0;
+        self.budget_met = false;
+    }
+
+    /// Fix the watermark at the bump: the bytes granted so far — a collector
+    /// batch's copy of its roots — stand through every
+    /// [`reset_to_the_watermark`](Self::reset_to_the_watermark) and go with
+    /// [`reset`](Self::reset). They are charged to the ledger here, since no
+    /// later growth charges them. Once per collection, before the bump has
+    /// left the workspace.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the batch runs in parts from S65.13")
+    )]
+    pub(crate) fn set_watermark(&mut self) {
+        assert!(
+            self.blocks.is_null() && self.watermark.is_null(),
+            "one watermark per collection, in the workspace"
+        );
+        self.publish(self.residue());
+        self.published_below_the_watermark = self.published;
+        self.watermark = self.cursor;
+        self.open_capacity = self.left;
+    }
+
+    /// End one part of a batch's trace: the rows swept and the record chains
+    /// forgotten as [`sweep_rows`](Self::sweep_rows) does, every block drawn
+    /// since the watermark given back as [`reset`](Self::reset) gives it, and
+    /// the bump rewound to the watermark, whose copy below it stands. What the
+    /// blocks drawn and the budget met say is left standing (module doc, "A
+    /// reset to the watermark").
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the batch runs in parts from S65.13")
+    )]
+    pub(crate) fn reset_to_the_watermark(&mut self) {
+        assert!(!self.watermark.is_null(), "the batch set a watermark");
+        self.sweep_rows();
+        gc_metadata::mark_peak(self.residue());
+        gc_metadata::discharge(self.published - self.published_below_the_watermark);
+        self.published = self.published_below_the_watermark;
+
+        // Ahead of the hand-over, as in [`reset`](Self::reset).
+        let workspace_end =
+            unsafe { BlockHeader::payload_start(self.base.block()).add(BLOCK_PAYLOAD) };
+        self.cursor = self.watermark;
+        self.left = workspace_end as usize - self.watermark as usize;
+        self.open_capacity = self.left;
+
+        fire_injected_reset_failure();
+
+        self.give_the_blocks_back();
+    }
+
+    /// Give every block the bump drew back: what the reserve lent to the
+    /// reserve, the rest to the pool ([`reset`](Self::reset) says why).
+    fn give_the_blocks_back(&mut self) {
         while !self.blocks.is_null() {
             let block = self.blocks;
             self.blocks = unsafe { (*block).next };
@@ -814,8 +897,6 @@ impl TraceScratchArena {
         }
 
         self.from_reserve = 0;
-        self.drawn = 0;
-        self.budget_met = false;
     }
 
     /// Null the shadow-row pointer of every block this collection
@@ -1170,7 +1251,9 @@ impl TraceScratchArena {
         self.block_budget = blocks;
     }
 
-    /// Whether a growth since the last reset was refused by the budget.
+    /// Whether a growth since the last [`reset`](Self::reset) was refused by
+    /// the budget; a [`reset_to_the_watermark`](Self::reset_to_the_watermark)
+    /// leaves the answer standing.
     pub(crate) fn met_its_budget(&self) -> bool {
         self.budget_met
     }
@@ -1245,6 +1328,15 @@ impl TraceScratchArena {
     #[cfg(test)]
     pub(crate) fn blocks_from_reserve(&self) -> usize {
         self.from_reserve
+    }
+
+    /// Blocks drawn above the workspace since the last
+    /// [`reset`](Self::reset), those a
+    /// [`reset_to_the_watermark`](Self::reset_to_the_watermark) gave back
+    /// included. Tests only.
+    #[cfg(test)]
+    pub(crate) fn blocks_drawn(&self) -> usize {
+        self.drawn
     }
 
     /// Blocks this arena holds. Tests only: the number is what a leak

@@ -35,8 +35,9 @@
 //! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff", amended
 //! 2026-09-16 to the whole batch). R's
 //! front advances past the batch only after every verdict is posted, by
-//! one guard that runs from the unwind as well, so that no entry is
-//! consumed without a verdict and none twice. The arena is opened under
+//! one guard that runs from the unwind as well and posts *unwalked* for
+//! every root the unwind left without a verdict ([`FinishThePosts`]), so
+//! that no entry is consumed without a verdict and none twice. The arena is opened under
 //! the grant, one per batch, and is reset before the token goes — on the
 //! unwind as on the return, since its rows stand over the mutator's blocks
 //! (`rfc/dev/design/trace-token-handshake.md`, E2); a workspace the pool
@@ -1933,41 +1934,57 @@ unsafe fn batch(
     // The entries copied out of R, which stay in R until the advance.
     let out = unsafe { std::slice::from_raw_parts_mut(copy, take) };
     let peeked = reader.peek(out);
-    let roots = &out[..peeked.len()];
-    if roots.is_empty() {
+    let taken = peeked.len();
+    if taken == 0 {
         return Served::Idle;
     }
 
+    // From the guard on, every root is owed a verdict and R its advance, on
+    // the unwind too, and the release that follows is to `POSTED`.
+    posted.set(true);
+    let mut posts = FinishThePosts {
+        verdicts: &verdicts,
+        roots: &mut out[..taken],
+        reader: &reader,
+        peeked,
+    };
+    #[cfg(test)]
+    testing::at_the_start_of_the_trace();
     #[cfg(test)]
     let traced_from = std::time::Instant::now();
-    let complete = unsafe { trace(arena, roots) };
+    let complete = unsafe { trace(arena, posts.roots) };
     #[cfg(test)]
     testing::note_traced_batch(|| testing::TracedBatch {
-        roots: roots.len(),
+        roots: taken,
+        parts: 1,
         complete,
         blocks: arena.blocks_held(),
         wall: traced_from.elapsed(),
     });
-    posted.set(true);
-    unsafe { post_the_verdicts(&verdicts, roots, complete) };
+    // A trace that ran to its end gives each root the colour its rows carry;
+    // an abandoned one leaves every root to the guard's `Unwalked`.
+    if complete {
+        for index in 0..taken {
+            let root = posts.root(index);
+            posts.post(index, unsafe { verdict_for(root) });
+        }
+    }
 
-    // Every verdict is posted: from here the advance is owed, and the guard
-    // makes it from the unwind as well.
-    let advance = AdvanceOnDrop(&reader, peeked);
+    posts.post_the_rest_unwalked();
     #[cfg(test)]
     testing::between_the_post_and_the_advance();
-    drop(advance);
+    drop(posts);
     let backlog = reader.has_at_least_by_count(threshold);
 
     let met_budget = arena.met_its_budget();
     arena.reset();
     mutator.note_batch();
     if at_the_threshold {
-        size_the_next_batch(mutator, clamp, roots.len(), complete, met_budget);
+        size_the_next_batch(mutator, clamp, taken, complete, met_budget);
     }
 
     Served::Batch {
-        roots: roots.len(),
+        roots: taken,
         complete,
         backlog,
     }
@@ -2019,38 +2036,62 @@ fn the_copy_in_the_workspace(
     copy
 }
 
-/// The advance a posted batch owes R, made on the unwind as well: past the
-/// last verdict the entries are the collector's answer, and leaving them
-/// unread would hand the same roots to the next batch.
-struct AdvanceOnDrop<'a>(&'a Reader<'a>, crate::ring::Peeked);
+/// Bit 1 of an entry of the batch's copy, set once its root's verdict is
+/// posted. The copy is the collector's own memory and never goes back into
+/// R, and every registered population is at least eight-aligned, so the bit
+/// is clear in every entry R holds (`crate::cycle::queue`, "The shape").
+const HAS_A_VERDICT: usize = 2;
 
-impl Drop for AdvanceOnDrop<'_> {
-    fn drop(&mut self) {
-        self.0.commit(self.1);
+/// The batch's posts, one per root of its copy, and the advance they owe R.
+/// Every root left without a verdict — all of them, when the trace was
+/// abandoned or unwound — is posted [`Verdict::Unwalked`] at the drop, on
+/// the return and on the unwind alike, and R advances past the batch once,
+/// after the last post: no entry is consumed without a verdict and none is
+/// posted twice. Past the last verdict the entries are the collector's
+/// answer, and leaving them unread would hand the same roots to the next
+/// batch.
+struct FinishThePosts<'a> {
+    verdicts: &'a VerdictWriter<'a>,
+    /// The copy's entries, [`HAS_A_VERDICT`] set on each root posted.
+    roots: &'a mut [usize],
+    reader: &'a Reader<'a>,
+    peeked: crate::ring::Peeked,
+}
+
+impl FinishThePosts<'_> {
+    fn root(&self, index: usize) -> *mut RcHeader {
+        crate::cycle::queue::entry_root(self.roots[index] & !HAS_A_VERDICT)
+    }
+
+    fn has_a_verdict(&self, index: usize) -> bool {
+        self.roots[index] & HAS_A_VERDICT != 0
+    }
+
+    /// Post `verdict` for the root at `index`, which has none yet.
+    fn post(&mut self, index: usize, verdict: Verdict) {
+        debug_assert!(!self.has_a_verdict(index), "one verdict per root");
+        self.verdicts
+            .post(self.root(index), verdict)
+            .expect("the batch was clamped to P's room");
+        self.roots[index] |= HAS_A_VERDICT;
+    }
+
+    /// Post [`Verdict::Unwalked`] for every root still without a verdict: no
+    /// colour of an abandoned trace is a verdict (`rfc/model/gc/rc-cycle.md`,
+    /// "Speculative tracing and exact validation").
+    fn post_the_rest_unwalked(&mut self) {
+        for index in 0..self.roots.len() {
+            if !self.has_a_verdict(index) {
+                self.post(index, Verdict::Unwalked);
+            }
+        }
     }
 }
 
-/// Post one verdict per root of `roots`, in the order the batch read them.
-///
-/// A trace that ran to its end gives each root the colour its rows carry;
-/// an abandoned one posts [`Verdict::Unwalked`] for every root, the batch
-/// having no reading to offer (`rfc/model/gc/rc-cycle.md`, "Speculative
-/// tracing and exact validation").
-///
-/// # Safety
-/// `roots` are the entries this batch copied out of R under the token, and
-/// `verdicts` is the writer opened over the same mutator.
-unsafe fn post_the_verdicts(verdicts: &VerdictWriter, roots: &[usize], complete: bool) {
-    for &entry in roots {
-        let root = crate::cycle::queue::entry_root(entry);
-        let verdict = if complete {
-            unsafe { verdict_for(root) }
-        } else {
-            Verdict::Unwalked
-        };
-        verdicts
-            .post(root, verdict)
-            .expect("the batch was clamped to P's room");
+impl Drop for FinishThePosts<'_> {
+    fn drop(&mut self) {
+        self.post_the_rest_unwalked();
+        self.reader.commit(self.peeked);
     }
 }
 

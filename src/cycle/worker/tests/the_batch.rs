@@ -370,6 +370,52 @@ fn the_advance_follows_the_last_post_from_the_unwind_as_well() {
     reset_lanes();
 }
 
+/// An unwind inside the trace, before any verdict: the guard posts every root
+/// `Unwalked` and advances R past them once, so the roots come back to the
+/// mutator's exact trace rather than standing in R for the next batch, and the
+/// release is to `POSTED`.
+#[test]
+fn an_unwind_inside_the_trace_posts_every_root_unwalked_and_advances_once() {
+    let _g = test_guard();
+    reset_lanes();
+    let node = node_class("TraceUnwindNode");
+    let mut arena = Arena::new();
+    let (_, keeper_a) = unsafe { kept_root(&mut arena, node, "TraceUnwindKeeperA") };
+    let (_, keeper_b) = unsafe { kept_root(&mut arena, node, "TraceUnwindKeeperB") };
+
+    testing::at_the_start_of_the_next_trace(Box::new(|| {
+        panic!("a trace unwound before its first verdict, by the case's request")
+    }));
+    let sent = Sent(record());
+    let outcome = testing::consent_while(std::thread::spawn(move || {
+        assert!(crate::memory::heap::ll_thread_init());
+        let record = sent.into_inner();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            testing::serve_alone(record)
+        }))
+    }));
+    assert!(outcome.is_err(), "the trace panicked where the case asked");
+    assert_eq!(candidate_count(), 0, "the guard advanced R past the batch");
+    assert_eq!(
+        verdicts(),
+        vec![Verdict::Unwalked; 2],
+        "each root once, unwalked"
+    );
+    assert_eq!(
+        crate::cycle::token::state(unsafe { &*record() }.token.read()),
+        crate::cycle::token::POSTED,
+        "and the release was to POSTED"
+    );
+
+    discard_standing_verdicts();
+    unsafe { &*record() }.token.clear_posted_for_test();
+    unsafe {
+        release_keeper(keeper_a);
+        release_keeper(keeper_b);
+    }
+    reset_lanes();
+}
+
 /// The mutator's own claim, `MUTATOR` on the byte from its take through its
 /// close, is what a collector's claim fails on: the collecting word is the
 /// mutator's own gate and the collector never reads it.

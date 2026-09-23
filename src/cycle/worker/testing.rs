@@ -290,12 +290,13 @@ pub(crate) fn note_refusal() {
 
 /// What one batch's trace did, for the probe that reads a take's cost by
 /// the shape of its roots (`dev/BENCHMARKS.md`, "S64.5 what a take costs by
-/// the shape of its roots"): the roots the trace walked, whether it ran to
-/// its end, the blocks its arena drew above the workspace, and the wall of
-/// the two phases.
+/// the shape of its roots"): the roots the trace walked, the parts it opened,
+/// whether it ran to its end, the blocks its arena drew above the workspace,
+/// and the wall of the two phases.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct TracedBatch {
     pub(crate) roots: usize,
+    pub(crate) parts: usize,
     pub(crate) complete: bool,
     pub(crate) blocks: usize,
     pub(crate) wall: std::time::Duration,
@@ -427,6 +428,18 @@ impl OneShot {
             act();
         }
     }
+}
+
+/// At the start of the next batch's trace, on the collector's thread, for
+/// the probe whose mutator asks for its token while the trace runs.
+static AT_THE_NEXT_TRACE: OneShot = OneShot::new();
+
+pub(crate) fn at_the_start_of_the_next_trace(act: Box<dyn FnOnce() + Send>) {
+    AT_THE_NEXT_TRACE.install(act);
+}
+
+pub(crate) fn at_the_start_of_the_trace() {
+    AT_THE_NEXT_TRACE.run();
 }
 
 /// Between the pre-claim reading's take of the mutator's blocks and its

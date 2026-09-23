@@ -400,18 +400,61 @@ them.
         slot reuse", amended; the 2026-09-18 poll ruling bannered. Miri owed
         at the stage's close for the pass under the token and the reordered
         state line
-- [ ] S65.5 The trace runs in parts (package commit 3)
-      done: a reset to the watermark above the root copy, a `judged` bit, posts
-        per part and `FinishThePosts`; the block budget stays one per grant
-        in this step — the reset to the watermark returns the blocks and
-        leaves `drawn` standing, so a grant of K parts reads no more than
-        today's one trace (`dev/S65-PLAN-CRITIC.md` F3; S65.6 lifts it); the
-        batch [r1, r3, r2] case posts exactly three verdicts; `disjoint-live`
-        in 63 parts with the mutator's census at 0 roots and 0 rows; a token
-        requested during the first of 63 parts waits no longer than on
-        today's tree, measured; `rfc/model/gc/rc-cycle.md` says P is posted
-        in the parts' order and R advanced once after the last
+- [x] S65.5 The machinery of the parts, the batch still traced once (package
+      commit 3, first half)
+      done: a reset to the watermark above the root copy with the blocks
+        drawn and the budget met standing, tested at the arena (blocks back,
+        copy kept, the budget the batch's, the ledger at the copy's charge
+        after each reset and at nothing after the arena's, an interrupted
+        reset finished by the drop); the verdict bit of the copy
+        (`HAS_A_VERDICT` — the plan's `judged`, whose stem the vocabulary
+        guard retires) and `FinishThePosts`, which posts `Unwalked` for every
+        root an unwind left without a verdict and then advances; the wait
+        arm of `what_a_take_costs`; the rfc's handshake row and the batch's
+        guard sentence say what the unwind posts. Amended 2026-09-23 from
+        running the parts under one block budget per grant, which the
+        measurement refuted (`dev/DECISIONS.md`, "the trace in parts waits
+        for the recall and the stack marks"); the parts and their clauses
+        are S65.13
       tier: T2 · role: Critic
+      baseline 2026-09-23, `9f99837` with the instrument alone, release,
+        CPU 3: a mutator asking for its token at the trace's start waited
+        129.5 µs median, 96.0 µs least on `disjoint-live` (the trace met the
+        budget at 8 blocks, every root unwalked), 38.3 / 29.2 µs on
+        `overlapping-live`; the mutator's collection over P on
+        `disjoint-live` 220.5 / 180.9 µs, census 63 roots, 315 rows. The
+        batch posted in R's order after one trace; an unwind in the trace
+        released to `FREE` with R untouched
+      red 2026-09-23 on `9f99837`: the [r1, r3, r2] case read one part
+        against two. The parts were built and measured
+        (`dev/BENCHMARKS.md`, "S65.5 what a mutator waits for under a take
+        in parts"): 63 parts on `disjoint-live`, census 0 roots, the
+        mutator's collection 6–8 µs, its wait 148–151 µs against 131 µs, and
+        686–703 µs against 158–170 µs on the wide rings of F3's case
+      Critic 2026-09-23: six findings over the parts. (1) The block budget
+        bounds blocks, not the workspace each part takes anew, and K doubles
+        to 1024 on the shapes the parts complete — accepted, the parts wait
+        for S65.13. (2) The scan of every later root after each part is
+        K²/2 lookups under the grant — carried to S65.13. (3) No case could
+        redden the watermark's mechanism — the four arena cases above. (4)
+        F3's withheld memory and the running K unmeasured — S65.13. (5)
+        Comments the parts made false — gone with the parts. (6) The rfc's
+        "every root behind it", "one snapshot" and "bounded by K parts" —
+        the amendment waits for S65.13. The disposition asked of it, S65.5
+        merged with S65.6, refused: the recall fires only on the mutator's
+        ask. Mutations, each red on its case: the drop's posts, the guard
+        after the trace, the drawn count zeroed at the watermark, the
+        discharge dropped, a discharge of the copy's charge, the rewind to
+        the workspace's start, the sweep dropped, the copy uncharged, the
+        verdict bit unset (the process aborts on the second post)
+      handoff: `worker::FinishThePosts` holds the posts and the advance,
+        `HAS_A_VERDICT` is bit 1 of the copy; `TraceScratchArena::`
+        `set_watermark` and `reset_to_the_watermark` carry an
+        `expect(dead_code)` naming S65.13. The parts' own code is in no
+        commit; what S65.13 owes against it is the decision's "What S65.13
+        inherits from the built parts". Edmond owes a ruling on the trade the
+        decision names. Miri owed at the stage's close for the arena's four
+        watermark cases and `the_batch`'s posts through the guard
 - [ ] S65.6 The token's recall (package commit 4)
       done: `waiting` set in `take_unless`, checked every N inspected
         positions in both phases — a position is a Vector element, a Hash
@@ -422,9 +465,8 @@ them.
         `walk_concurrent` stop on `ControlFlow` (the customers' concurrent
         walk only, named as their change); the release after a recall is
         `FinishThePosts` (at most K verdicts and one advance) and one reset,
-        and the contract names both; the per-part budget of the package's
-        section 7 is switched on here, S65.5's per-grant bound gone; the
-        budget's two comments say it bounds the arena; a pressure collection
+        and the contract names both; the budget's two comments say it bounds
+        the arena; a pressure collection
         under a grant raised after the mark waits at most N positions, the
         posts and a reset — over a scalar Vector of 10⁶ cells, a sparse Hash,
         an object of null fields and a hooked storage, the interval measured
@@ -437,6 +479,26 @@ them.
         each, `waiting` stored at the limit with no block; a mutator freeing
         under a grant recalls it at M and never waits; the withheld-free arm
         of `what_a_foreign_holder_costs` within its spread
+      tier: T2 · role: Critic
+- [ ] S65.13 The batch runs in parts (package commit 3, second half)
+      done: parts on, each with the block budget of its own, after the recall
+        and the marks bound the wait and the withheld memory; dead and
+        untracked roots posted before any part, and a part's met roots found
+        from its touched list against the copy sorted by address, so that no
+        part scans the later roots (`dev/DECISIONS.md`, "the trace in parts
+        waits for the recall and the stack marks", "What S65.13 inherits
+        from the built parts");
+        the [r1, r3, r2] case — two parts, three posts; a batch whose second
+        part meets the budget; an unwind inside the second part, the first
+        part's verdicts and then `Unwalked`, each once; `disjoint-live` with
+        the mutator's census at 0 roots and 0 rows; the wait of a mutator
+        asking for its token and the memory one freeing through the grant
+        withholds, on `disjoint-live` and `disjoint-wide-live` with K grown
+        by `size_the_next_batch` until it stops, against today's tree; the
+        `rfc/model/gc/rc-cycle.md` batch paragraph says P is posted in the
+        parts' order, R advanced once after the last, `Unwalked` for every
+        root still without a verdict, a part's verdicts resting on the
+        owner's exact validation
       tier: T2 · role: Critic
 - [ ] S65.8 The live core stamped from a list (package commit 6)
       done: one chain per grant of at most L blocks, its head on the hold

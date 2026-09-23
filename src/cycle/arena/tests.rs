@@ -41,4 +41,5 @@ fn met_first(answer: RowLookup) -> (*mut u32, bool) {
 mod the_rows_a_block_gets_at_its_first_touch;
 mod the_workspace_a_thread_holds_for_its_life;
 mod what_a_met_row_answers;
+mod what_a_reset_to_the_watermark_gives_back;
 mod what_the_arena_gives_back;

@@ -8,6 +8,64 @@ never edited or deleted.
 
 ---
 
+## 2026-09-23 — the trace in parts waits for the recall and the stack marks
+
+**Decided (model, over the Critic of S65.5, the same day):** the collector's
+batch keeps its one trace over every root until the recall of the token
+(S65.6) and the marks by stack length (S65.7) bound what a mutator waits and
+withholds under a grant; S65.13 switches the parts on after them. S65.5
+lands the machinery the parts need — the posts' guard
+(`worker::FinishThePosts`), the verdict bit of the collector's copy and the
+arena's reset to a watermark above the copy — with the batch still traced
+once.
+
+**Why the plan's temporary bound fell.** The plan ran the parts in S65.5
+under one block budget per grant, the reset to the watermark leaving `drawn`
+standing, on the premise that the parts of a grant then read no more than one
+trace did (`dev/S65-PLAN-CRITIC.md`, F3, the bound it chose among three). The
+premise is false: the budget counts blocks drawn above the workspace, and
+each part takes the workspace above the watermark anew, so a grant's rows are
+bounded by K workspaces plus B blocks against one workspace plus B blocks
+today. Measured on the built parts (`dev/BENCHMARKS.md`, "S65.5 what a
+mutator waits for under a take in parts"): a mutator asking for its token at
+the trace's start waited 148–151 µs against 131 µs on `disjoint-live`, and
+686–703 µs against 158–170 µs on 63 rings of twenty members, each ring
+fitting the workspace. K doubles after every completed batch that took its
+clamp, and parts complete exactly the shapes whose batches today meet the
+budget and halve K, so the running figure is K = 1024 parts and not 63. The
+stage's rule forbids any step to lengthen the wait or the withheld memory of
+a mutator under a grant beyond today's until the recall bounds it, so the
+parts cannot ship before it.
+
+**Refused.** A byte bound over the grant, the watermark rising over the
+workspace each part spent: it held the wait, and failed
+`the_batch::a_batch_is_clamped_to_ps_room_and_to_k`, whose 64 roots share
+blocks and fit one trace, because each part draws its row array and its
+worklist segment again. No count of memory bounds the parts' wait by today's
+per workload, since parts re-trace a shared acyclic subgraph once per root
+over the same bytes (the Critic's case). Merging S65.5 with S65.6 alone:
+S65.6's recall fires only when the mutator asks for its token, and one that
+keeps freeing through the grant is bounded by S65.7's marks alone.
+
+**What S65.13 inherits from the built parts** (their code is in no commit;
+the Critic's findings stand against it): the scan of every later root after
+each part is K²/2 lookups under the grant, 523,776 at K = 1024, and goes —
+dead and untracked roots are posted in a pass before any part, and a part's
+met roots are found from its touched list against the copy sorted by address;
+a batch at budget one whose second part meets it, and an unwind inside the
+second part, each get a case; the rfc's sentence names "every root still
+without a verdict", rests the verdicts of a part on the owner's exact
+validation rather than on one snapshot, and states no bound by parts.
+
+**Open for Edmond.** On `disjoint-live` the parts halve what the mutator
+pays in total — its wait and its collection over P, 131 + 203–223 µs today
+against 148–151 + 6–8 µs — while its wait alone grows by 15 %, which the
+stage's rule forbids; at K = 1024 on the wide rings the trade reverses by two
+orders of magnitude (arithmetic, not measured). The rule stands as written
+until he rules on the trade.
+
+---
+
 ## 2026-09-23 — the collector finds and the mutator judges, and a recall of the token bounds the mutator's wait instead of the budget
 
 **Decided (Edmond, 2026-09-23), over the review chain of the day**

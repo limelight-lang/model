@@ -168,6 +168,23 @@ const DISJOINT_LIVE: Shape = Shape {
     ..DISJOINT
 };
 
+/// Members of each ring of the wide disjoint shape, one per block: twenty,
+/// so that one ring's rows, about 41 KiB of row arrays, fit the workspace
+/// above the copy, while the 63 rings touch 1 260 blocks, over four times
+/// what one trace under [`TRACE_BLOCK_BUDGET`] can hold.
+const WIDE_RING_MEMBERS: usize = 20;
+
+/// The live disjoint shape with rings each a part fills the workspace with:
+/// the case the plan's Critic names against the trace in parts
+/// (`dev/S65-PLAN-CRITIC.md`, F3), where every part fits and their union
+/// passes the budget, so that a grant in parts runs longer than one trace
+/// over the same roots.
+const DISJOINT_WIDE_LIVE: Shape = Shape {
+    name: "disjoint-wide-live",
+    members: WIDE_RING_MEMBERS,
+    ..DISJOINT_LIVE
+};
+
 /// Members of each ring of the mixed shapes: six, so that the 63 components
 /// hold 378 objects — the corpus's median closure cut into 63 pieces — and
 /// their rows, dense, fit the trace's budget with no block drawn, which is
@@ -407,12 +424,16 @@ fn the_collection(
 /// One sample of the take arm: the elder takes the standing ring after the
 /// interval, the collector is retired, and the mutator's collection over P
 /// follows. The batch is the collector's own reading of its trace.
+///
+/// With `ask`, the mutator asks for its token at the start of the take's
+/// trace ([`asked_at_the_trace`]), and the sample carries what it waited.
 fn a_take(
     shape: Shape,
     class: *const Class,
     reading: Reading,
     control: &mut Option<Control>,
-) -> (Vec<testing::TracedBatch>, Collected, bool) {
+    ask: bool,
+) -> (Vec<testing::TracedBatch>, Collected, bool, Option<Duration>) {
     let mut arena = Arena::new();
     let built = unsafe { build(&mut arena, class, shape) };
     assert_eq!(
@@ -421,13 +442,24 @@ fn a_take(
         "R holds the shape's roots and nothing else"
     );
 
+    let asking = ask.then(asked_at_the_trace);
     testing::take_standing_after(Some(INTERVAL));
     testing::read_traced_batches(true);
     born_over(&[record()]);
     let mut batches = Vec::new();
+    let mut held_at = None;
     assert!(
         wait_until(
             || {
+                if let Some((asked, _)) = asking.as_ref()
+                    && asked.try_recv().is_ok()
+                {
+                    // At `POSTED` the hold leaves the byte as it stands, so
+                    // that the collection over P below reads the verdicts.
+                    drop(crate::cycle::token::HeldToken::take_or_hold_posted());
+                    held_at = Some(Instant::now());
+                }
+
                 batches.extend(testing::take_traced_batches());
                 !batches.is_empty()
             },
@@ -435,6 +467,13 @@ fn a_take(
         ),
         "the standing ring was taken inside the interval"
     );
+    let waited = asking.map(|(_, waiting_from)| {
+        let from = waiting_from
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .expect("the mutator stood in the token's wait before the trace went on");
+        held_at.expect("the mutator asked for its token") - from
+    });
     testing::read_traced_batches(false);
     testing::retire();
     testing::take_standing_after(None);
@@ -471,7 +510,40 @@ fn a_take(
     // member it decrements (`cycle::testing::dismantle_ring`), so R would
     // carry the last sample's dead members into the next one's reading.
     reset_lanes();
-    (batches, collected, whole)
+    (batches, collected, whole, waited)
+}
+
+/// The mutator's side of the ask: a receiver the next trace's start sends to,
+/// and the instant the mutator was seen standing in its token's wait, which
+/// the collector stamps before its trace goes on — so that the wait is timed
+/// from inside the token's wait rather than from the mutator's next reading of
+/// the receiver, a millisecond's sleep apart.
+fn asked_at_the_trace() -> (
+    std::sync::mpsc::Receiver<()>,
+    std::sync::Arc<std::sync::Mutex<Option<Instant>>>,
+) {
+    let (ask, asked) = std::sync::mpsc::channel();
+    let waiting_from = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let stamp = std::sync::Arc::clone(&waiting_from);
+    let token = unsafe { &raw const (*record()).token } as usize;
+    testing::at_the_start_of_the_next_trace(Box::new(move || {
+        let token = unsafe { &*(token as *const crate::cycle::token::TraceToken) };
+        let before = token.waits();
+        let _ = ask.send(());
+        let deadline = Instant::now() + A_BIRTH;
+        while token.waits() == before {
+            assert!(
+                Instant::now() < deadline,
+                "the mutator stood in its token's wait"
+            );
+            std::hint::spin_loop();
+        }
+
+        *stamp
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+    }));
+    (asked, waiting_from)
 }
 
 /// One sample of the baseline: the same rings, no collector, and the
@@ -591,6 +663,10 @@ fn median(samples: &mut [Duration]) -> Duration {
 enum Arm {
     /// The take, then the mutator's collection over P.
     Take,
+    /// The take with the mutator asking for its token at the start of the
+    /// trace: the sample is what it waited, from inside the token's wait to
+    /// its hold.
+    Wait,
     /// No take, and the mutator's collection over R whole.
     Baseline,
     /// The baseline a second time, whose difference from the first is the
@@ -602,6 +678,7 @@ impl Arm {
     fn name(self) -> &'static str {
         match self {
             Arm::Take => "take",
+            Arm::Wait => "wait",
             Arm::Baseline => "baseline",
             Arm::Control => "control",
         }
@@ -624,36 +701,41 @@ fn the_arm(
     let mut walls = Vec::with_capacity(SAMPLES);
     let mut traced = Vec::new();
     for sample in 0..SAMPLES {
-        let collected = match arm {
-            Arm::Take => {
+        let (collected, waited) = match arm {
+            Arm::Take | Arm::Wait => {
                 let mut taken = None;
                 for _ in 0..SHORT_TAKE_RETRIES {
-                    let (batches, collected, whole) = a_take(shape, class, Reading::Wall, control);
+                    let (batches, collected, whole, waited) =
+                        a_take(shape, class, Reading::Wall, control, arm == Arm::Wait);
                     if whole {
-                        taken = Some((batches, collected));
+                        taken = Some((batches, collected, waited));
                         break;
                     }
                 }
 
-                let (batches, collected) = taken.expect("a take carried the ring whole");
+                let (batches, collected, waited) = taken.expect("a take carried the ring whole");
                 if sample >= WARM_UP {
                     traced.extend(batches);
                 }
 
-                collected
+                (collected, waited)
             }
-            Arm::Baseline | Arm::Control => collected_in_line(shape, class, Reading::Wall, control),
+            Arm::Baseline | Arm::Control => (
+                collected_in_line(shape, class, Reading::Wall, control),
+                None,
+            ),
         };
         if sample >= WARM_UP {
-            walls.push(collected.wall);
+            walls.push(waited.unwrap_or(collected.wall));
         }
     }
 
     let counted = match arm {
-        Arm::Take => {
+        Arm::Take | Arm::Wait => {
             let mut taken = None;
             for _ in 0..SHORT_TAKE_RETRIES {
-                let (_, collected, whole) = a_take(shape, class, Reading::Census, &mut None);
+                let (_, collected, whole, _) =
+                    a_take(shape, class, Reading::Census, &mut None, false);
                 if whole {
                     taken = Some(collected);
                     break;
@@ -690,19 +772,29 @@ fn what_a_take_costs_by_the_shape_of_its_roots() {
         builder.build()
     };
 
-    let shapes = [OVERLAPPING, DISJOINT, OVERLAPPING_LIVE, DISJOINT_LIVE]
-        .into_iter()
-        .chain(MIXED);
+    let shapes = [
+        OVERLAPPING,
+        DISJOINT,
+        OVERLAPPING_LIVE,
+        DISJOINT_LIVE,
+        DISJOINT_WIDE_LIVE,
+    ]
+    .into_iter()
+    .chain(MIXED);
     for shape in shapes {
-        for arm in [Arm::Take, Arm::Baseline, Arm::Control] {
+        for arm in [Arm::Take, Arm::Wait, Arm::Baseline, Arm::Control] {
             if !selected(shape, arm.name()) {
                 continue;
             }
 
             let (mut walls, traced, report, freed) = the_arm(arm, shape, class, &mut control);
             let smallest = walls.iter().copied().min().expect("the arm has samples");
+            let sampled = match arm {
+                Arm::Wait => "the mutator's wait for its token",
+                _ => "the mutator's collection",
+            };
             println!(
-                "{} over the {} shape: the mutator's collection {:?}, least {:?} \
+                "{} over the {} shape: {sampled} {:?}, least {:?} \
                  (of {} samples), freeing {} of the shape's {} members, {} of which \
                  stand in live rings; the collector's batches {:?}; the census reads {}",
                 arm.name(),
