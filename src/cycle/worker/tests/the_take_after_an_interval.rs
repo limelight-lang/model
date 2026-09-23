@@ -392,10 +392,10 @@ fn a_grant_that_makes_no_batch_restarts_the_instant() {
 }
 
 /// The round reads the serve clock once per record, and the take and the
-/// turnover ask share that reading: a record whose ring the round stamps
+/// epoch's advance share that reading: a record whose ring the round stamps
 /// carries the same instant in both words.
 #[test]
-fn one_visits_clock_reading_is_shared_by_the_take_and_the_ask() {
+fn one_visits_clock_reading_is_shared_by_the_take_and_the_advance() {
     let _g = test_guard();
     reset_lanes();
     let _interval = StandingInterval::of(Duration::from_secs(60));
@@ -405,7 +405,8 @@ fn one_visits_clock_reading_is_shared_by_the_take_and_the_ask() {
         let _ = unsafe { long_ring(arena, class.into_inner(), STANDING_RING) };
     });
     let record = unsafe { &*mutator.record };
-    record.note_served_at(0);
+    let _ = record.take_new_life();
+    record.note_advanced_at(0);
     record.name_to_collector(SLOT);
     testing::confine_rounds_to(mutator.record);
     let mut standing = Standing::new(SLOT);
@@ -416,8 +417,8 @@ fn one_visits_clock_reading_is_shared_by_the_take_and_the_ask() {
     assert_ne!(stood_since, 0, "the round stamped the standing ring");
     assert_eq!(
         stood_since,
-        record.served_at(),
-        "and the ask after the serve read the same instant"
+        record.advanced_at(),
+        "and the epoch's first visit after the serve stamped the same instant"
     );
 
     testing::confine_rounds_to_records(&[]);

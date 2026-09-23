@@ -10,6 +10,17 @@ collector's own, and no request count is capped"). Built by `PLAN.md`'s
 S64, opened 2026-09-22, whose steps are where a part of it stands or does
 not; not normative until the `rfc` states the take at the stage's close.
 
+**Superseded in part 2026-09-23 (S65.2).** The epoch clock is the
+collector's cell, advanced after X of its clock or 64 of its batches
+(`dev/DECISIONS.md`, "the collector finds and the mutator judges, and a
+recall of the token bounds the mutator's wait instead of the budget"), so
+"The turnover request (S60)" under "Interactions" describes a mechanism that
+is gone: `ask_for_a_turnover_if_quiet`, `clock_stood_since_the_stamp` and
+`served_at` were deleted, and its premise was false — a collection over
+all-live verdicts closes a commit, which is the defect S65.2 repaired. The
+embedder's X is `ll_gc_set_epoch_interval`, and the standing instant is on
+the serve clock with no second word beside it. The take itself stands.
+
 ## The rule
 
 The collector visits every mutator's record on its own timer. A mutator

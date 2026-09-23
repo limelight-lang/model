@@ -499,9 +499,9 @@ pub(crate) struct ActiveTrace {
     arena: crate::cycle::arena::TraceScratchArena,
     /// Whether [`close`](Self::close) has run, so that [`Drop`] runs it once.
     closed: bool,
-    /// The commit count the marked pass saw; `Some` selects the deferred
-    /// disposition at the close ([`Self::dispose_batch_on_close`]).
-    defer_at_commits: Option<u64>,
+    /// The epoch cell as the marked pass's reading saw it; `Some` selects the
+    /// deferred disposition at the close ([`Self::dispose_batch_on_close`]).
+    defer_at_turnovers: Option<u64>,
     // A window belongs to the TLS state of the thread that opened it. Moving
     // the guard would close another thread's window and strand this one's.
     _not_send: std::marker::PhantomData<std::rc::Rc<()>>,
@@ -531,7 +531,7 @@ impl ActiveTrace {
             returns,
             arena,
             closed: false,
-            defer_at_commits: None,
+            defer_at_turnovers: None,
             _not_send: std::marker::PhantomData,
         })
     }
@@ -616,7 +616,7 @@ impl ActiveTrace {
     /// defer it, or leave it for the retirement pass.
     pub(crate) fn close_and_take_batch(mut self) -> crate::cycle::queue::Batch {
         assert!(
-            self.defer_at_commits.is_none(),
+            self.defer_at_turnovers.is_none(),
             "a reading that chose the deferred lane cannot hand its batch on"
         );
         self.close(false);
@@ -660,17 +660,17 @@ impl ActiveTrace {
     }
 
     /// Select the mutator-side disposition for the trace's original records: the
-    /// marked pass, with `at_commits` the commit count the reading that set
-    /// those marks saw (`crate::cycle::queue::dispose_candidates`).
+    /// marked pass, with `at_turnovers` the epoch cell as the reading that set
+    /// those marks saw it (`crate::cycle::queue::dispose_candidates`).
     ///
     /// A close that never reaches this leaves the batch in the ring whole,
     /// which is every path that gave up before the commit.
-    pub(crate) fn dispose_batch_on_close(&mut self, at_commits: u64) {
+    pub(crate) fn dispose_batch_on_close(&mut self, at_turnovers: u64) {
         assert!(
             self.batch.is_some(),
             "only a batch that was read has a disposition"
         );
-        self.defer_at_commits = Some(at_commits);
+        self.defer_at_turnovers = Some(at_turnovers);
     }
 
     /// The ordered close: sweep the rows, dispose of the batch, make the
@@ -702,8 +702,9 @@ impl ActiveTrace {
         self.arena.sweep_rows();
         self.returns.rows_are_gone();
         if dispose_batch {
-            if let (Some(batch), Some(at_commits)) = (self.batch.take(), self.defer_at_commits) {
-                crate::cycle::queue::dispose_candidates(batch, at_commits);
+            if let (Some(batch), Some(at_turnovers)) = (self.batch.take(), self.defer_at_turnovers)
+            {
+                crate::cycle::queue::dispose_candidates(batch, at_turnovers);
             }
         }
 

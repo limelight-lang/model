@@ -127,22 +127,22 @@ pub(crate) fn threshold_for_rounds() -> Option<usize> {
     }
 }
 
-/// The quiet interval the thread's rounds ask a turnover at, in
-/// nanoseconds, or zero for the module's own: a case that reads the ask
+/// The epoch interval the thread's rounds advance a mutator's epoch at, in
+/// nanoseconds, or zero for the module's own: a case that reads the advance
 /// sets it below its own wait.
-static QUIET_NANOS: AtomicU64 = AtomicU64::new(0);
+static EPOCH_NANOS: AtomicU64 = AtomicU64::new(0);
 
-/// Ask a turnover of a quiet mutator after `interval`, or after the
-/// module's own for `None`.
-pub(crate) fn ask_turnovers_after(interval: Option<std::time::Duration>) {
-    QUIET_NANOS.store(
+/// Advance a mutator's epoch after `interval` of the collector's clock, or
+/// after the module's own for `None`.
+pub(crate) fn advance_epochs_after(interval: Option<std::time::Duration>) {
+    EPOCH_NANOS.store(
         interval.map_or(0, |interval| interval.as_nanos() as u64),
         Ordering::Relaxed,
     );
 }
 
-pub(crate) fn quiet_interval() -> Option<std::time::Duration> {
-    match QUIET_NANOS.load(Ordering::Relaxed) {
+pub(crate) fn epoch_interval() -> Option<std::time::Duration> {
+    match EPOCH_NANOS.load(Ordering::Relaxed) {
         0 => None,
         nanos => Some(std::time::Duration::from_nanos(nanos)),
     }
@@ -616,11 +616,11 @@ pub(crate) fn retire() {
     confine_rounds_to_records(&[]);
     serve_rounds_at(0);
     wait_between_rounds_for(None);
-    ask_turnovers_after(None);
+    advance_epochs_after(None);
     take_standing_after(None);
     cap_expired_waits_at(None);
     super::set_collector_cap(super::DEFAULT_COLLECTOR_CAP);
-    super::set_quiet_interval(std::time::Duration::ZERO);
+    super::set_epoch_interval(std::time::Duration::ZERO);
     super::set_standing_interval(std::time::Duration::ZERO);
     let _ = take_rounds();
     let _ = take_round_times();

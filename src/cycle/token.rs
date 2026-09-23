@@ -242,8 +242,7 @@ impl TraceToken {
     /// every other value a holder or another collector's request. The failure
     /// is acquire too: a standing request answered on the free path is read
     /// through this failure as `COLLECTOR`, and the grant it reads must carry
-    /// the stores the mutator's consent released — its jumped counter among
-    /// them (`crate::cycle::queue::answer_a_turnover_request`).
+    /// the stores the mutator's consent released.
     pub(crate) fn request(&self, slot: usize) -> Result<(), u8> {
         self.word
             .compare_exchange(

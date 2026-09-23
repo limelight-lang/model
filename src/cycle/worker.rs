@@ -54,26 +54,26 @@
 //! would otherwise double K toward the bound on a thread that has produced
 //! no batch at all.
 //!
-//! # The quiet thread
+//! # The epoch clock
 //!
-//! A mutator's epoch moves at its own commits (`crate::cycle::epoch`), and
-//! a thread that registers nothing commits nothing: its deferred lane would
-//! wait for a turnover that never comes. So the round asks. After a serve
-//! that reached nothing, with the mutator's clock where the collector last
-//! stamped it and [`QUIET_INTERVAL`] — X, the rfc's letter for it
-//! (`rfc/model/gc/cycle/questions.md`, Y9) — passed since that stamp, the
-//! collector stores a request byte on the record's token line
-//! ([`MutatorRecord::request_a_turnover`]) and restamps; the mutator's poll
-//! answers by moving its own clock to the next turnover and re-offering the
-//! lane (`crate::cycle::queue::answer_a_turnover_request`). What decides
-//! the restamp is the clock and nothing else: a serve that found it moving
-//! restamps and asks nothing, since those stamps age on their own, and one
-//! that found it standing lets the stamp stand whatever the serve reached.
-//! A batch is no evidence of a moving clock — a batch whose verdicts all
-//! read live leaves the mutator a collection that commits nothing — so a
-//! thread batched oftener than X with all-live batches is asked like any
-//! other quiet thread (`dev/DECISIONS.md`, "a quiet thread's turnover is
-//! the collector's to ask for", amended 2026-09-22).
+//! The collector keeps the epoch clock of every mutator named to it
+//! (`crate::cycle::epoch`). At each visit of a round, after the serve, it
+//! advances the record's cell once [`crate::cycle::epoch::BATCHES_PER_EPOCH`]
+//! batches or [`EPOCH_INTERVAL`] of its own clock — X, the rfc's letter for
+//! it (`rfc/model/gc/cycle/questions.md`, Y9) — have passed since the last
+//! advance, whichever comes first ([`advance_the_epoch_if_due`]), and stores
+//! the cell's low eight bits on the record's token line, where the mutator's
+//! poll compares them with its deferred lane's mirror and re-offers the lane
+//! (`crate::cycle::queue::reoffer_deferred_if_epoch_moved`). The mutator
+//! stores nothing into its clock, so a thread whose batches all read live,
+//! and one that registers nothing, turns over at X like any other, and a
+//! component that became garbage behind one of its deferred roots waits
+//! about one X rather than until pressure or exit. The first visit of a life
+//! stamps the instant and advances nothing, X being counted from a reading
+//! and never from the record's birth, unless the registry noted a new life,
+//! which advances at once (`crate::cycle::epoch`, "A record's next life";
+//! `dev/DECISIONS.md`, "the collector finds and the mutator judges, and a
+//! recall of the token bounds the mutator's wait instead of the budget").
 //!
 //! # The thread, and the round over the records
 //!
@@ -261,19 +261,20 @@ const FALLBACK_INTERVAL_MIN: Duration = Duration::from_millis(10);
 /// threshold that reaches no poll waits for a round nobody signalled.
 const FALLBACK_INTERVAL_MAX: Duration = Duration::from_secs(1);
 
-/// How long a mutator that reaches no batch is left before the collector asks
-/// it for a turnover of its epoch, so that a component that became garbage
-/// while its root stood in the deferred lane is found on a thread that
-/// registers nothing (`crate::cycle::epoch`, the jump). 8 s, borrowed from
-/// V8's memory reducer, which collects a mutator that went quiet after the
-/// same delay; not measured here, and the field runs from that to Go's two
-/// minutes (`dev/RESEARCH.md`, "the idle-GC timers of five runtimes"). The
-/// embedder's figure replaces it ([`set_quiet_interval`]).
-const QUIET_INTERVAL: Duration = Duration::from_secs(8);
+/// The longest a mutator's epoch stands before its collector advances it,
+/// on the collector's own clock: the bound on how long a component that
+/// became garbage behind a deferred root waits on a thread whose batches do
+/// not reach [`crate::cycle::epoch::BATCHES_PER_EPOCH`] first ("The epoch
+/// clock"). 8 s, borrowed from V8's memory reducer, which collects a mutator
+/// that went quiet after the same delay; not measured here, and the field
+/// runs from that to Go's two minutes (`dev/RESEARCH.md`, "the idle-GC
+/// timers of five runtimes"). The embedder's figure replaces it
+/// ([`set_epoch_interval`]).
+const EPOCH_INTERVAL: Duration = Duration::from_secs(8);
 
-/// The embedder's quiet interval in nanoseconds, or zero for
-/// [`QUIET_INTERVAL`].
-static EMBEDDERS_QUIET_INTERVAL_NANOS: AtomicU64 = AtomicU64::new(0);
+/// The embedder's epoch interval in nanoseconds, or zero for
+/// [`EPOCH_INTERVAL`].
+static EMBEDDERS_EPOCH_INTERVAL_NANOS: AtomicU64 = AtomicU64::new(0);
 
 /// How many consent waits one walk of the records may spend on mutators
 /// that do not answer: past it, every request the walk lands afterwards is
@@ -427,23 +428,23 @@ fn collector_cap() -> usize {
     COLLECTOR_CAP.load(Ordering::Relaxed)
 }
 
-/// Set the embedder's quiet interval: how long a mutator that reaches no
-/// batch is left before the collector asks it for a turnover. Zero restores
-/// the crate's [`QUIET_INTERVAL`].
-pub(crate) fn set_quiet_interval(interval: Duration) {
+/// Set the embedder's epoch interval: the longest a mutator's epoch stands
+/// before its collector advances it. Zero restores the crate's
+/// [`EPOCH_INTERVAL`].
+pub(crate) fn set_epoch_interval(interval: Duration) {
     let nanos = u64::try_from(interval.as_nanos()).unwrap_or(u64::MAX);
-    EMBEDDERS_QUIET_INTERVAL_NANOS.store(nanos, Ordering::Relaxed);
+    EMBEDDERS_EPOCH_INTERVAL_NANOS.store(nanos, Ordering::Relaxed);
 }
 
-/// The quiet interval in force: a case's, the embedder's, or the crate's.
-fn quiet_interval() -> Duration {
+/// The epoch interval in force: a case's, the embedder's, or the crate's.
+fn epoch_interval() -> Duration {
     #[cfg(test)]
-    if let Some(interval) = testing::quiet_interval() {
+    if let Some(interval) = testing::epoch_interval() {
         return interval;
     }
 
-    match EMBEDDERS_QUIET_INTERVAL_NANOS.load(Ordering::Relaxed) {
-        0 => QUIET_INTERVAL,
+    match EMBEDDERS_EPOCH_INTERVAL_NANOS.load(Ordering::Relaxed) {
+        0 => EPOCH_INTERVAL,
         nanos => Duration::from_nanos(nanos),
     }
 }
@@ -475,27 +476,30 @@ fn serve_clock_now() -> u64 {
     (Instant::now().duration_since(*base).as_nanos() as u64).max(1)
 }
 
-/// The quiet thread (module doc): after a serve, restamp the record when a
-/// commit of the mutator's own moved its clock since the last stamp, and
-/// otherwise ask for a turnover once [`quiet_interval`] has passed since
-/// that stamp. The clock decides it alone, whatever the serve reached: a
-/// batch says nothing about the clock, its verdicts being all live as often
-/// as not, and a serve that restamped on the strength of one left a thread
-/// batched oftener than X never asked and its deferred lane waiting for
-/// pressure or exit. The first serve of a life stamps and asks nothing: X is
-/// counted from a reading, never from the record's birth. The mutator
-/// answers at its next poll (`crate::gc`, the poll;
-/// `crate::cycle::epoch::jump_to_the_next_turnover`).
-fn ask_for_a_turnover_if_quiet(record: &MutatorRecord, now: u64) {
-    let last = record.served_at();
-    if last == 0 || !record.clock_stood_since_the_stamp() {
-        record.note_served_at(now);
+/// The epoch clock (module doc): advance `record`'s cell when the registry
+/// noted a new life since the last visit, or once
+/// [`crate::cycle::epoch::BATCHES_PER_EPOCH`] batches or [`epoch_interval`]
+/// have passed since the last advance; the first visit of a life stamps the
+/// instant and advances nothing. `now` is the round's one reading of the
+/// clock for this record, the one its serve reads too. The mutator reads the
+/// advance at its next poll (`crate::gc`, the poll) and at its next
+/// collection's open (`crate::cycle::arena`).
+fn advance_the_epoch_if_due(record: &MutatorRecord, now: u64) {
+    if record.take_new_life() {
+        record.advance_the_epoch(now);
         return;
     }
 
-    if now - last >= quiet_interval().as_nanos() as u64 {
-        record.request_a_turnover();
-        record.note_served_at(now);
+    let last = record.advanced_at();
+    if last == 0 {
+        record.note_advanced_at(now);
+        return;
+    }
+
+    if record.batches_since_the_advance() >= crate::cycle::epoch::BATCHES_PER_EPOCH
+        || now.saturating_sub(last) >= epoch_interval().as_nanos() as u64
+    {
+        record.advance_the_epoch(now);
     }
 }
 
@@ -1005,9 +1009,17 @@ fn round(index: usize, threshold: usize, standing: &mut Standing) -> Round {
     outcome
 }
 
-/// One record of a round: read its note for the timer, serve it once, ask
-/// the quiet thread for its turnover ([`ask_for_a_turnover_if_quiet`]), and
-/// fold what the serve answered into `outcome`.
+/// One record of a round: read its note for the timer, advance its epoch
+/// where it is due ([`advance_the_epoch_if_due`]), serve it once, and fold
+/// what the serve answered into `outcome`.
+///
+/// **The advance comes before the serve.** A batch granted at the visit that
+/// advances opens its arena on the turned epoch and descends where the old
+/// stamps would have pruned, and the grant's release to `POSTED` orders the
+/// cell's store before the mutator's reading of P, so the collection over P
+/// reads the same epoch the batch did. After the serve, a root the batch read
+/// live against the old epoch would be deferred against the new one and wait
+/// one advance more.
 ///
 /// The note is read whatever the serve answers — a free-list record has a
 /// count equal to the copy, and a record between threads answers one
@@ -1030,8 +1042,8 @@ unsafe fn read_one_record(
     }
 
     let now = serve_clock_now();
+    advance_the_epoch_if_due(unsafe { &*record }, now);
     let served = unsafe { serve(record, index, threshold, standing, now) };
-    ask_for_a_turnover_if_quiet(unsafe { &*record }, now);
     outcome.made_a_batch |= standing.take_batches_served() > 0;
     outcome.saw_work |= standing.take_saw_work();
     standing.take_backlogged(&mut outcome.backlogged);
@@ -1058,7 +1070,7 @@ unsafe fn read_one_record(
 /// stood an interval ([`decide_the_branch_and_stamp_the_instant`]), and the round
 /// passes [`SOFT_THRESHOLD`]. `now` is the round's one reading of the serve
 /// clock for this record, the instant a standing ring is measured against
-/// and the one the turnover ask reads after the serve. `slot` is the
+/// and the one the epoch's advance read before the serve. `slot` is the
 /// calling collector's, the name its request writes into the byte.
 ///
 /// **The request is one swap `FREE → REQUESTED|slot`**, and every other
@@ -1466,8 +1478,8 @@ unsafe fn serve_the_grant(
     // Declared after the release guard, so that its drop — the reset of
     // the rows, which stand over the mutator's blocks — runs before the
     // release on the unwind as on the return. The epoch is the served
-    // mutator's, not this thread's: the stamps this trace reads were written
-    // by that mutator's own commits (`crate::cycle::epoch`).
+    // mutator's cell, not this thread's: the stamps this trace reads were
+    // written against that mutator's clock (`crate::cycle::epoch`).
     let Some(mut arena) = (unsafe { TraceScratchArena::open_for_owner(mutator) }) else {
         return Served::Idle;
     };
@@ -1938,6 +1950,7 @@ unsafe fn batch(
 
     let met_budget = arena.met_its_budget();
     arena.reset();
+    mutator.note_batch();
     if at_the_threshold {
         size_the_next_batch(mutator, clamp, complete, met_budget);
     }

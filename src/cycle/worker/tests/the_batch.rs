@@ -130,6 +130,7 @@ fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
     let mut expected = Vec::new();
     collect_lane_tokens(&mut expected);
+    let batches = unsafe { &*record() }.batches_since_the_advance();
 
     assert_eq!(
         served_by_a_collector(),
@@ -138,6 +139,11 @@ fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
             complete: true,
             backlog: false,
         }
+    );
+    assert_eq!(
+        unsafe { &*record() }.batches_since_the_advance(),
+        batches.saturating_add(1),
+        "the batch counts toward the epoch's advance"
     );
     assert_eq!(candidate_count(), 0, "R's front moved past the batch");
     assert_eq!(

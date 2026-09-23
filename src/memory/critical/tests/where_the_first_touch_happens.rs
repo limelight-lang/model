@@ -144,16 +144,18 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("RESERVE", true),
         ("RING", false),
         ("ROWS_READ", false),
-        ("SLOTS_POPPED", false), // test-only const Cell, no drop glue
+        ("SINCE_THE_TURN", false), // test-only const Cell<u8>, no drop glue
+        ("SLOTS_POPPED", false),   // test-only const Cell, no drop glue
         ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
         ("SURVIVORS_ADMITTED_BEFORE_REFUSAL", false), // test-only const Cell, no drop glue
-        ("TAKE_THIS", false),    // test-only const Cell of a raw pointer, no drop glue
+        ("TAKE_THIS", false),      // test-only const Cell of a raw pointer, no drop glue
         ("TEARDOWN_DEPTH", false), // const Cell<u32>, no drop glue
         ("THREAD_BUFFER_ARENA", false),
         ("THREAD_CACHE", true),
         ("THREAD_FIGURES", false),
         ("THREAD_HEAP", false),
         ("TRACED_MUTATOR", false), // test-only const Cell of a pointer, no drop glue
+        ("TURN_AFTER_THE_HARVEST", false), // test-only const Cell<bool>, no drop glue
         ("VERDICT_COLLECTIONS", false), // test-only const Cell, no drop glue
         ("WEAK_TABLE", false),
         ("WINDOW", false),

@@ -12,6 +12,22 @@ use super::*;
 
 use crate::test_support::allocation_probe;
 
+/// The collector's advance stood in for, then the poll's re-offer. The cell
+/// is turned until its byte differs from the lane's mirror, which the
+/// deferrals here record from a reading of zero: a single turn lands on the
+/// mirror's own byte once in 256.
+fn reoffer_after_an_advance() -> bool {
+    let record = crate::cycle::mutator_record::this_thread_record();
+    loop {
+        crate::cycle::epoch::turn_this_threads_cell();
+        if unsafe { (*record).turnover_byte() } != deferred_turnover_mirror() {
+            break;
+        }
+    }
+
+    reoffer_deferred_if_epoch_moved()
+}
+
 /// The calibration: a ring of two blocks and a filled overflow buffer,
 /// against the counters and against the entities the fixture registered.
 #[test]
@@ -219,7 +235,7 @@ fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
         1
     );
 
-    assert!(reoffer_deferred_if_epoch_moved(u64::MAX));
+    assert!(reoffer_after_an_advance());
     assert_eq!(candidate_count(), 2);
     assert_eq!(deferred_count(), 0);
     tokens.clear();
@@ -239,7 +255,7 @@ fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
             .count(),
         1
     );
-    // A third deferral recorded at the same reading, so that the refusal below
+    // A third deferral recorded at the cell the re-offer read, so that the refusal below
     // is the mirror's answer rather than the empty lane's: with nothing
     // deferred the call returns on its first disjunct and an implementation
     // that never wrote the mirror would pass it.
@@ -249,15 +265,15 @@ fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
     // The lane's block went into the circle with the re-offer, so the
     // deferral takes a fresh one from a cell.
     assert!(refill_spares());
-    defer_candidates(read_batch(), u64::MAX);
+    defer_candidates(read_batch(), crate::cycle::epoch::this_threads_turnovers());
     assert_eq!(
         deferred_count(),
         3,
         "the deferral takes back the two re-offered records with the new one"
     );
     assert!(
-        !reoffer_deferred_if_epoch_moved(u64::MAX),
-        "the same full-width reading may not re-offer a second time"
+        !reoffer_deferred_if_epoch_moved(),
+        "a cell that stood since the re-offer may not re-offer a second time"
     );
     assert_eq!(deferred_count(), 3, "the refused reading moved nothing");
 
@@ -328,7 +344,7 @@ fn a_deferred_lane_of_two_blocks_is_spliced_back_whole() {
         1
     );
 
-    assert!(reoffer_deferred_if_epoch_moved(u64::MAX));
+    assert!(reoffer_after_an_advance());
     assert_eq!(deferred_count(), 0);
     assert_eq!(
         candidate_count(),
@@ -393,7 +409,7 @@ fn a_reoffer_at_a_poll_with_nothing_to_draw_splices_the_lane_in() {
     assert_eq!(spare_count(), 0);
 
     let _ = allocation_probe::take_allocations();
-    assert!(reoffer_deferred_if_epoch_moved(u64::MAX));
+    assert!(reoffer_after_an_advance());
     assert_eq!(
         allocation_probe::take_allocations(),
         (0, 0),
@@ -447,7 +463,7 @@ fn a_deferred_decrement_neither_duplicates_its_token_nor_loses_an_active_one() {
     assert!(unsafe { !release(active_entity) });
     assert_eq!(candidate_count(), 1);
 
-    assert!(reoffer_deferred_if_epoch_moved(u64::MAX));
+    assert!(reoffer_after_an_advance());
     assert_eq!(candidate_count(), 2);
     assert_eq!(deferred_count(), 0);
     let mut tokens = Vec::new();
@@ -505,7 +521,7 @@ fn a_deferral_retires_the_record_of_a_completed_death() {
     assert_eq!(tokens, vec![survivor]);
 
     unsafe { dismantle_candidate(survivor) };
-    assert!(reoffer_deferred_if_epoch_moved(u64::MAX));
+    assert!(reoffer_after_an_advance());
     unsafe { retire_candidates() };
     assert_eq!(candidate_count(), 0);
     reset();

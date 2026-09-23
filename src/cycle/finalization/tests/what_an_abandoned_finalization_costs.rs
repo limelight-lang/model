@@ -31,7 +31,7 @@ unsafe fn confirmed_ring(
     // which reads the heap and not a row.
     let [first, second] = unsafe { ring(arena, [node, node]) };
 
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
@@ -195,8 +195,8 @@ fn a_revalidation_dropped_instead_of_closed_fails() {
     );
 }
 
-/// The close is where the commit is counted, so the refusal does not depend
-/// on a guard standing: an empty finalization dropped past its destructor pass
+/// The close is the commit's last step, so the refusal does not depend on a
+/// guard standing: an empty finalization dropped past its destructor pass
 /// fails the run the same way, where a guard count would have read zero
 /// against zero and let it go.
 #[test]
@@ -208,7 +208,9 @@ fn an_empty_revalidation_dropped_instead_of_closed_fails() {
     const CHILD: &str = "LL_FINALIZATION_UNCLOSED_EMPTY_REVALIDATION_CHILD";
     if std::env::var_os(CHILD).is_some() {
         let _g = test_guard();
-        let pass = Finalization::begin().seal().destructors();
+        let pass = Finalization::begin_at_this_threads_epoch()
+            .seal()
+            .destructors();
         drop(pass.close());
         return;
     }
@@ -218,8 +220,8 @@ fn an_empty_revalidation_dropped_instead_of_closed_fails() {
         CHILD,
     );
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("the commit goes uncounted"),
-        "an empty commit is counted at the close, so its revalidation is closed or the run fails"
+        String::from_utf8_lossy(&output.stderr).contains("the commit left its order"),
+        "an empty commit ends at the close, so its revalidation is closed or the run fails"
     );
 }
 

@@ -140,9 +140,9 @@
 //! thread whose fill at init was refused has never drawn and would never be
 //! asked again. It then drains the overflow buffer into the queue, which is
 //! why the refill comes first; behind an open gate and with the deferred
-//! lane occupied, answers the collector's request for a turnover by moving
-//! the clock ([`answer_a_turnover_request`]), then compares the full-width
-//! epoch against the lane's mirror and re-offers the lane where it moved;
+//! lane occupied, compares the byte the collector stores at every advance of
+//! the epoch against the lane's mirror and re-offers the lane where it moved
+//! ([`reoffer_deferred_if_epoch_moved`]);
 //! reads the token byte, consenting to a collector's request and arming for the
 //! collection over P on `POSTED` ([`verdicts`]); armed and behind an open
 //! gate, fires a collection; and last, behind the same gate, signals the
@@ -233,11 +233,12 @@ struct MutatorCycleState {
     workspace_base: Cell<*mut BlockHeader>,
     /// Blocks taken ahead of the next growth, `spare_count` of them valid.
     spares: [Cell<*mut BlockHeader>; SPARE_SEGMENTS],
-    /// Full-width commit count as it stood when the deferred lane last became
-    /// nonempty or was re-offered. Read against the poll's own count, which is
-    /// what tells a turnover from a commit
-    /// ([`reoffer_deferred_if_epoch_moved`]).
-    turnover_mirror: Cell<u64>,
+    /// The low eight bits of the epoch cell as the reading that filled the
+    /// deferred lane saw them, or as the poll that last re-offered it read
+    /// the collector's byte ([`reoffer_deferred_if_epoch_moved`]). Only
+    /// inequality is asked of it, so eight bits tell every advance apart but
+    /// the 256th.
+    turnover_mirror: Cell<u8>,
     /// The deferred lane: candidates a later turnover rather than a decrement
     /// offers to a trace again. Written and read by the mutator alone, at a
     /// collection's close and at the re-offer.
@@ -267,9 +268,9 @@ struct MutatorCycleState {
     /// stands for (`rfc/model/gc/rc-cycle.md`, "Signals"). Set on the
     /// growth path, which is paid for already, and read by nothing on the
     /// registration path; set again at a collection's close when it fills an
-    /// empty deferred lane, which is what brings the round that asks the
-    /// quiet thread for its turnover (`crate::cycle::worker`, "The quiet
-    /// thread"); cleared by the poll when its wake was received, and by an
+    /// empty deferred lane, which births the elder whose rounds keep the
+    /// epoch clock the lane waits on (`crate::cycle::worker`, "The epoch
+    /// clock"); cleared by the poll when its wake was received, and by an
     /// in-line collection's reading of R.
     signal_due: Cell<bool>,
     /// Completed deaths a compaction retired since the poll last asked: the
@@ -1117,9 +1118,9 @@ pub(crate) fn read_batch_of_verdicts() -> Batch {
 /// ones the close cannot dispose of written back into R, and P's front
 /// advances past all of them ([`verdicts`]).
 ///
-/// `at_commits` is the collecting thread's commit count as the reading that
-/// decided the marks saw it, and it is recorded only where the deferred lane
-/// goes from empty to occupied — the oldest deferred record is what decides
+/// `at_turnovers` is the epoch cell as the reading that decided the marks
+/// saw it, and it is recorded only where the deferred lane goes from empty
+/// to occupied — the oldest deferred record is what decides
 /// when the mutator owes a re-offer, as it is for [`defer_candidates`].
 ///
 /// **A marked entry stays in the ring when the deferred lane cannot take
@@ -1129,19 +1130,19 @@ pub(crate) fn read_batch_of_verdicts() -> Batch {
 /// costs recall on that root and nothing else: the one destination that
 /// cannot refuse is the one the fallback names, so no token is ever in no
 /// lane (`rfc/model/gc/cycle/questions.md`, Y12 clause 8).
-pub(crate) fn dispose_candidates(batch: Batch, at_commits: u64) {
-    compaction::compact(Some(at_commits), false, Some(batch.verdicts));
+pub(crate) fn dispose_candidates(batch: Batch, at_turnovers: u64) {
+    compaction::compact(Some(at_turnovers), false, Some(batch.verdicts));
 }
 
 /// Move a traced batch whole into this mutator's deferred lane, sweeping out of
 /// that lane the records whose entities completed their deaths on the way.
 ///
-/// `at_commits` is the collecting thread's commit count as the reading that
-/// found the component live saw it, and the caller takes it at that instant
-/// rather than letting this read the counter: the two collection paths dispose
-/// of a batch on opposite sides of their own commit's increment, and a mirror
-/// taken here would put the same event one whole epoch apart between them. It is recorded
-/// only when the lane goes from empty to occupied — the oldest deferred record
+/// `at_turnovers` is the epoch cell as the reading that found the component
+/// live saw it — the collection's one reading, taken at its arena's open —
+/// and the caller passes it rather than letting this read the cell: an
+/// advance between the reading and the close would otherwise have the lane
+/// wait for the advance after the one the reading already missed. It is
+/// recorded only when the lane goes from empty to occupied — the oldest deferred record
 /// is what decides when the mutator owes a re-offer.
 ///
 /// The deferred lane is swept before it receives the batch, so a record
@@ -1151,13 +1152,13 @@ pub(crate) fn dispose_candidates(batch: Batch, at_commits: u64) {
 /// entities first"). The entries behind the batch and the overflow buffer are
 /// kept by the same pass and not deferred: nothing that was not traced may
 /// be.
-pub(crate) fn defer_candidates(mut batch: Batch, at_commits: u64) {
+pub(crate) fn defer_candidates(mut batch: Batch, at_turnovers: u64) {
     if batch.is_empty() {
         return;
     }
 
     batch.mark_for_deferral(|_| true);
-    compaction::compact(Some(at_commits), true, Some(batch.verdicts));
+    compaction::compact(Some(at_turnovers), true, Some(batch.verdicts));
 }
 
 /// Re-offer every deferred record: at a mutator poll whose epoch moved
@@ -1184,72 +1185,45 @@ pub(crate) fn reoffer_deferred_candidates() {
     unsafe { writer.splice_after_tail(first, last) };
 }
 
-/// Re-offer the deferred lane exactly once after `commits` stands in a later
-/// epoch than the mirror this mutator recorded. Returns whether it moved any
-/// records.
+/// Re-offer the deferred lane exactly once after the collector advanced this
+/// mutator's epoch past the mirror the lane recorded. Returns whether it
+/// moved any records.
 ///
-/// The caller is the safepoint poll. What the comparison asks is whether a
-/// turnover has closed since the mirror, not whether a commit has: a deferred
-/// record waits out its epoch, and re-offering it at this thread's next commit
-/// would give back the whole recall the deferral buys. The count is full-width
-/// rather than the header's two epoch bits so that four turnovers slept
-/// through read as four, and the mirror advances only with the mutator-side
-/// move, so a refused collection cannot make the lane disappear.
-///
-/// The collector's request for a turnover is answered by the poll before
-/// this comparison ([`answer_a_turnover_request`]), by moving the counter
-/// the poll then re-reads and hands here.
-pub(crate) fn reoffer_deferred_if_epoch_moved(commits: u64) -> bool {
+/// The caller is the safepoint poll. The comparison reads the byte the
+/// collector stores beside the token at every advance
+/// (`crate::cycle::mutator_record::MutatorRecord::turnover_byte`) against
+/// the mirror, so the poll touches the token line it reads anyway and
+/// nothing of the collector's own; the mutator writes nothing into the
+/// clock. A deferred record waits for an advance, which is where its
+/// recall is bought back, and the mirror moves only with the mutator-side
+/// splice, so a refused collection cannot make the lane disappear.
+pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
     let state = mutator_state();
     if state.is_null() {
         return false;
     }
     let mutator_state = unsafe { mutator_state_ref(state) };
-    if mutator_state.deferred().is_empty()
-        || crate::cycle::epoch::turnovers_of(mutator_state.turnover_mirror.get())
-            == crate::cycle::epoch::turnovers_of(commits)
-    {
+    if mutator_state.deferred().is_empty() {
         return false;
     }
 
-    mutator_state.turnover_mirror.set(commits);
+    let byte = this_thread_record_ref().turnover_byte();
+    if byte == mutator_state.turnover_mirror.get() {
+        return false;
+    }
+
+    mutator_state.turnover_mirror.set(byte);
     reoffer_deferred_candidates();
     true
 }
 
 /// Whether this mutator's deferred lane holds a record: the poll's test
-/// before it reads the collector's turnover request, so that an empty lane
+/// before it reads the collector's turnover byte, so that an empty lane
 /// costs the poll no load of the record.
 #[inline]
 pub(crate) fn deferred_lane_is_occupied() -> bool {
     let state = mutator_state();
     !state.is_null() && !unsafe { mutator_state_ref(state) }.deferred().is_empty()
-}
-
-/// Answer the collector's request for a turnover at a poll whose deferred
-/// lane is occupied: take the request down and move this thread's clock to
-/// the next turnover's first commit, so that the comparison the caller makes
-/// next ([`reoffer_deferred_if_epoch_moved`]) reads a turnover and splices
-/// the lane. **The request waits one poll while a collector holds the
-/// token**: a batch granted under the old epoch prunes against the epoch its
-/// arena opened with, and a jump under it would spend the turnover on a trace
-/// that stops where the stamps still stand.
-///
-/// This is what keeps a deferred record from waiting for ever on a thread
-/// that registers nothing. The clock is the thread's own
-/// (`crate::cycle::epoch`) and moves at its commits, which a thread with
-/// nothing in its active lane makes none of; the collector's round asks
-/// after X (`crate::cycle::worker`, "The quiet thread"), and the answer is
-/// the mutator's own store. What the turnover costs is one un-pruned trace
-/// of the lane's closure per X on a thread whose deferred roots are live.
-pub(crate) fn answer_a_turnover_request() {
-    let record = this_thread_record_ref();
-    if !record.turnover_is_requested() || crate::cycle::token::collector_is_tracing_this_thread() {
-        return;
-    }
-
-    record.clear_turnover_request();
-    crate::cycle::epoch::jump_to_the_next_turnover();
 }
 
 /// Retire completed deaths at the mutator's exact reading, compacting the ring
@@ -1273,15 +1247,15 @@ pub(crate) unsafe fn retire_candidates() {
 /// path, so that the token's release to `FREE` never leaves a verdict
 /// behind it (`rfc/dev/design/trace-token-handshake.md`, "The fourth
 /// round"). A root the collection never finalized goes back into R as a
-/// registration is; `at_commits` is the mirror a root read live records, and
-/// the caller passes the count its own reading saw rather than one taken at
-/// the close, as [`defer_candidates`] states.
+/// registration is; `at_turnovers` is the mirror a root read live records,
+/// and the caller passes the cell as its own reading saw it rather than as
+/// it stands at the close, as [`defer_candidates`] states.
 ///
 /// # Safety
 /// As [`retire_candidates`].
-pub(crate) unsafe fn retire_candidates_and_dispose_of_verdicts(at_commits: u64) {
+pub(crate) unsafe fn retire_candidates_and_dispose_of_verdicts(at_turnovers: u64) {
     let standing = verdicts::verdict_ring().map_or(0, |ring| ring.count());
-    compaction::compact(Some(at_commits), false, Some(standing));
+    compaction::compact(Some(at_turnovers), false, Some(standing));
 }
 
 mod compaction;
@@ -1294,14 +1268,14 @@ pub(crate) mod verdicts;
 /// The block comes from a spare cell and never from the reserve: a block the
 /// deferred lane keeps is one the reserve does not get back, and a draw at
 /// a collection's close would be a request under the pressure that can have
-/// started it (`rfc/model/gc/cycle/questions.md`, Y12 clause 8). `at_commits`
-/// is recorded as the turnover mirror only where the lane goes from empty to
-/// occupied — the oldest deferred record is what decides when the mutator owes
+/// started it (`rfc/model/gc/cycle/questions.md`, Y12 clause 8). The low
+/// eight bits of `at_turnovers` are recorded as the turnover mirror only
+/// where the lane goes from empty to occupied — the oldest deferred record is what decides when the mutator owes
 /// a re-offer — and `None` records nothing.
 fn defer_entry(
     mutator_state: &MutatorCycleState,
     entity: *mut RcHeader,
-    at_commits: Option<u64>,
+    at_turnovers: Option<u64>,
 ) -> Result<(), ring::NoBlock> {
     let lane_was_empty = mutator_state.deferred().is_empty();
     mutator_state.deferred().push(entity_entry(entity), || {
@@ -1313,15 +1287,13 @@ fn defer_entry(
     })?;
 
     if lane_was_empty {
-        if let Some(at_commits) = at_commits {
-            mutator_state.turnover_mirror.set(at_commits);
+        if let Some(at_turnovers) = at_turnovers {
+            mutator_state.turnover_mirror.set(at_turnovers as u8);
         }
-        // A request the collector made against the last accumulation is
-        // stale against this one, and the signal is what brings the round
-        // that will ask again after X — or births the elder that makes it
+        // The signal births the elder whose rounds advance the clock the
+        // lane now waits on, where none is born yet
         // (`signal_the_collector_if_due`, at the poll's tail: the birth
         // stays outside the collection this fill runs in).
-        this_thread_record_ref().clear_turnover_request();
         mutator_state.signal_due.set(true);
     }
 
@@ -1639,16 +1611,12 @@ pub(crate) fn spare_count() -> usize {
     }
 }
 
-/// The commit count this mutator recorded when its deferred lane last became
-/// nonempty or was re-offered, which is what
-/// [`reoffer_deferred_if_epoch_moved`] compares its argument against.
-///
-/// A case reads it rather than [`crate::cycle::epoch::commits`] because a
-/// collection this thread drives between the deferral and the reading moves
-/// the counter and not the mirror, and what the re-offer compares is the
-/// mirror.
+/// The low eight bits of the epoch cell this mutator recorded when its
+/// deferred lane last became nonempty or was re-offered, which is what
+/// [`reoffer_deferred_if_epoch_moved`] compares the collector's byte
+/// against.
 #[cfg(test)]
-pub(crate) fn deferred_turnover_mirror() -> u64 {
+pub(crate) fn deferred_turnover_mirror() -> u8 {
     let state = mutator_state();
     if state.is_null() {
         return 0;

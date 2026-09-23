@@ -5,12 +5,12 @@
 //! rather than follow it (`crate::cycle::mark`), so the cases here are about which
 //! components earn one and what age it carries. Every one of them drives the
 //! finalization chain by hand, as `cycle::collect` does: the stamp is written at
-//! the reading that proves the component live, and the commit is counted at
-//! the close.
+//! the reading that proves the component live, in the epoch the collection
+//! read at its open.
 //!
-//! The epoch is pinned rather than driven: 64 commits is a turnover, and a
-//! case that drove them would spend the collections to say what one pinned
-//! reading says (`crate::cycle::epoch::pin`).
+//! The epoch is pinned rather than turned: the cell is the collector's, and a
+//! pinned reading says what a case would otherwise arrange through it
+//! (`crate::cycle::epoch::pin`).
 
 use super::*;
 use crate::cycle::epoch;
@@ -45,7 +45,7 @@ fn stamped(epoch: u32, age: u32) -> MaturationStamp {
 /// As [`Finalization::confirm`]: the members are a component of this thread's
 /// GC heap, each named once.
 unsafe fn commit_reading_live(members: &mut [*mut RcHeader]) {
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(members)) },
         ValidationResult::ExternallyReferenced,
@@ -102,13 +102,15 @@ fn a_component_read_live_ages_by_one_at_every_collection() {
     }
 }
 
-/// The commit that writes the stamps is what carries the process toward the
-/// next epoch, so a collection counts once however many components it read.
+/// The commit that writes the stamps moves no clock: the epoch cell is the
+/// collector's (`crate::cycle::epoch`), so however many commits a thread
+/// closes, its stamps age only at the collector's advance.
 ///
-/// The count is this thread's record's, so the three commits driven here are
-/// the whole of the difference between the two readings.
+/// The cell is this thread's record's, and no collector is named to write it
+/// here, so the three commits driven are all that stands between the two
+/// readings.
 #[test]
-fn every_closed_commit_is_counted_toward_the_turnover() {
+fn a_closed_commit_moves_no_clock() {
     let _g = test_guard();
     let _epoch = epoch::pin(1);
     let node = ClassBuilder::new("StampedCountedNode")
@@ -125,15 +127,15 @@ fn every_closed_commit_is_counted_toward_the_turnover() {
     unsafe { store_prop(&mut arena, keeper, prop_offset(0), members[0]) };
 
     let mut component = headers(members);
-    let before = epoch::commits();
+    let before = epoch::this_threads_turnovers();
     for _ in 0..3 {
         unsafe { commit_reading_live(&mut component) };
     }
 
     assert_eq!(
-        epoch::commits(),
-        before + 3,
-        "each commit closed is one commit counted"
+        epoch::this_threads_turnovers(),
+        before,
+        "three commits closed moved the cell by nothing"
     );
 
     unsafe {
@@ -275,7 +277,7 @@ unsafe fn a_component_read_unreachable_takes_no_stamp(classes: [*const crate::cl
     let members = unsafe { traced_unreachable_ring(&mut arena, classes) };
     let mut membership = headers(members);
 
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut membership)) },
         ValidationResult::Unreachable
@@ -325,7 +327,7 @@ fn a_resurrected_component_is_stamped_at_the_second_reading() {
     let members = unsafe { traced_unreachable_ring(&mut arena, [plain, keeper]) };
     let mut component = headers(members);
 
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut component)) },
         ValidationResult::Unreachable

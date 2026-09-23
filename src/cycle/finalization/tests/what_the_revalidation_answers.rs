@@ -85,7 +85,7 @@ fn a_finalization_no_destructor_ran_in_is_not_read_again() {
         let ring = unsafe { traced_unreachable_ring(&mut arena, classes) };
         KEPT_MEMBER.store(0, Ordering::Relaxed);
 
-        let mut finalization = Finalization::begin();
+        let mut finalization = Finalization::begin_at_this_threads_epoch();
         let mut members = headers(ring);
         assert_eq!(
             unsafe { finalization.confirm(&Membership::listed(&mut members)) },
@@ -160,7 +160,7 @@ fn a_destructor_that_keeps_this_leaves_the_component_with_its_true_counts() {
     let cell = unsafe { ll_weakref_create(&mut context, peer as *mut RcHeader) };
     assert!(!cell.is_null(), "the fixture's weak cell");
 
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = headers(ring);
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
@@ -228,7 +228,7 @@ fn a_member_whose_guard_was_its_last_reference_dies_at_the_release() {
     KEPT_MEMBER.store(0, Ordering::Relaxed);
     DEATHS.store(0, Ordering::Relaxed);
 
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = headers(ring);
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
@@ -312,7 +312,7 @@ fn a_survivor_the_release_decrements_is_registered_as_a_candidate() {
 
     unsafe { read_as_unreachable(peer, &[peer, keeper_member]) };
 
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [peer as *mut RcHeader, keeper_member as *mut RcHeader];
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
@@ -381,7 +381,7 @@ fn a_child_of_a_dying_member_runs_its_destructor_inside_the_release() {
         assert!(!ll_release(child as *mut RcHeader));
     }
 
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = headers(ring);
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
@@ -503,7 +503,7 @@ fn a_component_rooted_by_an_earlier_teardown_is_read_after_it() {
         assert!(!ll_release(child as *mut RcHeader));
     }
 
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut components = [headers(torn_down), headers(read_later)];
     for members in &mut components {
         assert_eq!(

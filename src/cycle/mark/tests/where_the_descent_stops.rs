@@ -264,29 +264,22 @@ fn a_pinned_threshold_of_two_stops_the_third_collection_at_the_child() {
 }
 
 /// A collector thread prunes against the epoch of the mutator it traces for,
-/// which is where the stamps it reads came from. Its own thread closes no
-/// commit of its own, so a trace that read its own clock would find every
-/// stamp of a busy mutator stale and descend into the mature core the prune
-/// exists to stop at.
+/// which is where the stamps it reads came from. Its own record's cell is
+/// nobody's stamps' clock, so a trace that read it would find every stamp of
+/// the mutator stale and descend into the mature core the prune exists to
+/// stop at.
 ///
-/// The two clocks are told apart by a turnover this thread closes before it
-/// stamps anything: its own epoch is one, a thread the registry has just
-/// handed a record to reads zero.
+/// The two clocks are told apart by a turn of this thread's cell before it
+/// stamps anything: its own epoch is past zero, and a record the registry has
+/// just carved reads zero.
 #[test]
 fn a_collectors_trace_prunes_against_the_owners_epoch() {
     let _g = test_guard();
     release_queue_segments();
-    // Started from the worst place the harness thread could leave the counter
-    // in, one commit short of a turnover, so that the alignment below is what
-    // every run checks rather than the runs that happen to land there.
-    epoch::close_commits_to_one_short_of_the_turnover();
     let fresh = epoch::current();
-    // The clock is put at a turnover's first commit rather than 64 commits
-    // past wherever the harness left it: the three collections below close
-    // three commits, and a stamp written before a turnover reads as no stamp
-    // after it, so a start near a boundary reads the child as unstamped
-    // halfway through the loop.
-    epoch::stand_at_the_start_of_a_nonzero_epoch();
+    // The collections below move no cell, so the stamps they write all stand
+    // in the epoch this turn opens.
+    epoch::turn_to_a_nonzero_epoch();
     assert_ne!(
         epoch::current(),
         fresh,

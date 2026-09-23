@@ -194,7 +194,7 @@ fn a_ring_in_the_deferred_lane_is_collected_by_the_exit() {
     let class = node_class("ExitDeferredRingNode", counting_destructor as *const ());
     let mut arena = Arena::new();
     let _members = unsafe { ring(&mut arena, [class, class, class]) };
-    defer_candidates(read_batch(), crate::cycle::epoch::commits());
+    defer_candidates(read_batch(), crate::cycle::epoch::this_threads_turnovers());
     assert_eq!(deferred_count(), 3, "the ring's registrations are deferred");
     assert_eq!(candidate_count(), 0);
 

@@ -26,8 +26,9 @@
 //!
 //! # What each module owns, and for how long
 //!
-//! Three lifetimes. [`epoch`] holds one word for the process, a count of
-//! closed commits that owns no memory and is never given back. [`queue`] holds
+//! Three lifetimes. [`epoch`] owns no memory: the clock it reads is a word of
+//! each mutator's record, which the collector keeps and the process never
+//! gives back (`crate::cycle::mutator_record`). [`queue`] holds
 //! per-thread state for one thread's whole
 //! life, given back at `ll_thread_exit` — the base block, and the collection
 //! workspace an [`arena`] borrows. Everything else is per collection:
@@ -93,8 +94,9 @@ pub(crate) mod validation;
 // component takes, the destructors that run behind both, and the second
 // reading of each component the guard is subtracted in.
 pub(crate) mod finalization;
-// The count of closed commits and the epoch a maturation stamp carries. Read
-// by the commit that writes a stamp and by the descent that reads one.
+// The mutator's epoch clock, which the collector keeps, and the epoch a
+// maturation stamp carries. Read once by every collection, at its arena's
+// open, for the commit that writes a stamp and the descent that reads one.
 pub(crate) mod epoch;
 // The first phase of a trace, reached from [`trace`] rather than from a
 // collection.

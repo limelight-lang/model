@@ -10,8 +10,15 @@
 //!
 //! # Two readings, and why neither is one number
 //!
-//! The turnover period `N` is 64 commits (`crate::cycle::epoch`), taken from
-//! YRC and never measured here. Two figures decide it, and both follow a rate
+//! The turnover period `N` is 64 of the collector's batches for the mutator
+//! (`crate::cycle::epoch::BATCHES_PER_EPOCH`), taken from YRC and never
+//! measured here. The probe's in-line collections stand in for those batches:
+//! the harness turns the epoch cell after every `N` of them, as the
+//! collector's count would (`crate::cycle::worker`, "The epoch clock"). In
+//! production an in-line collection counts toward nothing, so the recall
+//! reading's `N − d + 1` is the model's figure for a thread whose every
+//! collection is a collector's batch, and follows from the stand-in by
+//! construction; what the probe measures of the lane is the volume. Two figures decide it, and both follow a rate
 //! the harness sets, so a single figure would be its own input read back
 //! (`dev/DECISIONS.md`, 2026-09-19, "the calibration runs on a parameterized
 //! test heap, and the entry names its parameters"): the volume the turnover
@@ -23,8 +30,8 @@
 //! collection whose reading finds the lane externally referenced defers the
 //! whole batch, so one record per live root enters the lane and the occupancy
 //! is `rate × collections`. The volume a turnover of `N` re-offers is that line
-//! read at `N`. The run starts at the first commit of an epoch and stays inside
-//! it, so nothing is re-offered while the line is taken.
+//! read at `N`. The run starts at a turn of the cell and stays inside the
+//! epoch it opens, so nothing is re-offered while the line is taken.
 //!
 //! # The recall reading
 //!
@@ -33,11 +40,11 @@
 //! (`crate::cycle::queue`), so nothing offers the ring to a trace until the lane
 //! is re-offered. On a thread whose active lane keeps filling that is the
 //! turnover, `N − d + 1` collections later. On a thread with nothing else
-//! registered no commit of its own moves the clock: the wait is X, the quiet
-//! interval after which the collector asks for a turnover
-//! (`crate::cycle::worker`, "The quiet thread"), and the poll after the request
+//! registered no batch counts toward `N`: the wait is X, the interval after
+//! which the collector advances the cell on its own clock
+//! (`crate::cycle::worker`, "The epoch clock"), and the poll after the advance
 //! takes the ring — one collection, whatever `d`. The harness stands in for the
-//! collector's request, so the idle cells read that one collection and say
+//! collector's advance, so the idle cells read that one collection and say
 //! nothing about X's length; the background rate tells the two lanes apart.
 //!
 //! # The precondition both readings need
@@ -47,14 +54,13 @@
 //! (`cycle::collect::tests::when_the_turnover_reoffers`, "with no spare cell
 //! the close keeps the root in the active lane"). Every poll here refills them.
 
+use std::cell::Cell;
 use std::ptr;
 
 use super::*;
-use crate::cycle::epoch::{self, commits_per_epoch, stand_at_the_start_of_a_nonzero_epoch};
-use crate::cycle::mutator_record::{request_a_turnover_for_test, this_thread_record};
+use crate::cycle::epoch::{self, BATCHES_PER_EPOCH};
 use crate::cycle::queue::{
-    answer_a_turnover_request, deferred_count, refill_spares, release_queue_segments,
-    reoffer_deferred_if_epoch_moved,
+    deferred_count, refill_spares, release_queue_segments, reoffer_deferred_if_epoch_moved,
 };
 use crate::cycle::row::take_edge_dispatches;
 use crate::cycle::testing::{move_prop, on_a_fresh_thread};
@@ -122,11 +128,30 @@ unsafe fn let_go(arena: &mut Arena, live: Live) {
     }
 }
 
+thread_local! {
+    /// Collections since the harness last turned this thread's cell: the
+    /// stand-in for the collector's count of batches.
+    static SINCE_THE_TURN: Cell<u8> = const { Cell::new(0) };
+}
+
+/// Turn this thread's cell as the collector would at an advance, and restart
+/// the count of collections the next advance is measured by.
+fn turn_the_cell() {
+    epoch::turn_this_threads_cell();
+    SINCE_THE_TURN.with(|since| since.set(0));
+}
+
+/// Stand at a turn into an epoch that is not zero, the count restarted.
+fn stand_at_a_turn() {
+    epoch::turn_to_a_nonzero_epoch();
+    SINCE_THE_TURN.with(|since| since.set(0));
+}
+
 /// Close the epoch and collect until nothing is freed, so that a load gives
 /// back everything it built: a deferred record waits out its epoch, and a
 /// leaked component would fail some other case.
 fn drain() {
-    epoch::close_a_turnover_of_commits();
+    turn_the_cell();
     for _ in 0..8 {
         if poll_and_collect() == 0 {
             return;
@@ -136,18 +161,22 @@ fn drain() {
 }
 
 /// One safepoint and the collection behind it, in the order the poll
-/// (`crate::gc::ll_gc_maybe_collect`) takes them — the collector's request
-/// answered, then the turnover comparison — with the poll's test of the
-/// lane's occupancy left out: this load's lane is occupied when the request
-/// is made.
+/// (`crate::gc::ll_gc_maybe_collect`) takes them — the turnover comparison,
+/// then the collection — with the poll's test of the lane's occupancy left
+/// out. The collector's advance at `N` collections is made first, where it is
+/// due, by the harness standing in for it.
 fn poll_and_collect() -> usize {
+    if SINCE_THE_TURN.with(Cell::get) == BATCHES_PER_EPOCH {
+        turn_the_cell();
+    }
+
     // A close with no spare cell keeps the root in the active lane, so the
     // deferral this load reads needs the spares topped up
     // (`cycle::collect::tests::when_the_turnover_reoffers`).
     let _ = refill_spares();
-    answer_a_turnover_request();
-    let _ = reoffer_deferred_if_epoch_moved(epoch::commits());
+    let _ = reoffer_deferred_if_epoch_moved();
     let collected = unsafe { ll_gc_collect_cycles() };
+    SINCE_THE_TURN.with(|since| since.set(since.get() + 1));
     let _ = take_edge_dispatches();
     collected
 }
@@ -159,7 +188,7 @@ fn poll_and_collect() -> usize {
 /// `N`.
 fn an_arrival_curve(rate: usize) -> Vec<(usize, usize)> {
     release_queue_segments();
-    stand_at_the_start_of_a_nonzero_epoch();
+    stand_at_a_turn();
     let class = node_class(&format!("ArrivalLoad{rate}"));
     let mut arena = Arena::new();
     let mut standing: Vec<Live> = Vec::new();
@@ -186,7 +215,7 @@ fn an_arrival_curve(rate: usize) -> Vec<(usize, usize)> {
 /// live components arriving before every collection.
 fn a_recall_delay(death_at: usize, background: usize) -> usize {
     release_queue_segments();
-    stand_at_the_start_of_a_nonzero_epoch();
+    stand_at_a_turn();
     let class = node_class(&format!("RecallLoad{death_at}x{background}"));
     let mut arena = Arena::new();
     let mut standing: Vec<Live> = Vec::new();
@@ -201,11 +230,11 @@ fn a_recall_delay(death_at: usize, background: usize) -> usize {
 
     // The keeper lets go. The ring holds itself, so nothing is freed here; the
     // deferred record is what keeps a collection from seeing it. A thread with
-    // no background never turns its own epoch: the harness makes the request
+    // no background reaches no count of batches: the harness makes the advance
     // the collector would make after X.
     unsafe { let_go(&mut arena, dying) };
     if background == 0 {
-        request_a_turnover_for_test(this_thread_record());
+        turn_the_cell();
     }
 
     let mut waited = 0;
@@ -219,7 +248,7 @@ fn a_recall_delay(death_at: usize, background: usize) -> usize {
             break collected;
         }
         assert!(
-            waited <= commits_per_epoch() as usize,
+            waited <= usize::from(BATCHES_PER_EPOCH),
             "a turnover closes inside one epoch's worth of collections"
         );
     };
@@ -260,7 +289,7 @@ fn the_lane_grows_by_the_rate_live_roots_arrive() {
 /// What a deferral costs the component that dies behind it: the rest of the
 /// epoch on a thread whose active lane keeps filling, because nothing offers
 /// the ring before the turnover; and X on one with nothing else registered,
-/// read here as the one collection after the collector's request.
+/// read here as the one collection after the collector's advance.
 #[test]
 #[ignore = "a measurement, recorded in dev/BENCHMARKS.md; run with --ignored"]
 fn a_deferred_death_waits_for_the_traffic_behind_it() {
@@ -271,12 +300,12 @@ fn a_deferred_death_waits_for_the_traffic_behind_it() {
         for death_at in DEATHS_AT {
             let waited = on_a_fresh_thread(move || a_recall_delay(death_at, background));
             println!("  {background:<11} {death_at:<9} {waited}");
-            // The idle cells read the request rather than the lane: the poll
-            // after it turns the epoch and takes the ring, whatever `d`.
+            // The idle cells read the advance rather than the lane: the poll
+            // after it re-offers the lane and takes the ring, whatever `d`.
             let expected = if background == 0 {
                 1
             } else {
-                commits_per_epoch() as usize - death_at + 1
+                usize::from(BATCHES_PER_EPOCH) - death_at + 1
             };
             assert_eq!(
                 waited, expected,

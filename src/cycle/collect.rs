@@ -164,12 +164,12 @@ struct CollectingThread {
     /// between its rounds and can leave deaths behind after the last, and the
     /// second never ran a pass at all.
     retire_on_drop: Cell<bool>,
-    /// The commit count the last reading of this collection saw, and `None`
-    /// where this collection read no component. The drop's disposition of P
-    /// records it as the deferred lane's mirror, so that a root deferred out
-    /// of P and one deferred out of R in the same collection wait out the same
-    /// epoch (`crate::cycle::queue::defer_candidates`).
-    at_commits: Cell<Option<u64>>,
+    /// The epoch cell as the last reading of this collection saw it, and
+    /// `None` where this collection read no component. The drop's disposition
+    /// of P records it as the deferred lane's mirror, so that a root deferred
+    /// out of P and one deferred out of R in the same collection wait for the
+    /// same advance (`crate::cycle::queue::defer_candidates`).
+    at_turnovers: Cell<Option<u64>>,
     /// This thread's token, held from the take through the close: the last
     /// field, so that its release — the field's drop, after the drop body's
     /// retirement pass and the collecting word's clear — is the close's last
@@ -210,7 +210,7 @@ impl CollectingThread {
         Ok(Self {
             record,
             retire_on_drop: Cell::new(true),
-            at_commits: Cell::new(None),
+            at_turnovers: Cell::new(None),
             token,
         })
     }
@@ -221,10 +221,10 @@ impl CollectingThread {
         self.retire_on_drop.set(false);
     }
 
-    /// Keep `at_commits`, the count a reading of this collection took before
-    /// its own commit counted one more, for the disposition the drop makes.
-    fn its_reading_saw(&self, at_commits: u64) {
-        self.at_commits.set(Some(at_commits));
+    /// Keep `at_turnovers`, the cell as a reading of this collection saw it,
+    /// for the disposition the drop makes.
+    fn its_reading_saw(&self, at_turnovers: u64) {
+        self.at_turnovers.set(Some(at_turnovers));
     }
 }
 
@@ -290,17 +290,16 @@ impl Drop for CollectingThread {
         // the token's release to `FREE` after this never leaves a verdict
         // behind (`crate::cycle::queue::retire_candidates_and_dispose_of_verdicts`).
         if self.retire_on_drop.get() {
-            // The mirror is this collection's own reading rather than a count
-            // taken here: its commit has counted itself by this point, and a
-            // root deferred out of P under the later count would wait out a
-            // whole epoch more than one the same collection deferred out of R.
-            // A collection that read nothing counted nothing either, so the
-            // counter is what its reading would have seen.
-            let at_commits = self
-                .at_commits
+            // The mirror is this collection's own reading rather than one
+            // taken here: an advance since would have a root deferred out of
+            // P wait for one advance more than one the same collection
+            // deferred out of R. A collection that read nothing has no
+            // reading, and the cell as it stands is what one would have seen.
+            let at_turnovers = self
+                .at_turnovers
                 .get()
-                .unwrap_or_else(crate::cycle::epoch::commits);
-            unsafe { crate::cycle::queue::retire_candidates_and_dispose_of_verdicts(at_commits) };
+                .unwrap_or_else(crate::cycle::epoch::this_threads_turnovers);
+            unsafe { crate::cycle::queue::retire_candidates_and_dispose_of_verdicts(at_turnovers) };
         }
 
         // An arming for P alone made before this collection is spent by it:
@@ -439,6 +438,9 @@ unsafe fn collection(form: BatchForm) -> Collection {
         Err(TraceRefusal::EmptyLane) => return zero(Ending::EmptyLane),
         Err(TraceRefusal::AllocationFailed) => return zero(Ending::TraceRefused),
     };
+    // The collection's one reading of the cell, kept for the close's
+    // disposition of P on every ending from here, the commit's among them.
+    _collecting.its_reading_saw(window.arena().turnovers());
 
     unsafe { note_scan_end(window.arena(), roots) };
 
@@ -461,7 +463,7 @@ unsafe fn collection(form: BatchForm) -> Collection {
     // unwind out of the marking walk still leaves every entry masked; the
     // ordinary disposition does not mask, and a marked entry reaching a lane
     // through it would be read as an entity address one byte along.
-    window.dispose_batch_on_close(outcome.at_commits);
+    window.dispose_batch_on_close(outcome.at_turnovers);
     _collecting.retirement_runs_at_the_close();
     window.mark_roots_for_deferral(outcome.initial == ValidationResult::ExternallyReferenced);
     let ending = match outcome.initial {
@@ -835,10 +837,10 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     // spliced back into R first — a splice and no turnover. At this epoch
     // the trace finds every ring whose members are all registered and every
     // dead-in-place slot standing in the lane; a ring behind a mature member
-    // is the collector's request to expose (`crate::cycle::queue`,
-    // `answer_a_turnover_request`), because a turnover per refused
-    // allocation would re-trace the lane's whole closure with no lower
-    // bound.
+    // is the collector's advance of the epoch to expose
+    // (`crate::cycle::worker`, "The epoch clock"), because a turnover per
+    // refused allocation would re-trace the lane's whole closure with no
+    // lower bound.
     crate::cycle::queue::reoffer_deferred_candidates();
 
     let mut freed = 0;
@@ -882,8 +884,8 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
             break;
         };
 
-        if let Some(at_commits) = committed.at_commits {
-            _collecting.its_reading_saw(at_commits);
+        if let Some(at_turnovers) = committed.at_turnovers {
+            _collecting.its_reading_saw(at_turnovers);
         }
 
         let taken = committed.freed;
@@ -975,7 +977,13 @@ unsafe fn trace_and_harvest(roots: usize) -> Traced {
         return Traced::AllocationFailed;
     }
 
+    let turnovers = window.arena().turnovers();
     let batch = window.close_and_take_batch();
+    #[cfg(test)]
+    if TURN_AFTER_THE_HARVEST.with(|armed| armed.replace(false)) {
+        crate::cycle::epoch::turn_this_threads_cell();
+    }
+
     // The arming answered true and nothing between it and the close runs user
     // code or a second collection, so the list stands: a `None` here is the
     // region's bookkeeping contradicting its own arming.
@@ -985,6 +993,7 @@ unsafe fn trace_and_harvest(roots: usize) -> Traced {
         members: Some(members),
         batch: Some(batch),
         roots_traced,
+        turnovers,
     })
 }
 
@@ -1031,14 +1040,15 @@ unsafe fn tear_down_the_harvest(
     whole_lane: bool,
 ) -> Option<PressureCommit> {
     if standing.members().entities().is_empty() {
+        let at_turnovers = Some(standing.turnovers);
         drop(standing);
         return Some(PressureCommit {
             freed: 0,
-            at_commits: None,
+            at_turnovers,
         });
     }
 
-    let mut arena = TraceScratchArena::open()?;
+    let mut arena = TraceScratchArena::open_at(standing.turnovers)?;
     let committed = unsafe { commit_under_pressure(&mut standing, &mut arena, whole_lane) };
     arena.reset();
     Some(committed)
@@ -1104,6 +1114,11 @@ struct HarvestedMembers {
     members: Option<crate::cycle::members::StandingMembers>,
     batch: Option<crate::cycle::queue::Batch>,
     roots_traced: usize,
+    /// The epoch cell as the trace's arena read it at its open: the one
+    /// reading of this round, which the commit's second arena opens on and
+    /// the deferral records, the trace's own arena having gone back with its
+    /// blocks.
+    turnovers: u64,
 }
 
 impl HarvestedMembers {
@@ -1131,8 +1146,8 @@ impl HarvestedMembers {
 
     /// Send the batch to the deferred lane, to wait out the epoch of the
     /// reading that found it live.
-    fn defer_batch(&mut self, at_commits: u64) {
-        crate::cycle::queue::defer_candidates(self.take_batch(), at_commits);
+    fn defer_batch(&mut self, at_turnovers: u64) {
+        crate::cycle::queue::defer_candidates(self.take_batch(), at_turnovers);
     }
 
     fn take_batch(&mut self) -> crate::cycle::queue::Batch {
@@ -1146,11 +1161,11 @@ struct CommitOutcome {
     freed: usize,
     /// The exact validation's first reading of the set.
     initial: ValidationResult,
-    /// Commits this thread has closed as the reading itself saw them, which is
-    /// before this commit's own close counted one more. A batch that goes to
-    /// the deferred lane waits out the epoch of the reading that found it live,
-    /// rather than the epoch of the instant its window happens to close.
-    at_commits: u64,
+    /// The epoch cell as this collection read it at its arena's open. A batch
+    /// that goes to the deferred lane waits for the advance past the reading
+    /// that found it live, rather than past the instant its window happens
+    /// to close.
+    at_turnovers: u64,
 }
 
 /// Run the commit over one membership and answer how many entities it freed.
@@ -1162,10 +1177,6 @@ struct CommitOutcome {
 /// type below states — that a commit reads one membership once
 /// (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation").
 ///
-/// A commit is counted even where the validation refuses the set, because the
-/// epoch a maturation stamp carries counts commits rather than teardowns
-/// (`crate::cycle::epoch`).
-///
 /// `arena` carries the queue the sever's displaced children wait in, and on the
 /// pressure path it is a second arena rather than the trace's: the trace's went
 /// back with its blocks.
@@ -1176,11 +1187,10 @@ struct CommitOutcome {
 /// runs on the owning thread with no mutator beside it.
 unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> CommitOutcome {
     let mut initial = ValidationResult::ZeroCountMember;
-    let mut at_commits = 0;
+    let at_turnovers = arena.turnovers();
     let freed = match unsafe {
         commit_before_drops(members, arena, |result| {
             initial = result;
-            at_commits = crate::cycle::epoch::commits();
         })
     } {
         Some((freed, deferred)) => {
@@ -1192,7 +1202,7 @@ unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> Com
     CommitOutcome {
         freed,
         initial,
-        at_commits,
+        at_turnovers,
     }
 }
 
@@ -1200,10 +1210,9 @@ unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> Com
 struct PressureCommit {
     /// Entities the teardown freed.
     freed: usize,
-    /// The commit count the round's reading saw, before its own close counted
-    /// one more, and `None` for a round that read no component and so closed
-    /// no commit.
-    at_commits: Option<u64>,
+    /// The epoch cell as the round's commit read it at its arena's open, and
+    /// `None` for a round that read no component.
+    at_turnovers: Option<u64>,
 }
 
 /// Commit one harvested pressure membership and retire its completed members
@@ -1232,11 +1241,14 @@ unsafe fn commit_under_pressure(
 ) -> PressureCommit {
     let mut members = standing.take_members();
     let mut reading = None;
+    // The trace's reading, which the commit's own arena was opened on: the
+    // stamps below are written in it and the deferral records it.
+    let at_turnovers = arena.turnovers();
     let outcome = {
         let listed = Membership::listed(members.entities_mut());
         unsafe {
             commit_before_drops(&listed, arena, |initial| {
-                reading = Some((initial, crate::cycle::epoch::commits()));
+                reading = Some((initial, at_turnovers));
             })
         }
     };
@@ -1246,18 +1258,18 @@ unsafe fn commit_under_pressure(
     // this commit's own destructors completed, and it may not run while the
     // membership still names them.
     match reading {
-        Some((ValidationResult::ExternallyReferenced, at_commits)) if whole_lane => {
-            standing.defer_batch(at_commits)
+        Some((ValidationResult::ExternallyReferenced, at_turnovers)) if whole_lane => {
+            standing.defer_batch(at_turnovers)
         }
         _ => standing.restore_batch(),
     }
 
     drop(members);
-    let at_commits = reading.map(|(_, at_commits)| at_commits);
+    let at_turnovers = reading.map(|(_, at_turnovers)| at_turnovers);
     let Some((freed, deferred)) = outcome else {
         return PressureCommit {
             freed: 0,
-            at_commits,
+            at_turnovers,
         };
     };
 
@@ -1274,7 +1286,10 @@ unsafe fn commit_under_pressure(
         });
     }
     deferred.drain();
-    PressureCommit { freed, at_commits }
+    PressureCommit {
+        freed,
+        at_turnovers,
+    }
 }
 
 /// Run a commit through the completed member frees, leaving only its deferred
@@ -1294,7 +1309,7 @@ unsafe fn commit_before_drops<'a>(
 ) -> Option<(usize, DeferredReclamation<'a>)> {
     fire_injected_verdict_race();
 
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin(arena.epoch());
     // Before the first guard and before the early answer a commit with nothing
     // to tear down takes: a live heap with no garbage in it is exactly the
     // collection whose components the descent is here to mature
@@ -1370,6 +1385,19 @@ thread_local! {
     )> = const {
         Cell::new((std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()))
     };
+    /// Whether the next pressure harvest of this thread turns its epoch cell
+    /// once its trace's window has closed, standing in for the collector's
+    /// advance between a collection's reading and its commit
+    /// ([`turn_the_cell_after_the_next_harvest`]).
+    static TURN_AFTER_THE_HARVEST: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Turn this thread's epoch cell after the next pressure harvest, when its
+/// trace has read the cell and before the commit's arena opens, as a
+/// collector's advance landing there would.
+#[cfg(test)]
+pub(crate) fn turn_the_cell_after_the_next_harvest() {
+    TURN_AFTER_THE_HARVEST.with(|armed| armed.set(true));
 }
 
 /// Arm one store for **one** collection of this thread, and disarm it when

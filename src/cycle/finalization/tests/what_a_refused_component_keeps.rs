@@ -52,7 +52,7 @@ fn an_externally_referenced_component_takes_no_guard_and_keeps_its_cell() {
     unsafe { store_prop(&mut arena, keeper, prop_offset(0), first) };
 
     let before = unsafe { counts_and_flags(&[first, second]) };
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
@@ -145,7 +145,7 @@ fn a_zero_count_member_leaves_the_component_and_its_cell_alone() {
     assert!(unsafe { ll_release(head as *mut RcHeader) });
 
     let before = unsafe { counts_and_flags(&[head, tail]) };
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [head as *mut RcHeader, tail as *mut RcHeader];
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },

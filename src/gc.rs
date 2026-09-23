@@ -75,8 +75,8 @@ impl Arming {
 /// unread or that the gate refused, because what stands behind it is
 /// garbage the poll has to read
 /// (`crate::cycle::collect::collect_under_pressure`). And the poll itself,
-/// when the epoch has turned over and the deferred lane is re-offered, so
-/// that the same safepoint traces the re-offered roots. The candidate
+/// when the collector has advanced the epoch and the deferred lane is
+/// re-offered, so that the same safepoint traces the re-offered roots. The candidate
 /// queue's growth arms nothing: a block the manager refused raises the
 /// collector's signal (`crate::cycle::queue`). The third arming, for P
 /// alone, is the byte's ([`arm_for_the_verdicts`]). The arming is how the
@@ -253,20 +253,16 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     let open = crate::cycle::collect::may_collect();
 
     // The deferred lane's turnover, under an open gate and before the token
-    // is read. The owner alone moves its clock and its records: the
-    // collector's request for a turnover is answered by a jump of the
-    // counter, and the full-width comparison against the mirror then reads
-    // it as any turnover; arming here lets this same safepoint trace the
-    // re-offered roots. The jump is stored before the token is read: the
-    // consent's release swap orders every store this thread made before it —
-    // the jumped counter among them — before the collector's acquire read
-    // of the grant, so a batch granted at this poll prunes against the
-    // turned epoch (`crate::cycle::token`, `crate::cycle::worker`).
-    if open && crate::cycle::queue::deferred_lane_is_occupied() {
-        crate::cycle::queue::answer_a_turnover_request();
-        if crate::cycle::queue::reoffer_deferred_if_epoch_moved(crate::cycle::epoch::commits()) {
-            arm();
-        }
+    // is read. The collector keeps the clock and stores its low byte beside
+    // the token at every advance; the owner alone moves its records, so the
+    // poll compares that byte against the lane's mirror and splices the lane
+    // where it moved, and arming here lets this same safepoint trace the
+    // re-offered roots (`crate::cycle::worker`, "The epoch clock").
+    if open
+        && crate::cycle::queue::deferred_lane_is_occupied()
+        && crate::cycle::queue::reoffer_deferred_if_epoch_moved()
+    {
+        arm();
     }
 
     // The byte, read by the one reading the slot free entry makes too, and
@@ -340,15 +336,15 @@ pub extern "C" fn ll_gc_set_collector_cap(cap: usize) {
     crate::cycle::worker::set_collector_cap(cap);
 }
 
-/// ABI: set how long a thread that registers no candidates and reaches no
-/// batch is left before the collector asks it to turn its epoch over and
-/// re-trace the roots it deferred, in milliseconds; zero restores the crate's
-/// default (`crate::cycle::worker`, "The quiet thread"). The embedder's
-/// dial over how long garbage behind a deferred root may wait on a quiet
-/// thread. Callable at any time from any thread; the next round reads it.
+/// ABI: set the longest a mutator's epoch stands before its collector
+/// advances it, and with it re-offers the roots the mutator deferred, in
+/// milliseconds; zero restores the crate's default (`crate::cycle::worker`,
+/// "The epoch clock"). The embedder's dial over how long garbage behind a
+/// deferred root may wait on a thread whose batches are few. Callable at any
+/// time from any thread; the next round reads it.
 #[unsafe(no_mangle)]
-pub extern "C" fn ll_gc_set_quiet_interval(millis: u64) {
-    crate::cycle::worker::set_quiet_interval(std::time::Duration::from_millis(millis));
+pub extern "C" fn ll_gc_set_epoch_interval(millis: u64) {
+    crate::cycle::worker::set_epoch_interval(std::time::Duration::from_millis(millis));
 }
 
 /// ABI: set how long a mutator's candidate ring may stand non-empty below

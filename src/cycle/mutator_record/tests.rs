@@ -345,7 +345,10 @@ fn a_refused_record_is_a_thread_that_never_starts() {
 /// A record off the free list is reset in place: its reader's and writer's
 /// lines are the next thread's own — R's words empty, P's naming the block
 /// drawn for that life — and the token word is the one the exit left rather
-/// than a rewritten one.
+/// than a rewritten one. The epoch cell is the one line word the re-take
+/// leaves: it stands where the last life's collector moved it, and the re-take
+/// notes the new life, which the collector's next visit advances past
+/// (`crate::cycle::epoch`, "A record's next life").
 #[test]
 fn a_retaken_record_starts_with_fresh_lines() {
     let _g = test_guard();
@@ -356,6 +359,8 @@ fn a_retaken_record_starts_with_fresh_lines() {
         "P's block came with the record"
     );
     scribble_lines_for_test(record);
+    unsafe { crate::cycle::epoch::turn_the_cell_of(record) };
+    let turnovers = unsafe { (*record).turnovers() };
     pin_for_test(record, true);
     drop(release);
     thread.join().expect("the thread exited");
@@ -370,16 +375,30 @@ fn a_retaken_record_starts_with_fresh_lines() {
     // takes: the list's top moves under the parallel harness, and the pin
     // keeps every other thread off this record until the reading is made.
     let sent = Sent(record);
-    let (retook_it, lines_fresh) = std::thread::spawn(move || {
+    let (retook_it, lines_fresh, cell, new_life) = std::thread::spawn(move || {
         let record = sent.into_inner();
         take_this_record_for_test(record);
         assert!(crate::memory::heap::ll_thread_init());
         let mine = this_thread_record();
-        (mine == record, lines_are_fresh(mine))
+        let mine_ref = unsafe { &*mine };
+        (
+            mine == record,
+            lines_are_fresh(mine),
+            mine_ref.turnovers(),
+            mine_ref.take_new_life(),
+        )
     })
     .join()
     .expect("the thread returned");
     assert!(retook_it, "the named record was the one taken");
     assert!(lines_fresh, "the re-take reset the lines in place");
+    assert_eq!(
+        cell, turnovers,
+        "the cell stands where the last life left it"
+    );
+    assert!(
+        new_life,
+        "and the re-take noted the new life for the collector"
+    );
     pin_for_test(record, false);
 }

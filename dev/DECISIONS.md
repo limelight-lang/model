@@ -57,6 +57,14 @@ whole, so the mutator reads nothing it did not read before. The package's
 answer 8 and sections 7 and 12 are amended in place. The other six findings
 change no premise and are taken into `PLAN.md`'s steps.
 
+**Amended 2026-09-23, on the Critic of S65.2.** The collector advances a
+mutator's epoch before it serves that mutator, not after: a batch at the
+advancing visit then traces on the turned epoch, and the grant's release
+orders the advance before the owner's reading of P, where the other order
+deferred the batch's live roots against the ended epoch for one advance more.
+The pressure path's commit opens its arena on its trace's reading rather than
+reading the cell a second time, so one collection round holds one reading.
+
 **Decided under his rule, not by him.** The Sage (third version): the
 mutator retires completed deaths of R by a count, without a trace (his
 "option 5" of 2026-09-17); returning slots at once under a foreign trace is
@@ -476,6 +484,21 @@ leaves no request standing and reads no silent mark.
 
 ## 2026-09-21 — a quiet thread's turnover is the collector's to ask for, and the poll re-offers only on a turnover
 
+**Superseded in part 2026-09-23** ("the collector finds and the mutator
+judges…"; S65.2): the clock is the collector's cell, advanced after X of its
+clock or 64 of its batches, and the ask, the request byte and the mutator's
+jump went with the commit-counted clock; the byte on the token line carries
+the cell's low eight bits. The 2026-09-22 amendment's premise was false: a
+collection over all-live verdicts closes a commit (`Revalidation::close`), so
+a thread batched oftener than X read as a moving clock and was never asked.
+What stands: the per-poll re-offer stays deleted, the poll re-offers only at
+a turnover, and the pressure path splices with no turnover. Two costs moved
+for a thread that collects in line, until S65 ends the in-line firing: its
+deferred garbage waits X rather than 64 of its collections, and a thread
+collecting between one per X and 64 per X pays one un-pruned trace of its
+lane per X rather than per 64 collections — at one collection per five
+seconds, one per 8 s against one per 320 s.
+
 **Ruled by the Sage of 2026-09-21 in two rounds with a Critic between, and
 accepted by Edmond the same day**, who refused the algorithm it replaces.
 Supersedes by name the last paragraph of "the epoch counter is the collecting
@@ -603,6 +626,13 @@ a workload the compiler later produces can move them. **Rejected:** keeping both
 steps blocked until a real heap exists, which is what the ruling answers.
 
 ## 2026-09-19 — the epoch counter is the collecting thread's, in its record
+
+**Superseded 2026-09-23** ("the collector finds and the mutator judges…"):
+the cell is the collector's and counts turnovers; the mutator's commits count
+nothing. What stands: the clock is per mutator and in its record, a collector
+prunes against the owner's cell, and a re-taken record's stamps must read
+stale, which the collector's first visit of the new life now does by
+advancing.
 
 **Decided (Edmond, S37.10).** The commit counter the maturation stamp is read
 against moves from a process-global word to the mutator's own record, where the

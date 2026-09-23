@@ -154,6 +154,14 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   which `release_emptied` already recurses through. Raised by the Critic of
   2026-09-13 over the survivor-list grouping, and priced nowhere.
 
+- **Whether an empty revalidation dropped unclosed is still refused.**
+  `Revalidation`'s drop refuses it in every build, and its reason — the
+  commit the close counted — went with the collector's epoch clock (S65.2);
+  a `DestructorPass` with no guard is already let go. Dropping the empty
+  case removes the refusal `what_an_abandoned_finalization_costs::`
+  `an_empty_revalidation_dropped_instead_of_closed_fails` pins, so it is
+  Edmond's (Critic of S65.2, finding 6).
+
 - **What a process-wide `pthread_key` would buy the reserve draw.** The
   thread-locals of this crate that carry drop glue — the census test
   `critical::tests::where_the_first_touch_happens` lists them — register a
@@ -217,11 +225,8 @@ them.
         bits, eight-aligned promoted survivors being candidates; text in the
         package's section 10
       tier: T0 · role: —
-      handoff: three comments in `queue.rs` — the module head, `DEFERRED_MARK`
-        and `ENTRY_MARK_BITS` — now say three bits; `weak/table.rs`'s own
-        four-bit claim holds, its cells being heap slots. Gate green
-        2026-09-23 (1115 tests, four runs), citations 805 with no miss.
-- [ ] S65.2 The epoch cell is the collector's (package commit 1)
+      handoff: `5014615`, three comments in `queue.rs`; gate green 2026-09-23.
+- [x] S65.2 The epoch cell is the collector's (package commit 1)
       done: the cell on the record's hold line, advanced at the first of 64
         batches or X of the collector's clock; the turnover byte has one
         writer; one epoch reading per collection; `turn_the_cell_of` replaces
@@ -232,6 +237,43 @@ them.
         says the epoch clock is the collector's cell, advanced by its batches
         or its interval
       tier: T2 · role: Critic
+      baseline 2026-09-23, `5014615`, before the first edit: the poll with
+        the lane occupied loads the lane's occupancy (base block's control
+        line), the request byte (token line) and `commits` (writer line), and
+        compares against the mirror; allocates nothing and refuses nothing.
+        An in-line collection reads `commits` at the arena's open and stores
+        it at the commit's close; the collector reads `commits` at every
+        visit (`clock_stood_since_the_stamp`). `what_the_poll_costs`, release,
+        four runs of the saved binary: empty 8.06–8.26 ns minimum, one
+        deferred record 8.45–8.90 ns minimum (load average 2.4)
+      red 2026-09-23 on `5014615`, the mutator's counter positioned at an
+        epoch's start: seven real takes, each round a batch, mirror 64 before
+        X and after; green on the new tree, and 20 runs of `the_epoch_clock`
+        at eight threads green
+      Critic 2026-09-23: seven findings. (1) The advance after the serve
+        deferred a root the batch read live against the ended epoch — accepted,
+        the advance moved before the serve, red case
+        `a_batch_at_the_advancing_visit_traces_on_the_turned_epoch` seen red
+        on the old order. (2) The pressure path read the cell again at its
+        commit arena — accepted, `HarvestedMembers` carries the trace's
+        reading into `TraceScratchArena::open_at`, red case
+        `a_pressure_collection_defers_at_its_traces_reading_across_an_advance`
+        seen red with the second read; both paths note the reading at the
+        trace's open. (3) The red run unrecorded and `takes > 5` load-bound —
+        red recorded above, the count dropped. (4) Two moved costs unpriced,
+        the S37.5 probe measuring its stand-in — priced in the 2026-09-21
+        banner, the probe says what it models. (5) One writer by naming —
+        the cell advances by `fetch_add`, the hold-line exemption stated.
+        (6) The empty revalidation's refusal lost its reason — to Edmond,
+        `PLAN.md` fog (rule 4: removing it deletes a pinned test). (7) The
+        standing-take design kept the refuted premise — bannered.
+      handoff: the cell is `HoldLine::turnovers`, advanced in `worker::`
+        `advance_the_epoch_if_due` before the serve; the poll compares
+        `MutatorRecord::turnover_byte` with the u8 mirror; `arm()` after the
+        re-offer still stands for S65.10. Poll 6.84–6.99 ns against
+        8.26–8.36 ns, `dev/BENCHMARKS.md`, "S65.2 the poll with the
+        collector's epoch cell". Miri owed at the stage's close for
+        `epoch::turn_the_cell_of` and the record's new accessors.
 - [ ] S65.3 A merged lane is taken at the next round, and K doubles only on a
       filled clamp (package commit 1a, in the Critic's form)
       done: a `merges` counter on R's writer line bumped beside the splice,
@@ -543,10 +585,11 @@ live: `archive/pre-rc-cycle`").
 - [ ] **A quiet thread's garbage is taken after X.** Edmond, 2026-09-18: the
   GC takes a thread's garbage of its own accord once some time X has passed.
   The half that turns a quiet thread's deferred lane over is built: the
-  collector's round asks after X (`worker::quiet_interval`, 8 s by default,
-  `ll_gc_set_quiet_interval` the embedder's dial) and the poll answers
-  (`dev/DECISIONS.md`, "a quiet thread's turnover is the collector's to ask
-  for"). What
+  collector advances the mutator's epoch after X of its own clock
+  (`worker::epoch_interval`, 8 s by default, `ll_gc_set_epoch_interval` the
+  embedder's dial) and the poll re-offers the lane (`dev/DECISIONS.md`, "the
+  collector finds and the mutator judges, and a recall of the token bounds
+  the mutator's wait instead of the budget"). What
   is left is R: a collector serves a mutator whose R holds
   `worker::SOFT_THRESHOLD` (64) records or more, the round's threshold is
   constant in the working build (`worker::threshold_for_rounds`), and a thread
@@ -556,7 +599,7 @@ live: `archive/pre-rc-cycle`").
   `an_unarmed_poll_leaves_a_completed_death_registered`). The cheapest form
   leaves the poll alone: a round serves such a mutator at a threshold of one
   once X has passed since the instant the round stamps on its record
-  (`MutatorRecord::served_at`). The algorithm is accepted and S64 builds it:
+  (`MutatorRecord::standing_since`). The algorithm is accepted and S64 builds it:
   `dev/design/a-standing-r-is-taken-after-n-rounds.md`
   (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
   collector's own, and no request count is capped") — the take after an

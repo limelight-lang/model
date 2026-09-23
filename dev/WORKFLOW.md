@@ -412,22 +412,17 @@ cores. The census flake of 2026-08-06 failed 3 in 30, 7 in 40, 6 in 40
 and 9 in 40 that way, and 0 in 60 after the fix under the same load
 (`dev/POSTMORTEM.md`, "an entity killed at refcount 1").
 
-**A second flake class: a margin that is a fraction of a real interval.**
-`worker::tests::the_quiet_thread::`
-`a_thread_batched_all_live_oftener_than_x_is_asked_after_x` failed once in
-five full runs at eight threads on 2026-09-22, at its last assertion ("X
-passed through the batches, and the serve asked"), and passed three of three
-when its group was run alone. The case sleeps `X / 5` in a loop, reads the
-serve clock, asks, and breaks on the first reading past `X − X / 10`; the
-assertion after the break requires that ask to have requested the turnover.
-Two mechanisms can defeat it under load and the run did not separate them:
-the ask's own reading of the clock can fall on the other side of X from the
-loop's if the thread is descheduled by more than `X / 10` between the two,
-and a batch landing between them restamps `served_at`, which the loop tests
-only on the iterations it does not break on. What would separate them is
-printing both readings and the stamp at the break. Until then the red is
-re-run past like the ledger class above, and it is named here so that an
-unnamed red is not read as this one.
+**A second flake class: a margin that is a fraction of a real interval.** A
+case that reads a clock in a loop and asserts at the first reading past a
+bound can be defeated under load when the code under test reads the same
+clock on the other side of the bound. The case that showed it, the quiet
+thread's ask with a margin of `X / 10`, failed once in five full runs at eight
+threads on 2026-09-22 and went with the ask on 2026-09-23. Its replacement,
+`worker::tests::the_epoch_clock::`
+`a_lane_behind_all_live_takes_oftener_than_x_is_reoffered_after_x`, takes
+until `1.5 X` has passed and asserts once, after the last take, so its margin
+is half of X and no assertion falls inside the loop; a red from it is a
+finding until a run shows otherwise.
 
 **The gate flake watch.** Six cases read the process-wide GC ledger across
 a child thread's whole life, which no per-thread figure can answer, and they
@@ -455,7 +450,8 @@ loop's, the trampoline's and the guard's. One further red came on
 2026-09-19, in a run whose name the command's tail did not keep, and seven
 `debug-journal` runs of the same tree after it were green; on 2026-09-22 it
 was 4 in 54 `debug-journal` runs, one of them under the two-core load recipe
-and two in the runs of the standing list's step, whose new cases start twenty mutator threads. What would close them is
+and two in the runs of the standing list's step, whose new cases start twenty mutator threads; on 2026-09-23 it was 1 in 7 over
+S65.2's two gates, 112 against 113 again. What would close them is
 a reading of a named thread's figures that outlives the thread, a structure
 rather than a patch; Edmond deferred building it on 2026-09-18 ("fix it
 later"), so the watch stands and the flake is re-run past, and until it is

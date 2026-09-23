@@ -100,7 +100,7 @@ fn a_destructor_reads_null_through_the_cell_naming_the_other_member() {
     SEEN_BY_THE_SECOND.store(usize::MAX, Ordering::Relaxed);
 
     let before = unsafe { refcounts(&[target, probe]) };
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [target as *mut RcHeader, probe as *mut RcHeader];
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
@@ -170,7 +170,7 @@ fn a_destructor_of_one_component_reads_null_through_a_cell_naming_another() {
 
     let ring_members = [probe, probe_peer, target, target_peer];
     let before = unsafe { refcounts(&ring_members) };
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut components = [
         [probe as *mut RcHeader, probe_peer as *mut RcHeader],
         [target as *mut RcHeader, target_peer as *mut RcHeader],
@@ -250,7 +250,7 @@ fn every_destructor_of_the_finalization_reads_null_through_the_other_s_cell() {
     SEEN_BY_THE_FIRST.store(usize::MAX, Ordering::Relaxed);
     SEEN_BY_THE_SECOND.store(usize::MAX, Ordering::Relaxed);
 
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },
@@ -312,7 +312,7 @@ fn a_release_inside_a_destructor_stops_at_the_other_member_s_guard() {
     RELEASE_REACHED_ZERO.store(true, Ordering::Relaxed);
 
     let before = unsafe { refcounts(&[target, probe]) };
-    let mut finalization = Finalization::begin();
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [target as *mut RcHeader, probe as *mut RcHeader];
     assert_eq!(
         unsafe { finalization.confirm(&Membership::listed(&mut members)) },

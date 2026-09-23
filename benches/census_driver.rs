@@ -195,8 +195,14 @@ fn run(named: Named, collections: usize, mut control: Option<Control>) {
         second_edge: named.second_edge,
     };
     let roots = if named.retained { 1 } else { named.members };
-    // The epoch turns over every 64 commits and a turnover's re-offer would
-    // land inside the interval: one process stays under it by count.
+    // The epoch is the collector's and turns only at its visits, after X of
+    // its clock or 64 of its batches for this thread, and a turnover's
+    // re-offer would land inside the interval. The driver's own collections
+    // count toward neither; the bound keeps the interval under 64 of them, so
+    // that a collector the load's signal births and that batched once per
+    // collection could not turn it either. A run that outlasts X from that
+    // collector's first visit can still meet an advance, which the old clock
+    // could not; one un-pruned collection is its whole cost.
     assert!(
         collections + 3 < 64,
         "the warm-up, the interval and the teardown stay inside one epoch"

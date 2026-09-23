@@ -6,8 +6,9 @@
 //! byte and its wait; the reader's line, the collector's words of the
 //! two rings; the writer's line, the mutator's words of them and its count
 //! of freeing dispositions; and the hold line, the word under
-//! which a collector reads the rings' blocks before its claim and the word
-//! that names the mutator's collector (`rfc/dev/DECISIONS.md`, "the candidate
+//! which a collector reads the rings' blocks before its claim, the word
+//! that names the mutator's collector, and the mutator's epoch clock, which
+//! that collector keeps (`crate::cycle::epoch`; `rfc/dev/DECISIONS.md`, "the candidate
 //! queue is read behind its writer, and the collector's verdicts come back
 //! by a second ring"). The reader's and the writer's lines are each written
 //! by one party, so a registration's store and a batch's load never share a
@@ -121,19 +122,17 @@ pub(crate) struct MutatorRecord {
     /// mutator's candidates and the entities the trace reaches, and by the
     /// mutator around its own.
     pub(crate) token: TraceToken,
-    /// The collector's request for a turnover of this mutator's epoch, read
-    /// beside the token byte at every poll that finds the deferred lane
-    /// non-empty (`crate::gc`, the poll; `crate::cycle::queue`, the deferred
-    /// lane): stored by the collector's round when this mutator has been
-    /// quiet for X (`crate::cycle::worker`), cleared by the mutator at the
-    /// poll that jumps its clock and at the fill of an empty lane. Relaxed on
-    /// both sides: nothing is published beside it, and a request the fill
-    /// cleared or the poll read late costs one turnover early or one poll
-    /// late, never a wrong free. A collection of this thread's own between
-    /// the ask and the poll — under pressure, or fired — re-defers the lane
-    /// and so clears the request, and the next ask waits X again: a thread
-    /// whose clock moved is not quiet.
-    turnover_requested: AtomicU8,
+    /// The low eight bits of this mutator's epoch cell
+    /// ([`HoldLine::turnovers`]), stored by the collector at every advance
+    /// and by nobody else. The poll that finds the deferred lane occupied
+    /// compares it with the lane's mirror and re-offers the lane when the two
+    /// differ (`crate::gc`, the poll; `crate::cycle::queue`, the deferred
+    /// lane). On this line because the poll reads the token beside it.
+    /// Relaxed on both sides: nothing is published beside it, and a byte read
+    /// late delays the re-offer by one poll, never a wrong free. Eight bits
+    /// wrap at 256 turnovers, which at X is over half an hour of a thread
+    /// that never polls; the price of the alias is one more X.
+    turnover: AtomicU8,
     /// The next free record, meaningful while this one is on the registry's
     /// free list and written under its lock alone.
     free_link: Cell<*mut MutatorRecord>,
@@ -183,20 +182,6 @@ struct ReaderLine {
     /// Set and cleared by the collector alone; cleared with the line at a
     /// re-take.
     released_unserved: AtomicBool,
-    /// When the collector last served this mutator, in nanoseconds since the
-    /// base `crate::cycle::worker` fixes at the process's first serve; zero
-    /// before any serve. Restamped by every serve that found the mutator's
-    /// clock moving, and by the serve that reached nothing with X elapsed
-    /// and asked for a turnover (`crate::cycle::worker`, "The quiet
-    /// thread"). The collector's own word, so relaxed.
-    served_at: AtomicU64,
-    /// The mutator's clock as the collector last stamped it, beside the
-    /// instant: a clock that moved since is a thread whose stamps age on
-    /// their own, and it is restamped rather than asked. This word decides
-    /// the restamp by itself — what a serve reached does not, a batch's
-    /// verdicts being all live as often as not. The collector's own word, so
-    /// relaxed.
-    commits_seen: AtomicU64,
     /// The link pair of the collector's standing list: the records whose
     /// request stands on the byte past the wait, a doubly linked list
     /// threaded through the records with its two end pointers on the
@@ -245,17 +230,6 @@ struct WriterLine {
     /// (`crate::cycle::worker`, "The thread, and the round over the
     /// records").
     freeing_dispositions: AtomicU32,
-    /// This mutator's clock, which its maturation stamps are written and
-    /// read against (`crate::cycle::epoch`): the commits it has closed,
-    /// moved to the next turnover's first commit at its poll on the
-    /// collector's request ([`MutatorRecord::turnover_requested`]). Written
-    /// by the mutator alone, at its commit's close and at that poll, and
-    /// read by the collector that traces this mutator's graph, which prunes
-    /// against the owner's epoch and never against its own thread's. A record
-    /// handed out again starts one turnover past where its last life left it
-    /// (`crate::cycle::epoch::a_new_lifes_count`), so no stamp that life wrote
-    /// reads fresh to this one.
-    commits: AtomicU64,
 }
 
 /// The line the collector, the exit and the registry share.
@@ -282,8 +256,7 @@ struct HoldLine {
     /// `crate::cycle::worker` or more after that reading, and stamps the
     /// word again at the end of every batch
     /// (`dev/design/a-standing-r-is-taken-after-n-rounds.md`, "The round").
-    /// On this line rather than the reader's, which is full since the
-    /// standing list's link pair took its last sixteen bytes. Read and
+    /// On this line with the collector's other words a round writes. Read and
     /// written under the reading hold or under this collector's grant,
     /// which is where the round's reading and the batch's end stand, and
     /// nowhere else: outside both, a record between the hand-back and the
@@ -309,6 +282,45 @@ struct HoldLine {
     /// which serves the mutators named to it. On this line because it is the
     /// one word a collector writes into a record it does not read for.
     collector: AtomicU8,
+    /// This word and the three after it, the epoch's, are written by the
+    /// advance outside the reading hold and the grant, unlike
+    /// [`HoldLine::standing_since`]: the collector's visit advances before its
+    /// serve requests the token, and a record between two lives is visited
+    /// like any other. Every interleaving with the
+    /// registry's re-take ends in an extra advance or a restamp, and either
+    /// costs recall only (`crate::cycle::epoch`, "A reading that missed an
+    /// advance is conservative").
+    ///
+    /// Whether the registry handed this record out again since the
+    /// collector's last visit: that visit advances the epoch once and clears
+    /// the byte, so that no stamp the last life wrote reads fresh against
+    /// the new one's clock (`crate::cycle::epoch`, "A record's next life").
+    /// Set by the registry, cleared by the collector; relaxed, since a flag
+    /// read late costs recall until the next advance and nothing else.
+    new_life: AtomicU8,
+    /// Batches the collector made for this mutator since the last advance,
+    /// saturating: the advance comes at the first of
+    /// `crate::cycle::epoch::BATCHES_PER_EPOCH` of them or X of the
+    /// collector's clock. Written by the collector the record is named to
+    /// alone, so relaxed; cleared at every advance and at a re-take.
+    batches_since: AtomicU8,
+    /// This mutator's epoch clock: the turnovers of its epoch, full width and
+    /// monotone across the record's lives. The epoch a maturation stamp
+    /// carries is its low two bits (`crate::cycle::epoch`). Written by the
+    /// collector the record is named to and by nobody else, at each advance
+    /// (`crate::cycle::worker`, "The epoch clock"); read once per collection
+    /// by whoever traces this mutator's graph, at the arena's open, so that
+    /// the owner's collections and the collector's batches prune against
+    /// the same clock. Relaxed: a reading that missed an advance prunes
+    /// against an epoch that has ended, which costs a descent and never a
+    /// wrong free (`crate::cycle::mark`, "The epoch is the arena's").
+    turnovers: AtomicU64,
+    /// The collector's clock at the last advance, in nanoseconds since the
+    /// base `crate::cycle::worker` fixes at the process's first serve; zero
+    /// for a life no visit has read yet, which the first visit stamps
+    /// without advancing. The collector's own word, so relaxed; cleared at a
+    /// re-take.
+    advanced_at: AtomicU64,
 }
 
 /// A collector is reading the rings' blocks under no claim.
@@ -344,8 +356,6 @@ impl ReaderLine {
             batch: AtomicUsize::new(0),
             freeing_dispositions_seen: AtomicU32::new(0),
             released_unserved: AtomicBool::new(false),
-            served_at: AtomicU64::new(0),
-            commits_seen: AtomicU64::new(0),
             standing_next: AtomicPtr::new(std::ptr::null_mut()),
             standing_prev: AtomicPtr::new(std::ptr::null_mut()),
         }
@@ -367,8 +377,6 @@ impl ReaderLine {
         self.batch.store(0, Ordering::Relaxed);
         self.freeing_dispositions_seen.store(0, Ordering::Relaxed);
         self.released_unserved.store(false, Ordering::Relaxed);
-        self.served_at.store(0, Ordering::Relaxed);
-        self.commits_seen.store(0, Ordering::Relaxed);
     }
 }
 
@@ -379,7 +387,6 @@ impl WriterLine {
             p_front_block: AtomicPtr::new(std::ptr::null_mut()),
             collecting: AtomicBool::new(false),
             freeing_dispositions: AtomicU32::new(0),
-            commits: AtomicU64::new(0),
         }
     }
 
@@ -391,10 +398,6 @@ impl WriterLine {
             .store(std::ptr::null_mut(), Ordering::Relaxed);
         self.collecting.store(false, Ordering::Relaxed);
         self.freeing_dispositions.store(0, Ordering::Relaxed);
-        self.commits.store(
-            crate::cycle::epoch::a_new_lifes_count(self.commits.load(Ordering::Relaxed)),
-            Ordering::Relaxed,
-        );
     }
 }
 
@@ -449,7 +452,7 @@ impl MutatorRecord {
     const fn taken() -> Self {
         Self {
             token: TraceToken::new_held(),
-            turnover_requested: AtomicU8::new(0),
+            turnover: AtomicU8::new(0),
             free_link: Cell::new(std::ptr::null_mut()),
             #[cfg(test)]
             pinned: AtomicBool::new(false),
@@ -460,6 +463,10 @@ impl MutatorRecord {
                 standing_since: AtomicU64::new(0),
                 standing_slot: AtomicU8::new(0),
                 collector: AtomicU8::new(0),
+                new_life: AtomicU8::new(0),
+                batches_since: AtomicU8::new(0),
+                turnovers: AtomicU64::new(0),
+                advanced_at: AtomicU64::new(0),
             },
         }
     }
@@ -588,48 +595,78 @@ impl MutatorRecord {
         &self.reader.standing_prev
     }
 
-    /// When the collector last served this mutator ([`ReaderLine::served_at`]).
+    /// This mutator's epoch clock ([`HoldLine::turnovers`]): read by the
+    /// arena of every collection over this mutator's graph, once, at its
+    /// open.
     #[inline]
-    pub(crate) fn served_at(&self) -> u64 {
-        self.reader.served_at.load(Ordering::Relaxed)
+    pub(crate) fn turnovers(&self) -> u64 {
+        self.hold.turnovers.load(Ordering::Relaxed)
     }
 
-    /// Stamp the serve's instant ([`ReaderLine::served_at`]) and the clock as
-    /// it stands ([`ReaderLine::commits_seen`]), on the collector's thread.
+    /// The low eight bits of the clock as the collector last stored them
+    /// ([`MutatorRecord::turnover`]), on the mutator's thread: the poll's
+    /// reading against the deferred lane's mirror.
     #[inline]
-    pub(crate) fn note_served_at(&self, nanos: u64) {
-        self.reader.served_at.store(nanos, Ordering::Relaxed);
-        self.reader
-            .commits_seen
-            .store(self.commits(), Ordering::Relaxed);
+    pub(crate) fn turnover_byte(&self) -> u8 {
+        self.turnover.load(Ordering::Relaxed)
     }
 
-    /// Whether the mutator's clock stands where the collector last stamped
-    /// it ([`ReaderLine::commits_seen`]): no commit of its own since.
+    /// Advance the clock by one turnover, on the collector's thread: the
+    /// cell, then the byte the poll reads, then the instant and the batch
+    /// count the next advance is measured from. The cell is moved by one
+    /// read-modify-write, so two visits of one record — a round and a
+    /// handover's, or a round over a record between two lives — each count
+    /// and neither moves the cell back; the byte they store last may be the
+    /// earlier of the two, which delays a re-offer by one advance and frees
+    /// nothing wrongly.
     #[inline]
-    pub(crate) fn clock_stood_since_the_stamp(&self) -> bool {
-        self.reader.commits_seen.load(Ordering::Relaxed) == self.commits()
+    pub(crate) fn advance_the_epoch(&self, now: u64) {
+        let turnovers = self
+            .hold
+            .turnovers
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        self.turnover.store(turnovers as u8, Ordering::Relaxed);
+        self.hold.advanced_at.store(now, Ordering::Relaxed);
+        self.hold.batches_since.store(0, Ordering::Relaxed);
     }
 
-    /// Ask this mutator for a turnover of its epoch
-    /// ([`MutatorRecord::turnover_requested`]), on the collector's thread.
+    /// The collector's clock at the last advance, or zero for a life no
+    /// visit has read yet ([`HoldLine::advanced_at`]).
     #[inline]
-    pub(crate) fn request_a_turnover(&self) {
-        self.turnover_requested.store(1, Ordering::Relaxed);
+    pub(crate) fn advanced_at(&self) -> u64 {
+        self.hold.advanced_at.load(Ordering::Relaxed)
     }
 
-    /// Whether the collector asked for a turnover, on the mutator's thread.
+    /// Stamp the instant the next advance is measured from without
+    /// advancing: the first visit of a life.
     #[inline]
-    pub(crate) fn turnover_is_requested(&self) -> bool {
-        self.turnover_requested.load(Ordering::Relaxed) != 0
+    pub(crate) fn note_advanced_at(&self, now: u64) {
+        self.hold.advanced_at.store(now, Ordering::Relaxed);
     }
 
-    /// Take the request down, on the mutator's thread: at the poll that acts
-    /// on it, and at the fill of an empty deferred lane, where a request made
-    /// against the last accumulation is stale.
+    /// Batches made for this mutator since the last advance
+    /// ([`HoldLine::batches_since`]).
     #[inline]
-    pub(crate) fn clear_turnover_request(&self) {
-        self.turnover_requested.store(0, Ordering::Relaxed);
+    pub(crate) fn batches_since_the_advance(&self) -> u8 {
+        self.hold.batches_since.load(Ordering::Relaxed)
+    }
+
+    /// Count one batch made for this mutator, on the collector's thread,
+    /// saturating.
+    #[inline]
+    pub(crate) fn note_batch(&self) {
+        let batches = self.hold.batches_since.load(Ordering::Relaxed);
+        self.hold
+            .batches_since
+            .store(batches.saturating_add(1), Ordering::Relaxed);
+    }
+
+    /// Whether the registry handed this record out again since the last
+    /// visit, clearing the note ([`HoldLine::new_life`]).
+    #[inline]
+    pub(crate) fn take_new_life(&self) -> bool {
+        self.hold.new_life.swap(0, Ordering::Relaxed) != 0
     }
 
     /// Whether the mutator is collecting in line: the word is the mutator's
@@ -650,31 +687,6 @@ impl MutatorRecord {
     #[inline]
     pub(crate) fn clear_collecting(&self) {
         self.writer.collecting.store(false, Ordering::Relaxed);
-    }
-
-    /// Count one commit this mutator closed, on the mutator's own thread.
-    #[inline]
-    pub(crate) fn note_commit(&self) {
-        let commits = self.writer.commits.load(Ordering::Relaxed);
-        self.writer.commits.store(commits + 1, Ordering::Relaxed);
-    }
-
-    /// Move the clock to `commits`, on the mutator's own thread: the
-    /// collector's turnover request answered
-    /// (`crate::cycle::epoch::jump_to_the_next_turnover`).
-    #[inline]
-    pub(crate) fn jump_commits_to(&self, commits: u64) {
-        self.writer.commits.store(commits, Ordering::Relaxed);
-    }
-
-    /// This mutator's clock: the commits it has closed, moved to the next
-    /// turnover's first commit on the collector's request (the field's
-    /// contract, `WriterLine::commits`). Read by the mutator itself and by
-    /// the collector that traces for it, where it is the clock the stamps in
-    /// that mutator's entities were written against.
-    #[inline]
-    pub(crate) fn commits(&self) -> u64 {
-        self.writer.commits.load(Ordering::Relaxed)
     }
 
     /// Note, on the mutator's thread, that the collection its poll fired
@@ -1011,9 +1023,14 @@ fn take_record() -> *mut MutatorRecord {
             // life ended under a standing request is unlinked by its
             // collector's pass and not by this path.
             (*released).hold.standing_slot.store(0, Ordering::Relaxed);
-            // The token line's request byte, which neither reset above
-            // reaches: a request made against the last life's lane is stale.
-            (*released).clear_turnover_request();
+            // The clock itself is left where the last life moved it: the
+            // collector's next visit advances it once, so that no stamp that
+            // life wrote reads fresh against this one's
+            // (`crate::cycle::epoch`, "A record's next life"). The instant and
+            // the batch count restart with the life.
+            (*released).hold.batches_since.store(0, Ordering::Relaxed);
+            (*released).hold.advanced_at.store(0, Ordering::Relaxed);
+            (*released).hold.new_life.store(1, Ordering::Relaxed);
             // Last, with release: the next reading's take is what sees the
             // lines above as reset.
             (*released).hold.reading.store(0, Ordering::Release);
@@ -1179,9 +1196,9 @@ pub(crate) fn refuse_record_draws(refuse: bool) {
 }
 
 /// Write into `record`'s lines, for a case that reads whether a re-take
-/// empties them: the batch size and the serve instant, which are words no
-/// exit reads, the turnover request, and the standing instant on the hold
-/// line. The four block words are left alone, because the
+/// empties them: the batch size, which no exit reads, and on the hold line
+/// the standing instant, the list's stamp, the advance's instant and its
+/// batch count. The four block words are left alone, because the
 /// exit reads both rings through them and a scribbled pointer would be
 /// followed; they are nulled by the rings' dismantle before the record goes
 /// back, which is what the reset repeats. The collecting word is left alone
@@ -1192,23 +1209,23 @@ pub(crate) fn refuse_record_draws(refuse: bool) {
 pub(crate) fn scribble_lines_for_test(record: *mut MutatorRecord) {
     unsafe {
         (*record).reader.batch.store(7, Ordering::Relaxed);
-        (*record).reader.served_at.store(7, Ordering::Relaxed);
         (*record).hold.standing_since.store(7, Ordering::Relaxed);
         (*record).hold.standing_slot.store(7, Ordering::Relaxed);
-        (*record).turnover_requested.store(1, Ordering::Relaxed);
+        (*record).hold.advanced_at.store(7, Ordering::Relaxed);
+        (*record).hold.batches_since.store(7, Ordering::Relaxed);
     }
 }
 
-/// Store the turnover request into `record` from the harness thread, standing
-/// in for the collector's round after X.
+/// Note a new life on `record` as the registry's re-take does, for a case
+/// that reads what the collector's next visit makes of it.
 #[cfg(test)]
-pub(crate) fn request_a_turnover_for_test(record: *mut MutatorRecord) {
-    unsafe { (*record).request_a_turnover() };
+pub(crate) fn note_new_life_for_test(record: *mut MutatorRecord) {
+    unsafe { (*record).hold.new_life.store(1, Ordering::Relaxed) };
 }
 
 /// Whether `record`'s lines hold what a fresh life starts with: R's words,
-/// the batch size, the serve instant, the standing instant, the standing
-/// list's stamp and the turnover request empty, the collecting word clear,
+/// the batch size, the standing instant, the standing list's stamp, the
+/// advance's instant and its batch count empty, the collecting word clear,
 /// and P's two words naming one block.
 #[cfg(test)]
 pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
@@ -1217,10 +1234,10 @@ pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
     let p_block = reader.p_tail_block.load(Ordering::Relaxed);
     reader.r_front_block.load(Ordering::Relaxed).is_null()
         && reader.batch.load(Ordering::Relaxed) == 0
-        && reader.served_at.load(Ordering::Relaxed) == 0
         && unsafe { (*record).hold.standing_since.load(Ordering::Relaxed) == 0 }
         && unsafe { (*record).hold.standing_slot.load(Ordering::Relaxed) == 0 }
-        && unsafe { !(*record).turnover_is_requested() }
+        && unsafe { (*record).hold.advanced_at.load(Ordering::Relaxed) == 0 }
+        && unsafe { (*record).hold.batches_since.load(Ordering::Relaxed) == 0 }
         && writer.r_tail_block.load(Ordering::Relaxed).is_null()
         && !writer.collecting.load(Ordering::Relaxed)
         && !p_block.is_null()

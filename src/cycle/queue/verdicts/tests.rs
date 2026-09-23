@@ -289,7 +289,7 @@ fn a_proposed_root_is_collected_by_the_poll_that_reads_it() {
 }
 
 #[test]
-fn a_root_read_live_waits_in_the_deferred_lane_against_the_polls_count() {
+fn a_root_read_live_waits_in_the_deferred_lane_against_the_polls_reading() {
     let _g = test_guard();
     start();
     let node = node_class("VerdictLiveNode");
@@ -309,20 +309,20 @@ fn a_root_read_live_waits_in_the_deferred_lane_against_the_polls_count() {
     assert_eq!(stand_in_posts(1, |_| Verdict::ReadLive), Posted::Batch(1));
     assert!(refill_spares(), "the lane's block comes from a cell");
 
-    let before = crate::cycle::epoch::commits();
+    crate::cycle::epoch::turn_to_a_nonzero_epoch();
+    let reading = crate::cycle::epoch::this_threads_turnovers();
     assert_eq!(
         unsafe { ll_gc_maybe_collect() },
         0,
         "nothing armed the poll"
     );
-    let after = crate::cycle::epoch::commits();
     assert_eq!(verdict_count(), 0);
     assert_eq!(candidate_count(), 0);
     assert_eq!(deferred_count(), 1, "the root waits for the turnover");
-    let mirror = deferred_turnover_mirror();
-    assert!(
-        (before..=after).contains(&mirror),
-        "the mirror is the poll's own count: {mirror} in {before}..={after}"
+    assert_eq!(
+        deferred_turnover_mirror(),
+        reading as u8,
+        "the mirror is the reading of the poll's own collection"
     );
 
     unsafe {

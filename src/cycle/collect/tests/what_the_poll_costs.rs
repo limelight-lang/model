@@ -3,8 +3,8 @@
 //! statement pays (`rfc/dev/design/trace-token-handshake.md`, "Cost": one
 //! acquire load of the byte in place of the per-poll peek of P); and the
 //! same poll with one record standing in the deferred lane, which adds the
-//! load of the collector's turnover request beside the token byte
-//! (`crate::cycle::queue::answer_a_turnover_request`).
+//! load of the collector's turnover byte beside the token byte
+//! (`crate::cycle::queue::reoffer_deferred_if_epoch_moved`).
 //!
 //! A measurement probe: `cargo test --release --lib -- --ignored
 //! what_the_poll_costs`, one binary per tree, the minimum beside the median
@@ -49,8 +49,8 @@ fn measure_what_the_poll_costs() {
 }
 
 /// The same poll with one live root standing in the deferred lane and no
-/// request made: the lane's occupancy is read off the base block's control
-/// line and the request byte off the record's token line, both lines the
+/// advance made: the lane's occupancy is read off the base block's control
+/// line and the turnover byte off the record's token line, both lines the
 /// poll touches already. Recorded as an absolute figure beside the empty
 /// arm (`dev/BENCHMARKS.md`, "S60.6 what the poll costs with a deferred
 /// record standing").
@@ -60,7 +60,7 @@ fn measure_what_the_poll_costs_with_a_deferred_record_standing() {
     let _g = test_guard();
     crate::cycle::queue::release_queue_segments();
     assert!(crate::cycle::queue::refill_spares());
-    crate::cycle::epoch::stand_at_the_start_of_a_nonzero_epoch();
+    crate::cycle::epoch::turn_to_a_nonzero_epoch();
     crate::gc::disarm();
 
     let node = ClassBuilder::new("PollCostNode").prop("next", true).build();
@@ -118,14 +118,12 @@ fn measure_what_the_poll_costs_with_a_deferred_record_standing() {
         samples[0]
     );
 
-    // The ring goes back: the keeper lets go, the request the collector
+    // The ring goes back: the keeper lets go, the advance the collector
     // would make after X is made by hand, and the poll after it takes it.
     unsafe {
         assert!(ll_release(keeper as *mut RcHeader));
         ll_object_die(keeper);
     }
-    crate::cycle::mutator_record::request_a_turnover_for_test(
-        crate::cycle::mutator_record::this_thread_record(),
-    );
+    crate::cycle::epoch::turn_this_threads_cell();
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 2, "the ring went back");
 }

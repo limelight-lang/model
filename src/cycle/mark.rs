@@ -62,10 +62,10 @@
 //! threshold itself. Both are recall paid inside one epoch and neither is a
 //! free (`rfc/model/gc/rc-cycle.md`, "What a commit stamps").
 //!
-//! **The epoch is the arena's, fixed when the trace opened it.** It is a
-//! division over the owning mutator's commit counter
-//! (`crate::cycle::epoch`), so a reading per edge would put that on every edge
-//! of the trace; and the owner is the arena's to name, since a collector
+//! **The epoch is the arena's, fixed when the trace opened it.** It is the
+//! owning mutator's epoch cell as the collection read it at the open
+//! (`crate::cycle::epoch`), so no edge of the trace pays a load of the line
+//! the collector writes; and the owner is the arena's to name, since a collector
 //! thread traces a graph whose stamps are the served mutator's clock and never
 //! its own thread's (`crate::cycle::arena::TraceScratchArena::open_for_owner`).
 //! Two

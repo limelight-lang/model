@@ -318,10 +318,13 @@ pub(crate) struct TraceScratchArena {
     /// Whether a growth was refused by the budget rather than by the pool:
     /// what tells a batch that met its budget from one the pool refused.
     budget_met: bool,
-    /// The epoch the mark prunes against: the clock of the mutator whose
-    /// graph this trace walks, which is the opening thread's own for an
-    /// in-line collection and the served mutator's for a collector thread
-    /// ([`TraceScratchArena::open_for_owner`], `crate::cycle::epoch`).
+    /// The collection's one reading of the epoch cell of the mutator whose
+    /// graph this trace walks — the opening thread's own for an in-line
+    /// collection, the served mutator's for a collector thread
+    /// ([`TraceScratchArena::open_for_owner`], `crate::cycle::epoch`) — and
+    /// the epoch the mark prunes and the commit stamps against, taken from
+    /// it at the open. The full reading is the deferred lane's mirror.
+    turnovers: u64,
     epoch: u32,
     /// The bump cursor into the newest block, and the bytes left in it.
     cursor: *mut u8,
@@ -392,13 +395,24 @@ impl TraceScratchArena {
     /// workspace at a time, and a second arena opened over a live one ends the
     /// process rather than granting the same bytes twice.
     pub(crate) fn open() -> Option<Self> {
-        Self::open_for(crate::cycle::epoch::current())
+        Self::open_at(crate::cycle::epoch::this_threads_turnovers())
+    }
+
+    /// The same, on a reading of this thread's cell a trace of the same
+    /// collection already took: the pressure path's commit arena, opened
+    /// after the trace's arena went back, carries the trace's reading rather
+    /// than a second one (`crate::cycle::collect`).
+    pub(crate) fn open_at(turnovers: u64) -> Option<Self> {
+        Self::open_for(
+            turnovers,
+            crate::cycle::epoch::epoch_this_thread_reads(turnovers),
+        )
     }
 
     /// The same, for a trace of `owner`'s graph on a collector thread: the
     /// mark prunes against that mutator's clock, since the stamps it reads
-    /// were written by that mutator's commits (`crate::cycle::epoch`). The
-    /// workspace is still this thread's.
+    /// are that mutator's (`crate::cycle::epoch`). The workspace is still
+    /// this thread's.
     ///
     /// # Safety
     /// `owner` is a live record, held for the length of the call by the trace
@@ -406,11 +420,13 @@ impl TraceScratchArena {
     pub(crate) unsafe fn open_for_owner(
         owner: *const crate::cycle::mutator_record::MutatorRecord,
     ) -> Option<Self> {
-        Self::open_for(unsafe { crate::cycle::epoch::of_record(owner) })
+        let turnovers = unsafe { crate::cycle::epoch::of_record(owner) };
+        Self::open_for(turnovers, crate::cycle::epoch::epoch_of(turnovers))
     }
 
-    /// The arena of a trace pruning against `epoch`.
-    fn open_for(epoch: u32) -> Option<Self> {
+    /// The arena of a trace that read the cell at `turnovers` and prunes
+    /// against `epoch`.
+    fn open_for(turnovers: u64, epoch: u32) -> Option<Self> {
         let base = crate::cycle::queue::lend_workspace_base();
         if base.is_null() {
             return None;
@@ -424,6 +440,7 @@ impl TraceScratchArena {
             drawn: 0,
             block_budget: usize::MAX,
             budget_met: false,
+            turnovers,
             epoch,
             cursor: unsafe { payload.add(WORKSPACE_PREFIX_BYTES) },
             left: WORKSPACE_BUMP_BYTES,
@@ -1158,10 +1175,18 @@ impl TraceScratchArena {
         self.budget_met
     }
 
-    /// The epoch this trace's mark prunes against: the clock of the mutator
-    /// whose graph it walks, fixed when the arena was opened.
+    /// The epoch this trace's mark prunes and its commit stamps against: the
+    /// clock of the mutator whose graph it walks, fixed when the arena was
+    /// opened.
     pub(crate) fn epoch(&self) -> u32 {
         self.epoch
+    }
+
+    /// The epoch cell as this collection read it at the open, full width:
+    /// what a root it defers records as the deferred lane's mirror
+    /// (`crate::cycle::queue::defer_candidates`).
+    pub(crate) fn turnovers(&self) -> u64 {
+        self.turnovers
     }
 
     /// The newest array of the touched list, or null while no block has

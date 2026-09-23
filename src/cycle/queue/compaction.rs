@@ -41,8 +41,8 @@ enum Destination {
 /// Compact this thread's queue in place: retire every completed death, move
 /// every marked entry the deferred lane can take, keep the rest in order.
 ///
-/// `deferred_at` is the commit count a deferred lane going from empty to
-/// occupied records, and `None` where this pass has no marks to read — every
+/// `deferred_at` is the epoch cell a deferred lane going from empty to
+/// occupied records as its mirror, and `None` where this pass has no marks to read — every
 /// caller but the close's own ([`crate::cycle::queue::dispose_candidates`]
 /// and [`crate::cycle::queue::defer_candidates`]). A pass given `None` over a
 /// marked entry keeps it in the ring with its mark taken off, which is the

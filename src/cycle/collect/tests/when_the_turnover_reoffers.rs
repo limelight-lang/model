@@ -20,18 +20,18 @@
 //! refuses the edge into that member, and its root waits for the turnover
 //! (`crate::cycle::mark`, "The mature live core is not descended into").
 //!
-//! **The commit counter is passed rather than driven.** A turnover is 64
-//! commits, and driving them is 64 collections to reach a reading the argument
-//! states. The mutator poll takes the count as its argument for that reason,
-//! so a case reads the mirror the deferral recorded and answers from it: one
-//! commit past that mirror is not a turnover, and one turnover past it is.
+//! **The collector's advance is stood in for by the case.** The epoch cell is
+//! the collector's (`crate::cycle::epoch`), and a case that waits for X or for
+//! 64 batches to reach a reading one store states turns the cell itself
+//! (`crate::cycle::epoch::turn_this_threads_cell`), as the collector's round
+//! would: the poll's comparison reads the byte the turn stores, so a cell
+//! that stood is no turnover and one turned is.
 
 use super::*;
 use crate::cycle::collect::InjectedVerdictRace;
 use crate::cycle::collect::collect_under_pressure;
 use crate::cycle::epoch;
 use crate::cycle::mark::{TRAVERSAL_AGE_THRESHOLD, take_edges_pruned};
-use crate::cycle::mutator_record::{request_a_turnover_for_test, this_thread_record};
 use crate::cycle::queue::verdicts::{Verdict, discard_standing_verdicts};
 use crate::cycle::queue::{
     candidate_count, deferred_count, deferred_turnover_mirror, refill_spares,
@@ -139,16 +139,14 @@ fn a_matured_ring_that_loses_its_keeper_is_collected_at_the_turnover_and_not_bef
     );
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 0);
 
-    let mirror = deferred_turnover_mirror();
     assert!(
-        !reoffer_deferred_if_epoch_moved(epoch::one_commit_inside_the_turnover_of(mirror)),
-        "one commit is not a turnover"
+        !reoffer_deferred_if_epoch_moved(),
+        "a collection of this thread's own is not a turnover"
     );
     assert_eq!(deferred_count(), 2);
 
-    assert!(reoffer_deferred_if_epoch_moved(epoch::one_turnover_past(
-        mirror
-    )));
+    epoch::turn_this_threads_cell();
+    assert!(reoffer_deferred_if_epoch_moved());
     assert_eq!(deferred_count(), 0);
     assert_eq!(candidate_count(), 2, "each record came back once");
 
@@ -161,22 +159,19 @@ fn a_matured_ring_that_loses_its_keeper_is_collected_at_the_turnover_and_not_bef
 }
 
 /// A thread whose roots all stand in the deferred lane runs no collection on
-/// its own polls. The clock is the thread's own and moves at its commits, a
-/// collection needs a root in the active lane, and the poll re-offers the lane
-/// only when the counter crossed a turnover — which, on a thread that
-/// registers nothing, is where the collector's request moves it
-/// (`crate::cycle::epoch::jump_to_the_next_turnover`). Sixty-four polls of
-/// such a thread leave the counter, the lane and the mark where they were;
-/// the poll after the request turns the epoch, splices the lane and takes the
-/// ring (`dev/DECISIONS.md`, "a quiet thread's turnover is the collector's to
-/// ask for").
+/// its own polls. A collection needs a root in the active lane, and the poll
+/// re-offers the lane only when the collector advanced the epoch cell past the
+/// lane's mirror (`crate::cycle::worker`, "The epoch clock"), which no poll
+/// and no collection of the thread's own does. Sixty-four polls of such a
+/// thread leave the cell, the lane and the mark where they were; the poll
+/// after the advance splices the lane and takes the ring.
 ///
 /// The same fixture as the case above, driven by the production poll.
 #[test]
-fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_turnover() {
+fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_advances_its_epoch() {
     let _g = test_guard();
     release_queue_segments();
-    epoch::stand_at_the_start_of_a_nonzero_epoch();
+    epoch::turn_to_a_nonzero_epoch();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
 
     let node = node_class("IdleLaneNode", counting_destructor as *const ());
@@ -208,9 +203,9 @@ fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_
     }
     assert_eq!(deferred_count(), 2, "the ring is garbage no lane offers");
 
-    let commits = epoch::commits();
+    let turnovers = epoch::this_threads_turnovers();
     let _ = take_dispatches_in_mark_phase();
-    for _ in 0..epoch::commits_per_epoch() {
+    for _ in 0..epoch::BATCHES_PER_EPOCH {
         assert_eq!(
             unsafe { crate::gc::ll_gc_maybe_collect() },
             0,
@@ -218,9 +213,9 @@ fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_
         );
     }
     assert_eq!(
-        epoch::commits(),
-        commits,
-        "sixty-four polls moved the counter by nothing"
+        epoch::this_threads_turnovers(),
+        turnovers,
+        "sixty-four polls moved the cell by nothing"
     );
     assert_eq!(
         deferred_count(),
@@ -230,34 +225,30 @@ fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_
     assert_eq!(take_dispatches_in_mark_phase(), 0, "no mark ran");
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 0);
 
-    // The collector's request after X, stood in for by the harness: the next
-    // poll moves the counter to the next turnover's first commit, splices the
-    // lane back and the collection it arms takes the ring.
-    request_a_turnover_for_test(this_thread_record());
+    // The collector's advance after X, stood in for by the harness: the next
+    // poll reads the byte, splices the lane back and the collection it arms
+    // takes the ring.
+    epoch::turn_this_threads_cell();
     assert_eq!(
         unsafe { crate::gc::ll_gc_maybe_collect() },
         2,
-        "the poll after the request re-offered the lane and freed the ring"
+        "the poll after the advance re-offered the lane and freed the ring"
     );
     assert_eq!(
-        epoch::turnovers_of(epoch::commits()),
-        epoch::turnovers_of(commits) + 1,
-        "the request moved the clock by one turnover"
+        epoch::this_threads_turnovers(),
+        turnovers + 1,
+        "the advance moved the clock by one turnover, and the collection by nothing"
     );
     assert_eq!(
-        epoch::commits() % epoch::commits_per_epoch(),
-        1,
-        "to the turnover's first commit, plus the collection's own close"
-    );
-    assert!(
-        !unsafe { (*this_thread_record()).turnover_is_requested() },
-        "the answering poll took the request down"
+        deferred_turnover_mirror(),
+        (turnovers + 1) as u8,
+        "the poll recorded the byte it re-offered at"
     );
     assert_eq!(deferred_count(), 0);
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
 
     // A second accumulation on the same thread: the polls after it move
-    // nothing again, which is what a request left standing would break.
+    // nothing again, which is what a mirror left behind the byte would break.
     let members = unsafe { ring(&mut arena, [node, node]) };
     let keeper = {
         let mut context = LLContext { arena: &mut arena };
@@ -276,22 +267,20 @@ fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_
         0
     );
     assert_eq!(deferred_count(), 2);
-    let commits = epoch::commits();
-    for _ in 0..epoch::commits_per_epoch() {
+    for _ in 0..epoch::BATCHES_PER_EPOCH {
         assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
     }
     assert_eq!(
-        epoch::commits(),
-        commits,
-        "no request stood, so no poll jumped"
+        deferred_count(),
+        2,
+        "the fill recorded the byte as it stands, so no poll re-offered"
     );
-    assert_eq!(deferred_count(), 2);
 
     unsafe {
         assert!(ll_release(keeper as *mut RcHeader));
         ll_object_die(keeper);
     }
-    request_a_turnover_for_test(this_thread_record());
+    epoch::turn_this_threads_cell();
     assert_eq!(
         unsafe { crate::gc::ll_gc_maybe_collect() },
         2,
@@ -304,13 +293,13 @@ fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_
 /// with no turnover — a thread short of memory with nothing in its active lane
 /// would otherwise read nothing to trace. The splice finds every ring whose
 /// members are all registered; a ring behind a mature member stays the
-/// collector's request to expose, because a turnover per refused allocation
+/// collector's advance to expose, because a turnover per refused allocation
 /// would re-trace the lane's whole closure without a lower bound.
 #[test]
 fn a_pressure_collection_splices_the_deferred_lane_and_turns_no_epoch() {
     let _g = test_guard();
     release_queue_segments();
-    epoch::stand_at_the_start_of_a_nonzero_epoch();
+    epoch::turn_to_a_nonzero_epoch();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
 
     let node = node_class("PressureLaneNode", counting_destructor as *const ());
@@ -340,7 +329,7 @@ fn a_pressure_collection_splices_the_deferred_lane_and_turns_no_epoch() {
         assert!(ll_release(keeper as *mut RcHeader));
         ll_object_die(keeper);
     }
-    let commits = epoch::commits();
+    let turnovers = epoch::this_threads_turnovers();
     assert_eq!(
         unsafe { collect_under_pressure() },
         2,
@@ -348,9 +337,9 @@ fn a_pressure_collection_splices_the_deferred_lane_and_turns_no_epoch() {
     );
     assert_eq!(deferred_count(), 0, "the splice emptied the lane");
     assert_eq!(
-        epoch::turnovers_of(epoch::commits()),
-        epoch::turnovers_of(commits),
-        "and turned no epoch: the collection's own commit is the clock's only move"
+        epoch::this_threads_turnovers(),
+        turnovers,
+        "and turned no epoch: the cell is the collector's"
     );
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
 }
@@ -456,10 +445,8 @@ fn a_ring_whose_mates_matured_apart_is_collected_at_the_turnover() {
         "no lane offers the ring to this trace"
     );
 
-    let mirror = deferred_turnover_mirror();
-    assert!(reoffer_deferred_if_epoch_moved(epoch::one_turnover_past(
-        mirror
-    )));
+    epoch::turn_this_threads_cell();
+    assert!(reoffer_deferred_if_epoch_moved());
     assert_eq!(
         candidate_count(),
         3,
@@ -695,12 +682,10 @@ fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnov
 
     // The turnover: the re-offer puts the root back, and the next epoch reads
     // the member's stamp as none at all.
-    let mirror = deferred_turnover_mirror();
     drop(epoch_of_the_stamp);
     let _epoch = epoch::pin(1);
-    assert!(reoffer_deferred_if_epoch_moved(epoch::one_turnover_past(
-        mirror
-    )));
+    epoch::turn_this_threads_cell();
+    assert!(reoffer_deferred_if_epoch_moved());
     assert_eq!(deferred_count(), 0);
     assert_eq!(candidate_count(), 1, "the root came back once");
 
@@ -714,21 +699,20 @@ fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnov
 }
 
 /// A ring behind a mature member no lane names dies at the poll after the
-/// collector's request. The polls before it offer and free nothing: the ring's
+/// collector's advance. The polls before it offer and free nothing: the ring's
 /// root stands deferred, and a re-trace would stop at the member's stamp,
-/// which is this epoch's. The poll after the request moves the counter to the
-/// next turnover's first commit, which retires the stamp, splices the lane
-/// back, and the collection it arms descends into the member and takes the
-/// ring whole (`crate::cycle::epoch::jump_to_the_next_turnover`).
+/// which is this epoch's. The advance retires the stamp, the poll after it
+/// splices the lane back, and the collection it arms descends into the member
+/// and takes the ring whole (`crate::cycle::worker`, "The epoch clock").
 ///
 /// The same shape as the case above, matured under a keeper by
 /// `TRAVERSAL_AGE_THRESHOLD` collections with the spare cells empty and one
 /// with them refilled, which is the reading that defers the root.
 #[test]
-fn a_quiet_threads_ring_behind_a_mature_member_dies_at_the_poll_after_the_request() {
+fn a_ring_behind_a_mature_member_dies_at_the_poll_after_the_advance() {
     let _g = test_guard();
     release_queue_segments();
-    epoch::stand_at_the_start_of_a_nonzero_epoch();
+    epoch::turn_to_a_nonzero_epoch();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
 
     let node = node_class("QuietRingNode", counting_destructor as *const ());
@@ -791,37 +775,37 @@ fn a_quiet_threads_ring_behind_a_mature_member_dies_at_the_poll_after_the_reques
         assert!(ll_release(keeper as *mut RcHeader));
         ll_object_die(keeper);
     }
-    let commits = epoch::commits();
+    let turnovers = epoch::this_threads_turnovers();
     for _ in 0..3 {
         assert_eq!(
             unsafe { crate::gc::ll_gc_maybe_collect() },
             0,
-            "a poll before the request frees nothing"
+            "a poll before the advance frees nothing"
         );
     }
     assert_eq!(deferred_count(), 1, "the root stands deferred");
-    assert_eq!(epoch::commits(), commits, "and the counter has not moved");
+    assert_eq!(
+        epoch::this_threads_turnovers(),
+        turnovers,
+        "and the cell has not moved"
+    );
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 0);
 
-    request_a_turnover_for_test(this_thread_record());
+    epoch::turn_this_threads_cell();
     assert_eq!(
         unsafe { crate::gc::ll_gc_maybe_collect() },
         2,
-        "the poll after the request turned the epoch and the collection took the ring"
+        "the poll after the advance re-offered the lane and the collection took the ring"
     );
     assert_eq!(
         take_edges_pruned(),
         0,
-        "the turnover retired the member's stamp, so the descent reached it"
+        "the advance retired the member's stamp, so the descent reached it"
     );
     assert_eq!(
-        epoch::turnovers_of(epoch::commits()),
-        epoch::turnovers_of(commits) + 1
-    );
-    assert_eq!(
-        epoch::commits() % epoch::commits_per_epoch(),
-        1,
-        "the jump lands on the turnover's first commit, and the close adds one"
+        epoch::this_threads_turnovers(),
+        turnovers + 1,
+        "one advance, and the collection moved the cell by nothing"
     );
     assert_eq!(deferred_count(), 0);
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
@@ -927,10 +911,8 @@ fn a_deferred_record_withholds_its_dead_slot_until_the_close_after_the_reoffer()
     );
     assert_eq!(deferred_count(), 1);
 
-    let mirror = deferred_turnover_mirror();
-    assert!(reoffer_deferred_if_epoch_moved(epoch::one_turnover_past(
-        mirror
-    )));
+    epoch::turn_this_threads_cell();
+    assert!(reoffer_deferred_if_epoch_moved());
     assert_eq!(
         candidate_count(),
         1,
@@ -1016,31 +998,24 @@ fn a_pressure_collections_deferral_sweeps_a_dead_record_out_of_the_lane() {
         assert!(ll_release(keeper as *mut RcHeader));
         ll_object_die(keeper);
     }
-    let mirror = deferred_turnover_mirror();
-    assert!(reoffer_deferred_if_epoch_moved(epoch::one_turnover_past(
-        mirror
-    )));
+    epoch::turn_this_threads_cell();
+    assert!(reoffer_deferred_if_epoch_moved());
     assert_eq!(unsafe { ll_gc_collect_cycles() }, 2);
 }
 
 /// A pressure collection whose harvest is torn down defers the verdict
-/// standing in P at the commit count its own reading saw, which is the count
-/// an R-side deferral of the same collection records and one short of the
-/// count its close leaves behind.
+/// standing in P at the epoch cell its own commit read, which is the reading
+/// an R-side deferral of the same collection records.
 ///
 /// **The two sides cannot be read off one lane.** A mirror is written where
 /// the deferred lane goes from empty to occupied
 /// (`crate::cycle::queue::defer_candidates`), and a collection defers out of R
 /// before its close disposes of P, so a case that defers one of each reads the
-/// R side's count and nothing of the P side's. This case leaves R's roots to
-/// the teardown and defers out of P alone.
-///
-/// The crossing is what tells the two readings apart: the counter stands one
-/// short of the turnover, so the commit this collection closes crosses it, and
-/// the later count puts the root a whole epoch out — the root would wait for
-/// 64 collections of this thread's instead of being offered to the next poll.
+/// R side's reading and nothing of the P side's. This case leaves R's roots to
+/// the teardown and defers out of P alone, from a cell turned past zero so
+/// that a reading the close failed to carry would record a byte of its own.
 #[test]
-fn a_pressure_collection_defers_its_verdict_at_the_count_its_reading_saw() {
+fn a_pressure_collection_defers_its_verdict_at_its_own_reading() {
     let _g = test_guard();
     release_queue_segments();
     discard_standing_verdicts();
@@ -1074,29 +1049,29 @@ fn a_pressure_collection_defers_its_verdict_at_the_count_its_reading_saw() {
     assert_eq!(candidate_count(), 2, "the ring is what the harvest reads");
 
     assert!(refill_spares());
-    epoch::close_commits_to_one_short_of_the_turnover();
-    let reading = epoch::commits();
+    epoch::turn_to_a_nonzero_epoch();
+    let reading = epoch::this_threads_turnovers();
 
     assert_eq!(
         unsafe { collect_under_pressure() },
         2,
         "the ring nothing holds was torn down"
     );
-    assert_eq!(
-        epoch::commits(),
-        reading + 1,
-        "the teardown's commit closed one"
-    );
     assert_eq!(deferred_count(), 1, "the root read live went to the lane");
     assert_eq!(
         deferred_turnover_mirror(),
-        reading,
-        "the mirror is the count the reading saw, not the one the close left"
+        reading as u8,
+        "the mirror is the reading the commit took"
+    );
+    assert!(
+        !reoffer_deferred_if_epoch_moved(),
+        "a cell that stood since the reading is no turnover"
     );
 
+    epoch::turn_this_threads_cell();
     assert!(
-        reoffer_deferred_if_epoch_moved(epoch::commits()),
-        "the turnover the reading stood in closed with that very commit"
+        reoffer_deferred_if_epoch_moved(),
+        "the advance past the reading re-offers the lane"
     );
     assert_eq!(candidate_count(), 1, "the root is back in the active lane");
 
@@ -1110,4 +1085,65 @@ fn a_pressure_collection_defers_its_verdict_at_the_count_its_reading_saw() {
         "a completed death is retired at the close, not collected"
     );
     assert_eq!(candidate_count(), 0);
+}
+
+/// A pressure collection defers what its trace read live at the trace's
+/// reading of the cell, even when the collector advances the cell between the
+/// trace and the commit: the commit's arena is opened on the trace's reading,
+/// so the mirror is the epoch the prune read against, and the advance the
+/// collection missed re-offers the lane at the next poll. Red with the commit
+/// arena reading the cell afresh: the mirror is the advanced cell, and the
+/// lane waits for one advance more than its trace did.
+#[test]
+fn a_pressure_collection_defers_at_its_traces_reading_across_an_advance() {
+    let _g = test_guard();
+    release_queue_segments();
+    epoch::turn_to_a_nonzero_epoch();
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+
+    let node = node_class("AcrossAnAdvanceNode", counting_destructor as *const ());
+    let mut arena = Arena::new();
+    let members = unsafe { ring(&mut arena, [node, node]) };
+    let keeper = {
+        let mut context = LLContext { arena: &mut arena };
+        unsafe {
+            new_constructed(
+                &mut context,
+                keeper_class("AcrossAnAdvanceKeeper"),
+                MemoryCategory::GcHeap,
+            )
+        }
+    };
+    assert!(refill_spares());
+    let reading = epoch::this_threads_turnovers();
+
+    let race = InjectedVerdictRace::arm(&mut arena, keeper, members[0]);
+    crate::cycle::collect::turn_the_cell_after_the_next_harvest();
+    assert_eq!(
+        unsafe { collect_under_pressure() },
+        0,
+        "the reference the store took holds the ring"
+    );
+    drop(race);
+    assert_eq!(
+        epoch::this_threads_turnovers(),
+        reading + 1,
+        "the cell turned between the trace and the commit"
+    );
+    assert_eq!(deferred_count(), 2, "the reading deferred both records");
+    assert_eq!(
+        deferred_turnover_mirror(),
+        reading as u8,
+        "the mirror is the trace's reading, not the cell at the commit"
+    );
+    assert!(
+        reoffer_deferred_if_epoch_moved(),
+        "the advance the trace missed re-offers the lane at once"
+    );
+
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+    }
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 2, "the ring went back");
 }

@@ -175,7 +175,6 @@
 
 use std::marker::PhantomData;
 
-use crate::cycle::epoch;
 use crate::cycle::membership::Membership;
 use crate::cycle::validation::{ValidationResult, validate_component};
 use crate::object::{Object, ll_entity_die, run_user_destructor};
@@ -196,10 +195,10 @@ pub(crate) struct Finalization {
     /// what the drop below distinguishes from a finalization abandoned with
     /// guards outstanding.
     sealed: bool,
-    /// The epoch every stamp of this commit carries, read once at
-    /// [`Finalization::begin`] and carried to the second reading: a turnover
-    /// between step 2 and step 5 would otherwise age two components of one
-    /// collection against different epochs.
+    /// The epoch every stamp of this commit carries: the collection's one
+    /// reading, handed to [`Finalization::begin`] and carried to the second
+    /// reading, so that two components of one collection age against one
+    /// epoch whatever the collector advances meanwhile.
     epoch: u32,
     /// The counts and the cells are the owning thread's to write, and the
     /// exact validation reads fields no other thread may read
@@ -208,14 +207,25 @@ pub(crate) struct Finalization {
 }
 
 impl Finalization {
-    /// Open a finalization holding no component.
-    pub(crate) fn begin() -> Self {
+    /// Open a finalization holding no component, stamping in `epoch`: the
+    /// collection's reading, which its arena took at the open
+    /// (`crate::cycle::arena::TraceScratchArena::epoch`).
+    pub(crate) fn begin(epoch: u32) -> Self {
         Self {
             members: 0,
             sealed: false,
-            epoch: epoch::current(),
+            epoch,
             _not_send: PhantomData,
         }
+    }
+
+    /// [`Finalization::begin`] at this thread's reading of its own epoch,
+    /// tests only: a case that drives a finalization by hand opens no arena
+    /// to take the reading from, and a pin answers here as it does at an
+    /// arena's open.
+    #[cfg(test)]
+    pub(crate) fn begin_at_this_threads_epoch() -> Self {
+        Self::begin(crate::cycle::epoch::current())
     }
 
     /// Validate one candidate component and, where the exact validation confirms it,
@@ -282,8 +292,8 @@ impl Finalization {
     /// The epoch every stamp of this commit carries, which the live
     /// components take as well ([`crate::cycle::maturation`]).
     ///
-    /// Read once at [`Finalization::begin`], so that the two producers of a
-    /// stamp write one epoch even where a turnover falls between them.
+    /// Fixed at [`Finalization::begin`], so that the two producers of a
+    /// stamp write one epoch even where an advance falls between them.
     pub(crate) fn epoch(&self) -> u32 {
         self.epoch
     }
@@ -606,12 +616,6 @@ impl Revalidation {
     /// a driver that stopped short, and not one that offered a component
     /// twice. That every guard has come off is [`GuardedComponent`]'s own
     /// refusal rather than this one.
-    ///
-    /// **This is where the process counts one commit**
-    /// ([`epoch::commit_closed`]), and therefore where the epoch a later
-    /// collection stamps with advances. A trace that proposed nothing still
-    /// opens and closes a finalization and counts; one that aborted before
-    /// step 2 never reaches this and counts nothing.
     pub(crate) fn close(mut self) {
         assert_eq!(
             self.members_revalidated, self.guarded,
@@ -619,24 +623,24 @@ impl Revalidation {
         );
 
         self.closed = true;
-        epoch::commit_closed();
     }
 }
 
 impl Drop for Revalidation {
     /// The refusal the two values before it make, over whatever is left: a
     /// component unread keeps its guards, and nothing else takes them off. The
-    /// refusal stands with every guard released too, and for an empty commit,
-    /// because [`Revalidation::close`] is the one site that counts the commit:
-    /// a value dropped past its last release would leave the epoch one commit
-    /// short, which no guard reads and no count catches.
+    /// refusal stands with every guard released too, and for an empty commit.
+    /// That part's reason was the commit count the close kept, which went with
+    /// the collector's epoch clock; an empty revalidation dropped unclosed now
+    /// leaves no state wrong, and whether it stays refused is open
+    /// (`PLAN.md`, "Fog").
     fn drop(&mut self) {
         if self.closed || std::thread::panicking() {
             return;
         }
 
         panic!(
-            "a revalidation was dropped instead of closed: the commit goes uncounted, and a \
+            "a revalidation was dropped instead of closed: the commit left its order, and a \
              guarded member unread keeps its guard"
         );
     }

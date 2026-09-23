@@ -8,6 +8,36 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-23 — S65.2 the poll with the collector's epoch cell: 6.8–7.0 ns with a deferred record standing, against 8.3–8.4 ns on the commit-counted clock
+
+**Two arms of `cycle::collect::tests::what_the_poll_costs`, two binaries.**
+The base is `5014615`, the tree before S65.2, whose occupied-lane poll loads
+the lane's occupancy, the request byte and the writer line's commit count and
+compares turnovers; the new tree loads the occupancy and the collector's
+turnover byte and compares it with the mirror. Nothing else in the poll moved.
+
+**Machine:** dev box, sixteen cores, another session compiling C++ beside the
+run (load average 7.8–9.0). **Method:** release build, each binary pinned to
+CPU 11 with `taskset`, the two interleaved six times, nine rounds of 200,000
+polls per run, the minimum beside the median.
+
+| arm | base, min | new, min |
+| --- | ---: | ---: |
+| empty lane | 7.66–8.20 ns | 7.25–7.43 ns |
+| one deferred record | 8.26–8.36 ns | **6.84–6.99 ns** |
+
+**The reading.** The occupied poll is 1.3–1.5 ns cheaper, 16–18 %: one load
+and the turnover arithmetic fewer, on lines the poll touches anyway, and more
+than the 7–10 % two builds of one loop differ by from placement alone
+(2026-09-14, "the null pair"). The empty arm's 0.4 ns, 5 %, is inside that
+term and is not claimed.
+The new binary's fifth run read 13.41 and 12.75 ns in both arms at once, a
+process-wide stall, and is dropped from the ranges; unpinned runs of the same
+two binaries under the same load spread 7.6–10.5 ns and were not used. S60.6's
+figures (6.95–7.83 and 8.13–8.46 ns) were taken on another day and are not
+compared; the done-line's "within S60.6" is met against the same-session base.
+Accepted.
+
 ## 2026-09-22 — the mix: what the mutator pays a take falls with the live share of its ring, and the whole sweep's readings
 
 Two arms fixed the ends of the scale — every root dead, every root live. This
