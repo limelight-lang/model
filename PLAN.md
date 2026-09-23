@@ -223,6 +223,11 @@ states carries the `rfc`'s amendment in its done-line (F7, `dev/WORKFLOW.md`,
 "Documentation follows the logic, in the same commit"; the two repositories
 commit together), and no step may lengthen the wait or the withheld memory
 of a mutator under a grant beyond today's until the recall bounds it (F3).
+A wait under a shortage of memory is the exception and not a breach: the
+pressure collection and the retirement after a refused allocation inside a
+teardown wait for the token by necessity (Edmond, 2026-09-23;
+`dev/DECISIONS.md`, "a mutator short of memory waits for its token, and the
+wait is the rule's exception").
 Done when: the mutator's collection over P traces no `Unwalked` root, no poll
 arms a collection over R whole outside `cap 0`, a recalled grant returns the
 token within N inspected positions, one bounded post and one arena reset,
@@ -452,8 +457,10 @@ them.
         `set_watermark` and `reset_to_the_watermark` carry an
         `expect(dead_code)` naming S65.13. The parts' own code is in no
         commit; what S65.13 owes against it is the decision's "What S65.13
-        inherits from the built parts". Edmond owes a ruling on the trade the
-        decision names. Miri owed at the stage's close for the arena's four
+        inherits from the built parts". Edmond ruled the same day that a wait
+        under a shortage of memory is the rule's exception (`dev/DECISIONS.md`,
+        "a mutator short of memory waits for its token, and the wait is the
+        rule's exception"). Miri owed at the stage's close for the arena's four
         watermark cases and `the_batch`'s posts through the guard
 - [ ] S65.6 The token's recall (package commit 4)
       done: `waiting` set in `take_unless`, checked every N inspected

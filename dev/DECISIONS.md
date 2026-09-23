@@ -8,6 +8,33 @@ never edited or deleted.
 
 ---
 
+## 2026-09-23 — a mutator short of memory waits for its token, and the wait is the rule's exception
+
+**Decided (Edmond, 2026-09-23), as given:** a mutator short of memory waits
+for its token, of course: it would do that work itself anyway. In critical
+cases the wait is unavoidable. This does not breach the stage's rule; it is
+the exception to it.
+
+**Where it applies.** The stage's rule forbids a step to lengthen the wait
+or the withheld memory of a mutator under a grant beyond today's until the
+recall bounds it (`PLAN.md`, S65; `dev/S65-PLAN-CRITIC.md`, F3). The waits
+under a shortage of memory are two, both on a refused allocation: the
+pressure collection (`cycle::collect::collect_under_pressure`) and the
+retirement pass after a refusal inside a teardown
+(`cycle::collect`'s `refused_under_pressure`, through
+`HeldToken::take_or_hold_posted`). The ruling names neither the exit's
+collection nor an embedder's `ll_gc_collect_cycles`, nor the withheld
+memory; those stay under the rule.
+
+**What it answers.** The question the entry below left open for him: the
+15 % the parts add on `disjoint-live` to a mutator's wait is, on the two
+paths above, no breach. The parts still wait for S65.13: the exit's wait and
+the withheld memory of a mutator freeing through a longer grant remain
+bounded by the rule, and only the recall and the marks by stack length bound
+them.
+
+---
+
 ## 2026-09-23 — the trace in parts waits for the recall and the stack marks
 
 **Decided (model, over the Critic of S65.5, the same day):** the collector's
