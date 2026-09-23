@@ -810,5 +810,6 @@ mod what_the_byte_arms;
 mod what_the_poll_costs;
 mod when_a_destructor_requests_the_exit;
 mod when_a_member_is_owned;
+mod when_deaths_are_retired_by_their_count;
 mod when_pressure_retires_members;
 mod when_the_turnover_reoffers;

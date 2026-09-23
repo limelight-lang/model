@@ -830,6 +830,16 @@ ruling owed; ruled by the model under S57.2.
 
 ## 2026-09-18 — the safepoint poll takes the free path's road and runs no retirement of its own; a bounded sweep of R is not built until a workload asks
 
+**Superseded in part 2026-09-23** ("the collector finds and the mutator
+judges…"; S65.4): the poll runs one retirement pass of its own when the free
+path armed it — the completed deaths the free path withheld since the last
+compaction reached `queue::DEATHS_TO_RETIRE`, a count each pass that
+returned less than half of it doubles up to `DEATHS_TO_RETIRE_BOUND` — below
+the collector's threshold, under the thread's own token or at `POSTED`
+holding nothing, over R, its overflow and P, the deferred lane left to its
+turnover. At the threshold the pass is the collector's signal instead. What
+stands: no bounded sweep of R, and an unarmed poll reads no lane.
+
 Edmond's ruling, on a stage that had built one. The stage was drawn from his
 line of 2026-09-17 — the collection `POSTED` arms also walks R and retires the
 records whose count reads zero — and the measurements that turned it are

@@ -62,6 +62,8 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: 
     let mutator_state = unsafe { mutator_state_ref(state) };
     note_queue_work(1, 0, 0);
     checkpoint(0);
+    // Every pass reads R whole and retires what the free path counted.
+    mutator_state.candidate_deaths.set(0);
 
     if sweep_deferred {
         mutator_state.deferred().retain(

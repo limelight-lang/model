@@ -50,19 +50,25 @@ thread_local! {
 pub(crate) enum Arming {
     /// No collection owed.
     None = 0,
+    /// No collection, and a retirement pass over R: completed deaths the
+    /// free path counted to [`crate::cycle::queue::DEATHS_TO_RETIRE`] stand
+    /// there with their slots withheld. Every collection retires them too,
+    /// so every other arming outranks this one.
+    Retire = 1,
     /// The collection over P: the collector's batch stands there, its
     /// release having written `POSTED` into this thread's byte
     /// (`crate::cycle::token::read_and_act_on_this_thread`).
-    Verdicts = 1,
+    Verdicts = 2,
     /// The collection over R whole, with P disposed of in it.
-    AllRoots = 2,
+    AllRoots = 3,
 }
 
 impl Arming {
     fn from_word(word: u8) -> Self {
         match word {
             0 => Self::None,
-            1 => Self::Verdicts,
+            1 => Self::Retire,
+            2 => Self::Verdicts,
             _ => Self::AllRoots,
         }
     }
@@ -79,7 +85,9 @@ impl Arming {
 /// re-offered, so that the same safepoint traces the re-offered roots. The candidate
 /// queue's growth arms nothing: a block the manager refused raises the
 /// collector's signal (`crate::cycle::queue`). The third arming, for P
-/// alone, is the byte's ([`arm_for_the_verdicts`]). The arming is how the
+/// alone, is the byte's ([`arm_for_the_verdicts`]), and the lowest, a
+/// retirement pass with no collection, is the free path's count's
+/// ([`arm_to_retire`]). The arming is how the
 /// poll hears about any of them (`rfc/model/gc/strategies.md`, "Collection
 /// requests and triggers").
 pub(crate) fn arm() {
@@ -93,12 +101,21 @@ pub(crate) fn arm_for_the_verdicts() {
     COLLECTION_ARMED.with(|armed| armed.set(armed.get().max(Arming::Verdicts as u8)));
 }
 
-/// Lower an arming for P alone, keeping one for R whole: a collection just
-/// disposed of P whole, so a collection over P alone would open an empty
-/// window (`crate::cycle::collect::CollectingThread`).
+/// Arm this thread for the retirement pass, unless it is armed for more:
+/// the free path's count of completed deaths
+/// (`crate::cycle::queue::note_a_candidate_death`).
+pub(crate) fn arm_to_retire() {
+    COLLECTION_ARMED.with(|armed| armed.set(armed.get().max(Arming::Retire as u8)));
+}
+
+/// Lower an arming for P alone or for the retirement pass, keeping one for R
+/// whole: a collection just disposed of P whole and retired R's completed
+/// deaths, so a collection over P alone would open an empty window
+/// (`crate::cycle::collect::CollectingThread`), and a pass would read what
+/// the close has just read.
 pub(crate) fn spend_an_arming_for_the_verdicts() {
     COLLECTION_ARMED.with(|armed| {
-        if armed.get() == Arming::Verdicts as u8 {
+        if armed.get() <= Arming::Verdicts as u8 {
             armed.set(Arming::None as u8);
         }
     });
@@ -298,6 +315,10 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     crate::cycle::queue::take_retired_by_the_close();
     let freed = match take_arming() {
         Arming::None => 0,
+        Arming::Retire => {
+            unsafe { crate::cycle::queue::retire_at_the_poll() };
+            0
+        }
         Arming::Verdicts => {
             #[cfg(test)]
             VERDICT_COLLECTIONS.with(|count| count.set(count.get() + 1));

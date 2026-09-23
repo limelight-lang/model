@@ -345,7 +345,7 @@ them.
         until S65.10. `rfc/model/gc/rc-cycle.md` amended in the same pair of
         commits. Miri owed at the stage's close for `Reader::unread_up_to`,
         the reading's reordered loads and the `the_merged_lane` cases
-- [ ] S65.4 Completed deaths of R are retired by a count (package commit 2)
+- [x] S65.4 Completed deaths of R are retired by a count (package commit 2)
       done: a count on the candidate arm of `ll_free`, `Arming::Retire` at the
         threshold, the pass on a poll with the gate open and the token free,
         tracing nothing; the pass is `compact(None, false, None)`: it reads R,
@@ -355,6 +355,51 @@ them.
         with D deaths in R, the pass's queue-work count no higher than R's
         length; the poll unmoved
       tier: T2 · role: Critic
+      baseline 2026-09-23, `d660033`, before the first edit, by reading: the
+        free's candidate arm (`stdapi::free_taken`) tests the flags it was
+        handed and returns, with no load and no store of its own; a
+        completed death then stands in R, its slot withheld, until a
+        compaction retires it — the close of a collection over P, the
+        pressure path, the exit, a teardown's refused allocation. The poll
+        reads the arming once (`take_arming`), three levels, and allocates
+        nothing; its cost is S65.2's (6.84–6.99 ns with a deferred record,
+        7.25–7.43 ns empty, `dev/BENCHMARKS.md`, today). `MutatorCycleState`
+        is one 64-byte line
+      red 2026-09-23 on `d660033`, `collect::tests::`
+        `when_deaths_are_retired_by_their_count`: D deaths armed nothing and
+        stood in R through the poll; the grant case likewise; behind a lane
+        of 10⁵ live entries the D entries stayed in R. Two fixture faults on
+        the way: a failing case under a stand-in grant left its thread's
+        exit waiting for a release nobody made — a hang of an hour at 0 %
+        CPU, the grant now dropped by a guard — and 10⁵ registrations with
+        no poll overflowed the base block's buffer, the fixture now refilling
+        every `POLL_STRIDE`
+      Critic 2026-09-23: six findings, all taken. (1) At the threshold the
+        pass left the ring to a collector that need not be born, and the
+        count, never zeroed there, could not arm again before its wrap — the
+        skip raises the poll's signal and zeroes the count. (2) Nothing
+        tested the token take — a request landed on the byte is refused by
+        the pass. (3) The pass's retirements shortened the collector's
+        timer — they make no note. (4) Deaths the pass cannot retire, the
+        lane's, armed it every D — a pass returning under half its count
+        doubles the next count up to `DEATHS_TO_RETIRE_BOUND`, 4096. (5) A
+        grant a return consented to after the poll's reading made the pass
+        wait out a batch — the byte is read again before the take. (6) The
+        overflow term and the `POSTED` form were missing from the texts —
+        rewritten. Mutations, each red on its case or hung under a timeout
+        (the take and the re-read, whose absence strands a grant): the
+        free's count, D ± 1, the poll's arm, the threshold test, the signal,
+        the zeroing there, a lane sweep, the compaction's zeroing, the
+        spend, the max, the note, the doubling, the reset. The poll
+        unmoved (`dev/BENCHMARKS.md`, "S65.4 the poll with a fourth
+        arming"); the free's candidate arm has no probe and is not measured
+      handoff: the count and its threshold are `MutatorCycleState::`
+        `candidate_deaths` and `retire_after`, the pass
+        `queue::retire_at_the_poll`, the arming `gc::Arming::Retire`, lowest
+        of three. `rfc/model/gc/rc-cycle.md`, "Zero-count entities pending
+        slot reuse", amended; the 2026-09-18 poll ruling bannered. Miri owed
+        at the stage's close for the pass under the token and the reordered
+        state line
 - [ ] S65.5 The trace runs in parts (package commit 3)
       done: a reset to the watermark above the root copy, a `judged` bit, posts
         per part and `FinishThePosts`; the block budget stays one per grant

@@ -205,6 +205,18 @@ pub(crate) const OVERFLOW_CAPACITY: usize =
 /// "a runtime loop carries the poll contract it broke").
 pub(crate) const POLL_STRIDE: usize = OVERFLOW_CAPACITY / 2;
 
+/// Completed deaths of candidates, counted on the free path, at which the
+/// poll is armed for a retirement pass over R: half of the collector's
+/// threshold, so that a thread whose ring stands below the threshold gives
+/// back its withheld slots before the take would. Not measured.
+pub(crate) const DEATHS_TO_RETIRE: u16 = 32;
+
+/// The most deaths the count waits for after passes that returned little:
+/// each such pass doubles the count the next one waits for, up to this, so
+/// that deaths the pass cannot retire — the deferred lane's — cost the
+/// mutator a pass per this many at worst. Not measured.
+pub(crate) const DEATHS_TO_RETIRE_BOUND: u16 = 4096;
+
 /// Spare blocks a thread keeps ahead of the next growth.
 ///
 /// Two, which covers the two consumptions one interval between polls can
@@ -233,12 +245,6 @@ struct MutatorCycleState {
     workspace_base: Cell<*mut BlockHeader>,
     /// Blocks taken ahead of the next growth, `spare_count` of them valid.
     spares: [Cell<*mut BlockHeader>; SPARE_SEGMENTS],
-    /// The low eight bits of the epoch cell as the reading that filled the
-    /// deferred lane saw them, or as the poll that last re-offered it read
-    /// the collector's byte ([`reoffer_deferred_if_epoch_moved`]). Only
-    /// inequality is asked of it, so eight bits tell every advance apart but
-    /// the 256th.
-    turnover_mirror: Cell<u8>,
     /// The deferred lane: candidates a later turnover rather than a decrement
     /// offers to a trace again. Written and read by the mutator alone, at a
     /// collection's close and at the re-offer.
@@ -273,10 +279,26 @@ struct MutatorCycleState {
     /// clock"); cleared by the poll when its wake was received, and by an
     /// in-line collection's reading of R.
     signal_due: Cell<bool>,
+    /// The low eight bits of the epoch cell as the reading that filled the
+    /// deferred lane saw them, or as the poll that last re-offered it read
+    /// the collector's byte ([`reoffer_deferred_if_epoch_moved`]). Only
+    /// inequality is asked of it, so eight bits tell every advance apart but
+    /// the 256th.
+    turnover_mirror: Cell<u8>,
     /// Completed deaths a compaction retired since the poll last asked: the
     /// figure the poll's note to the collector's timer reads beside what a
     /// collection freed ([`take_retired_by_the_close`]).
     retired_by_the_close: Cell<u32>,
+    /// Completed deaths of candidates the free path withheld since the last
+    /// compaction, which every compaction zeroes since each reads R whole;
+    /// the one that reaches `retire_after` arms the poll for the retirement
+    /// pass ([`note_a_candidate_death`]). Wrapping.
+    candidate_deaths: Cell<u16>,
+    /// The count that arms the pass: [`DEATHS_TO_RETIRE`], doubled up to
+    /// [`DEATHS_TO_RETIRE_BOUND`] after each pass that returned fewer than
+    /// half of it, and back to the start after one that returned more
+    /// ([`retire_at_the_poll`]).
+    retire_after: Cell<u16>,
 }
 
 thread_local! {
@@ -295,12 +317,14 @@ impl MutatorCycleState {
         Self {
             workspace_base: Cell::new(std::ptr::null_mut()),
             spares: [const { Cell::new(std::ptr::null_mut()) }; SPARE_SEGMENTS],
-            turnover_mirror: Cell::new(0),
             deferred: UnsafeCell::new(Chain::empty()),
             spare_count: Cell::new(0),
             overflow_len: Cell::new(0),
             signal_due: Cell::new(false),
+            turnover_mirror: Cell::new(0),
             retired_by_the_close: Cell::new(0),
+            candidate_deaths: Cell::new(0),
+            retire_after: Cell::new(DEATHS_TO_RETIRE),
         }
     }
 
@@ -1161,6 +1185,83 @@ pub(crate) fn defer_candidates(mut batch: Batch, at_turnovers: u64) {
     compaction::compact(Some(at_turnovers), true, Some(batch.verdicts));
 }
 
+/// Count a completed death the free path withholds because a queue entry
+/// names the slot, and arm the poll for the retirement pass at the count the
+/// last pass left, [`DEATHS_TO_RETIRE`] to begin with, since the last
+/// compaction ([`retire_at_the_poll`]). A thread with no queue counts
+/// nothing.
+#[inline]
+pub(crate) fn note_a_candidate_death() {
+    let state = mutator_state();
+    if state.is_null() {
+        return;
+    }
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    let deaths = mutator_state.candidate_deaths.get().wrapping_add(1);
+    mutator_state.candidate_deaths.set(deaths);
+    if deaths == mutator_state.retire_after.get() {
+        crate::gc::arm_to_retire();
+    }
+}
+
+/// The poll's retirement pass over R, for an arming the free path's count
+/// made ([`note_a_candidate_death`]): the completed deaths in R, its
+/// overflow and P given back under this thread's own token, or at `POSTED`
+/// holding nothing, the deferred lane left to its turnover, and nothing
+/// traced (`dev/CYCLE-SPLIT-PACKAGE-3.md`, section 8). The pass reads R's
+/// entries below the collector's threshold and the overflow buffer.
+///
+/// A ring at the threshold is not read: it is the collector's to batch,
+/// whose collection over P compacts it, so the pass raises the poll's signal
+/// — which births the elder where none stands yet — and starts the count
+/// again. A byte a return consented at since the poll's reading is a grant
+/// the take would wait out, so the pass stands for the next poll. What the
+/// pass retired is no disposition of the collector's and makes no note for
+/// its timer; it sets the count the next pass waits for, doubled after a
+/// pass that returned fewer than half of it, since those deaths stand where
+/// the pass does not read.
+///
+/// # Safety
+/// The caller is the poll, with the gate open.
+pub(crate) unsafe fn retire_at_the_poll() {
+    let state = mutator_state();
+    let record = mutator_record::this_thread_record();
+    if state.is_null() || record.is_null() {
+        return;
+    }
+    let mutator_state = unsafe { mutator_state_ref(state) };
+
+    // This thread alone consents, so no grant lands between this read and
+    // the take.
+    let byte = unsafe { (*record).token.read() };
+    if crate::cycle::token::state(byte) == crate::cycle::token::COLLECTOR {
+        crate::gc::arm_to_retire();
+        return;
+    }
+
+    // Off the front block by loads, as the collector reads it: a collector
+    // may be reading the ring before its claim.
+    let reader = unsafe { crate::ring::Reader::new((*record).candidate_ring()) };
+    if reader.has_at_least(crate::cycle::worker::SOFT_THRESHOLD) {
+        mutator_state.candidate_deaths.set(0);
+        mutator_state.signal_due.set(true);
+        return;
+    }
+
+    {
+        let _token = crate::cycle::token::HeldToken::take_or_hold_posted();
+        unsafe { retire_candidates() };
+    }
+    let retired = mutator_state.retired_by_the_close.replace(0);
+    let after = mutator_state.retire_after.get();
+    let next = if retired >= u32::from(after / 2) {
+        DEATHS_TO_RETIRE
+    } else {
+        after.saturating_mul(2).min(DEATHS_TO_RETIRE_BOUND)
+    };
+    mutator_state.retire_after.set(next);
+}
+
 /// Re-offer every deferred record: at a mutator poll whose epoch moved
 /// ([`reoffer_deferred_if_epoch_moved`]), and before each round of the
 /// exit's collection, which is the thread's last turnover
@@ -1466,6 +1567,8 @@ pub(crate) fn release_queue_segments() {
         gc_metadata::release_to_critical(block);
     });
 
+    mutator_state.candidate_deaths.set(0);
+    mutator_state.retire_after.set(DEATHS_TO_RETIRE);
     let spare_count = mutator_state.spare_count.replace(0);
     for cell in &mutator_state.spares[..usize::from(spare_count)] {
         let block = cell.replace(std::ptr::null_mut());

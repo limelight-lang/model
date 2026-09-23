@@ -8,6 +8,37 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-23 — S65.4 the poll with a fourth arming: unmoved, 7.8–7.9 ns minimum on both trees
+
+**Two arms of `cycle::collect::tests::what_the_poll_costs`, two binaries.**
+The base is `d660033`, the tree before S65.4; the new tree adds the arming
+`Retire` below `Verdicts`, one more arm in the poll's match on the arming,
+and a count on the free's candidate arm, which the probe does not run. The
+unarmed poll reads the arming as before and takes the `None` arm.
+
+**Machine:** dev box, sixteen cores, one core held by another process at
+100 % (load average 3.5–4.1). **Method:** release build, the two binaries
+interleaved ten times on each of CPUs 3 and 6 with `taskset`, nine rounds of
+200,000 polls per run; the minimum of the run's rounds, then the minimum and
+the median of those over the ten runs.
+
+| arm | CPU | base, min / median of mins | new, min / median of mins |
+| --- | ---: | ---: | ---: |
+| empty lane | 3 | 7.90 / 8.36 ns | 7.84 / 8.40 ns |
+| empty lane | 6 | 7.90 / 8.17 ns | 7.83 / 8.28 ns |
+| one deferred record | 3 | 7.84 / 8.29 ns | 7.86 / 8.15 ns |
+| one deferred record | 6 | 7.87 / 8.21 ns | 7.92 / 8.32 ns |
+
+**The reading.** The two trees differ by at most 0.11 ns in every cell, in
+both directions, inside the 7–10 % two builds of one loop differ by from
+placement alone (2026-09-14, "the null pair"): the poll is unmoved. A first
+series on CPU 11 read 10–18 ns in both arms with minima spread over 6 ns and
+is not used; the core shared its time with the process above. The absolute
+figures are a ns above S65.2's of the same morning, taken under other load,
+and are not compared with them. The free's candidate arm — the thread-local's pointer, then a load, an add, a
+store and a compare on the queue's control line — has no probe and is not
+measured.
+
 ## 2026-09-23 — S65.2 the poll with the collector's epoch cell: 6.8–7.0 ns with a deferred record standing, against 8.3–8.4 ns on the commit-counted clock
 
 **Two arms of `cycle::collect::tests::what_the_poll_costs`, two binaries.**
