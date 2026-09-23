@@ -134,6 +134,41 @@ lines that ended in a sentence the `rfc` owes — which destructors "ran
 anywhere" counts, the object handed to a survivor, the exit's safepoint word
 — moved to `rfc/dev/PLAN.md`'s fog on 2026-09-21.
 
+- **The mutator collecting from R while the collector goes on collecting
+  roots.** Edmond, 2026-09-23, to be thought through: if the mutator is
+  allowed to collect memory from its queue R, and the collector is at the
+  same time allowed to go on collecting roots, that changes a great deal.
+  Raised while deciding who judges a root whose closure alone exceeds the
+  trace's block budget, after he stated that the mutator collects by itself
+  only under memory shortage (`dev/CYCLE-SPLIT-SYNTHESIS.md` and the
+  documents beside it). The fact it meets today: the token makes the two
+  exclusive — a mutator collecting in line holds `MUTATOR`, and a collector
+  holding it for a batch keeps the mutator's collection waiting
+  (`cycle::token`). Edmond, the same day: a larger budget for the collector
+  is the way out of this, and giving one means removing the reason the
+  budget exists. There are two reasons and the first is the blocker — while
+  the collector traces long, the mutator cannot free memory; solve that
+  blocker and the problem is gone. In the code the blocker has two halves:
+  under a foreign holder every death is withheld and no slot goes back to
+  the allocator (`deferred_slot_reuse::withhold_under_a_foreign_trace`, for
+  the address a trace holds between reading a cell and meeting its row),
+  and the mutator's own collection, pressure included, waits for the token,
+  the rows of both traces standing in the same blocks' row arrays. The
+  second reason is the collector arena's memory, a size and not a block.
+  Two forms, named and not chosen. **A**: the collector hands mutator A's
+  token back when A asks for it and goes on to other mutators; two traces
+  never walk one heap at once, which the token already allows. It removes
+  the wait for the token, and the withheld deaths too if A also asks for
+  the token back when its withheld memory passes a mark; it throws away the
+  trace in flight, so a trace made of complete parts, one closure each,
+  loses less to a recall than a prefix redone after the budget
+  (`dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, variant A, against
+  `dev/CYCLE-SPLIT-SYNTHESIS.md`, step 1). **B**: the collector traces part
+  of A's roots while A collects another part itself. It needs the
+  collector's rows out of the heap blocks' row arrays and a narrower
+  protection of memory than withholding every death — by block, component
+  or generation.
+
 - **What to do about a take that meets the block budget**, which is the one
   regime where the split is a loss to both sides. Measured 2026-09-22
   (`dev/BENCHMARKS.md`, "the live-roots arm" and "the mix"): inside
@@ -198,6 +233,48 @@ anywhere" counts, the object handed to a survivor, the exit's safepoint word
   the block kind is the split").
 - `dev/ARCHITECTURE.md` is the crate's knowledge map and moves with behaviour
   like any other document (`dev/WORKFLOW.md`).
+
+## First: a shipped defect
+
+- [ ] **The quiet thread's ask never fires on a thread that is batched.**
+  `worker::ask_for_a_turnover_if_quiet` restamps whenever
+  `MutatorRecord::clock_stood_since_the_stamp` is false, and the amendment of
+  2026-09-22 (`dev/DECISIONS.md`, "a quiet thread's turnover is the
+  collector's to ask for") rests on "the collection over them closes with no
+  commit". It does not: every collection that reaches `commit`, one with no
+  member included, closes a finalization and counts a commit
+  (`collect::commit_before_drops` → `Revalidation::close` →
+  `epoch::commit_closed`), and the `overlapping-live` take arm's census
+  ending `NothingProposed` is assigned after that commit
+  (`dev/BENCHMARKS.md`, "the live-roots arm"). So any batch between two
+  visits moves the clock, all-live ones included, and such a thread's
+  deferred lane waits for 64 commits rather than X — about 4.3 minutes at
+  one take per 4 s, by arithmetic. The guarding case,
+  `the_quiet_thread::a_thread_batched_all_live_oftener_than_x_is_asked_after_x`,
+  runs no collection over P and calls `ask_the_quiet_thread` alone, so it
+  passes by construction. Found by the Critic of 2026-09-23
+  (`dev/CYCLE-SPLIT-CRITIC-REVIEW.md`, finding 4), confirmed by reading.
+  Three repairs, none chosen: restamp only when the epoch turned since the
+  stamp (the recommendation — it leaves the commit's meaning alone); count
+  no commit for a collection with no member; restamp on freeing commits.
+  done: a case that runs real collections over all-live verdicts oftener
+  than X is seen red, the repair Edmond picks makes it green, and the
+  amendment's premise sentence is corrected in `dev/DECISIONS.md` and in
+  `worker.rs`'s module doc ("the quiet thread").
+- [ ] **The block budget is documented as a bound on time, and it bounds
+  memory.** `worker.rs`'s module doc says what a mutator waits for when it
+  needs its token is "one batch's trace, bounded by the blocks rather than
+  by the roots", and `TRACE_BLOCK_BUDGET`'s comment that it bounds "the
+  mutator's wait for its token". `TraceScratchArena::grow` is the one place
+  the budget is read, and it runs only when the bump is exhausted, so the
+  work between two draws is bounded by edges: one met array of many cells
+  naming targets already met costs a subtraction per cell and draws no
+  block, and the scan draws only worklist segments. Found by the Critic of
+  2026-09-23 (`dev/CYCLE-SPLIT-CRITIC-REVIEW.md`, finding 7), confirmed by
+  the synthesis. done: both comments say what the budget bounds — the
+  collector arena's blocks — and what bounds the mutator's wait is stated
+  as unbounded in edges, until a recall of the token exists (Fog, the first
+  line).
 
 ## Then: arrays as a performance problem
 

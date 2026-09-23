@@ -24,7 +24,18 @@ refused stays in `dev/`, and the rfc moves only on adoption"):
 §3.1 is the chunked form `cycle::census::replay` prices against the flat one
 (`dev/BENCHMARKS.md`, 2026-09-12); and [Cycle improvement
 candidates](CYCLE-IMPROVEMENTS-CRITICAL-REVIEW.md), candidates with
-counterexamples and measurement requirements, its status at its top. The
+counterexamples and measurement requirements, its status at its top; and
+[S64 GC improvement analysis](S64-GC-IMPROVEMENT-ANALYSIS.md), the measured
+all-or-nothing take and the directions for CPU admission, partial results and
+resource refusal, reviewed by Astra and the Critic, not an adopted algorithm;
+and the review chain of 2026-09-23 over the same question, none of it adopted:
+[the weak points and Edmond's three directions](CYCLE-SPLIT-WEAK-POINTS.md)
+(Russian), [the first Sage report](CYCLE-SPLIT-SAGE-REPORT.md) and [its
+Critic](CYCLE-SPLIT-CRITIC-REVIEW.md), [the synthesis of the two
+analyses](CYCLE-SPLIT-SYNTHESIS.md) (Russian), and [the package — the epoch
+clock kept by the collector, the token's recall, the trace in parts, the live
+core stamped from a list](CYCLE-SPLIT-PACKAGE.md) (Russian) with [its
+Critic](CYCLE-SPLIT-PACKAGE-CRITIC.md), whose findings are not yet answered. The
 collector–mutator memory protocol of 2026-09-09 and its review are in
 `docs/history/`, superseded by the collector thread that was built.
 
