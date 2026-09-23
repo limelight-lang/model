@@ -212,11 +212,15 @@ token within N inspected positions, one bounded post and one arena reset,
 and the poll and the free are where `dev/BENCHMARKS.md` S60.6 and S38.3 put
 them.
 
-- [ ] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
+- [x] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
       done: the two comments (the module head and `ENTRY_MARK_BITS`) say three
         bits, eight-aligned promoted survivors being candidates; text in the
         package's section 10
       tier: T0 · role: —
+      handoff: three comments in `queue.rs` — the module head, `DEFERRED_MARK`
+        and `ENTRY_MARK_BITS` — now say three bits; `weak/table.rs`'s own
+        four-bit claim holds, its cells being heap slots. Gate green
+        2026-09-23 (1115 tests, four runs), citations 805 with no miss.
 - [ ] S65.2 The epoch cell is the collector's (package commit 1)
       done: the cell on the record's hold line, advanced at the first of 64
         batches or X of the collector's clock; the turnover byte has one

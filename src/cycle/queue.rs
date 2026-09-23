@@ -28,11 +28,14 @@
 //! One queue per thread, and its writer is the thread that owns it
 //! (Y12 clause 1), so the write is uncontended by construction and needs
 //! no read-modify-write. An entry is one pointer to an entity header, stored
-//! as its address. Slots are sixteen-byte aligned in every size class
-//! (`memory::heap::SIZE_CLASSES`), so an entry's low four bits are free and
-//! carry the marks a reading writes over an entry it read. **Bit 0 is
-//! the close's**, which is where it says a root belongs to the deferred lane
-//! ([`DEFERRED_MARK`]); bits 1 to 3 are unused. The mark is written over the
+//! as its address. Heap slots are sixteen-byte aligned in every size class
+//! (`memory::heap::SIZE_CLASSES`), and a promoted survivor in a retained
+//! block is eight-aligned (`memory::arena::round_up_8`, `promote`), so an
+//! entry's low three bits are free in every population that registers, and
+//! the fourth is not; the three carry the marks a reading writes over an
+//! entry it read. **Bit 0 is the close's**, which is where it says a root
+//! belongs to the deferred lane ([`DEFERRED_MARK`]); bits 1 and 2 are unused
+//! here, and P's ledger is `queue::verdicts`. The mark is written over the
 //! entries a collection read and read once, by the pass that disposes of
 //! them: every walk that hands an entry out as an address masks it
 //! ([`ENTRY_MARK_BITS`]).
@@ -1007,8 +1010,9 @@ impl Batch {
 /// The bit a close's disposition reads off an entry: the root it names
 /// belongs to the deferred lane rather than to the active one.
 ///
-/// Bit 0 of the stored address, which an entity header never carries: the
-/// smallest size class is sixteen bytes, so the low four bits are clear and
+/// Bit 0 of the stored address, which an entity header never carries: every
+/// registered population is at least eight-aligned — the heap's slots
+/// sixteen, a promoted survivor eight — so the low three bits are clear and
 /// the module doc's ledger says which of them belongs to whom. It is written
 /// by [`Batch::mark_for_deferral`] after the commit and read once, by
 /// the pass that disposes of the batch; every path that hands an entry to
@@ -1016,8 +1020,8 @@ impl Batch {
 pub(crate) const DEFERRED_MARK: usize = 1;
 
 /// The low bits of an entry that carry a mark, masked off wherever an entry
-/// is handed out as an address. The one bit written and not the four a
-/// slot's alignment frees: a fixture's header stands on any eight-byte
+/// is handed out as an address. The one bit written and not the three an
+/// entry's alignment frees: a fixture's header stands on any eight-byte
 /// boundary, and a mask over bits nothing writes would fold two such headers
 /// into one.
 pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK;
