@@ -614,3 +614,121 @@ fn a_grant_recalled_before_its_batch_is_released_with_no_batch() {
     unsafe { let_go(root) };
     reset_lanes();
 }
+
+/// A mutator whose consent the collector holds while it traces another
+/// mutator's batch, and which then asks for its token, is released within a
+/// stride of that batch, and the batch goes on to its end: the grant held
+/// behind it has no batch of its own to abandon.
+///
+/// The collector is the case's thread with a list of its own on a slot no
+/// thread stands in, as in `the_standing_list`.
+#[test]
+fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
+    const SLOT: usize = 6;
+    let _g = test_guard();
+    reset_lanes();
+    let _wait = testing::HeldRequestWait::of(Duration::from_millis(100));
+
+    // Asleep to every request: its request stands, the record on the list.
+    let behind = Mutator::start_idling_with(|_| {});
+    let behind_root = behind.run(|arena| {
+        let mut context = LLContext { arena };
+        let empty = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+        assert!(!empty.is_null(), "the array was allocated");
+        Sent(unsafe { a_root_over(&mut context, empty as *mut RcHeader, Tag::Array) })
+    });
+    let mut standing = Standing::new(SLOT);
+    standing.start_a_round();
+    assert_eq!(
+        unsafe { serve(behind.record, SLOT, 1, &mut standing, serve_clock_now()) },
+        Served::Unanswered,
+        "the sleeping mutator's request stands"
+    );
+
+    // Consents at its next reading, between jobs.
+    let traced = Mutator::start();
+    let traced_root = traced.run(|arena| {
+        let mut context = LLContext { arena };
+        let (vector, tag) = unsafe { build(&mut context, Container::ScalarVector) };
+        Sent(unsafe { a_root_over(&mut context, vector, tag) })
+    });
+
+    // At the traced batch's start the mutator behind consents and asks for
+    // its token; the trace goes on once it stands in the token's wait.
+    let (took, behind_took) = std::sync::mpsc::channel::<Sent<Instant>>();
+    let behind_jobs = behind.jobs.clone();
+    let behind_token = unsafe { &raw const (*behind.record).token } as usize;
+    let waiting_from = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let stamp = std::sync::Arc::clone(&waiting_from);
+    testing::at_the_start_of_the_next_trace(Box::new(move || {
+        let token = unsafe { &*(behind_token as *const crate::cycle::token::TraceToken) };
+        let before = token.waits();
+        behind_jobs
+            .send(Box::new(move |_| {
+                crate::cycle::token::read_and_act_on_this_thread();
+                drop(crate::cycle::token::HeldToken::take());
+                took.send(Sent(Instant::now())).expect("the case waits");
+            }))
+            .expect("the mutator behind runs");
+        let deadline = Instant::now() + A_BIRTH;
+        while token.waits() == before {
+            assert!(
+                Instant::now() < deadline,
+                "the mutator behind stood in its token's wait"
+            );
+            std::hint::spin_loop();
+        }
+
+        *stamp
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+    }));
+    crate::cycle::arena::GRANTS_RELEASED_AT.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
+    standing.start_a_round();
+    let served = unsafe { serve(traced.record, SLOT, 1, &mut standing, serve_clock_now()) };
+    let released_at =
+        crate::cycle::arena::GRANTS_RELEASED_AT.load(std::sync::atomic::Ordering::Relaxed);
+    let traced_batch_ended = Instant::now();
+    // A grant the trace did not release is released by the next pass at the
+    // latest, the take behind it having recalled it before the batch.
+    standing.start_a_round();
+    let _ = unsafe { serve(super::record(), SLOT, 1, &mut standing, serve_clock_now()) };
+    let behind_took = behind_took
+        .recv_timeout(A_BIRTH)
+        .expect("the mutator behind took its token")
+        .into_inner();
+    let waiting_from = waiting_from
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .expect("the mutator behind stood in the token's wait");
+    eprintln!(
+        "the mutator behind waited {:?}; the traced batch ended {:?} after it stood in the wait",
+        behind_took.saturating_duration_since(waiting_from),
+        traced_batch_ended.saturating_duration_since(waiting_from)
+    );
+
+    traced.run(move |_| unsafe {
+        crate::gc::ll_gc_maybe_collect();
+        let_go(traced_root.into_inner());
+    });
+    behind.run(move |_| unsafe { let_go(behind_root.into_inner()) });
+    for mutator in [traced, behind] {
+        mutator.run(|_| unsafe {
+            crate::gc::ll_gc_collect_cycles();
+        });
+    }
+    reset_lanes();
+
+    assert!(
+        matches!(served, Served::Batch { complete: true, .. }),
+        "the traced batch ran to its end: {served:?}"
+    );
+    assert!(
+        behind_took < traced_batch_ended,
+        "the mutator behind waited out the other's batch"
+    );
+    assert_eq!(
+        released_at, RECALL_STRIDE,
+        "the grant was released at the first reading after its mutator stood in the wait"
+    );
+}

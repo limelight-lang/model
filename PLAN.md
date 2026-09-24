@@ -530,7 +530,7 @@ them.
         positions, and by `grow`; a grant recalled before its batch goes back
         at `serve_the_grant`. Miri owed at the stage's close for
         `the_recall`'s two arena cases (the stride, the growth)
-- [ ] S65.14 A grant held behind another mutator's batch is recalled
+- [x] S65.14 A grant held behind another mutator's batch is recalled
       done: a mutator whose consent a collector holds while it traces
         another mutator's batch, once it asks for its token, waits at most N
         positions of that batch, its posts and a reset before its own grant
@@ -547,9 +547,29 @@ them.
         walk's cost, O(n) per set word, named; `rfc/model/gc/rc-cycle.md`,
         "The recall of the token", states the bound in place of the gap
       tier: T2 · role: Critic
+      red 2026-09-24: the two-mutator case took the token behind the other
+        batch's end, the batch complete
+      Critic 2026-09-24: (1) the traced mutator's own recall walked the
+        whole list before it stopped — its reading now comes first and walks
+        nothing; (2) the bound in the text claimed one stride where a take
+        after the last reading waits the rest, the posts, the reset and a
+        pass — rfc, handshake and module docs say so; (3) a plain Release
+        store of the slot's word could lose an earlier setter's `waiting` —
+        `fetch_or`; the test asserted no stride — it asserts the release at
+        the first reading. Held: the raw list pointer under both borrow
+        models, kept grants, every held grant on the list, other slots
+      mutations 2026-09-24, each red on the case: the take sets no slot word,
+        the stride reads no slot word
+      handoff: `Collector::grants_recalled`, set by `recall_the_grants_of`
+        from the take, taken by `TraceScratchArena::release_the_grants_behind`
+        at the stride and the growth, released by
+        `Standing::release_the_recalled`; `dev/BENCHMARKS.md`, "S65.14 a grant
+        held behind another mutator's batch". Miri owed at the stage's close
+        for the two-mutator case's raw list pointer
 - [ ] S65.7 The marks by stack length (package commit 5)
       done: a length beside each of the three withheld stacks' heads, a limit
-        each, `waiting` stored at the limit with no block, and cleared at the
+        each, `waiting` stored at the limit with no block, and the collector
+        slot's word set as a take sets it (S65.14), `waiting` cleared at the
         consent and on the drain under `FREE`, so that a recall made at M
         stops no later grant (package section 6); a mutator freeing under a
         grant recalls it at M and never waits; the withheld-free arm of

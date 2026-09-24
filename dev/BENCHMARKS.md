@@ -8,6 +8,20 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-24 — S65.14 a grant held behind another mutator's batch: released in 14–27 µs, the other batch 1.8–2.8 ms long
+
+`cycle::worker::tests::the_recall::`
+`a_grant_held_behind_another_mutators_batch_is_released_within_a_stride`,
+release build, CPU 3, eleven runs: one mutator's request stands on the
+collector's list; the other's batch, over a root holding a vector of 10⁶
+scalars, starts; at its start the first mutator consents and asks for its
+token. From its standing in the token's wait to its hold it waited 17.0 µs
+median, 14.0 least, 26.6 most, the release made at the first reading of the
+recall; the other batch ran on to its end 1.75–2.83 ms after the same
+instant, which is what the first mutator waited before the
+slot's word existed: the case was red on it, the token taken after the
+batch's end.
+
 ## 2026-09-24 — S65.6 the token's recall: the wait under a take falls to 17–23 µs, the collection after it grows by 27 µs where the trace would have completed
 
 **What the recall costs and buys**, read on two binaries: the base is

@@ -320,6 +320,39 @@ fn fire_injected_harvest_failure() {
     }
 }
 
+/// The grants a collector thread holds unserved while its trace runs for
+/// another mutator: the slot's word a waiting mutator sets, and the release
+/// of those whose mutators wait, handed the collector's list.
+pub(crate) struct GrantsBehind {
+    recalled: &'static std::sync::atomic::AtomicBool,
+    release: unsafe fn(*mut ()),
+    list: *mut (),
+}
+
+impl GrantsBehind {
+    /// # Safety
+    /// `list` stays valid, and is `release`'s to use alone, while the arena
+    /// that holds this lives.
+    pub(crate) unsafe fn new(
+        recalled: &'static std::sync::atomic::AtomicBool,
+        release: unsafe fn(*mut ()),
+        list: *mut (),
+    ) -> Self {
+        Self {
+            recalled,
+            release,
+            list,
+        }
+    }
+}
+
+/// The positions a trace had read when a reading last took the slot's word
+/// and walked the grants behind it, `usize::MAX` for none since a case reset
+/// it: what places the release at a reading.
+#[cfg(test)]
+pub(crate) static GRANTS_RELEASED_AT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
+
 /// Positions of storage a collector's trace reads between two readings of
 /// the traced mutator's recall of its token
 /// ([`TraceScratchArena::inspect_position`]): what a mutator asking for its
@@ -367,6 +400,11 @@ pub(crate) struct TraceScratchArena {
     /// Whether a reading found the recall standing: what tells a trace the
     /// recall stopped from one a refused allocation did.
     recalled: bool,
+    /// The grants a collector thread holds unserved while this trace runs,
+    /// released at a reading of the recall when their mutators wait
+    /// ([`TraceScratchArena::hold_the_grants_behind`]); `None` for an
+    /// in-line collection.
+    grants_behind: Option<GrantsBehind>,
     /// Readings of the recall made so far: with the countdown, the positions
     /// this arena's trace has read, which a case reads.
     #[cfg(test)]
@@ -500,6 +538,7 @@ impl TraceScratchArena {
             traced_token: std::ptr::null(),
             positions_to_the_reading: RECALL_STRIDE,
             recalled: false,
+            grants_behind: None,
             #[cfg(test)]
             recall_readings: 0,
             turnovers,
@@ -1253,6 +1292,8 @@ impl TraceScratchArena {
             return false;
         }
 
+        self.release_the_grants_behind();
+
         if self.drawn == self.block_budget {
             self.budget_met = true;
             return false;
@@ -1333,12 +1374,45 @@ impl TraceScratchArena {
             self.recall_readings += 1;
         }
 
+        // The traced mutator's own recall first: the batch ends, and a grant
+        // held behind it is read at the pass its consent admitted, so the
+        // recall waits for no walk of the list.
         if self.recall_stands() {
             self.recalled = true;
             return ControlFlow::Break(());
         }
 
+        self.release_the_grants_behind();
         ControlFlow::Continue(())
+    }
+
+    /// Have the readings of the recall release the grants the collector
+    /// holds behind this trace: `behind` names the slot's word a waiting
+    /// mutator sets and what releases them.
+    pub(crate) fn hold_the_grants_behind(&mut self, behind: GrantsBehind) {
+        self.grants_behind = Some(behind);
+    }
+
+    /// Release the grants behind this trace whose mutators wait, if one of
+    /// them set the word since the last reading: the word is taken before
+    /// the release, so a set that lands during it is read at the next.
+    fn release_the_grants_behind(&self) {
+        let Some(behind) = &self.grants_behind else {
+            return;
+        };
+
+        if behind.recalled.load(std::sync::atomic::Ordering::Relaxed)
+            && behind
+                .recalled
+                .swap(false, std::sync::atomic::Ordering::Acquire)
+        {
+            #[cfg(test)]
+            GRANTS_RELEASED_AT.store(
+                self.positions_inspected(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            unsafe { (behind.release)(behind.list) };
+        }
     }
 
     /// Whether the traced mutator stands in its token's wait. An arena opened

@@ -47,9 +47,9 @@
 //! `rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of the thread it
 //! claimed"), and the waiter recalls the token before it waits, so the wait is
 //! bounded by one stride of the trace, the batch's posts and one reset of the
-//! collector's arena ([`TraceToken::take_unless`]) — when the batch traced is
-//! the waiter's own; behind another mutator's batch it waits that batch out
-//! (`crate::cycle::worker`, "The recall of the token"). Nobody waits on any other
+//! collector's arena ([`TraceToken::take_unless`]), or behind another
+//! mutator's batch by the same bound of that batch and one pass over the
+//! collector's list (`crate::cycle::worker`, "The recall of the token"). Nobody waits on any other
 //! state: a collector that meets `MUTATOR`, `REQUESTED` or `POSTED` skips.
 //! Eligibility is checked before the wait: a thread the gate refuses — one
 //! already collecting, inside a teardown, or inside a reset — opens no window
@@ -385,10 +385,12 @@ impl TraceToken {
     /// retirement pass's form, decided on the same read a swap would act on.
     ///
     /// **A take that meets `COLLECTOR` recalls the token first**: it sets
-    /// [`mutator_waits`](Self::mutator_waits) before its first wait and clears
-    /// it when it returns, so that the collector stops its trace within a
-    /// stride of positions, posts and releases (`rfc/model/gc/rc-cycle.md`,
-    /// "The recall of the token").
+    /// [`mutator_waits`](Self::mutator_waits) before its first wait, tells the
+    /// collector's slot, and clears the mark when it returns, so that the
+    /// collector stops its trace within a stride of positions, posts and
+    /// releases, or releases the grant with no batch where it holds it behind
+    /// another mutator's (`rfc/model/gc/rc-cycle.md`, "The recall of the
+    /// token").
     pub(crate) fn take_unless(&self, hold_at_posted: bool) -> Option<TookFrom> {
         // Cleared on the unwind too: a recall left standing would stop every
         // later grant's trace at its first reading.
@@ -423,6 +425,7 @@ impl TraceToken {
                 COLLECTOR => {
                     if !*recalled {
                         self.waiting.store(true, Ordering::Relaxed);
+                        crate::cycle::worker::recall_the_grants_of(slot(seen));
                         *recalled = true;
                     }
 

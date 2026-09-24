@@ -74,10 +74,15 @@
 //! (`rfc/model/gc/rc-cycle.md`, "The recall of the token"). A recalled batch
 //! leaves K where it stands, the recall saying nothing of the batch's size.
 //!
-//! A grant this thread holds while it traces another mutator's batch — one a
-//! checkpoint reads after a consent that came during that batch — is not
-//! recalled: its mark is read when that batch ends, and its mutator waits the
-//! batch out whole. S65.14 builds the reading that releases it.
+//! A grant this thread holds while it traces another mutator's batch — one
+//! the standing list holds after a consent that came during that batch — has
+//! no batch of its own to abandon: the take that meets it also sets the slot's
+//! word ([`recall_the_grants_of`]), and the same readings of the recall release
+//! every such grant whose mutator waits, with no batch, while the batch traced
+//! goes on ([`Standing::release_the_recalled`]). Its mutator waits at most one
+//! stride of the other's batch and one pass over the list, or, where its take
+//! lands after the batch's last reading, the rest of that batch, its posts and
+//! reset, and the pass its consent admitted.
 //!
 //! # The epoch clock
 //!
@@ -182,12 +187,12 @@
 //! landing beside a slot's rebirth resolves at the token like any two
 //! claims.
 
-use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::cells::AtomicCells;
-use crate::cycle::arena::TraceScratchArena;
+use crate::cycle::arena::{GrantsBehind, TraceScratchArena};
 use crate::cycle::mark::{MarkResult, mark};
 use crate::cycle::mutator_record::{self, MutatorRecord};
 use crate::cycle::queue::verdicts::{Verdict, VerdictWriter};
@@ -427,6 +432,13 @@ struct Collector {
     /// know (`dev/design/the-standing-request-lives-on-the-record.md`, "The
     /// collector").
     byte_wakes: AtomicUsize,
+    /// Set by a mutator's take that meets a grant this slot holds, after the
+    /// take marked its token ([`recall_the_grants_of`]), and taken by the
+    /// trace's reading of the recall, which releases every grant its
+    /// standing list holds unserved whose mutator waits
+    /// ([`Standing::release_the_recalled`]). A hint as the token's mark is:
+    /// a reading that missed it costs one stride more.
+    grants_recalled: AtomicBool,
 }
 
 impl Collector {
@@ -437,8 +449,30 @@ impl Collector {
             wake_signal: Condvar::new(),
             idle_rounds: AtomicUsize::new(0),
             byte_wakes: AtomicUsize::new(0),
+            grants_recalled: AtomicBool::new(false),
         }
     }
+}
+
+/// [`Standing::release_the_recalled`] behind a trace's reading of the recall.
+///
+/// # Safety
+/// `list` is the collector thread's [`Standing`], borrowed by nobody else.
+unsafe fn release_the_recalled_grants(list: *mut ()) {
+    unsafe { &mut *list.cast::<Standing>() }.release_the_recalled();
+}
+
+/// Tell collector `slot` that a mutator waits on a grant it holds: the take
+/// that met `COLLECTOR|slot` calls it after marking its token, so that the
+/// trace in progress releases the grant if it is one held behind another
+/// mutator's batch (`rfc/model/gc/rc-cycle.md`, "The recall of the token").
+/// A read-modify-write with Release, so that the trace which takes the word
+/// reads the mark of every setter before it, a later setter's write
+/// continuing the release sequence rather than starting one.
+pub(crate) fn recall_the_grants_of(slot: usize) {
+    COLLECTORS[slot]
+        .grants_recalled
+        .fetch_or(true, Ordering::Release);
 }
 
 static COLLECTORS: [Collector; MAX_COLLECTORS] = [const { Collector::unborn() }; MAX_COLLECTORS];
@@ -1550,6 +1584,15 @@ unsafe fn serve_the_grant(
     let Some(mut arena) = (unsafe { TraceScratchArena::open_for_owner(mutator) }) else {
         return Served::Idle;
     };
+    // The list outlives the arena, and nothing else touches it until the
+    // batch returns.
+    arena.hold_the_grants_behind(unsafe {
+        GrantsBehind::new(
+            &COLLECTORS[slot].grants_recalled,
+            release_the_recalled_grants,
+            std::ptr::from_mut(standing).cast(),
+        )
+    });
     unsafe { batch(mutator, &mut arena, threshold, &held.posted) }
 }
 
@@ -1809,6 +1852,25 @@ impl Standing {
         let served = usize::from(matches!(outcome, Served::Batch { .. }));
         self.batches_served += served;
         served
+    }
+
+    /// Release every grant this list holds unserved whose mutator stands in
+    /// its token's wait, with no batch: the collector traces another
+    /// mutator's batch meanwhile, and the grant has none of its own to
+    /// abandon. Not marked released unserved, since its mutator is awake
+    /// (`MutatorRecord::note_released_unserved`).
+    fn release_the_recalled(&mut self) {
+        let granted = word(COLLECTOR, self.slot);
+        let mut cursor = self.first;
+        while !cursor.is_null() {
+            let following = Self::after(cursor);
+            let mutator = unsafe { &*cursor };
+            if mutator.token.read() == granted && mutator.token.mutator_waits() {
+                self.forget(mutator);
+                mutator.token.release_claim(self.slot, false);
+            }
+            cursor = following;
+        }
     }
 
     /// Start a walk of the records: the waits this walk may spend are its
