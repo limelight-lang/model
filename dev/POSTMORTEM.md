@@ -7,6 +7,51 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-24 — a pool count across a thread's exit met another thread's free of an evicted ring
+
+**What happened.** `memory::heap::tests::a_life_the_allocator_left_heapless::`
+`a_heapless_life_gives_back_the_blocks_it_drew` read the pool one block short
+of its expectation in one of three `debug-journal` runs at eight threads
+(118 against 119). Under that feature the life's exit retires its ring, one
+pooled block, and the case expected it kept. In a whole run the registry's
+quota of `journal::RETIRED_KEPT` retired rings is full, so the retirement
+evicts the oldest, and the next live thread to journal or mark frees it —
+any thread of the run, between the case's two readings.
+
+**Root cause.** The expectation counted the case's own ring and not the
+quota's eviction, whose free lands on whichever thread journals next.
+
+**Repair.** Each reading follows a `journal::mark()`, which frees the rings
+evicted before it, and the case subtracts the evictions between the two
+marks from the ring it expects kept.
+
+## 2026-09-24 — the poll read its byte before the returns whose free consents to a request
+
+**What happened.** The poll read its token byte and then made the returns a
+foreign trace had left it withholding. Each return re-enters the free path,
+and the free path reads the byte too and consents to a request standing on
+it. A request that landed between the two was consented to by a return, the
+poll's reading still said `FREE`, and a poll armed for R whole went on into
+`ll_gc_collect_cycles`, whose take met `COLLECTOR` and waited out the
+collector's whole batch, where the handshake's E9 has an armed poll that
+meets a collector defer and keep its arming. The order dates from
+`7bb601f` (2026-09-17), which put the reading ahead of the returns that
+`ee12c47` had placed in the poll. The Sage found it reading the take paths
+for S65.6's recall, and the Critic traced it to the arm that meets it: the
+arming for P is set only from `POSTED`, which only this thread moves, so only
+the arming for R whole can reach the window. The case
+`deferred_slot_reuse::tests::what_a_foreign_trace_withholds::`
+`a_request_consented_to_by_the_polls_returns_defers_the_poll` landed a
+request from a hook at the drain's start and read the poll wait 200 ms and
+spend its arming; the returns now come before the reading, as
+`queue::retire_at_the_poll` already ordered its own.
+
+**Root cause.** Two readings of one byte on one path, the second made inside
+a call the first did not know reads it, and the first acted on.
+
+**Why it was not caught.** No case made a request land inside the poll, and
+the window is the length of a drain.
+
 ## 2026-09-22 — a safety property derived from one mechanism, and a second mechanism that reached the same state
 
 **What happened.** The standing list rests on one rule: a record is renamed

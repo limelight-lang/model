@@ -1016,6 +1016,9 @@ unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8) {
 /// This thread has no window of its own open, and every slot on the stack is
 /// a dead entity this thread's free withheld.
 pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
+    #[cfg(test)]
+    run_the_hook_before_the_returns();
+
     // The slots go first because a slot's return can empty its block and
     // reach the pool, which is where a block would be withheld again under a
     // holder that arrived meanwhile — and then the block list below finds it.
@@ -1373,6 +1376,44 @@ pub(crate) fn deferred_slot_count() -> usize {
     }
 
     count
+}
+
+/// A closure a case installs to run once at the start of the next drain of
+/// the withheld returns on its own thread, so that it acts inside a window
+/// the caller of the drain otherwise closes in nanoseconds.
+#[cfg(test)]
+type HookBeforeTheReturns = (std::thread::ThreadId, Box<dyn FnOnce() + Send>);
+
+#[cfg(test)]
+static BEFORE_THE_NEXT_RETURNS: std::sync::Mutex<Option<HookBeforeTheReturns>> =
+    std::sync::Mutex::new(None);
+
+/// Run `act` at the start of this thread's next drain of the withheld returns.
+#[cfg(test)]
+pub(crate) fn before_the_next_returns(act: Box<dyn FnOnce() + Send>) {
+    *BEFORE_THE_NEXT_RETURNS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some((std::thread::current().id(), act));
+}
+
+#[cfg(test)]
+fn run_the_hook_before_the_returns() {
+    let act = {
+        let mut hook = BEFORE_THE_NEXT_RETURNS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match hook.take() {
+            Some((thread, act)) if thread == std::thread::current().id() => Some(act),
+            other => {
+                *hook = other;
+                None
+            }
+        }
+    };
+    if let Some(act) = act {
+        act();
+    }
 }
 
 #[cfg(test)]

@@ -100,6 +100,61 @@ fn the_poll_makes_the_returns_a_holder_left_behind() {
     unsafe { crate::memory::stdapi::ll_free(again as *mut u8) };
 }
 
+/// A request that lands while the poll makes the returns is consented to by a
+/// return's free, and the poll reads the byte after the returns: armed for R
+/// whole, it defers to the collector and keeps its arming rather than waiting
+/// out a batch (`rfc/dev/design/trace-token-handshake.md`, E9).
+#[test]
+fn a_request_consented_to_by_the_polls_returns_defers_the_poll() {
+    use crate::cycle::token::{REQUESTED, word};
+    use crate::cycle::worker::ELDER;
+
+    let _guard = test_guard();
+    let dead = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+    assert!(!dead.is_null());
+    let dead = unsafe { dead_entity(dead) };
+
+    let mut holder = HeldByACollector::take(this_thread_token(), false);
+    unsafe { crate::memory::stdapi::ll_free(dead as *mut u8) };
+    assert_eq!(foreign_withheld_count(), 1);
+    holder.release();
+
+    let token = this_thread_token() as usize;
+    crate::cycle::deferred_slot_reuse::before_the_next_returns(Box::new(move || {
+        unsafe { &*(token as *const crate::cycle::token::TraceToken) }
+            .request_for_test(word(REQUESTED, ELDER));
+    }));
+    // The collector that stands in for the one whose request landed, releasing
+    // its grant with no batch after a bound a poll that waited would show.
+    let (granted_sender, granted) = std::sync::mpsc::channel::<()>();
+    let stand_in = std::thread::spawn(move || {
+        let token = unsafe { &*(token as *const crate::cycle::token::TraceToken) };
+        let _ = granted.recv_timeout(std::time::Duration::from_millis(200));
+        if crate::cycle::token::state(token.read()) == crate::cycle::token::COLLECTOR {
+            token.release_claim(ELDER, false);
+        }
+    });
+
+    crate::gc::arm();
+    let freed = unsafe { crate::gc::ll_gc_maybe_collect() };
+    let deferred = crate::gc::is_armed();
+    let byte = unsafe { &*(token as *const crate::cycle::token::TraceToken) }.read();
+    drop(granted_sender);
+    stand_in.join().expect("the stand-in returned");
+    unsafe { crate::gc::ll_gc_maybe_collect() };
+
+    assert_eq!(foreign_withheld_count(), 0, "the poll made the return");
+    assert_eq!(
+        (freed, deferred, byte),
+        (0, true, word(crate::cycle::token::COLLECTOR, ELDER)),
+        "the poll deferred under the grant its returns consented to, its arming kept"
+    );
+    let again = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+    assert!(!again.is_null());
+    let again = unsafe { dead_entity(again) };
+    unsafe { crate::memory::stdapi::ll_free(again as *mut u8) };
+}
+
 /// A holder that takes the token again before the mutator has made its
 /// returns leaves them standing: the pop stops at a held token rather than
 /// handing a slot back under the new trace.

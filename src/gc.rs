@@ -282,16 +282,18 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         arm();
     }
 
+    // The returns a foreign trace left this thread withholding, made here so
+    // that a thread which frees nothing after the holder let go still gives
+    // them back at its next safepoint (`crate::cycle::deferred_slot_reuse`).
+    // Before the byte is read: a return re-enters the free path, whose own
+    // reading consents to a request that landed meanwhile, and a reading
+    // taken before it would fire a take into that grant and wait its batch.
+    unsafe { crate::cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace() };
+
     // The byte, read by the one reading the slot free entry makes too, and
     // whatever the gate: a request is consented to and `POSTED` arms whether
     // or not this poll may fire (`crate::cycle::token`).
     let reading = crate::cycle::token::read_and_act_on_this_thread();
-
-    // And the returns a foreign trace left this thread withholding, made
-    // here so that a thread which frees nothing after the holder let go
-    // still gives them back at its next safepoint
-    // (`crate::cycle::deferred_slot_reuse`).
-    unsafe { crate::cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace() };
 
     if !open {
         return 0;

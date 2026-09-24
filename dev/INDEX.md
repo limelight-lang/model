@@ -43,6 +43,10 @@ amendment](CYCLE-SPLIT-PACKAGE-3-LANE.md) and [its
 Critic](CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md), whose F2 and F3 are the form
 taken (`dev/DECISIONS.md`, "the collector finds and the mutator judges, and a
 recall of the token bounds the mutator's wait instead of the budget"). The
+recall per take path, 2026-09-24: [the Sage's first ruling](S65-RECALL-SAGE.md),
+[its Critic](S65-RECALL-CRITIC.md) and [the second
+ruling](S65-RECALL-SAGE-2.md); the recall stays on every take as S65.6 built
+it, and what they settled of S65.14's form is in that step. The
 collector–mutator memory protocol of 2026-09-09 and its review are in
 `docs/history/`, superseded by the collector thread that was built.
 

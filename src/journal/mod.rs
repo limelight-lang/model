@@ -702,6 +702,16 @@ pub enum Window {
     NeverJournaled { threads: u64 },
 }
 
+impl Mark {
+    /// Rings the quota had evicted when this mark was taken. Tests only: a
+    /// case that counts pool blocks across a thread's exit reads how many
+    /// rings that exit pushed off the quota, since the mark frees them.
+    #[cfg(test)]
+    pub(crate) fn evictions(&self) -> u64 {
+        self.evictions
+    }
+}
+
 /// Read every registered ring's cursor. One end of a window; the other is
 /// another call to this after the interval.
 pub fn mark() -> Mark {

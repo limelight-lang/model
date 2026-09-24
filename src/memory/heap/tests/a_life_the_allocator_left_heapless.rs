@@ -188,10 +188,14 @@ fn a_heapless_thread_hands_its_record_over_claimable() {
 /// and the process-wide readings come back to where they stood. Under
 /// `debug-journal` the life's ring is retired rather than freed, and the
 /// registry keeps a retired ring readable until a later thread evicts it, so
-/// the pool is one block short of its reading — measured in both builds.
+/// the pool is one block short of its reading — measured in both builds —
+/// unless the retirement pushed an older ring off the quota. Each reading
+/// follows a mark, which frees the rings evicted before it, so that no other
+/// thread's free of one lands between the two readings.
 #[test]
 fn a_heapless_life_gives_back_the_blocks_it_drew() {
     let _g = crate::memory::block_pool::test_guard();
+    let evictions_before = crate::journal::mark().evictions();
     let metadata_before = crate::memory::gc_metadata::stats().current_blocks();
     let blocks_before = crate::memory::block_pool::BlockPool::global().blocks_out();
 
@@ -208,7 +212,8 @@ fn a_heapless_life_gives_back_the_blocks_it_drew() {
         metadata_before,
         "a heapless life kept GC metadata past its exit"
     );
-    let ring_kept = usize::from(cfg!(feature = "debug-journal"));
+    let evicted = crate::journal::mark().evictions() - evictions_before;
+    let ring_kept = usize::from(cfg!(feature = "debug-journal")) - evicted as usize;
     assert_eq!(
         crate::memory::block_pool::BlockPool::global().blocks_out(),
         blocks_before + ring_kept,

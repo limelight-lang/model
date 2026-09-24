@@ -536,13 +536,16 @@ them.
         positions of that batch, its posts and a reset before its own grant
         is released; the two-mutator case — one consents while the collector
         traces the other's batch over a vector of 10⁶ scalars, then takes its
-        token under pressure — red today on the whole batch; the mechanism
-        decided at the step and put to its Critic, the S65.6 Critic's form
-        standing as the first candidate: the take writes a recall word on
-        the collector's slot, the stride reads it beside the traced token,
-        and a set word releases each held and unserved grant whose mutator
-        waits; `rfc/model/gc/rc-cycle.md`, "The recall of the token", states
-        the bound in place of the gap
+        token under pressure — red today on the whole batch, and green with
+        the other's batch complete; the form (`dev/S65-RECALL-SAGE-2.md`, C,
+        with `dev/S65-RECALL-CRITIC.md`, 6): the take that meets
+        `COLLECTOR|s`, and S65.7's mark at M, set a word on collector slot
+        s; the stride and the growth read it beside the traced token, clear
+        it before they walk the standing list once, and release through
+        `release_claim` every grant held unserved whose recall stands,
+        without `note_released_unserved`, the batch traced going on; the
+        walk's cost, O(n) per set word, named; `rfc/model/gc/rc-cycle.md`,
+        "The recall of the token", states the bound in place of the gap
       tier: T2 · role: Critic
 - [ ] S65.7 The marks by stack length (package commit 5)
       done: a length beside each of the three withheld stacks' heads, a limit
