@@ -1286,7 +1286,9 @@ impl TraceScratchArena {
             return false;
         }
 
-        if self.drawn == self.block_budget {
+        // At or past: the collector's retry puts B back while the blocks it
+        // drew under `B_max` are still out.
+        if self.drawn >= self.block_budget {
             self.budget_met = true;
             return false;
         }
@@ -1335,6 +1337,19 @@ impl TraceScratchArena {
     /// [`reset_to_the_watermark`](Self::reset_to_the_watermark) gives them back.
     pub(crate) fn budget_blocks(&mut self, blocks: usize) {
         self.block_budget = blocks;
+    }
+
+    /// The blocks this arena may draw above the workspace
+    /// ([`budget_blocks`](Self::budget_blocks)).
+    pub(crate) fn block_budget(&self) -> usize {
+        self.block_budget
+    }
+
+    /// Clear whether the budget refused a growth, so that the next trace's
+    /// answer is its own: the collector's retry of a part the budget refused,
+    /// under a larger one.
+    pub(crate) fn forget_the_budget_met(&mut self) {
+        self.budget_met = false;
     }
 
     /// Whether a growth since the last [`reset`](Self::reset) was refused by

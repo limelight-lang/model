@@ -8,6 +8,66 @@ never edited or deleted.
 
 ---
 
+## 2026-09-24 — a part that meets B is retried under `B_max` once per grant, a part past the ceiling defers the roots it met, and the batch goes on
+
+**Decided (model, S65.9, the package's commit 7):** a part that meets B is
+retried at once for the same root under `worker::RETRY_BLOCK_BUDGET`, 128
+blocks, once per grant. A finished retry is an ordinary part. A retry that
+meets `B_max`, and a part that meets B with the retry spent, post every live
+root their rows met read live, reset the arena to the watermark and go on
+with the next root, which opens a part of its own. A retry the pool refuses
+or the mutator recalls ends the batch as a part would, its roots unwalked.
+K doubles after a batch whose every part finished over its clamp and nothing
+halves it (`rfc/model/gc/rc-cycle.md`, "The retry at the ceiling").
+
+**No ceiling mark (Edmond, 2026-09-24, on the step's Critic, round 1,
+finding 1).** The package marked a root past `B_max` in bits 20–22 of byte 6,
+written by the owner from a second section of the live list, and a take
+skipped a root whose mark named the current epoch. The Critic showed the skip
+unreachable in the ordinary flow: a root read live goes to the deferred lane,
+which hands it back to R only at a turnover, where the mark is already stale.
+So the mark, its skip, the marks section and its clearings went, and bits
+20–22 are the collector's reserve again. The Critic's finding 3, the
+collector's give-back dropping the clearings, went with them.
+
+**Read live, not unwalked (Edmond, 2026-09-24, round 1, finding 2).** *Read
+live* after a part past the ceiling is a deferral rather than a trace's
+verdict. Unwalked would make the owner's in-line collection trace the closure
+on its thread, against the stage's rule that the mutator's performance comes
+first, and once `Unwalked` goes back into R untraced (S65.10) the collector
+would repeat the failed attempt at every take.
+
+**The batch goes on (Edmond, 2026-09-24, round 2, finding 1).** Ending the
+batch after a failed retry left the roots it had not met unwalked, and one of
+the same closure — a retry opened at a later root of a ring passes `B_max`
+before it meets an earlier one — was traced whole on the owner's thread,
+the cost the ruling above refused. Going on defers what each part past the
+ceiling met and opens a part for the rest, so a closure past B costs the
+owner nothing once S65.10 drops the turnover's arm: until then the re-offer
+at every turnover still arms a collection over R whole, which traces every
+deferred root on the owner's thread, against the rfc's rule that the
+re-offer arms nothing while a collector lives. Halving K went with it (round 2, finding 2): it answered the
+roots a batch lost to unwalked, which it loses no more, and it made each
+failed retry defer fewer roots for the same 128 blocks. The price: garbage
+past `B_max` waits for a shortage of memory or the thread's exit once S65.10
+lands, as the ruling on finding 2 accepted; garbage whose closure lies
+between B and `B_max`, met in a grant whose retry is spent, waits a turnover
+instead of the owner's next collection, and behind a live closure past
+`B_max` that spends the retry first in every grant it waits for the same two
+collections. The collector pays per root rather than per closure: a part at
+B for every root of a closure past B that no earlier attempt of the grant
+met, so m roots spread along such a closure cost one retry and m − 1 parts
+at B in each grant (at K = 1024 and the 75–157 µs a take abandoned at B was
+measured to cost, `dev/BENCHMARKS.md`, "the live-roots arm", about 80–160 ms,
+an estimate). It is unmeasured; S65.12's
+rig carries the measurement.
+
+**Where the code differs from section 7:** the retry is the part's root's
+alone, and the roots a failed retry defers are the ones its rows met, so
+their count depends on the order R hands them back.
+
+---
+
 ## 2026-09-24 — the live core a batch read is stamped by the owner from a list, at the take from `POSTED` or at the first return under it
 
 **Decided (model, S65.8, the package's commit 6):** a part of the collector's

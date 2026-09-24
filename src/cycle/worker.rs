@@ -34,11 +34,14 @@
 //! part posts its root's verdict and the verdict of every other root its
 //! rows met, *proposed* or *read live* ([`verdict_for`]), and the arena is
 //! reset to the watermark for the next; a root an earlier part met opens
-//! none. A part that meets its budget, a refused allocation or the mutator's
-//! recall of its token ends the batch: no color of such a part is a verdict,
-//! so its root and every root still without one are posted *unwalked*, for
-//! the mutator's exact trace, while the verdicts of the parts before it stand
-//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"). R's
+//! none. A part that meets its budget is retried at once under
+//! [`RETRY_BLOCK_BUDGET`], `B_max`, once per grant. A retry that meets it too,
+//! and a part that meets B with the retry spent, post every live root their
+//! rows met *read live*, which defers each to the turnover, and the batch goes
+//! on with the next root. A refused allocation or the mutator's recall of its
+//! token ends the batch: no color of such a part is a verdict, so its root
+//! and every root still without one are posted *unwalked*, for the mutator's
+//! exact trace, while the verdicts of the parts before it stand (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"). R's
 //! front advances past the batch only after every verdict is posted, by
 //! one guard that runs from the unwind as well and posts *unwalked* for
 //! every root the unwind left without a verdict ([`FinishThePosts`]), so
@@ -48,10 +51,10 @@
 //! (`rfc/dev/design/trace-token-handshake.md`, E2); a workspace the pool
 //! refuses is a grant released with no batch.
 //!
-//! K starts at [`INITIAL_BATCH`], halves after a batch one of whose parts
-//! met its budget — the budget alone, a pool refusal saying nothing about the
-//! batch's size — and doubles back after one whose every part completed over
-//! its whole clamp, up to [`BATCH_BOUND`]: under a
+//! K starts at [`INITIAL_BATCH`] and doubles after a batch whose every part
+//! completed over its whole clamp, up to [`BATCH_BOUND`]; nothing halves it,
+//! since a part past the budget defers the roots it met rather than losing
+//! the batch's rest to *unwalked*. The bound is under a
 //! block's capacity, so a batch spans at most two blocks of R, and small
 //! enough that the copy leaves the workspace to the rows. A take of a standing ring reads K
 //! neither way ([`batch`]): it clamps one entry short of the threshold,
@@ -267,22 +270,31 @@ const _: () = assert!(
 const _: () = assert!(BATCH_BOUND <= u16::MAX as usize + 1);
 
 /// Blocks one part of a batch's trace may draw above the collector's
-/// workspace before the part ends the batch, its root and every root still
-/// without a verdict unwalked ([`trace_in_parts`]). Not a measured figure: what it bounds is the
-/// collector's arena, the memory its thread holds at any instant of a grant
-/// and the length of the reset that returns it; the mutator's wait for its
-/// token is the recall's ([`RECALL_STRIDE`](crate::cycle::arena::RECALL_STRIDE)).
+/// workspace before the part is retried under [`RETRY_BLOCK_BUDGET`], or, with
+/// the grant's retry spent, defers the roots it met to the turnover
+/// ([`trace_in_parts`]). Not a measured figure: it
+/// bounds a part's share of the collector's arena and the reset between two
+/// parts, and `B_max` bounds the arena at any instant of a grant; the
+/// mutator's wait for its token is the recall's
+/// ([`RECALL_STRIDE`](crate::cycle::arena::RECALL_STRIDE)).
 /// **What this bound decides is whether a part is worth anything to the
-/// mutator at all.** Measured on takes traced as one part
-/// (`dev/BENCHMARKS.md`, "the live-roots arm"): 63 live roots whose closure fit
-/// here left the mutator's collection over P nothing to walk, 15,365
-/// instructions against the 658,832 of collecting the same rings in line; a
-/// closure past it was abandoned after 75 to 157 µs of the collector's time,
-/// and the mutator met the same rows itself for 0.68 % more than it would have
-/// spent without the take, whatever share of the ring was live
-/// (`dev/BENCHMARKS.md`, "the mix"). Inside the bound that share is what the
+/// mutator at all.** Measured on takes traced as one part, before a part past
+/// it was retried (`dev/BENCHMARKS.md`, "the live-roots arm"): 63 live roots
+/// whose closure fit here left the mutator's collection over P nothing to
+/// walk, 15,365 instructions against the 658,832 of collecting the same rings
+/// in line; a closure past it was abandoned after 75 to 157 µs of the
+/// collector's time, and the mutator met the same rows itself for 0.68 % more
+/// than it would have spent without the take, whatever share of the ring was
+/// live (`dev/BENCHMARKS.md`, "the mix"). Inside the bound that share is what the
 /// mutator saves: it walks the roots the parts proposed and no others.
 const TRACE_BLOCK_BUDGET: usize = 8;
+
+/// `B_max`: the blocks a part that met [`TRACE_BLOCK_BUDGET`] is retried under,
+/// at once and once per grant, before the roots its rows met are posted read
+/// live (`dev/CYCLE-SPLIT-PACKAGE-3.md`, section 7). A borrowed number the stage's
+/// rig reads (`PLAN.md`, S65.12); 128 blocks are 8 MiB drawn and given back
+/// inside one grant.
+const RETRY_BLOCK_BUDGET: usize = 128;
 
 /// Entries a mutator's R holds at or above which a round takes a batch from
 /// it. Not a measured figure: the rfc names the threshold as the runtime's
@@ -2015,11 +2027,9 @@ impl Drop for Standing {
 /// Each part's budget bounds the part whatever the clamp is, and it is spent
 /// by the closure of the part's root rather than by the number of roots: a
 /// root inside that closure is posted with the part and opens none
-/// ([`trace_in_parts`]). A part that meets it posts `Unwalked` for its root
-/// and every root still without a verdict, and the mutator traces them exactly at its next
-/// poll, as it does for any unwalked root (`dev/DECISIONS.md`, "a take's trace
-/// is budgeted as one batch's, and an unwalked take shifts the mutator's trace
-/// rather than adding one"); sixty-three roots over closures that do not
+/// ([`trace_in_parts`]). A part that meets it is retried under `B_max` once
+/// per grant, and past that defers the roots it met to the turnover while the
+/// batch goes on; sixty-three roots over closures that do not
 /// overlap, each inside the workspace, are sixty-three parts and a verdict
 /// per root (`dev/BENCHMARKS.md`, "S65.5 what a mutator waits for under a
 /// take in parts").
@@ -2096,7 +2106,8 @@ unsafe fn batch(
         crate::cycle::mark::take_edges_pruned(),
         testing::take_rows_met(),
     );
-    let (parts, complete) = unsafe { trace_in_parts(arena, &mut posts, by_address, &mut live) };
+    let outcome = unsafe { trace_in_parts(arena, &mut posts, by_address, &mut live) };
+    let (parts, complete) = (outcome.parts, outcome.complete);
     #[cfg(test)]
     testing::note_traced_batch(|| testing::TracedBatch {
         roots: taken,
@@ -2108,6 +2119,9 @@ unsafe fn batch(
         lookup_visits: testing::take_lookup_visits(),
         edges_pruned: crate::cycle::mark::take_edges_pruned(),
         rows_met: testing::take_rows_met(),
+        parts_met_budget: outcome.parts_met_budget,
+        retried: outcome.retried,
+        deferred_parts: outcome.deferred_parts,
     });
     #[cfg(not(test))]
     let _ = parts;
@@ -2118,12 +2132,11 @@ unsafe fn batch(
     drop(posts);
     let backlog = reader.has_at_least_by_count(threshold);
 
-    let met_budget = arena.met_its_budget();
     arena.reset();
     live.publish(mutator, serve_clock_now());
     mutator.note_batch();
     if at_the_threshold {
-        size_the_next_batch(mutator, clamp, taken, complete, met_budget);
+        size_the_next_batch(mutator, clamp, taken, complete);
     }
 
     Served::Batch {
@@ -2242,29 +2255,20 @@ impl Drop for FinishThePosts<'_> {
 
 /// Size the mutator's next batch from what this one, clamped to `size` roots
 /// and taking `taken` of them, did: a batch whose every part finished over the
-/// whole clamp doubles it up to [`BATCH_BOUND`], and one with a part that met
-/// its block budget halves it. A trace that finished short of its clamp leaves the
+/// whole clamp doubles it up to [`BATCH_BOUND`], and any other leaves it. A
+/// batch that deferred the roots of a part past its budget finished no such
+/// part, and lost no root to *unwalked* either, which is what halving would
+/// have answered. A trace that finished short of its clamp leaves the
 /// size where it stands, the ring or P's room having held no more, which
 /// says nothing of what the mutator offers per batch: a merged lane of three
 /// roots read at the threshold off its blocks would double K at every
 /// turnover of a thread that produces nothing
 /// (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F3). So does a trace
-/// abandoned for anything but the budget — a refused allocation or the
-/// mutator's recall — neither saying how much of the heap the batch would
-/// have reached.
-fn size_the_next_batch(
-    mutator: &MutatorRecord,
-    size: usize,
-    taken: usize,
-    complete: bool,
-    met_budget: bool,
-) {
-    if complete {
-        if taken == size {
-            mutator.set_batch_size((size * 2).min(BATCH_BOUND));
-        }
-    } else if met_budget {
-        mutator.set_batch_size((size / 2).max(1));
+/// abandoned for a refused allocation or the mutator's recall, neither saying
+/// how much of the heap the batch would have reached.
+fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, complete: bool) {
+    if complete && taken == size {
+        mutator.set_batch_size((size * 2).min(BATCH_BOUND));
     }
 }
 
@@ -2277,7 +2281,7 @@ fn size_the_next_batch(
 /// without a verdict, in R's order, opens a part — the mark and the scan of
 /// its closure alone, on the arena above the watermark — and when the part
 /// completes, the root and every other root the part met are posted from
-/// its rows ([`post_the_roots_the_part_met`]) and the arena is reset to the
+/// its rows ([`for_each_met_root`]) and the arena is reset to the
 /// watermark for the next part, with a block budget of its own. A root met
 /// by an earlier part opens none: its closure is inside that part's, and a
 /// root read within a larger closure can read unreachable where its own part
@@ -2291,7 +2295,16 @@ fn size_the_next_batch(
 /// (`crate::cycle::live_list`); a part that read its root unreachable lists
 /// nothing.
 ///
-/// A part that meets its budget, a refused allocation or the mutator's recall
+/// A part that meets its budget is retried at once under `B_max`
+/// ([`retry_under_the_ceiling`]), once per grant. A retry that meets `B_max`,
+/// and a part that meets its budget with the retry spent, post every live
+/// root their rows met read live, and the batch goes on with the next root
+/// on an arena reset to the watermark: the deferred lane hands such a root
+/// back at the turnover, and a root of the same closure the rows did not meet
+/// opens a part of its own. A retry the pool refuses or the mutator recalls
+/// ends the batch as a part would; the budget is read before the pool at
+/// every growth, so a part past B meets the budget on the collector's reserve
+/// before it sees a refusal. A refused allocation or the mutator's recall
 /// ends the batch where it stands, and every root without a verdict is left
 /// to [`FinishThePosts`]; the verdicts the earlier parts posted stand, each
 /// resting on the owner's exact validation as every verdict does. Besides its
@@ -2301,8 +2314,8 @@ fn size_the_next_batch(
 /// so that neither the pass nor the resets between parts add a walk the
 /// recall cannot stop; the lookup of met roots counts a position per root or
 /// row it visits, and the list's walk one per live row. No reading follows
-/// the last part: a batch whose every part completed is complete, and sizes K
-/// as one.
+/// the last part: a batch whose every part completed, none deferred, is
+/// complete, and sizes K as one.
 ///
 /// # Safety
 /// As [`mark`] through `AtomicCells`: the calling thread holds the mutator's
@@ -2314,10 +2327,11 @@ unsafe fn trace_in_parts(
     posts: &mut FinishThePosts<'_>,
     by_address: &[u16],
     live: &mut crate::cycle::live_list::Writer,
-) -> (usize, bool) {
+) -> PartsOutcome {
+    let mut outcome = PartsOutcome::default();
     for index in 0..posts.roots.len() {
         if arena.read_the_recall_now().is_break() {
-            return (0, false);
+            return outcome;
         }
 
         if let RootReading::Verdict(verdict) = unsafe { read_the_root(posts.root(index)) } {
@@ -2325,7 +2339,7 @@ unsafe fn trace_in_parts(
         }
     }
 
-    let mut parts = 0;
+    let budget = arena.block_budget();
     for index in 0..posts.roots.len() {
         if posts.has_a_verdict(index) {
             continue;
@@ -2333,40 +2347,129 @@ unsafe fn trace_in_parts(
 
         // Between two parts, and not after the last: a batch whose every
         // part completed is a completed batch, whatever the recall says.
-        if parts > 0 && arena.read_the_recall_now().is_break() {
-            return (parts, false);
+        if outcome.parts > 0 && arena.read_the_recall_now().is_break() {
+            return outcome;
         }
 
-        parts += 1;
         let root = posts.root(index);
+        outcome.parts += 1;
+        // The flag a deferred part left is not this part's answer.
+        arena.forget_the_budget_met();
+        #[cfg(test)]
+        testing::before_the_trace_of_part(outcome.parts);
         if !unsafe { trace(arena, root) } {
-            return (parts, false);
+            if !arena.met_its_budget() {
+                return outcome;
+            }
+
+            // A part that met B is retried at once under `B_max`, once per
+            // grant; a second part that meets B finds the attempt spent.
+            outcome.parts_met_budget += 1;
+            let retried = !outcome.retried && {
+                outcome.retried = true;
+                unsafe { retry_under_the_ceiling(arena, root, budget) }
+            };
+            if !retried {
+                if !arena.met_its_budget() {
+                    return outcome;
+                }
+
+                // Past B with the retry spent, or past `B_max`: every live
+                // root the rows met is deferred to the turnover, and the
+                // batch goes on.
+                outcome.deferred_parts += 1;
+                let posted = unsafe {
+                    for_each_met_root(arena, posts, by_address, |posts, index| {
+                        posts.post(index, Verdict::ReadLive);
+                    })
+                };
+                if posted.is_break() {
+                    return outcome;
+                }
+
+                arena.reset_to_the_watermark();
+                continue;
+            }
         }
 
         #[cfg(test)]
-        testing::after_the_trace_of_part(parts);
+        testing::after_the_trace_of_part(outcome.parts);
         #[cfg(test)]
         unsafe {
             testing::note_rows_met(arena)
         };
         let verdict = unsafe { verdict_for(root) };
         posts.post(index, verdict);
-        if unsafe { post_the_roots_the_part_met(arena, posts, by_address) }.is_break() {
-            return (parts, false);
+        let posted = unsafe {
+            for_each_met_root(arena, posts, by_address, |posts, index| {
+                posts.post(index, verdict_for(posts.root(index)));
+            })
+        };
+        if posted.is_break() {
+            return outcome;
         }
 
         if verdict == Verdict::ReadLive && unsafe { live.append_the_part(arena) }.is_break() {
-            return (parts, false);
+            return outcome;
         }
 
         arena.reset_to_the_watermark();
     }
 
-    (parts, true)
+    outcome.complete = outcome.deferred_parts == 0;
+    outcome
 }
 
-/// Post the verdict of every root without one whose row the part just
-/// completed met. For each block on the part's touched list, the roots whose
+/// What [`trace_in_parts`] answers of a batch's parts.
+#[derive(Clone, Copy, Default)]
+struct PartsOutcome {
+    /// Parts opened, a retry under `B_max` not counted as one.
+    parts: usize,
+    /// Whether every root without a verdict of its own had its part finish.
+    complete: bool,
+    /// Parts that met B.
+    parts_met_budget: usize,
+    /// Whether a part was retried under `B_max`.
+    retried: bool,
+    /// Parts whose met roots were deferred read live: past B with the retry
+    /// spent, or past `B_max`.
+    deferred_parts: usize,
+}
+
+/// Retry the part of `root`, which met B, under `B_max` on an arena reset to
+/// its watermark, and put B back after it: true when the retry finished,
+/// false when it met `B_max` too, a refused allocation or the recall — the
+/// rows of the attempt standing either way.
+///
+/// # Safety
+/// As [`trace`].
+unsafe fn retry_under_the_ceiling(
+    arena: &mut TraceScratchArena,
+    root: *mut RcHeader,
+    budget: usize,
+) -> bool {
+    arena.reset_to_the_watermark();
+    arena.forget_the_budget_met();
+    arena.budget_blocks(retry_budget());
+    #[cfg(test)]
+    testing::at_the_start_of_the_retry();
+    let finished = unsafe { trace(arena, root) };
+    arena.budget_blocks(budget);
+    finished
+}
+
+/// `B_max`, or the budget a case set.
+fn retry_budget() -> usize {
+    #[cfg(test)]
+    if let Some(blocks) = testing::retry_budget() {
+        return blocks;
+    }
+
+    RETRY_BLOCK_BUDGET
+}
+
+/// Act on every root without a verdict whose row the part just traced met,
+/// `act` posting one for it. For each block on the part's touched list, the roots whose
 /// addresses fall in that block are found in `by_address` by a binary search,
 /// and one of two walks is taken: the block's roots, each read for a met row,
 /// where they are no more than eight times the groups the part met there, or
@@ -2382,13 +2485,18 @@ unsafe fn trace_in_parts(
 /// # Safety
 /// As [`verdict_for`] for every root it posts: the part completed on this
 /// thread and its rows still stand; `by_address` as [`trace_in_parts`] has it.
-unsafe fn post_the_roots_the_part_met(
+unsafe fn for_each_met_root(
     arena: &mut TraceScratchArena,
     posts: &mut FinishThePosts<'_>,
     by_address: &[u16],
+    mut act: impl FnMut(&mut FinishThePosts<'_>, usize),
 ) -> std::ops::ControlFlow<()> {
     let mut array = arena.touched_head();
     while !array.is_null() {
+        // A position per block as well as per root or row: a block that holds
+        // no root costs two searches and a count, and a retry under `B_max`
+        // leaves thousands of such blocks before the part's root's own.
+        arena.inspect_position()?;
         let (block, population) = unsafe { ((*array).block, (*array).population) };
         let address =
             |posts: &FinishThePosts<'_>, index: u16| posts.root(usize::from(index)) as usize;
@@ -2405,7 +2513,7 @@ unsafe fn post_the_roots_the_part_met(
                 arena.inspect_position()?;
                 #[cfg(test)]
                 testing::note_a_lookup_visit();
-                unsafe { post_if_met(posts, usize::from(index)) };
+                unsafe { act_if_met(posts, usize::from(index), &mut act) };
             }
         } else {
             unsafe {
@@ -2419,7 +2527,7 @@ unsafe fn post_the_roots_the_part_met(
                     if let Ok(at) = in_the_block
                         .binary_search_by_key(&(entity as usize), |&index| address(posts, index))
                     {
-                        post_if_met(posts, usize::from(in_the_block[at]));
+                        act_if_met(posts, usize::from(in_the_block[at]), &mut act);
                     }
 
                     std::ops::ControlFlow::Continue(())
@@ -2433,13 +2541,17 @@ unsafe fn post_the_roots_the_part_met(
     std::ops::ControlFlow::Continue(())
 }
 
-/// Post the verdict of the root at `index` if it has none and is live with a
-/// row the part met; a root read at count zero here opens a part of its own,
-/// which its count lets finish at once.
+/// Act on the root at `index` if it has no verdict and is live with a row the
+/// part met; a root read at count zero here opens a part of its own, which its
+/// count lets finish at once.
 ///
 /// # Safety
-/// As [`post_the_roots_the_part_met`].
-unsafe fn post_if_met(posts: &mut FinishThePosts<'_>, index: usize) {
+/// As [`for_each_met_root`].
+unsafe fn act_if_met(
+    posts: &mut FinishThePosts<'_>,
+    index: usize,
+    act: &mut impl FnMut(&mut FinishThePosts<'_>, usize),
+) {
     if posts.has_a_verdict(index) {
         return;
     }
@@ -2448,7 +2560,7 @@ unsafe fn post_if_met(posts: &mut FinishThePosts<'_>, index: usize) {
     if let RootReading::Tracked(key) = unsafe { read_the_root(root) }
         && unsafe { crate::cycle::arena::find_initialized_row(key) }.is_some()
     {
-        posts.post(index, unsafe { verdict_for(root) });
+        act(posts, index);
     }
 }
 

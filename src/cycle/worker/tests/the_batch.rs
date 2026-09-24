@@ -1,9 +1,9 @@
 //! What one serve does for a mutator: the batch it takes from behind the
 //! mutator's writer, clamped to P's room; the verdict per root, in the order
 //! of the parts that gave them; the advance that follows the last post from
-//! the return and from the unwind alike; the budget of each part, which turns
-//! the part that meets it and every root still without a verdict unwalked and
-//! halves K; the
+//! the return and from the unwind alike; the budget of each part, past which
+//! a part with the grant's retry spent defers the roots it met and the batch
+//! goes on, K standing; the
 //! skip of a mutator collecting in line; and a mutator registering
 //! throughout, whose registrations come out once each.
 //!
@@ -197,7 +197,7 @@ fn a_batch_posts_one_verdict_per_root_in_the_parts_order_and_advances_past_them(
 }
 
 /// This thread's record's batch size.
-fn record_batch_size() -> usize {
+pub(super) fn record_batch_size() -> usize {
     unsafe { &*record() }.batch_size()
 }
 
@@ -278,7 +278,7 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
     // K's bound: a completed batch that took its clamp at the bound stays at
     // it. Sized by hand, since a batch of the bound's thousand roots would
     // be built for this one reading.
-    size_the_next_batch(unsafe { &*record() }, BATCH_BOUND, BATCH_BOUND, true, false);
+    size_the_next_batch(unsafe { &*record() }, BATCH_BOUND, BATCH_BOUND, true);
     assert_eq!(
         record_batch_size(),
         BATCH_BOUND,
@@ -293,25 +293,36 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
     reset_lanes();
 }
 
-/// A part that meets its budget ends the batch: the part before it stands
-/// with its verdicts, and the part's own root and every root still without a
-/// verdict come back `Unwalked`, no color of an abandoned part being a
-/// verdict; K halves.
+/// A part that meets its budget with the grant's retry spent defers the roots
+/// it met read live and the batch goes on: the parts before it stand with
+/// their verdicts, the retried one's among them, the root after it opens a
+/// part of its own, and K stands, no root having been lost to `Unwalked`.
+///
+/// Two long rings registered in turn put both into one batch behind a small
+/// one: the first long ring's part meets B and its retry under `B_max`
+/// finishes, and the second's part meets B with the retry spent. A kept root
+/// registered after the rings' first pair comes after that part.
 #[test]
-fn a_second_part_that_meets_its_budget_leaves_the_first_parts_verdicts_and_halves_k() {
+fn a_part_past_b_with_the_retry_spent_defers_the_roots_it_met_and_the_batch_goes_on() {
     let _g = test_guard();
     reset_lanes();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
     let node = node_class("BudgetNode");
     let mut arena = Arena::new();
-    let _garbage = unsafe { ring(&mut arena, [node, node]) };
+    let small = unsafe { ring(&mut arena, [node, node]) };
     unsafe { &*record() }.set_batch_size(16);
 
     // Parts that may draw no block past the workspace: the small ring's part
-    // fits it, and the big ring's, the second part, meets the budget.
+    // and the kept root's fit it, and each long ring's meets the budget.
     testing::budget_the_next_batch(0);
     let big = node_class("BudgetBigRing");
-    let members = unsafe { crate::cycle::testing::long_ring(&mut arena, big, 16_000) };
+    let mut keeper = std::ptr::null_mut();
+    let mut kept = std::ptr::null_mut();
+    let (retried, deferred) = unsafe {
+        long_rings_registered_in_turn(&mut arena, big, 16_000, |arena| {
+            (kept, keeper) = kept_root(arena, node, "BudgetKeeper");
+        })
+    };
     testing::read_traced_batches(true);
     assert_eq!(
         served_by_a_collector(),
@@ -324,27 +335,117 @@ fn a_second_part_that_meets_its_budget_leaves_the_first_parts_verdicts_and_halve
     let traced = testing::take_traced_batches();
     testing::read_traced_batches(false);
     assert_eq!(
-        traced.iter().map(|batch| batch.parts).collect::<Vec<_>>(),
-        vec![2],
-        "the second part ended the batch"
+        traced
+            .iter()
+            .map(|batch| (
+                batch.parts,
+                batch.parts_met_budget,
+                batch.retried,
+                batch.deferred_parts
+            ))
+            .collect::<Vec<_>>(),
+        vec![(4, 2, true, 1)],
+        "the second part met B and was retried, the third met B with the retry spent, and \
+         the kept root's part followed it"
     );
-    let mut expected = vec![Verdict::Proposed; 2];
-    expected.extend([Verdict::Unwalked; 14]);
+    let ring_of = |entity: *mut RcHeader| {
+        let object = entity as *mut Object;
+        if small.contains(&object) {
+            "small"
+        } else if retried.contains(&object) {
+            "retried"
+        } else if deferred.contains(&object) {
+            "deferred"
+        } else {
+            assert_eq!(entity, kept);
+            "kept"
+        }
+    };
+    let mut expected = vec![("small", Verdict::Proposed); 2];
+    expected.extend([("retried", Verdict::Proposed); 7]);
+    expected.extend([("deferred", Verdict::ReadLive); 6]);
+    expected.push(("kept", Verdict::ReadLive));
     assert_eq!(
-        verdicts(),
+        standing_verdicts()
+            .iter()
+            .map(|&(entity, verdict)| (ring_of(entity), verdict))
+            .collect::<Vec<_>>(),
         expected,
-        "the first part's verdicts, then no color of the part that met its budget"
+        "the first two parts' verdicts, the deferred roots, then the kept root's part"
     );
-    assert_eq!(record_batch_size(), 8, "K halved on the budget met");
+    assert_eq!(record_batch_size(), 16, "K stands");
 
-    // The mutator's collection takes the small ring out of P and traces the
-    // unwalked roots exactly: the first members of the big ring are its
-    // batch's P roots, the rest of the big ring still stands in R, and one
-    // trace over both frees everything.
-    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2 + members.len());
-    assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2 + members.len());
+    // The mutator's collection over P frees the two proposed rings and
+    // defers the rest; the deferred ring stands in R and in the deferred
+    // lane until a collection over R, which frees it whole.
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2 + retried.len());
+    assert_eq!(
+        deferred_count(),
+        7,
+        "the deferred part's six roots and the kept root"
+    );
+    unsafe { release_keeper(keeper) };
+    assert!(refill_spares());
+    assert_eq!(unsafe { crate::gc::ll_gc_collect_cycles() }, deferred.len());
+    assert_eq!(
+        DESTRUCTOR_RUNS.load(Ordering::Relaxed),
+        2 + retried.len() + deferred.len() + 1
+    );
     assert_eq!(verdict_count(), 0);
     reset_lanes();
+}
+
+/// Two rings of `members` each, their members released in turn — the
+/// first's, then the second's — so that R holds them interleaved, with what
+/// `after_the_first_pair` registers behind their first pair. The spare
+/// segments are refilled after each pair, as the poll a loop this long owes
+/// would refill them, so that R grows past what the overflow buffer holds.
+///
+/// # Safety
+/// As [`crate::cycle::testing::long_ring`].
+unsafe fn long_rings_registered_in_turn(
+    arena: &mut Arena,
+    class: *const Class,
+    members: usize,
+    after_the_first_pair: impl FnOnce(&mut Arena),
+) -> (Vec<*mut Object>, Vec<*mut Object>) {
+    let mut context = LLContext { arena: &mut *arena };
+    let mut ring = || -> Vec<*mut Object> {
+        (0..members)
+            .map(|_| unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) })
+            .collect()
+    };
+    let (first, second) = (ring(), ring());
+    for ring in [&first, &second] {
+        for (index, &member) in ring.iter().enumerate() {
+            unsafe {
+                crate::test_support::store_prop(
+                    arena,
+                    member,
+                    crate::test_support::prop_offset(0),
+                    ring[(index + 1) % members],
+                )
+            };
+        }
+    }
+
+    let mut after_the_first_pair = Some(after_the_first_pair);
+    for (&one, &other) in first.iter().zip(&second) {
+        for member in [one, other] {
+            assert!(
+                !unsafe { ll_release(member as *mut RcHeader) },
+                "an edge of the ring holds this member"
+            );
+        }
+
+        if let Some(act) = after_the_first_pair.take() {
+            act(arena);
+        }
+
+        assert!(refill_spares(), "the pool refilled the spares");
+    }
+
+    (first, second)
 }
 
 /// A root met by an earlier part opens none: over R = [r1, r3, r2], where
@@ -569,8 +670,8 @@ unsafe fn spread_ring(
 
 /// Each part draws under the whole budget: under a budget of one block, two
 /// rings whose rows each pass the workspace by less than a block both
-/// complete, where a budget shared by the batch would have refused the
-/// second part's block and left its root unwalked.
+/// complete with no part meeting B, where a budget shared by the batch would
+/// have refused the second part's block and sent it to the retry.
 #[test]
 fn every_part_draws_under_the_budget_of_its_own() {
     let _g = test_guard();
@@ -610,14 +711,14 @@ fn every_part_draws_under_the_budget_of_its_own() {
     let traced = testing::take_traced_batches();
     testing::read_traced_batches(false);
     assert_eq!(
-        traced.iter().map(|batch| batch.parts).collect::<Vec<_>>(),
-        vec![2]
-    );
-    assert_eq!(
-        verdicts(),
-        vec![Verdict::Proposed; 2],
+        traced
+            .iter()
+            .map(|batch| (batch.parts, batch.parts_met_budget))
+            .collect::<Vec<_>>(),
+        vec![(2, 0)],
         "the second part drew its block as the first did"
     );
+    assert_eq!(verdicts(), vec![Verdict::Proposed; 2]);
 
     assert_eq!(unsafe { ll_gc_maybe_collect() }, first.len() + second.len());
     for filler in first_fillers.into_iter().chain(second_fillers) {

@@ -163,8 +163,8 @@ struct ReaderLine {
     /// The block of P the collector posts into: P's one block, the same
     /// [`WriterLine::p_front_block`] names, for the thread's whole life.
     p_tail_block: AtomicPtr<BlockHeader>,
-    /// Roots the collector takes from this mutator per batch, halved on a
-    /// batch that met its budget and doubled back on a completed one
+    /// Roots the collector takes from this mutator per batch, doubled on a
+    /// completed one and never halved
     /// (`crate::cycle::worker`); zero before the first batch, which reads
     /// it as the starting size.
     batch: AtomicUsize,

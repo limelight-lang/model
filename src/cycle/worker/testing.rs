@@ -310,6 +310,13 @@ pub(crate) struct TracedBatch {
     pub(crate) edges_pruned: usize,
     /// Rows the batch's parts met, summed over the parts.
     pub(crate) rows_met: usize,
+    /// Parts that met B, the retry of one under `B_max` not counted.
+    pub(crate) parts_met_budget: usize,
+    /// Whether a part was retried under `B_max`.
+    pub(crate) retried: bool,
+    /// Parts whose met roots were deferred read live, past B with the retry
+    /// spent or past `B_max`.
+    pub(crate) deferred_parts: usize,
 }
 
 /// Whether a case is reading the batches: off by the module's own, so that
@@ -385,6 +392,32 @@ pub(crate) fn take_outcomes() -> Outcomes {
 /// The block budget the next batch traces under, for the case that reads
 /// what a batch that meets it posts; `usize::MAX` for the module's own.
 static NEXT_BATCH_BUDGET: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// The budget a part that met B is retried under, `usize::MAX` for the
+/// module's own `B_max`; process-wide, the cases holding the pool's guard.
+static RETRY_BUDGET: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Retry parts under `blocks` rather than `B_max` until the guard drops.
+pub(crate) fn retry_parts_under(blocks: usize) -> RetryBudget {
+    RETRY_BUDGET.store(blocks, Ordering::Relaxed);
+    RetryBudget
+}
+
+pub(crate) fn retry_budget() -> Option<usize> {
+    match RETRY_BUDGET.load(Ordering::Relaxed) {
+        usize::MAX => None,
+        blocks => Some(blocks),
+    }
+}
+
+/// The budget [`retry_parts_under`] set, lifted at the drop.
+pub(crate) struct RetryBudget;
+
+impl Drop for RetryBudget {
+    fn drop(&mut self) {
+        RETRY_BUDGET.store(usize::MAX, Ordering::Relaxed);
+    }
+}
 
 pub(crate) fn budget_the_next_batch(blocks: usize) {
     NEXT_BATCH_BUDGET.store(blocks, Ordering::Relaxed);
@@ -473,6 +506,41 @@ pub(crate) fn at_the_start_of_the_next_trace(act: Box<dyn FnOnce() + Send>) {
 
 pub(crate) fn at_the_start_of_the_trace() {
     AT_THE_NEXT_TRACE.run();
+}
+
+/// At the start of the next retry under `B_max`, on the collector's thread,
+/// for the case whose mutator recalls its token while the retry runs.
+static AT_THE_NEXT_RETRY: OneShot = OneShot::new();
+
+pub(crate) fn at_the_start_of_the_next_retry(act: Box<dyn FnOnce() + Send>) {
+    AT_THE_NEXT_RETRY.install(act);
+}
+
+pub(crate) fn at_the_start_of_the_retry() {
+    AT_THE_NEXT_RETRY.run();
+}
+
+/// Before the trace of one part of the next batches, numbered from one, on
+/// the collector's thread: for the case that recalls inside a part after a
+/// deferral.
+static BEFORE_A_PART: Mutex<Option<(usize, Box<dyn FnOnce() + Send>)>> = Mutex::new(None);
+
+pub(crate) fn before_the_trace_of(part: usize, act: Box<dyn FnOnce() + Send>) {
+    *BEFORE_A_PART
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((part, act));
+}
+
+/// Run the hook installed before `part`, once.
+pub(crate) fn before_the_trace_of_part(part: usize) {
+    let mut installed = BEFORE_A_PART
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if installed.as_ref().is_some_and(|&(at, _)| at == part) {
+        let (_, act) = installed.take().expect("read above");
+        drop(installed);
+        act();
+    }
 }
 
 /// After the trace of one part of the next batches, numbered from one, on the

@@ -533,9 +533,9 @@ fn a_ring_that_crossed_the_threshold_under_a_standing_take_is_a_threshold_batch(
     });
 }
 
-/// The take's clamp is the ring, not K: a mutator whose deep graph has
-/// halved K to one has its standing ring taken whole all the same, where a
-/// take under K would carry it off one root per interval.
+/// The take's clamp is the ring, not K: a mutator whose K is one has its
+/// standing ring taken whole all the same, where a take under K would carry
+/// it off one root per interval.
 #[test]
 fn a_take_is_clamped_by_the_ring_and_not_by_k() {
     let _g = test_guard();
