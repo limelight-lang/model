@@ -226,4 +226,5 @@ mod what_a_window_asks_the_allocator;
 mod what_an_unwind_gives_back;
 mod what_else_a_foreign_trace_withholds;
 mod what_the_close_and_the_abort_return;
+mod when_a_withheld_stack_recalls_the_token;
 mod which_window_withholds_a_death;

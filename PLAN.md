@@ -159,6 +159,14 @@ lines that ended in a sentence the `rfc` owes — which destructors "ran
 anywhere" counts, the object handed to a survivor, the exit's safepoint word
 — moved to `rfc/dev/PLAN.md`'s fog on 2026-09-21.
 
+- **Whether a grant should bound the cross-thread frees it withholds.** A
+  slot another thread frees waits on its block's remote list while this
+  thread's token is held (`Heap::collect_remote`, through
+  `deferred_slot_reuse::returns_are_withheld`), and none of the three marks
+  of S65.7 counts it, so a producer freeing this mutator's entities holds
+  memory for the grant's whole length. Raised by the Critic of S65.7,
+  2026-09-24; how much a workload reaches it is unmeasured.
+
 - **Whether a survivor list should prefer a block this reset has already
   retained.** `Arena::alloc_preferring` tries the described block's tail, the
   reset's current block, then a fresh pool block. A bump arena's survivor
@@ -566,15 +574,54 @@ them.
         `Standing::release_the_recalled`; `dev/BENCHMARKS.md`, "S65.14 a grant
         held behind another mutator's batch". Miri owed at the stage's close
         for the two-mutator case's raw list pointer
-- [ ] S65.7 The marks by stack length (package commit 5)
+- [x] S65.7 The marks by stack length (package commit 5)
       done: a length beside each of the three withheld stacks' heads, a limit
         each, `waiting` stored at the limit with no block, and the collector
         slot's word set as a take sets it (S65.14), `waiting` cleared at the
         consent and on the drain under `FREE`, so that a recall made at M
         stops no later grant (package section 6); a mutator freeing under a
         grant recalls it at M and never waits; the withheld-free arm of
-        `what_a_foreign_holder_costs` within its spread
+        `what_a_foreign_holder_costs` within its spread — amended by Edmond,
+        2026-09-24: the arm pays 0.3–0.6 ns for the count, accepted
+        (`dev/DECISIONS.md`, "a withheld death pays for its count, and the
+        marks bound what a grant withholds")
       tier: T2 · role: Critic
+      red 2026-09-24: six cases red on the limits alone, each on its
+        assertion: no recall at M deaths, M_c chunks, a run or a large
+        entity spanning M_b blocks, and none at the consent
+      Sage 2026-09-24 (asked by Edmond): no form of the count reaches the
+        placement bar; a countdown measures the same, layout hints move the
+        two free entries opposite ways; the price goes to Edmond. Final.
+        Edmond accepted it, after the packed-head form he proposed measured
+        dearer. The Sage also found S65.6's
+        `a_grant_recalled_before_its_batch_is_released_with_no_batch` red:
+        the consent's clear retired its hand-set recall; Edmond ruled it
+        stale, and it reaches the release through a stack at its mark
+      Critic 2026-09-24 round 1: (1) a return's nested drain zeroed every
+        count while the outer drain held the deaths, so a consent read
+        nothing withheld and a stack could grow a mark per interrupted
+        drain — the drain now takes each weight off before the return and
+        nothing zeroes; (2) the whole drain's end cleared a recall under
+        the grant a return's consent opened — cleared only while no grant
+        stands; both with a red case. (3) cross-thread frees on a block's
+        remote list are counted by no mark — the rfc's claim narrowed to
+        the three stacks, a Fog line. (4) stale comments repaired
+      Critic 2026-09-24 round 2, over the repair: no defect; the comments
+        still said "whole" — reworded; the counts were checked by no
+        production path — the exit asserts them at zero beside the heads
+      mutations 2026-09-24, each red on its case: the consent's clear, the
+        consent's second reading, the slot word, the crossing test, the
+        large entity on the deaths, a run as one block, the drain's clear
+        and its guard, the uncount of a death, a large death, a chunk and
+        a block
+      handoff: `ForeignStack::count` and `uncount` in
+        `cycle::deferred_slot_reuse`, "The marks by stack length";
+        `token::recall_this_threads_token`, `recall_if_a_mark_stands` at the
+        consent, `forget_this_threads_recall`; the three marks unmeasured,
+        S65.12's. Miri owed at the stage's close for
+        `when_a_withheld_stack_recalls_the_token` (the uncount's block kind
+        load, `blocks_a_withheld_block_spans`, `blocks_spanned`) and the
+        re-aimed `the_recall` case
 - [ ] S65.13 The batch runs in parts (package commit 3, second half)
       done: parts on, each with the block budget of its own, after the recall
         and the marks bound the wait and the withheld memory; dead and

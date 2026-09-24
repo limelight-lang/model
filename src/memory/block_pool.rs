@@ -757,6 +757,7 @@ impl BlockPool {
         if unsafe {
             crate::cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace(
                 block as *mut u8,
+                1,
             )
         } {
             return;

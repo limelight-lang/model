@@ -1353,8 +1353,9 @@ impl TraceScratchArena {
     /// Count one position of storage a collector's trace is about to read,
     /// and answer `Break` once the traced mutator has recalled its token: the
     /// recall is read at every [`RECALL_STRIDE`]th position, relaxed, so a
-    /// mutator that stood in its token's wait before a reading waits through
-    /// at most one stride of positions for the trace to stop. The trace's
+    /// mutator that recalled its token before a reading — from its take's
+    /// wait, or at a withheld stack's mark — sees the trace stop within one
+    /// stride of positions. The trace's
     /// phases call it under [`crate::cells::AtomicCells`] alone.
     #[inline]
     pub(crate) fn inspect_position(&mut self) -> ControlFlow<()> {
@@ -1387,13 +1388,13 @@ impl TraceScratchArena {
     }
 
     /// Have the readings of the recall release the grants the collector
-    /// holds behind this trace: `behind` names the slot's word a waiting
+    /// holds behind this trace: `behind` names the slot's word a recalling
     /// mutator sets and what releases them.
     pub(crate) fn hold_the_grants_behind(&mut self, behind: GrantsBehind) {
         self.grants_behind = Some(behind);
     }
 
-    /// Release the grants behind this trace whose mutators wait, if one of
+    /// Release the grants behind this trace whose mutators recall them, if one of
     /// them set the word since the last reading: the word is taken before
     /// the release, so a set that lands during it is read at the next.
     fn release_the_grants_behind(&self) {
@@ -1415,11 +1416,11 @@ impl TraceScratchArena {
         }
     }
 
-    /// Whether the traced mutator stands in its token's wait. An arena opened
+    /// Whether the traced mutator recalls its token. An arena opened
     /// on the tracing thread's own behalf is recalled by nobody, whichever
     /// reader its trace takes.
     fn recall_stands(&self) -> bool {
-        !self.traced_token.is_null() && unsafe { (*self.traced_token).mutator_waits() }
+        !self.traced_token.is_null() && unsafe { (*self.traced_token).is_recalled() }
     }
 
     /// Whether [`inspect_position`](Self::inspect_position) found the recall

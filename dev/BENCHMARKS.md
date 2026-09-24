@@ -8,6 +8,51 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-24 — S65.7 the marks by stack length: a withheld death costs 0.3–0.6 ns more, 2.7–2.8 against 3.1–3.4 ns, and no cheaper form was found
+
+`cycle::deferred_slot_reuse::tests::what_a_foreign_holder_costs`, release,
+every binary pinned to CPU 11, interleaved eight times per sitting; the
+figure is the least and the median of the eight per-sitting minima, in ns
+per free of 20,000. The base is `b3351bf`; the placement control is the
+same tree with a no-op function of 97 iterations kept by a `#[used]`
+static (Method, "The placement bar"); the step's form counts beside each
+head, recalls at the return that crosses the mark, keeps the large entity's
+count out of line and takes each weight off in the drain.
+
+| arm | base | placement control | the step |
+| --- | ---: | ---: | ---: |
+| slot free, withheld | 2.70 / 2.75 | 2.71 / 2.74 | 3.12 / 3.38 |
+| entity free, withheld | 2.58 / 2.70 | 2.61 / 2.65 | 3.11 / 3.28 |
+| chunk free, withheld | 4.01 / 4.40 | 4.06 / 4.27 | 3.69 / 4.18 |
+| slot free, returned | 13.08 / 13.10 | 12.88 / 13.10 | 11.77 / 12.07 |
+| slot pop | 13.50 / 14.11 | 13.33 / 13.46 | 12.16 / 12.33 |
+| chunk pop | 7.06 / 7.30 | 7.08 / 7.21 | 5.73 / 6.10 |
+
+The step's pop takes each item's weight off its count before the return,
+one load of the block's kind per death; the pops and the returned free,
+whose path runs the drain empty, read about 1 ns lower on this build, and
+no arm of the step's pops or returns moved up. The drop was not examined:
+the drain's code is on all three paths.
+
+Three earlier sittings of the same day, on the form before the drain took
+weights off, read the step's withheld slot free
+0.2–0.5 ns above the base and the placement control within 0.1 ns of it;
+the returned and the pop arms moved inside their spread on every sitting.
+The probe's withheld arm frees 20,000 under one holder, so 11,808 of them
+fall past the deaths' mark of 8,192.
+
+**The forms tried and refused**, on the same probe, the withheld slot free's per-sitting minima: a recall asked by every
+return past the mark (the token's record read each time), 3.8–4.1 ns; the
+hot path forced inline with `#[inline(always)]`, 3.5–3.9 ns; the large
+entity's test moved to the caller, 3.1–3.5 ns; the count packed into the
+high sixteen bits of the head's word, 3.9–4.3 ns. The Sage measured a
+countdown (`decq` and one branch, the least a count in memory costs) at the
+step's own figure. What is left is issue width on a path of about thirteen
+cycles, and no event coarser than a death is written under a holder to
+count at (`dev/DECISIONS.md`, "a withheld death pays for its count, and the
+marks bound what a grant withholds"). The recall a mark makes is the
+collector's stride away, as `the_recall` measures it (the S65.6 entry).
+
 ## 2026-09-24 — S65.14 a grant held behind another mutator's batch: released in 14–27 µs, the other batch 1.8–2.8 ms long
 
 `cycle::worker::tests::the_recall::`

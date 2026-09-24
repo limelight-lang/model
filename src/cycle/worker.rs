@@ -73,12 +73,15 @@
 //! the width of an entity; the block budget bounds the arena and not the wait
 //! (`rfc/model/gc/rc-cycle.md`, "The recall of the token"). A recalled batch
 //! leaves K where it stands, the recall saying nothing of the batch's size.
+//! A mutator freeing under the grant recalls it the same way without waiting,
+//! once one of its withheld stacks holds its mark
+//! (`crate::cycle::deferred_slot_reuse`, "The marks by stack length").
 //!
 //! A grant this thread holds while it traces another mutator's batch — one
 //! the standing list holds after a consent that came during that batch — has
 //! no batch of its own to abandon: the take that meets it also sets the slot's
 //! word ([`recall_the_grants_of`]), and the same readings of the recall release
-//! every such grant whose mutator waits, with no batch, while the batch traced
+//! every such grant whose mutator recalls it, with no batch, while the batch traced
 //! goes on ([`Standing::release_the_recalled`]). Its mutator waits at most one
 //! stride of the other's batch and one pass over the list, or, where its take
 //! lands after the batch's last reading, the rest of that batch, its posts and
@@ -432,10 +435,10 @@ struct Collector {
     /// know (`dev/design/the-standing-request-lives-on-the-record.md`, "The
     /// collector").
     byte_wakes: AtomicUsize,
-    /// Set by a mutator's take that meets a grant this slot holds, after the
-    /// take marked its token ([`recall_the_grants_of`]), and taken by the
+    /// Set by a mutator's recall of a grant this slot holds, after the recall
+    /// marked its token ([`recall_the_grants_of`]), and taken by the
     /// trace's reading of the recall, which releases every grant its
-    /// standing list holds unserved whose mutator waits
+    /// standing list holds unserved whose mutator recalls it
     /// ([`Standing::release_the_recalled`]). A hint as the token's mark is:
     /// a reading that missed it costs one stride more.
     grants_recalled: AtomicBool,
@@ -462,9 +465,10 @@ unsafe fn release_the_recalled_grants(list: *mut ()) {
     unsafe { &mut *list.cast::<Standing>() }.release_the_recalled();
 }
 
-/// Tell collector `slot` that a mutator waits on a grant it holds: the take
-/// that met `COLLECTOR|slot` calls it after marking its token, so that the
-/// trace in progress releases the grant if it is one held behind another
+/// Tell collector `slot` that a mutator recalls a grant it holds: the take
+/// that met `COLLECTOR|slot` calls it after marking its token, and so does a
+/// stack of returns withheld under the grant once it holds its mark, so that
+/// the trace in progress releases the grant if it is one held behind another
 /// mutator's batch (`rfc/model/gc/rc-cycle.md`, "The recall of the token").
 /// A read-modify-write with Release, so that the trace which takes the word
 /// reads the mark of every setter before it, a later setter's write
@@ -473,6 +477,15 @@ pub(crate) fn recall_the_grants_of(slot: usize) {
     COLLECTORS[slot]
         .grants_recalled
         .fetch_or(true, Ordering::Release);
+}
+
+/// Take collector `slot`'s recall word as a trace's reading does, and say
+/// whether it was set: a case's reading of who told the slot.
+#[cfg(test)]
+pub(crate) fn take_the_recall_of(slot: usize) -> bool {
+    COLLECTORS[slot]
+        .grants_recalled
+        .swap(false, Ordering::Acquire)
 }
 
 static COLLECTORS: [Collector; MAX_COLLECTORS] = [const { Collector::unborn() }; MAX_COLLECTORS];
@@ -1572,7 +1585,7 @@ unsafe fn serve_the_grant(
 
     // A recall that stands before the batch is made goes back with no batch,
     // as a refused workspace does, rather than after the peek and a stride.
-    if mutator.token.mutator_waits() {
+    if mutator.token.is_recalled() {
         return Served::Idle;
     }
 
@@ -1854,8 +1867,9 @@ impl Standing {
         served
     }
 
-    /// Release every grant this list holds unserved whose mutator stands in
-    /// its token's wait, with no batch: the collector traces another
+    /// Release every grant this list holds unserved whose mutator recalls
+    /// it, from its take's wait or at a withheld stack's mark, with no batch:
+    /// the collector traces another
     /// mutator's batch meanwhile, and the grant has none of its own to
     /// abandon. Not marked released unserved, since its mutator is awake
     /// (`MutatorRecord::note_released_unserved`).
@@ -1865,7 +1879,7 @@ impl Standing {
         while !cursor.is_null() {
             let following = Self::after(cursor);
             let mutator = unsafe { &*cursor };
-            if mutator.token.read() == granted && mutator.token.mutator_waits() {
+            if mutator.token.read() == granted && mutator.token.is_recalled() {
                 self.forget(mutator);
                 mutator.token.release_claim(self.slot, false);
             }

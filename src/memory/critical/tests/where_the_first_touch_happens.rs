@@ -88,9 +88,9 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("BETWEEN_THE_READS", false), // test-only const Cell of an fn pointer, no drop glue
         ("BLOCKS", false),
         ("BLOCKS_CARVED", false), // test-only const Cell, no drop glue
-        ("BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue
+        ("BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
         ("BLOCK_BUDGET", false),
-        ("CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue
+        ("CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
         ("CLOSED", false),                                // const Cell<bool>, no drop glue
         ("COLLECTION_ARMED", false),
         ("COUNTS", false),               // test-only const Cell, no drop glue
@@ -159,7 +159,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("VERDICT_COLLECTIONS", false), // test-only const Cell, no drop glue
         ("WEAK_TABLE", false),
         ("WINDOW", false),
-        ("WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const Cell of a pointer, no drop glue
+        ("WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
         ("WRITTEN_BYTES", false),
     ];
 

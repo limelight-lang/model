@@ -8,6 +8,55 @@ never edited or deleted.
 
 ---
 
+## 2026-09-24 — a withheld death pays for its count, and the marks bound what a grant withholds
+
+**Decided (Edmond, 2026-09-24):** the marks by stack length stand as S65.7
+built them — a count beside each of the three foreign-holder stacks' heads,
+the recall at the return that crosses the mark — at their price of 0.3–0.6 ns
+on every return withheld under a foreign holder, 2.7–2.8 against 3.1–3.4 ns
+(`dev/BENCHMARKS.md`, "S65.7 the marks by stack length"). The step's
+done-line asked for that arm within its spread; he accepted the price after
+the Sage found no form of the count that reaches it, in his words, translated, "if
+anything, I accept this price", before the last form was measured.
+
+**What was tried.** Four forms by the model and one by the Sage, each figure
+in the entry named above: a recall asked by every return past the mark; the
+hot path forced inline; the large entity's test moved to the caller; a
+countdown (the Sage); the count in the high bits of the head's word, which
+Edmond proposed. None was cheaper than the increment and compare. The
+count has no coarser event to ride on: the stack is threaded through the
+dead entities and draws nothing, so it has no growth to check at, and no
+block word is written under a holder. A count of the blocks the mutator
+draws from the pool under a grant, read at the heap's refill once per 64
+KiB, was put to Edmond as the form that costs the free nothing; it bounds
+the memory the grant makes the mutator draw rather than the deaths it
+withholds, and he did not take it up.
+
+**A count is what its stack holds.** The drain takes each item's weight off
+its count before the return, rather than zeroing the counts once the stacks
+went back whole, as the step first did: a return re-enters the free path,
+whose own drain, nested in the outer one, found the deaths' head empty — the
+outer drain holding them in hand — gave the chunks back whole and zeroed
+every count, so that a consent at the next return read nothing withheld and
+a stack could grow by a mark per interrupted drain without bound (the Critic
+of S65.7, its first finding). For the same reason the recall is cleared
+after a whole drain only while no grant stands: a consent at a drain's last
+return opens one, and the return withheld again under it may have recalled
+it. What the exact count costs is a load of the block's kind per death
+given back, on the drain.
+
+**The consent and the recall.** The consent clears the recall ahead of its
+release swap, as the step's done-line asks, and then recalls the grant it
+opened when a stack already holds its mark: a stopped drain, or a consent
+no drain preceded, leaves the stack at its mark, and without the second
+reading that grant would withhold on unrecalled. A recall standing before a
+consent from anything else is cleared by it, so the case of S65.6 that set
+one by hand, `the_recall::a_grant_recalled_before_its_batch_is_released_with_no_batch`,
+had its premise retired; Edmond ruled it stale the same day, and it reaches
+the same release through a stack at its mark.
+
+---
+
 ## 2026-09-23 — a mutator short of memory waits for its token, and the wait is the rule's exception
 
 **Decided (Edmond, 2026-09-23), as given:** a mutator short of memory waits

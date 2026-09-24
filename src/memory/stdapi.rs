@@ -547,14 +547,20 @@ unsafe fn free_taken<const ENTITY: bool>(ptr: *mut u8, block: *mut u8, kind: u32
     unsafe { ll_free_large(ptr, block, kind) };
 }
 
-/// Unmap an OS-direct run by the length its header records.
+/// How many blocks of `BLOCK_SIZE` a block or a run a foreign trace withheld
+/// spans: its mapping's length for a run, one for anything else — what its
+/// withholding counted toward the blocks' mark.
 ///
 /// # Safety
-/// `block` is the header of a live run nothing reads any more.
-unsafe fn unmap_run(block: *mut u8) {
-    let hdr = block as *mut LargeHeader;
-    let run_bytes = unsafe { (*hdr).run_bytes };
-    crate::memory::os::unmap(block, run_bytes);
+/// `block` is a block header or a run header the deferral withheld, not yet
+/// returned.
+pub(crate) unsafe fn blocks_a_withheld_block_spans(block: *mut u8) -> usize {
+    let kind = unsafe { crate::memory::block_pool::load_block_kind(block as *const AtomicU32) };
+    if kind == BLOCK_KIND_LARGE_RUN {
+        unsafe { (*(block as *const LargeHeader)).run_bytes / BLOCK_SIZE }
+    } else {
+        1
+    }
 }
 
 /// Make the return of a block or a run a foreign trace withheld: a run is
@@ -583,11 +589,19 @@ pub(crate) unsafe fn return_withheld_block(block: *mut u8) {
 /// # Safety
 /// `block` is the header of a mapped run this thread's free reached.
 unsafe fn unmap_run_unless_withheld(block: *mut u8) {
-    if unsafe { crate::cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace(block) } {
+    // The length its header records, which is also the blocks the run
+    // counts toward the withheld blocks' mark.
+    let run_bytes = unsafe { (*(block as *const LargeHeader)).run_bytes };
+    if unsafe {
+        crate::cycle::deferred_slot_reuse::withhold_block_under_a_foreign_trace(
+            block,
+            run_bytes / BLOCK_SIZE,
+        )
+    } {
         return;
     }
 
-    unsafe { unmap_run(block) };
+    crate::memory::os::unmap(block, run_bytes);
 }
 
 /// # Safety

@@ -187,6 +187,21 @@ pub(crate) unsafe fn free(block: *mut u8, kind: u32) {
     }
 }
 
+/// How many blocks of `BLOCK_SIZE` a large entity's memory spans: one in the
+/// pooled form, its mapping's length in the run form.
+///
+/// # Safety
+/// `block` is the block header of a large-entity allocation, and `kind` is
+/// the kind read from it.
+#[inline]
+pub(crate) unsafe fn blocks_spanned(block: *mut u8, kind: u32) -> usize {
+    if kind == BLOCK_KIND_ENTITY_LARGE_RUN {
+        unsafe { (*(block as *const LargeEntityHeader)).run_bytes / BLOCK_SIZE }
+    } else {
+        1
+    }
+}
+
 /// The entity a large-entity block holds, and how big it is.
 ///
 /// # Safety

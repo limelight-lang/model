@@ -303,7 +303,7 @@ fn a_batch_asked_between_its_phases(on_the_ask: impl FnOnce()) -> (testing::Trac
     );
 
     assert!(
-        !unsafe { &(*record()).token }.mutator_waits(),
+        !unsafe { &(*record()).token }.is_recalled(),
         "the take that recalled the token cleared the recall when it returned"
     );
     let released_at = testing::take_released_at().expect("the grant was released");
@@ -561,7 +561,10 @@ fn a_growth_under_a_standing_recall_draws_no_block() {
 }
 
 /// A grant whose mutator's recall stands before the batch is made goes back
-/// with no batch: R keeps its root, and no trace is read.
+/// with no batch: R keeps its root, and no trace is read. The recall is the
+/// one a consent raises over a stack of withheld deaths already at its mark
+/// (`crate::cycle::deferred_slot_reuse`, "The marks by stack length"), a
+/// recall standing from before the consent being cleared by it.
 #[test]
 fn a_grant_recalled_before_its_batch_is_released_with_no_batch() {
     let _g = test_guard();
@@ -578,7 +581,7 @@ fn a_grant_recalled_before_its_batch_is_released_with_no_batch() {
 
     let token = unsafe { &(*record()).token };
     let _clear = ClearTheRecall(token);
-    token.recall_for_test(true);
+    withhold_deaths_to_the_mark();
     let _ = testing::take_outcomes();
     testing::serve_rounds_at(1);
     testing::read_traced_batches(true);
@@ -613,6 +616,46 @@ fn a_grant_recalled_before_its_batch_is_released_with_no_batch() {
 
     unsafe { let_go(root) };
     reset_lanes();
+}
+
+/// Leave this thread's stack of deaths withheld under a foreign holder at
+/// its mark, the holder gone and no drain run, as a grant ends before the
+/// mutator's next free: the next consent then recalls the grant it opens.
+fn withhold_deaths_to_the_mark() {
+    use crate::cycle::deferred_slot_reuse::{DEATHS_MARK, foreign_withheld_count};
+    // Dead arrays of no storage, freed as a teardown frees them: nothing
+    // reads a dead slot's body but its first word.
+    let slots: Vec<_> = (0..DEATHS_MARK)
+        .map(|_| {
+            let slot = unsafe { crate::memory::heap::entity_alloc(64) };
+            assert!(!slot.is_null(), "the heap served");
+            let header = slot as *mut RcHeader;
+            unsafe {
+                header.write(RcHeader::new(
+                    MemoryCategory::GcHeap,
+                    crate::refcount::EntityKind::Array.to_flags(),
+                ));
+                crate::refcount::set_header_refcount(header, 0);
+            }
+            slot
+        })
+        .collect();
+    let mut holder = crate::cycle::token::testing::HeldByACollector::take(record_token(), false);
+    for &slot in &slots {
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+    }
+
+    holder.release();
+    let _ = crate::cycle::worker::take_the_recall_of(ELDER);
+    assert_eq!(
+        foreign_withheld_count(),
+        DEATHS_MARK,
+        "the deaths stand at the mark"
+    );
+}
+
+fn record_token() -> *const crate::cycle::token::TraceToken {
+    unsafe { &raw const (*record()).token }
 }
 
 /// A mutator whose consent the collector holds while it traces another

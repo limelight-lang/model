@@ -96,6 +96,24 @@
 //! reader that finds the link where a class was re-reads the count as zero
 //! and strides nothing (`crate::cells::trace_cells`).
 //!
+//! **The marks by stack length.** Each of the three stacks counts what it
+//! took beside its head — deaths, chunks, and blocks, a run and a large
+//! entity's death counted by the blocks they span — and once a count holds
+//! its mark ([`DEATHS_MARK`], [`CHUNKS_MARK`], [`BLOCKS_MARK`]) the mutator
+//! recalls the grant as its take would, marking the token and the holder's
+//! slot, and goes on freeing: nothing blocks and nothing is returned
+//! (`crate::cycle::token::recall_this_threads_token`). The recall is made at
+//! the return that crosses the mark, and the returns past it ask nothing. The
+//! consent that opens the next grant clears the recall, and so does the drain
+//! that gives the stacks back whole outside a grant, so that a recall made at
+//! a mark stops no later grant; a stack still at its mark when a grant opens
+//! — a drain a new holder stopped, or a consent no drain preceded — recalls
+//! that grant at its consent ([`recall_if_a_mark_stands`]). A count is what
+//! its stack holds at every instant: the drain takes an item's weight off
+//! before the return, and a return withheld again counts anew, so a consent
+//! inside a drain, the drain's own chain in hand, reads it exactly
+//! (`rfc/model/gc/rc-cycle.md`, "The recall of the token").
+//!
 //! # What a refusal costs, and where it is answered
 //!
 //! **No path of this module asks an allocation path**, so no path of it can
@@ -813,7 +831,7 @@ pub(crate) unsafe fn withhold_under_a_trace_or_make_returns(ptr: *mut u8, kind: 
             return false;
         }
 
-        unsafe { withhold_under_a_foreign_trace(ptr) };
+        unsafe { withhold_under_a_foreign_trace(ptr, kind) };
         return true;
     }
 
@@ -942,9 +960,10 @@ pub(crate) unsafe fn withhold_chunk_under_a_foreign_trace(chunk: *mut u8, capaci
         return false;
     }
 
-    CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
-        unsafe { set_chunk_link(chunk, head.get(), capacity) };
-        head.set(chunk);
+    CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| {
+        unsafe { set_chunk_link(chunk, stack.head.get(), capacity) };
+        stack.head.set(chunk);
+        stack.count(1, CHUNKS_MARK);
     });
     true
 }
@@ -958,18 +977,23 @@ pub(crate) unsafe fn withhold_chunk_under_a_foreign_trace(chunk: *mut u8, capaci
 /// (`memory::block_pool::BlockPool::put`, `memory::stdapi::ll_free`'s run
 /// arm). Threaded by the header's second word ([`block_link`]).
 ///
+/// `blocks` is how many blocks of `BLOCK_SIZE` the item spans, which is
+/// what it counts toward the blocks' mark: one for a block, a run's mapping
+/// for a run.
+///
 /// # Safety
 /// `block` is a block header of this thread's on no list, or the header of
 /// an OS-direct run about to be unmapped.
 #[inline]
-pub(crate) unsafe fn withhold_block_under_a_foreign_trace(block: *mut u8) -> bool {
+pub(crate) unsafe fn withhold_block_under_a_foreign_trace(block: *mut u8, blocks: usize) -> bool {
     if !under_a_foreign_holder() {
         return false;
     }
 
-    BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
-        unsafe { set_block_link(block, head.get()) };
-        head.set(block);
+    BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| {
+        unsafe { set_block_link(block, stack.head.get()) };
+        stack.head.set(block);
+        stack.count(blocks, BLOCKS_MARK);
     });
     true
 }
@@ -986,15 +1010,41 @@ pub(crate) unsafe fn withhold_block_under_a_foreign_trace(block: *mut u8) -> boo
 /// the dead entities like the window's ([`withheld_link`]), headed in a word
 /// of this thread's, and nothing is drawn.
 ///
+/// A large entity's death counts the blocks its memory spans toward the
+/// blocks' mark rather than one death toward the deaths', its return being
+/// a block or a run.
+///
 /// # Safety
 /// As [`withhold_under_a_trace_or_make_returns`], and this thread has no window of its own
 /// open.
 #[inline]
-unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8) {
-    WITHHELD_UNDER_A_FOREIGN_TRACE.with(|head| {
-        unsafe { set_withheld_next(ptr, head.get()) };
-        head.set(ptr);
+unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8, kind: u32) {
+    let large = crate::memory::large_entity::is_large_entity(kind);
+    WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| {
+        unsafe { set_withheld_next(ptr, stack.head.get()) };
+        stack.head.set(ptr);
+        if !large {
+            stack.count(1, DEATHS_MARK);
+        }
     });
+    if large {
+        unsafe { count_a_large_death(ptr, kind) };
+    }
+}
+
+/// Count a large entity's withheld death toward the blocks' mark, by the
+/// blocks its memory spans. Out of line, so that the slotted death's path
+/// above stays inline in the free.
+///
+/// # Safety
+/// `ptr` is a dead large entity of this thread's, and `kind` its block's.
+#[cold]
+#[inline(never)]
+unsafe fn count_a_large_death(ptr: *mut u8, kind: u32) {
+    let blocks = unsafe {
+        crate::memory::large_entity::blocks_spanned(BlockHeader::of_ptr(ptr) as *mut u8, kind)
+    };
+    BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.count(blocks, BLOCKS_MARK));
 }
 
 /// Make the returns withheld under a foreign holder, once the token is free.
@@ -1022,15 +1072,16 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
     // The slots go first because a slot's return can empty its block and
     // reach the pool, which is where a block would be withheld again under a
     // holder that arrived meanwhile — and then the block list below finds it.
-    let drained = unsafe {
+    let deaths = unsafe {
         drain_withheld(
             &WITHHELD_UNDER_A_FOREIGN_TRACE,
             |slot| withheld_next(slot),
             |last, next| set_withheld_next(last, next),
+            |slot| uncount_a_death(slot),
             |slot| crate::memory::stdapi::hand_back_and_free(slot),
         )
     };
-    if !drained {
+    if deaths == Drained::Stopped {
         return;
     }
 
@@ -1040,7 +1091,7 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
     // reads cannot disagree; what the shared drain buys instead is one copy of
     // the re-withhold and its splice (`dev/BENCHMARKS.md`, "S38.3 what a
     // foreign holder costs the owner", for the path this sits on).
-    let drained = unsafe {
+    let chunks = unsafe {
         drain_withheld(
             &CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE,
             |chunk| chunk_link(chunk).0,
@@ -1048,27 +1099,74 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
                 let (_, last_capacity) = chunk_link(last);
                 set_chunk_link(last, next, last_capacity);
             },
+            |_| CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.uncount(1)),
             |chunk| {
                 let (_, capacity) = chunk_link(chunk);
                 crate::memory::buffer_arena::buffer_free_longlived_payload(chunk, capacity);
             },
         )
     };
-    if !drained {
+    if chunks == Drained::Stopped {
         return;
     }
 
-    unsafe {
+    let blocks = unsafe {
         drain_withheld(
             &BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE,
             |block| block_link(block),
             |last, next| set_block_link(last, next),
+            |block| {
+                let blocks = crate::memory::stdapi::blocks_a_withheld_block_spans(block);
+                BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.uncount(blocks));
+            },
             |block| crate::memory::stdapi::return_withheld_block(block),
         )
     };
+    if blocks == Drained::Stopped {
+        return;
+    }
+
+    // A stack gave returns back and no holder stopped the drain, so no grant
+    // stands — an outer drain may still hold items in hand, whose counts
+    // stand — and a recall the marks raised belongs to a grant that is over.
+    // Only where something went back, the empty drain being every free's;
+    // and not under a grant a return's consent opened, whose recall a
+    // re-withheld return may have raised
+    // (`crate::cycle::token::forget_this_threads_recall`).
+    if [deaths, chunks, blocks].contains(&Drained::Whole) {
+        crate::cycle::token::forget_this_threads_recall();
+    }
 }
 
-/// Give back one withheld list, and answer whether it went back whole.
+/// Take a death's weight off the count it was counted on: one death, or
+/// the blocks a large entity's memory spans.
+///
+/// # Safety
+/// `slot` is a death on this thread's foreign-holder stack, not yet
+/// returned.
+unsafe fn uncount_a_death(slot: *mut u8) {
+    let block = BlockHeader::of_ptr(slot);
+    let kind = unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) };
+    if crate::memory::large_entity::is_large_entity(kind) {
+        let blocks = unsafe { crate::memory::large_entity::blocks_spanned(block as *mut u8, kind) };
+        BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.uncount(blocks));
+    } else {
+        WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.uncount(1));
+    }
+}
+
+/// What a drain of one withheld list did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Drained {
+    /// The list was empty.
+    Nothing,
+    /// Every item went back.
+    Whole,
+    /// A holder arrived between two returns, and what was left stands.
+    Stopped,
+}
+
+/// Give back one withheld list, and answer how much of it went back.
 ///
 /// The whole stack is taken off the head first: each return re-enters the
 /// entry that withheld it, which asks
@@ -1078,34 +1176,44 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
 ///
 /// A holder that arrives between two returns ends the drain: what is left
 /// goes back on the head, behind whatever the returns so far re-withheld,
-/// and the answer is false so that the caller leaves the lists after this
-/// one standing too.
+/// and the answer is [`Drained::Stopped`] so that the caller leaves the lists
+/// after this one standing too.
 ///
-/// `next_of` reads an item's link, `link` writes one, and `give_back` is the
-/// return itself — the entry a withheld item goes back through.
+/// `next_of` reads an item's link, `link` writes one, `uncount` takes the
+/// item's weight off the count it was counted on, before the return, which
+/// may withhold it again and count it anew, and `give_back` is the return
+/// itself — the entry a withheld item goes back through.
 ///
 /// # Safety
 /// As [`make_returns_withheld_under_a_foreign_trace`]: the list is this
 /// thread's, and its items are what this thread's own free withheld.
 unsafe fn drain_withheld(
-    head: &'static std::thread::LocalKey<Cell<*mut u8>>,
+    stack: &'static std::thread::LocalKey<ForeignStack>,
     next_of: impl Fn(*mut u8) -> *mut u8,
     link: impl Fn(*mut u8, *mut u8),
+    uncount: impl Fn(*mut u8),
     give_back: impl Fn(*mut u8),
-) -> bool {
-    let mut taken = head.with(|head| head.replace(std::ptr::null_mut()));
+) -> Drained {
+    let mut taken = stack.with(|stack| stack.head.replace(std::ptr::null_mut()));
+    if taken.is_null() {
+        return Drained::Nothing;
+    }
+
     while !taken.is_null() {
         if crate::cycle::token::collector_is_tracing_this_thread() {
-            head.with(|head| unsafe { splice_behind_the_head(head, taken, &next_of, &link) });
-            return false;
+            stack.with(|stack| unsafe {
+                splice_behind_the_head(&stack.head, taken, &next_of, &link)
+            });
+            return Drained::Stopped;
         }
 
         let item = taken;
         taken = next_of(item);
+        uncount(item);
         give_back(item);
     }
 
-    true
+    Drained::Whole
 }
 
 /// Put a chain a drain took off `head` back on it, behind what the returns
@@ -1285,16 +1393,97 @@ pub(crate) fn dispose_thread_state() {
         "a thread cannot exit inside its trace window"
     );
     assert!(
-        WITHHELD_UNDER_A_FOREIGN_TRACE.with(Cell::get).is_null()
-            && CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE
-                .with(Cell::get)
-                .is_null()
-            && BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE
-                .with(Cell::get)
-                .is_null(),
+        WITHHELD_UNDER_A_FOREIGN_TRACE.with(ForeignStack::is_empty)
+            && CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(ForeignStack::is_empty)
+            && BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(ForeignStack::is_empty),
         "a thread cannot exit with returns withheld under a foreign trace"
     );
+    // A count that drifted from what its stack holds would recall every
+    // grant of this OS thread's later lives, the cells outliving the life.
+    assert!(
+        !(WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(1))
+            || CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(1))
+            || BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(1))),
+        "a thread's withheld counts end at zero with its stacks"
+    );
 }
+
+/// One of the three stacks a foreign holder's returns wait on: the newest
+/// item, each naming the next through the stack's own link, and how much the
+/// stack holds, a drain's chain in hand included, in the unit its mark
+/// counts. No drop glue, as every thread-local the exit reaches.
+struct ForeignStack {
+    head: Cell<*mut u8>,
+    held: Cell<usize>,
+}
+
+impl ForeignStack {
+    const fn empty() -> Self {
+        Self {
+            head: Cell::new(std::ptr::null_mut()),
+            held: Cell::new(0),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.head.get().is_null()
+    }
+
+    /// Count `weight` toward `mark`, and recall the token at the return that
+    /// crosses it. A return past the mark asks nothing, so that the grant is
+    /// recalled once and the returns after it cost what they cost below it;
+    /// a stack that already holds its mark when a grant opens recalls that
+    /// grant at its consent ([`recall_if_a_mark_stands`]).
+    #[inline]
+    fn count(&self, weight: usize, mark: usize) {
+        let before = self.held.get();
+        let held = before + weight;
+        self.held.set(held);
+        if before < mark && held >= mark {
+            crate::cycle::token::recall_this_threads_token();
+        }
+    }
+
+    /// Take `weight` off the count, for a return the drain is about to
+    /// make: the count is what the stack holds, the drain's own chain
+    /// included, at every instant a consent may read it.
+    fn uncount(&self, weight: usize) {
+        debug_assert!(self.held.get() >= weight, "a count below what it holds");
+        self.held.set(self.held.get() - weight);
+    }
+
+    fn holds(&self, mark: usize) -> bool {
+        self.held.get() >= mark
+    }
+}
+
+/// Recall the grant this thread has just consented to if a stack of its
+/// withheld returns already holds its mark: returns a stopped drain left
+/// standing, or a grant consented to before any drain ran, are withheld
+/// under the new grant from its first reading. Once per grant, at the
+/// consent (`crate::cycle::token::read_and_act_on_this_thread`).
+pub(crate) fn recall_if_a_mark_stands() {
+    if WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(DEATHS_MARK))
+        || CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(CHUNKS_MARK))
+        || BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(BLOCKS_MARK))
+    {
+        crate::cycle::token::recall_this_threads_token();
+    }
+}
+
+/// M: the deaths withheld under a foreign holder at which the mutator recalls
+/// its token. 8,192 deaths of 64 bytes are 512 KiB; the figure is the
+/// package's starting point and unmeasured, S65.12 measures it.
+pub(crate) const DEATHS_MARK: usize = 8_192;
+
+/// M_b: the blocks withheld under a foreign holder, a run and a large
+/// entity counted by the blocks they span, at which the mutator recalls its
+/// token. 16 blocks are 1 MiB; unmeasured, S65.12 measures it.
+pub(crate) const BLOCKS_MARK: usize = 16;
+
+/// M_c: the buffer chunks withheld under a foreign holder at which the
+/// mutator recalls its token. Unmeasured, S65.12 measures it.
+pub(crate) const CHUNKS_MARK: usize = 256;
 
 thread_local! {
     /// Newest return withheld because another thread holds this thread's
@@ -1304,25 +1493,25 @@ thread_local! {
     /// collected — and so never drew a workspace — withholds without drawing
     /// anything on its free path. No drop glue, as every thread-local the
     /// exit reaches (`memory::heap::ll_thread_exit`).
-    static WITHHELD_UNDER_A_FOREIGN_TRACE: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
+    static WITHHELD_UNDER_A_FOREIGN_TRACE: ForeignStack = const { ForeignStack::empty() };
 }
 
 thread_local! {
     /// Newest buffer chunk withheld under a foreign holder, or null; each
     /// names the next through its own first word, packed with its size
     /// ([`chunk_link`]).
-    static CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
+    static CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE: ForeignStack = const { ForeignStack::empty() };
     /// Newest whole block or OS-direct run withheld under a foreign holder,
     /// or null; each names the next through its header's second word, the
     /// pool's own link ([`block_link`]).
-    static BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE: Cell<*mut u8> = const { Cell::new(std::ptr::null_mut()) };
+    static BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE: ForeignStack = const { ForeignStack::empty() };
 }
 
 /// How many chunks this thread is withholding under a foreign holder.
 #[cfg(test)]
 pub(crate) fn foreign_withheld_chunks() -> usize {
     let mut count = 0;
-    let mut chunk = CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(Cell::get);
+    let mut chunk = CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.head.get());
     while !chunk.is_null() {
         count += 1;
         chunk = unsafe { chunk_link(chunk) }.0;
@@ -1336,7 +1525,7 @@ pub(crate) fn foreign_withheld_chunks() -> usize {
 #[cfg(test)]
 pub(crate) fn foreign_withheld_blocks() -> usize {
     let mut count = 0;
-    let mut block = BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(Cell::get);
+    let mut block = BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.head.get());
     while !block.is_null() {
         count += 1;
         block = unsafe { block_link(block) };
@@ -1345,12 +1534,22 @@ pub(crate) fn foreign_withheld_blocks() -> usize {
     count
 }
 
+/// The three stacks' counts toward their marks: deaths, chunks, blocks.
+#[cfg(test)]
+pub(crate) fn foreign_withheld_counts() -> (usize, usize, usize) {
+    (
+        WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.held.get()),
+        CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.held.get()),
+        BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.held.get()),
+    )
+}
+
 /// How many returns this thread is withholding under a foreign holder of its
 /// token, by walking that stack.
 #[cfg(test)]
 pub(crate) fn foreign_withheld_count() -> usize {
     let mut count = 0;
-    let mut slot = WITHHELD_UNDER_A_FOREIGN_TRACE.with(Cell::get);
+    let mut slot = WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.head.get());
     while !slot.is_null() {
         count += 1;
         slot = unsafe { withheld_next(slot) };
