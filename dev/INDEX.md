@@ -22,33 +22,22 @@ they analyse (`dev/DECISIONS.md`, "analysis of a candidate that may be
 refused stays in `dev/`, and the rfc moves only on adoption"):
 [Shadow rows: flat or chunks](SHADOW-ROW-REPRESENTATION-ANALYSIS.md), whose
 §3.1 is the chunked form `cycle::census::replay` prices against the flat one
-(`dev/BENCHMARKS.md`, 2026-09-12); and [Cycle improvement
-candidates](CYCLE-IMPROVEMENTS-CRITICAL-REVIEW.md), candidates with
-counterexamples and measurement requirements, its status at its top; and
-[S64 GC improvement analysis](S64-GC-IMPROVEMENT-ANALYSIS.md), the measured
-all-or-nothing take and the directions for CPU admission, partial results and
-resource refusal, reviewed by Astra and the Critic, not an adopted algorithm;
-and the review chain of 2026-09-23 over the same question, none of it adopted:
-[the weak points and Edmond's three directions](CYCLE-SPLIT-WEAK-POINTS.md)
-(Russian), [the first Sage report](CYCLE-SPLIT-SAGE-REPORT.md) and [its
-Critic](CYCLE-SPLIT-CRITIC-REVIEW.md), [the synthesis of the two
-analyses](CYCLE-SPLIT-SYNTHESIS.md) (Russian), and [the package — the epoch
-clock kept by the collector, the token's recall, the trace in parts, the live
-core stamped from a list](CYCLE-SPLIT-PACKAGE.md) (Russian) with [its
-Critic](CYCLE-SPLIT-PACKAGE-CRITIC.md), then [the second
-version](CYCLE-SPLIT-PACKAGE-2.md) with [its
-Critic](CYCLE-SPLIT-PACKAGE-2-CRITIC.md), and **[the third
-version](CYCLE-SPLIT-PACKAGE-3.md), the design S65 builds**, with [the lane
+(`dev/BENCHMARKS.md`, 2026-09-12).
+
+The design S65 builds, kept until the stage closes: **[the package, third
+version](CYCLE-SPLIT-PACKAGE-3.md)** (Russian), with [the lane
 amendment](CYCLE-SPLIT-PACKAGE-3-LANE.md) and [its
 Critic](CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md), whose F2 and F3 are the form
 taken (`dev/DECISIONS.md`, "the collector finds and the mutator judges, and a
-recall of the token bounds the mutator's wait instead of the budget"). The
-recall per take path, 2026-09-24: [the Sage's first ruling](S65-RECALL-SAGE.md),
-[its Critic](S65-RECALL-CRITIC.md) and [the second
-ruling](S65-RECALL-SAGE-2.md); the recall stays on every take as S65.6 built
-it, and what they settled of S65.14's form is in that step. The
-collector–mutator memory protocol of 2026-09-09 and its review are in
-`docs/history/`, superseded by the collector thread that was built.
+recall of the token bounds the mutator's wait instead of the budget"); [the
+Critic over the S65 plan](S65-PLAN-CRITIC.md), whose F1–F7 the steps carry;
+and [the S64 analysis](S64-GC-IMPROVEMENT-ANALYSIS.md) (Russian), whose
+"Какие опыты нужны" is the rig S65.12 runs. The review chain that led to the
+package, its first two versions and their Critics, and the Sage rulings on
+the recall per take path were deleted on 2026-09-24; their outcomes stand in
+`dev/DECISIONS.md` and in `PLAN.md`'s S65 steps, and the files in `git log
+-- dev/`. The collector–mutator memory protocol of 2026-09-09 and its review
+are in `docs/history/`, superseded by the collector thread that was built.
 
 ## Entry points
 

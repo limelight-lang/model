@@ -5,140 +5,35 @@ manager, the object model and the cycle collector built to the `rfc`'s
 design and calibrated on parameterized test heaps, each reading naming its
 parameters.
 
-Implementation plan, re-sorted last on 2026-07-24 against the object-layout
-redesign of 2026-07-22.
-
 Design lives in `rfc` and is authoritative — read before coding, do not
 re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 `model/gc/rc-cycle.md`, `model/gc/cycle/questions.md`, `model/memory/ffi.md`,
-`runtime/object-lifecycle.md`.
-
-The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
-in the specification rather than in this crate.
+`runtime/object-lifecycle.md`. The `rfc` repository carries its own plan at
+`dev/PLAN.md` for work that lands in the specification rather than in this
+crate. The destination's last mile, the compiler that links this crate, is
+outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
+`limelight`.
 
 Updated: 2026-09-24 · Active: S65.
-S65 opened on 2026-09-23 from Edmond's rulings of the day: the collector
-finds and the mutator judges, the epoch clock is the collector's, and a
-recall of the token replaces the budget as the bound on the mutator's wait
-(`dev/DECISIONS.md`, "the collector finds and the mutator judges, and a
-recall of the token bounds the mutator's wait instead of the budget"). The
-two fog lines it answers — the take that meets the block budget, and the
-mutator collecting from R while the collector goes on — left the fog with it,
-and the two shipped defects filed that morning are its steps S65.2 and S65.6.
-S64 went on 2026-09-22, the day its design was accepted: a mutator whose
-candidate ring stands non-empty below the serve threshold has it taken as an
-ordinary batch once `STANDING_INTERVAL` of the collector's own clock has
-passed, an unanswered take leaves its request standing on the record, the
-batch's form is read off the ring under the grant, and a round's spending on
-consent waits that expire is capped (`dev/DECISIONS.md`, the four entries of
-2026-09-22; `dev/design/a-standing-r-is-taken-after-n-rounds.md`; the `rfc`
-states the take at `rfc/model/gc/rc-cycle.md`, "Signals"). Its six steps closed with their
-Critics, three Sage rulings and the Code Reviewer over the stage, whose one
-defect — the handover renaming a record a standing request was linked on —
-is `dev/POSTMORTEM.md`, "a safety property derived from one mechanism, and a
-second mechanism that reached the same state"; the figures are
-`dev/BENCHMARKS.md`, "what sleeping sub-threshold threads cost a round",
-"what a take costs by the shape of its roots" and "a second producer behind
-the sleeping threads". S63 went on 2026-09-22, the day after
-its design: the collector's standing requests live on the records as a list
-with no capacity, read at a checkpoint only after a byte event and serving
-one grant per pass, the silent mark gone (`dev/DECISIONS.md`, "the standing
-request lives on the record, the checkpoint serves one grant, and no count is
-capped"; `dev/design/the-standing-request-lives-on-the-record.md`, the
-`rfc`'s handshake document amended); its three steps closed with their
-Critics and the Code Reviewer paid, the two sleeper probes re-run
-(`dev/BENCHMARKS.md`, "the sleeper probes on the standing list"). S62 went
-with it, a design stage: the take of a standing R after an interval of the
-collector's own is the accepted algorithm, and S64 below builds it
-(`dev/DECISIONS.md`, "a standing R is taken after an interval of the
-collector's own, and no request count is capped";
-`dev/design/a-standing-r-is-taken-after-n-rounds.md`). S61 went on 2026-09-22, the day it opened:
-the sibling-birth red of the journal gate was the harness's stand-in for a
-disposition racing the round it stands in for, found by stretching the other
-mutator's tick and repaired by clearing every mutator's `POSTED` by hand
-before each backlog wake (`dev/POSTMORTEM.md`, "a wake inside the other
-mutator's tick meets a backlog of one"); the Critic over the diagnosis and
-the Code Reviewer over the stage are paid, and what each found is in that
-entry. S60 went the same morning with its six steps closed and both gates
-paid; its ruling stands in `dev/DECISIONS.md`, "a quiet thread's turnover is
-the collector's to ask for", the figures in `dev/BENCHMARKS.md`, "S60.6 what
-the poll costs with a deferred record standing". The destination's last mile
-— the compiler that links this crate — is outside this plan: `rfc/BACKLOG.md`,
-"The big one", and the front end in `limelight`.
 
 Review 2026-09-23: on time, found by hand, the hook still blind to this
 plan. Pass 1, code `128cefc..89bb0dc` against the thresholds (a function over
 50 code lines, depth 3, a one-implementation abstraction, a one-caller
-forward), 297 functions touched, 117 of them production: five production
-places — `worker::batch` at 59 lines, cut to 42 by S65.3;
-`Standing::checkpoint` at depth 4; `epoch::of_record` and
+forward): five production places — `worker::batch` at 59 lines, cut to 42 by
+S65.3; `Standing::checkpoint` at depth 4; `epoch::of_record` and
 `Standing::take_backlogged`, one-caller forwards; `HandBackOnDrop`, kept as
-the unwind guard `AdvanceOnDrop` already is — and 45 in tests, the cuts
-being the backlog line "The review's cuts of 2026-09-23". Of the 2026-09-21
-list, `collect_under_pressure` grew by one line to exactly 50 and the rest
-stand. A Miri ignore reason with a botched line join was repaired, and the
-backlog line "What S37 named and left", which named
-`epoch::COMMITS_PER_EPOCH`, deleted at S65.2, re-pointed.
-Pass 2: the period's algorithms are Edmond's rulings of 2026-09-23. Pass 3
-is the Critic over the S65 section of the same day (`dev/S65-PLAN-CRITIC.md`);
-the backlog below it was not re-read.
+the unwind guard `AdvanceOnDrop` already is — and 45 in tests, the cuts being
+the backlog line "The review's cuts of 2026-09-23". Pass 2: the period's
+algorithms are Edmond's rulings of 2026-09-23. Pass 3 is the Critic over the
+S65 section of the same day (`dev/S65-PLAN-CRITIC.md`). Earlier reviews and
+the closed stages' summaries are in `git log -- PLAN.md`.
 
-Review 2026-09-21: overdue by a day, the hook reading `dev/PLAN.md` and never
-this file. Pass 1, code `c58d49f..128cefc` against the thresholds, 203
-functions touched: `heap::ll_thread_init` at 59 code lines,
-`collect::collect_under_pressure` at 51, depth 3 in `mark::mark`'s tracer
-closure and `static_block::run_thread_exit_teardown`, two test helpers and six
-`#[test]` bodies at depth 3; the cuts are the backlog line "The review's cuts
-of 2026-09-21". Pass 2: the period's algorithms are Edmond's rulings, so a
-simpler form is a premise change for him. Pass 3, the plan against its
-destination: "calibrated on a Phase-D corpus" was refuted by the ruling of
-2026-09-19 (second) and is amended to that ruling's terms; the five backlog
-lines that waited on the corpus or on a workload are re-stated on the test
-heap; the bounded sweep's line, the futex paragraph of the birth's line, the
-accelerator sentence and the header's copy of the S36 residue repeated a
-journal entry or each other and are cut; the language-runtime, Phase-D,
-proxy, interceptor and provenance lines named work no stage of this crate
-can be drawn from and go, the per-structure line folds into the telemetry
-line; the fog line on a cross-arena store, overtaken by the rulings of
-2026-09-13, becomes a test debt below, and the three fog lines the `rfc`
-owes moved to `rfc/dev/PLAN.md`'s fog. S37's own gate ran the same day and
-found the ignored turnover load red at the new threshold
-(`dev/POSTMORTEM.md`, 2026-09-21).
-
-Review 2026-09-18, second: pass 3 by the Critic over the plan as rewritten
-by S57.7 — its findings and their disposition were in that step, deleted with
-S57 the same day. Pass 1 over
-the period's code is void, the period's only source changes being comments;
-pass 2 likewise.
-
-Review 2026-09-18: the first one recorded here, and overdue — the hook reads
-`dev/PLAN.md` while this plan sits at the repo root, so nothing named the
-period. Code of 2026-09-15 to 2026-09-17 (`abfba48..c58d49f`) against the
-thresholds: eleven places, the largest `worker::serve` at 80 code lines where
-the same function was 42 before the slice, `collect::collect_under_pressure` at
-79 and control depth 4, `worker::thread_body` at 77; they became S37.8, closed 2026-09-18
-(`dev/BENCHMARKS.md`, "S37.8 the review's cuts leave the poll where it was"). Two
-proposed deletions were refused — `make_withheld_returns_before_the_retry`
-states a precondition its callee's `# Safety` does not and carries two callers,
-and deleting `collect_off_the_poll` moves a contract paragraph into `gc.rs` and
-re-points eight `As [...]` citations. The algorithms of the period are Edmond's
-own rulings, so a simpler form is a premise change for him rather than a review
-finding. The plan lost S40, whose goal was discharged on 2026-09-12, ten closed
-steps, the obituary of nine deleted stages, two fog lines and a cross-cutting
-section duplicated 640 lines from its twin; the nine orphan debts that cut would
-have dropped were filed first, in `dev/DECISIONS.md` (four entries),
-`dev/POSTMORTEM.md`, `dev/WORKFLOW.md`, `dev/RESEARCH.md` and, since S37 went,
-the backlog line "What S37 named and left".
-
-**Closed stages are deleted whole** (rule 23.1.3), and what outlived each
-of them is in the journals rather than here: `dev/DECISIONS.md` for a
-decision and its reason, `dev/POSTMORTEM.md` for a trap,
-`dev/BENCHMARKS.md` for a measurement, `dev/INDEX.md` and
-`dev/ARCHITECTURE.md` for the map. Deleted so far: S4 through S64, every
-number this plan has spent. A number is never reissued, so a
-stage added later sits where it is to be done rather than where its
-number falls, and the prose sections below are the backlog stages are
-drawn from.
+**Closed stages are deleted whole** (rule 23.1.3), and what outlived each of
+them is in the journals: `dev/DECISIONS.md` for a decision and its reason,
+`dev/POSTMORTEM.md` for a trap, `dev/BENCHMARKS.md` for a measurement,
+`dev/INDEX.md` and `dev/ARCHITECTURE.md` for the map. Deleted so far: S4
+through S64. A number is never reissued, and the prose sections below the
+active stage are the backlog stages are drawn from.
 
 **Every cycle-GC step has one review gate, and the Sage is the escalation**
 (Edmond, 2026-09-10 and 2026-09-12: the Critic first, the Sage only for what
@@ -146,18 +41,14 @@ the model cannot answer itself). The pre-change baseline the step would erase
 — operation count, manager-allocation budget, cache working set, lifetime and
 refusal model — is recorded in the step before the first edit; a red test is
 seen failing; the Critic reviews the repair and its mutations before the step
-is checked, and its findings are recorded in the step. This applies to every
-step of a cycle-GC stage; one broad review does not waive a later step's gate. The rest of
-the routine — the gate, Miri in slices, the citation checks — is
-`dev/WORKFLOW.md`.
+is checked, and its findings are recorded in the step. One broad review does
+not waive a later step's gate. The rest of the routine — the gate, Miri in
+slices, the citation checks — is `dev/WORKFLOW.md`.
 
 ## Fog
 
 A line here is an unresolved question rather than a step: it carries no
-criterion, and it leaves when it gets one or when it is ruled on. The three
-lines that ended in a sentence the `rfc` owes — which destructors "ran
-anywhere" counts, the object handed to a survivor, the exit's safepoint word
-— moved to `rfc/dev/PLAN.md`'s fog on 2026-09-21.
+criterion, and it leaves when it gets one or when it is ruled on.
 
 - **Whether a grant should bound the cross-thread frees it withholds.** A
   slot another thread frees waits on its block's remote list while this
@@ -219,8 +110,7 @@ mutator's wait for its token is a recall rather than the trace's block budget
 of the token bounds the mutator's wait instead of the budget"). The design is
 `dev/CYCLE-SPLIT-PACKAGE-3.md` with `dev/CYCLE-SPLIT-PACKAGE-3-LANE.md` as
 amended by its Critic (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F2 and F3);
-the review chain behind it is `dev/CYCLE-SPLIT-*.md` and
-`dev/S64-GC-IMPROVEMENT-ANALYSIS.md`. Each step is one commit of the package's
+the analysis behind it is `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`. Each step is one commit of the package's
 build order (its section 11), with that section's mechanism, red test and
 measurement; the rule of the stage is the owner's: the mutator's performance
 comes first. The Critic over this section (`dev/S65-PLAN-CRITIC.md`,
@@ -241,445 +131,53 @@ arms a collection over R whole outside `cap 0`, a recalled grant returns the
 token within N inspected positions, one bounded post and one arena reset,
 and the poll and the free are where `dev/BENCHMARKS.md` S60.6 and S38.3 put
 them.
+Miri owed at the stage's close, targeted (`dev/WORKFLOW.md`, "Miri"):
+`epoch::turn_the_cell_of` and the record's accessors; `Reader::unread_up_to`,
+the reading's reordered loads and `the_merged_lane`; the retirement pass under
+the token and the reordered state line; the arena's watermark cases and
+`the_batch`'s cases; `the_recall`'s stride and growth cases, its two-mutator
+case's raw list pointer and its two grant-behind cases;
+`when_a_withheld_stack_recalls_the_token`.
 
 - [x] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
-      done: the two comments (the module head and `ENTRY_MARK_BITS`) say three
-        bits, eight-aligned promoted survivors being candidates; text in the
-        package's section 10
-      tier: T0 · role: —
-      handoff: `5014615`, three comments in `queue.rs`; gate green 2026-09-23.
+      handoff: `5014615`, three comments in `queue.rs`.
 - [x] S65.2 The epoch cell is the collector's (package commit 1)
-      done: the cell on the record's hold line, advanced at the first of 64
-        batches or X of the collector's clock; the turnover byte has one
-        writer; one epoch reading per collection; `turn_the_cell_of` replaces
-        the commit-driven instrument in the seven test files; the red test of
-        the quiet thread's defect — real all-live takes oftener than X, the
-        lane's mirror moved after X — seen red on today's tree and green
-        after; `what_the_poll_costs` within S60.6; `rfc/model/gc/rc-cycle.md`
-        says the epoch clock is the collector's cell, advanced by its batches
-        or its interval
-      tier: T2 · role: Critic
-      baseline 2026-09-23, `5014615`, before the first edit: the poll with
-        the lane occupied loads the lane's occupancy (base block's control
-        line), the request byte (token line) and `commits` (writer line), and
-        compares against the mirror; allocates nothing and refuses nothing.
-        An in-line collection reads `commits` at the arena's open and stores
-        it at the commit's close; the collector reads `commits` at every
-        visit (`clock_stood_since_the_stamp`). `what_the_poll_costs`, release,
-        four runs of the saved binary: empty 8.06–8.26 ns minimum, one
-        deferred record 8.45–8.90 ns minimum (load average 2.4)
-      red 2026-09-23 on `5014615`, the mutator's counter positioned at an
-        epoch's start: seven real takes, each round a batch, mirror 64 before
-        X and after; green on the new tree, and 20 runs of `the_epoch_clock`
-        at eight threads green
-      Critic 2026-09-23: seven findings. (1) The advance after the serve
-        deferred a root the batch read live against the ended epoch — accepted,
-        the advance moved before the serve, red case
-        `a_batch_at_the_advancing_visit_traces_on_the_turned_epoch` seen red
-        on the old order. (2) The pressure path read the cell again at its
-        commit arena — accepted, `HarvestedMembers` carries the trace's
-        reading into `TraceScratchArena::open_at`, red case
-        `a_pressure_collection_defers_at_its_traces_reading_across_an_advance`
-        seen red with the second read; both paths note the reading at the
-        trace's open. (3) The red run unrecorded and `takes > 5` load-bound —
-        red recorded above, the count dropped. (4) Two moved costs unpriced,
-        the S37.5 probe measuring its stand-in — priced in the 2026-09-21
-        banner, the probe says what it models. (5) One writer by naming —
-        the cell advances by `fetch_add`, the hold-line exemption stated.
-        (6) The empty revalidation's refusal lost its reason — Edmond,
-        2026-09-23: a test no longer relevant goes; the empty case is let go
-        as an empty `DestructorPass` is, and its test deleted. (7) The
-        standing-take design kept the refuted premise — bannered.
-      handoff: the cell is `HoldLine::turnovers`, advanced in `worker::`
-        `advance_the_epoch_if_due` before the serve; the poll compares
-        `MutatorRecord::turnover_byte` with the u8 mirror; `arm()` after the
-        re-offer still stands for S65.10. Poll 6.84–6.99 ns against
-        8.26–8.36 ns, `dev/BENCHMARKS.md`, "S65.2 the poll with the
-        collector's epoch cell". Miri owed at the stage's close for
-        `epoch::turn_the_cell_of` and the record's new accessors.
+      handoff: the cell is `HoldLine::turnovers`, advanced by
+        `worker::advance_the_epoch_if_due` before the serve; the poll
+        6.84–6.99 against 8.26–8.36 ns, `dev/BENCHMARKS.md`, "S65.2 the
+        poll with the collector's epoch cell".
 - [x] S65.3 A merged lane is taken at the next round, and K doubles only on a
       filled clamp (package commit 1a, in the Critic's form)
-      done: a `merges` counter on R's writer line bumped beside the splice,
-        `merges_seen` on the hold line, the round answering `Takes` when it
-        moved; `size_the_next_batch` doubles only when the batch took its
-        clamp; a take reads its backlog by the exact count. Red first: the
-        shipped K ratchet — a poll that splices and consents, then a batch of
-        8 roots moves K from 64 to 128 — seen red today; a packed lane taken
-        at the next round; a take over three blocks reports no backlog
-      tier: T2 · role: Critic
-      baseline 2026-09-23, `89bb0dc`, before the first edit, by reading: the
-        merge is the lane's `take` and `splice_after_tail`, whose stores are
-        the chain's last link, the old tail block's link and `r_tail_block`;
-        the poll with the lane occupied loads the lane's occupancy and the
-        turnover byte and reaches the merge only when the byte moved, so the
-        steady poll does not run it (6.84–6.99 ns, `dev/BENCHMARKS.md`,
-        "S65.2 the poll", today). The round's pre-claim reading loads
-        `r_front_block`, the front block's two index lines and `r_tail_block`,
-        and P's room; the batch reads its form and, after the commit, its
-        backlog off the front block alone, and doubles K after every
-        completed batch of threshold form, whatever it took. Nothing is
-        allocated and nothing refused on either side. The writer line uses
-        24 bytes of 64, the hold line 40
-      red 2026-09-23 on `89bb0dc`, `cycle::worker::tests::the_merged_lane`:
-        the consenting merge left K at 128 against 64; the packed merged lane
-        read `Idle` against `Batch { roots: 2 }`; the batch over three blocks
-        read `backlog: true`. The rewritten F7 case is a batch of threshold
-        form over a take-sized ring, the form that ring reads as. Two old
-        cases measured K by the ruled-away doubling and now fill their
-        clamp (`the_batch`'s first case, the crossing take's)
-      Critic 2026-09-23: five findings, all taken. (1) The empty arm could
-        record a merge as seen off a reading torn by a pack in flight — the
-        reading loads the tail block before the front block's tail and the
-        pack stores the tail block with release. (2) The pressure path's and
-        the exit's merges counted, re-taking what they had just traced — only
-        `reoffer_deferred_if_epoch_moved` counts, pinned by
-        `only_the_turnovers_merge_is_counted`. (3) The count-before-reading
-        and the grant's count-before-peek orders were unguarded — the hook
-        moved between the two loads, cases
-        `a_merge_between_the_count_and_the_reading_is_taken_a_round_later`
-        and `a_merge_under_a_grant_is_taken_at_the_next_round`. (4) One
-        rewritten K assertion could not fail — the room-cut batch now
-        asserts K kept. (5) Two dead reasons for the take's K, and the rfc's
-        "doubles it back" — rewritten. Mutations, each red on its case:
-        the merge's `Takes`, the grant's record, the count read at the
-        release, the empty arm's record, the two loads swapped, doubling on
-        any completed batch, the backlog off the front block, the count on
-        every splice, no count on the turnover's, the re-take's two resets,
-        the bound on K. Green, no arm reaches them: the pack's release
-        (release and relaxed codegen alike on x86, and no case packs beside
-        a reading), the release/acquire of the count, and the walk's stop
-        at its limit, which costs time only
-      handoff: the count is `WriterLine::merges`, bumped in
-        `queue::reoffer_deferred_if_epoch_moved`; `HoldLine::merges_seen` is
-        written by the grant's release and by a round reading R empty;
-        `batch`'s backlog is `Reader::has_at_least_by_count`. Today's poll
-        still arms AllRoots after the merge, so a drip registered after that
-        collection and before the round is taken a round early, once per X,
-        until S65.10. `rfc/model/gc/rc-cycle.md` amended in the same pair of
-        commits. Miri owed at the stage's close for `Reader::unread_up_to`,
-        the reading's reordered loads and the `the_merged_lane` cases
+      handoff: the count is `WriterLine::merges`,
+        `HoldLine::merges_seen` its reading; the backlog is
+        `Reader::has_at_least_by_count`.
 - [x] S65.4 Completed deaths of R are retired by a count (package commit 2)
-      done: a count on the candidate arm of `ll_free`, `Arming::Retire` at the
-        threshold, the pass on a poll with the gate open and the token free,
-        tracing nothing; the pass is `compact(None, false, None)`: it reads R,
-        its overflow and P, and leaves the deferred lane to the turnover as
-        today, so that its work is bounded by R below the threshold and not
-        by the lane (`dev/S65-PLAN-CRITIC.md` F2); its red test red today; beside it a lane of 10⁵ live entries
-        with D deaths in R, the pass's queue-work count no higher than R's
-        length; the poll unmoved
-      tier: T2 · role: Critic
-      baseline 2026-09-23, `d660033`, before the first edit, by reading: the
-        free's candidate arm (`stdapi::free_taken`) tests the flags it was
-        handed and returns, with no load and no store of its own; a
-        completed death then stands in R, its slot withheld, until a
-        compaction retires it — the close of a collection over P, the
-        pressure path, the exit, a teardown's refused allocation. The poll
-        reads the arming once (`take_arming`), three levels, and allocates
-        nothing; its cost is S65.2's (6.84–6.99 ns with a deferred record,
-        7.25–7.43 ns empty, `dev/BENCHMARKS.md`, today). `MutatorCycleState`
-        is one 64-byte line
-      red 2026-09-23 on `d660033`, `collect::tests::`
-        `when_deaths_are_retired_by_their_count`: D deaths armed nothing and
-        stood in R through the poll; the grant case likewise; behind a lane
-        of 10⁵ live entries the D entries stayed in R. Two fixture faults on
-        the way: a failing case under a stand-in grant left its thread's
-        exit waiting for a release nobody made — a hang of an hour at 0 %
-        CPU, the grant now dropped by a guard — and 10⁵ registrations with
-        no poll overflowed the base block's buffer, the fixture now refilling
-        every `POLL_STRIDE`
-      Critic 2026-09-23: six findings, all taken. (1) At the threshold the
-        pass left the ring to a collector that need not be born, and the
-        count, never zeroed there, could not arm again before its wrap — the
-        skip raises the poll's signal and zeroes the count. (2) Nothing
-        tested the token take — a request landed on the byte is refused by
-        the pass. (3) The pass's retirements shortened the collector's
-        timer — they make no note. (4) Deaths the pass cannot retire, the
-        lane's, armed it every D — a pass returning under half its count
-        doubles the next count up to `DEATHS_TO_RETIRE_BOUND`, 4096. (5) A
-        grant a return consented to after the poll's reading made the pass
-        wait out a batch — the byte is read again before the take. (6) The
-        overflow term and the `POSTED` form were missing from the texts —
-        rewritten. Mutations, each red on its case or hung under a timeout
-        (the take and the re-read, whose absence strands a grant): the
-        free's count, D ± 1, the poll's arm, the threshold test, the signal,
-        the zeroing there, a lane sweep, the compaction's zeroing, the
-        spend, the max, the note, the doubling, the reset. The poll
-        unmoved (`dev/BENCHMARKS.md`, "S65.4 the poll with a fourth
-        arming"); the free's candidate arm has no probe and is not measured
-      handoff: the count and its threshold are `MutatorCycleState::`
-        `candidate_deaths` and `retire_after`, the pass
-        `queue::retire_at_the_poll`, the arming `gc::Arming::Retire`, lowest
-        of three. `rfc/model/gc/rc-cycle.md`, "Zero-count entities pending
-        slot reuse", amended; the 2026-09-18 poll ruling bannered. Miri owed
-        at the stage's close for the pass under the token and the reordered
-        state line
+      handoff: `MutatorCycleState::candidate_deaths` against
+        `retire_after`, the pass `queue::retire_at_the_poll`, the arming
+        `gc::Arming::Retire`.
 - [x] S65.5 The machinery of the parts, the batch still traced once (package
       commit 3, first half)
-      done: a reset to the watermark above the root copy with the blocks
-        drawn and the budget met standing, tested at the arena (blocks back,
-        copy kept, the budget the batch's, the ledger at the copy's charge
-        after each reset and at nothing after the arena's, an interrupted
-        reset finished by the drop); the verdict bit of the copy
-        (`HAS_A_VERDICT` — the plan's `judged`, whose stem the vocabulary
-        guard retires) and `FinishThePosts`, which posts `Unwalked` for every
-        root an unwind left without a verdict and then advances; the wait
-        arm of `what_a_take_costs`; the rfc's handshake row and the batch's
-        guard sentence say what the unwind posts. Amended 2026-09-23 from
-        running the parts under one block budget per grant, which the
-        measurement refuted (`dev/DECISIONS.md`, "the trace in parts waits
-        for the recall and the stack marks"); the parts and their clauses
-        are S65.13
-      tier: T2 · role: Critic
-      baseline 2026-09-23, `9f99837` with the instrument alone, release,
-        CPU 3: a mutator asking for its token at the trace's start waited
-        129.5 µs median, 96.0 µs least on `disjoint-live` (the trace met the
-        budget at 8 blocks, every root unwalked), 38.3 / 29.2 µs on
-        `overlapping-live`; the mutator's collection over P on
-        `disjoint-live` 220.5 / 180.9 µs, census 63 roots, 315 rows. The
-        batch posted in R's order after one trace; an unwind in the trace
-        released to `FREE` with R untouched
-      red 2026-09-23 on `9f99837`: the [r1, r3, r2] case read one part
-        against two. The parts were built and measured
-        (`dev/BENCHMARKS.md`, "S65.5 what a mutator waits for under a take
-        in parts"): 63 parts on `disjoint-live`, census 0 roots, the
-        mutator's collection 6–8 µs, its wait 148–151 µs against 131 µs, and
-        686–703 µs against 158–170 µs on the wide rings of F3's case
-      Critic 2026-09-23: six findings over the parts. (1) The block budget
-        bounds blocks, not the workspace each part takes anew, and K doubles
-        to 1024 on the shapes the parts complete — accepted, the parts wait
-        for S65.13. (2) The scan of every later root after each part is
-        K²/2 lookups under the grant — carried to S65.13. (3) No case could
-        redden the watermark's mechanism — the four arena cases above. (4)
-        F3's withheld memory and the running K unmeasured — S65.13. (5)
-        Comments the parts made false — gone with the parts. (6) The rfc's
-        "every root behind it", "one snapshot" and "bounded by K parts" —
-        the amendment waits for S65.13. The disposition asked of it, S65.5
-        merged with S65.6, refused: the recall fires only on the mutator's
-        ask. Mutations, each red on its case: the drop's posts, the guard
-        after the trace, the drawn count zeroed at the watermark, the
-        discharge dropped, a discharge of the copy's charge, the rewind to
-        the workspace's start, the sweep dropped, the copy uncharged, the
-        verdict bit unset (the process aborts on the second post)
-      handoff: `worker::FinishThePosts` holds the posts and the advance,
-        `HAS_A_VERDICT` is bit 1 of the copy; `TraceScratchArena::`
-        `set_watermark` and `reset_to_the_watermark` carry an
-        `expect(dead_code)` naming S65.13. The parts' own code is in no
-        commit; what S65.13 owes against it is the decision's "What S65.13
-        inherits from the built parts". Edmond ruled the same day that a wait
-        under a shortage of memory is the rule's exception (`dev/DECISIONS.md`,
-        "a mutator short of memory waits for its token, and the wait is the
-        rule's exception"). Miri owed at the stage's close for the arena's four
-        watermark cases and `the_batch`'s posts through the guard
+      handoff: `worker::FinishThePosts` and bit 1 of the copy,
+        `HAS_A_VERDICT`; the reset to the watermark, which S65.13
+        switched on.
 - [x] S65.6 The token's recall (package commit 4)
-      done: `waiting` set in `take_unless`, checked every N inspected
-        positions in both phases — a position is a Vector element, a Hash
-        entry, an object field or a hooked cell, counted whether or not it
-        yields a reference, since `counted_box_cell` returns `None` for a
-        scalar and a million-cell scalar array would otherwise be read
-        between two checks (`dev/S65-PLAN-CRITIC.md` F1); `trace_cells` and
-        `walk_concurrent` stop on `ControlFlow` (the customers' concurrent
-        walk only, named as their change); the release after a recall is
-        `FinishThePosts` (at most K verdicts and one advance) and one reset,
-        and the contract names both; the budget's two comments say it bounds
-        the arena; a pressure collection
-        under a grant raised after the mark waits at most N positions, the
-        posts and a reset — over a scalar Vector of 10⁶ cells, a sparse Hash,
-        an object of null fields and a hooked storage, the interval measured
-        from the request to the release; `rfc/model/gc/rc-cycle.md` states
-        the recall and the handshake document records `waiting` as a hint
-        beside E10
-      tier: T2 · role: Critic
-      baseline 2026-09-23, `0bdeed3`, release, CPU 3, load 7.5: a mutator
-        asking for its token at the start of a take's trace waited 43.9 µs
-        median, 26.9 least, on `overlapping-live` and 154.1 / 115.8 µs on
-        `disjoint-live`
-      red 2026-09-23 on the old mechanism, through a per-thread instrument
-        since removed: the scan after the ask read 65,537 / 1,000,001 /
-        16,385 / 65,537 positions over the hash, the vector, the null fields
-        and the outside storage, every batch complete; five cases red, the
-        debug build's waits 0.35–19 ms against 69–185 µs green
-      Critic 2026-09-24: seven findings. (1) A grant the collector holds
-        while it traces another mutator's batch is read only when that batch
-        ends, so its mutator waits the batch out whole: a grant recalled
-        before its batch is made is now released with no batch
-        (`worker::serve_the_grant`), the rest is S65.14, and the rfc's "The
-        recall of the token" and the worker's module doc name the gap. (2)
-        The package's reading in `grow` was missing: built, and the recalled
-        `disjoint-live` batch draws no block, its wait 20–23 µs against
-        94–98 µs without it. (3) Of the three green mutations the pointer
-        run's was a hole, a typed property being a pointer run: a case of
-        16,384 null typed fields; a Reference is one uncounted position after
-        a counted one, since PHP stores no reference inside a reference, and
-        a template's values are a site's fixed few, so both stand. (4) The
-        clear at consent and on the drain went to S65.7's done-line. (5) The
-        `wait` arm dropped the collection after the wait: read now
-        (`dev/BENCHMARKS.md`, "S65.6 the token's recall"). Where the trace
-        would have completed, the recall costs the retirement's mutator
-        about 15 µs net, 49–51 against 33–36 µs; the figure is Edmond's to
-        weigh. (6) The cases bound positions and not the wall: refused,
-        since a wall assertion in a suite run at eight threads reddens on
-        load; the posts and the advance are
-        `a_recalled_batch_posts_every_root_once_unwalked_and_advances_r`'s,
-        and the two-mutator case is S65.14's. The hash of 65,536 entries
-        holding no reference stands for the plan's sparse Hash, every entry
-        a counted position. (7) The visitor's doc said a position is counted
-        before it is read, a test walk ignored `Break`, and an unwind out of
-        the take skipped the clear: all three repaired
-      mutations 2026-09-23 and 24, each red on its case: the take sets no
-        recall, the take never clears it, the reading ignores it, the
-        countdown never resets, the arena names no token, the vector's, the
-        hash's, the Box run's, the pointer run's and the outside walk's
-        position dropped, the expansion counts nothing, `Recalled` read as a
-        refusal in the mark and in the scan, a recall completing the batch,
-        the growth's reading dropped, the grant's check dropped. Green, no
-        case reaching them: a Reference's position and a template value's
-      handoff: the recall is `TraceToken::waiting` on the token's line, read
-        by `TraceScratchArena::inspect_position` every `RECALL_STRIDE`, 1024
-        positions, and by `grow`; a grant recalled before its batch goes back
-        at `serve_the_grant`. Miri owed at the stage's close for
-        `the_recall`'s two arena cases (the stride, the growth)
+      handoff: `TraceToken::waiting`, read by
+        `TraceScratchArena::inspect_position` every `RECALL_STRIDE` and
+        at a growth; `dev/BENCHMARKS.md`, "S65.6 the token's recall".
 - [x] S65.14 A grant held behind another mutator's batch is recalled
-      done: a mutator whose consent a collector holds while it traces
-        another mutator's batch, once it asks for its token, waits at most N
-        positions of that batch, its posts and a reset before its own grant
-        is released; the two-mutator case — one consents while the collector
-        traces the other's batch over a vector of 10⁶ scalars, then takes its
-        token under pressure — red today on the whole batch, and green with
-        the other's batch complete; the form (`dev/S65-RECALL-SAGE-2.md`, C,
-        with `dev/S65-RECALL-CRITIC.md`, 6): the take that meets
-        `COLLECTOR|s`, and S65.7's mark at M, set a word on collector slot
-        s; the stride and the growth read it beside the traced token, clear
-        it before they walk the standing list once, and release through
-        `release_claim` every grant held unserved whose recall stands,
-        without `note_released_unserved`, the batch traced going on; the
-        walk's cost, O(n) per set word, named; `rfc/model/gc/rc-cycle.md`,
-        "The recall of the token", states the bound in place of the gap
-      tier: T2 · role: Critic
-      red 2026-09-24: the two-mutator case took the token behind the other
-        batch's end, the batch complete
-      Critic 2026-09-24: (1) the traced mutator's own recall walked the
-        whole list before it stopped — its reading now comes first and walks
-        nothing; (2) the bound in the text claimed one stride where a take
-        after the last reading waits the rest, the posts, the reset and a
-        pass — rfc, handshake and module docs say so; (3) a plain Release
-        store of the slot's word could lose an earlier setter's `waiting` —
-        `fetch_or`; the test asserted no stride — it asserts the release at
-        the first reading. Held: the raw list pointer under both borrow
-        models, kept grants, every held grant on the list, other slots
-      mutations 2026-09-24, each red on the case: the take sets no slot word,
-        the stride reads no slot word
-      handoff: `Collector::grants_recalled`, set by `recall_the_grants_of`
-        from the take, taken by `TraceScratchArena::release_the_grants_behind`
-        at the stride and the growth, released by
-        `Standing::release_the_recalled`; `dev/BENCHMARKS.md`, "S65.14 a grant
-        held behind another mutator's batch". Miri owed at the stage's close
-        for the two-mutator case's raw list pointer
+      handoff: `Collector::grants_recalled`, released by
+        `Standing::release_the_recalled`; `dev/BENCHMARKS.md`, "S65.14 a
+        grant held behind another mutator's batch".
 - [x] S65.7 The marks by stack length (package commit 5)
-      done: a length beside each of the three withheld stacks' heads, a limit
-        each, `waiting` stored at the limit with no block, and the collector
-        slot's word set as a take sets it (S65.14), `waiting` cleared at the
-        consent and on the drain under `FREE`, so that a recall made at M
-        stops no later grant (package section 6); a mutator freeing under a
-        grant recalls it at M and never waits; the withheld-free arm of
-        `what_a_foreign_holder_costs` within its spread — amended by Edmond,
-        2026-09-24: the arm pays 0.3–0.6 ns for the count, accepted
-        (`dev/DECISIONS.md`, "a withheld death pays for its count, and the
-        marks bound what a grant withholds")
-      tier: T2 · role: Critic
-      red 2026-09-24: six cases red on the limits alone, each on its
-        assertion: no recall at M deaths, M_c chunks, a run or a large
-        entity spanning M_b blocks, and none at the consent
-      Sage 2026-09-24 (asked by Edmond): no form of the count reaches the
-        placement bar; a countdown measures the same, layout hints move the
-        two free entries opposite ways; the price goes to Edmond. Final.
-        Edmond accepted it, after the packed-head form he proposed measured
-        dearer. The Sage also found S65.6's
-        `a_grant_recalled_before_its_batch_is_released_with_no_batch` red:
-        the consent's clear retired its hand-set recall; Edmond ruled it
-        stale, and it reaches the release through a stack at its mark
-      Critic 2026-09-24 round 1: (1) a return's nested drain zeroed every
-        count while the outer drain held the deaths, so a consent read
-        nothing withheld and a stack could grow a mark per interrupted
-        drain — the drain now takes each weight off before the return and
-        nothing zeroes; (2) the whole drain's end cleared a recall under
-        the grant a return's consent opened — cleared only while no grant
-        stands; both with a red case. (3) cross-thread frees on a block's
-        remote list are counted by no mark — the rfc's claim narrowed to
-        the three stacks, a Fog line. (4) stale comments repaired
-      Critic 2026-09-24 round 2, over the repair: no defect; the comments
-        still said "whole" — reworded; the counts were checked by no
-        production path — the exit asserts them at zero beside the heads
-      mutations 2026-09-24, each red on its case: the consent's clear, the
-        consent's second reading, the slot word, the crossing test, the
-        large entity on the deaths, a run as one block, the drain's clear
-        and its guard, the uncount of a death, a large death, a chunk and
-        a block
-      handoff: `ForeignStack::count` and `uncount` in
-        `cycle::deferred_slot_reuse`, "The marks by stack length";
-        `token::recall_this_threads_token`, `recall_if_a_mark_stands` at the
-        consent, `forget_this_threads_recall`; the three marks unmeasured,
-        S65.12's. Miri owed at the stage's close for
-        `when_a_withheld_stack_recalls_the_token` (the uncount's block kind
-        load, `blocks_a_withheld_block_spans`, `blocks_spanned`) and the
-        re-aimed `the_recall` case
+      handoff: `ForeignStack::count` and `uncount`,
+        `token::recall_if_a_mark_stands`; the price accepted,
+        `dev/DECISIONS.md`, "a withheld death pays for its count, and
+        the marks bound what a grant withholds".
 - [x] S65.13 The batch runs in parts (package commit 3, second half)
-      done: parts on, each with the block budget of its own, after the recall
-        and the marks bound the wait and the withheld memory; dead and
-        untracked roots posted before any part, and a part's met roots found
-        from its touched list against the copy sorted by address, so that no
-        part scans the later roots (`dev/DECISIONS.md`, "the trace in parts
-        waits for the recall and the stack marks", "What S65.13 inherits
-        from the built parts");
-        the [r1, r3, r2] case — two parts, three posts; a batch whose second
-        part meets the budget; an unwind inside the second part, the first
-        part's verdicts and then `Unwalked`, each once; `disjoint-live` with
-        the mutator's census at 0 roots and 0 rows; the wait of a mutator
-        asking for its token and the memory one freeing through the grant
-        withholds, on `disjoint-live` and `disjoint-wide-live` with K grown
-        by `size_the_next_batch` until it stops, against today's tree; the
-        `rfc/model/gc/rc-cycle.md` batch paragraph says P is posted in the
-        parts' order, R advanced once after the last, `Unwalked` for every
-        root still without a verdict, a part's verdicts resting on the
-        owner's exact validation
-      tier: T2 · role: Critic
-      red 2026-09-24: the [r1, r3, r2] case, the second-part budget, the
-        unwind inside a part and the per-part budget each red on its
-        mutation; a first measurement waited 317 µs at K = 1,024, the pass
-        before the parts read by the stride alone — the recall is read at
-        each of its roots and between two parts
-      Critic 2026-09-24 round 1: seven findings. (1) The lookup of met roots
-        read every root of each touched block, K²/2 on roots side by side —
-        accepted, a walk the part's own met rows bound.
-        (2) The grant-behind case of S65.14 reads 0 — Edmond: the case is
-        out of date; it asserts the pass's reading and a second case asks
-        between the phases for the stride's. (3) A part at B ending the
-        batch, and the grant's length for other mutators — refused, the
-        package ends the grant there before S65.9's retry, and G is the
-        rig's (`dev/DECISIONS.md`, "Refused, from the Critic's third
-        finding"). (4) "The
-        color its own part would" — the sentence says the larger closure
-        can only propose more. (5) The probe's `wait` arms stop at different
-        points; a mid-grant ask, a dense shape and the sort are measured.
-        (6) Exit paths with no red case — four cases added, the unwind moved
-        inside the part, the reading after the last part dropped. (7) Stale
-        texts repaired
-      Critic 2026-09-24 round 2, over the repair: (1) the dense grant was
-        credited to the lookup — a run's `lookup_visits` read 2,056 per
-        batch, and the entry says the lookup is not it; (2) the dense case
-        never checked its placement — it asserts over 16 roots beside each
-        ring member; (3) texts said "every part's end", and no case held the
-        reading's absence after the last part — reworded, a case added; the
-        rfc's bound names the sort and the lookup's positions; (4) "every
-        root a header in a block of its own" and (5) "the shorter of two
-        walks" reworded; (6) the stride constant pinned in the lookup's
-        case. The first pass's per-root reading has no case of its own; the
-        probe's `wait` arm is its measure
-      handoff: `worker::trace_in_parts`, `post_the_roots_the_part_met`,
-        `shadow::for_each_met_row`, `TraceScratchArena::read_the_recall_now`;
-        `dev/BENCHMARKS.md`, "S65.13 the batch in parts at a grown K", from
-        `worker::tests::what_a_grown_k_costs`. Miri owed at the stage's close
-        for `the_batch`'s part cases, the arena's watermark cases and the two
-        grant-behind cases of `the_recall`
+      handoff: `worker::trace_in_parts` and
+        `post_the_roots_the_part_met`; `dev/DECISIONS.md`, "the batch
+        runs in parts"; `dev/BENCHMARKS.md`, "S65.13 the batch in parts
+        at a grown K".
 - [ ] S65.8 The live core stamped from a list (package commit 6)
       done: one chain per grant of at most L blocks, its head on the hold
         line, stamped at the take from `POSTED` or at the first block or run
