@@ -156,9 +156,10 @@ pub(crate) fn verdict_collections_on_this_thread() -> usize {
 
 /// Lower the flag, for a case whose subject is an arming.
 ///
-/// A fixture arms this thread as a side effect — the queue's growth draws the
-/// reserve, and a draw arms — so a case that means to see its own arming
-/// starts from a flag it lowered rather than from one it assumed down.
+/// A fixture arms this thread as a side effect — a pressure collection that
+/// hands its lane to the poll arms it, and so does a `POSTED` a stand-in's
+/// batch leaves — so a case that means to see its own arming starts from a
+/// flag it lowered rather than from one it assumed down.
 #[cfg(test)]
 pub(crate) fn disarm() {
     take_arming();
@@ -212,14 +213,15 @@ pub extern "C" fn ll_gc_reoffer_deferred() -> usize {
 /// ABI: fire a collection only if one was *armed*, else do nothing. This is
 /// the poll the compiler injects at the safepoints it chooses — statement
 /// boundary, allocation slow path, request end (`rfc/model/gc/strategies.md`,
-/// §2 and the arm/fire split). The arming *policy* — which signals, which
-/// thresholds — is the compiler's decision, outside this crate; the runtime
-/// records the arming and collects here, where the graph is clean. The one
-/// threshold the runtime owns is the collector thread's soft threshold,
-/// which arms nothing: the count of an owner's ring at which the
-/// collector's round takes a batch (`crate::cycle::worker`,
-/// `SOFT_THRESHOLD`); the poll's wake to the collector is sent on a block of
-/// R filled, and decides nothing.
+/// §2 and "Collection requests and triggers"). Where the polls stand is the
+/// compiler's; what they fire is armed by the runtime — the byte's `POSTED`
+/// for P, a refused allocation for R whole, the free path's count of
+/// completed deaths for a retirement pass ([`Arming`]) — and collected here,
+/// where the graph is clean. The search is the collector thread's, which
+/// takes a batch on the count of an owner's ring it reads itself
+/// (`crate::cycle::worker`, `SOFT_THRESHOLD`) and arms nothing; the poll's
+/// wake to the collector is sent on a block of R filled, and decides
+/// nothing.
 ///
 /// The reserve refills and queue maintenance below happen whether or not the
 /// fire does, an unarmed poll being the ordinary case and the maintenance

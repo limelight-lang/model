@@ -191,63 +191,10 @@ block.
         "a part that meets B is retried under `B_max` once per grant, a part
         past the ceiling defers the roots it met, and the batch goes on".
 - [x] S65.10 `Unwalked` is no root of the collection over P (package commit 8)
-      done: `Verdict::is_root_in(BatchForm)`; P = [`Unwalked` x] writes x back
-        into R untraced; under pressure 63 `Unwalked` are still traced; the
-        turnover's `arm()` gone outside `cap 0`, which makes true the rfc's
-        "the re-offer arms the poll's collection only while the record names
-        no living collector", false of the code since 2026-09-15;
-        `rfc/model/gc/rc-cycle.md` states who finds and who judges, and when
-        the mutator searches
-      tier: T2 · role: Critic
-      baseline 2026-09-24 (`5a5948f`), what the step erases: an `Unwalked`
-        entry of P is a root of every batch (`Verdict::is_root`), so the
-        collection over P marks and scans its closure on the mutator's thread
-        and the close defers, retires or writes it back by what that trace
-        read; the poll's re-offer arms a collection over R whole at every
-        epoch move, a living collector or none, so the re-offered roots are
-        traced in line at that poll; the collection over P draws the
-        workspace and whatever arena blocks the `Unwalked` closures take; no
-        refusal is new. Red run: P = [`Unwalked` ×2] of a garbage ring, the
-        poll freed 2; a poll after the advance over a garbage ring, freed 2.
-      Critic 2026-09-24 round 1, six findings. (1) The rfc's new summary
-        bullet cited the ruling for the exit and the explicit fire, which it
-        does not name, and the re-offer sentence left `cap 0` unowned: the
-        bullet names the ruling's two occasions and cites the other two to
-        their own sections; S65.12's done-line owns the sentence's `cap 0`
-        form. (2) Two ignored probes go red on the moved contract,
-        `what_the_poll_costs`'s deferred arm at its cleanup and
-        `what_a_take_costs`' `Wait` arm (run: freed 0 of 381): to Edmond with
-        the three gated cases, who ruled all five outdated ("да" to the
-        rewrite): the turnover cases free the ring by the explicit fire after
-        the poll's re-offer, the verdict case keeps `Proposed` alone, the poll
-        probe's cleanup and the `Wait` arm free by the fire. (3) A root the
-        collector cannot walk circles P and R with no owner-side breaker:
-        named in the rfc beside the verdict, and the backlog line rewritten. (4) The form in `mark_for_deferral`
-        was pinned by nothing:
-        `an_unwalked_root_a_proposal_reaches_is_written_back_rather_than_deferred`,
-        red when the marking ignores the form. (5) `dispose_verdicts`' comment
-        overclaimed: corrected, the code kept. (6) The collection over P opens
-        a window with no proposal: unmeasured, a backlog line with the probe
-        owed. Stale test text in `the_merged_lane` and
-        `the_volume_a_turnover_reoffers` corrected.
-      Critic 2026-09-24 round 2, over the corrections and the rewrites: no
-        rewrite pins less than the moved contract. (1) The summary bullet's
-        "only" contradicted its own second clause: four occasions, two the
-        ruling's and two asked for outside the collector. (2)
-        `rfc/model/gc/strategies.md`, "Collection requests and triggers",
-        still states the pre-collector model: added to S65.11's list. (3) The
-        BENCHMARKS entry and this block described the probes before their
-        rewrite: corrected. (4) "That collector's next round" named the
-        ended one: the first collector's. All accepted.
-      handoff: `queue::BatchForm` on `Batch`, `Verdict::is_root_in`; the poll's
-        re-offer arms nothing (`gc.rs`); cases in
-        `collect::tests::who_traces_an_unwalked_root`, five old tests rewritten
-        on Edmond's ruling; `dev/BENCHMARKS.md`, "S65.10 the poll without the
-        turnover's arming". Gate of 2026-09-24 green: plain, 3× t8,
-        `hash-folding`, 3× `debug-journal` (1,197 and 1,206 passed), release,
-        bench, doc, citations 826/0, rfc linkcheck 0. No `unsafe` line moved,
-        so nothing joins the Miri list.
-- [ ] S65.11 The rfc read whole against the stage
+      handoff: `queue::BatchForm`, `Verdict::is_root_in`, the re-offer arming
+        nothing (`gc.rs`); `collect::tests::who_traces_an_unwalked_root`;
+        `abd07f1`, rfc `ed68c6d`.
+- [x] S65.11 The rfc read whole against the stage
       done: every amendment S65.2–S65.10 made is read in its place with its
         neighbours — no sentence of `rfc/model/gc/rc-cycle.md`, the handshake
         document, `rfc/model/classes.md` or `rfc/model/gc/strategies.md`
@@ -256,6 +203,42 @@ block.
         citation checker over both repositories
         with no miss
       tier: T2 · role: Critic
+      Readers 2026-09-24, one over `rc-cycle.md` and one over the other three:
+        nine and twelve passages the stage left stale, applied; `classes.md`
+        clean. Beyond the done-line's three kinds: `strategies.md`'s "Collection
+        requests and triggers" still stated the pre-collector model (the
+        compiler's policy alone, a runtime that never fires on its own, an
+        inbox).
+      Critic 2026-09-24 round 1, seven findings. (1) The rewrite gave the
+        compiler explicit collections at request end, on bytes allocated and
+        in the pressure mode, each an owner's search of R whole the ruling does
+        not name: to Edmond, whose ruling is below. (2) "A collector
+        saves the owner the trace and never the validation" was false of the
+        collection over P, which traces the proposals: reworded. (3) `cap 0`
+        read as built: qualified. (4) The "inbox" lead-in and its history
+        note: renamed, corrected. (5) The arena reset cited "The word": "The
+        two sides". (6) The request bullet's "a collection is due" and the
+        batch "at an epoch's turn": corrected. (7) `critical-reserve.md`'s
+        poll that "tries collection" on the overflow and `gc::disarm`'s "a
+        draw arms": corrected.
+      Edmond 2026-09-24 on (1): "убрать старое поведение, оставить только
+        poll()" — the compiler emits the poll alone, its collection signals go,
+        `ll_gc_collect_cycles` stays the embedder's; `rfc/dev/DECISIONS.md`,
+        "the compiler emits the poll alone, and its collection signals go";
+        the comment in `model/lowering.md` that enrolling arms a collection
+        corrected with it.
+      Critic 2026-09-24 round 2: the backlog line still gave the compiler
+        explicit collections (corrected); the DECISIONS entry settled
+        `ll_gc_collect_cycles` beyond the quoted words (marked as the model's
+        reading, put to Edmond); the overflow's wake is sent by a poll whose
+        gate is open, and "Signals" names only the filled block (both
+        sentences cite the fourth round of the handshake instead); the
+        candidate count, the old list's fourth signal, is the collector's
+        threshold. All accepted.
+      handoff: rfc `model/gc/rc-cycle.md`, `dev/design/trace-token-handshake.md`,
+        `model/gc/strategies.md`, `model/memory/critical-reserve.md`,
+        `model/lowering.md` and the ruling in `rfc/dev/DECISIONS.md`; the
+        crate's `gc.rs` docs. Citations 831/0, linkcheck 0.
 - [ ] S65.12 `cap 0`, then the N-mutators-on-N-cores rig (package commit 9)
       done: the clamp lifted, the elder kept as the clock without takes, and
         the mutator collecting at its threshold and at the merge under
@@ -364,8 +347,10 @@ against the code on 2026-08-13.
 - [ ] **`Lazy` (1) and `Box` (10) have no producer**: Box waits on the FFI
   surface, Lazy on the compiler. `ll_entity_die` routes `LAZY` to
   `ll_object_die`; `Box` reaches its `debug_assert!`.
-- [ ] **The threshold arming policy.** The policy is the compiler's
-  (`rfc/model/gc/strategies.md`, arm/fire). The critical reserve's third
+- [ ] **The threshold arming policy.** Where the polls stand is the
+  compiler's, `ll_gc_collect_cycles` is the embedder's, and the search is the
+  collector's (`rfc/model/gc/strategies.md`, "Collection requests and
+  triggers"). The critical reserve's third
   customer, a mutator whose gate is closed, is answered null until the ABI
   names the runtime progress operations a reserve would fund
   (`rfc/model/memory/critical-reserve.md`, "Mutator progress while
