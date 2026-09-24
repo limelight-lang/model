@@ -6,9 +6,9 @@ a third, with the sleeper's arm as the Sage ruled it the same evening
 (`dev/DECISIONS.md`, "a take's unanswered request stands on the record, and
 the ring under the token decides the batch's form")
 (`dev/DECISIONS.md`, "a standing R is taken after an interval of the
-collector's own, and no request count is capped"). Built by `PLAN.md`'s
-S64, opened 2026-09-22, whose steps are where a part of it stands or does
-not; not normative until the `rfc` states the take at the stage's close.
+collector's own, and no request count is capped"). Built on 2026-09-22; the
+`rfc` states the take at `rfc/model/gc/rc-cycle.md`, "The standing ring is
+taken after an interval".
 
 **Superseded in part 2026-09-23 (S65.2).** The epoch clock is the
 collector's cell, advanced after X of its clock or 64 of its batches

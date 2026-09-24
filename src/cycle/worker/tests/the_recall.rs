@@ -618,6 +618,73 @@ fn a_grant_recalled_before_its_batch_is_released_with_no_batch() {
     reset_lanes();
 }
 
+/// The recall a stack at its mark raises at the consent stands before the
+/// consent's swap publishes the grant, so the collector's reading before the
+/// batch sees it: the mutator is held between its swap and anything it does
+/// after it until the collector has chosen, and the grant still goes back
+/// with no batch.
+#[test]
+fn a_consent_at_a_mark_is_read_as_a_recall_before_the_batch() {
+    let _g = test_guard();
+    let _end = RetireOnDrop;
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let empty = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    assert!(!empty.is_null(), "the array was allocated");
+    let root = unsafe { a_root_over(&mut context, empty as *mut RcHeader, Tag::Array) };
+    assert_eq!(candidate_count(), 1, "R holds the root alone");
+
+    let token = unsafe { &(*record()).token };
+    let _clear = ClearTheRecall(token);
+    withhold_deaths_to_the_mark();
+    let _ = testing::take_outcomes();
+    testing::serve_rounds_at(1);
+    testing::read_traced_batches(true);
+    let before = testing::idle_and_traced_so_far();
+    testing::after_the_next_consents_swap(Box::new(move || {
+        let deadline = Instant::now() + A_BIRTH;
+        while testing::idle_and_traced_so_far() == before {
+            assert!(
+                Instant::now() < deadline,
+                "the collector chose over the grant"
+            );
+            std::thread::yield_now();
+        }
+    }));
+    testing::confine_rounds_to(record());
+    testing::permit_births(true);
+    ensure_thread();
+    let (mut grants, mut idle, mut batches) = (0, 0, 0);
+    assert!(
+        wait_until(
+            || {
+                let outcomes = testing::take_outcomes();
+                grants += outcomes.grants;
+                idle += outcomes.idle;
+                batches += outcomes.batches;
+                grants > 0 && (idle > 0 || batches > 0)
+            },
+            A_BIRTH
+        ),
+        "a grant was read and answered"
+    );
+    let traced = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    testing::retire();
+    token.recall_for_test(false);
+
+    assert_eq!(
+        (batches, traced.len()),
+        (0, 0),
+        "no batch was made under the recall the consent raised"
+    );
+    assert_eq!(candidate_count(), 1, "R kept its root");
+
+    unsafe { let_go(root) };
+    reset_lanes();
+}
+
 /// Leave this thread's stack of deaths withheld under a foreign holder at
 /// its mark, the holder gone and no drain run, as a grant ends before the
 /// mutator's next free: the next consent then recalls the grant it opens.

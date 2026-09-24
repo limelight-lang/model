@@ -104,11 +104,13 @@
 //! slot, and goes on freeing: nothing blocks and nothing is returned
 //! (`crate::cycle::token::recall_this_threads_token`). The recall is made at
 //! the return that crosses the mark, and the returns past it ask nothing. The
-//! consent that opens the next grant clears the recall, and so does the drain
-//! that gives the stacks back whole outside a grant, so that a recall made at
-//! a mark stops no later grant; a stack still at its mark when a grant opens
-//! — a drain a new holder stopped, or a consent no drain preceded — recalls
-//! that grant at its consent ([`recall_if_a_mark_stands`]). A count is what
+//! consent that opens the next grant sets the recall to whether a stack holds
+//! its mark, ahead of the swap that publishes the grant, and the drain that
+//! gives the stacks back whole outside a grant clears it, so that a recall
+//! made at a mark stops no later grant; a stack still at its mark when a
+//! grant opens — a drain a new holder stopped, or a consent no drain preceded
+//! — recalls that grant at its consent, before the collector's reading ahead
+//! of its batch ([`a_mark_stands`], [`recall_if_a_mark_stands`]). A count is what
 //! its stack holds at every instant: the drain takes an item's weight off
 //! before the return, and a return withheld again counts anew, so a consent
 //! inside a drain, the drain's own chain in hand, reads it exactly
@@ -1457,18 +1459,25 @@ impl ForeignStack {
     }
 }
 
-/// Recall the grant this thread has just consented to if a stack of its
-/// withheld returns already holds its mark: returns a stopped drain left
-/// standing, or a grant consented to before any drain ran, are withheld
-/// under the new grant from its first reading. Once per grant, at the
-/// consent (`crate::cycle::token::read_and_act_on_this_thread`).
+/// Complete the recall of the grant this thread has just consented to if a
+/// stack of its withheld returns already holds its mark: the consent stored
+/// the recall ahead of its swap, and this sets the collector slot's word as
+/// well, which releases the grant where the collector holds it behind
+/// another mutator's batch. Once per grant, after the consent
+/// (`crate::cycle::token::read_and_act_on_this_thread`).
 pub(crate) fn recall_if_a_mark_stands() {
-    if WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(DEATHS_MARK))
-        || CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(CHUNKS_MARK))
-        || BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(BLOCKS_MARK))
-    {
+    if a_mark_stands() {
         crate::cycle::token::recall_this_threads_token();
     }
+}
+
+/// Whether one of this thread's three withheld stacks holds its mark: what
+/// the consent stores as the recall ahead of its swap
+/// (`crate::cycle::token::TraceToken::consent`).
+pub(crate) fn a_mark_stands() -> bool {
+    WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(DEATHS_MARK))
+        || CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(CHUNKS_MARK))
+        || BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(BLOCKS_MARK))
 }
 
 /// M: the deaths withheld under a foreign holder at which the mutator recalls

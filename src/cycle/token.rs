@@ -316,14 +316,16 @@ impl TraceToken {
     /// `REQUESTED|s → COLLECTOR|s`, a release, so that every store this
     /// thread made before its reading is ordered before the collector's
     /// loads after its grant; then the wake of s. `Err` is the byte the
-    /// swap read back instead, which the caller acts on. The recall is
-    /// cleared first, so that a grant starts unrecalled.
-    pub(crate) fn consent(&self, seen: u8) -> Result<(), u8> {
+    /// swap read back instead, which the caller acts on. The recall is set to
+    /// `recalled` first — whether a stack of withheld returns holds its mark —
+    /// so that a grant starts recalled exactly when a mark stands, and not
+    /// by a recall a mark raised under an earlier grant.
+    pub(crate) fn consent(&self, seen: u8, recalled: bool) -> Result<(), u8> {
         debug_assert_eq!(state(seen), REQUESTED);
-        // Ahead of the release swap, which publishes it: a recall a mark
-        // raised under an earlier grant would stop this one at its first
-        // reading.
-        self.waiting.store(false, Ordering::Relaxed);
+        // Ahead of the release swap, which publishes it: the collector reads
+        // the recall once before its batch, after its acquire of the grant,
+        // and a recall stored after the swap can land behind that reading.
+        self.waiting.store(recalled, Ordering::Relaxed);
         let granted = word(COLLECTOR, slot(seen));
         self.word
             .compare_exchange(seen, granted, Ordering::Release, Ordering::Acquire)
@@ -654,8 +656,10 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
             }
             COLLECTOR => return Reading::Collector,
             MUTATOR => return Reading::Mutator,
-            _ => match token.consent(seen) {
+            _ => match token.consent(seen, crate::cycle::deferred_slot_reuse::a_mark_stands()) {
                 Ok(()) => {
+                    #[cfg(test)]
+                    crate::cycle::worker::testing::after_the_consents_swap();
                     crate::cycle::deferred_slot_reuse::recall_if_a_mark_stands();
                     return Reading::Collector;
                 }

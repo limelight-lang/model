@@ -271,7 +271,8 @@ under this box's 1.5–3 % noise floor (`rfc/model/arrays-hashtable.md`,
 
 The rename closed 2026-09-02; three guards in `src/cycle/tests/` hold it
 (`dev/DECISIONS.md`, "the vocabulary is held by three guards, one per
-surface"). The cross-repository remainder is `rfc/dev/PLAN.md`, S9.1.
+surface"). The cross-repository remainder is the `rfc` plan's step "Rewrite the
+documents and the crate to the glossary".
 Residues with no owner:
 
 - [ ] **`promote` keeps `corpse`** for the glossary's *torn-down entity*,

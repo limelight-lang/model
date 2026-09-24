@@ -8,6 +8,21 @@ never edited or deleted.
 
 ---
 
+## 2026-09-24 — the consent stores the recall a mark raises ahead of its swap
+
+**Decided (model):** the consent sets the recall to whether one of the
+thread's withheld stacks holds its mark before the release swap that
+publishes the grant, rather than clearing it there and recalling after the
+swap, as the entry below had it ("The consent and the recall"). The
+collector reads the recall once before its batch, after its acquire of the
+grant, and a store after the swap can land behind that reading
+(`dev/POSTMORTEM.md`, "a recall stored after the grant's swap landed behind
+the collector's reading before the batch"). What the entry below decided
+stands otherwise: a mark recalls one grant and no later one, and a recall
+standing from anything else is cleared by the consent.
+
+---
+
 ## 2026-09-24 — the batch runs in parts: the recall is read at every root before the parts and between two parts, and a part's met roots are found by a walk its own rows bound
 
 **Decided (model, over the Critic of S65.13, the same day):** the collector's

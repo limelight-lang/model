@@ -345,6 +345,25 @@ fn batches() -> std::sync::MutexGuard<'static, Vec<TracedBatch>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// The grants served idle and the batches traced so far, read without taking
+/// them: what a case's hook waits on while its test loop takes the counts.
+pub(crate) fn idle_and_traced_so_far() -> (usize, usize) {
+    (IDLE.load(Ordering::Relaxed), batches().len())
+}
+
+/// On the mutator's thread, between its consent's swap and the reading of its
+/// withheld stacks' marks, for the case that holds the mutator there until
+/// the collector has made its choice over the grant.
+static AFTER_THE_CONSENT: OneShot = OneShot::new();
+
+pub(crate) fn after_the_next_consents_swap(act: Box<dyn FnOnce() + Send>) {
+    AFTER_THE_CONSENT.install(act);
+}
+
+pub(crate) fn after_the_consents_swap() {
+    AFTER_THE_CONSENT.run();
+}
+
 /// Every outcome since the last call, and zero the counts.
 pub(crate) fn take_outcomes() -> Outcomes {
     Outcomes {

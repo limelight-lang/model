@@ -674,7 +674,8 @@ run under Miri with `reset_window::defer_free` (then named `park_large`)
 returning false — a build whose window defers nothing, which its
 neighbour's comment names as the condition — and it passed, in 176 s. Either the mutation is not the one
 those comments mean, or a second half of the arrangement is missing.
-Re-arming them is nobody's step yet.
+Re-arming them is `PLAN.md`'s backlog line "Three `promote` tests claim Miri
+as their whole regression".
 
 Three things about the command itself are load-bearing:
 

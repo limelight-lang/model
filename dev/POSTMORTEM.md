@@ -7,6 +7,40 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-24 — a recall stored after the grant's swap landed behind the collector's reading before the batch
+
+**What happened.** `the_recall::a_grant_recalled_before_its_batch_is_released_with_no_batch`
+failed once in about a hundred runs with a batch made, `(1, 1)` against
+`(0, 0)`. Its mutator withholds deaths to the mark and consents; the
+consent then recalls the grant (S65.7). The consent swapped the byte to
+`COLLECTOR` with a release, woke the collector, and only after both stored
+the recall; the collector, reading the recall once after its acquire of the
+grant and before the batch, could read it before that store and make the
+batch.
+
+**Why it was possible.** S65.7 wrote the consent as "clear the recall, swap,
+then recall if a mark stands", which orders the clear before the grant's
+publication and the recall after it. The collector's one reading before the
+batch sits after the acquire, so only a store ahead of the release swap is
+guaranteed to be seen there. The later recall is still read at the stride,
+so the mechanism's bound held; the case's claim, no batch at all, did not.
+
+**Why it was not caught.** The window is the time from the collector's wake
+to its reading, against the mutator's few instructions after the swap: one
+failure in a hundred runs alone, none in sixty on two cores. The
+S65.13 gate's runs happened to show it once, in a debug print hunt for
+another flake.
+
+**The fix.** The consent stores the recall as whether a stack holds its mark,
+ahead of its swap (`token::TraceToken::consent`,
+`deferred_slot_reuse::a_mark_stands`); the call after the swap still sets
+the collector slot's word for a grant held behind another batch. The red
+case holds the mutator between its swap and the rest until the collector has
+chosen: `the_recall::a_consent_at_a_mark_is_read_as_a_recall_before_the_batch`,
+red three times in three on the old order.
+
+---
+
 ## 2026-09-24 — a pool count across a thread's exit met another thread's free of an evicted ring
 
 **What happened.** `memory::heap::tests::a_life_the_allocator_left_heapless::`

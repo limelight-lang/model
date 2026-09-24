@@ -874,8 +874,10 @@ fn a_recall_after_the_last_parts_trace_leaves_the_batch_complete() {
 
 /// The lookup of a part's met roots counts a position per root it visits, so
 /// a recall made before a lookup longer than a stride stops it: over one ring
-/// of [`BATCH_BOUND`] members, every one a root, the part posts some of them
-/// and leaves the rest `Unwalked`.
+/// of [`BATCH_BOUND`] members, every one a root, the lookup ends short of its
+/// last root and the batch is incomplete. How many roots it posted first
+/// depends on where the ring's blocks fall and in which order the touched list
+/// holds them, so the case reads the lookup's visits and not the posts.
 #[test]
 fn a_recall_stops_the_lookup_of_met_roots() {
     // A lookup of BATCH_BOUND visits holds a reading of the stride wherever
@@ -889,17 +891,33 @@ fn a_recall_stops_the_lookup_of_met_roots() {
     unsafe { &*record() }.set_batch_size(BATCH_BOUND);
 
     testing::after_the_trace_of(1, recall_from_the_collector());
-    let (parts, posted) = parts_and_verdicts_of_a_serve();
-    assert_eq!(parts, vec![1]);
-    let proposed = posted
-        .iter()
-        .filter(|&&verdict| verdict == Verdict::Proposed)
-        .count();
-    assert_eq!(posted.len(), BATCH_BOUND);
-    assert!(
-        proposed >= 1 && proposed < BATCH_BOUND,
-        "the lookup stopped part way: {proposed} proposed"
+    testing::read_traced_batches(true);
+    let served = served_by_a_collector();
+    let traced = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    unsafe { &*record() }.token.recall_for_test(false);
+    assert_eq!(
+        served,
+        Served::Batch {
+            roots: BATCH_BOUND,
+            complete: false,
+            backlog: false,
+        },
+        "the recall ended the batch"
     );
+    assert_eq!(traced.len(), 1);
+    assert_eq!(traced[0].parts, 1);
+    assert!(
+        traced[0].lookup_visits < BATCH_BOUND,
+        "the lookup stopped short of its last root: {} visits",
+        traced[0].lookup_visits
+    );
+    assert_eq!(
+        verdict_count(),
+        BATCH_BOUND,
+        "every root has its one verdict"
+    );
+    unsafe { ll_gc_maybe_collect() };
     reset_lanes();
 }
 
