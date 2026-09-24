@@ -257,16 +257,6 @@ return opens one, and the return withheld again under it may have recalled
 it. What the exact count costs is a load of the block's kind per death
 given back, on the drain.
 
-**The consent and the recall.** The consent clears the recall ahead of its
-release swap, as the step's done-line asks, and then recalls the grant it
-opened when a stack already holds its mark: a stopped drain, or a consent
-no drain preceded, leaves the stack at its mark, and without the second
-reading that grant would withhold on unrecalled. A recall standing before a
-consent from anything else is cleared by it, so the case of S65.6 that set
-one by hand, `the_recall::a_grant_recalled_before_its_batch_is_released_with_no_batch`,
-had its premise retired; Edmond ruled it stale the same day, and it reaches
-the same release through a stack at its mark.
-
 ---
 
 ## 2026-09-23 — a mutator short of memory waits for its token, and the wait is the rule's exception
@@ -307,24 +297,6 @@ lands the machinery the parts need — the posts' guard
 arena's reset to a watermark above the copy — with the batch still traced
 once.
 
-**Why the plan's temporary bound fell.** The plan ran the parts in S65.5
-under one block budget per grant, the reset to the watermark leaving `drawn`
-standing, on the premise that the parts of a grant then read no more than one
-trace did (`dev/S65-PLAN-CRITIC.md`, F3, the bound it chose among three). The
-premise is false: the budget counts blocks drawn above the workspace, and
-each part takes the workspace above the watermark anew, so a grant's rows are
-bounded by K workspaces plus B blocks against one workspace plus B blocks
-today. Measured on the built parts (`dev/BENCHMARKS.md`, "S65.5 what a
-mutator waits for under a take in parts"): a mutator asking for its token at
-the trace's start waited 148–151 µs against 131 µs on `disjoint-live`, and
-686–703 µs against 158–170 µs on 63 rings of twenty members, each ring
-fitting the workspace. K doubles after every completed batch that took its
-clamp, and parts complete exactly the shapes whose batches today meet the
-budget and halve K, so the running figure is K = 1024 parts and not 63. The
-stage's rule forbids any step to lengthen the wait or the withheld memory of
-a mutator under a grant beyond today's until the recall bounds it, so the
-parts cannot ship before it.
-
 **Refused.** A byte bound over the grant, the watermark rising over the
 workspace each part spent: it held the wait, and failed
 `the_batch::a_batch_is_clamped_to_ps_room_and_to_k`, whose 64 roots share
@@ -334,23 +306,6 @@ per workload, since parts re-trace a shared acyclic subgraph once per root
 over the same bytes (the Critic's case). Merging S65.5 with S65.6 alone:
 S65.6's recall fires only when the mutator asks for its token, and one that
 keeps freeing through the grant is bounded by S65.7's marks alone.
-
-**What S65.13 inherits from the built parts** (their code is in no commit;
-the Critic's findings stand against it): the scan of every later root after
-each part is K²/2 lookups under the grant, 523,776 at K = 1024, and goes —
-dead and untracked roots are posted in a pass before any part, and a part's
-met roots are found from its touched list against the copy sorted by address;
-a batch at budget one whose second part meets it, and an unwind inside the
-second part, each get a case; the rfc's sentence names "every root still
-without a verdict", rests the verdicts of a part on the owner's exact
-validation rather than on one snapshot, and states no bound by parts.
-
-**Open for Edmond.** On `disjoint-live` the parts halve what the mutator
-pays in total — its wait and its collection over P, 131 + 203–223 µs today
-against 148–151 + 6–8 µs — while its wait alone grows by 15 %, which the
-stage's rule forbids; at K = 1024 on the wide rings the trade reverses by two
-orders of magnitude (arithmetic, not measured). The rule stands as written
-until he rules on the trade.
 
 ---
 
@@ -390,18 +345,6 @@ amendment, `dev/CYCLE-SPLIT-PACKAGE-3.md` and `-3-LANE.md`). Built as S65.
   the collector pays for it and the mutator does not.
 - The premise sentences of the package's third version, section 12, are
   accepted whole.
-
-**Amended 2026-09-23, the same evening**, on the Critic over the S65 plan
-(`dev/S65-PLAN-CRITIC.md`, F4; Edmond's yes, "if it raises performance"):
-the parking sentence of section 12 read "the stamp clears the mark", and
-the stamp's list is optional (its cap L, a pool refusal, `waiting`), so a
-root whose retry finished without a list entry kept its mark and was skipped
-untraced once every four epochs. The mark is cleared by an unpark entry the
-collector writes into the chain's second section for every marked root whose
-part finished; the section is at most K entries and the mutator reads it
-whole, so the mutator reads nothing it did not read before. The package's
-answer 8 and sections 7 and 12 are amended in place. The other six findings
-change no premise and are taken into `PLAN.md`'s steps.
 
 **Amended 2026-09-23, on the Critic of S65.2.** The collector advances a
 mutator's epoch before it serves that mutator, not after: a batch at the
@@ -581,16 +524,6 @@ the budget. Where one root's closure alone meets it, K halves to one and
 every threshold batch is `Unwalked` too, so K buys nothing there and the
 take loses nothing.
 
-What an unwalked take costs the mutator over a completed one, in the one
-regime where they differ — up to 63 closures that do not overlap, each
-under the budget and their sum over it — is a shift and not a second trace:
-a dead root is traced exactly in line whatever the collector's verdict was,
-`Verdict::is_root` being `Proposed | Unwalked`; a root read live is deferred
-and its lane is traced un-pruned at the next X; a root of count zero is
-expanded by nothing. So the delta is the live roots' closures traced at this
-poll instead of at the X collection over R whole four seconds later, and it
-is spared only for a root that dies in between.
-
 **Refused, with the reason.** Bounding the take's span through a word that
 is not K, halving it after a trace that met the budget: in the overlap
 regime a halved span never gets under the budget, so six halvings are six
@@ -605,14 +538,6 @@ reading, so the budget is met in the mark, when no root carries a colour
 that is a verdict; a sound prefix would need mark-and-scan per root with a
 reset between, and it would reopen the rfc's "no colour of an abandoned
 trace is a verdict".
-
-**What it obliges.** S64.5 measures the disjoint arm: 63 roots each the root
-of a one-per-block ring, the take's `complete`, and the mutator's collection
-over P after it — roots traced, blocks drawn, instructions, wall — against
-the same ring collected in line at X, which is the accepted floor. A figure
-above that floor goes into the comments of `TRACE_BLOCK_BUDGET` and
-`STANDING_INTERVAL` as the first measured bound on either; it does not
-reopen the take's form.
 
 **Premises.** None of Edmond's move: "a take under K" and "a take must feed
 K neither way" stand and are why the bounded span is refused, and the
@@ -983,15 +908,6 @@ prunes against the owner's cell, and a re-taken record's stamps must read
 stale, which the collector's first visit of the new life now does by
 advancing.
 
-**Decided (Edmond, S37.10).** The commit counter the maturation stamp is read
-against moves from a process-global word to the mutator's own record, where the
-thread that closes a commit counts it. A collector thread tracing for a mutator
-reads that mutator's counter (`cycle::epoch::of_record`, through
-`TraceScratchArena::open_for_owner`), never its own thread's: the stamps it
-meets were written by the owner's commits, and the entities of one mutator are
-that mutator's, no thread pointing into another thread's blocks
-(`rfc/model/gc/rc-cycle.md`, the disjointness the token's proof assumes).
-
 **Why:** the ruling carries no reason of its own. What stands beside it is the
 model's: a shared word hands the maturation rate to the busiest thread in the
 process, so a thread that collects rarely finds every stamp of its own stale at
@@ -1000,26 +916,6 @@ exactly the quiet thread. The rfc's reason for the shared word, one rate for a
 component split across two threads' heaps, describes a shape the disjointness
 above forbids (`rfc/dev/DECISIONS.md`, "the epoch counter belongs to the thread
 that collects").
-
-**What it costs:** eight bytes in the record's writer line and one load of that
-line per batch by the collector; what it removes is a word every collecting
-thread writes. A record the registry hands out starts **one turnover past**
-where its last life left it rather than at zero: zero is epoch 0, which every
-stamp of that life's first epoch carries, and a thread that adopted the dead
-thread's entity blocks would prune those entities at its first collection. A
-test pin answers for `epoch::current` alone, so a case that drives a collector
-arranges the two clocks through the counter.
-
-**The liveness the shared word used to provide** is replaced rather than
-dropped: the clock now moves only when this thread commits a collection, and a
-collection needs a root in its active lane, so a thread that deferred its last
-root and registered nothing more would hold those slots until its exit. The
-safepoint poll re-offers a deferred lane when the active lane is empty
-(`cycle::queue::reoffer_deferred_when_nothing_else_stands`), which costs recall
-on the re-offered roots at the moment the trace is cheapest. Found by the
-Critic of 2026-09-19 over the built step. *(This paragraph is superseded by
-2026-09-21, "a quiet thread's turnover is the collector's to ask for": the
-re-offer remembered nothing and collected at every poll.)*
 
 ## 2026-09-19 — the collector thread is born by the OS entry, on a stack its slot keeps, and is woken by a word
 
@@ -1196,28 +1092,6 @@ stands in R across any number of polls with its slot withheld. The bounded
 sweep of one block per fire (`ring::BlockSweep`, `queue::sweep_one_block`,
 commit `0ceb364`) was therefore aimed at a path that does the work already,
 and its natural home, the unarmed poll, is where Edmond refused it.
-
-**The ruling.** `ll_gc_maybe_collect` goes the same road as `ll_free`: a poll
-may return what the free path returns, by the free path's own mechanism, and
-runs no retirement pass of its own. It may tidy R only where it can prove no
-collector reads it, and that proof is the byte, which is the complication the
-ruling declines for now.
-
-**Why declining costs little.** The hold is bounded by the serve threshold: a
-collector serves a mutator whose R holds `worker::SOFT_THRESHOLD` (64) records
-or more, and the poll signals at the same count, so a thread below it holds
-fewer than 64 records — at most sixty-three dead slots — and a thread that
-crosses it is served, posted to and compacted whole at the fire. Read off the
-code, not measured.
-
-**What the ruling leaves open, and Edmond named the same day.** The same
-threshold means a quiet thread below it is served by no round however long it
-waits, and its cycle garbage stands with its dead slots: the round's threshold
-is constant in the working build (`worker::threshold_for_rounds`), the timer
-sets the rounds' cadence and not their threshold, and the only armings for R
-whole are the collection's own re-arms, the pressure path and the deferred
-lane's re-offer. The GC is to take such a thread's garbage after some time X
-of its own accord (`PLAN.md`, "A quiet thread's garbage is taken after X").
 
 ## 2026-09-18 — the edge-side prune cannot tear down a live component, because membership decides an internal edge and the trace does not
 
@@ -1833,17 +1707,6 @@ owner's `offer_lane` on top of the timer, which adds a cross-thread word to
 the poll for a latency the interval already bounds; requesting only the
 owners whose lanes are non-empty, which the collector cannot read under no
 claim.
-
-**Cost:** a wakeup every 10 ms for the life of the process after its first
-shortage; a request set on every record every round, spent by the owner's
-next poll whether or not it offers; the treadmill of a live root the
-backlog already carries, now driven at the interval; ~700 KB a registered
-thread holds, on the collector too. The spawn allocates through the global
-allocator — the thread's name and the handle's shared state — on the path
-the no-panic ruling covers; the backlog names it beside the exit's own
-containers. In the test binary the thread is born only through a switch a
-case sets, and its rounds are confined to that case's record, because a
-request set on a stranger's record makes that thread's next poll offer.
 
 ## 2026-09-15 — the token stands in a record the process keeps, and the exit's claim on it is never released
 
@@ -2477,21 +2340,6 @@ segment drawn during it would take the last bytes ahead of a list, turning
 a block whose list was refused into root sources — an unbounded cycle leak
 in the ordinary shape, where the log's own refusal costs one bounded leak.
 
-**A refused record pins the round's survivors, and settles no count low.**
-The first answer — one extra `ll_retain` of the child at the refusal — was
-refused by the Critic with a failing case: for a child promoted in the same
-round as its holder the retain lands before the child's count at promotion
-is captured, the arithmetic `edges_live + (now − at) + D − K` replaces
-everything inside `at` by the edges the walk finds, and the holder's death
-then settles the child at −1 — one too low, the direction the ruling
-forbids. So a refused snapshot sets one flag for the round, and after the
-round's survivors have their counts captured and their categories rewritten
-each of them takes one `ll_retain`: the holder outlives the reset, every
-edge it holds is walked instead of escrowed, and the price is the round's
-survivors leaked, bounded and needing no storage. A refused decrement record
-leaves the compensating retain standing uncredited, which settles the child
-one too high — the same bounded leak. Refusals are counted in a test build.
-
 **Names follow `rfc/dev/GLOSSARY.md`** where the code is rewritten: a
 *deferred free* for a parked body, a *torn-down entity* and `is_torn_down`
 for the record, a *deferred increment* and *deferred decrement* for the two
@@ -2998,15 +2846,6 @@ of the stored entry, set by a walk over the batch after the commit while the
 rows still stand — `Color::Live`, or `Color::PotentiallyUnreachable` when the
 exact validation read the proposed set as externally referenced.
 
-**Why a side exit rather than a second output.** `compaction::finish` walks one
-segment list with a read cursor ahead of a write cursor in that same list, and
-`Compaction::drop` re-runs the state machine to completion on an unwind. A
-second output cursor in that list would have to draw segments out of list
-order, which is a different pass and re-argues all eight checkpoints; the
-deficit it would solve is at most two segments, which is what the two spare
-cells hold. The lane's head therefore comes from `take_spare` and the entry is
-written straight into it, outside the list the cursors are consuming.
-
 **What a refused spare does.** Both cells can stand empty — step 4's own
 registrations draw them — and the append then sends the record to the in-place
 output, which cannot refuse. The root is offered to the next collection
@@ -3377,15 +3216,6 @@ fixtures build, returns nothing at all.
 
 Owner: the Sage, ruling on whether S36.15 could be built at all.
 
-**A collection returns no entity slot today.** Every member of a collected
-component is a registered candidate — the barrier spends an entity's creation
-reference with `ll_release`, and that non-final decrement is what the candidate
-gate admits — so `ll_free` withholds each member's slot and the block's `used`
-falls at a return that never comes. What a collection does return is a member's
-body: a string payload, an array's storage chunk, an OS-direct run. So the
-allocation path can be wired to a collection and still be refused on the retry,
-which is why S36.15's criterion "served rather than refused" moved out of it.
-
 **The retirement stays at the owner's read of a zero-count entry**, which is
 where Y12 clause 7 puts it, and not in the commit. The commit cannot drop the
 entry: the mark reads a root's refcount out of the body, so an entry is the only
@@ -3393,13 +3223,6 @@ identifier of a slot the collection freed, and dropping it while the slot stays
 withheld would park that slot for the life of the process. `PLAN.md` S39.2 is
 that step, and S39.1's exit drain becomes one of its callers rather than the
 owner of the mechanism.
-
-**Why the wiring goes first rather than waiting.** Held behind S39.2, the
-collection under pressure keeps the state S36.7 left it in — built, correct and
-reached by nothing — and the `expect(dead_code)` on it is the whole record of
-that. Wired first, the refusal path is exercised at every allocation that meets
-an empty pool, and the case that reads a freed member's slot as still withheld
-is the negative polarity S39.2 flips.
 
 ## 2026-09-07 — the guard on a traced edge target stands in the row dispatch rather than at registration
 
@@ -3496,18 +3319,6 @@ before, for the mark and the scan, and that refusal turned on the two answers
 having nothing in common — here both forms answer the same question with the
 same meaning.
 
-**The batch's disposition is a merge into the live lane.** The design says the
-collection "takes the batch and gives its segments back", and giving a segment
-back with its records in it strands every root in that segment: a root the
-collection did not free keeps `CANDIDATE_BIT` and the gate refuses to register
-it again for the life of the process, and a member it did free keeps the entry
-that holds its slot out of the allocator's hands until S39.1 retires it. So
-`queue::merge_candidates` joins the two chains — the batch's full segments
-behind the live chain, its part-filled head copied in, its block to a spare
-cell — and `restore_candidates` with its refusal is gone. The merge has no
-refusal of its own, which is what lets the window's close call it while a panic
-unwinds. Carrying the amendment back to `rfc` is S36.16.
-
 **The driver is a module of its own, one entry per path.** `cycle::collect`,
 because the two paths differ in three places — where the window closes, which
 membership form, whether they loop — and a mode parameter would put all three
@@ -3572,13 +3383,6 @@ the mark alone — take `ring` and run the phases themselves.
 teardown at all, the commit having freed the members; the rest add what is
 theirs — a candidate bit cleared by hand, a weak cell, an external chain.
 `dismantle_ring` covers the common part and each case writes its own beside it.
-
-**What stays as it is**, because a shared fixture would bury the point of the
-case: the two rings that close through an array element rather than a
-property; the two cases whose subject is an unusual way to spend a creation
-reference; `confirmed_ring`, whose subject is that nothing is torn down; both
-`two_rings`, whose members carry self-edges and stage the candidate queue; and
-`density::tests::build`, which chooses block populations.
 
 **What the duplication had already cost:** S36.6 needed a ring of three
 members and generalised the teardown of one file out of twenty; the other
@@ -4121,15 +3925,6 @@ row of this collection names any slot of the block — and the allocator has
 been handing out slots of such blocks all through the trace. Recording those
 deaths protected nothing, and it was what kept the growth reachable.
 
-**Why the foreign slot is stacked rather than listed.**
-`heap::entity_block_slot_bounds` reads the owner's bump cursor without
-synchronisation, so a walk that acted on what it found there would read the
-first word of a slot the owner is publishing: the mixed-size access against
-`publish_header`'s store that `refcount::flags_load` names as undefined. The
-stack costs one store into a slot already hot from the teardown, and the close
-returns each stacked slot through `ll_free`, which posts onto the block's own
-stack of cross-thread frees.
-
 **What holds such a slot until then:** the owner never received the free, so
 its `used` still counts the slot and the block cannot reach the pool.
 `heap::adopt` and `abandon_all` go on asserting that no *listed* block reaches
@@ -4137,18 +3932,6 @@ them; a marked slot of a foreign block does reach an adopting thread, and the
 marking window's close returns it through `ll_free` either way — onto the
 block's own stack of cross-thread frees while it is a stranger's, and by the
 ordinary owner path once this thread has adopted it.
-
-**Ownership moves inside a window, and the close's order is what answers it.**
-`Heap::adopt` runs on the ordinary refill path, so a block foreign when one of
-its slots was stacked can be this thread's when the next slot of it dies, and
-that slot lists the block. The stack is therefore walked **before** the list:
-every stacked slot reads free by the time the block walk reaches it, and the
-block cannot retire under that walk, the mark that listed it being a hold of
-its own. Walking the list first frees the stacked slot as an ordinary marked
-one and then reads a free-list link where the stack wrote its own, which walks
-the block's free list back into the allocator — the Critic's first round found
-it, and `a_block_adopted_after_a_slot_of_it_was_stacked_returns_each_slot_once`
-is red without the order.
 
 **Refused:** keeping the growth for the deaths a mark could not take and
 narrowing the step to the reserve draw and the abort. A slot in a block
@@ -4169,12 +3952,6 @@ sweep that never runs", and "the slotted arm is outside this, ownership
 standing beside its stamp" — and it means all three populations now rest on
 the premise rather than two. S38's token is what closes it, and S38.3 is where
 it is paid.
-
-**Open, and Edmond's:** the stack of foreign slots would serve every
-population and could displace the region chain — one load and two stores into
-a line the teardown has already touched, no region and no walk. S43.1 measured
-the per-slot sweep against the chain rather than this form, so the question
-needs a measurement of its own.
 
 ---
 
@@ -5004,13 +4781,6 @@ guarantee the design never made. Edmond's condition is the one that matters
 and holds either way: every block is explicitly requested from the memory
 manager, which `acquire` is, and nothing is carved from a block that was not.
 
-**The Commit phase moves to S36.12.** "Bytes the commit still names after the
-trace close" are the member list S36.12 builds and S36.3 consumes; at this
-step nothing names them, so a typed `Commit` state would be built ahead of the
-shape it serves and could be seen red only against a test that names bytes no
-production path names. S36.10 builds `Idle → Trace → Idle` with the rewind at
-the trace close; S36.12 splits the close when it chooses its commit unit.
-
 **Rejected:** the mandatory draw at init, for the reason above; a base
 adopted from the critical reserve, which `critical-reserve.md` forbids as an
 ordinary bump block; a phase word beside the withheld-return chain's head
@@ -5075,16 +4845,6 @@ refuses them. Owner-only plain counters with abandonment and adoption of
 retained blocks: unsafe under the ABI free path, and a third population to
 adopt that has no free slots.
 
-**What the rfc entry answers before slice (e) writes code:** the header's
-words and who publishes them; that a retained block is on no thread's list
-and is neither abandoned nor adopted, its last death returning it from any
-thread; that a list-holding block returns when its last list and last
-occupant are gone; and that the quiescent enumerator reads the list without
-a lock. Also the defect the proposal missed: `retain_block` nulls only the
-shadow pointer today, and a block retained, returned, drawn by an arena and
-retained again would carry a stale list address unless the whole collector
-line is cleared before the kind's release store.
-
 ---
 
 ## 2026-09-01 — the weak table is the mutator's memory, and it comes from the buffer layer
@@ -5148,19 +4908,7 @@ chain of 64 KiB blocks drawn through `memory::gc_metadata`, ordinary pool
 first and the critical reserve second. The chain's control line is the first
 64 bytes of the head block's payload, and thread-local storage keeps one
 non-owning pointer to that head block; a null pointer is the closed window, so
-the separate active flag goes. The first block is drawn when the window opens
-and not at the first withheld return. Both doors refusing at the open answers
-`None` and the collection does not start; a growth past the first block that
-both doors refuse ends the process.
-
-**Why the draw moved to the open:** a collection is ordinarily the standard
-in-line form and meets no refusal anywhere, but on the pressure path it is a
-refused pool that started it (`rfc/model/gc/cycle/questions.md`, Y14). A draw
-at the first withheld return meets that refusal holding a slot whose rows are
-live: returning it is the reuse the window exists to prevent, and dropping the
-record loses a physical return, which the ruling of 2026-08-28 refuses. Moving
-the draw to the open is what turns the same refusal into a collection that
-never starts.
+the separate active flag goes.
 
 **Refused, with reasons.** The trace scratch arena as the store: its own reset
 returns the record blocks to the pool before the replay reads them, and a
@@ -5173,22 +4921,6 @@ thread, the records as long as one trace. Waiting for S36.10's workspace: the
 `Box<Vec<_>>` stays until then, so the slice's own deny gate cannot pass and
 S36.9 waits on two later steps.
 
-**The ledger gains a seventh charge site and a third residue.** A chain block
-leaving the append position is charged for what it holds; the block under the
-cursor is a residue, entered in the high-water figure at the window's close
-and never standing in the current one. Charged and marked are the bytes
-*written*: the head's control line counts and a later block's reserved one
-does not, which is the rule `current_bytes_in_use` already states. The close
-marks the arena's residue and the chain's as one sum, before the arena's reset
-charges and discharges its own — that instant is the only one at which both
-residues of a collection are in use, and a mark after it would enter them
-separately and understate the maximum.
-
-**The window is taken down by whoever releases the chain.** The ordered close
-takes it down after the row sweep and before the replay; the chain's own drop
-takes it down again, which is what an unwind out of the sweep reaches. See
-`POSTMORTEM.md` of the same date for the round that established this.
-
 ## 2026-09-01 — the logical charge lands at a structural transition, not at a grant
 
 Owner: S36.9 slice b, ruled by the Sage gate before the first edit.
@@ -5198,9 +4930,7 @@ one inverse: a queue segment leaving the live position charges its whole
 65,280-byte payload; an escrow landing charges one 8-byte pointer; a floor
 charges its 64-byte control line; an arena block leaving the bump charges what
 it consumed; an arena reset charges the block under the cursor and then
-discharges the collection's whole total. The sixth is not a charge — the
-owner's drain enters the live segment's fill in the high-water figure alone,
-the bytes being released in the same breath. Charging 8 bytes per enrolment is
+discharges the collection's whole total. Charging 8 bytes per enrolment is
 refused.
 
 **Why:** the enrolment write is the hottest path in the runtime. A per-grant
@@ -5210,17 +4940,6 @@ enrolments and the write itself takes no added instruction. The escrow is
 charged per entry and is the exception that proves the rule: it is the tier
 both memory doors refused into, not the write, and its drain takes one
 discharge for the whole run.
-
-**What this costs:** two residues, each bounded by one block payload — the live
-segment's own fill, per thread, and the arena block still under the bump, per
-collection in flight. The current figure lags by them, and the high-water
-figure carries each only from the transition that ends it: the arena's reset,
-the owner's drain. On one thread that is exact, a collection holding one block
-for two hundred bytes standing in the figure at two hundred. Across threads it
-is not: a segment filled while another thread held ten is entered when its
-owner drains, and by then the other thread may have given its ten back, so the
-figure can miss a maximum the two stood in together by up to one payload per
-thread.
 
 ---
 
@@ -5302,15 +5021,6 @@ queue's present TLS `Cell`s move into its manager-issued floor header, leaving
 TLS only a non-owning pointer; capacity and poll bounds are re-derived from the
 new layout.
 
-**Decided:** every registered owner keeps one ordinary-pool 64 KiB
-`CycleWorkspace` block from init to exit. Collection overflow may draw the pool
-and then the critical reserve, but returns after commit or abort; a permanent
-base never consumes the critical reserve. The workspace moves through typed
-`Idle → Trace → Commit → Idle` phases. Ending the trace filters members while
-rows are readable, sweeps block shadow pointers, lowers the active flag and
-replays parking. Only the later commit/abort rewind may reuse bytes still named
-by the member list.
-
 **Cost:** mandatory direct cycle memory is 131,072 bytes per registered thread:
 one 65,536-byte queue floor and one workspace. The two best-effort queue spares
 make the nominal/maximum direct baseline 262,144 bytes when both are present.
@@ -5322,12 +5032,7 @@ forms; sparse placement across 381 widest blocks reserves 6,251,448 row-array
 bytes, or 6,258,608 bytes (about 5.97 MiB) with that stack and 381 member
 pointers. These are bounds from layouts, not workload results.
 
-**Decided:** `ENROLLED` denotes one logical candidate token in exactly one of
-three owner states: active queue, detached in-flight batch, or dormant
-suspects. Acquittal moves the token to dormant without clearing the bit; epoch
-turnover detaches the due dormant lane beside the active lane as a composite
-in-flight batch without a second enrolment or a second token. Abort restores
-each sub-batch to its source lane without allocation. Repeated decrements while
+Repeated decrements while
 dormant see the bit and add nothing. An enrolled
 death leaves its record and identity standing; only the consumer that owns the
 record may observe count zero, clear the bit, physically return the slot and
@@ -5336,10 +5041,7 @@ retire the token.
 **Why:** clearing on acquittal is an edge-triggered permanent miss, while
 copying into both active and suspects is a duplicate raw pointer whose two
 consumers can retire different occupants of a recycled slot. Moving one token
-preserves recall and identity together. Current queue chains cannot splice a
-partially filled suspect chain because only their live head carries a bound;
-the replacement therefore carries explicit `read`/`used` bounds or compacts
-back to full segments before any O(1) move.
+preserves recall and identity together.
 
 **Review:** the Sage counted allocation and cache traffic before this plan was
 written. Queue entries consume one new 64-byte line per eight enrolments;
@@ -5358,9 +5060,7 @@ their code.
 S36.2.
 
 **Decided:** the in-line trace's slot-reuse window and its `ShadowArena` are
-one `cycle::parking::TraceWindow`. Its close first resets the arena and nulls
-every block shadow, then lowers the owner-local active flag, then replays every
-parked return through `memory::stdapi::ll_free`. The guard is must-use,
+one `cycle::parking::TraceWindow`. The guard is must-use,
 thread-bound and non-nestable in every build.
 
 **Why:** a row is indexed by address. Returning a slot before the row sweep lets
@@ -5384,16 +5084,6 @@ population has no per-slot free list, and a large run is unmapped. Both lose
 identity as completely as reusing one slotted address. One predicate for
 physical identity and another for legal header access prevents the block kind
 at offset zero from being mistaken for a live refcount.
-
-**Cost and boundary:** parked pointers live in an out-of-band owner-local
-`Vec`; its cold trace-only allocation is the cost of leaving the intrusive
-list of 2026-07-26 (that entry deleted 2026-09-24; git keeps it). Bytes 8-15 of an entity slot are the class word the
-walker dereferences one pass after the header, so a link threaded there is a
-wild read under a walker chasing a stale pointer, while out of band the corpse
-stays readable (`docs/memory-manager.md`, "Parking is out of band"). This TLS form is only
-the synchronous owner-side substrate. Before the accelerator exists,
-S38.1/S38.3 must move the state where a worker can address its owner and solve
-RFC audit A3's generation/handoff race; this step claims neither.
 
 ## 2026-08-29 — the exact test compares two sums, and a component arrives as its own member list
 
@@ -5527,16 +5217,6 @@ critical reserve at their own fills; and the exit guard at
 `thread_exit_will_run`, which is last, and which is what makes the guard the
 first destructor to run under glibc's reverse order.
 
-**What is left on the release path is one population**, the thread the runtime
-never registered. Its first registration is the exit guard's, inside
-`cycle::queue::draw_floor_or_abort`, and `critical::draw` two lines later is
-the second. Both stand beside an abort that thread already takes — the refused
-floor — but they are **not the same edge**: the floor's abort answers a block
-pool with nothing left, and the registration's fatal answers glibc's heap
-with nothing left, and one can be exhausted while the other is not. What is
-true is weaker and is what is accepted here: under exhaustion deep enough to
-starve either, an unregistered thread doing entity work ends the process, and
-this runtime has no reporting path for that thread at all.
 `memory::critical::tests::where_the_first_touch_happens` pins the placement,
 which is what a test can reach — the registration itself cannot be observed
 from inside a process that the failing case has already killed.
@@ -5579,14 +5259,6 @@ told nothing by an attribute. The tree's own C callers are the demonstration —
 every probe in `bench-external/` declared the new signature and went on calling
 it bare — so each of them now reads the answer by hand and refuses to measure a
 thread the runtime would not start.
-
-**Three exemptions, and they are the self-initialising paths**:
-`stdapi::ll_alloc_init`, `heap::ll_entity_reserve` and `heap::entity_alloc_init`.
-Their contract is a null allocation on any refusal, which they report by
-reading the heap after the call, and that report covers a refused floor exactly
-as it covers a refused heap. A fourth caller, the journal's registration inside
-`ring_for_writing`, discards it deliberately: what it needs from the call is
-the exit guard, which it asks for on the next line.
 
 **The floor is returned by `release_floor` and not by `drain`.** `drain` is
 also how a live thread empties its queue — every test in the module starts and
@@ -5660,41 +5332,9 @@ poll in it.
 
 ## 2026-08-27 — the enrolment queue is a chain of pool segments, and its live segment is a spare cell
 
-**Decision.** A queue segment is one 64 KiB pool block, the queue is a chain of
-them threaded through `BlockHeader::next`, and growth links the full segment in
-rather than copying out of it. Only the live segment is partly filled — an
-overflow is the one way a segment leaves that position — so the chain carries no
-per-segment length and the fill is one cell beside it. A thread holds **no live
-segment until its first enrolment**, which finds no room by construction and
-takes the overflow path, so the empty-queue case is the overflow case and a
-thread that never enrols holds two segments instead of three.
-
-**Why.** The design fixes the segment at one pool block, that being the only
-unit both funding doors dispense (`rfc/model/gc/cycle/questions.md`, Y12
-clause 3). Everything else follows from wanting the write to be a store: a
-per-segment header would put a second load on the hot path, and a lazily taken
-live segment removes the arm that would otherwise test for one.
-
-**The undo of the enrolled bit is this step's own, and it decides nothing
-beyond itself.** With both cells empty and the critical reserve spent, no entry
-lands, and the release path puts the bit back down. That is legal under the law
-of 2026-08-26 — the owner reducing its own incomplete enrolment on an exact
-reading — and it leaves the entity enrollable at a later decrement rather than
-reserved an examination that will never come. What the runtime owes beyond it is
-`rfc/dev/PLAN.md` S8.5 and is nobody's ruling yet, so the branch carries a
-`#[cfg(test)]` counter and no reporting.
-
-**Cost.** Two 64 KiB blocks resident per thread from `ll_thread_init`, and a
-third from the first enrolment. One narrow store into the flags half on the
-release path, where the loaded word is reused, plus the queue's own store. Not
-measured: what the enrolment adds to a non-final decrement, there being no
-benchmark that isolates one.
-
 **Rejected: a `RefCell` around the queue.** The write is the hottest path in the
 runtime and the borrow flag buys nothing, the queue having one writer by
-contract and no path that re-enters it. **Rejected: keeping the fill inside the
-block.** It is a second cache line on the write path for a number only the live
-segment has.
+contract and no path that re-enters it.
 
 ## 2026-08-27 — the test binary counts allocations through a global allocator
 
@@ -5741,10 +5381,7 @@ enumeration of exactly the blocks the list already names.
 **Also settled here: a retained block's index space.** It is the block's object
 index, so the array holds one row per occupant and a row is found by the
 occupant's position in it — the same number `retained::occupant_index` answers
-in. The length lives behind the registry mutex, so it is asked once per block at
-the first touch (`occupant_count`) rather than once per edge; the per-edge lock
-in `occupant_index` stays until S35.1 gives the trace a per-block visit to hold
-an `Arc` over. The row lookup bounds-checks the index against the recorded
+in. The row lookup bounds-checks the index against the recorded
 length and answers "no row" above it, which keeps the referent alive rather than
 condemning it on a row the trace guessed.
 
@@ -5875,12 +5512,6 @@ rejected: making the triple's words plain rather than atomic. Two of the three
 are written by the owner and read by a collector on another thread, so plain
 writes are a data race by the model however constant the values are — the same
 medicine `kind` and `size_class` were split out with.
-
-**What is not built.** `shadow` has no writer: nothing reserves rows yet, and the
-step that does — `PLAN.md` S33.2 — also owes nulling it at the end of a
-collection, on the abort path included, because a stale pointer left in a block
-whose arena has been recommissioned makes the next collection decrement live
-payload.
 
 ---
 
@@ -6044,15 +5675,6 @@ And its body is the narrow atomic load rather than a plain read: those 187
 sites are the population a ThreadSanitizer run reaches first, so a shorthand
 re-exporting the plain read buys the compile error and keeps the blind spot.
 
-**The grep is kept because privacy does not subsume it.** `memory_category`
-and `lifetime_counted` take `&self`, stay public for the pre-publication
-callers, and autoref reaches them past private fields: `(*p).memory_category()`
-on a published header forms the forbidden shared reference and compiles. Those
-two spellings the guard sees and the type never will. The four field spellings
-stay in its list as the tripwire against the privacy being reverted, at the
-cost of one array literal, and its two self-tests keep it honest against
-passing by finding nothing.
-
 **What the ruling accepts losing:** the fields as public API. `RcHeader` is
 re-exported from `lib.rs` and the crate is published, so a consumer outside
 this repository reading `.refcount` breaks at its next update, unsurveyed. Such
@@ -6113,16 +5735,6 @@ two widths in one walk. `heap::describe_slot` reported the whole header word
 as text and now reports the two mutator halves, the collector's bits having no
 mutator-side reader to report them. `stdapi`'s `#[cfg(test)]` free-path
 assertion read eight bytes to test four, on every entity of every test build.
-
-**The guard's test exemption covers 187 accesses in 37 files** outside
-`refcount`'s own tests, counted the same day by the guard's own patterns, and
-its stated reason — headers built on the stack — is false for most of them,
-which are factory-allocated entities. That population is the one
-a ThreadSanitizer run reaches first, so the exemption is a hole in the
-fallback instrument rather than in this one. Closing it is the same job as
-taking `RcHeader`'s fields private, and that decision is open: a type would
-retire all three evasions the guard admits to — a rename, a local, a reference
-binding — at the price of every fixture's shorthand.
 
 ---
 
@@ -6420,19 +6032,11 @@ narrowing the two accessors took `heap → arena` from 4.82 to 1.53 ns per
 store and put `rc-walk` below `rc-trace` on a direction where it had been
 2.2x above (`dev/BENCHMARKS.md`, 2026-08-15).
 
-**`header_pair` stays wide and keeps its one caller.** A predicate over both
-halves — `cow_separation_needed`, reached from `ll_cow_separate` and
-`array::entity::needs_separation` — takes one load rather than two, because
-neither site has a narrow store in front of it. It buys no coherence the two
-narrow readers lack: the collector's only claim on a published header is the
-epoch byte, which no such predicate reads.
-
 **Reaching past the helpers to the field is what the guard forbids.** Not
 because a plain read gives a wrong value, but because it races the
 collector's byte store and is invisible to every runtime check;
 `refcount::tests::who_may_read_a_header` reads the sources for it, and
-ThreadSanitizer is what exhibits it (`dev/WORKFLOW.md`). The `rc-trace` arm
-of a `#[cfg]` pair is exempt: that build has no concurrent collector.
+ThreadSanitizer is what exhibits it (`dev/WORKFLOW.md`).
 
 **Refused with it, and not to be reproposed without an instrument that
 resolves the escape direction to better than a percent:** merging the
@@ -6449,14 +6053,6 @@ box's logged release tears that entity down while the reset still has
 passes to run. Two passes then read what died — `retrace_survivors` and
 `reconcile_cow_counts`, both through `walk::trace_entity` — and the weak
 walk reads one header word of every entity the arena's weak log names.
-
-**Death becomes membership**, and each pass tests it before it walks an
-entity. `reset_window::record_death` is called on `ll_object_die`'s
-dispose-true arm, which is the one door a resurrection can turn back, and
-at the teardown body of each of the other three kinds, none of which runs
-user code that could resurrect. The set is shared by the whole window
-chain, because a survivor of an outer reset can die inside an inner one
-and it is the outer reset's passes that must not walk it.
 
 **The header was the first test and does not decide this.** Refcount 0
 alone calls every internally-reached survivor a corpse, `mark_one`
@@ -6485,15 +6081,6 @@ living survivors.
 
 ### The COW count: `edges_live + (now - at) + D - K`
 
-`reconcile_cow_counts` settles each COW survivor from the edges the walk
-finds now, plus what changed since promotion, plus two correction terms.
-The skip and the terms are one repair and neither half stands alone.
-Skipping a corpse without them settles a live entity one too low: the
-corpse's release is already inside `now - at`, and dropping its edge
-removes the same event a second time. Carrying the terms without the skip
-settles it one too high: teardown leaves a slot readable and stale, so
-the walk counts an edge the escrow has already restored.
-
 **The rows themselves are not filtered**, only the walk, because a COW
 survivor cannot become a corpse of the reset that promoted it:
 `count_children` gives it one retain per holder edge it finds, and each
@@ -6502,29 +6089,10 @@ it was before the reset began. A COW entity is also never an escapee —
 the store barrier copies it out of the arena rather than counting it in
 (`barrier::escape_gain`) — so no `&` box can kill one either.
 
-**D is the corpse's promotion-time snapshot**, taken inside
-`count_children`'s existing walk and paid into the escrow of the window
-that took it when the holder's teardown completes. The instant is the
-whole of it, because it decides which column absorbed the retain: an edge
-held since promotion has its retain in the discarded `at` and needs a +1
-back, while an edge taken after promotion has retain and release both
-inside the delta and must not be compensated. A snapshot taken at the
-door of death answers neither case — it sees the edges the corpse holds
-at the end, and both counterexamples turn on the difference between that
-set and the set at promotion.
-
 **K takes back the compensating retain** `count_children` gives an
 already-promoted COW child in a later round. That retain lands in the
 child's delta while the edge behind it is walked as well, so the pair
 would count twice.
-
-**A resurrection earns none of this.** Teardown that does not complete
-records no death, so the passes keep reading the entity and its snapshot
-stays with the window. The count is a poor witness of that: where the
-entity's edges at the would-be death are the edges of its snapshot, an
-escrowed edge replaces exactly the edge a skip removes and the figure
-agrees either way. So the test reads the record, and the two Miri cases
-read the memory.
 
 ## 2026-08-14 — the arena keeps its single bump, and two ways of making it walkable are refused
 
@@ -6650,15 +6218,6 @@ behind `&` produces a survivor whose logged release kills it inside the
 same reset, and its teardown frees the very bytes the refusal pinned the
 block for.
 
-**The release leaves the index in place**, which is why it is
-`retained::reset_pin_released` and not `payload_freed`. The latter drops
-the index when the count reaches zero, and `ll_free`'s retained arm
-answers off the index — a block freed through it with no index reads as a
-block the registry knows nothing about and never reaches the pool. The
-new door leaves the index exactly as `register` leaves it, and a block
-that empties on the release joins the `emptied` vector the reset already
-drains through `ll_free`, because no later death exists to report it.
-
 **Zero occupants at that release means "nothing indexed holds this
 block", not "every occupant died".** A block holding bytes but no
 survivor is never registered at all, so its `live` stays zero for good.
@@ -6753,19 +6312,6 @@ a superseding entry here when it lands. Dispatching on the kind does not
 breach promotion's invariant: the invariant is that promotion learns no
 *layout*, and `external_memory` is its sanctioned kind switch already.
 
-**Until then `ll_object_new` refuses the pairing**, with a
-`debug_assert`: it is the one door that sees the class and the category
-together. Not a returned null, which in this crate means out of memory
-and would lie to the creation site; not a build-time refusal, the
-category being a runtime argument. `Immortal` is not refused — such an
-instance never resets and never tears down — and `LongLived` is already
-marked out of use.
-
-**The refusal is temporary by design.** `rfc/model/maps.md` leans on
-arena-resident maps in load-bearing places, the escape copy and the
-pointer-tag budget among them, so a permanent refusal would refuse the
-RFC.
-
 ---
 
 ## 2026-08-13 — a class with cells outside itself carries one flag and one group of five
@@ -6815,15 +6361,6 @@ A real departure from "why tracing stays data", accepted because only a
 class with outside cells pays it; the runs keep their monomorphized
 stride.
 
-**`recheck` exists because Phase 3 cannot ask a non-array for a version.**
-The re-check finds the version by casting the entity to `LLArray` and
-taking the head at +8, which on an object is the class word: a map would
-answer `class_ptr != walked`, be acquitted every epoch forever, and
-materialise a 40-byte reference over a body that may be 16. So the walk
-answers `Option<usize>` and `Epoch::row_still_has_its_cells` dispatches:
-Array keeps the head, a class with the flag asks `recheck`, everything
-else stays `true`. `None` means no cell came out of versioned storage.
-
 **The sever hook takes the entity and hangs off the drain's arm, not
 `sever_counted_slots`.** The object sever the collector actually runs is
 `walk::sever_cells`' `OBJECT | LAZY | REFERENCE` arm, which traces and
@@ -6835,21 +6372,6 @@ index 0 and closes a chain on itself, and a null in the key word reads as
 an integer key rather than a hole, leaving a live entry and a stale
 count. A static block therefore may not be laid out by a descriptor
 carrying the flag, and the builder asserts it.
-
-**`free` exists because rc-trace frees the white set itself.** It does
-not call `dispose` there by design, and dispatches per entity kind for
-kinds owning memory outside their slot; `Object` falls to the default
-arm, so without this member a cyclic-garbage map's chunk is never freed
-and holds its block's live count above zero for the life of the process.
-This is the member S18.3's criterion needs, not the sever.
-
-**The block a hook yields cells from must be parkable.** A block whose
-cells the collector recorded may not be freed while an epoch is in
-flight, and the parking machinery takes a freeable block kind or a
-buffer-arena chunk — a `std::alloc` allocation cannot be parked at all.
-So a hooked class draws its outside storage from the memory manager, and
-`free` parks rather than frees during an epoch. This is a constraint on
-the contract, not a note.
 
 **The hooks supplement the generic stride; they do not replace it**, or a
 subclass's own properties go untraced. `for_each_counted_cell` strides
@@ -6864,16 +6386,6 @@ S18.2 fixes with this.** `ClassBuilder::build` seeds `ptr_runs`,
 `ll_default_dispose`. For a map subclass that is a leak of the whole
 table. The group and `dispose` are both seeded from the parent, and a
 subclass that declares either replaces it wholesale.
-
-**A give-up is the racing reader's alone.** The walk may answer `None`
-having yielded nothing when it cannot get a coherent reading of its head,
-and that is safe for the collector, where a missed edge only pins its
-target. It is not safe for the arena reset: `reconcile_cow_counts`
-*assigns* a survivor's count from the edges the trace finds, so a hook
-that gave up there writes a count below the truth and the next release
-frees a live entity. The plain reader has no writer to race and never
-needs to give up, so `CellReader` carries an associated constant saying
-whether it may be raced and the give-up asserts on it.
 
 **The consumers, counted honestly.** The walk hook serves the quiescent
 tracer and the collector's relaxed one from `for_each_counted_cell`, and
@@ -6911,15 +6423,6 @@ catchable error and distinguishable from an allocation refusal. It fires
 where a trigger trips and no rebuild remains, and it is the structural
 backstop `rfc/model/strings.md` has promised since before the map design.
 
-**It stands on a key the crate does not have** — 32 bytes from the OS
-once per process in every build, outside `STAMP` and exempt from
-`hash-folding`. `strong_hash`'s doc names the slot and stands in for it,
-and `draw_salt` hashes a recyclable storage address under a seed that
-folding turns into a build constant, so today's per-table salt is a
-public function of one address. Until the key exists, every rebuild the
-ladder performs is aimable in a folding build and only rung three is
-real.
-
 **The obligations, in `array/table.rs`:** the trigger becomes a
 tag-equality test; both `slot_hash` and `entry_slot_hash` dispatch on the
 tag with the byte branch asserted unreachable from any other; `draw_salt`
@@ -6948,10 +6451,7 @@ is reserved and `4`–`6` are the family the RFC wants consolidated.
 entries, and they live in a chunk outside the entity, where `ptr_runs`
 and `box_runs` cannot describe them. So a map is the second customer of
 the optional `walk` hook on the class descriptor, S18, raised for a
-coroutine whose waker cells lie outside the object the same way. The
-hook's two rules are the map's too: it yields cells rather than children,
-because Phase 3 re-reads a recorded cell; and the chunk goes through
-`deferred_free` while an epoch is in flight.
+coroutine whose waker cells lie outside the object the same way.
 
 **What it forecloses.** Array-like value semantics by default. That is
 the entry below.
@@ -7275,12 +6775,6 @@ reference another holder still names — a dangling reference rather than a
 cost — so hardening the cost symptom while the safety symptom stands
 unguarded protects the wrong flank.
 
-**Cost:** debug builds pay one system allocation per `separate` and a
-linear scan per level, quadratic in the distinct nested arena COW arrays
-of one graph, which number in the tens today. Release builds keep no
-guard, so a regression reaching only release shows as cost rather than as
-an assertion.
-
 ---
 
 ## 2026-08-12 — the deep copy preserves the source's sharing
@@ -7330,15 +6824,6 @@ the root is the one exemption that matters. Meeting it
 again means a descendant names it, which is a cycle, and a cycle cannot
 close inside a pure-COW subgraph. Recording it would cost a table
 allocation on every escape copy to answer a shape nothing can build.
-
-**Termination stops leaning on count-equals-holders.** Each distinct
-entity enters the list at most once, so a subgraph that closed on itself
-is reproduced and handed to the tracing side rather than walked until
-memory refuses. The `entered` probe that stood in `separate` is deleted
-with its message: it fired on a diamond, which is a graph the invariant
-allows, so it indicted an intact invariant. No substitute is claimed; a
-probe for that invariant belongs to the refcount machinery that maintains
-it.
 
 **Considered and rejected:** a forwarding pointer written into the source
 header, which needs no side allocation. It writes into live entities
@@ -7589,12 +7074,6 @@ object; a missed edge only leaks. A destination nothing has published is
 written by one thread, so the copy stays plain and the version window
 covers only the publication.
 
-**What makes the old chunk safe to free is the epoch, not the bracket.** A
-collector walks only inside one, and an epoch parks every buffer-chunk
-free instead of recycling it (`memory::deferred_free`), so a walker still
-striding the replaced chunk reads intact bytes. Outside an epoch nothing
-walks.
-
 **The price is a refusal where there was none.** An insert that would have
 compacted now fails under memory pressure, exactly as one that would have
 doubled does. Compaction still avoids doubling — the fresh chunk is the
@@ -7711,14 +7190,6 @@ cheaper than discovering it.
 **Deriving the tag from `nslots == 0` was refused:** an empty ordered
 hash reads that way, and so does every `Map` before its first insert.
 
-**The head is a prefix inside each representation, not a field beside a
-union of them.** That keeps `Table` self-contained, which matters because
-`Map` is the table's second customer and wants the hash without an
-array's storage protocol; the price is one constant byte in every table,
-its tag stuck at `Hash`. The union's own address is therefore the head's
-address, and `entity::storage_head` casts it without naming a
-representation — pinned by a const assertion in each member.
-
 **The walker loads all five words before it branches on the tag.** The
 read set does not depend on the tag, so a stale one is discarded with
 everything read beside it and can never select a stride. Both ends of the
@@ -7784,13 +7255,6 @@ whose content exceeds what its category's allocator packs in one slot has
 no inline home, so it must be out of line **and** copy-on-write, and one
 bit cannot say both. Building it in the existing dynamic form would have
 made a large string silently mutable under a second holder.
-
-The layout is `STRING_OUT_OF_LINE` now, bit 15, and `COW` means only
-copy-on-write. The bit is free on a string header in both builds: rc-trace
-writes the candidate index into bits 15-31 only for the kinds that can
-close a cycle, and `String` is not one, while rc-walk's epoch byte starts
-at 16. A kind-scoped bit follows `ARENA_RESET_MARK`, which borrows the
-GC-state field for arena entities the same way.
 
 What it bought: `ll_string_new` and `new_uninit` choose the layout
 against `routing::slot_limit`, so a 9 KiB heap string and a 64 KiB arena
@@ -8064,12 +7528,6 @@ at all. That arm now spends one pin, and hands the block over when it was the
 last holder. The bytes are still left where they are — former arena memory
 has no free list to take them back — so what is reclaimed is the block.
 
-During a collector epoch the call parks, for the reason `ll_free` parks a
-slot in a retained block: the walker holds addresses inside it and a block
-handed to the pool is re-stamped as another kind under them. A parked record
-now names the free it replays instead of inferring it from a size, because
-this one is neither of the two the size chose between.
-
 **The test needed a fault injection of its own.** `block_pool::FORCE_OOM`
 refuses the pool, and the buffer arena can serve a carry out of a block it
 already owns or adopts, so the refusal did not happen 5 runs in 40 and the
@@ -8125,12 +7583,6 @@ and the manual leaves shutdown order undefined.
 Under a refused chunk the order degrades with the bound: a held child
 released on the recursive path runs its destructors ahead of the subtree
 deferred before it. Memory exhaustion is the only way in.
-
-The drain takes one duty over from `ll_entity_die`'s door with the array:
-under rc-trace a dying entity leaves the candidate buffer, and a nested array
-never passes that door again. Removing the call was verified to fire
-`ll_free`'s "entity freed while buffered as a cycle-collector candidate" —
-which is a test-build assertion, so a release build has no net under it.
 
 **What this does not bound** is a chain that leaves the array kind between
 levels: an object chain (`$a->next = $b->next = …`) recurses through
@@ -8218,9 +7670,6 @@ live state. The window closes with the collection.
 `memory::retained` counts a retained block's live occupants;
 `stdapi::ll_free`'s retained arm reports each occupant's death; at zero
 the index is dropped, the block is restamped and returned to the pool.
-The block rides the parked-free queue like every other kind whose free
-can put memory back in circulation, because its last occupant's death
-hands over the whole block.
 
 **Why now, and why inside S3.1.** A reference box behind `&` made this a
 blocking defect rather than a future item. Boxing an element of an arena
@@ -8506,18 +7955,6 @@ here is driven by the attacker's nesting depth, so the refusal has to be a value
 An ordinary copy allocates nothing: the list is empty until the first nested
 array.
 
-Termination needs no visited set, and the reasoning is the ruling's: the list is
-entered only by an arena COW child, and a cycle cannot close inside a pure-COW
-subgraph while count-equals-holders holds, because every entity a real ring
-passes through is non-COW and is published by the barrier rather than entered. A
-debug build keeps the visited set and asserts it; a release build pays nothing.
-
-**What this does not fix, and it is the same attacker's input:** teardown of the
-copy is recursive — `array_die` releases a child, the child dies, its own
-`array_die` runs — one nested set of frames per level. The depth reaches the
-machine stack at the free instead of at the store. The plan carries it as the
-other half rather than as a separate finding.
-
 One defect found by the test rather than by reading: the list's growth freed the
 old chunk through `dispose`, which also empties the list, so a copy deeper than
 the first chunk silently lost every pair it had queued — whole subtrees copied
@@ -8560,26 +7997,6 @@ did not have: `reseed` returned early only on `strong`, so an attacker could
 make every insert redraw, each redraw an O(`used`) rebuild against a document
 promising O(n) twice.
 
-**What the work found is why both rungs exist.** A redraw moves integer keys and
-no others, because an integer's slot is `mix_int(k, salt)` while a string's slot
-below `strong` *is* its cached rapidhash, which no salt enters. Escalation is the
-mirror image: it rehashes string keys with a keyed function over their bytes and
-leaves `mix_int` untouched. So the ladder is not one defence escalating in
-strength — it is two defences for two key kinds, tried cheapest first. The
-consequences are worth stating rather than rediscovering: a pure string flood
-spends one rebuild that provably separates nothing before reaching the rung that
-answers it, and a pure integer flood is answered by the redraw or not at all,
-since escalation gives it nothing. `arrays-hashtable.md` describes the rungs as
-an escalation and owes this correction.
-
-**The redrawn salt takes entropy.** The step was a public LCG over the old salt,
-so an attacker who learned the initial value knew the whole orbit offline and
-could aim the redraw as easily as the original — the one rebuild the bound allows
-would then be spent for nothing. The new salt mixes the process seed
-(`hash::seed::raw`) and the storage address into the step. Under `hash-folding`
-the process seed is a build constant, so such a build's redraw is only as
-unpredictable as its storage address, which is ASLR's to give.
-
 `strong` and `reseeded` are bits in one `flags` byte rather than a `bool` each,
 because the strategy tag joins them there: `rfc/model/arrays.md` gives an array
 three storage strategies and two bits to name the current one, and the entity's
@@ -8595,28 +8012,6 @@ flight on the thread, the two doors bracket it (`ll_entity_die`,
 non-zero, beside the `GC_ACTIVE` reentrancy test it already had. `COLLECT_PENDING`
 is untouched by the refusal, so the arming survives and the next poll at a clean
 point collects.
-
-**This supersedes the three-call shape recorded below on the same day**, which an
-independent review refuted: with the forget standing before `dispose` and again
-after it, an object was still a buffered root at refcount zero for the whole of
-phase 2, and phase 2 releases children whose destructors are user code. A
-collection fired there computes the dying object garbage — its slots are still
-populated, so `mark_gray` trial-deletes through them, and `scan` sees refcount
-zero — frees it, and the teardown that was interrupted frees it again. The only
-point that closes the window by ordering alone lies between phase 1 and phase 2,
-which is inside `dispose`, where the runtime has no call site. The guard closes
-it without one, so the forget stays at a single place per door: after `dispose`
-returns in `ll_object_die`, and before the kind switch in `ll_entity_die` for
-the kinds that run no `dispose`.
-
-Regression: `gc::tests::a_collection_fired_from_a_destructor_does_nothing_and_
-defers`, seen returning 2 without the guard — the two objects it would have
-freed being the two already dying.
-
-The rc-walk build has carried the same bracket since 2026-07-27 for a different
-obligation (no message pickup between a committing zero store and the end of a
-dispose), so both configurations now count teardown depth, each for its own
-strategy.
 
 ## 2026-08-07 — this crate's `EntityKind` is the normative kind assignment
 
@@ -8655,26 +8050,11 @@ policy, and it is what the constant carries: String, Box and WeakRef own
 nothing a ring passes through, so they stay out by the same test that lets
 a Lazy proxy in.
 
-**No mask can express this set**, which is why the shape changed rather
-than the constant. A subset compare `flags & MASK == 0` admits only kind
-sets closed under clearing a bit; admitting `Reference 011` needs bit 0
-clear in the mask and excluding `String 001` needs it set. The entry of
-2026-08-07 on the candidate buffer (deleted 2026-09-24) read that impossibility as a reason to wait for a renumbering. It is a
-reason to stop deriving the policy from the codes: the mask could say
-"which kinds" only by leaning on "which numbers they were given", and that
-coupling is what produced the leak. The set is built from `EntityKind`, so
-a later consolidation of the codes moves its value at compile time and
-leaves its meaning alone.
-
 The leak it closes: `$a['x'] = &$a` — the box holds the array, the array's
 element holds the box, and the frame's release lands on the box at count
 two. Nothing else is decremented, the box was not admitted, so no candidate
 existed and the ring lived to process exit. `$a->next = &$a` never showed
 it, because there the last release lands on the object.
-
-**`Lazy` is admitted although no factory stamps kind 6 yet.** Waiting for a
-producer before admitting a kind is exactly what left the ReferenceBox
-outside; its test is owed to whichever stage builds the Lazy factory.
 
 Three alternatives were rejected, and the reasons matter more than the
 choice. Buffering the box's *target* instead of the box keeps boxes out of
@@ -8685,26 +8065,6 @@ second compare (`masked == 0 || kind == Reference`) grows one term per
 admitted kind and leaves Lazy out on the same argument. The entity-kind
 renumbering stays rejected on the grounds recorded in `PLAN.md`, and this
 removes its last motive.
-
-Cost, accepted on reasoning because `dev/BENCHMARKS.md` puts this box's
-noise floor at 1.5–3 % and the effect is smaller: roughly three ALU
-instructions where there were two, on the rc-trace non-final-release tail
-only — the `rc-walk` build compiles the branch away entirely. Buffer
-pressure grows by every heap ReferenceBox decremented to non-zero,
-scalar-valued ones included, so the candidate threshold arms marginally
-sooner; that threshold is already unmeasured.
-
-Nothing else needed changing, which was verified rather than assumed:
-`ll_entity_die` already forgets a buffered candidate of any kind before its
-kind switch, `gc.rs`'s white-free default arm already frees a box, and
-`walk::trace_entity` already traces through one. Regressions:
-`gc::tests::a_ring_whose_last_release_lands_on_a_reference_box_is_collected`,
-seen failing on the old gate, and its rc-walk twin in `walk.rs`, which turns
-"the whole-heap walk needs no candidate" from an expectation into a fact.
-
-**Owed to the RFC and not yet made:** `model/classes.md` says the buffer
-holds objects and arrays, and `model/lowering.md`'s pseudocode comment names
-a heap *object*. Both now describe a gate the crate no longer has.
 
 ## 2026-08-06 — `LongLived` goes out of use, and its rename waits for a mechanism
 
@@ -9138,11 +8498,6 @@ test. `hash::seed::STAMP` identifies the function and — only when folding
 required to call it at startup. Emitting the program's half is owed by the
 compiler and does not exist yet.
 
-**`build.rs` arrived with this** for one line:
-`cargo::rerun-if-env-changed=LL_HASH_SEED`. `option_env!` is invisible to
-cargo, so without it a rebuild after changing the seed silently reuses the
-artifact built under the old one.
-
 **"Per process" is per address space, and a pre-forking server has one**
 (added 2026-08-11, from the module doc this entry now carries). A seed
 established before `fork` is inherited by every worker, so in the
@@ -9318,18 +8673,7 @@ owner's fields sit on the first cache line with `owner`, and
 **Two departures from the heap's version**, both because a buffer block
 is bump-filled rather than slotted. The owner keeps a chain of its blocks
 — a block the bump has moved past is reachable no other way, and its
-posted frees would sit there forever. And **an adopted block is
-reclaimed, not reused**: it never becomes current, `pop_fit` only
-consults the current block, so neither its bump tail nor its inherited
-free list serves an allocation. A block abandoned with one live 16-byte
-chunk is held, swept on every rotation, and returns whole when that chunk
-is freed — while the adopter takes a fresh pool block for the allocation
-that triggered the adoption. That is the weaker half of what `heap.rs`
-gets from adoption, and it is stated here rather than as "the tail of one
-block", which is what an earlier version of this entry called it
-(corrected 2026-08-04 by the second critic pass). Resuming a foreign bump
-would mean storing the cursor in the header and trusting it across an
-owner's death.
+posted frees would sit there forever.
 
 **Rejected:** moving GC-heap payloads to `ll_alloc`, which answers
 cross-thread free for free. It puts continuously varying, realloc-heavy
@@ -9365,13 +8709,6 @@ underflows there. Marking now leaves a COW count alone, and
 `reconcile_cow_counts` settles every COW survivor once, after the last
 destructor, from the edges that remain.
 
-**It assigns rather than adjusts.** The holders that die with the arena
-never release, so the count carried out of the fixpoint is too high by
-exactly their number and there is no list of them to subtract. The
-surviving edges are enumerable, and they are the answer. Between the mark
-and the reconciliation the count is too high, which is the safe
-direction: it can only cause a separation that was not strictly needed.
-
 **Rejected:** keeping the true count and subtracting the dying holders —
 that needs a walk of the whole dying population, and the trace is bounded
 by the escaped subgraph on purpose (`arena-reset.md`). Also rejected: a
@@ -9402,16 +8739,6 @@ worker thread ending normally.
 by an explicit `dispose` that `ll_thread_exit` calls. `Drop` stays on
 `BufferArena` itself: stack-built arenas in tests still need it, and it is
 now run by hand rather than by TLS glue.
-
-**The order in `ll_thread_exit` becomes:** static blocks → candidate
-buffer → parked list → weak table → **buffer arena** → the heaps. The
-arena is fifth because every step above it can still free a buffer: the
-static blocks through user code, and the parked backlog's flush through
-the same payload route. It is before the heaps only because nothing after
-it needs an arena; the blocks it hands back go to the process-global
-pool, which outlives every thread. Disposing earlier is not detected — a
-later free would build a second arena through the lazy path and leak it —
-which is why the position is written down rather than inferred.
 
 **Regression:** `static_block::tests::`
 `a_thread_that_just_ends_frees_a_static_strings_payload`, a worker that
@@ -9584,35 +8911,9 @@ behind the same accessors, if a measurement ever justifies collapsing
 the TLS reads; on Windows it would replace three dependent loads with
 the one-instruction `gs` read.
 
-**Cost:** none on `ll_release`, which is untouched instruction for
-instruction — the buffered-bit test reads flags already in a register
-and `buffer_candidate` is `#[inline(never)]`. Inside the moved bodies a
-`RefCell` borrow-flag load/store pair becomes one dependent load plus a
-null check that is cold after first use: not a new cost class, and
-**not** claimed as a speedup, because this box's noise floor is 1.5–3%
-and nobody measured it.
-
 **Found by the same review, closed here:** `ll_static_block_register`
 could abort on a refused growth, where this crate refuses instead
 (`try_reserve`, and a hand-rolled allocation as in `ll_thread_init`).
-`buffer_arena`'s key has the same drop-glue shape and no caller on the
-exit path yet; it carries a note rather than a change.
-
-**One suggestion from that review was tried and reverted, by Miri.**
-Candidates still buffered at thread death keep their buffered bit while
-their blocks go to the abandoned list, so an adopted object released
-later can never be re-buffered — a silent cycle leak. Clearing those
-bits during disposal looked free, since the drain walks them anyway.
-It is not: a candidate can already be **gone**. An arena entity dies
-with its arena without individual teardown, so nothing calls
-`forget_candidate` for it and its buffer entry outlives its memory;
-Miri reported a write through exactly such an entry (`gc.rs`, in-bounds
-pointer arithmetic on a dangling address). The disposal now frees the
-buffer and touches nothing in it, and the stale-bit leak is recorded as
-a known limit on `gc::dispose` — closing it needs a liveness test the
-buffer cannot provide, which is a design question rather than a
-cleanup. Cross-thread entity survival is reserved today, so nothing
-reaches the case.
 
 ## 2026-08-03 — a static block registers its layout, not a teardown function
 
@@ -9676,32 +8977,11 @@ the other by scanning the region registry — and need the index from a
 block address. A per-set index would need a second block→set map on the
 lookup path that the per-block one does not.
 
-**Totality: the census keeps one lookup.** rc-walk.md requires row
-omission and edge omission to be one decision taken at one test, and a
-census with two sources could have become two lookups with two answers.
-Instead the single sorted payload list carries both kinds of block, and
-only the slot derivation branches after the match: a strided block
-divides, an indexed block binary-searches its own index. One search,
-one answer, and an address in neither kind still finds nothing.
-
-**Lifetime: the index is owned by a registry keyed by block address**
-(`memory/retained.rs`), released by one call. Nothing calls it yet —
-retained blocks never return to the pool today — so the index lives
-exactly as long as the retention it describes, which is the correct
-lifetime and not a leak. The call exists so the hook is one line when
-"return a fully emptied retained block" lands.
-
 **Rejected: copying survivors into entity blocks at reset** so the
 existing strided walk covers them. That is the evacuation the RFC
 defers behind the escapee-reference fixup, it costs a copy per survivor
 where the index costs one pointer, and it would have made a placement
 choice out of a collectability requirement.
-
-**Cost:** one pointer per survivor for the life of the retention, and
-`EntityBlockSnapshot` stops being plain numbers — it now carries the
-index for a retained block. The collector still computes slot addresses
-itself and still touches slots only through the relaxed-atomic helpers;
-what it gained is data it reads, not slots it reaches into.
 
 ## 2026-07-27 — undef stamping is the factory's, from descriptor `undef_runs` (A5)
 
@@ -9783,26 +9063,6 @@ snapshot takes no cursor: commissioning zeroes every entity-slot
 header, so the walker scans whole blocks and virgin slots skip on the
 occupancy test. Collector-side work for mutator-side zero — the
 design's own trade, and the rfc carries the amendment.
-
-**A soundness hole found and closed while sweeping:** the dispose
-guard's transient `rc 0 → 1 → 0` bypassed the F5 rule with plain
-arithmetic — an entity condemned *while its own destructor ran* would
-finish teardown under the verdict, and the drain would later tear a
-freed slot. The un-guard is now condemned-aware
-(`mutator_unguard_release`): reaching zero under the byte defers the
-rest of teardown to the drain (fields intact, `DESTRUCTOR_RAN` set —
-torn exactly once there). With that, the deferred-death store keeps
-the byte SET as the drain's marker, so the acquittal duties can tell
-a deferred death (tear it) from a slot that died ordinarily after a
-touch and was freed (leave it) — `acquit_condemned` snapshots the
-deferred set before clearing bytes.
-
-**Known limits, accepted and on record:** collector byte stores
-against mutator word stores are mixed-size atomics — sound on x86-64
-and AArch64, unrepresentable to Miri, so the free-running stress test
-is Miri-ignored while every stepped test keeps Miri coverage; a
-mutator thread must not exit while an epoch is in flight (entity-block
-retirement is between-epochs only — actors revisit).
 
 ---
 
