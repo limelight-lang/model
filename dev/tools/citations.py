@@ -9,7 +9,13 @@ for base in ["src", "benches", "docs"]:
             continue
         for fn in filenames:
             FILES.append(os.path.join(dirpath, fn))
-FILES += [os.path.join(ROOT, f) for f in ("dev/INDEX.md", "dev/ARCHITECTURE.md", "dev/WORKFLOW.md", "PLAN.md")]
+# every document under dev/, the dated journals among them: a journal names the
+# document of its day, and a citation into one deleted since names the branch it
+# survives on, which resolves below
+for base in ["dev", "dev/design"]:
+    FILES += [os.path.join(ROOT, base, f) for f in sorted(os.listdir(os.path.join(ROOT, base)))
+              if f.endswith(".md")]
+FILES.append(os.path.join(ROOT, "PLAN.md"))
 PATH_RE = re.compile(r'`([a-zA-Z0-9_./-]+\.md)`')
 def norm(s):
     s = s.replace('*', '').replace('_', '')

@@ -1942,7 +1942,7 @@ pub extern "C" fn ll_thread_exit() {
 
 /// The last act of [`ll_thread_exit`] on either path: the journal's ring
 /// is handed to the registry, which keeps it readable after this thread
-/// is gone (`journal.rs`).
+/// is gone (`journal/mod.rs`).
 ///
 /// **Last, not fifth of five.** Everything above it is worth journaling,
 /// the block frees of the heap teardown included — those are a default

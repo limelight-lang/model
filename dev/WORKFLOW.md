@@ -323,19 +323,17 @@ re-run after any deletion of a module, a document or a feature:
    names a file *and* a quoted heading or bold lead-in, and the `rfc` rewrite
    of 2026-08-30 renamed sections under 73 citations that the file test read
    as clean. `python3 dev/tools/citations.py`, run from the crate root, pulls
-   every `` `…md`, "…" `` pair out of `src/`, `benches/`, `docs/`,
-   `dev/INDEX.md`, `dev/ARCHITECTURE.md`, `dev/WORKFLOW.md` and `PLAN.md`,
-   resolves `rfc/…` against the sibling repository, and prints each citation
-   whose quoted text is not in the named file.
+   every `` `…md`, "…" `` pair out of `src/`, `benches/`, `docs/`, every
+   document under `dev/` and `dev/design/`, and `PLAN.md`, resolves `rfc/…`
+   against the sibling repository, and prints each citation whose quoted text
+   is not in the named file.
 
    **A document that was deleted is cited on the branch it survives on**, and
    the checker reads that form: `` `rfc`'s `archive/pre-rc-cycle`,
    `model/gc/rc-walk.md`, "…" `` resolves through `git show` in the named
-   repository. The five citations in
-   `docs/performance-case-decompositions.md` are the population, and they
-   were read as misses until 2026-09-05.
+   repository.
 
-   On 2026-09-18 it reports 723 citations and no miss, so a run that prints
+   On 2026-09-24 it reports 962 citations and no miss, so a run that prints
    anything has found a renamed heading, a split path or a quoted phrase that
    is not a heading. Three things it skips by rule: `docs/history/`, whose
    documents are superseded and cite the tree of their day; a quoted span in
@@ -344,11 +342,12 @@ re-run after any deletion of a module, a document or a feature:
    `…`, this file's placeholder in the citation form. The other examples in
    the two guard tests cite real headings.
 
-   **What a hit means depends on where it stands.** A dated journal —
-   `DECISIONS.md`, `BENCHMARKS.md`, `POSTMORTEM.md` — names the document of
-   its own day, and so does a note under a deletion banner. Those hits are
-   records and stay; a hit anywhere else is debris. That is the distinction the stage
-   sweep above draws, and it is drawn for the same reason.
+   **A dated journal names the document of its own day**, and when that
+   document or heading goes, the citation is re-pointed rather than left to
+   miss: to the branch the document survives on, to the heading that holds
+   the passage now with the old title beside it, or cut where the sentence
+   stands without it. The journals joined the checker on 2026-09-24, when 26
+   of their citations missed.
 2. **Every module path a comment cites, resolved against the modules that
    exist.** `` `walk::` ``, `` `collector::` ``, `` `epoch::` ``. A rename
    leaves nine of these behind and no build reports one, since a comment is

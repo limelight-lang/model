@@ -413,13 +413,6 @@ against the code on 2026-09-24.
   `pin_threshold`). `template.rs` builds its entity without reading the
   class flags, so a template class marked acyclic would miss `ACYCLIC_GATE`
   — conservative, left until one is marked.
-- [ ] **The citation check does not read the journals.**
-  `dev/tools/citations.py` walks `src/`, `benches/`, `docs/` and four files,
-  so a journal's citation of a plan line is checked by nobody; one is dead,
-  the 2026-09-18 entry's on the collector thread's spawn through the global
-  allocator.
-  done: the journals join the checker's population and the dead ones are
-  re-pointed or cut.
 - [ ] **A store of one request arena's entity into another's object.**
   `store_category_barrier` keys on category alone, so the pointer is stored
   raw. A destructor inside arena A's reset can reset arena B, whose

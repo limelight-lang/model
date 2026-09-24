@@ -1,6 +1,6 @@
 # Critic on the S65 implementation plan
 
-Date: 2026-09-23. Reviewed `dev/S65-PLAN-FOR-REVIEW.md` against model
+Date: 2026-09-23. Reviewed `dev/S65-PLAN-FOR-REVIEW.md` (deleted 2026-09-24, kept by git) against model
 `b7245ce`, the current `PLAN.md`, the decision of 2026-09-23, package v3,
 the lane amendment and its Critic, relevant earlier reviews, the current
 implementation, and the sibling RFC's handshake and layout contracts.

@@ -23,7 +23,7 @@ remain in [BENCHMARKS.md](BENCHMARKS.md); their scope must be preserved.
 Decided 2026-09-12 (S40.2): the flat representation stays, and the chunked
 form of §3.1 is not adopted without a built candidate, whose stage is
 Edmond's to open; the figures for and against it and what would reopen the
-question are `DECISIONS.md`, "the flat row array stays". The recommendation
+question are `dev/DECISIONS.md`, "the flat row array stays". The recommendation
 as written before that decision follows.
 
 Keep the current flat representation pending a comparison with a concretely

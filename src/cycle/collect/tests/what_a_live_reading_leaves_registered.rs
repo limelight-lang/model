@@ -47,8 +47,8 @@
 //! deaths alone, and every member here is live, so what the reading states is
 //! that neither pass touched a live registration.
 //!
-//! `queue/tests/the_batch_a_collection_detaches.rs` proves the merge itself at
-//! token identity. What this file adds is the consequence the step asks for:
+//! `queue/tests/the_batch_a_collection_reads.rs` proves the close itself,
+//! record by record. What this file adds is the consequence the step asks for:
 //! the entities a later collection frees, which is the only assertion that
 //! shows a kept token was worth keeping.
 //!

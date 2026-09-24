@@ -313,7 +313,7 @@ keeps freeing through the grant is bounded by S65.7's marks alone.
 
 **Decided (Edmond, 2026-09-23), over the review chain of the day**
 (`dev/CYCLE-SPLIT-*.md`, the package at its third version with the lane
-amendment, `dev/CYCLE-SPLIT-PACKAGE-3.md` and `-3-LANE.md`). Built as S65.
+amendment, `dev/CYCLE-SPLIT-PACKAGE-3.md` and `dev/CYCLE-SPLIT-PACKAGE-3-LANE.md`). Built as S65.
 
 **His rulings, as given.**
 - The mutator's performance comes first; every remaining choice is taken by
@@ -750,8 +750,9 @@ left standing on silent mutators, sixteen entries on the thread's frame
 mechanism: the number of mutator threads is not known in advance, and a
 fixed count of them cannot be the bound on anything. A standing request
 belongs to the mutator's own record, where the turnover request already
-stands. This is a change to the built handshake and is filed as its own
-stage (`PLAN.md`, "The standing request moves to the record"); S62's take
+stands. This is a change to the built handshake and was built as its own
+stage (`dev/DECISIONS.md`, "the standing request lives on the record, the
+checkpoint serves one grant, and no count is capped"); S62's take
 leaves no request standing and reads no silent mark.
 
 ---
@@ -845,9 +846,10 @@ it through `ll_gc_set_quiet_interval`, in milliseconds, zero restoring the
 default. The case `an_idle_thread_reoffers_its_deferred_lane_at_the_next_poll`
 inverted its contract and became
 `an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_asks_for_a_turnover`,
-a test-contract change made on Edmond's acceptance. The threshold-one serve of
-R after X is a step of its own (`PLAN.md`, "A quiet thread's garbage is taken
-after X").
+a test-contract change made on Edmond's acceptance. The serve of R below its
+threshold became a step of its own, built with an interval of the collector's
+own rather than X (`dev/DECISIONS.md`, "a standing R is taken after an interval
+of the collector's own, and no request count is capped").
 
 ## 2026-09-19 (third) — the traversal age threshold is one
 
@@ -1034,9 +1036,9 @@ runs user code, and a second pass reopens that. A fixed-size sink for the
 displaced children with the walk re-run when it fills: the walk's visitor
 cannot stop early, and the per-slot drop is what the design says.
 
-**What is left.** The collector thread's spawn, `PLAN.md`, "The collector
-thread's spawn allocates through the global allocator", a stage of its own
-with a platform arm each. `CLASS_OUTSIDE_CELLS` on a static block's layout
+**What is left.** The collector thread's spawn, built since as a stage of its
+own with a platform arm each (`dev/DECISIONS.md`, "the collector thread is born
+by the OS entry, on a stack its slot keeps, and is woken by a word"). `CLASS_OUTSIDE_CELLS` on a static block's layout
 is refused by a `debug_assert` alone, a contract on the compiler that
 predates the stage. Whether the compiler's static initializer runs once per
 OS thread or once per life decides whether a second life re-registers at
@@ -2368,7 +2370,7 @@ abort out of `Vec` or `Box`. This closes the question S36.9 held open since
 whether it reaches `promote`'s own twelve container sites — the survivor
 list, the snapshot pairs, the retained and pinned sets, the per-block index,
 the rounds and the settle map, under the same disclosed decision
-(`dev/design/retained-index-ownership.md`) and in the same frames when a
+(`docs/history/retained-index-ownership-2026-09-01.md`) and in the same frames when a
 destructor inside a collection resets an arena — Edmond: «моё решение
 глобально. я не хочу кода Rust который делает панику. однако. давай так.
 можно оставить это техническим долгом.» So no runtime path of this crate
@@ -2761,8 +2763,7 @@ the follow-on traces new roots, not the set just collected. What stays
 unbuilt is the critical reserve's third customer, the mutator whose gate is
 closed: it is answered null and draws nothing, and which runtime progress
 operations a reserve would fund is what the ABI does not yet name
-(`PLAN.md`, Fog, "The threshold arming policy and the collector-thread
-accelerator").
+(`PLAN.md`, "The critical reserve's third customer").
 
 ## 2026-09-11 — the ownership mark is the owned store's to move and the holder's `dispose` to honour
 
@@ -4125,7 +4126,7 @@ happened anyway had the thread lived longer.
 is `extern "C"` with no caller to refuse to (`cycle::mod`). The wait replaces
 the abort.
 
-**What it closes in `rfc`.** The first clause of `dev/ALGORITHM-AUDIT.md` A4,
+**What it closes in `rfc`.** The first clause of `rfc/dev/ALGORITHM-AUDIT.md` A4,
 "order abandonment and adoption against the old owner's trace token", which the
 Sage of 2026-08-29 proposed and which stood unruled in `rfc/dev/PLAN.md` S8.9.
 
@@ -4406,8 +4407,7 @@ grew — and better in no case.
 **What the measurement missed:** it read the bump's consumption during the
 trace and found zero where it had found 4,112. The region's own 4,160 bytes
 came off the same bump at the arena's open, before the reading started, so the
-control arm and the treatment arm did not pay the same
-(`dev/POSTMORTEM.md`, "a probe's control arm must pay the same").
+control arm and the treatment arm did not pay the same.
 
 **What a region could still buy, and it is not this one:** a region *smaller*
 than a segment. At 64 entries it costs the bump 1,088 bytes and serves a trace
@@ -4840,7 +4840,7 @@ and every line of it replaced when the list moves to the block. The Sage's
 own form of B, a per-thread chain of fresh pool blocks holding the lists:
 the arena already holds the memory the reset is standing in, and a fresh
 block is the fallback, not the rule. A block per list, and a full
-`HeapBlockHeader` on a retained block: as `dev/design/retained-index-ownership.md`
+`HeapBlockHeader` on a retained block: as `docs/history/retained-index-ownership-2026-09-01.md`
 refuses them. Owner-only plain counters with abandonment and adoption of
 retained blocks: unsafe under the ABI free path, and a third population to
 adopt that has no free slots.
@@ -5097,7 +5097,7 @@ against the sum of the edges its members hold of each other, instead of testing
 **Why:** the per-member form needs one in-degree counter per member, and there
 is nowhere to keep it. The trace token is released before the exact test of any
 component and the arena returns with it, so the allocator that funded every
-other collection-private array has gone (`rfc/model/gc/rc-cycle.md`, "The
+other collection-private array has gone (`rfc/dev/DECISIONS.md`, "The
 release obliges a readership rule"). `rc-walk` built a `HashMap` per component;
 a door that can refuse leaves the component unjudged exactly when memory is
 short, and the sums need no memory at all. They answer the same question,
@@ -5113,7 +5113,8 @@ binary search over it.**
 
 **Why:** a linear scan per traced edge costs the component's size per edge, and
 a component here can be the whole reachable population — 381 objects of 381 on
-the corpus measured 2026-08-25 (`rfc/model/gc/rc-cycle.md`, "What it is").
+the corpus measured 2026-08-25 (`rfc/model/gc/rc-cycle.md`, "Candidate
+registration and trial deletion").
 Neither form allocates, and neither was measured; what decides is the bound.
 The price is the caller's order, which the sort destroys: nothing may be held
 parallel to the slice by index, and an entry array indexed after the call names
@@ -5164,7 +5165,8 @@ descent — so the prune adds a header test and no second dispatch, and the
 
 **Why**, and it is an argument the Critic round did not have: the prune is
 evaluated on the target of an edge and never on a root
-(`rfc/model/gc/rc-cycle.md`, "What it is"), while `edge_to` is asked about a
+(`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial deletion"),
+while `edge_to` is asked about a
 root as well — `mark::meet_root` asks it to place the root's own row. A prune
 inside the dispatch would therefore prune roots, and a ring whose own root had
 matured would go uncollected until its epoch turned, which is the failure the
@@ -5246,7 +5248,7 @@ unexamined option rather than a rejected one.
 
 **The status is `#[must_use]`.** The ABI gained a return so that a refused
 floor could end a thread rather than the process (`rfc/dev/DECISIONS.md`, "the
-escrow's floor is allocator-issued"), and a status nobody is obliged to read
+baseline overflow segment is allocator-issued"), and a status nobody is obliged to read
 ends nothing: every Rust caller in the tree discarded it, so the ruled soft
 path — the task runs elsewhere — was unreachable and the refusal degenerated
 into the lazy draw's abort. The attribute puts the choice at each call site;
@@ -5470,9 +5472,8 @@ partition among the reserve's three named customers is built: two of them do not
 exist in the crate, and no share is derivable without a workload.
 
 **Both normative documents moved with the ruling**, in `rfc` at `27417f2`:
-`rc-cycle.md`'s "The rows are not zeroed greedily" lost the virtual reservation,
-and `critical-reserve.md`'s "The three customers" and "Sizing" gained the draw
-order and lost the sentence that called the funding open.
+`rc-cycle.md` lost the virtual reservation, and `critical-reserve.md` gained
+the draw order and lost the sentence that called the funding open.
 
 ---
 
@@ -5967,8 +5968,8 @@ unmeasured, and this box cannot resolve an effect that size
 ## 2026-08-17 — the no-RC research round closes: unique ownership survives it
 
 Edmond's ruling on the 2026-08-16/17 GC research round. What survives
-is in `rfc/model/gc/rc-walk.md`, "The birth count" and "Unique
-ownership": a statically known in-degree written by the factory, and a
+is in `rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`, "The birth count"
+and "Unique ownership": a statically known in-degree written by the factory, and a
 one-owning-slot policy with no count, eager death, and COW
 eligibility. What is rejected: appeal-walk and the published-epoch
 barrier as replacements for rc-walk — the armed barrier costs about
@@ -8962,7 +8963,8 @@ call it.
 Retained former-arena blocks were unwalkable because an arena's bump
 allocator leaves mixed sizes and no stride to divide by, so their
 occupants were root sources and a ring living entirely among promoted
-survivors was never collected (`rfc/model/gc/retained-block-walk.md`).
+survivors was never collected (`rfc`'s `archive/pre-rc-cycle`,
+`model/gc/retained-block-walk.md`).
 The reset already builds the inventory — `promote`'s fixpoint collects
 every survivor into a vector and then drops it. It is now kept, split
 per block and sorted by address, as that block's object index. Three
@@ -9072,7 +9074,7 @@ design's own trade, and the rfc carries the amendment.
 from their own block population — `BLOCK_KIND_ENTITY`, served by a second
 `Heap` instance per thread — while raw C-ABI allocations keep
 `BLOCK_KIND_HEAP`. Four rules make the population walkable
-(`rfc/model/gc/rc-walk.md`): the in-slot free-list link moves to slot
+(`rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`): the in-slot free-list link moves to slot
 bytes 8–15 (bytes 0–7 keep the dead entity's final refcount-0 header —
 the occupancy test), commissioning zeroes every slot's first 8 bytes,
 the factory publishes the header last as one 8-byte store, and the block
@@ -9397,7 +9399,7 @@ dominating the barrier bill.
 ## 2026-08-18 — proof-horizon granularity: the class bit is policy, always-provable elision is lawful in both regimes, and nothing introduces a write barrier
 
 Ruled by Edmond, closing open question 4 of
-`dev/design/proof-horizon.md` after three Critic rounds attacked both
+`dev/design/proof-horizon.md` (deleted, kept by git) after three Critic rounds attacked both
 readings.
 
 **Decided:** whether a class's locals are counted or enter the borrow
@@ -9430,7 +9432,8 @@ introduce a write barrier or any other mutator work beyond the
 program's own code — the GC philosophy applied to the compiler's
 output. The constraint's scope is the per-site elision rules: the
 family's checkpoint-progress compensation
-(`dev/design/owned-slots-and-the-walk.md`, open question 3) and the
+(`model`'s `archive/pre-rc-cycle`, `dev/design/owned-slots-and-the-walk.md`,
+open question 3) and the
 unique-move rule keep their own open questions outside it, and the
 economics' measurement counter is exempt by name as instrument work.
 
@@ -9442,7 +9445,8 @@ is exactly the infallible ones.
 ## 2026-08-18 — child-release order is language surface, and the hand-off's external-child delay stands
 
 Ruled by Edmond ("да, это сохраняется"), closing the two questions
-`dev/design/pure-destructors.md` left with him.
+`model`'s `archive/pre-rc-cycle`, `dev/design/pure-destructors.md` left with
+him.
 
 **Decided:** the order in which a teardown releases an object's
 children is **specified** — today's order is part of the language
@@ -9513,8 +9517,8 @@ checkpoint pair is the configuration-independent lowering surface, and
 `object.rs:238,246` and `benches/lifecycle.rs:23` already depend on it.
 `gc.rs:714` is the only steady-state refill of the log reserve —
 `heap.rs:1734` fills once at thread init — so deleting the file reverts
-`rfc/runtime/exceptions.md`'s "the next safepoint raises memory-exhausted"
-to "the barrier eventually fails", with no test that can see the change.
+`rfc/runtime/exceptions.md`'s raise of memory-exhausted at the next safepoint
+to a barrier that eventually fails, with no test that can see the change.
 And S30's verification links nothing and builds no bench target, so four
 undefined C symbols would surface at integration rather than at the stage.
 
@@ -9526,8 +9530,8 @@ Sage ruling, same round.
 window, destructors and the resurrection re-verify, sever and free and the
 deferred drops — and all eight operations of `drain_confirmed` survive in
 today's order. The resurrection re-verify survives. The order is written
-into `rfc/model/gc/rc-cycle.md` as a "Cycle teardown" section by a new step
-S30.6, executed **before** S30.2, so the section is transcribed against
+into `rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation" (then
+titled "Cycle teardown"), by a new step S30.6, executed **before** S30.2, so the section is transcribed against
 running code; `rfc/model/weak-references.md` repoints its binding obligation
 there. A block's `used` falls at the slot's return and never at the parking,
 and S34.3's criterion names it.

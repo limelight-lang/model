@@ -47,8 +47,8 @@ counter itself, only to the deferral list index: under a bursty writer
 the wrap-around live-locks.
 
 Both modules the comparison was written for are deleted; `rc-cycle` has
-no epoch counter, and its window is a per-thread flag
-(`src/cycle/parking.rs`). The e+2 argument keeps its value as a reading
+no epoch counter, and its window is per thread
+(`cycle::deferred_slot_reuse`, `ActiveTrace`). The e+2 argument keeps its value as a reading
 record.
 
 ### ck_ec: event counts instead of a condition variable
@@ -481,7 +481,7 @@ it steers a design.
 - The static family — Joisha ISMM 2007, Rust borrows (RustBelt, POPL
   2018), Perceus with borrowing, Lobster, Nim ARC/ORC — removes
   counting where an owner provably covers every borrow: the road
-  `rc-walk.md`'s birth count and unique ownership already walk, with
+  the deleted `rc-walk.md`'s birth count and unique ownership already walk, with
   Nim's `.acyclic` partition as the spiritual match for a purity-gated
   class split.
 
@@ -500,7 +500,8 @@ figure is the whole quantified motive on record for this crate's deferred
 candidate lane. **It is borrowed and unmeasured here.** The lane's own price
 was taken against this crate's fixtures (`dev/BENCHMARKS.md`, S37.4), the
 turnover it re-offers at is provisional after YRC's own values
-(`dev/DECISIONS.md`, "maturation is Y9's edge-side prune…"), and what a real
+(`dev/DECISIONS.md`, "maturation is Y9's edge-side prune, and the trace
+writes nothing"), and what a real
 workload saves is owed at S37.5 on a corpus. Quoted as YRC's number, never as
 this crate's.
 

@@ -1162,8 +1162,8 @@ of A's third run is one round's interference, its minimum unmoved.
 **W's tail.** The wait the collector gives a mutator that answered its last
 request (`worker::REQUEST_WAIT`, 2 ms) lands above the 99th percentile of
 the interval between two consecutive polls or slot frees of a running
-mutator on the corpus. The corpus is Phase D's (`PLAN.md`, "Phase D, the
-vertical slice"), so the arm is blocked and the placeholder keeps its "not a
+mutator on the corpus. The corpus is the vertical slice's (`rfc/BACKLOG.md`,
+"The big one"), so the arm is blocked and the placeholder keeps its "not a
 measured figure"; what the probes below show is that the placeholder is
 long enough for a mutator that polls every millisecond and short enough
 that a blocked one costs the round 2 ms once.
@@ -1608,7 +1608,8 @@ box in the same session, minima of three runs of fifteen: 2.1, 2.1, 2.2 µs at
 `HashMap` it would replace, against three times longer for the search.
 
 It is not in the tree because the search is what S47.7's design says and what
-Edmond agreed to (`dev/plans/S47.md`). What it costs to adopt is one hazard to
+Edmond agreed to (`dev/plans/S47.md`, deleted with S47's close and kept by
+git). What it costs to adopt is one hazard to
 answer: the tag is bit 31 of the count, so a live COW entity holding more than
 2^31 references and named by a correction would have its count corrupted,
 where the search reads no header it does not write.
@@ -2531,8 +2532,7 @@ component and from `defer_reuse_if_tracing`'s documented cost.
 per-slot walk of them runs to, and how the deaths cluster across them. The
 death count itself is the fixture's own input, so it is reported as a check
 rather than as a reading: the free path withheld exactly the 381 returns the
-fixture made, on every load (`dev/DECISIONS.md`, "the death count of a
-synthetic load is a check and not a measurement").
+fixture made, on every load.
 
 **The load:** S40.1's own populations at the median closure size of 381, with
 the eighth collection running the teardown inside its still-open window. The
@@ -3249,7 +3249,7 @@ probe went with `rc-walk` on 2026-08-26, and no epoch byte or enrolment stamp
 is read today. The entry stays as the record of its day.
 
 
-Node C2 of `rfc/model/gc/walk/questions.md`.
+Node C2 of `rfc`'s `archive/pre-rc-cycle`, `model/gc/walk/questions.md`.
 `collector::tests::what_the_young_free_exemption_removes::measure_young_free_exemption`,
 `cargo test --release --lib -- --ignored measure_young_free_exemption --nocapture`,
 11th Gen Intel i7-11700K, WSL2. Counting rather than timing: release and debug
@@ -3355,7 +3355,7 @@ is the `gap` column above.
 
 ## 2026-08-22 — negative: counting ring-capable entities per block buys nothing, because no block comes out uniform
 
-Node B6 of `rfc/model/gc/walk/questions.md`.
+Node B6 of `rfc`'s `archive/pre-rc-cycle`, `model/gc/walk/questions.md`.
 `collector::tests::how_uniform_a_block_comes_out::measure_block_uniformity`,
 `cargo test --release --lib -- --ignored measure_block_uniformity --nocapture`,
 11th Gen Intel i7-11700K, WSL2. Counting rather than timing, so one run.
@@ -3418,7 +3418,7 @@ node A6.
 
 ## 2026-08-22 — a prefetch of the two foreign headers: costs 0.9 ns where nothing misses, and its gain at a million entities is not established
 
-Node A5 of `rfc/model/gc/walk/questions.md`.
+Node A5 of `rfc`'s `archive/pre-rc-cycle`, `model/gc/walk/questions.md`.
 `memory::barrier::tests::what_a_prefetch_recovers_from_a_cold_pair::measure_prefetch_recovery`,
 `cargo test --release --lib -- --ignored measure_prefetch_recovery --nocapture`,
 11th Gen Intel i7-11700K, WSL2. Fifteen timed rounds per point after a
@@ -3458,7 +3458,7 @@ exact test, which leaves one straight-line stretch to coalesce.
 
 ## 2026-08-22 — the walk's cost per cell is the edge, not the container: 43 ns in array storage, 47 ns in an object body
 
-Node B4 of `rfc/model/gc/walk/questions.md`, extending the entry below with
+Node B4 of `rfc`'s `archive/pre-rc-cycle`, `model/gc/walk/questions.md`, extending the entry below with
 two arms it did not have. Same probe, now five arms:
 `collector::tests::what_an_array_row_costs_the_walk::measure_array_row_cost`,
 `cargo test --release --lib -- --ignored measure_array_row_cost --nocapture`,
@@ -3510,7 +3510,7 @@ a chosen subset.
 
 ## 2026-08-22 — an empty array's row costs the walk about 15 ns more than a leaf's
 
-Node B4 of `rfc/model/gc/walk/questions.md`.
+Node B4 of `rfc`'s `archive/pre-rc-cycle`, `model/gc/walk/questions.md`.
 `collector::tests::what_an_array_row_costs_the_walk::measure_array_row_cost`,
 `cargo test --release --lib -- --ignored measure_array_row_cost --nocapture`,
 11th Gen Intel i7-11700K, WSL2. Six runs, five timed epochs per point after
@@ -3564,7 +3564,7 @@ question it served is live in S37 and needs its own number. The entry stays as
 the record of its day.
 
 
-Node B1 of `rfc/model/gc/walk/questions.md`.
+Node B1 of `rfc`'s `archive/pre-rc-cycle`, `model/gc/walk/questions.md`.
 `collector::tests::what_a_leaf_row_costs_the_walk::measure_leaf_row_cost`,
 `cargo test --release --lib -- --ignored measure_leaf_row_cost --nocapture`,
 11th Gen Intel i7-11700K, WSL2. Three runs, five timed epochs per point
@@ -3613,7 +3613,7 @@ that made the test's own thread the collector. The entry stays as the record
 of its day.
 
 
-Node C4 of `rfc/model/gc/walk/questions.md`, whose currency a review round
+Node C4 of `rfc`'s `archive/pre-rc-cycle`, `model/gc/walk/questions.md`, whose currency a review round
 corrected: rung 2 costs epoch **duration**, and what it spends it on is the
 collector waiting for a handshake ack. Nothing timed that wait before.
 `collector::tests::what_the_collector_waits_for::measure_collector_wait`,
@@ -3654,9 +3654,9 @@ them.
 **What it decides.** Rung 2's per-round price is three handshake round
 trips plus a drain floor, in the currency the node demanded. What it does
 not decide is whether the rung earns its keep: that needs the rung to
-exist — the ladder is unbuilt (`rfc/model/gc/rc-walk.md`, "When the
-collector runs") — and needs a workload with a real checkpoint interval
-rather than this sweep's synthetic one.
+exist — the ladder is unbuilt (`rfc`'s `archive/pre-rc-cycle`,
+`model/gc/rc-walk.md`, "When the collector runs") — and needs a workload with
+a real checkpoint interval rather than this sweep's synthetic one.
 
 **A defect in the first version of this probe, recorded because the shape
 is easy to get wrong.** It made the test's own thread the collector and
@@ -3673,7 +3673,7 @@ byte plus the census store, and neither is written today. The entry stays as
 the record of its day.
 
 
-Node B7 of `rfc/model/gc/walk/questions.md`, which asks what a block skip
+Node B7 of `rfc`'s `archive/pre-rc-cycle`, `model/gc/walk/questions.md`, which asks what a block skip
 adds over the per-entity skip of node B1.
 `collector::tests::what_a_skipped_entity_still_costs::measure_skipped_entity_cost`,
 `taskset -c 3 cargo test --release --lib -- --ignored measure_skipped_entity_cost --nocapture`,
@@ -3728,7 +3728,7 @@ its fallback and its counter against.
 
 ## 2026-08-24 — the prefetch distance is not the lever, and the wide arm has no sign
 
-Node A5 of `rfc/model/gc/walk/questions.md`, which asked for a pinned core,
+Node A5 of `rfc`'s `archive/pre-rc-cycle`, `model/gc/walk/questions.md`, which asked for a pinned core,
 a longer round and the fixed distance of eight swept.
 `memory::barrier::tests::what_a_prefetch_recovers_from_a_cold_pair::measure_prefetch_recovery`,
 `taskset -c 3 cargo test --release --lib -- --ignored measure_prefetch_recovery --nocapture`,
@@ -3777,7 +3777,7 @@ named instrument defect for the case that matters.
 
 ## 2026-08-24 — a severed cell is 2.3 ns and a released child 1.0 ns, or 14 with its teardown: the drain's borrowed price was three to fourteen times over
 
-Node D3 of `rfc/model/gc/walk/questions.md`.
+Node D3 of `rfc`'s `archive/pre-rc-cycle`, `model/gc/walk/questions.md`.
 `walk::tests::what_a_sever_and_a_release_cost::measure_sever_and_release`,
 `taskset -c 3 cargo test --release --lib -- --ignored measure_sever_and_release --nocapture`,
 11th Gen Intel i7-11700K, L2 4 MiB, L3 16 MiB, WSL2. Six runs, 15 timed
@@ -3914,7 +3914,8 @@ scattered vector read; the difference is what each harness holds constant,
 and the figures are the same order but not the same measurement. Read as
 agreement in order of magnitude, not as a reproduction.
 
-**What it decides.** `rfc/model/gc/gc-horizon-v2/questions.md` node N
+**What it decides.** `rfc`'s `archive/pre-rc-cycle`,
+`model/gc/gc-horizon-v2/questions.md` node N
 estimated the both-miss pair at about 80 ns and marked the figure unmeasured.
 The measurement is 33 — the estimate is high by a factor of about 2.4. The
 store path still carries an order of magnitude between a warm heap and a cold
@@ -3967,9 +3968,9 @@ arithmetic: records/ms at an assumed churn rate times the epoch
 figures of "fresh brackets on one HEAD".
 
 Both arms are the measured case for the unbuilt young-free exemption
-(`rfc/BACKLOG.md` via `rfc/model/gc/rc-walk.md`, "Deferred physical
-release"), corrected 2026-08-22: the second arm's entities are born and dead
-inside one epoch, and the first arm's are allocated fresh and killed before
+(`rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`, "Deferred physical
+release"), corrected 2026-08-22: the
+second arm's entities are born and dead inside one epoch, and the first arm's are allocated fresh and killed before
 `walk()` reaches them, so both read epoch byte zero at free time and neither
 was ever enrolled. The exemption would remove the whole table. A mature arm
 needs a population walked in an earlier epoch, which the exemption's own probe
@@ -3993,8 +3994,8 @@ collector (`walk`, `epoch`'s ack and attend), the block pool's
 cross-thread structures, the buffer arena's remote free, the intern
 table, and `Arc` — none on the counted hot path.
 
-**The cost half of `rfc/model/gc/rc-walk.md` open question 2 stays
-open**: instruction identity is confirmed, but no ARM hardware exists
+**The cost half of `rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`
+open question 2 stays open**: instruction identity is confirmed, but no ARM hardware exists
 here to pair the instructions with a clock, and the x86 lesson of
 2026-07-27 (a 3x effect invisible in instruction choice) is exactly
 why identity is not a cost claim.
@@ -4988,8 +4989,8 @@ if the walk shows up again in profiles.
 is the bodies, which are gone. The entry stays as the record of its day.
 
 
-The split (`rfc/model/gc/rc-walk.md` "Batched releases", amendment
-2026-07-28) replaces the one pre-run `ll_gc_checkpoint` with
+The split (`rfc`'s `archive/pre-rc-cycle`, `model/gc/rc-walk.md`,
+"Batched releases", amendment 2026-07-28) replaces the one pre-run `ll_gc_checkpoint` with
 `ll_gc_checkpoint_ack` before the run and a full `ll_gc_checkpoint`
 after it, in both the batched bench shape and `ll_release_vector`.
 Correctness-driven (pre-run pickup = the phase-lock shape); measured

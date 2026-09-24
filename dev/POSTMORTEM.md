@@ -281,8 +281,9 @@ idle cells read the threshold; the two entries and the ruling's reasoning are
 amended in place with the date (`dev/BENCHMARKS.md`, "S37.5 what a turnover
 re-offers, and what a deferral costs"; `dev/DECISIONS.md`, "the traversal age
 threshold is one"); the re-offer's doc states what it does per poll, and the
-per-poll collection on an idle thread is a question in `PLAN.md`, "What S37
-named and left". The rule this leaves: a commit that moves a constant an
+per-poll collection on an idle thread was a question of the plan, since ruled
+(`dev/DECISIONS.md`, "a quiet thread's turnover is the collector's to ask for,
+and the poll re-offers only on a turnover"). The rule this leaves: a commit that moves a constant an
 ignored load reads re-runs that load and cites the run.
 
 ## 2026-09-19 — a case that reads the live epoch is positioned by its harness thread's history
@@ -712,8 +713,7 @@ way until a step changed the figure it read.
 
 **What changed.** The case reads the current figure after lowering the peak
 and asserts the difference, which is the collection's own. The lesson is
-the one `dev/WORKFLOW.md`'s "state is taken from the instrument" already
-states for numbers from journals, applied to a number a fixture computes: a
+the rule that state is taken from the instrument rather than from a journal, applied to a number a fixture computes: a
 figure that includes the thread's history is asserted as a difference from
 a reading taken beside it, never as a constant.
 
@@ -1707,8 +1707,8 @@ and then take a relaxed load beside it from a later commissioning. The paragraph
 was rewritten to say what the acquire does buy — the commissioning that
 accompanies the value — and to name the mechanism that actually excludes a
 recycled block: the parking rule, which keeps a block from emptying and reaching
-the pool while a trace is in flight (`rfc/model/gc/rc-cycle.md`, "Death while
-enrolled"). At the time nothing parked; `PLAN.md` S36.2 subsequently built
+the pool while a trace is in flight (`rfc/model/gc/rc-cycle.md`, "Zero-count
+entities pending slot reuse", then titled "Death while enrolled"). At the time nothing parked; `PLAN.md` S36.2 subsequently built
 the owner-side trace window.
 
 **Why it was possible.** The pairing is real and the ordering it provides is

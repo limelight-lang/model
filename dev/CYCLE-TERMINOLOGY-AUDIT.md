@@ -295,7 +295,7 @@ precedes return across the manager boundary.
 
 ## Comment rewrite
 
-Follow `dev/WORKFLOW.md`, "Comment standard". Comments should carry contracts
+Follow `dev/WORKFLOW.md`, "Comments: the contract in the code, the argument in a document". Comments should carry contracts
 and local facts, not the history or argument that led to them.
 
 Keep locally:
