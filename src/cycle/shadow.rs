@@ -169,7 +169,7 @@ pub(crate) fn compose(color: Color, count: u32) -> u32 {
 /// construction", same document) and cannot find more in-edges than the
 /// refcount holds, so with `exact` a test build asserts `count >= edges`
 /// before the subtraction: a double subtraction fails the suite rather than
-/// clamping (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 6). A trace on another
+/// clamping (`docs/history/cycle-collector-review-2026-09-01.md`, finding 6). A trace on another
 /// thread reads a count the mutator moves under it — a reference stored
 /// after the row started is one more in-edge than the count — and passes
 /// `exact` false, so it clamps where the mutator's trace asserts

@@ -2397,7 +2397,7 @@ pub(crate) fn thread_may_free() -> bool {
 /// the exit guard runs the sequence at the thread's end whether or not a
 /// request stands, and the reading an embedder's thread end or the emitted
 /// safepoint would make has no export yet — under what name the ABI carries
-/// it is the rfc's question (`PLAN.md`, "Fog").
+/// it is the rfc's question (`rfc/dev/PLAN.md`, "Fog").
 #[cfg_attr(
     not(test),
     expect(

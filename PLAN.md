@@ -32,7 +32,7 @@ the closed stages' summaries are in `git log -- PLAN.md`.
 them is in the journals: `dev/DECISIONS.md` for a decision and its reason,
 `dev/POSTMORTEM.md` for a trap, `dev/BENCHMARKS.md` for a measurement,
 `dev/INDEX.md` and `dev/ARCHITECTURE.md` for the map. Deleted so far: S4
-through S64. A number is never reissued, and the prose sections below the
+through S64, and S66. A number is never reissued, and the prose sections below the
 active stage are the backlog stages are drawn from.
 
 **Every cycle-GC step has one review gate, and the Sage is the escalation**
@@ -334,7 +334,7 @@ The region reset gates the rename.
 ## What is left of the old phase lists
 
 Carried from the phase lists deleted with the 2026-07-24 snapshot; checked
-against the code on 2026-08-13.
+against the code on 2026-09-24.
 
 - [ ] **A3's factory half.** `factory(ctx, category)` takes no class, so it
   needs per-class generation; until then the generic path is
@@ -347,11 +347,10 @@ against the code on 2026-08-13.
 - [ ] **`Lazy` (1) and `Box` (10) have no producer**: Box waits on the FFI
   surface, Lazy on the compiler. `ll_entity_die` routes `LAZY` to
   `ll_object_die`; `Box` reaches its `debug_assert!`.
-- [ ] **The threshold arming policy.** Where the polls stand is the
-  compiler's, `ll_gc_collect_cycles` is the embedder's, and the search is the
-  collector's (`rfc/model/gc/strategies.md`, "Collection requests and
-  triggers"). The critical reserve's third
-  customer, a mutator whose gate is closed, is answered null until the ABI
+- [ ] **The critical reserve's third customer.** Who arms a collection is
+  settled (`rfc/model/gc/strategies.md`, "Collection requests and triggers").
+  The reserve's third customer, a mutator whose gate is closed, is answered
+  null until the ABI
   names the runtime progress operations a reserve would fund
   (`rfc/model/memory/critical-reserve.md`, "Mutator progress while
   collection is unavailable").
@@ -400,7 +399,10 @@ against the code on 2026-08-13.
   hooks forwarding to one `OneShot`, the two `EmbeddersInterval` guards.
   done: each under its threshold or recorded as kept.
 - [ ] **The turnover period `N` is unruled.** `epoch::BATCHES_PER_EPOCH` is
-  YRC's 64 (Y9's dial, `rfc/model/gc/cycle/questions.md`); both costs are
+  YRC's 64 (Y9's dial, `rfc/model/gc/cycle/questions.md`), the batches a
+  collector makes for one mutator before it advances that mutator's epoch
+  unless X (`worker::EPOCH_INTERVAL`) comes first; the package names it `N_b`
+  and S65.12's rig reads it. Both costs are
   linear in it and pull opposite ways, measured on the test heap
   (`dev/BENCHMARKS.md`, "S37.5 what a turnover re-offers, and what a
   deferral costs"). Which side pays is Edmond's; the ruling goes to
@@ -413,11 +415,10 @@ against the code on 2026-08-13.
   — conservative, left until one is marked.
 - [ ] **The citation check does not read the journals.**
   `dev/tools/citations.py` walks `src/`, `benches/`, `docs/` and four files,
-  so a journal's citation of a plan line is checked by nobody; two are dead
-  — `dev/DECISIONS.md` 2026-09-15 ("A root the worker read live is never
-  deferred") and 2026-09-18 ("The collector thread's spawn allocates through
-  the global allocator").
-  done: the journals join the checker's population and the two are
+  so a journal's citation of a plan line is checked by nobody; one is dead,
+  the 2026-09-18 entry's on the collector thread's spawn through the global
+  allocator.
+  done: the journals join the checker's population and the dead ones are
   re-pointed or cut.
 - [ ] **A store of one request arena's entity into another's object.**
   `store_category_barrier` keys on category alone, so the pointer is stored

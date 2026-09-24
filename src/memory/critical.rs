@@ -31,7 +31,7 @@
 //! (`crate::memory::heap::entity_alloc`), and which runtime progress
 //! operations a reserve would fund instead is what the ABI does not yet name
 //! (`rfc/model/memory/critical-reserve.md`, "Mutator progress while
-//! collection is unavailable"; `PLAN.md`, "The threshold arming policy").
+//! collection is unavailable"; `PLAN.md`, "The critical reserve's third customer").
 //! No partition among the three is
 //! built until one of their shares can be derived.
 //!

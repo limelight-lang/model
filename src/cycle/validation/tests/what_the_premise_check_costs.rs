@@ -1,6 +1,6 @@
 //! The cost of the premise check, which a debug build pays per component:
 //! every member's cells are walked once, so the check is linear in the
-//! component (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 5). Beside the walk
+//! component (`docs/history/cycle-collector-review-2026-09-01.md`, finding 5). Beside the walk
 //! count stands what the two debug checks ask the global allocator, which is
 //! the figure every deny case over a collection subtracts.
 

@@ -1,5 +1,9 @@
 # Cycle collector review, 2026-09-01
 
+> **A record.** Moved out of `dev/` on 2026-09-24: every finding is closed
+> as its status paragraph says, and code cites the findings by number for
+> the reasoning they hold.
+
 Status, 2026-09-18: a record. "State of the collector" describes the tree
 of 2026-09-01, and every mechanism it lists as unbuilt is built (`dev/INDEX.md`,
 "Entry points"). Of the six findings, 1 was withdrawn on 2026-09-03 with

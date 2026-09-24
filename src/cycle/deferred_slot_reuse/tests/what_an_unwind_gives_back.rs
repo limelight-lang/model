@@ -18,8 +18,8 @@ use super::*;
 /// anything that can raise, so no panic site in the crate reaches this arm
 /// and `WindowControl::swept` is what says which disposition the
 /// drop takes — the fact read rather than inferred from where an unwind came
-/// from (`dev/DECISIONS.md`, "the row sweep runs ahead of the candidate
-/// restore"). The case therefore opens the window's own structure over an
+/// from (`dev/DECISIONS.md`, "the close sweeps the rows, returns, and gives
+/// the arena's blocks back last"). The case therefore opens the window's own structure over an
 /// arena's region and drops it without telling it the rows are gone.
 #[test]
 fn a_window_dropped_before_its_rows_are_gone_abandons_what_it_withheld() {

@@ -401,7 +401,7 @@ pub(crate) unsafe fn entity_at(
 // shape decides how many of them a scan makes per entity. The count is what
 // decides the shape rather than a duration, because a dispatch is a few loads
 // and the clock cannot resolve one where a count can
-// (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 2).
+// (`docs/history/cycle-collector-review-2026-09-01.md`, finding 2).
 //
 // Per thread, because the tests that trace run beside each other.
 #[cfg(test)]

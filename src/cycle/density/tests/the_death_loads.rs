@@ -16,8 +16,9 @@
 //! The fixture frees the component it built, so
 //! [`deferred_slot_count`](crate::cycle::deferred_slot_reuse::deferred_slot_count)
 //! answers the number the fixture chose. As a measurement that is the
-//! harness's own input read back, and it is refused in that role (Sage,
-//! 2026-09-04, `dev/DECISIONS.md`). It stands here as a check instead: the
+//! harness's own input read back, and it is refused in that role
+//! (`dev/DECISIONS.md`, "the calibration runs on a parameterized test heap,
+//! and the entry names its parameters"). It stands here as a check instead: the
 //! crate's own free path withheld exactly the deaths the fixture made, which
 //! fails if a death took another `ll_free` arm, if a candidate bit still
 //! stood, or if a teardown killed something nobody counted.

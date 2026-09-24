@@ -706,7 +706,7 @@ The third customer the design names, the mutator that cannot collect, is
 not built: a mutator whose entry gate is closed is answered null, and which
 runtime progress operations a reserve would fund instead is what the ABI does
 not yet name (`rfc/model/memory/critical-reserve.md`, "Mutator progress while
-collection is unavailable"; `PLAN.md`, "The threshold arming policy"). No partition among the three is built
+collection is unavailable"; `PLAN.md`, "The critical reserve's third customer"). No partition among the three is built
 until one of their shares can be derived.
 
 Eight blocks is 512 KiB, which is the design's 500 KB figure read at

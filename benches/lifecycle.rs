@@ -5,8 +5,8 @@
 //! and what the death-branch checkpoint costs there — plain
 //! `ll_release` (one checkpoint test per death) against the batched
 //! form (`ll_gc_checkpoint_ack` fronting the run, `ll_release_batch`
-//! per death, one full `ll_gc_checkpoint` trailing it — the split of
-//! 2026-07-28).
+//! per death, one full `ll_gc_checkpoint` trailing it —
+//! `rfc/model/memory/bulk-operations.md`).
 //!
 //! Run A→B→A per `dev/BENCHMARKS.md`. One configuration since 2026-08-26,
 //! when the GC feature axis went with the two collectors:

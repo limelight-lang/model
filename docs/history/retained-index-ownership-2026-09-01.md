@@ -29,7 +29,7 @@ the last section. What is superseded: the manager chain, the thread-owner
 word, thread-exit abandonment and adoption of retained blocks, and the
 four open questions, each answered by the rfc entry. Kept as the record
 of what was considered. The review that raised it is
-`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 3.
+`docs/history/cycle-collector-review-2026-09-01.md`, finding 3.
 
 ## What the registry is and who reads it
 

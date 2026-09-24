@@ -355,12 +355,12 @@ registry, lifetimes, shadow metadata, integrity checks, metrics export.
 §9, the event journal, is built behind the `debug-journal` feature
 (`src/journal/`); §§1–8 are design with nothing behind them.
 
-`dev/design/pure-destructors.md` — a pointer at
-`rfc/model/gc/pure-destructors.md`, which is normative and carries the
-2026-08-23 amendment. The backlog line in `PLAN.md` is the owner.
+Pure destructors: `rfc/model/gc/pure-destructors.md` is normative and
+carries the 2026-08-23 amendment; the backlog line in `PLAN.md` is the owner.
 
 `docs/history/` — superseded documents, each with a banner naming what
-in it stands: the memory manager of 2026-07-03, the stack-exit epoch GC
+in it stands: the memory manager of 2026-07-03, the cycle collector review
+of 2026-09-01, the stack-exit epoch GC
 of 2026-08-18 and its review, the retained-index proposal of 2026-09-01,
 the collector–mutator protocol of 2026-09-09 and its review.
 
@@ -396,10 +396,9 @@ spans spared. Why the three are three, and what they still do not
 cover, is `dev/DECISIONS.md`, "the vocabulary is held by three guards,
 one per surface".
 
-`dev/CYCLE-COLLECTOR-REVIEW.md` — the 2026-09-01 read-only review of
-`src/cycle/` with Edmond's ruling per finding: arena tail waste, the
-scan's double row lookup, the retained registry lock, and three T1
-items; what each finding became is its status paragraph. Code cites the
+`docs/history/cycle-collector-review-2026-09-01.md` — the 2026-09-01
+read-only review of `src/cycle/` with Edmond's ruling per finding, every
+finding closed; what each became is its status paragraph. Code cites the
 findings by number.
 
 Documents deleted on 2026-08-26 with the collectors they described —

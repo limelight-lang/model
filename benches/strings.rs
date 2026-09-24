@@ -5,8 +5,8 @@
 //! - **What an append loop costs, and where.** `ll_string_append` on a
 //!   request-arena string extends its payload in place off the bump top
 //!   when it can; the same call on a GC-heap string reallocates and copies
-//!   every time it outgrows its capacity, because `buffer_ensure_longlived`
-//!   has no such path (`PLAN.md`, Residual; `rfc/model/memory/buffers.md`).
+//!   every time it outgrows its capacity when `buffer_ensure_longlived` cannot
+//!   grow its chunk in place (`rfc/model/memory/buffers.md`).
 //!
 //!   **The two append arms are not a measurement of that gap**, and must
 //!   not be read as one: they also differ in how the payload is reclaimed —

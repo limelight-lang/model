@@ -460,7 +460,8 @@ impl Drop for WithheldReturns {
     ///
     /// **No panic site of the crate stands in that second case**, [`ActiveTrace`]'s
     /// drop sweeping ahead of everything that can raise (`dev/DECISIONS.md`,
-    /// "the row sweep runs ahead of the candidate restore"). The word is read
+    /// "the close sweeps the rows, returns, and gives the arena's blocks back
+    /// last"). The word is read
     /// rather than the order inferred, so a close reordered later cannot make
     /// this drop return under a row that still names the slot.
     ///
@@ -703,8 +704,8 @@ impl ActiveTrace {
     /// disposition so that an unwind raised past it — out of a free the
     /// disposition's retirement makes — leaves a drop whose rows are gone and
     /// whose withheld returns can therefore be made rather than abandoned
-    /// (`dev/DECISIONS.md`, "the row sweep runs ahead of the candidate
-    /// restore"). Every root the disposition keeps stays in the ring, in
+    /// (`dev/DECISIONS.md`, "the close sweeps the rows, returns, and gives the
+    /// arena's blocks back last"). Every root the disposition keeps stays in the ring, in
     /// order, behind nothing and ahead of whatever the teardown registered;
     /// the disposition reads no row and no withheld slot, and `ll_free`'s
     /// candidate arm reads the entity's own bit rather than the lane its
@@ -753,8 +754,8 @@ thread_local! {
 ///
 /// What it stages is an unwind out of the close past the sweep: the rows are
 /// gone by then, so the withheld returns are made by the drop that runs behind
-/// it rather than abandoned (`dev/DECISIONS.md`, "the row sweep runs ahead of
-/// the candidate restore").
+/// it rather than abandoned (`dev/DECISIONS.md`, "the close sweeps the rows,
+/// returns, and gives the arena's blocks back last").
 #[cfg(test)]
 pub(crate) fn inject_close_unwind() -> crate::cycle::testing::ArmedInjection {
     crate::cycle::testing::ArmedInjection::arm(&PANIC_IN_CLOSE)

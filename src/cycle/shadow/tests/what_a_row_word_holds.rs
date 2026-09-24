@@ -179,7 +179,7 @@ fn a_subtraction_stops_at_zero_and_keeps_the_colour() {
 
 /// More edges than the count holds is a defect of the in-line mutator trace,
 /// which reads exact counts, and a test build fails on it rather than
-/// clamping (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 6). The test runs
+/// clamping (`docs/history/cycle-collector-review-2026-09-01.md`, finding 6). The test runs
 /// under `debug_assertions` alone: a `--release` test build carries no
 /// assertion, clamps, and would report the absence of a panic as a
 /// defect.

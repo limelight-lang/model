@@ -64,7 +64,7 @@ const _: () = assert!(SEGMENT_BYTES - SEGMENT_HEADER_BYTES == 4096);
 /// push has already paid it. The pointer and not the colour: another path
 /// into the same entity can recolour the row between the push and the pop,
 /// and what decides the expansion is the colour the row holds at the pop
-/// (`dev/CYCLE-COLLECTOR-REVIEW.md`, finding 2).
+/// (`docs/history/cycle-collector-review-2026-09-01.md`, finding 2).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(C)]
 pub(crate) struct WorklistEntry {
