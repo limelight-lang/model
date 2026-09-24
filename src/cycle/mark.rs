@@ -87,7 +87,9 @@
 //! [`TraceScratchArena::push_work`](crate::cycle::arena::TraceScratchArena::push_work).
 //! Either refused
 //! answers [`MarkResult::AllocationFailed`], which abandons the trace where it
-//! stands. Abandoning is free precisely because no entity was written.
+//! stands, and a trace through `cells::AtomicCells` is abandoned the same way
+//! when the traced mutator recalls its token ([`MarkResult::Recalled`]).
+//! Abandoning is free precisely because no entity was written.
 //!
 //! One ordering matters and it is this module's: the row is ensured before
 //! the count is subtracted, so an entity reached for the first time starts
@@ -110,7 +112,9 @@
 //! the call that read it. The rule lives here rather than in the caller that
 //! drains the queue, so that a second caller of [`mark`] inherits it.
 
-use crate::cells::{self, CellReader};
+use std::ops::ControlFlow;
+
+use crate::cells::{self, Cell, CellReader, CellVisitor};
 use crate::cycle::arena::{RowLookup, TraceScratchArena};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
@@ -233,6 +237,13 @@ pub(crate) enum MarkResult {
     /// Both allocation paths refused, so the collection aborts. The heap is
     /// byte-identical and the arena's reset is the whole of the debt.
     AllocationFailed,
+    /// The traced mutator recalled its token while a collector thread traced
+    /// for it, and the trace stopped where it stood
+    /// (`crate::cycle::arena::TraceScratchArena::inspect_position`). As after
+    /// a refusal, the heap is byte-identical and the arena's reset is the
+    /// whole of the debt; a trace through `cells::PlainCells` is never
+    /// recalled.
+    Recalled,
 }
 
 /// Trial-delete the component reachable from `root`, leaving the verdict
@@ -255,8 +266,8 @@ pub(crate) enum MarkResult {
 /// first root's depth drew.
 ///
 /// **Nothing is written into any entity**, so [`MarkResult::AllocationFailed`]
-/// leaves the heap byte-identical and the caller's whole duty is
-/// `TraceScratchArena::reset`.
+/// and [`MarkResult::Recalled`] leave the heap byte-identical and the caller's
+/// whole duty is `TraceScratchArena::reset`.
 ///
 /// **A root at count zero was torn down, and is expanded by nothing** (module
 /// doc), which is not a refusal: the answer is [`MarkResult::Complete`] and
@@ -295,27 +306,68 @@ pub(crate) unsafe fn mark<R: CellReader>(
         // a collector holds the kind from its own reading of the header
         // and does not go back to a word the mutator may be writing.
         let kind = unsafe { cells::entity_kind(entity) };
-        let mut refused = false;
-        unsafe {
-            cells::trace_cells::<R>(entity, kind, |cell| {
-                // The refusal cannot break out of the tracer, so the
-                // remaining cells of this entity are read and dropped.
-                // They cost a load each and nothing else: the collection
-                // is over, and every row it wrote dies with the arena.
-                if refused {
-                    return;
-                }
-
-                refused = !visit_child::<R>(arena, cell.child, prune);
-            })
-        };
-
-        if refused {
-            return MarkResult::AllocationFailed;
+        let expansion = Expansion::<R, _>::new(arena, |arena, child| unsafe {
+            visit_child::<R>(arena, child, prune)
+        });
+        if unsafe { cells::trace_cells_until::<R>(entity, kind, expansion) }.is_break() {
+            return if arena.was_recalled() {
+                MarkResult::Recalled
+            } else {
+                MarkResult::AllocationFailed
+            };
         }
     }
 
     MarkResult::Complete
+}
+
+/// The visitor both phases hand `cells::trace_cells_until` for one entity:
+/// each counted child goes to `child`, whose false is a refused allocation
+/// and stops the stride, and under a concurrent reader each position is
+/// counted toward the traced mutator's recall, which stops it too
+/// (`crate::cycle::arena::TraceScratchArena::inspect_position`). The two
+/// stops are told apart by [`TraceScratchArena::was_recalled`].
+pub(crate) struct Expansion<'a, R, F> {
+    arena: &'a mut TraceScratchArena,
+    child: F,
+    reader: std::marker::PhantomData<R>,
+}
+
+impl<'a, R, F> Expansion<'a, R, F>
+where
+    F: FnMut(&mut TraceScratchArena, *mut RcHeader) -> bool,
+{
+    pub(crate) fn new(arena: &'a mut TraceScratchArena, child: F) -> Self {
+        Self {
+            arena,
+            child,
+            reader: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<R, F> CellVisitor for Expansion<'_, R, F>
+where
+    R: CellReader,
+    F: FnMut(&mut TraceScratchArena, *mut RcHeader) -> bool,
+{
+    #[inline]
+    fn cell(&mut self, cell: Cell) -> ControlFlow<()> {
+        if (self.child)(self.arena, cell.child) {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        }
+    }
+
+    #[inline]
+    fn position(&mut self) -> ControlFlow<()> {
+        if R::CONCURRENT {
+            self.arena.inspect_position()
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
 }
 
 /// Meet the root's own row and queue it for expansion. False when both

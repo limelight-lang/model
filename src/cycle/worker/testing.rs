@@ -292,7 +292,9 @@ pub(crate) fn note_refusal() {
 /// the shape of its roots (`dev/BENCHMARKS.md`, "S64.5 what a take costs by
 /// the shape of its roots"): the roots the trace walked, the parts it opened,
 /// whether it ran to its end, the blocks its arena drew above the workspace,
-/// and the wall of the two phases.
+/// and the wall of the two phases; and, where a case's hook ran between the
+/// phases ([`between_the_next_phases`]), the positions of storage the scan
+/// read after it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct TracedBatch {
     pub(crate) roots: usize,
@@ -300,6 +302,7 @@ pub(crate) struct TracedBatch {
     pub(crate) complete: bool,
     pub(crate) blocks: usize,
     pub(crate) wall: std::time::Duration,
+    pub(crate) positions_after_the_hook: Option<usize>,
 }
 
 /// Whether a case is reading the batches: off by the module's own, so that
@@ -418,15 +421,19 @@ impl OneShot {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(act);
     }
 
-    fn run(&self) {
+    /// Run the closure installed, if one is, and say whether one ran.
+    fn run(&self) -> bool {
         let act = self
             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
+        let installed = act.is_some();
         if let Some(act) = act {
             act();
         }
+
+        installed
     }
 }
 
@@ -440,6 +447,61 @@ pub(crate) fn at_the_start_of_the_next_trace(act: Box<dyn FnOnce() + Send>) {
 
 pub(crate) fn at_the_start_of_the_trace() {
     AT_THE_NEXT_TRACE.run();
+}
+
+/// Between the next batch's mark and its scan, on the collector's thread,
+/// for the case whose mutator asks for its token after the mark: what the
+/// scan reads from there on is what the mutator waits through.
+static BETWEEN_THE_NEXT_PHASES: OneShot = OneShot::new();
+
+pub(crate) fn between_the_next_phases(act: Box<dyn FnOnce() + Send>) {
+    BETWEEN_THE_NEXT_PHASES.install(act);
+}
+
+/// Run the hook between the phases, and say whether a case installed one.
+pub(crate) fn between_the_phases() -> bool {
+    BETWEEN_THE_NEXT_PHASES.run()
+}
+
+/// The positions the scan read after the hook between the phases, left by
+/// the hooked batch's trace for its own record, and `usize::MAX` for none:
+/// only a batch that ran the hook writes it, and the hook is one case's.
+static POSITIONS_AFTER_THE_HOOK: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+pub(crate) fn note_positions_after_the_hook(positions: usize) {
+    POSITIONS_AFTER_THE_HOOK.store(positions, Ordering::Relaxed);
+}
+
+pub(crate) fn take_positions_after_the_hook() -> Option<usize> {
+    match POSITIONS_AFTER_THE_HOOK.swap(usize::MAX, Ordering::Relaxed) {
+        usize::MAX => None,
+        positions => Some(positions),
+    }
+}
+
+/// The instant just before the first release of a grant since a case began
+/// reading the batches: the end of what a mutator standing in the token's wait
+/// waits for, the wake aside.
+static RELEASED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+pub(crate) fn note_release() {
+    if !READING_BATCHES.load(Ordering::Relaxed) {
+        return;
+    }
+
+    // The first release a case reads, which is its batch's: a round after
+    // it may serve the ring again before the case stops reading.
+    RELEASED_AT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_or_insert_with(Instant::now);
+}
+
+pub(crate) fn take_released_at() -> Option<Instant> {
+    RELEASED_AT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
 }
 
 /// Between the pre-claim reading's take of the mutator's blocks and its

@@ -43,13 +43,14 @@
 //!
 //! # The descent is the mark's, written twice
 //!
-//! Pop, load the kind, hand the entity to `cells::trace_cells`, answer a
-//! per-child question, abort on a refusal: the loop below is
-//! `crate::cycle::mark`'s with one bool and one enum changed. Sharing it
-//! would take a trait over the per-child answer for two callers, and the
-//! two answers have nothing in common — one subtracts and one colours.
-//! What the copy costs is that a change to the refusal handling has to
-//! be made in both files.
+//! Pop, load the kind, hand the entity to `cells::trace_cells_until`, answer
+//! a per-child question, stop on a refusal or a recall: the loop below is
+//! `crate::cycle::mark`'s with the answer and one enum changed. What the two
+//! share is the visitor, `crate::cycle::mark::Expansion`, which counts the
+//! positions toward the recall and stops the stride; the per-child answers
+//! have nothing in common — one subtracts and one colours — so each phase
+//! hands it its own. What the copy of the loop costs is that a change to
+//! how a stop is answered has to be made in both files.
 //!
 //! **Nothing here outlives the call.** The rows, the bitmap and the worklist
 //! are the caller's arena. The scan asks that arena for one thing only, a
@@ -67,6 +68,7 @@
 
 use crate::cells::{self, CellReader};
 use crate::cycle::arena::{TraceScratchArena, find_initialized_row};
+use crate::cycle::mark::Expansion;
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow::{self, Color};
 use crate::cycle::stack::WorklistEntry;
@@ -82,6 +84,9 @@ pub(crate) enum ScanResult {
     /// collection aborts. The heap is byte-identical and the arena's
     /// reset is the whole of the debt.
     AllocationFailed,
+    /// The traced mutator recalled its token, as `crate::cycle::mark`'s
+    /// `MarkResult::Recalled` says.
+    Recalled,
 }
 
 /// Colour the closure of `root`: every entity it reaches through the
@@ -126,23 +131,15 @@ pub(crate) unsafe fn scan<R: CellReader>(
         // The kind is loaded here and passed down rather than read
         // inside the tracer, which is the contract `trace_cells` states.
         let kind = unsafe { cells::entity_kind(entry.entity) };
-        let mut refused = false;
-        unsafe {
-            cells::trace_cells::<R>(entry.entity, kind, |cell| {
-                // The refusal cannot break out of the tracer, so the
-                // remaining cells of this entity are read and dropped.
-                // They cost a load each and nothing else: the collection
-                // is over, and every row it coloured dies with the arena.
-                if refused {
-                    return;
-                }
-
-                refused = !classify_and_schedule_entity(arena, cell.child, live);
-            })
-        };
-
-        if refused {
-            return ScanResult::AllocationFailed;
+        let expansion = Expansion::<R, _>::new(arena, |arena, child| unsafe {
+            classify_and_schedule_entity(arena, child, live)
+        });
+        if unsafe { cells::trace_cells_until::<R>(entry.entity, kind, expansion) }.is_break() {
+            return if arena.was_recalled() {
+                ScanResult::Recalled
+            } else {
+                ScanResult::AllocationFailed
+            };
         }
     }
 

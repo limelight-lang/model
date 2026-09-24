@@ -225,10 +225,14 @@ pub(crate) fn registry_holds() -> (usize, usize) {
 /// and an allocation it cannot get is a refusal").
 unsafe fn tear_down(block: *mut u8, layout: *const Class) {
     unsafe {
-        crate::object::for_each_body_cell::<crate::cells::PlainCells>(block, layout, &mut |cell| {
-            crate::cells::empty_cell(cell);
-            crate::memory::barrier::drop_ref(MemoryCategory::LongLived, cell.child);
-        })
+        let _ = crate::object::for_each_body_cell::<crate::cells::PlainCells>(
+            block,
+            layout,
+            &mut |cell| {
+                crate::cells::empty_cell(cell);
+                crate::memory::barrier::drop_ref(MemoryCategory::LongLived, cell.child);
+            },
+        );
     };
 }
 

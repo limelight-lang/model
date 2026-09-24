@@ -36,6 +36,7 @@
 //! exists to refuse. The storage pointer and its version belong in slots
 //! no property store can reach.
 
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering, fence};
 
 use crate::cells::{AtomicCells, Cell, CellReader, OutsideCarry, OutsideCells, PlainCells};
@@ -267,7 +268,11 @@ const COHERENT_READ_ATTEMPTS: usize = 4;
 /// fence rather than an acquire load on the second read, because an
 /// acquire load orders what follows it and would leave the pointer's
 /// load free to be taken after the check it is meant to pass.
-unsafe fn walk_concurrent(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(Cell)) {
+unsafe fn walk_concurrent(
+    base: *mut u8,
+    _: *const Class,
+    visit: &mut dyn FnMut(Option<Cell>) -> ControlFlow<()>,
+) -> ControlFlow<()> {
     for _ in 0..COHERENT_READ_ATTEMPTS {
         let before = unsafe { version(base) };
         if before % 2 != 0 {
@@ -280,12 +285,20 @@ unsafe fn walk_concurrent(base: *mut u8, _: *const Class, visit: &mut dyn FnMut(
             continue;
         }
 
-        if !block.is_null() {
-            unsafe { yield_cells::<AtomicCells>(block, visit) };
+        if block.is_null() {
+            return ControlFlow::Continue(());
         }
 
-        return;
+        // Every position of the block, a cell or none, as the group's
+        // contract asks of a concurrent walk.
+        for i in 0..CELLS {
+            visit(unsafe { crate::cells::counted_box_cell::<AtomicCells>(block.add(i * 16)) })?;
+        }
+
+        return ControlFlow::Continue(());
     }
+
+    ControlFlow::Continue(())
 }
 
 /// Empty every cell and hand its former occupant back undropped, the

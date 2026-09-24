@@ -85,6 +85,15 @@
 //! (`dev/DECISIONS.md`, "the trace in parts waits for the recall and the
 //! stack marks"), and S65.13 switches the parts on.
 //!
+//! # The recall
+//!
+//! A collector's trace counts the positions of storage it reads on its arena
+//! ([`TraceScratchArena::inspect_position`]) and reads the traced mutator's
+//! token for a recall every [`RECALL_STRIDE`] of them and at every block it
+//! draws: an arena opened for a collector names that token
+//! ([`TraceScratchArena::open_for_owner`]), and one opened for the thread's own
+//! collection names none, nobody recalling it.
+//!
 //! # What it does not hold
 //!
 //! A `Vec`, a `HashMap`, or anything else that reaches the global allocator.
@@ -115,6 +124,8 @@
 //! harmless by an ordering instead: the row is written only after the
 //! enrolment is in hand, so a refused enrolment leaves the row at zero
 //! ([`TraceScratchArena::ensure_row`]).
+
+use std::ops::ControlFlow;
 
 use crate::cycle::deferred_slot_reuse::RETURNS_BASE_BYTES;
 use crate::cycle::drops::{
@@ -309,6 +320,13 @@ fn fire_injected_harvest_failure() {
     }
 }
 
+/// Positions of storage a collector's trace reads between two readings of
+/// the traced mutator's recall of its token
+/// ([`TraceScratchArena::inspect_position`]): what a mutator asking for its
+/// token waits through before the trace stops, the posts and the reset
+/// aside. Not a measured figure; the rig of `PLAN.md`'s S65.12 reads it.
+pub(crate) const RECALL_STRIDE: usize = 1024;
+
 /// One collection's memory: the thread's workspace for as long as the arena
 /// lives, and the blocks the bump grew into past it, which
 /// [`TraceScratchArena::reset`] returns.
@@ -338,6 +356,21 @@ pub(crate) struct TraceScratchArena {
     /// Whether a growth was refused by the budget rather than by the pool:
     /// what tells a batch that met its budget from one the pool refused.
     budget_met: bool,
+    /// The token of the mutator a collector thread traces for, whose recall
+    /// the trace reads every [`RECALL_STRIDE`] positions; null for an
+    /// in-line collection, which nobody recalls
+    /// ([`TraceScratchArena::open_for_owner`]).
+    traced_token: *const crate::cycle::token::TraceToken,
+    /// Positions left to read before the next reading of the recall, from
+    /// [`RECALL_STRIDE`] down to one.
+    positions_to_the_reading: usize,
+    /// Whether a reading found the recall standing: what tells a trace the
+    /// recall stopped from one a refused allocation did.
+    recalled: bool,
+    /// Readings of the recall made so far: with the countdown, the positions
+    /// this arena's trace has read, which a case reads.
+    #[cfg(test)]
+    recall_readings: usize,
     /// The collection's one reading of the epoch cell of the mutator whose
     /// graph this trace walks — the opening thread's own for an in-line
     /// collection, the served mutator's for a collector thread
@@ -441,7 +474,9 @@ impl TraceScratchArena {
         owner: *const crate::cycle::mutator_record::MutatorRecord,
     ) -> Option<Self> {
         let turnovers = unsafe { crate::cycle::epoch::of_record(owner) };
-        Self::open_for(turnovers, crate::cycle::epoch::epoch_of(turnovers))
+        let mut arena = Self::open_for(turnovers, crate::cycle::epoch::epoch_of(turnovers))?;
+        arena.traced_token = unsafe { &raw const (*owner).token };
+        Some(arena)
     }
 
     /// The arena of a trace that read the cell at `turnovers` and prunes
@@ -462,6 +497,11 @@ impl TraceScratchArena {
             watermark: std::ptr::null_mut(),
             published_below_the_watermark: 0,
             budget_met: false,
+            traced_token: std::ptr::null(),
+            positions_to_the_reading: RECALL_STRIDE,
+            recalled: false,
+            #[cfg(test)]
+            recall_readings: 0,
             turnovers,
             epoch,
             cursor: unsafe { payload.add(WORKSPACE_PREFIX_BYTES) },
@@ -1198,12 +1238,21 @@ impl TraceScratchArena {
         self.drops.segment_count()
     }
 
-    /// Take one more block, or answer false when both allocation paths refuse.
+    /// Take one more block, or answer false when both allocation paths refuse
+    /// or the traced mutator has recalled its token.
     ///
     /// What is left of the previous block is abandoned. A bump that
     /// searched its older blocks for a fit would be a free list, and the
     /// arena's whole life is one collection.
     fn grow(&mut self) -> bool {
+        // A growth reads the recall as the stride does: a trace whose every
+        // position opens a block would otherwise draw the budget whole
+        // inside one stride.
+        if self.recall_stands() {
+            self.recalled = true;
+            return false;
+        }
+
         if self.drawn == self.block_budget {
             self.budget_met = true;
             return false;
@@ -1244,9 +1293,11 @@ impl TraceScratchArena {
     /// the growth that would pass it answers as a refused allocation does,
     /// so a trace under the budget ends with `AllocationFailed` where an
     /// unbounded one would have drawn. The collector's batch runs under one,
-    /// so that what a mutator waits for is bounded by memory rather than by
-    /// the closure of a root (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner
-    /// handoff", the block budget B). Blocks already drawn count.
+    /// so that the memory its thread holds under a grant, and the reset that
+    /// returns it, are bounded by blocks rather than by the closure of a root
+    /// (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff", the block
+    /// budget B); what a mutator waits for is the recall's ([`RECALL_STRIDE`]).
+    /// Blocks already drawn count.
     pub(crate) fn budget_blocks(&mut self, blocks: usize) {
         self.block_budget = blocks;
     }
@@ -1256,6 +1307,57 @@ impl TraceScratchArena {
     /// leaves the answer standing.
     pub(crate) fn met_its_budget(&self) -> bool {
         self.budget_met
+    }
+
+    /// Count one position of storage a collector's trace is about to read,
+    /// and answer `Break` once the traced mutator has recalled its token: the
+    /// recall is read at every [`RECALL_STRIDE`]th position, relaxed, so a
+    /// mutator that stood in its token's wait before a reading waits through
+    /// at most one stride of positions for the trace to stop. The trace's
+    /// phases call it under [`crate::cells::AtomicCells`] alone.
+    #[inline]
+    pub(crate) fn inspect_position(&mut self) -> ControlFlow<()> {
+        self.positions_to_the_reading -= 1;
+        if self.positions_to_the_reading != 0 {
+            return ControlFlow::Continue(());
+        }
+
+        self.read_the_recall()
+    }
+
+    #[cold]
+    fn read_the_recall(&mut self) -> ControlFlow<()> {
+        self.positions_to_the_reading = RECALL_STRIDE;
+        #[cfg(test)]
+        {
+            self.recall_readings += 1;
+        }
+
+        if self.recall_stands() {
+            self.recalled = true;
+            return ControlFlow::Break(());
+        }
+
+        ControlFlow::Continue(())
+    }
+
+    /// Whether the traced mutator stands in its token's wait. An arena opened
+    /// on the tracing thread's own behalf is recalled by nobody, whichever
+    /// reader its trace takes.
+    fn recall_stands(&self) -> bool {
+        !self.traced_token.is_null() && unsafe { (*self.traced_token).mutator_waits() }
+    }
+
+    /// Whether [`inspect_position`](Self::inspect_position) found the recall
+    /// standing since the open.
+    pub(crate) fn was_recalled(&self) -> bool {
+        self.recalled
+    }
+
+    /// The positions this arena's trace has counted since the open.
+    #[cfg(test)]
+    pub(crate) fn positions_inspected(&self) -> usize {
+        self.recall_readings * RECALL_STRIDE + (RECALL_STRIDE - self.positions_to_the_reading)
     }
 
     /// The epoch this trace's mark prunes and its commit stamps against: the

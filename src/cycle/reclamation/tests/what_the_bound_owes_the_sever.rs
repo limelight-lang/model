@@ -25,7 +25,7 @@ static OUTSIDE_OCCUPANT: AtomicUsize = AtomicUsize::new(0);
 /// A group whose walk yields nothing and whose sever hands one occupant over.
 static SEVERS_MORE_THAN_IT_WALKS: OutsideCells = OutsideCells {
     walk_plain: yields_nothing,
-    walk_concurrent: yields_nothing,
+    walk_concurrent: yields_nothing_concurrently,
     sever: hands_one_over,
     sever_one: severs_nothing,
     free: frees_nothing,
@@ -35,7 +35,7 @@ static SEVERS_MORE_THAN_IT_WALKS: OutsideCells = OutsideCells {
 /// A group whose walk yields one occupant and whose sever hands none over.
 static WALKS_MORE_THAN_IT_SEVERS: OutsideCells = OutsideCells {
     walk_plain: yields_the_occupant,
-    walk_concurrent: yields_the_occupant,
+    walk_concurrent: yields_the_occupant_concurrently,
     sever: hands_nothing_over,
     sever_one: severs_nothing,
     free: frees_nothing,
@@ -43,6 +43,14 @@ static WALKS_MORE_THAN_IT_SEVERS: OutsideCells = OutsideCells {
 };
 
 unsafe fn yields_nothing(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) {}
+
+unsafe fn yields_nothing_concurrently(
+    _: *mut u8,
+    _: *const Class,
+    _: &mut dyn FnMut(Option<Cell>) -> std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    std::ops::ControlFlow::Continue(())
+}
 
 /// No case here reaches the per-cell sever: these two groups are read by
 /// the teardown's whole-entity bound, which calls `sever` alone.
@@ -67,6 +75,23 @@ unsafe fn yields_the_occupant(base: *mut u8, _: *const Class, visit: &mut dyn Fn
         child,
         shape: crate::cells::CellShape::Box,
     });
+}
+
+/// [`yields_the_occupant`] for a collector's reader, one position.
+unsafe fn yields_the_occupant_concurrently(
+    base: *mut u8,
+    class: *const Class,
+    visit: &mut dyn FnMut(Option<Cell>) -> std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    let mut answer = std::ops::ControlFlow::Continue(());
+    unsafe {
+        yields_the_occupant(base, class, &mut |cell| {
+            if answer.is_continue() {
+                answer = visit(Some(cell));
+            }
+        })
+    };
+    answer
 }
 
 unsafe fn hands_one_over(_: *mut RcHeader, displaced: &mut dyn FnMut(*mut RcHeader)) {

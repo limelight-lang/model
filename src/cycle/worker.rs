@@ -29,8 +29,9 @@
 //! an arena bounded to [`TRACE_BLOCK_BUDGET`] blocks; a root at count zero
 //! is marked by nothing. Then it posts one verdict per entry, in R's order
 //! — *proposed*, *read live*, *zero-count* ([`verdict_for`]) — or *unwalked*
-//! for every root of a batch whose trace met the budget or a refused
-//! allocation: no color of such a trace is a verdict, so the whole batch is
+//! for every root of a batch whose trace met the budget, a refused
+//! allocation or the mutator's recall of its token: no color of such a trace
+//! is a verdict, so the whole batch is
 //! handed to the mutator's exact trace rather than a prefix of it
 //! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff", amended
 //! 2026-09-16 to the whole batch). R's
@@ -48,13 +49,35 @@
 //! — and doubles back after a completed one that took its whole clamp, up
 //! to [`BATCH_BOUND`]: under a
 //! block's capacity, so a batch spans at most two blocks of R, and small
-//! enough that the copy leaves the workspace to the rows. What a mutator
-//! waits for when it needs its token is one batch's trace, bounded by the
-//! blocks rather than by the roots. A take of a standing ring reads K
+//! enough that the copy leaves the workspace to the rows. A take of a standing ring reads K
 //! neither way ([`batch`]): it clamps one entry short of the threshold,
 //! which such a ring cannot exceed, so its clamp is the threshold's rather
 //! than K, and a take that filled it would size K from the threshold on a
 //! thread that has produced no batch at all.
+//!
+//! # The recall of the token
+//!
+//! A mutator that needs its token while this thread traces for it recalls it:
+//! its take marks the token before it waits
+//! (`crate::cycle::token::TraceToken::take_unless`), and the trace reads the
+//! mark every [`RECALL_STRIDE`](crate::cycle::arena::RECALL_STRIDE) positions
+//! of storage it reads, whether or not a position holds a counted reference, in
+//! the mark and in the scan alike, and at every block the arena draws
+//! (`crate::cycle::arena::TraceScratchArena::inspect_position`). A trace that
+//! finds the mark stops where it stands, and the release after it is the
+//! release of any abandoned batch: [`FinishThePosts`] — at most K posts of
+//! `Unwalked` and one advance of R — and one reset of the arena; a grant whose
+//! mark stands before the batch is made is released with no batch. What the
+//! mutator whose batch is traced waits through is therefore one stride of
+//! positions, those posts and that reset, whatever the closure of its roots or
+//! the width of an entity; the block budget bounds the arena and not the wait
+//! (`rfc/model/gc/rc-cycle.md`, "The recall of the token"). A recalled batch
+//! leaves K where it stands, the recall saying nothing of the batch's size.
+//!
+//! A grant this thread holds while it traces another mutator's batch — one a
+//! checkpoint reads after a consent that came during that batch — is not
+//! recalled: its mark is read when that batch ends, and its mutator waits the
+//! batch out whole. S65.14 builds the reading that releases it.
 //!
 //! # The epoch clock
 //!
@@ -196,8 +219,9 @@ pub(crate) enum Served {
     Unanswered,
     /// Nothing was taken: before any claim — R below the threshold, P
     /// without room, the record under another collector's reading — under
-    /// the claim, when the workspace was refused or the peek came up empty,
-    /// or at the withdrawal, when the record had moved on.
+    /// the claim, when the workspace was refused, the mutator had recalled
+    /// its token or the peek came up empty, or at the withdrawal, when the
+    /// record had moved on.
     Idle,
     /// A batch was made: this many roots taken from R, each with a verdict
     /// posted into P, whether their trace completed, and whether R still
@@ -224,18 +248,20 @@ const _: () =
     assert!(BATCH_BOUND * size_of::<usize>() * 4 <= crate::cycle::arena::WORKSPACE_BUMP_BYTES);
 
 /// Blocks a batch's trace may draw above the collector's workspace before it
-/// ends with its roots unwalked. Not a measured figure: what it bounds is
-/// the mutator's wait for its token, and the rfc names the bound and not its
-/// size. **What this bound decides is whether the collector's trace is worth
-/// anything to the mutator at all** (`dev/BENCHMARKS.md`, "the live-roots
-/// arm"): a take of 63 live roots whose closure fits here leaves the
-/// mutator's collection over P nothing to walk, 15,365 instructions against
-/// the 658,832 of collecting the same rings in line; a take whose closure
-/// passes it is abandoned after 75 to 157 µs of the collector's time, and
-/// the mutator meets the same rows itself for 0.68 % more than it would have
-/// spent without the take — whatever share of the ring is live
-/// (`dev/BENCHMARKS.md`, "the mix"). Inside the bound that share is what the
-/// mutator saves: it walks the roots the trace proposed and no others.
+/// ends with its roots unwalked. Not a measured figure: what it bounds is the
+/// collector's arena, the memory its thread holds under a grant and the length
+/// of the reset that returns it; the mutator's wait for its token is the
+/// recall's ([`RECALL_STRIDE`](crate::cycle::arena::RECALL_STRIDE)). **What
+/// this bound decides is whether the collector's trace is worth anything to the
+/// mutator at all** (`dev/BENCHMARKS.md`, "the live-roots arm"): a take of 63
+/// live roots whose closure fits here leaves the mutator's collection over P
+/// nothing to walk, 15,365 instructions against the 658,832 of collecting the
+/// same rings in line; a take whose closure passes it is abandoned after 75 to
+/// 157 µs of the collector's time, and the mutator meets the same rows itself
+/// for 0.68 % more than it would have spent without the take — whatever share
+/// of the ring is live (`dev/BENCHMARKS.md`, "the mix"). Inside the bound that
+/// share is what the mutator saves: it walks the roots the trace proposed and
+/// no others.
 const TRACE_BLOCK_BUDGET: usize = 8;
 
 /// Entries a mutator's R holds at or above which a round takes a batch from
@@ -1491,6 +1517,10 @@ unsafe fn serve_the_grant(
             // interval.
             self.mutator.note_standing_since(serve_clock_now());
             self.mutator.note_merges_seen(self.merges);
+            // Before the store: the mutator the release wakes may read the
+            // instant as soon as the store lands.
+            #[cfg(test)]
+            testing::note_release();
             self.mutator
                 .token
                 .release_claim(self.slot, self.posted.get());
@@ -1505,6 +1535,12 @@ unsafe fn serve_the_grant(
     crate::cycle::token::note_traced_mutator(std::ptr::from_ref(mutator).cast_mut());
     #[cfg(test)]
     testing::note_grant();
+
+    // A recall that stands before the batch is made goes back with no batch,
+    // as a refused workspace does, rather than after the peek and a stride.
+    if mutator.token.mutator_waits() {
+        return Served::Idle;
+    }
 
     // Declared after the release guard, so that its drop — the reset of
     // the rows, which stand over the mutator's blocks — runs before the
@@ -1960,6 +1996,7 @@ unsafe fn batch(
         complete,
         blocks: arena.blocks_held(),
         wall: traced_from.elapsed(),
+        positions_after_the_hook: testing::take_positions_after_the_hook(),
     });
     // A trace that ran to its end gives each root the colour its rows carry;
     // an abandoned one leaves every root to the guard's `Unwalked`.
@@ -2104,8 +2141,9 @@ impl Drop for FinishThePosts<'_> {
 /// roots read at the threshold off its blocks would double K at every
 /// turnover of a thread that produces nothing
 /// (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F3). So does a trace
-/// abandoned for anything but the budget, the refusal saying nothing about
-/// how much of the heap the batch would have reached.
+/// abandoned for anything but the budget — a refused allocation or the
+/// mutator's recall — neither saying how much of the heap the batch would
+/// have reached.
 fn size_the_next_batch(
     mutator: &MutatorRecord,
     size: usize,
@@ -2123,8 +2161,8 @@ fn size_the_next_batch(
 }
 
 /// Mark every root of `roots`, then scan every one: true when both phases
-/// completed, false when either met the budget or a refused allocation — at
-/// which point no color is a verdict.
+/// completed, false when either met the budget, a refused allocation or the
+/// mutator's recall — at which point no color is a verdict.
 ///
 /// # Safety
 /// As [`mark`] through `AtomicCells`: the calling thread holds the mutator's
@@ -2137,14 +2175,18 @@ unsafe fn trace(arena: &mut TraceScratchArena, roots: &[usize]) -> bool {
         }
     }
 
-    for &entry in roots {
+    #[cfg(test)]
+    let hooked_at = testing::between_the_phases().then(|| arena.positions_inspected());
+    let scanned = roots.iter().all(|&entry| {
         let root = crate::cycle::queue::entry_root(entry);
-        if unsafe { scan::<AtomicCells>(arena, root) } != ScanResult::Complete {
-            return false;
-        }
+        (unsafe { scan::<AtomicCells>(arena, root) }) == ScanResult::Complete
+    });
+    #[cfg(test)]
+    if let Some(from) = hooked_at {
+        testing::note_positions_after_the_hook(arena.positions_inspected() - from);
     }
 
-    true
+    scanned
 }
 
 /// The verdict a completed trace supports for `root`: a count read zero is

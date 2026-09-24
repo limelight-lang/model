@@ -83,9 +83,9 @@ pub(crate) enum Verdict {
     ReadLive = 1,
     /// The count read zero: a death the mutator may find completed.
     ZeroCount = 2,
-    /// The trace never walked the root — its block budget was met, or an
-    /// allocation refused — posted so that no root blocks the ring behind
-    /// it.
+    /// The trace never walked the root — its block budget was met, an
+    /// allocation refused, or the mutator recalled its token — posted so that
+    /// no root blocks the ring behind it.
     Unwalked = 3,
 }
 

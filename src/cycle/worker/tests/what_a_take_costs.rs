@@ -665,7 +665,7 @@ enum Arm {
     Take,
     /// The take with the mutator asking for its token at the start of the
     /// trace: the sample is what it waited, from inside the token's wait to
-    /// its hold.
+    /// its hold, and its collection over P after the hold is read beside it.
     Wait,
     /// No take, and the mutator's collection over R whole.
     Baseline,
@@ -685,6 +685,17 @@ impl Arm {
     }
 }
 
+/// What one arm read: the timed samples, the wall of the mutator's collection
+/// after each wait of the `wait` arm (empty for the others), the batches the
+/// collector traced, and the census sample's report and members freed.
+struct ArmReading {
+    walls: Vec<Duration>,
+    collections_after_the_wait: Vec<Duration>,
+    traced: Vec<testing::TracedBatch>,
+    report: census::CollectionReport,
+    freed: usize,
+}
+
 /// Run `arm` over `shape`: the timed samples, then one sample with the
 /// census armed, whose counts are exact and whose wall is the instrument's.
 fn the_arm(
@@ -692,13 +703,9 @@ fn the_arm(
     shape: Shape,
     class: *const Class,
     control: &mut Option<Control>,
-) -> (
-    Vec<Duration>,
-    Vec<testing::TracedBatch>,
-    census::CollectionReport,
-    usize,
-) {
+) -> ArmReading {
     let mut walls = Vec::with_capacity(SAMPLES);
+    let mut collections_after_the_wait = Vec::new();
     let mut traced = Vec::new();
     for sample in 0..SAMPLES {
         let (collected, waited) = match arm {
@@ -727,6 +734,9 @@ fn the_arm(
         };
         if sample >= WARM_UP {
             walls.push(waited.unwrap_or(collected.wall));
+            if waited.is_some() {
+                collections_after_the_wait.push(collected.wall);
+            }
         }
     }
 
@@ -734,8 +744,10 @@ fn the_arm(
         Arm::Take | Arm::Wait => {
             let mut taken = None;
             for _ in 0..SHORT_TAKE_RETRIES {
+                // The `wait` arm's census asks as its samples did, so that it
+                // counts the collection the recall left the mutator.
                 let (_, collected, whole, _) =
-                    a_take(shape, class, Reading::Census, &mut None, false);
+                    a_take(shape, class, Reading::Census, &mut None, arm == Arm::Wait);
                 if whole {
                     taken = Some(collected);
                     break;
@@ -746,12 +758,13 @@ fn the_arm(
         }
         Arm::Baseline | Arm::Control => collected_in_line(shape, class, Reading::Census, &mut None),
     };
-    (
+    ArmReading {
         walls,
+        collections_after_the_wait,
         traced,
-        counted.report.expect("the census was armed"),
-        counted.freed,
-    )
+        report: counted.report.expect("the census was armed"),
+        freed: counted.freed,
+    }
 }
 
 #[test]
@@ -787,26 +800,39 @@ fn what_a_take_costs_by_the_shape_of_its_roots() {
                 continue;
             }
 
-            let (mut walls, traced, report, freed) = the_arm(arm, shape, class, &mut control);
-            let smallest = walls.iter().copied().min().expect("the arm has samples");
+            let mut reading = the_arm(arm, shape, class, &mut control);
+            let smallest = reading
+                .walls
+                .iter()
+                .copied()
+                .min()
+                .expect("the arm has samples");
             let sampled = match arm {
                 Arm::Wait => "the mutator's wait for its token",
                 _ => "the mutator's collection",
             };
+            let after_the_wait = match reading.collections_after_the_wait.iter().min() {
+                Some(&least) => format!(
+                    ", then its collection {:?}, least {:?}",
+                    median(&mut reading.collections_after_the_wait),
+                    least
+                ),
+                None => String::new(),
+            };
             println!(
-                "{} over the {} shape: {sampled} {:?}, least {:?} \
+                "{} over the {} shape: {sampled} {:?}, least {:?}{after_the_wait} \
                  (of {} samples), freeing {} of the shape's {} members, {} of which \
                  stand in live rings; the collector's batches {:?}; the census reads {}",
                 arm.name(),
                 shape.name,
-                median(&mut walls),
+                median(&mut reading.walls),
                 smallest,
                 SAMPLES - WARM_UP,
-                freed,
+                reading.freed,
                 shape.members(),
                 shape.live_members(),
-                traced,
-                census_line(&report),
+                reading.traced,
+                census_line(&reading.report),
             );
         }
     }

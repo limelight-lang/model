@@ -18,7 +18,7 @@ use crate::cells::OutsideCells;
 /// empty bodies, and what is checked is which group a subclass finds.
 static PROBE: OutsideCells = OutsideCells {
     walk_plain: probe_walk,
-    walk_concurrent: probe_walk,
+    walk_concurrent: probe_walk_concurrent,
     sever: probe_sever,
     sever_one: probe_sever_one,
     free: probe_free,
@@ -26,6 +26,14 @@ static PROBE: OutsideCells = OutsideCells {
 };
 
 unsafe fn probe_walk(_: *mut u8, _: *const Class, _: &mut dyn FnMut(Cell)) {}
+
+unsafe fn probe_walk_concurrent(
+    _: *mut u8,
+    _: *const Class,
+    _: &mut dyn FnMut(Option<Cell>) -> std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    std::ops::ControlFlow::Continue(())
+}
 
 unsafe fn probe_sever(
     _: *mut crate::refcount::RcHeader,
@@ -208,7 +216,7 @@ static FREED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0
 
 static COUNTING: OutsideCells = OutsideCells {
     walk_plain: probe_walk,
-    walk_concurrent: probe_walk,
+    walk_concurrent: probe_walk_concurrent,
     sever: probe_sever,
     sever_one: probe_sever_one,
     free: counting_free,

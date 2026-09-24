@@ -21,6 +21,7 @@
 //! through [`trace_cells`] rather than growing a stride of its own
 //! (`crate::cycle::mark`).
 
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use crate::object::Object;
@@ -183,7 +184,21 @@ pub(crate) struct OutsideCells {
     /// it is the trace window's contract, not the walk's
     /// (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the
     /// token"). Read by [`AtomicCells`] alone.
-    pub walk_concurrent: unsafe fn(*mut u8, *const crate::class::Class, &mut dyn FnMut(Cell)),
+    ///
+    /// **It hands the visitor every position it reads**, `Some` with the
+    /// cell where the position holds a counted reference and `None` where
+    /// it holds none, and it returns at once, answering `Break`, the first
+    /// time the visitor answers `Break`. The trace counts positions rather
+    /// than cells because the mutator's recall of its token is read every
+    /// [`crate::cycle::arena::RECALL_STRIDE`] of them: a walk that searched
+    /// sparse storage between two references without reporting would hold
+    /// the mutator's wait for as long as the search
+    /// (`rfc/model/gc/rc-cycle.md`, "The recall of the token").
+    pub walk_concurrent: unsafe fn(
+        *mut u8,
+        *const crate::class::Class,
+        &mut dyn FnMut(Option<Cell>) -> ControlFlow<()>,
+    ) -> ControlFlow<()>,
     /// Empty the outside cells and collect their former occupants,
     /// without dropping them. Not [`empty_cell`], which writes a whole
     /// `Value` and a bare `NULL`: in a table entry the first zeroes the
@@ -334,6 +349,9 @@ pub(crate) trait CellReader {
     /// the cell, and outside the body that is the group whatever the
     /// cell's width.
     ///
+    /// `Break` when the visitor answered it, after which the walk read no
+    /// further cell.
+    ///
     /// # Safety
     /// As the group's own members: `base` addresses a live region laid
     /// out by `cls`, whose class carries the group.
@@ -341,8 +359,8 @@ pub(crate) trait CellReader {
         group: &OutsideCells,
         base: *mut u8,
         cls: *const crate::class::Class,
-        visit: &mut dyn FnMut(Cell),
-    );
+        visit: &mut dyn CellVisitor,
+    ) -> ControlFlow<()>;
 
     /// Read the eight bytes at `addr` as an integer. For the `+8` word
     /// of a `Value`, which is decided on as an integer — a tag word, zero,
@@ -399,9 +417,17 @@ impl CellReader for AtomicCells {
         group: &OutsideCells,
         base: *mut u8,
         cls: *const crate::class::Class,
-        visit: &mut dyn FnMut(Cell),
-    ) {
-        unsafe { (group.walk_concurrent)(base, cls, &mut |cell| visit(cell.outside())) }
+        visit: &mut dyn CellVisitor,
+    ) -> ControlFlow<()> {
+        unsafe {
+            (group.walk_concurrent)(base, cls, &mut |position| {
+                visit.position()?;
+                match position {
+                    Some(cell) => visit.cell(cell.outside()),
+                    None => ControlFlow::Continue(()),
+                }
+            })
+        }
     }
 
     #[inline]
@@ -418,14 +444,24 @@ impl CellReader for AtomicCells {
 impl CellReader for PlainCells {
     const CONCURRENT: bool = false;
 
+    /// The plain walk cannot stop, so a `Break` leaves the rest of its cells
+    /// read and dropped.
     #[inline]
     unsafe fn walk_outside(
         group: &OutsideCells,
         base: *mut u8,
         cls: *const crate::class::Class,
-        visit: &mut dyn FnMut(Cell),
-    ) {
-        unsafe { (group.walk_plain)(base, cls, &mut |cell| visit(cell.outside())) }
+        visit: &mut dyn CellVisitor,
+    ) -> ControlFlow<()> {
+        let mut answer = ControlFlow::Continue(());
+        unsafe {
+            (group.walk_plain)(base, cls, &mut |cell| {
+                if answer.is_continue() {
+                    answer = visit.cell(cell.outside());
+                }
+            })
+        };
+        answer
     }
 
     #[inline]
@@ -436,6 +472,42 @@ impl CellReader for PlainCells {
     #[inline]
     unsafe fn ptr(at: *const u8) -> *mut u8 {
         unsafe { (at as *const *mut u8).read() }
+    }
+}
+
+/// What a stride hands each position of storage it reads, and each counted
+/// cell among them, with the answer that stops the stride.
+///
+/// A position is one place a counted reference may stand — a vector's
+/// element, a hash entry, an object's field, a template's value, a cell of a
+/// class's outside storage — and [`position`](Self::position) is called
+/// once for it, before its cell if it yields one goes to
+/// [`cell`](Self::cell). A stride returns
+/// `Break` at the first `Break` either method answers and reads nothing
+/// after it, except the plain outside walk, which cannot stop
+/// ([`CellReader::walk_outside`]).
+///
+/// **A closure over [`Cell`] is a visitor** that counts nothing and never
+/// stops, which is every caller that reads a quiescent heap. The two that
+/// answer otherwise are the trace's phases, which stop on a refused
+/// allocation and, under [`AtomicCells`], on the mutator's recall of its
+/// token (`crate::cycle::mark`, `crate::cycle::scan`).
+pub(crate) trait CellVisitor {
+    /// Take one counted cell.
+    fn cell(&mut self, cell: Cell) -> ControlFlow<()>;
+
+    /// Take note of one position, before its cell.
+    #[inline]
+    fn position(&mut self) -> ControlFlow<()> {
+        ControlFlow::Continue(())
+    }
+}
+
+impl<F: FnMut(Cell)> CellVisitor for F {
+    #[inline]
+    fn cell(&mut self, cell: Cell) -> ControlFlow<()> {
+        self(cell);
+        ControlFlow::Continue(())
     }
 }
 
@@ -517,11 +589,26 @@ pub unsafe fn trace_entity(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcH
 /// publication paired with that acquire (`crate::refcount::publish_header`),
 /// which holds for an entity built one instruction before its address was
 /// stored as much as for one built an hour before.
+#[inline]
 pub(crate) unsafe fn trace_cells<R: CellReader>(
     entity: *mut RcHeader,
     kind: u32,
-    mut visit: impl FnMut(Cell),
+    visit: impl FnMut(Cell),
 ) {
+    let _ = unsafe { trace_cells_until::<R>(entity, kind, visit) };
+}
+
+/// [`trace_cells`] with a visitor that sees every position and may stop the
+/// stride: `Break` when `visit` answered it, and nothing read after that
+/// position ([`CellVisitor`]). The trace's two phases are its callers.
+///
+/// # Safety
+/// As [`trace_cells`].
+pub(crate) unsafe fn trace_cells_until<R: CellReader>(
+    entity: *mut RcHeader,
+    kind: u32,
+    mut visit: impl CellVisitor,
+) -> ControlFlow<()> {
     const OBJECT: u32 = EntityKind::Object as u32;
     const LAZY: u32 = EntityKind::Lazy as u32;
     const REFERENCE: u32 = EntityKind::Reference as u32;
@@ -549,15 +636,17 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 && unsafe { crate::refcount::slot_state(entity) }
                     != crate::refcount::SlotState::Live
             {
-                return;
+                return ControlFlow::Continue(());
             }
 
             unsafe { crate::object::for_each_counted_cell::<R>(entity as *mut u8, class, visit) }
         }
         REFERENCE => {
+            visit.position()?;
             let at = unsafe { (entity as *const u8).add(REFERENCE_VALUE_OFFSET) };
-            if let Some(cell) = unsafe { counted_box_cell::<R>(at) } {
-                visit(cell);
+            match unsafe { counted_box_cell::<R>(at) } {
+                Some(cell) => visit.cell(cell),
+                None => ControlFlow::Continue(()),
             }
         }
 
@@ -573,7 +662,7 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 crate::array::entity::storage_head(entity as *mut crate::array::entity::LLArray)
             };
             let Some(view) = (unsafe { crate::array::head::StorageHead::coherent(head) }) else {
-                return;
+                return ControlFlow::Continue(());
             };
 
             // The stride is chosen here and nowhere earlier: the tag came
@@ -589,29 +678,32 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 crate::array::head::StorageTag::Hash => {}
                 crate::array::head::StorageTag::Typed => {
                     debug_assert!(false, "the walker has no stride for the typed vector");
-                    return;
+                    return ControlFlow::Continue(());
                 }
                 crate::array::head::StorageTag::Vector => {
                     let (elements, used) =
                         unsafe { crate::array::vector::Vector::elements_of(&view) };
                     for i in 0..used {
+                        visit.position()?;
                         // No key beside the element: a vector's key is the
                         // position, so every cell here is a Box.
                         let value_at = unsafe {
                             elements.add(i * crate::array::vector::ELEMENT_STRIDE) as *const u8
                         };
                         if let Some(cell) = unsafe { counted_box_cell::<R>(value_at) } {
-                            visit(cell);
+                            visit.cell(cell)?;
                         }
                     }
 
-                    return;
+                    return ControlFlow::Continue(());
                 }
             }
 
             let (entries, used) = unsafe { crate::array::table::Table::entries_of(&view) };
 
+            // An entry is one position, its key and its element together.
             for i in 0..used {
+                visit.position()?;
                 let at = unsafe { entries.add(i) as *const u8 };
                 // A string key is a counted child behind a tagged word;
                 // the sentinels below the limit are an integer key and a
@@ -621,11 +713,11 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                 // encoding).
                 let key = unsafe { R::ptr(at.add(KEY_OFFSET)) };
                 if key as usize >= crate::array::entry::KEY_SENTINEL_LIMIT {
-                    visit(Cell {
+                    visit.cell(Cell {
                         addr: at as usize + KEY_OFFSET,
                         child: (key as usize & !crate::array::entry::KEY_TAG_MASK) as *mut RcHeader,
                         shape: CellShape::Key,
-                    });
+                    })?;
                 }
 
                 let value_at = unsafe { at.add(ELEMENT_OFFSET) };
@@ -633,14 +725,16 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
                     // The shape the reader built is the width; what the
                     // entry adds is the collision link in its tag word,
                     // which only this stride knows is there.
-                    visit(Cell {
+                    visit.cell(Cell {
                         shape: CellShape::Element,
                         ..cell
-                    });
+                    })?;
                 }
             }
+
+            ControlFlow::Continue(())
         }
-        _ => {}
+        _ => ControlFlow::Continue(()),
     }
 }
 
@@ -801,10 +895,14 @@ pub(crate) unsafe fn sever_cells(
             // whole `Value` or a bare `NULL`, which is right for a cell
             // inside the entity and wrong for anything a class keeps
             let cls = (*(entity as *mut Object)).class;
-            crate::object::for_each_body_cell::<PlainCells>(entity as *mut u8, cls, &mut |cell| {
-                empty_cell(cell);
-                displaced(cell.child);
-            });
+            let _ = crate::object::for_each_body_cell::<PlainCells>(
+                entity as *mut u8,
+                cls,
+                &mut |cell| {
+                    empty_cell(cell);
+                    displaced(cell.child);
+                },
+            );
 
             // A class whose cells lie outside its body empties them
             // itself: a table entry cleared cell-wise loses its collision

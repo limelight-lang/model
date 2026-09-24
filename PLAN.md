@@ -16,7 +16,7 @@ re-derive: `model/classes.md`, `model/values.md`, `model/lowering.md`,
 The `rfc` repository carries its own plan at `dev/PLAN.md` for work that lands
 in the specification rather than in this crate.
 
-Updated: 2026-09-23 · Active: S65.
+Updated: 2026-09-24 · Active: S65.
 S65 opened on 2026-09-23 from Edmond's rulings of the day: the collector
 finds and the mutator judges, the epoch clock is the collector's, and a
 recall of the token replaces the budget as the bound on the mutator's wait
@@ -462,7 +462,7 @@ them.
         "a mutator short of memory waits for its token, and the wait is the
         rule's exception"). Miri owed at the stage's close for the arena's four
         watermark cases and `the_batch`'s posts through the guard
-- [ ] S65.6 The token's recall (package commit 4)
+- [x] S65.6 The token's recall (package commit 4)
       done: `waiting` set in `take_unless`, checked every N inspected
         positions in both phases — a position is a Vector element, a Hash
         entry, an object field or a hooked cell, counted whether or not it
@@ -481,11 +481,76 @@ them.
         the recall and the handshake document records `waiting` as a hint
         beside E10
       tier: T2 · role: Critic
+      baseline 2026-09-23, `0bdeed3`, release, CPU 3, load 7.5: a mutator
+        asking for its token at the start of a take's trace waited 43.9 µs
+        median, 26.9 least, on `overlapping-live` and 154.1 / 115.8 µs on
+        `disjoint-live`
+      red 2026-09-23 on the old mechanism, through a per-thread instrument
+        since removed: the scan after the ask read 65,537 / 1,000,001 /
+        16,385 / 65,537 positions over the hash, the vector, the null fields
+        and the outside storage, every batch complete; five cases red, the
+        debug build's waits 0.35–19 ms against 69–185 µs green
+      Critic 2026-09-24: seven findings. (1) A grant the collector holds
+        while it traces another mutator's batch is read only when that batch
+        ends, so its mutator waits the batch out whole: a grant recalled
+        before its batch is made is now released with no batch
+        (`worker::serve_the_grant`), the rest is S65.14, and the rfc's "The
+        recall of the token" and the worker's module doc name the gap. (2)
+        The package's reading in `grow` was missing: built, and the recalled
+        `disjoint-live` batch draws no block, its wait 20–23 µs against
+        94–98 µs without it. (3) Of the three green mutations the pointer
+        run's was a hole, a typed property being a pointer run: a case of
+        16,384 null typed fields; a Reference is one uncounted position after
+        a counted one, since PHP stores no reference inside a reference, and
+        a template's values are a site's fixed few, so both stand. (4) The
+        clear at consent and on the drain went to S65.7's done-line. (5) The
+        `wait` arm dropped the collection after the wait: read now
+        (`dev/BENCHMARKS.md`, "S65.6 the token's recall"). Where the trace
+        would have completed, the recall costs the retirement's mutator
+        about 15 µs net, 49–51 against 33–36 µs; the figure is Edmond's to
+        weigh. (6) The cases bound positions and not the wall: refused,
+        since a wall assertion in a suite run at eight threads reddens on
+        load; the posts and the advance are
+        `a_recalled_batch_posts_every_root_once_unwalked_and_advances_r`'s,
+        and the two-mutator case is S65.14's. The hash of 65,536 entries
+        holding no reference stands for the plan's sparse Hash, every entry
+        a counted position. (7) The visitor's doc said a position is counted
+        before it is read, a test walk ignored `Break`, and an unwind out of
+        the take skipped the clear: all three repaired
+      mutations 2026-09-23 and 24, each red on its case: the take sets no
+        recall, the take never clears it, the reading ignores it, the
+        countdown never resets, the arena names no token, the vector's, the
+        hash's, the Box run's, the pointer run's and the outside walk's
+        position dropped, the expansion counts nothing, `Recalled` read as a
+        refusal in the mark and in the scan, a recall completing the batch,
+        the growth's reading dropped, the grant's check dropped. Green, no
+        case reaching them: a Reference's position and a template value's
+      handoff: the recall is `TraceToken::waiting` on the token's line, read
+        by `TraceScratchArena::inspect_position` every `RECALL_STRIDE`, 1024
+        positions, and by `grow`; a grant recalled before its batch goes back
+        at `serve_the_grant`. Miri owed at the stage's close for
+        `the_recall`'s two arena cases (the stride, the growth)
+- [ ] S65.14 A grant held behind another mutator's batch is recalled
+      done: a mutator whose consent a collector holds while it traces
+        another mutator's batch, once it asks for its token, waits at most N
+        positions of that batch, its posts and a reset before its own grant
+        is released; the two-mutator case — one consents while the collector
+        traces the other's batch over a vector of 10⁶ scalars, then takes its
+        token under pressure — red today on the whole batch; the mechanism
+        decided at the step and put to its Critic, the S65.6 Critic's form
+        standing as the first candidate: the take writes a recall word on
+        the collector's slot, the stride reads it beside the traced token,
+        and a set word releases each held and unserved grant whose mutator
+        waits; `rfc/model/gc/rc-cycle.md`, "The recall of the token", states
+        the bound in place of the gap
+      tier: T2 · role: Critic
 - [ ] S65.7 The marks by stack length (package commit 5)
       done: a length beside each of the three withheld stacks' heads, a limit
-        each, `waiting` stored at the limit with no block; a mutator freeing
-        under a grant recalls it at M and never waits; the withheld-free arm
-        of `what_a_foreign_holder_costs` within its spread
+        each, `waiting` stored at the limit with no block, and cleared at the
+        consent and on the drain under `FREE`, so that a recall made at M
+        stops no later grant (package section 6); a mutator freeing under a
+        grant recalls it at M and never waits; the withheld-free arm of
+        `what_a_foreign_holder_costs` within its spread
       tier: T2 · role: Critic
 - [ ] S65.13 The batch runs in parts (package commit 3, second half)
       done: parts on, each with the block budget of its own, after the recall

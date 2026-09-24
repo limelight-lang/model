@@ -8,6 +8,81 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-24 — S65.6 the token's recall: the wait under a take falls to 17–23 µs, the collection after it grows by 27 µs where the trace would have completed
+
+**What the recall costs and buys**, read on two binaries: the base is
+`0bdeed3`, the other the same tree with the recall of the token
+(`cycle::worker`, "The recall of the token"), the probe's own change — the
+collection after the wait read beside it, the census asking as the samples
+do — in both. Three readings. The `wait` arm of
+`cycle::worker::tests::what_a_take_costs` asks for the token through
+`HeldToken::take_or_hold_posted` at the start of the take's trace, times the
+mutator from inside the token's wait to its hold, then times its collection
+over P. The `take` arm's batches give the collector's wall over a trace no
+one recalls. The `baseline` and `control` arms time the mutator's own
+collection over R whole, which runs `PlainCells` and counts no position.
+
+**Machine:** dev box, every thread of the process on CPU 3 by `taskset`, load
+average 0.8 at the start; the two binaries interleaved over two rounds.
+**Method:** release build, 21 samples per arm, the first five dropped;
+median and least of the sixteen, in µs. The collector's wall is the median
+and least of the eleven batches left after the first five.
+
+| shape, arm | base, round 1 / 2 | recall, round 1 / 2 |
+| --- | ---: | ---: |
+| `overlapping-live`, wait | 31.5 / 28.9 (least 25.1 / 25.7) | 18.9 / 17.4 (least 14.3 / 14.1) |
+| `overlapping-live`, the collection after the wait | 4.4 / 4.3 (least 3.8 / 3.6) | 32.0 / 31.1 (least 29.4 / 30.1) |
+| `disjoint-live`, wait | 113.4 / 114.5 (least 91.2 / 90.1) | 20.3 / 22.9 (least 16.9 / 19.2) |
+| `disjoint-live`, the collection after the wait | 176.2 / 161.9 (least 152.9 / 153.0) | 225.3 / 222.8 (least 194.7 / 201.4) |
+| `overlapping-live`, baseline | 23.3 / 23.4 (least 22.7 / 23.0) | 24.3 / 24.8 (least 23.8 / 23.8) |
+| `overlapping-live`, control | 23.1 / 23.8 (least 22.5 / 23.1) | 24.4 / 23.9 (least 23.5 / 23.5) |
+| `overlapping-live`, take, the collector's wall | 18.0 / 17.9 (least 15.4 / 15.4) | 21.8 / 21.5 (least 18.7 / 18.5) |
+| `disjoint-live`, take, the collector's wall | 95.6 / 100.4 (least 76.7 / 78.7) | 100.1 / 93.5 (least 81.6 / 75.4) |
+
+In the `wait` arm the base's batches over `overlapping-live` completed their
+trace of 381 members before the release, and its census read 0 roots after
+them; over `disjoint-live` they met the budget at eight blocks. The recall's
+batches came back unwalked on both shapes, at no block drawn, the growth
+reading the recall as the stride does, and the census read 63 roots and 381
+or 315 rows. The mutator's collection after a `take` is the same on both
+trees (4.0–4.8 µs on `overlapping-live`, 165–223 µs on `disjoint-live`).
+
+**The recall's own cases**, `cycle::worker::tests::the_recall`, the mutator
+asking between the mark and the scan over one root: eleven runs of the
+recall binary on CPU 3, the wait from the mutator's standing in the token's
+wait to the release, median, least and most in µs, and the positions the
+scan read after the ask.
+
+| container | median | least | most | positions after the ask |
+| --- | ---: | ---: | ---: | ---: |
+| a vector of 10⁶ scalars | 3.9 | 3.1 | 20.2 | 447 |
+| a hash of 65,536 entries holding no reference | 7.4 | 3.9 | 25.1 | 1,023 |
+| an object of 16,384 null Box fields | 3.4 | 2.5 | 18.4 | 1,023 |
+| an object of 16,384 null typed fields | 2.4 | 2.0 | 5.4 | 1,023 |
+| an outside storage of 65,536 empty cells | 5.3 | 4.1 | 10.6 | 1,023 |
+
+**The reading.** The recall bounds the wait: on both live shapes it falls to
+17–23 µs, since the base's trace ran on after the ask, to its end or to the
+budget, and the recall's stops within one stride or at its first growth.
+What it does not bound is the work it hands back. Where the collector would
+have completed, on `overlapping-live`, the mutator traces the 63 roots
+itself: its wait and its collection together are 49–51 µs against 33–36 µs,
+a loss of about 15 µs on the path this arm takes, the retirement after a
+teardown's refused allocation. Under pressure and at exit the mutator
+traces R whole whatever the collector posted, so there the shorter wait is
+the whole of the difference. On `disjoint-live` the base's batch came back
+unwalked too, and the two together are 243–248 µs against 276–290 µs; the
+recall's collection after the wait is 50–60 µs longer than the base's, which
+no arm here explains — every thread shares one core, and the base's trace
+had just read the same rows on it. The collector's trace over 381 members
+grows by 3.6 µs, 20 %, the recall's code on that path being the count, its
+check and the visitor that can stop. The owner's trace, which counts
+nothing, reads 0.5–1.4 µs above the base on both of its arms here, and on
+the day's earlier pair of binaries, before the growth read the recall, its
+leasts were 23.5 / 24.7 against 24.4 / 23.3; no placement control was built,
+and the 7–10 % a layout alone moved two builds of one loop (Method, "The
+placement bar") is larger than the difference.
+
 ## 2026-09-23 — S65.5 what a mutator waits for under a take in parts: 15 % longer on `disjoint-live`, 4.3× on wide rings, and its collection over P 30× shorter
 
 **The `wait` arm of `cycle::worker::tests::what_a_take_costs`**, added for

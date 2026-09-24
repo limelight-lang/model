@@ -13,6 +13,8 @@
 //! specialized to its layout (`dev/DECISIONS.md`, "a generated lifecycle
 //! body unrolls small, loops large").
 
+use std::ops::ControlFlow;
+
 use crate::class::{Class, NO_DESTRUCT_SLOT};
 use crate::journal::kinds::journal_event;
 use crate::memory::context::{LLContext, resolve_arena};
@@ -392,9 +394,11 @@ pub(crate) unsafe fn for_each_counted_child(
 ) {
     let cls = unsafe { (*obj).class() };
     unsafe {
-        for_each_counted_cell::<crate::cells::PlainCells>(obj as *mut u8, cls, |cell| {
-            visit(cell.child)
-        })
+        let _ = for_each_counted_cell::<crate::cells::PlainCells>(
+            obj as *mut u8,
+            cls,
+            |cell: crate::cells::Cell| visit(cell.child),
+        );
     };
 }
 
@@ -417,6 +421,8 @@ pub(crate) unsafe fn for_each_counted_child(
 /// Generic over the visitor and `#[inline]`, so every instantiation
 /// monomorphizes to a bare stride with no indirect call per child — the
 /// contract `rfc/model/classes.md` states as "Why tracing stays data".
+/// `Break` when the visitor answered it, and nothing read after that
+/// position (`crate::cells::CellVisitor`).
 ///
 /// # Safety
 /// `base` addresses a live region laid out by `cls`, and its cells are
@@ -426,16 +432,16 @@ pub(crate) unsafe fn for_each_counted_child(
 pub(crate) unsafe fn for_each_counted_cell<R: crate::cells::CellReader>(
     base: *mut u8,
     cls: *const crate::class::Class,
-    mut visit: impl FnMut(crate::cells::Cell),
-) {
-    unsafe { for_each_body_cell::<R>(base, cls, &mut visit) };
+    mut visit: impl crate::cells::CellVisitor,
+) -> ControlFlow<()> {
+    unsafe { for_each_body_cell::<R>(base, cls, &mut visit) }?;
 
     // The outside cells come after the body's, never instead of them: a
     // subclass declares properties of its own and those live in the runs,
     // so replacing the stride would leave them untraced — a computed root
     // and a ring that never collects.
     let Some(group) = (unsafe { crate::class::Class::outside_cells(cls) }) else {
-        return;
+        return ControlFlow::Continue(());
     };
     unsafe { R::walk_outside(group, base, cls, &mut visit) }
 }
@@ -454,34 +460,36 @@ pub(crate) unsafe fn for_each_counted_cell<R: crate::cells::CellReader>(
 pub(crate) unsafe fn for_each_body_cell<R: crate::cells::CellReader>(
     base: *mut u8,
     cls: *const crate::class::Class,
-    visit: &mut impl FnMut(crate::cells::Cell),
-) {
+    visit: &mut impl crate::cells::CellVisitor,
+) -> ControlFlow<()> {
     // A template's children are counted by its shape, because one class
     // serves every interpolation site and the runs would have to differ
     // per instance (`crate::template`).
     if unsafe { crate::class::Class::flags_of(cls) } & crate::class::CLASS_TEMPLATE != 0 {
         let n = unsafe { crate::template::value_count_at::<R>(base) };
         for i in 0..n {
+            visit.position()?;
             let at = unsafe { base.add(crate::template::VALUES_OFFSET + i * 16) };
             if let Some(cell) = unsafe { crate::cells::counted_box_cell::<R>(at) } {
-                visit(cell);
+                visit.cell(cell)?;
             }
         }
 
-        return;
+        return ControlFlow::Continue(());
     }
 
     // Pointer runs: bare 8-byte pointers, `NULL` is empty.
     for run in unsafe { (*cls).ptr_runs() } {
         for i in 0..run.count {
+            visit.position()?;
             let at = unsafe { base.add((run.offset + i * 8) as usize) };
             let child = unsafe { R::ptr(at) } as *mut RcHeader;
             if !child.is_null() {
-                visit(crate::cells::Cell {
+                visit.cell(crate::cells::Cell {
                     addr: at as usize,
                     child,
                     shape: crate::cells::CellShape::Pointer,
-                });
+                })?;
             }
         }
     }
@@ -489,12 +497,15 @@ pub(crate) unsafe fn for_each_body_cell<R: crate::cells::CellReader>(
     // Box runs: 16-byte Values, empty is a `+8` word that is no pointer.
     for run in unsafe { (*cls).box_runs() } {
         for i in 0..run.count {
+            visit.position()?;
             let at = unsafe { base.add((run.offset + i * 16) as usize) };
             if let Some(cell) = unsafe { crate::cells::counted_box_cell::<R>(at) } {
-                visit(cell);
+                visit.cell(cell)?;
             }
         }
     }
+
+    ControlFlow::Continue(())
 }
 
 /// Phase 1 alone: run `__destruct` exactly once (sets the guard bit).

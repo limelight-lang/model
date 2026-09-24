@@ -43,9 +43,13 @@
 //!
 //! **A waiter blocks rather than spins.** The mutator that finds its byte at
 //! `COLLECTOR` waits on the mutex and is woken by the collector's release; a
-//! trace runs no user code and takes no user lock, so the wait is bounded by
-//! one batch (Edmond, 2026-08-29, `rfc/dev/DECISIONS.md`, "a trace stays
-//! inside the blocks of the thread it claimed"). Nobody waits on any other
+//! trace runs no user code and takes no user lock (Edmond, 2026-08-29,
+//! `rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of the thread it
+//! claimed"), and the waiter recalls the token before it waits, so the wait is
+//! bounded by one stride of the trace, the batch's posts and one reset of the
+//! collector's arena ([`TraceToken::take_unless`]) — when the batch traced is
+//! the waiter's own; behind another mutator's batch it waits that batch out
+//! (`crate::cycle::worker`, "The recall of the token"). Nobody waits on any other
 //! state: a collector that meets `MUTATOR`, `REQUESTED` or `POSTED` skips.
 //! Eligibility is checked before the wait: a thread the gate refuses — one
 //! already collecting, inside a teardown, or inside a reset — opens no window
@@ -62,7 +66,7 @@
 //! (`rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of the thread it
 //! claimed").
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
 /// Nobody traces this thread; the mutator returns memory at once.
@@ -163,6 +167,15 @@ pub(crate) enum TookFrom {
 /// there.
 pub(crate) struct TraceToken {
     word: AtomicU8,
+    /// Whether the mutator stands in this token's wait: set by its take
+    /// before it waits out a collector's claim and cleared once the take
+    /// returns, so that the collector's trace, which reads it every
+    /// `crate::cycle::arena::RECALL_STRIDE` positions, stops and releases
+    /// (`rfc/model/gc/rc-cycle.md`, "The recall of the token"). A hint and
+    /// not a claim: a reading that missed the store costs one stride more,
+    /// and nothing but the byte above decides who holds the token. Relaxed
+    /// on both sides, since nothing is published beside it.
+    waiting: AtomicBool,
     wait: Mutex<()>,
     released: Condvar,
     /// How many times a taker has gone to wait on this token. A case reads
@@ -195,6 +208,7 @@ impl TraceToken {
     pub(crate) const fn new_held() -> Self {
         Self {
             word: AtomicU8::new(MUTATOR),
+            waiting: AtomicBool::new(false),
             wait: Mutex::new(()),
             released: Condvar::new(),
             #[cfg(test)]
@@ -215,6 +229,13 @@ impl TraceToken {
     #[inline]
     pub(crate) fn read(&self) -> u8 {
         self.word.load(Ordering::Acquire)
+    }
+
+    /// Whether the mutator stands in this token's wait, asking a collector
+    /// that traces for it to stop: the collector's reading of the recall.
+    #[inline]
+    pub(crate) fn mutator_waits(&self) -> bool {
+        self.waiting.load(Ordering::Relaxed)
     }
 
     /// Whether a collector traces this thread now: the byte at `COLLECTOR`.
@@ -362,7 +383,36 @@ impl TraceToken {
     /// `hold_at_posted` a byte read as `POSTED` — at the first read or after
     /// a wait — is left as it is and `None` is answered, which is the
     /// retirement pass's form, decided on the same read a swap would act on.
+    ///
+    /// **A take that meets `COLLECTOR` recalls the token first**: it sets
+    /// [`mutator_waits`](Self::mutator_waits) before its first wait and clears
+    /// it when it returns, so that the collector stops its trace within a
+    /// stride of positions, posts and releases (`rfc/model/gc/rc-cycle.md`,
+    /// "The recall of the token").
     pub(crate) fn take_unless(&self, hold_at_posted: bool) -> Option<TookFrom> {
+        // Cleared on the unwind too: a recall left standing would stop every
+        // later grant's trace at its first reading.
+        struct ClearTheRecall<'a> {
+            waiting: &'a AtomicBool,
+            recalled: bool,
+        }
+        impl Drop for ClearTheRecall<'_> {
+            fn drop(&mut self) {
+                if self.recalled {
+                    self.waiting.store(false, Ordering::Relaxed);
+                }
+            }
+        }
+        let mut clear = ClearTheRecall {
+            waiting: &self.waiting,
+            recalled: false,
+        };
+        self.take_recalling(hold_at_posted, &mut clear.recalled)
+    }
+
+    /// [`take_unless`](Self::take_unless) up to the clearing of the recall,
+    /// which `recalled` says is owed.
+    fn take_recalling(&self, hold_at_posted: bool, recalled: &mut bool) -> Option<TookFrom> {
         let mut guard = None;
         let mut seen = self.read();
         loop {
@@ -371,6 +421,11 @@ impl TraceToken {
                 POSTED if hold_at_posted => return None,
                 POSTED => TookFrom::Posted,
                 COLLECTOR => {
+                    if !*recalled {
+                        self.waiting.store(true, Ordering::Relaxed);
+                        *recalled = true;
+                    }
+
                     seen = self.wait_out_a_claim(&mut guard);
                     continue;
                 }
@@ -428,6 +483,13 @@ impl TraceToken {
     #[cfg(test)]
     pub(crate) fn is_held(&self) -> bool {
         matches!(state(self.read()), MUTATOR | COLLECTOR)
+    }
+
+    /// Set or clear the recall as the mutator's take does, for a case that
+    /// traces on the calling thread against a recall standing.
+    #[cfg(test)]
+    pub(crate) fn recall_for_test(&self, waiting: bool) {
+        self.waiting.store(waiting, Ordering::Relaxed);
     }
 
     /// Write `requested`, a `REQUESTED|s` byte, over `FREE`: a case standing

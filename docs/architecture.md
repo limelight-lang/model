@@ -471,6 +471,11 @@ else
   mutator -> token : consent at the next poll or slot free\n(COLLECTOR|s), or refuse; a request not answered\ninside the bound stands on the byte, the record in the\ncollector's standing list, and is served at a checkpoint
   worker -> R : peek up to K entries from behind\nthe writer, clamped to P's room
   worker -> worker : mark + scan through AtomicCells\non its own arena, under a block budget
+  opt the mutator needs its token meanwhile
+    mutator -> token : take: mark the recall, wait on the mutex
+    worker -> token : read the recall every RECALL_STRIDE positions
+    worker -> worker : stop the trace; every root Unwalked
+  end
   worker -> P : one verdict per root, in R's order
   worker -> R : advance past the batch\n(the guard runs on the unwind too)
   worker -> token : release to POSTED, or to FREE\nwhen the batch posted nothing
