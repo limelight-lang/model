@@ -261,31 +261,29 @@ fn verdicts_come_back_in_rs_order_and_r_s_front_moves_by_the_count_posted() {
 
 #[test]
 fn a_proposed_root_is_collected_by_the_poll_that_reads_it() {
-    for verdict in [Verdict::Proposed, Verdict::Unwalked] {
-        let _g = test_guard();
-        start();
-        DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
-        let class = ClassBuilder::new("VerdictProposedNode")
-            .prop("next", true)
-            .destructor(counting_destructor as *const ())
-            .build();
-        let mut arena = Arena::new();
-        let _members = unsafe { ring(&mut arena, [class, class]) };
-        assert_eq!(stand_in_posts(2, move |_| verdict), Posted::Batch(2));
-        assert_eq!(candidate_count(), 0, "the collector took both roots");
-        assert!(!crate::gc::is_armed(), "nothing has armed this thread");
+    let _g = test_guard();
+    start();
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+    let class = ClassBuilder::new("VerdictProposedNode")
+        .prop("next", true)
+        .destructor(counting_destructor as *const ())
+        .build();
+    let mut arena = Arena::new();
+    let _members = unsafe { ring(&mut arena, [class, class]) };
+    assert_eq!(stand_in_posts(2, |_| Verdict::Proposed), Posted::Batch(2));
+    assert_eq!(candidate_count(), 0, "the collector took both roots");
+    assert!(!crate::gc::is_armed(), "nothing has armed this thread");
 
-        assert_eq!(
-            unsafe { ll_gc_maybe_collect() },
-            2,
-            "the poll read the verdicts, armed itself, and collected the ring"
-        );
-        assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
-        assert_eq!(verdict_count(), 0);
-        assert_eq!(candidate_count(), 0, "the close retired both records");
-        assert!(!crate::gc::is_armed(), "the fire spent the arming");
-        reset();
-    }
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the poll read the verdicts, armed itself, and collected the ring"
+    );
+    assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
+    assert_eq!(verdict_count(), 0);
+    assert_eq!(candidate_count(), 0, "the close retired both records");
+    assert!(!crate::gc::is_armed(), "the fire spent the arming");
+    reset();
 }
 
 #[test]

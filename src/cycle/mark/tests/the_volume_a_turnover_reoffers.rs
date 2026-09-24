@@ -42,8 +42,10 @@
 //! turnover, `N − d + 1` collections later. On a thread with nothing else
 //! registered no batch counts toward `N`: the wait is X, the interval after
 //! which the collector advances the cell on its own clock
-//! (`crate::cycle::worker`, "The epoch clock"), and the poll after the advance
-//! takes the ring — one collection, whatever `d`. The harness stands in for the
+//! (`crate::cycle::worker`, "The epoch clock"), and the first collection over
+//! R after the advance takes the ring — the collector's next batch and the
+//! collection over P it arms, stood in for here by one collection, whatever
+//! `d`. The harness stands in for the
 //! collector's advance, so the idle cells read that one collection and say
 //! nothing about X's length; the background rate tells the two lanes apart.
 //!
@@ -160,11 +162,12 @@ fn drain() {
     panic!("the load's own garbage outlived eight collections past a turnover");
 }
 
-/// One safepoint and the collection behind it, in the order the poll
-/// (`crate::gc::ll_gc_maybe_collect`) takes them — the turnover comparison,
-/// then the collection — with the poll's test of the lane's occupancy left
-/// out. The collector's advance at `N` collections is made first, where it is
-/// due, by the harness standing in for it.
+/// One safepoint's turnover comparison, as the poll
+/// (`crate::gc::ll_gc_maybe_collect`) makes it with its test of the lane's
+/// occupancy left out, and then one collection over R whole, which stands in
+/// for the collector's batch and the collection over P it arms. The
+/// collector's advance at `N` collections is made first, where it is due, by
+/// the harness standing in for it.
 fn poll_and_collect() -> usize {
     if SINCE_THE_TURN.with(Cell::get) == BATCHES_PER_EPOCH {
         turn_the_cell();

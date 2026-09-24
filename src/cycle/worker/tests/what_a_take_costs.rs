@@ -4,12 +4,13 @@
 //!
 //! The budget ruling says a take's trace is one batch's — bounded by
 //! [`TRACE_BLOCK_BUDGET`] blocks of the collector's arena, which bound each
-//! part of a batch traced in parts (`crate::cycle::worker`, "The batch") — and
-//! that an unwalked take shifts the mutator's trace rather than adding one
+//! part of a batch traced in parts (`crate::cycle::worker`, "The batch")
 //! (`dev/DECISIONS.md`, "a take's trace is budgeted as one batch's, and an
-//! unwalked take shifts the mutator's trace rather than adding one"). Two
-//! shapes of the same sixty-three roots put the two halves of that claim
-//! side by side:
+//! unwalked take shifts the mutator's trace rather than adding one"); a root
+//! a take leaves unwalked is written back into R by the mutator's collection
+//! over P, untraced, for a later batch (`crate::cycle::queue::verdicts`). Two
+//! shapes of the same sixty-three roots put the budget's two sides side by
+//! side:
 //!
 //! - **overlapping** — every root inside one component of 381 members, the
 //!   corpus's median closure: the union of the closures is one closure, the
@@ -492,16 +493,24 @@ fn a_take(
     // goes back whatever it took.
     let taken: usize = batches.iter().map(|batch| batch.roots).sum();
     let whole = taken == shape.roots();
+    // A recalled take posts its roots `Unwalked`, which the collection over P
+    // writes back into R untraced; the explicit fire stands in for the
+    // collector's next batch, so that the dead rings go back.
+    let fired = if ask {
+        unsafe { crate::gc::ll_gc_collect_cycles() }
+    } else {
+        0
+    };
     let dismantled = unsafe { let_the_rings_go(&mut arena, &built) };
     if whole {
         assert_eq!(
-            (collected.freed, dismantled),
+            (collected.freed + fired, dismantled),
             (shape.dead_members(), shape.live_members()),
-            "the collection over P freed the dead rings and the teardown took the live ones"
+            "the collections freed the dead rings and the teardown took the live ones"
         );
     } else {
         assert_eq!(
-            collected.freed + dismantled,
+            collected.freed + fired + dismantled,
             shape.members(),
             "a short take's sample gave every member back all the same"
         );
@@ -669,7 +678,8 @@ enum Arm {
     Take,
     /// The take with the mutator asking for its token at the start of the
     /// trace: the sample is what it waited, from inside the token's wait to
-    /// its hold, and its collection over P after the hold is read beside it.
+    /// its hold, and its collection over P after the hold, which writes the
+    /// recalled roots back into R, is read beside it.
     Wait,
     /// No take, and the mutator's collection over R whole.
     Baseline,

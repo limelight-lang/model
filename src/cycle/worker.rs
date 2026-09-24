@@ -40,8 +40,9 @@
 //! rows met *read live*, which defers each to the turnover, and the batch goes
 //! on with the next root. A refused allocation or the mutator's recall of its
 //! token ends the batch: no color of such a part is a verdict, so its root
-//! and every root still without one are posted *unwalked*, for the mutator's
-//! exact trace, while the verdicts of the parts before it stand (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"). R's
+//! and every root still without one are posted *unwalked*, which the
+//! mutator's collection over P writes back into R untraced for the next
+//! batch, while the verdicts of the parts before it stand (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"). R's
 //! front advances past the batch only after every verdict is posted, by
 //! one guard that runs from the unwind as well and posts *unwalked* for
 //! every root the unwind left without a verdict ([`FinishThePosts`]), so
@@ -111,10 +112,12 @@
 //! stores nothing into its clock, so a thread whose batches all read live,
 //! and one that registers nothing, turns over at X like any other, and a
 //! component that became garbage behind one of its deferred roots waits
-//! about one X rather than until pressure or exit. The first visit of a life
-//! stamps the instant and advances nothing, X being counted from a reading
-//! and never from the record's birth, unless the registry noted a new life,
-//! which advances at once (`crate::cycle::epoch`, "A record's next life";
+//! about one X and the next round's take of the merged lane rather than
+//! until pressure or exit; the re-offer arms no collection of the mutator's
+//! (`crate::cycle::queue`, "What the poll does for this module"). The first
+//! visit of a life stamps the instant and advances nothing, X being counted
+//! from a reading and never from the record's birth, unless the registry
+//! noted a new life, which advances at once (`crate::cycle::epoch`, "A record's next life";
 //! `dev/DECISIONS.md`, "the collector finds and the mutator judges, and a
 //! recall of the token bounds the mutator's wait instead of the budget").
 //!
@@ -2599,7 +2602,7 @@ enum RootReading {
 /// untracked, which the trace's own rule reads as an external live reference
 /// and which the mutator's trace would place no better — is
 /// [`Verdict::ReadLive`]; an *unwalked* verdict would send it round P and R at
-/// every poll. Any other root names its row.
+/// every batch. Any other root names its row.
 ///
 /// # Safety
 /// The calling thread holds the mutator's token, and `root` is an entry of

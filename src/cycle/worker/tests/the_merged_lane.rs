@@ -176,7 +176,7 @@ fn a_packed_merged_lane_is_taken_at_the_next_round() {
 }
 
 /// A round that reads the ring empty has seen every merge before its
-/// reading, since the owner's collection traced what the merge brought: a
+/// reading, since a collection over R whole traced what the merge brought: a
 /// ring registered after it stands its interval rather than being taken as
 /// a merge.
 #[test]

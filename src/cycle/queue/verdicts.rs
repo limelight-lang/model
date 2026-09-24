@@ -39,12 +39,17 @@
 //! the mutator's token byte, and the mutator's reading of it — on its slot
 //! free entry and at its poll — arms the collection over P
 //! (`crate::cycle::token::read_and_act_on_this_thread`,
-//! `crate::cycle::collect::collect_over_the_verdicts`): the proposed and
-//! unwalked entries standing at the batch's reading are its roots and are
-//! traced from P's slots, with no entry of R written for them and nothing
-//! of R read (`crate::cycle::queue::Batch`). The pressure path and the exit
-//! read P into their batch first, ahead of R, so that a proposal never
-//! stands through a collection short of memory. The invariant the byte
+//! `crate::cycle::collect::collect_over_the_verdicts`): the proposed entries
+//! standing at the batch's reading are its roots and are traced from P's
+//! slots, with no entry of R written for them and nothing of R read
+//! (`crate::cycle::queue::Batch`). An unwalked entry is no root of it: the
+//! collector never read that root, and the collection over P validates what
+//! the collector read rather than searching, so its close writes the root
+//! back into R for the collector's next batch (`rfc/model/gc/rc-cycle.md`,
+//! "The mutator's disposition"). The pressure path, the exit and the
+//! explicit fire read P into their batch first, ahead of R, with its
+//! unwalked entries among the roots, so that a proposal never stands through
+//! a collection short of memory ([`BatchForm`]). The invariant the byte
 //! carries: P holds an entry the mutator has not disposed of only while the
 //! byte reads `POSTED` or `MUTATOR`, so a byte at `FREE` promises an empty
 //! P (`rfc/dev/design/trace-token-handshake.md`, "The word").
@@ -90,10 +95,15 @@ pub(crate) enum Verdict {
 }
 
 impl Verdict {
-    /// Whether an entry under this verdict is a root of the mutator's batch:
-    /// one the mutator traces and validates exactly.
-    fn is_root(self) -> bool {
-        matches!(self, Self::Proposed | Self::Unwalked)
+    /// Whether an entry under this verdict is a root of a batch of `form`:
+    /// one the mutator traces and validates exactly. A proposal is a root of
+    /// every batch, and an unwalked root of a batch over R whole alone.
+    fn is_root_in(self, form: BatchForm) -> bool {
+        match self {
+            Self::Proposed => true,
+            Self::Unwalked => form == BatchForm::AllRoots,
+            Self::ReadLive | Self::ZeroCount => false,
+        }
     }
 }
 
@@ -142,10 +152,10 @@ pub(super) fn is_disposed(entry: usize) -> bool {
     entry & !LOW_BITS == 0
 }
 
-/// Whether an entry of P is a root of the mutator's batch.
+/// Whether an entry of P is a root of the mutator's batch of `form`.
 #[inline]
-pub(super) fn is_batch_root(entry: usize) -> bool {
-    !is_disposed(entry) && entry_verdict(entry).is_root()
+pub(super) fn is_batch_root(entry: usize, form: BatchForm) -> bool {
+    !is_disposed(entry) && entry_verdict(entry).is_root_in(form)
 }
 
 /// The collector's handle over one mutator's P: how much room it has, and the

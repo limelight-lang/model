@@ -140,8 +140,9 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: 
 /// of each of them: a completed death is retired, a root marked or read live
 /// goes to the deferred lane, and everything else — a component refused or
 /// resurrected, a resurrected zero count, a root the lane had no block
-/// for — is written back into R as a registration, before P's front
-/// advances past the whole prefix. Without a prefix, every completed death
+/// for, an unwalked root the collection over P did not trace — is written
+/// back into R as a registration, before P's front advances past the whole
+/// prefix. Without a prefix, every completed death
 /// standing in P is retired in place, its entry nulled, and P's front stays.
 ///
 /// The writes into P's slots are the mutator's under its exclusion of the
@@ -181,9 +182,13 @@ fn dispose_verdicts(
             return;
         }
 
-        let verdict = verdicts::entry_verdict(entry);
-        let deferrable = verdict == verdicts::Verdict::ReadLive
-            || (verdicts::is_batch_root(entry) && entry & verdicts::VERDICT_DEFER_MARK != 0);
+        // Read without the batch's form, which a close that ended before its
+        // own disposition does not have: the mark is written over a root of
+        // the marking batch alone, so an unwalked entry of a collection over P
+        // carries one only where a collection over R whole marked it and
+        // unwound before disposing of it, and that reading defers it.
+        let deferrable = verdicts::entry_verdict(entry) == verdicts::Verdict::ReadLive
+            || entry & verdicts::VERDICT_DEFER_MARK != 0;
         // Nulled before the move, so that no unwind between the two finds
         // the entity in P and in a lane.
         *slot = 0;

@@ -8,6 +8,34 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-24 — S65.10 the poll without the turnover's arming: 14.3–15.3 ns against 14.2–15.9 ns, no shift
+
+**Two arms of `cycle::collect::tests::what_the_poll_costs`, two binaries.**
+The base is `5a5948f`, whose poll arms a collection over R whole when the
+re-offer moves the lane; the step's poll makes the same re-offer and arms
+nothing. Neither arm reaches the re-offer, since no advance is made inside
+the timed loop, so the reading asks whether the poll's shape moved the
+path both arms take.
+
+**Machine:** dev box, sixteen cores, another process holding one core at
+100 % beside the run (load average 9.9–10.5). **Method:** release build,
+each binary pinned to CPU 11 with `taskset`, the two interleaved six times,
+nine rounds of 200,000 polls per run, the minimum.
+
+| arm | base, min | step, min |
+| --- | ---: | ---: |
+| empty lane | 14.18–15.88 ns | 14.61–15.12 ns |
+| one deferred record | 14.29–15.68 ns | 14.26–15.33 ns |
+
+**The reading.** No shift: the ranges overlap in both arms. The first run
+read 16.4–18.4 ns in both binaries at once, a stall under the build that
+had just finished, and is dropped from the ranges. The absolute figures are
+twice S65.2's 6.8–7.4 ns of 2026-09-23 under this day's load and are not
+compared with them. The step's deferred-record probe failed after its
+figures were printed, at a cleanup that expected the poll after the advance
+to take the ring, the contract the step removes; the cleanup was rewritten
+to take it by the explicit fire, and the probe is green.
+
 ## 2026-09-24 — S65.13 the batch in parts at a grown K: the mutator's wait stays within the base's but on the wide rings, its withheld deaths fall to the mark, and a grant nobody recalls lasts 4.1–4.3 ms and 32–37 ms against 0.13–0.41 ms
 
 `cycle::worker::tests::what_a_grown_k_costs`, added for S65.13: 1,024 live

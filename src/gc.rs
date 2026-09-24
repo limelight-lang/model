@@ -76,20 +76,18 @@ impl Arming {
 
 /// Arm this thread for a collection over R whole at its next clean point.
 ///
-/// Two callers arm, neither of which can collect where it stands. The
-/// pressure collection, at every ending that leaves a prefix of the lane
-/// unread or that the gate refused, because what stands behind it is
-/// garbage the poll has to read
-/// (`crate::cycle::collect::collect_under_pressure`). And the poll itself,
-/// when the collector has advanced the epoch and the deferred lane is
-/// re-offered, so that the same safepoint traces the re-offered roots. The candidate
-/// queue's growth arms nothing: a block the manager refused raises the
-/// collector's signal (`crate::cycle::queue`). The third arming, for P
-/// alone, is the byte's ([`arm_for_the_verdicts`]), and the lowest, a
-/// retirement pass with no collection, is the free path's count's
-/// ([`arm_to_retire`]). The arming is how the
-/// poll hears about any of them (`rfc/model/gc/strategies.md`, "Collection
-/// requests and triggers").
+/// One caller arms, and it cannot collect where it stands: the pressure
+/// collection, at every ending that leaves a prefix of the lane unread or
+/// that the gate refused, because what stands behind it is garbage the poll
+/// has to read (`crate::cycle::collect::collect_under_pressure`). The poll's
+/// re-offer of the deferred lane arms nothing, the re-offered roots being the
+/// collector's to take from R, and neither does the candidate queue's
+/// growth: a block the manager refused raises the collector's signal
+/// (`crate::cycle::queue`). The arming for P alone is the byte's
+/// ([`arm_for_the_verdicts`]), and the lowest, a retirement pass with no
+/// collection, is the free path's count's ([`arm_to_retire`]). The arming is
+/// how the poll hears about any of them (`rfc/model/gc/strategies.md`,
+/// "Collection requests and triggers").
 pub(crate) fn arm() {
     COLLECTION_ARMED.with(|armed| armed.set(Arming::AllRoots as u8));
 }
@@ -273,13 +271,11 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // is read. The collector keeps the clock and stores its low byte beside
     // the token at every advance; the owner alone moves its records, so the
     // poll compares that byte against the lane's mirror and splices the lane
-    // where it moved, and arming here lets this same safepoint trace the
-    // re-offered roots (`crate::cycle::worker`, "The epoch clock").
-    if open
-        && crate::cycle::queue::deferred_lane_is_occupied()
-        && crate::cycle::queue::reoffer_deferred_if_epoch_moved()
-    {
-        arm();
+    // where it moved (`crate::cycle::worker`, "The epoch clock"). It arms
+    // nothing: the re-offered roots stand in R as any registration does, and
+    // the collector's next batch takes them.
+    if open && crate::cycle::queue::deferred_lane_is_occupied() {
+        let _ = crate::cycle::queue::reoffer_deferred_if_epoch_moved();
     }
 
     // The returns a foreign trace left this thread withholding, made here so

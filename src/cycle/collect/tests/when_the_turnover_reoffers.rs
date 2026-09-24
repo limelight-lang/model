@@ -164,7 +164,8 @@ fn a_matured_ring_that_loses_its_keeper_is_collected_at_the_turnover_and_not_bef
 /// lane's mirror (`crate::cycle::worker`, "The epoch clock"), which no poll
 /// and no collection of the thread's own does. Sixty-four polls of such a
 /// thread leave the cell, the lane and the mark where they were; the poll
-/// after the advance splices the lane and takes the ring.
+/// after the advance splices the lane back into R, and the next collection
+/// over R takes the ring.
 ///
 /// The same fixture as the case above, driven by the production poll.
 #[test]
@@ -226,25 +227,35 @@ fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_advances_it
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 0);
 
     // The collector's advance after X, stood in for by the harness: the next
-    // poll reads the byte, splices the lane back and the collection it arms
-    // takes the ring.
+    // poll reads the byte and splices the lane back into R, and the
+    // collector's batch that takes the ring is stood in for by the explicit
+    // fire.
     epoch::turn_this_threads_cell();
+    let _ = take_dispatches_in_mark_phase();
     assert_eq!(
         unsafe { crate::gc::ll_gc_maybe_collect() },
-        2,
-        "the poll after the advance re-offered the lane and freed the ring"
+        0,
+        "the poll after the advance re-offered the lane and collected nothing"
     );
     assert_eq!(
-        epoch::this_threads_turnovers(),
-        turnovers + 1,
-        "the advance moved the clock by one turnover, and the collection by nothing"
+        crate::gc::arming(),
+        crate::gc::Arming::None,
+        "and armed nothing"
     );
+    assert_eq!(take_dispatches_in_mark_phase(), 0, "no mark ran");
+    assert_eq!(deferred_count(), 0);
+    assert_eq!(candidate_count(), 2, "the ring's roots stand in R");
     assert_eq!(
         deferred_turnover_mirror(),
         (turnovers + 1) as u8,
         "the poll recorded the byte it re-offered at"
     );
-    assert_eq!(deferred_count(), 0);
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 2, "the ring went back");
+    assert_eq!(
+        epoch::this_threads_turnovers(),
+        turnovers + 1,
+        "the advance moved the clock by one turnover, and the collection by nothing"
+    );
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
 
     // A second accumulation on the same thread: the polls after it move
@@ -281,11 +292,9 @@ fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_advances_it
         ll_object_die(keeper);
     }
     epoch::turn_this_threads_cell();
-    assert_eq!(
-        unsafe { crate::gc::ll_gc_maybe_collect() },
-        2,
-        "the ring went back"
-    );
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    assert_eq!(candidate_count(), 2, "the poll re-offered the lane");
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 2, "the ring went back");
 }
 
 /// A pressure collection takes a dead ring whose root stands in the deferred
@@ -698,18 +707,19 @@ fn a_ring_with_a_mature_member_no_lane_names_is_read_live_and_dies_at_the_turnov
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
 }
 
-/// A ring behind a mature member no lane names dies at the poll after the
-/// collector's advance. The polls before it offer and free nothing: the ring's
-/// root stands deferred, and a re-trace would stop at the member's stamp,
-/// which is this epoch's. The advance retires the stamp, the poll after it
-/// splices the lane back, and the collection it arms descends into the member
-/// and takes the ring whole (`crate::cycle::worker`, "The epoch clock").
+/// A ring behind a mature member no lane names dies at the first collection
+/// over R after the collector's advance. The polls before it offer and free
+/// nothing: the ring's root stands deferred, and a re-trace would stop at the
+/// member's stamp, which is this epoch's. The advance retires the stamp, the
+/// poll after it splices the lane back into R, and the next collection over R
+/// descends into the member and takes the ring whole (`crate::cycle::worker`,
+/// "The epoch clock").
 ///
 /// The same shape as the case above, matured under a keeper by
 /// `TRAVERSAL_AGE_THRESHOLD` collections with the spare cells empty and one
 /// with them refilled, which is the reading that defers the root.
 #[test]
-fn a_ring_behind_a_mature_member_dies_at_the_poll_after_the_advance() {
+fn a_ring_behind_a_mature_member_dies_at_the_first_collection_after_the_advance() {
     let _g = test_guard();
     release_queue_segments();
     epoch::turn_to_a_nonzero_epoch();
@@ -794,8 +804,16 @@ fn a_ring_behind_a_mature_member_dies_at_the_poll_after_the_advance() {
     epoch::turn_this_threads_cell();
     assert_eq!(
         unsafe { crate::gc::ll_gc_maybe_collect() },
+        0,
+        "the poll after the advance re-offered the lane and collected nothing"
+    );
+    assert_eq!(candidate_count(), 1, "the root stands in R");
+    // The collector's batch that takes the root, stood in for by the explicit
+    // fire.
+    assert_eq!(
+        unsafe { ll_gc_collect_cycles() },
         2,
-        "the poll after the advance re-offered the lane and the collection took the ring"
+        "the collection after the advance took the ring"
     );
     assert_eq!(
         take_edges_pruned(),

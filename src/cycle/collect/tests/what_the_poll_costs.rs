@@ -119,11 +119,17 @@ fn measure_what_the_poll_costs_with_a_deferred_record_standing() {
     );
 
     // The ring goes back: the keeper lets go, the advance the collector
-    // would make after X is made by hand, and the poll after it takes it.
+    // would make after X is made by hand, the poll after it re-offers the
+    // lane, and the explicit fire stands in for the collector's batch.
     unsafe {
         assert!(ll_release(keeper as *mut RcHeader));
         ll_object_die(keeper);
     }
     crate::cycle::epoch::turn_this_threads_cell();
-    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2, "the ring went back");
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        0,
+        "the poll collects nothing"
+    );
+    assert_eq!(unsafe { ll_gc_collect_cycles() }, 2, "the ring went back");
 }

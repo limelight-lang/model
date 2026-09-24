@@ -56,6 +56,7 @@ use crate::cycle::maturation::stamp_live_components;
 use crate::cycle::members::HarvestEnding;
 use crate::cycle::members::MEMBER_CAPACITY;
 use crate::cycle::membership::Membership;
+use crate::cycle::queue::BatchForm;
 use crate::cycle::reclamation::{DeferredReclamation, reclaim_before_drops};
 use crate::cycle::token::HeldToken;
 use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch};
@@ -348,25 +349,16 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
 }
 
 /// The collection over P alone, which `POSTED` arms
-/// (`crate::gc::Arming::Verdicts`): the collector's proposed and unwalked
-/// roots, validated exactly and finalized as any batch is, with nothing of
-/// R read or traced, and P disposed of whole at the close. Returns entities
+/// (`crate::gc::Arming::Verdicts`): the collector's proposed roots,
+/// validated exactly and finalized as any batch is, with nothing of R read
+/// or traced, and P disposed of whole at the close, an unwalked root
+/// written back into R untraced ([`BatchForm::Verdicts`]). Returns entities
 /// reclaimed.
 ///
 /// # Safety
 /// As [`collect_off_the_poll`].
 pub(crate) unsafe fn collect_over_the_verdicts() -> usize {
     unsafe { collection(BatchForm::Verdicts) }.freed
-}
-
-/// What a collection off the poll reads as its batch.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum BatchForm {
-    /// R whole, with P's roots ahead in it: the explicit fire, the exit's
-    /// rounds, and an arming for R.
-    AllRoots,
-    /// P alone: the arming `POSTED` made.
-    Verdicts,
 }
 
 /// Where a collection off the poll ended. Every arm but the last is a zero
@@ -492,12 +484,12 @@ unsafe fn collection(form: BatchForm) -> Collection {
     }
 }
 
-/// The prologue both paths share: open the window, read the two rings as
-/// the batch — R's entries, and the proposed and unwalked roots standing in
+/// The prologue both paths share: open the window, read `form`'s batch —
+/// over R whole, R's entries and the proposed and unwalked roots standing in
 /// P, so that a proposal never stands through a collection short of memory
-/// (`crate::cycle::queue::verdicts`) — and trace the first `roots` roots of
-/// it. Answers the window, still open with its rows and its batch, and how
-/// many roots the trace read.
+/// (`crate::cycle::queue::verdicts`); over P, its proposals alone — and trace
+/// the first `roots` roots of it. Answers the window, still open with its
+/// rows and its batch, and how many roots the trace read.
 ///
 /// The token is the caller's, held through the collection's close on both
 /// paths, and neither takes it here.

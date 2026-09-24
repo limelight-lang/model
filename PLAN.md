@@ -183,149 +183,14 @@ block.
         runs in parts"; `dev/BENCHMARKS.md`, "S65.13 the batch in parts
         at a grown K".
 - [x] S65.8 The live core stamped from a list (package commit 6)
-      done: one chain per grant of at most L blocks, its head on the hold
-        line, stamped at the take from `POSTED` or at the first block or run
-        return under it, dropped under pressure; the collector reads
-        `waiting` every N rows of the touched-list walk that writes the list
-        and stops when it is set, keeping what it wrote, so that the list adds
-        no unbounded work before the release (`dev/S65-PLAN-CRITIC.md` F1,
-        second instance), with a recall raised inside that walk measured;
-        after a take over `overlapping-live` every member carries the stamp
-        and the next take prunes; the handshake document records the list
-        and the stamp beside E12
-      tier: T2 · role: Critic
-      baseline 2026-09-24 (`ea9d092`), what the step erases: a grant draws
-        from the pool only its arena's blocks, all back before the release,
-        and no GC block crosses a thread; the take from `POSTED` is one swap
-        and writes no header; byte 6 is written by the owner's commit alone;
-        a block's return under `POSTED` reads the token once and the run arm
-        of `large_entity::free` reads nothing; a take over `overlapping-live`
-        meets all 381 rows and the next one in the same epoch prunes no edge
-        (read at the step's red run); no refusal is new.
-      Critic 2026-09-24 round 1: six findings. (1) The recall case could not
-        fail for a check before the walk: the seam moved inside it, the bound
-        asserted in positions, no wall probe. (2) A sleeping owner pinned the
-        list's blocks: the collector gives a stale list back. (3) The rewind on
-        a recall put block returns before the release and threw away live
-        rows: the walk stops and keeps them, done-line amended. (4) The
-        pressure case could not see its order: read inside a destructor. (5)
-        The non-`POSTED` arm of the return hook became a debug assertion, E13
-        corrected. (6) E11's closure must cover the list's writes: named in
-        E13. All accepted.
-      Critic 2026-09-24 round 2, over the corrections: the give-back walked a
-        chain with no happens-before (publication now a release, the swap an
-        acquire); its case called the function directly (a round-driven case
-        added); it borrowed the standing interval (keyed on the epoch's advance
-        instead, which costs no stamp). All accepted
-        (`dev/DECISIONS.md`, "the live core a batch read is stamped by the
-        owner from a list, at the take from `POSTED` or at the first return
-        under it").
-      handoff: `cycle::live_list` (writer, the owner's stamp, the return hook,
-        the collector's give-back after an advance), `HeldToken::take` /
-        `take_giving_back_the_live_list`; eleven cases in
-        `worker::tests::the_live_list`, eleven mutations red; 381 rows then 63
-        on `overlapping-live`. On the way the test block budget was made to
-        cover adoption (`dev/POSTMORTEM.md`, "an adopted block served a case
-        whose budget refused the pool").
+      handoff: `cycle::live_list`, `HeldToken::take_giving_back_the_live_list`;
+        `dev/DECISIONS.md`, "the live core a batch read is stamped by the owner
+        from a list, at the take from `POSTED` or at the first return under it".
 - [x] S65.9 The retry at the ceiling (package commit 7)
-      done: a part failing at B retried at `B_max` in the same grant, once per
-        grant; a failed retry, and a part meeting B with the retry spent, post
-        every live root their rows met `ReadLive`, which the deferred lane
-        holds until the turnover, and the batch goes on with the next root; a
-        retry the recall stops ends the batch; K never halves; a 300-block ring
-        judged in one grant; a ring past `B_max` read live once in a grant and
-        retried after the turnover; `rfc/model/gc/rc-cycle.md` states that
-        `ReadLive` as a deferral rather than a trace's verdict. Amended
-        2026-09-24 from a parking mark in byte 6 bits 20–22, written and
-        cleared by the owner from a second section of the live list's chain
-        (`dev/S65-PLAN-CRITIC.md` F4), and from a batch ended with the rest
-        `Unwalked` and K halved: Edmond's rulings on the Critic's findings,
-        below. That the owner pays nothing for a closure past B holds once
-        S65.10 drops the turnover's arm, which until then traces every
-        deferred root in a collection over R.
-      tier: T2 · role: Critic
-      baseline 2026-09-24 (`2610a33`), what the step erases: a part that meets
-        B ends the batch, every root left without a verdict is `Unwalked` and
-        K halves, so a root whose closure passes B comes back `Unwalked` at
-        every take; bits 20–23 of byte 6 have no writer; the live list's chain
-        holds one section; a grant draws at most B blocks above the workspace
-        at any instant.
-      Critic 2026-09-24 round 1, seven findings: (1) the mark's skip is
-        unreachable in the ordinary flow — a failed retry's roots go read live
-        to the deferred lane, which returns them only at a turnover, where the
-        mark is already stale; checked by hand, holds; to Edmond. (2) A failed
-        retry's `ReadLive` leaves garbage past `B_max` to pressure and the exit
-        once S65.10 drops the turnover's arm, against the rfc's "no colour of
-        an abandoned trace is a verdict"; to Edmond. (3) The collector's
-        give-back drops the marks section's clearings; waits on (1). (4) The
-        met-roots walk read no position per block: fixed. (5) Branches no case
-        drives (a met root's clearing, the clearings on the give-back paths,
-        the advance check on marks): cases owed. (6) rfc text against the code
-        in three places: owed. (7) `grow` refused at equality while the retry
-        put B back over drawn blocks: fixed (`>=`).
-      Edmond 2026-09-24 on (1): "согласен" to the recommendation — the mark
-        and its skip go, the retry stays; bits 20–22 back to reserve, the
-        marks section and F4's clearing moot, (3) with them. Read as that
-        recommendation; he asked what and where the mark is first (byte 6,
-        bits 20–22 of `RcHeader`'s flags) and did not name another option.
-      Edmond 2026-09-24 on (2): `ReadLive`, the package's and the
-        recommendation — `Unwalked` would trace the closure on the mutator's
-        thread, and after S65.10 retry it at every take; the rfc reworded as a
-        deferral. On the old case
-        `the_batch::a_second_part_that_meets_its_budget_leaves_the_first_parts_verdicts_and_halves_k`,
-        red because a part at B is retried and finishes: "тест устарел
-        переделать". Rewritten as
-        `a_part_that_meets_its_budget_with_the_retry_spent_leaves_the_earlier_verdicts_and_halves_k`,
-        two long rings registered in turn, so that the contract it kept —
-        `Unwalked` past the retry — stays covered (renamed again after the
-        ruling on round 2, below:
-        `a_part_past_b_with_the_retry_spent_defers_the_roots_it_met_and_the_batch_goes_on`). Findings (3) and (5) moot
-        with the mark; (6) re-read in round 2.
-      Critic 2026-09-24 round 2, over the removal, six findings: the removal
-        clean in code, rfc and `classes.md`. (1) The claim of one failed retry
-        per epoch and nothing on the owner's thread held only for the roots a
-        retry met: a root of the closure it did not meet comes back `Unwalked`,
-        traced in line until S65.10 and retried at its next take after it.
-        (2) Halving K on a failed retry spreads its fixed cost over fewer
-        roots. Edmond 2026-09-24 on both: the batch goes on — a part past the
-        ceiling defers the roots it met read live and the next root opens a
-        part — and K no longer halves, having answered the roots lost to
-        `Unwalked`; he asked its price and that it be measured (S65.12).
-        (3) rfc against the code: "every live root", the retry meeting
-        `B_max` in the `Unwalked` list, K left on a refused or recalled retry,
-        B with `B_max` bounding the arena; `TRACE_BLOCK_BUDGET`'s and the
-        record's K doc corrected. (4) A retry the recall stops had no case:
-        `a_recalled_retry_leaves_its_roots_unwalked_and_k_where_it_stands`,
-        two surviving mutations now red; a dead `forget_the_budget_met`
-        before each part removed, then restored once the batch went on past a
-        failed retry, whose flag it clears. (5) "Read live to every root left"
-        survived: `a_root_the_failed_retry_did_not_meet_opens_a_part_of_its_own`,
-        red. (6) The package's other mentions of the mark: a banner and
-        amendments in section 7 and in the premise of section 12. Seven
-        mutations of the going-on red.
-      Critic 2026-09-24 round 3, over the going-on: no code defect. (1) That
-        the owner pays nothing holds only once S65.10 drops the turnover's
-        arm: qualified in DECISIONS and the done-line, the rfc's own rule
-        already arming nothing while a collector lives. (2) The collector pays
-        per root, a part at B for each root no attempt of the grant met: rfc
-        and DECISIONS priced so, S65.12's measurement given the spread shape.
-        (3) Which failure goes on was pinned by nothing: a hook before a part,
-        `a_recall_in_the_part_after_a_deferral_leaves_its_root_unwalked` (the
-        flag's clearing red when dropped) and
-        `a_retry_the_pool_refuses_leaves_its_roots_unwalked` (the collector's
-        own block budget at zero from the retry's start, red without it); the
-        budget read before the pool named in `trace_in_parts`. (4) Stale text
-        in `batch`, `Verdict::Unwalked` and
-        `every_part_draws_under_the_budget_of_its_own`, which now asserts no
-        part met B. (5) The rfc's garbage sentence split in two.
-      handoff: `worker::trace_in_parts` (the retry, the deferral and the
-        going-on), `RETRY_BLOCK_BUDGET`, `size_the_next_batch` without the
-        halving; six cases in `worker::tests::the_ceiling` and the rewritten
-        `the_batch` case; seventeen mutations red over the three rounds. The
-        gate of 2026-09-24: plain, three runs at eight threads,
-        `hash-folding`, three `debug-journal` runs, all green (1,192 and
-        1,201 passed).
-- [ ] S65.10 `Unwalked` is no root of the collection over P (package commit 8)
+      handoff: `worker::trace_in_parts`, `RETRY_BLOCK_BUDGET`; `dev/DECISIONS.md`,
+        "a part that meets B is retried under `B_max` once per grant, a part
+        past the ceiling defers the roots it met, and the batch goes on".
+- [x] S65.10 `Unwalked` is no root of the collection over P (package commit 8)
       done: `Verdict::is_root_in(BatchForm)`; P = [`Unwalked` x] writes x back
         into R untraced; under pressure 63 `Unwalked` are still traced; the
         turnover's `arm()` gone outside `cap 0`, which makes true the rfc's
@@ -334,10 +199,59 @@ block.
         `rfc/model/gc/rc-cycle.md` states who finds and who judges, and when
         the mutator searches
       tier: T2 · role: Critic
+      baseline 2026-09-24 (`5a5948f`), what the step erases: an `Unwalked`
+        entry of P is a root of every batch (`Verdict::is_root`), so the
+        collection over P marks and scans its closure on the mutator's thread
+        and the close defers, retires or writes it back by what that trace
+        read; the poll's re-offer arms a collection over R whole at every
+        epoch move, a living collector or none, so the re-offered roots are
+        traced in line at that poll; the collection over P draws the
+        workspace and whatever arena blocks the `Unwalked` closures take; no
+        refusal is new. Red run: P = [`Unwalked` ×2] of a garbage ring, the
+        poll freed 2; a poll after the advance over a garbage ring, freed 2.
+      Critic 2026-09-24 round 1, six findings. (1) The rfc's new summary
+        bullet cited the ruling for the exit and the explicit fire, which it
+        does not name, and the re-offer sentence left `cap 0` unowned: the
+        bullet names the ruling's two occasions and cites the other two to
+        their own sections; S65.12's done-line owns the sentence's `cap 0`
+        form. (2) Two ignored probes go red on the moved contract,
+        `what_the_poll_costs`'s deferred arm at its cleanup and
+        `what_a_take_costs`' `Wait` arm (run: freed 0 of 381): to Edmond with
+        the three gated cases, who ruled all five outdated ("да" to the
+        rewrite): the turnover cases free the ring by the explicit fire after
+        the poll's re-offer, the verdict case keeps `Proposed` alone, the poll
+        probe's cleanup and the `Wait` arm free by the fire. (3) A root the
+        collector cannot walk circles P and R with no owner-side breaker:
+        named in the rfc beside the verdict, and the backlog line rewritten. (4) The form in `mark_for_deferral`
+        was pinned by nothing:
+        `an_unwalked_root_a_proposal_reaches_is_written_back_rather_than_deferred`,
+        red when the marking ignores the form. (5) `dispose_verdicts`' comment
+        overclaimed: corrected, the code kept. (6) The collection over P opens
+        a window with no proposal: unmeasured, a backlog line with the probe
+        owed. Stale test text in `the_merged_lane` and
+        `the_volume_a_turnover_reoffers` corrected.
+      Critic 2026-09-24 round 2, over the corrections and the rewrites: no
+        rewrite pins less than the moved contract. (1) The summary bullet's
+        "only" contradicted its own second clause: four occasions, two the
+        ruling's and two asked for outside the collector. (2)
+        `rfc/model/gc/strategies.md`, "Collection requests and triggers",
+        still states the pre-collector model: added to S65.11's list. (3) The
+        BENCHMARKS entry and this block described the probes before their
+        rewrite: corrected. (4) "That collector's next round" named the
+        ended one: the first collector's. All accepted.
+      handoff: `queue::BatchForm` on `Batch`, `Verdict::is_root_in`; the poll's
+        re-offer arms nothing (`gc.rs`); cases in
+        `collect::tests::who_traces_an_unwalked_root`, five old tests rewritten
+        on Edmond's ruling; `dev/BENCHMARKS.md`, "S65.10 the poll without the
+        turnover's arming". Gate of 2026-09-24 green: plain, 3× t8,
+        `hash-folding`, 3× `debug-journal` (1,197 and 1,206 passed), release,
+        bench, doc, citations 826/0, rfc linkcheck 0. No `unsafe` line moved,
+        so nothing joins the Miri list.
 - [ ] S65.11 The rfc read whole against the stage
       done: every amendment S65.2–S65.10 made is read in its place with its
         neighbours — no sentence of `rfc/model/gc/rc-cycle.md`, the handshake
-        document or `rfc/model/classes.md` still describes the budget as the
+        document, `rfc/model/classes.md` or `rfc/model/gc/strategies.md`
+        ("Collection requests and triggers") still describes the budget as the
         wait's bound, P in R's order or the turnover's collection over R; the
         citation checker over both repositories
         with no miss
@@ -372,7 +286,9 @@ block.
         time the `Unwalked` it would have traced costs, and the collector's
         time per grant the parts after a failed retry add, with the roots
         spread along a closure past `B_max` so that each opens a part at B
-        (S65.9's third Critic round, finding 2)
+        (S65.9's third Critic round, finding 2); `rfc/model/gc/rc-cycle.md`'s
+        "the re-offer arms no collection of the owner's" names the arming at
+        the merge under `cap 0`
       tier: T2 · role: Critic
 
 ## Then: arrays as a performance problem
@@ -577,11 +493,27 @@ against the code on 2026-08-13.
   one case (`…::a_thread_without_a_tls_slot_reports_instead_of_dying`,
   Windows-only) reads three of `a_life_the_allocator_left_heapless`'s six
   promises. The other three need a Windows run.
-- [ ] **A component past the collector's block budget whose owner-side
-  trace the pool refuses** circles P and R under pressure, arming a
-  collection each round (unverified since the batch runs in parts). Whether
-  a collector thread may spend its critical reserve and the unbounded
-  spare-cell surplus are recorded in `dev/DECISIONS.md` 2026-09-16.
+- [ ] **A root the collector cannot walk circles P and R.** A root sent back
+  `Unwalked` — every grant recalled by a mutator freeing past a mark, or a
+  pool that refuses every arena of the collector's while the mutator's own
+  allocations succeed — is written back into R untraced by the collection
+  over P and taken by a later batch, so it and the garbage behind it wait for
+  a shortage of memory or the exit; the mutator pays a collection over P per
+  turn (`rfc/model/gc/rc-cycle.md`, "The collector's batch"). How often a
+  workload reaches it is unmeasured. Whether a collector thread may spend its
+  critical reserve and the unbounded spare-cell surplus are recorded in
+  `dev/DECISIONS.md` 2026-09-16.
+  done: a case that recalls every grant, the turns it takes and what the
+  mutator pays per turn, read and recorded, and a ruling on a breaker or on
+  keeping the wait.
+- [ ] **The collection over P opens a window with no proposal to trace.** A
+  P holding only `ReadLive`, `ZeroCount` and `Unwalked` entries still opens
+  `ActiveTrace`, traces zero roots and commits an empty membership before the
+  disposition, which `retire_candidates_and_dispose_of_verdicts` makes
+  without a window (Critic of S65.10, finding 6).
+  done: `what_the_poll_costs`-style probe of that collection with and without
+  the window, both arms in one session; the window skipped if it pays, or
+  the figure recorded as kept.
 - [ ] **A weak map, the second death-subscriber kind**
   (`rfc/model/weak-references.md`; Edmond, 2026-09-07: it can wait). Shape:
   a GC-heap entity over `array::Table`, key uncounted and value counted; a

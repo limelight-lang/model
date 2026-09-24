@@ -149,8 +149,9 @@
 //! collector when a registration has filled a block of R, drawn the
 //! reserve or overflowed since the last signal
 //! ([`signal_the_collector_if_due`]) — after the fire, whose reading of R
-//! whole lowers the flag. A due deferred re-offer arms it for R whole, and
-//! the byte's `POSTED` for P.
+//! whole lowers the flag. The byte's `POSTED` arms it for P, and the
+//! deferred re-offer arms nothing: the merge it counts is what sends the
+//! collector's next round to the re-offered roots.
 //!
 //! # The second ring, P
 //!
@@ -901,10 +902,23 @@ pub(crate) fn drain_overflow() {
     }
 }
 
+/// What an in-line collection reads as its batch, and so which entries of P
+/// are its roots.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BatchForm {
+    /// R whole, with P's proposed and unwalked roots ahead in it: the
+    /// explicit fire, the pressure path, the exit's rounds, and an arming
+    /// for R.
+    AllRoots,
+    /// P alone, of which the proposed entries are the roots: the arming
+    /// `POSTED` made.
+    Verdicts,
+}
+
 /// The entries one in-line collection read as its roots: the first `len` of
 /// R from its front, which is every entry the ring held when the collection
-/// read it, and the first `verdicts` of P, of which the proposed and the
-/// unwalked are roots ([`read_batch`]).
+/// read it, and the first `verdicts` of P, of which `form` says which are
+/// roots ([`read_batch`], [`read_batch_of_verdicts`]).
 ///
 /// Counts and not a chain: the entries stay where they are, a registration
 /// the collection's own destructors make lands behind them in R, a verdict
@@ -916,6 +930,7 @@ pub(crate) fn drain_overflow() {
 pub(crate) struct Batch {
     len: usize,
     verdicts: usize,
+    form: BatchForm,
 }
 
 impl Batch {
@@ -943,8 +958,9 @@ impl Batch {
     /// `crate::cycle::mark`'s.
     pub(crate) fn walk_roots(&self, mut visit: impl FnMut(*mut RcHeader) -> bool) -> bool {
         let mut stopped = false;
+        let form = self.form;
         self.walk_verdicts(|entry| {
-            if verdicts::is_batch_root(entry) {
+            if verdicts::is_batch_root(entry, form) {
                 stopped = !visit(verdicts::verdict_entity(entry));
             }
             !stopped
@@ -1015,10 +1031,11 @@ impl Batch {
             };
         });
         if let Some(ring) = verdicts::verdict_ring() {
+            let form = self.form;
             ring.map_prefix_in_place(self.verdicts, |slot| {
                 let entry = *slot;
                 let unmarked = entry & !verdicts::VERDICT_DEFER_MARK;
-                *slot = if verdicts::is_batch_root(entry)
+                *slot = if verdicts::is_batch_root(entry, form)
                     && deferrable(verdicts::verdict_entity(entry))
                 {
                     marked += 1;
@@ -1093,8 +1110,9 @@ fn candidate_ring<'a>() -> Option<Quiescent<'a>> {
 
 /// Read this thread's two rings as one collection's batch: every entry of R
 /// from the front to the tail, and every entry of P the collector has
-/// posted, counted and left where they are. The caller holds the token, so
-/// P is quiescent under the reading.
+/// posted, counted and left where they are, P's proposed and unwalked
+/// entries among the roots ([`BatchForm::AllRoots`]). The caller holds the
+/// token, so P is quiescent under the reading.
 ///
 /// **It draws nothing and cannot be refused.** Nothing is taken out, so the
 /// next registration finds the tail where the writer left it, and a
@@ -1121,17 +1139,20 @@ pub(crate) fn read_batch() -> Batch {
     Batch {
         len: candidate_ring().map_or(0, |ring| ring.count()),
         verdicts: verdicts::verdict_ring().map_or(0, |ring| ring.count()),
+        form: BatchForm::AllRoots,
     }
 }
 
 /// Read P alone as one collection's batch — every entry the collector has
 /// posted, counted and left where it is — and nothing of R: the collection
-/// `POSTED` fires (`crate::gc::Arming::Verdicts`). The signal flag stands,
-/// since R is not read.
+/// `POSTED` fires (`crate::gc::Arming::Verdicts`), whose roots are P's
+/// proposals ([`BatchForm::Verdicts`]). The signal flag stands, since R is
+/// not read.
 pub(crate) fn read_batch_of_verdicts() -> Batch {
     Batch {
         len: 0,
         verdicts: verdicts::verdict_ring().map_or(0, |ring| ring.count()),
+        form: BatchForm::Verdicts,
     }
 }
 
