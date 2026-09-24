@@ -46,10 +46,10 @@ are in `docs/history/`, superseded by the collector thread that was built.
   both of its paths, and `cycle::worker` is the collector thread beside it.
   What the group may not know is `dev/ARCHITECTURE.md`'s `cycle` row; what
   is not built, the compiler's side of the acyclic gate and a ruling on the
-  turnover period, is `PLAN.md`, "What S37 named and left". The deleted
-  `rc-walk`, `rc-trace` and
-  `rc-satb` are on the branch `archive/pre-rc-cycle` (`src/lib.rs`'s module
-  doc; `dev/DECISIONS.md`, 2026-08-26). Where each part is:
+  turnover period, is `PLAN.md`, "The turnover period `N` is unruled". The
+  deleted `rc-walk`, `rc-trace` and `rc-satb` are on the branch
+  `archive/pre-rc-cycle` (`src/lib.rs`'s module doc; `dev/DECISIONS.md`,
+  2026-08-26). Where each part is:
 
   | module | what is there | called by, in production |
   |---|---|---|

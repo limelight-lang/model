@@ -458,8 +458,9 @@ fn the_fire_the_byte_arms_retires_a_death_standing_in_r() {
 /// allocator, until something runs a retirement pass. By ruling the poll runs
 /// none of its own (`dev/DECISIONS.md`, "the safepoint poll takes the free
 /// path's road"), and the hold is bounded by the collector's serve threshold;
-/// what takes a quiet thread's garbage after a time is `PLAN.md`, "A quiet
-/// thread's garbage is taken after X".
+/// what takes a quiet thread's garbage after a time is `dev/DECISIONS.md`,
+/// "a standing R is taken after an interval of the collector's own, and no
+/// request count is capped".
 #[test]
 fn an_unarmed_poll_leaves_a_completed_death_registered() {
     let _g = test_guard();

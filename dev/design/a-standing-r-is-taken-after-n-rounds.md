@@ -55,10 +55,11 @@ pays one batch per interval while its sub-threshold ring is non-empty —
 a mutator registering one candidate a second is taken every four seconds
 with a handful of entries — and nothing else new.
 
-The rule is the second half of `PLAN.md`, "A quiet thread's garbage is taken
-after X"; the first, the deferred lane's turnover on the collector's request,
-is built (`dev/DECISIONS.md`, "a quiet thread's turnover is the collector's
-to ask for"). The two are one mechanism read twice: the lane is turned over
+The rule is the second half of taking a quiet thread's garbage after X
+(`dev/DECISIONS.md`, "a standing R is taken after an interval of the
+collector's own, and no request count is capped"); the first, the deferred
+lane's turnover on the collector's request, is built (`dev/DECISIONS.md`, "a
+quiet thread's turnover is the collector's to ask for"). The two are one mechanism read twice: the lane is turned over
 after X of the mutator's clock standing, R is taken after
 `STANDING_INTERVAL` of R standing non-empty.
 

@@ -14,6 +14,6 @@ this note originally recommended, so the analysis is read there and not
 from a copy.
 
 What is open, and who owns it: `PLAN.md`'s backlog line "Pure
-destructors, and the hand-off drain". The runtime-only step needs no
+destructors, the P0 runtime step". The runtime-only step needs no
 ruling and no compiler; the hand-off waits on the residual-duties and
 tail-bound questions the RFC's open list names.

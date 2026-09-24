@@ -1934,8 +1934,8 @@ impl Standing {
     /// record of the registry named elsewhere — carries what its opening
     /// checkpoint read to the next round, as `batches_served` and the
     /// backlog do. The cost is that round's timer, which lengthens where the
-    /// checkpoint's batch would have shortened it (`PLAN.md`, "What S64
-    /// named and left").
+    /// checkpoint's batch would have shortened it (`PLAN.md`, "A round
+    /// whose walk reads no record carries its checkpoint's readings").
     fn take_saw_work(&mut self) -> bool {
         std::mem::replace(&mut self.saw_work, false)
     }

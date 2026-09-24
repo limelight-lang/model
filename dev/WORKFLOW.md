@@ -670,9 +670,9 @@ them still exhibits its defect is unverified.**
 its two neighbours guard the reset window against reading a large run
 after it was unmapped, and their doc comments say `cargo test` passes the
 defect by construction. They run under Miri again since 2026-08-26: on 2026-08-29 the reconcile one was
-run under Miri with `reset_window::park_large` returning false — a build
-whose window parks nothing, which its neighbour's comment names as the
-condition — and it passed, in 176 s. Either the mutation is not the one
+run under Miri with `reset_window::defer_free` (then named `park_large`)
+returning false — a build whose window defers nothing, which its
+neighbour's comment names as the condition — and it passed, in 176 s. Either the mutation is not the one
 those comments mean, or a second half of the arrangement is missing.
 Re-arming them is nobody's step yet.
 

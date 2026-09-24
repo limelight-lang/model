@@ -12,7 +12,7 @@ The diagrams show the implementation, not the destination. The in-line
 `rc-cycle` path and the collector thread beside it are both built and both
 drawn; what is not built is outside the crate: the compiler's proof that
 fills `CLASS_ACYCLIC`, and a ruling on the turnover period
-(`PLAN.md`, "What S37 named and left"). The deleted
+(`PLAN.md`, "The turnover period `N` is unruled"). The deleted
 `rc-walk` and `rc-trace` structures remain on `archive/pre-rc-cycle`, not in
 this picture.
 
