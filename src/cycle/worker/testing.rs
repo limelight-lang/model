@@ -292,9 +292,9 @@ pub(crate) fn note_refusal() {
 /// the shape of its roots (`dev/BENCHMARKS.md`, "S64.5 what a take costs by
 /// the shape of its roots"): the roots the trace walked, the parts it opened,
 /// whether it ran to its end, the blocks its arena drew above the workspace,
-/// and the wall of the two phases; and, where a case's hook ran between the
+/// and the wall of the two phases; where a case's hook ran between the
 /// phases ([`between_the_next_phases`]), the positions of storage the scan
-/// read after it.
+/// read after it; and the visits of the lookup of met roots.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct TracedBatch {
     pub(crate) roots: usize,
@@ -303,6 +303,8 @@ pub(crate) struct TracedBatch {
     pub(crate) blocks: usize,
     pub(crate) wall: std::time::Duration,
     pub(crate) positions_after_the_hook: Option<usize>,
+    /// Roots and rows the lookup of each part's met roots visited.
+    pub(crate) lookup_visits: usize,
 }
 
 /// Whether a case is reading the batches: off by the module's own, so that
@@ -447,6 +449,43 @@ pub(crate) fn at_the_start_of_the_next_trace(act: Box<dyn FnOnce() + Send>) {
 
 pub(crate) fn at_the_start_of_the_trace() {
     AT_THE_NEXT_TRACE.run();
+}
+
+/// After the trace of one part of the next batches, numbered from one, on the
+/// collector's thread, the part's rows standing and none of its verdicts
+/// posted: for the cases that unwind or recall inside a later part.
+static AFTER_A_PART: Mutex<Option<(usize, Box<dyn FnOnce() + Send>)>> = Mutex::new(None);
+
+pub(crate) fn after_the_trace_of(part: usize, act: Box<dyn FnOnce() + Send>) {
+    *AFTER_A_PART
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((part, act));
+}
+
+/// Run the hook installed for `part`, once.
+pub(crate) fn after_the_trace_of_part(part: usize) {
+    let mut installed = AFTER_A_PART
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if installed.as_ref().is_some_and(|&(at, _)| at == part) {
+        let (_, act) = installed.take().expect("read above");
+        drop(installed);
+        act();
+    }
+}
+
+thread_local! {
+    /// Roots and rows the lookup of met roots visited on this thread since the
+    /// last take: the instrument of its bound.
+    static LOOKUP_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+pub(crate) fn note_a_lookup_visit() {
+    LOOKUP_VISITS.with(|visits| visits.set(visits.get() + 1));
+}
+
+pub(crate) fn take_lookup_visits() -> usize {
+    LOOKUP_VISITS.with(|visits| visits.replace(0))
 }
 
 /// Between the next batch's mark and its scan, on the collector's thread,

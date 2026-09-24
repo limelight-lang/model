@@ -1,8 +1,8 @@
 //! What a reset to the watermark leaves and what it takes: the copy below the
 //! watermark stands, the rows are swept, every block drawn above it goes
-//! back, the blocks drawn and the budget met stand for the next part, the
-//! ledger returns to the copy's charge, and a reset the injection interrupts
-//! is finished by the arena's drop.
+//! back, the next part draws under the whole budget while the budget met
+//! stands, the ledger returns to the copy's charge, and a reset the injection
+//! interrupts is finished by the arena's drop.
 
 use super::*;
 use crate::memory::gc_metadata::thread_stats;
@@ -66,11 +66,12 @@ fn a_reset_to_the_watermark_gives_the_blocks_back_and_keeps_the_copy() {
     crate::memory::critical::drain_for_test();
 }
 
-/// The budget is the batch's: a part drawing its block counts against the
-/// part after it, so that under a budget of one the second part's growth is
-/// refused as the budget's, where a budget per part would have served it.
+/// The budget is each part's: under a budget of one, a part that drew its
+/// block leaves the part after it the same block to draw, and the growth past
+/// it is refused as the budget's; that refusal stands across the next reset
+/// to the watermark, which is what tells the batch a part met its budget.
 #[test]
-fn the_blocks_a_part_drew_count_against_the_parts_after_it() {
+fn every_part_draws_under_the_whole_budget() {
     let _g = test_guard();
     crate::memory::critical::drain_for_test();
     let (mut heap, slot, block) = an_entity_block();
@@ -78,16 +79,20 @@ fn the_blocks_a_part_drew_count_against_the_parts_after_it() {
     let (mut arena, _) = a_batch_arena(1, 0);
     a_part_that_draws_a_block(&mut arena, block);
     arena.reset_to_the_watermark();
-    assert_eq!(arena.blocks_drawn(), 1, "the drawn block stands counted");
+    assert_eq!(
+        arena.blocks_drawn(),
+        0,
+        "the part's block is counted no more"
+    );
 
-    let room = arena.room_left();
+    a_part_that_draws_a_block(&mut arena, block);
     assert!(
-        !arena.alloc(room).is_null(),
-        "the workspace is the part's anew"
+        !arena.met_its_budget(),
+        "the second part drew its block under a budget of one"
     );
     assert!(
-        arena.alloc(64).is_null(),
-        "the second part's growth passes the batch's budget"
+        arena.alloc(BLOCK_PAYLOAD).is_null(),
+        "and its growth past it passes the part's budget"
     );
     assert!(arena.met_its_budget(), "and it is the budget that refused");
     arena.reset_to_the_watermark();

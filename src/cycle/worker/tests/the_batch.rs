@@ -1,7 +1,9 @@
 //! What one serve does for a mutator: the batch it takes from behind the
-//! mutator's writer, clamped to P's room; the verdict per root, in R's order;
-//! the advance that follows the last post from the return and from the
-//! unwind alike; the budget that turns a batch unwalked and halves K; the
+//! mutator's writer, clamped to P's room; the verdict per root, in the order
+//! of the parts that gave them; the advance that follows the last post from
+//! the return and from the unwind alike; the budget of each part, which turns
+//! the part that meets it and every root still without a verdict unwalked and
+//! halves K; the
 //! skip of a mutator collecting in line; and a mutator registering
 //! throughout, whose registrations come out once each.
 //!
@@ -111,8 +113,11 @@ fn verdicts() -> Vec<Verdict> {
         .collect()
 }
 
+/// The verdicts go into P in the order of the parts that gave them, the roots
+/// no part can place ahead of every part: the completed death first, then
+/// the ring's part with both its roots, then each kept root's part.
 #[test]
-fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
+fn a_batch_posts_one_verdict_per_root_in_the_parts_order_and_advances_past_them() {
     let _g = test_guard();
     reset_lanes();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
@@ -151,16 +156,19 @@ fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
     assert_eq!(
         verdicts(),
         vec![
+            Verdict::ZeroCount,
             Verdict::Proposed,
             Verdict::Proposed,
             Verdict::ReadLive,
-            Verdict::ZeroCount,
             Verdict::ReadLive,
         ],
-        "one verdict per root, in R's order"
+        "one verdict per root, in the parts' order"
     );
     let mut standing = Vec::new();
     collect_lane_tokens(&mut standing);
+    // R's order was the ring, the first kept root, the death, the second.
+    let death = expected.remove(3);
+    expected.insert(0, death);
     assert_eq!(standing, expected, "every token once, now in P");
     assert_eq!(
         record_batch_size(),
@@ -169,8 +177,8 @@ fn a_batch_posts_one_verdict_per_root_in_rs_order_and_advances_past_them() {
     );
 
     // The mutator's poll: the deaths retired and the kept roots deferred up
-    // to the first proposal — which is first, so the poll arms and the
-    // collection takes the ring out of P and disposes of the rest.
+    // to the first proposal — which follows the death, so the poll arms and
+    // the collection takes the ring out of P and disposes of the rest.
     assert_eq!(
         unsafe { ll_gc_maybe_collect() },
         2,
@@ -285,23 +293,26 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
     reset_lanes();
 }
 
+/// A part that meets its budget ends the batch: the part before it stands
+/// with its verdicts, and the part's own root and every root still without a
+/// verdict come back `Unwalked`, no color of an abandoned part being a
+/// verdict; K halves.
 #[test]
-fn a_batch_that_meets_its_budget_posts_every_root_unwalked_and_halves_k() {
+fn a_second_part_that_meets_its_budget_leaves_the_first_parts_verdicts_and_halves_k() {
     let _g = test_guard();
     reset_lanes();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
     let node = node_class("BudgetNode");
     let mut arena = Arena::new();
     let _garbage = unsafe { ring(&mut arena, [node, node]) };
-    let (_, keeper) = unsafe { kept_root(&mut arena, node, "BudgetKeeper") };
     unsafe { &*record() }.set_batch_size(16);
 
-    // A trace that may draw no block past the workspace, over a graph the
-    // workspace cannot hold: the mark meets the budget, and no colour is a
-    // verdict.
+    // Parts that may draw no block past the workspace: the small ring's part
+    // fits it, and the big ring's, the second part, meets the budget.
     testing::budget_the_next_batch(0);
     let big = node_class("BudgetBigRing");
     let members = unsafe { crate::cycle::testing::long_ring(&mut arena, big, 16_000) };
+    testing::read_traced_batches(true);
     assert_eq!(
         served_by_a_collector(),
         Served::Batch {
@@ -310,22 +321,311 @@ fn a_batch_that_meets_its_budget_posts_every_root_unwalked_and_halves_k() {
             backlog: true,
         }
     );
-    let posted = verdicts();
-    assert_eq!(posted.len(), 16);
-    assert!(
-        posted.iter().all(|&verdict| verdict == Verdict::Unwalked),
-        "no color of a trace that met its budget is a verdict: {posted:?}"
+    let traced = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert_eq!(
+        traced.iter().map(|batch| batch.parts).collect::<Vec<_>>(),
+        vec![2],
+        "the second part ended the batch"
+    );
+    let mut expected = vec![Verdict::Proposed; 2];
+    expected.extend([Verdict::Unwalked; 14]);
+    assert_eq!(
+        verdicts(),
+        expected,
+        "the first part's verdicts, then no color of the part that met its budget"
     );
     assert_eq!(record_batch_size(), 8, "K halved on the budget met");
 
-    // The mutator's collection traces the unwalked roots exactly: the small
-    // ring and the first members of the big one are its batch's P roots,
-    // the rest of the big ring still stands in R, and one trace over both
-    // frees everything.
+    // The mutator's collection takes the small ring out of P and traces the
+    // unwalked roots exactly: the first members of the big ring are its
+    // batch's P roots, the rest of the big ring still stands in R, and one
+    // trace over both frees everything.
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 2 + members.len());
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2 + members.len());
     assert_eq!(verdict_count(), 0);
+    reset_lanes();
+}
+
+/// A root met by an earlier part opens none: over R = [r1, r3, r2], where
+/// r2 is inside r1's closure and r3 is not, the batch runs two parts and
+/// posts three verdicts, r2's with r1's.
+#[test]
+fn a_root_an_earlier_part_met_is_posted_with_that_part() {
+    let _g = test_guard();
+    reset_lanes();
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+    let node = node_class("MetNode");
+    let mut arena = Arena::new();
+    let r1 = unsafe { object(&mut arena, node) };
+    let r2 = unsafe { object(&mut arena, node) };
+    unsafe {
+        crate::test_support::store_prop(&mut arena, r1, crate::test_support::prop_offset(0), r2);
+        crate::test_support::store_prop(&mut arena, r2, crate::test_support::prop_offset(0), r1);
+        assert!(!ll_release(r1 as *mut RcHeader), "r2's edge holds r1");
+    }
+    let (r3, keeper) = unsafe { kept_root(&mut arena, node, "MetKeeper") };
+    assert!(
+        !unsafe { ll_release(r2 as *mut RcHeader) },
+        "r1's edge holds r2"
+    );
+    let mut in_r = Vec::new();
+    collect_lane_tokens(&mut in_r);
+    assert_eq!(in_r.len(), 3);
+    unsafe { &*record() }.set_batch_size(3);
+
+    testing::read_traced_batches(true);
+    assert_eq!(
+        served_by_a_collector(),
+        Served::Batch {
+            roots: 3,
+            complete: true,
+            backlog: false,
+        }
+    );
+    let traced = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert_eq!(
+        traced.iter().map(|batch| batch.parts).collect::<Vec<_>>(),
+        vec![2],
+        "r1's part and r3's, and none for r2"
+    );
+    assert_eq!(
+        standing_verdicts(),
+        vec![
+            (r1 as *mut RcHeader, Verdict::Proposed),
+            (r2 as *mut RcHeader, Verdict::Proposed),
+            (r3, Verdict::ReadLive),
+        ],
+        "r2 posted with the part that met it, ahead of r3's"
+    );
+
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the ring was collected"
+    );
+    assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
+    discard_standing_verdicts();
     unsafe { release_keeper(keeper) };
+    reset_lanes();
+}
+
+/// The lookup of the roots a part met reads the copy in the order of the
+/// roots' addresses: over R = [r1, y, r2], r2 inside r1's closure and y a
+/// root of its own in a block above theirs, the part over r1 finds r2 past y,
+/// which in R's order stands between them and past the block both are in.
+#[test]
+fn a_root_of_a_higher_block_between_two_met_roots_hides_neither() {
+    let _g = test_guard();
+    reset_lanes();
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+    let node = node_class("OrderNode");
+    let mut arena = Arena::new();
+    let block_of =
+        |object: *mut Object| object as usize & !(crate::memory::block_pool::BLOCK_SIZE - 1);
+    // Objects until two of them share the lowest block among all of them and
+    // a third stands in a block above it, whichever way the heap hands out
+    // its blocks: the two are the ring, the third is y, the rest go back.
+    let mut objects: Vec<*mut Object> = Vec::new();
+    let (r1, r2, y) = loop {
+        objects.push(unsafe { object(&mut arena, node) });
+        let lowest = objects
+            .iter()
+            .map(|&object| block_of(object))
+            .min()
+            .expect("one object at least");
+        let mut in_the_lowest = objects
+            .iter()
+            .copied()
+            .filter(|&object| block_of(object) == lowest);
+        let above = objects
+            .iter()
+            .copied()
+            .find(|&object| block_of(object) > lowest);
+        if let (Some(r1), Some(r2), Some(y)) = (in_the_lowest.next(), in_the_lowest.next(), above) {
+            break (r1, r2, y);
+        }
+
+        assert!(
+            objects.len() < 4 * crate::cycle::loads::slots_per_block(16),
+            "the heap handed out two blocks"
+        );
+    };
+    let fillers: Vec<*mut Object> = objects
+        .into_iter()
+        .filter(|&object| object != r1 && object != r2 && object != y)
+        .collect();
+    unsafe {
+        crate::test_support::store_prop(&mut arena, r1, crate::test_support::prop_offset(0), r2);
+        crate::test_support::store_prop(&mut arena, r2, crate::test_support::prop_offset(0), r1);
+        assert!(!ll_release(r1 as *mut RcHeader), "r2's edge holds r1");
+        ll_retain(y as *mut RcHeader);
+        assert!(
+            !ll_release(y as *mut RcHeader),
+            "y's creation reference holds it"
+        );
+        assert!(!ll_release(r2 as *mut RcHeader), "r1's edge holds r2");
+    }
+    unsafe { &*record() }.set_batch_size(3);
+
+    testing::read_traced_batches(true);
+    assert_eq!(
+        served_by_a_collector(),
+        Served::Batch {
+            roots: 3,
+            complete: true,
+            backlog: false,
+        }
+    );
+    let traced = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert_eq!(
+        traced.iter().map(|batch| batch.parts).collect::<Vec<_>>(),
+        vec![2],
+        "r1's part met r2, and y opened the second"
+    );
+    assert_eq!(
+        standing_verdicts(),
+        vec![
+            (r1 as *mut RcHeader, Verdict::Proposed),
+            (r2 as *mut RcHeader, Verdict::Proposed),
+            (y as *mut RcHeader, Verdict::ReadLive),
+        ]
+    );
+
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the ring was collected"
+    );
+    discard_standing_verdicts();
+    for object in fillers.into_iter().chain([y]) {
+        unsafe {
+            assert!(ll_release(object as *mut RcHeader));
+            ll_object_die(object);
+        }
+    }
+    reset_lanes();
+}
+
+/// Bytes of the objects [`spread_ring`] builds: a size class whose touched
+/// block reserves a row array of about 2 KiB.
+const SPREAD_CLASS_BYTES: usize = 128;
+
+/// A class of [`SPREAD_CLASS_BYTES`]: the header and the class word take
+/// sixteen bytes and each counted property sixteen.
+fn spread_class(name: &str) -> *const Class {
+    let mut builder = ClassBuilder::new(name).destructor(counting_destructor as *const ());
+    for property in 0..(SPREAD_CLASS_BYTES - 16) / 16 {
+        builder = builder.prop(&format!("p{property}"), true);
+    }
+
+    builder.build()
+}
+
+/// A garbage ring of `members` objects of `class`, one per block, its first
+/// member the one registered root: every other slot of a member's block
+/// holds a filler, so the part over the root reserves a row array per
+/// member. Answers the members and the fillers, which the case kills.
+///
+/// # Safety
+/// As `cycle::testing::ring`, and `class` is a [`spread_class`].
+unsafe fn spread_ring(
+    arena: &mut Arena,
+    class: *const Class,
+    members: usize,
+) -> (Vec<*mut Object>, Vec<*mut Object>) {
+    let fillers_per_member = crate::cycle::loads::slots_per_block(SPREAD_CLASS_BYTES) - 1;
+    let mut fillers = Vec::with_capacity(members * fillers_per_member);
+    let ring: Vec<*mut Object> = (0..members)
+        .map(|_| {
+            let member = unsafe { object(arena, class) };
+            for _ in 0..fillers_per_member {
+                fillers.push(unsafe { object(arena, class) });
+            }
+
+            member
+        })
+        .collect();
+    unsafe {
+        for (position, &member) in ring.iter().enumerate() {
+            crate::cycle::testing::move_prop(
+                member,
+                crate::test_support::prop_offset(0),
+                ring[(position + 1) % members],
+            );
+        }
+
+        ll_retain(ring[0] as *mut RcHeader);
+        assert!(
+            !ll_release(ring[0] as *mut RcHeader),
+            "the ring's edge holds the root"
+        );
+    }
+
+    (ring, fillers)
+}
+
+/// Each part draws under the whole budget: under a budget of one block, two
+/// rings whose rows each pass the workspace by less than a block both
+/// complete, where a budget shared by the batch would have refused the
+/// second part's block and left its root unwalked.
+#[test]
+fn every_part_draws_under_the_budget_of_its_own() {
+    let _g = test_guard();
+    reset_lanes();
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+    let class = spread_class("SpreadNode");
+    let mut arena = Arena::new();
+    let array = crate::cycle::shadow::bytes_for(crate::cycle::loads::slots_per_block(
+        SPREAD_CLASS_BYTES,
+    ) as u32);
+    // Past the workspace by half a block of row arrays, and so one block
+    // short of the budget's refusal.
+    let members = (crate::cycle::arena::WORKSPACE_BUMP_BYTES
+        + crate::memory::block_pool::BLOCK_PAYLOAD / 2)
+        / array;
+    assert!(members * array > crate::cycle::arena::WORKSPACE_BUMP_BYTES);
+    assert!(
+        members * array
+            < crate::cycle::arena::WORKSPACE_BUMP_BYTES + crate::memory::block_pool::BLOCK_PAYLOAD
+                - 8 * 1024,
+        "a block and the worklist's segment hold what the workspace does not"
+    );
+    let (first, first_fillers) = unsafe { spread_ring(&mut arena, class, members) };
+    let (second, second_fillers) = unsafe { spread_ring(&mut arena, class, members) };
+    unsafe { &*record() }.set_batch_size(2);
+
+    testing::budget_the_next_batch(1);
+    testing::read_traced_batches(true);
+    assert_eq!(
+        served_by_a_collector(),
+        Served::Batch {
+            roots: 2,
+            complete: true,
+            backlog: false,
+        }
+    );
+    let traced = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert_eq!(
+        traced.iter().map(|batch| batch.parts).collect::<Vec<_>>(),
+        vec![2]
+    );
+    assert_eq!(
+        verdicts(),
+        vec![Verdict::Proposed; 2],
+        "the second part drew its block as the first did"
+    );
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, first.len() + second.len());
+    for filler in first_fillers.into_iter().chain(second_fillers) {
+        unsafe {
+            assert!(ll_release(filler as *mut RcHeader));
+            ll_object_die(filler);
+        }
+    }
     reset_lanes();
 }
 
@@ -412,6 +712,289 @@ fn an_unwind_inside_the_trace_posts_every_root_unwalked_and_advances_once() {
     unsafe {
         release_keeper(keeper_a);
         release_keeper(keeper_b);
+    }
+    reset_lanes();
+}
+
+/// An unwind inside the second part, its trace done and its rows standing:
+/// the first part's verdicts stand, the guard posts every other root
+/// `Unwalked` and advances R once, and each root has one verdict.
+#[test]
+fn an_unwind_inside_the_second_part_keeps_the_first_parts_verdicts() {
+    let _g = test_guard();
+    reset_lanes();
+    let node = node_class("PartUnwindNode");
+    let mut arena = Arena::new();
+    let _garbage = unsafe { ring(&mut arena, [node, node]) };
+    let (_, keeper_a) = unsafe { kept_root(&mut arena, node, "PartUnwindKeeperA") };
+    let (_, keeper_b) = unsafe { kept_root(&mut arena, node, "PartUnwindKeeperB") };
+    unsafe { &*record() }.set_batch_size(4);
+
+    testing::after_the_trace_of(
+        2,
+        Box::new(|| panic!("the second part unwound, by the case's request")),
+    );
+    let sent = Sent(record());
+    let outcome = testing::consent_while(std::thread::spawn(move || {
+        assert!(crate::memory::heap::ll_thread_init());
+        let record = sent.into_inner();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            testing::serve_alone(record)
+        }))
+    }));
+    assert!(outcome.is_err(), "the part panicked where the case asked");
+    assert_eq!(candidate_count(), 0, "the guard advanced R past the batch");
+    assert_eq!(
+        verdicts(),
+        vec![
+            Verdict::Proposed,
+            Verdict::Proposed,
+            Verdict::Unwalked,
+            Verdict::Unwalked,
+        ],
+        "the ring's part, then each root once, unwalked"
+    );
+    assert_eq!(
+        crate::cycle::token::state(unsafe { &*record() }.token.read()),
+        crate::cycle::token::POSTED,
+        "and the release was to POSTED"
+    );
+
+    // The mutator's collection over P takes the ring the first part proposed
+    // and traces the unwalked kept roots exactly.
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the ring was collected"
+    );
+    assert_eq!(verdict_count(), 0);
+    unsafe {
+        release_keeper(keeper_a);
+        release_keeper(keeper_b);
+    }
+    reset_lanes();
+}
+
+/// Set this thread's recall of its token from the collector's thread, as a
+/// take would, without a mutator waiting on the token.
+fn recall_from_the_collector() -> Box<dyn FnOnce() + Send> {
+    let token = unsafe { &raw const (*record()).token } as usize;
+    Box::new(move || {
+        unsafe { &*(token as *const crate::cycle::token::TraceToken) }.recall_for_test(true)
+    })
+}
+
+/// The traced batches' parts and verdicts after one serve, the recall
+/// cleared and P disposed of by the mutator's collection over it.
+fn parts_and_verdicts_of_a_serve() -> (Vec<usize>, Vec<Verdict>) {
+    testing::read_traced_batches(true);
+    let served = served_by_a_collector();
+    assert!(matches!(served, Served::Batch { .. }), "{served:?}");
+    let traced = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    unsafe { &*record() }.token.recall_for_test(false);
+    let posted = verdicts();
+    unsafe { ll_gc_maybe_collect() };
+    (traced.iter().map(|batch| batch.parts).collect(), posted)
+}
+
+/// A recall standing when the trace starts is read at the first root of the
+/// pass before the parts: no part opens, and every root is posted `Unwalked`.
+#[test]
+fn a_recall_at_the_traces_start_opens_no_part() {
+    let _g = test_guard();
+    reset_lanes();
+    let node = node_class("RecallFirstPassNode");
+    let mut arena = Arena::new();
+    let _garbage = unsafe { ring(&mut arena, [node, node]) };
+    unsafe { &*record() }.set_batch_size(2);
+
+    testing::at_the_start_of_the_next_trace(recall_from_the_collector());
+    let (parts, posted) = parts_and_verdicts_of_a_serve();
+    assert_eq!(parts, vec![0], "the pass before the parts read the recall");
+    assert_eq!(posted, vec![Verdict::Unwalked; 2]);
+    reset_lanes();
+}
+
+/// A recall made during a part shorter than a stride is read before the next
+/// part opens: the part's verdicts stand and every later root is `Unwalked`.
+#[test]
+fn a_recall_during_a_part_is_read_before_the_next_part() {
+    let _g = test_guard();
+    reset_lanes();
+    let node = node_class("RecallBetweenPartsNode");
+    let mut arena = Arena::new();
+    let _first = unsafe { ring(&mut arena, [node, node]) };
+    let _second = unsafe { ring(&mut arena, [node, node]) };
+    unsafe { &*record() }.set_batch_size(4);
+
+    testing::after_the_trace_of(1, recall_from_the_collector());
+    let (parts, posted) = parts_and_verdicts_of_a_serve();
+    assert_eq!(parts, vec![1], "the second part never opened");
+    assert_eq!(
+        posted,
+        vec![
+            Verdict::Proposed,
+            Verdict::Proposed,
+            Verdict::Unwalked,
+            Verdict::Unwalked,
+        ]
+    );
+    reset_lanes();
+}
+
+/// No reading follows the last part: a recall made after the last part's
+/// trace, with a lookup shorter than a stride behind it, leaves the batch
+/// complete, every root posted from its part and K doubled.
+#[test]
+fn a_recall_after_the_last_parts_trace_leaves_the_batch_complete() {
+    let _g = test_guard();
+    reset_lanes();
+    let node = node_class("RecallAfterTheLastNode");
+    let mut arena = Arena::new();
+    let _first = unsafe { ring(&mut arena, [node, node]) };
+    let _second = unsafe { ring(&mut arena, [node, node]) };
+    unsafe { &*record() }.set_batch_size(4);
+
+    testing::after_the_trace_of(2, recall_from_the_collector());
+    assert_eq!(
+        served_by_a_collector(),
+        Served::Batch {
+            roots: 4,
+            complete: true,
+            backlog: false,
+        }
+    );
+    unsafe { &*record() }.token.recall_for_test(false);
+    assert_eq!(verdicts(), vec![Verdict::Proposed; 4]);
+    assert_eq!(record_batch_size(), 8, "a complete batch doubles K");
+    unsafe { ll_gc_maybe_collect() };
+    reset_lanes();
+}
+
+/// The lookup of a part's met roots counts a position per root it visits, so
+/// a recall made before a lookup longer than a stride stops it: over one ring
+/// of [`BATCH_BOUND`] members, every one a root, the part posts some of them
+/// and leaves the rest `Unwalked`.
+#[test]
+fn a_recall_stops_the_lookup_of_met_roots() {
+    // A lookup of BATCH_BOUND visits holds a reading of the stride wherever
+    // the trace left its count.
+    const _: () = assert!(BATCH_BOUND >= crate::cycle::arena::RECALL_STRIDE);
+    let _g = test_guard();
+    reset_lanes();
+    let node = node_class("RecallLookupNode");
+    let mut arena = Arena::new();
+    let _ring = unsafe { crate::cycle::testing::long_ring(&mut arena, node, BATCH_BOUND) };
+    unsafe { &*record() }.set_batch_size(BATCH_BOUND);
+
+    testing::after_the_trace_of(1, recall_from_the_collector());
+    let (parts, posted) = parts_and_verdicts_of_a_serve();
+    assert_eq!(parts, vec![1]);
+    let proposed = posted
+        .iter()
+        .filter(|&&verdict| verdict == Verdict::Proposed)
+        .count();
+    assert_eq!(posted.len(), BATCH_BOUND);
+    assert!(
+        proposed >= 1 && proposed < BATCH_BOUND,
+        "the lookup stopped part way: {proposed} proposed"
+    );
+    reset_lanes();
+}
+
+/// The lookup of a part's met roots walks the part's own rows where they are
+/// fewer than the roots of the block: roots each a part of its own and all in
+/// one block cost each part the group its row is in, and not the other roots
+/// of the block (`dev/DECISIONS.md`, "A part's met roots are found by a walk
+/// its own rows bound"). The walk over the
+/// rows still finds a met root: over R = [k1 … k256, a1, a2], a2 inside a1's
+/// closure, a1 and a2 built between the 128th kept root and the 129th so that
+/// their block holds at least 128 roots, a2 is posted with a1's part.
+#[test]
+fn the_lookup_of_met_roots_is_bounded_by_the_parts_rows() {
+    const ROOTS: usize = 256;
+    let _g = test_guard();
+    reset_lanes();
+    DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
+    let node = node_class("DenseNode");
+    let mut arena = Arena::new();
+    let mut kept: Vec<(*mut RcHeader, *mut Object)> = (0..ROOTS / 2)
+        .map(|index| unsafe { kept_root(&mut arena, node, &format!("DenseKeeper{index}")) })
+        .collect();
+    let a1 = unsafe { object(&mut arena, node) };
+    let a2 = unsafe { object(&mut arena, node) };
+    kept.extend(
+        (ROOTS / 2..ROOTS)
+            .map(|index| unsafe { kept_root(&mut arena, node, &format!("DenseKeeper{index}")) }),
+    );
+    // The walk over the rows is taken only where the block holds more roots
+    // than eight times the groups a part met there, one or two for a1's part.
+    let block_of = |address: usize| address & !(crate::memory::block_pool::BLOCK_SIZE - 1);
+    for member in [a1, a2] {
+        let roots_beside = kept
+            .iter()
+            .filter(|&&(root, _)| block_of(root as usize) == block_of(member as usize))
+            .count();
+        assert!(
+            roots_beside > 2 * crate::cycle::shadow::GROUP as usize,
+            "{roots_beside} roots share a block with the ring's member"
+        );
+    }
+    let keepers: Vec<*mut Object> = kept.iter().map(|&(_, keeper)| keeper).collect();
+    unsafe {
+        crate::test_support::store_prop(&mut arena, a1, crate::test_support::prop_offset(0), a2);
+        crate::test_support::store_prop(&mut arena, a2, crate::test_support::prop_offset(0), a1);
+        assert!(!ll_release(a1 as *mut RcHeader), "a2's edge holds a1");
+        assert!(!ll_release(a2 as *mut RcHeader), "a1's edge holds a2");
+    }
+    unsafe { &*record() }.set_batch_size(ROOTS + 2);
+
+    testing::read_traced_batches(true);
+    assert_eq!(
+        served_by_a_collector(),
+        Served::Batch {
+            roots: ROOTS + 2,
+            complete: true,
+            backlog: false,
+        }
+    );
+    let traced = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert_eq!(traced.len(), 1);
+    assert_eq!(
+        traced[0].parts,
+        ROOTS + 1,
+        "a1's part and every kept root's, and none for a2"
+    );
+    let posted = standing_verdicts();
+    let at = posted
+        .iter()
+        .position(|&(root, _)| root == a1 as *mut RcHeader)
+        .expect("a1 was posted");
+    assert_eq!(
+        posted[at..at + 2],
+        [
+            (a1 as *mut RcHeader, Verdict::Proposed),
+            (a2 as *mut RcHeader, Verdict::Proposed),
+        ],
+        "a2 posted with a1's part"
+    );
+    assert!(
+        traced[0].lookup_visits <= (ROOTS + 1) * crate::cycle::shadow::GROUP as usize,
+        "{} visits, where every part walking the block's roots makes about {}",
+        traced[0].lookup_visits,
+        ROOTS * ROOTS / 2
+    );
+
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the ring was collected"
+    );
+    discard_standing_verdicts();
+    for keeper in keepers {
+        unsafe { release_keeper(keeper) };
     }
     reset_lanes();
 }

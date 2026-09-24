@@ -8,6 +8,65 @@ never edited or deleted.
 
 ---
 
+## 2026-09-24 — the batch runs in parts: the recall is read at every root before the parts and between two parts, and a part's met roots are found by a walk its own rows bound
+
+**Decided (model, over the Critic of S65.13, the same day):** the collector's
+batch traces its roots in parts, each under a block budget of its own, now
+that the recall of the token and the marks by stack length bound what a
+mutator waits and withholds under a grant (the entry of 2026-09-23 below, "the
+trace in parts waits for the recall and the stack marks"). Measured at the K
+the parts grow to, 1,024, against the tree before: a mutator asking mid-grant
+waits 46–54 µs against 40–66 µs on `disjoint-live` and 75–76 µs against
+51–72 µs on `disjoint-wide-live`, and a freeing mutator withholds 9.1–9.2
+thousand deaths against 9.7–11.8 thousand; a grant nobody recalls lasts
+4.1–4.3 ms and 32–37 ms against 0.13–0.41 ms (`dev/BENCHMARKS.md`, "S65.13 the
+batch in parts at a grown K").
+
+**The recall is read at every root of the pass before the parts and between
+two parts**, beside the stride and the growth. The pass reads each root's
+header, which on the disjoint shapes is a block of its own, and a stride of
+1,024 such reads let a mutator asking at the trace's start wait 317 µs; the
+resets between parts count no position. The reading between two parts is not
+made after the last, so a batch whose every part completed is complete and
+sizes K as one.
+
+**A part's met roots are found by a walk its own rows bound.** For each block
+the part touched, the roots whose addresses fall in the block are found in
+the copy sorted by address; the part reads each of them for a met row where
+they are no more than eight times the groups its bitmap marks, and otherwise
+walks the rows it met and looks each up among those roots. Either walk is
+bounded by eight times the part's met groups, plus the one root of a large
+entity's block, which has no groups. Reading the block's roots alone,
+as the step first did, cost a part every root of its block: 1,024 roots
+side by side, each a part of its own, made about K²/2 reads under the grant
+(the Critic, its first finding), the scan the entry below meant to retire.
+
+**A met root's verdict is its own part's or a larger one's.** A root inside
+an earlier part's closure opens no part, and within that larger closure it
+can read unreachable where its own part would read it live, never the
+reverse: over one snapshot the proposals over a subset of the roots are a
+subset of those over all of them. Either verdict is the owner's exact
+validation to decide (the Critic, its fourth finding, against a sentence that
+claimed the two colors equal).
+
+**Refused, from the Critic's third finding.** A part that meets its budget
+posting its own root alone and the batch going on, with K sized by a batch's
+positions against a target: the package accepted by Edmond on 2026-09-23 ends
+the grant at a part that fails at B, which S65.9 retries at `B_max` first
+(`dev/CYCLE-SPLIT-PACKAGE-3.md`, section 7). The grant's length is the
+collector's time and every other mutator named to the same collector waits
+it; the package names a bound on it in touched blocks, G, as a knob of the
+rig, and S65.12 reads it.
+
+**An old case's instrument moved** (Edmond, 2026-09-24: the test is out of
+date): `the_recall::a_grant_held_behind_another_mutators_batch_is_released_within_a_stride`
+asked for the grant's release at the stride's first reading, and the first
+reading is now the pass's, at position 0; it asserts 0, and
+`a_grant_behind_a_part_is_released_at_the_strides_next_reading` keeps a case
+the stride's own release can redden.
+
+---
+
 ## 2026-09-24 — a withheld death pays for its count, and the marks bound what a grant withholds
 
 **Decided (Edmond, 2026-09-24):** the marks by stack length stand as S65.7

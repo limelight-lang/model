@@ -1,9 +1,9 @@
 //! The collector thread, and what it does for one mutator: request the
 //! mutator's token and wait for its consent, take a batch of the mutator's
 //! candidates from behind its writer, trace them on a copy through
-//! `cells::AtomicCells` under a block budget, post one verdict per root into
-//! the mutator's verdict ring P in R's order, advance R past them, and
-//! release — to `POSTED`, which tells the mutator to collect over P
+//! `cells::AtomicCells` in parts, one root's closure each under a block
+//! budget, post one verdict per root into the mutator's verdict ring P in the
+//! parts' order, advance R past them, and release — to `POSTED`, which tells the mutator to collect over P
 //! (`rfc/dev/design/trace-token-handshake.md`;
 //! `rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff";
 //! `rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
@@ -25,16 +25,20 @@
 //! and what a mutator that never answers costs). It peeks up to K entries
 //! from R's front through the reader's pair without consuming them, K
 //! clamped to P's room and to what R holds, and copies them into its
-//! workspace. It marks and scans each root through `cells::AtomicCells` on
-//! an arena bounded to [`TRACE_BLOCK_BUDGET`] blocks; a root at count zero
-//! is marked by nothing. Then it posts one verdict per entry, in R's order
-//! — *proposed*, *read live*, *zero-count* ([`verdict_for`]) — or *unwalked*
-//! for every root of a batch whose trace met the budget, a refused
-//! allocation or the mutator's recall of its token: no color of such a trace
-//! is a verdict, so the whole batch is
-//! handed to the mutator's exact trace rather than a prefix of it
-//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff", amended
-//! 2026-09-16 to the whole batch). R's
+//! workspace. It posts first the roots no trace can place, a count read zero
+//! *zero-count* and a root with no row *read live*, and traces the rest in
+//! parts ([`trace_in_parts`]): in R's order, each root still without a
+//! verdict opens one, the mark and the scan of its closure alone through
+//! `cells::AtomicCells`, on the arena above a watermark over the copy and
+//! under a budget of [`TRACE_BLOCK_BUDGET`] blocks of its own. A completed
+//! part posts its root's verdict and the verdict of every other root its
+//! rows met, *proposed* or *read live* ([`verdict_for`]), and the arena is
+//! reset to the watermark for the next; a root an earlier part met opens
+//! none. A part that meets its budget, a refused allocation or the mutator's
+//! recall of its token ends the batch: no color of such a part is a verdict,
+//! so its root and every root still without one are posted *unwalked*, for
+//! the mutator's exact trace, while the verdicts of the parts before it stand
+//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"). R's
 //! front advances past the batch only after every verdict is posted, by
 //! one guard that runs from the unwind as well and posts *unwalked* for
 //! every root the unwind left without a verdict ([`FinishThePosts`]), so
@@ -44,10 +48,10 @@
 //! (`rfc/dev/design/trace-token-handshake.md`, E2); a workspace the pool
 //! refuses is a grant released with no batch.
 //!
-//! K starts at [`INITIAL_BATCH`], halves after a batch that met the budget
-//! — the budget alone, a pool refusal saying nothing about the batch's size
-//! — and doubles back after a completed one that took its whole clamp, up
-//! to [`BATCH_BOUND`]: under a
+//! K starts at [`INITIAL_BATCH`], halves after a batch one of whose parts
+//! met its budget — the budget alone, a pool refusal saying nothing about the
+//! batch's size — and doubles back after one whose every part completed over
+//! its whole clamp, up to [`BATCH_BOUND`]: under a
 //! block's capacity, so a batch spans at most two blocks of R, and small
 //! enough that the copy leaves the workspace to the rows. A take of a standing ring reads K
 //! neither way ([`batch`]): it clamps one entry short of the threshold,
@@ -62,9 +66,12 @@
 //! (`crate::cycle::token::TraceToken::take_unless`), and the trace reads the
 //! mark every [`RECALL_STRIDE`](crate::cycle::arena::RECALL_STRIDE) positions
 //! of storage it reads, whether or not a position holds a counted reference, in
-//! the mark and in the scan alike, and at every block the arena draws
-//! (`crate::cycle::arena::TraceScratchArena::inspect_position`). A trace that
-//! finds the mark stops where it stands, and the release after it is the
+//! the mark and in the scan alike
+//! (`crate::cycle::arena::TraceScratchArena::inspect_position`), and at every
+//! block the arena draws, before every part but the first and at every root
+//! of the pass before the parts
+//! (`crate::cycle::arena::TraceScratchArena::read_the_recall_now`). A trace
+//! that finds the mark stops where it stands, and the release after it is the
 //! release of any abandoned batch: [`FinishThePosts`] — at most K posts of
 //! `Unwalked` and one advance of R — and one reset of the arena; a grant whose
 //! mark stands before the batch is made is released with no batch. What the
@@ -247,29 +254,34 @@ pub(crate) enum Served {
 const INITIAL_BATCH: usize = 64;
 
 /// The most roots a batch takes: under a block's capacity, so that the peek
-/// spans at most two blocks of R, and a copy of at most a quarter of the
-/// workspace's bump, so that the rows of the trace do not start by growing.
+/// spans at most two blocks of R; a copy and its order by address of at most
+/// a quarter of the workspace's bump, so that the rows of the trace do not
+/// start by growing; and an index of the copy fits the order's `u16`.
 const BATCH_BOUND: usize = 1024;
 
 const _: () = assert!(BATCH_BOUND < BLOCK_ENTRIES);
-const _: () =
-    assert!(BATCH_BOUND * size_of::<usize>() * 4 <= crate::cycle::arena::WORKSPACE_BUMP_BYTES);
+const _: () = assert!(
+    BATCH_BOUND * (size_of::<usize>() + size_of::<u16>()) * 4
+        <= crate::cycle::arena::WORKSPACE_BUMP_BYTES
+);
+const _: () = assert!(BATCH_BOUND <= u16::MAX as usize + 1);
 
-/// Blocks a batch's trace may draw above the collector's workspace before it
-/// ends with its roots unwalked. Not a measured figure: what it bounds is the
-/// collector's arena, the memory its thread holds under a grant and the length
-/// of the reset that returns it; the mutator's wait for its token is the
-/// recall's ([`RECALL_STRIDE`](crate::cycle::arena::RECALL_STRIDE)). **What
-/// this bound decides is whether the collector's trace is worth anything to the
-/// mutator at all** (`dev/BENCHMARKS.md`, "the live-roots arm"): a take of 63
-/// live roots whose closure fits here leaves the mutator's collection over P
-/// nothing to walk, 15,365 instructions against the 658,832 of collecting the
-/// same rings in line; a take whose closure passes it is abandoned after 75 to
-/// 157 µs of the collector's time, and the mutator meets the same rows itself
-/// for 0.68 % more than it would have spent without the take — whatever share
-/// of the ring is live (`dev/BENCHMARKS.md`, "the mix"). Inside the bound that
-/// share is what the mutator saves: it walks the roots the trace proposed and
-/// no others.
+/// Blocks one part of a batch's trace may draw above the collector's
+/// workspace before the part ends the batch, its root and every root still
+/// without a verdict unwalked ([`trace_in_parts`]). Not a measured figure: what it bounds is the
+/// collector's arena, the memory its thread holds at any instant of a grant
+/// and the length of the reset that returns it; the mutator's wait for its
+/// token is the recall's ([`RECALL_STRIDE`](crate::cycle::arena::RECALL_STRIDE)).
+/// **What this bound decides is whether a part is worth anything to the
+/// mutator at all.** Measured on takes traced as one part
+/// (`dev/BENCHMARKS.md`, "the live-roots arm"): 63 live roots whose closure fit
+/// here left the mutator's collection over P nothing to walk, 15,365
+/// instructions against the 658,832 of collecting the same rings in line; a
+/// closure past it was abandoned after 75 to 157 µs of the collector's time,
+/// and the mutator met the same rows itself for 0.68 % more than it would have
+/// spent without the take, whatever share of the ring was live
+/// (`dev/BENCHMARKS.md`, "the mix"). Inside the bound that share is what the
+/// mutator saves: it walks the roots the parts proposed and no others.
 const TRACE_BLOCK_BUDGET: usize = 8;
 
 /// Entries a mutator's R holds at or above which a round takes a batch from
@@ -1999,16 +2011,17 @@ impl Drop for Standing {
 /// where P has the room for it, and what P's room leaves behind stands a
 /// further interval.
 ///
-/// The batch's budget bounds the trace whatever the clamp is, and it is
-/// spent by the union of the roots' closures rather than by their number:
-/// a root inside another's closure meets rows that already say met
-/// (`crate::cycle::mark`). A trace that meets it posts `Unwalked` for every
-/// root, and the mutator traces them exactly at its next poll, as it does
-/// for any batch — which is what a take of sixty-three roots over closures
-/// that do not overlap costs it, against the same roots traced at the next
-/// turnover of its lane (`dev/DECISIONS.md`, "a take's trace is budgeted as
-/// one batch's, and an unwalked take shifts the mutator's trace rather than
-/// adding one").
+/// Each part's budget bounds the part whatever the clamp is, and it is spent
+/// by the closure of the part's root rather than by the number of roots: a
+/// root inside that closure is posted with the part and opens none
+/// ([`trace_in_parts`]). A part that meets it posts `Unwalked` for its root
+/// and every root still without a verdict, and the mutator traces them exactly at its next
+/// poll, as it does for any unwalked root (`dev/DECISIONS.md`, "a take's trace
+/// is budgeted as one batch's, and an unwalked take shifts the mutator's trace
+/// rather than adding one"); sixty-three roots over closures that do not
+/// overlap, each inside the workspace, are sixty-three parts and a verdict
+/// per root (`dev/BENCHMARKS.md`, "S65.5 what a mutator waits for under a
+/// take in parts").
 ///
 /// The reading holds for the batch under the grant: nothing leaves R while
 /// `COLLECTOR|slot` stands, the mutator withholding its frees and its
@@ -2041,7 +2054,7 @@ unsafe fn batch(
     if take == 0 {
         return Served::Idle;
     }
-    let copy = the_copy_in_the_workspace(arena, threshold, take);
+    let (copy, order) = the_copy_in_the_workspace(arena, threshold, take);
 
     // The entries copied out of R, which stay in R until the advance.
     let out = unsafe { std::slice::from_raw_parts_mut(copy, take) };
@@ -2050,6 +2063,15 @@ unsafe fn batch(
     if taken == 0 {
         return Served::Idle;
     }
+
+    let by_address = unsafe { std::slice::from_raw_parts_mut(order, taken) };
+    for (position, index) in by_address.iter_mut().enumerate() {
+        *index = position as u16;
+    }
+    by_address.sort_unstable_by_key(|&index| {
+        crate::cycle::queue::entry_root(out[usize::from(index)]) as usize
+    });
+    arena.set_watermark();
 
     // From the guard on, every root is owed a verdict and R its advance, on
     // the unwind too, and the release that follows is to `POSTED`.
@@ -2064,24 +2086,21 @@ unsafe fn batch(
     testing::at_the_start_of_the_trace();
     #[cfg(test)]
     let traced_from = std::time::Instant::now();
-    let complete = unsafe { trace(arena, posts.roots) };
+    #[cfg(test)]
+    let _ = testing::take_lookup_visits();
+    let (parts, complete) = unsafe { trace_in_parts(arena, &mut posts, by_address) };
     #[cfg(test)]
     testing::note_traced_batch(|| testing::TracedBatch {
         roots: taken,
-        parts: 1,
+        parts,
         complete,
         blocks: arena.blocks_held(),
         wall: traced_from.elapsed(),
         positions_after_the_hook: testing::take_positions_after_the_hook(),
+        lookup_visits: testing::take_lookup_visits(),
     });
-    // A trace that ran to its end gives each root the colour its rows carry;
-    // an abandoned one leaves every root to the guard's `Unwalked`.
-    if complete {
-        for index in 0..taken {
-            let root = posts.root(index);
-            posts.post(index, unsafe { verdict_for(root) });
-        }
-    }
+    #[cfg(not(test))]
+    let _ = parts;
 
     posts.post_the_rest_unwalked();
     #[cfg(test)]
@@ -2127,26 +2146,28 @@ fn the_form_and_the_clamp(
     (false, threshold.saturating_sub(1))
 }
 
-/// Room for `take` entries in the batch's workspace, `arena`, with the
-/// batch's budget set on it first; `threshold` is the batch's, which bounds
-/// the copy of a take as K bounds a threshold batch's. Never null, by both
-/// bounds ([`BATCH_BOUND`]).
+/// Room for `take` entries in the batch's workspace, `arena`, and for their
+/// indices in the order of their roots' addresses, with the budget of each
+/// part set on it first; `threshold` is the batch's, which bounds the copy of
+/// a take as K bounds a threshold batch's. Neither is null, by both bounds
+/// ([`BATCH_BOUND`]).
 fn the_copy_in_the_workspace(
     arena: &mut TraceScratchArena,
     threshold: usize,
     take: usize,
-) -> *mut usize {
+) -> (*mut usize, *mut u16) {
     debug_assert!(
         threshold <= BATCH_BOUND,
         "the copy is bounded by the threshold as well as by K"
     );
     arena.budget_blocks(budget_for_this_batch());
     let copy = arena.alloc(take * size_of::<usize>()) as *mut usize;
+    let order = arena.alloc(take * size_of::<u16>()) as *mut u16;
     assert!(
-        !copy.is_null(),
+        !copy.is_null() && !order.is_null(),
         "the copy fits the workspace by the bound on K and on the threshold"
     );
-    copy
+    (copy, order)
 }
 
 /// Bit 1 of an entry of the batch's copy, set once its root's verdict is
@@ -2209,9 +2230,9 @@ impl Drop for FinishThePosts<'_> {
 }
 
 /// Size the mutator's next batch from what this one, clamped to `size` roots
-/// and taking `taken` of them, did: a trace that finished over the whole
-/// clamp doubles it up to [`BATCH_BOUND`], and one that met the workspace
-/// budget halves it. A trace that finished short of its clamp leaves the
+/// and taking `taken` of them, did: a batch whose every part finished over the
+/// whole clamp doubles it up to [`BATCH_BOUND`], and one with a part that met
+/// its block budget halves it. A trace that finished short of its clamp leaves the
 /// size where it stands, the ring or P's room having held no more, which
 /// says nothing of what the mutator offers per batch: a merged lane of three
 /// roots read at the threshold off its blocks would double K at every
@@ -2236,27 +2257,189 @@ fn size_the_next_batch(
     }
 }
 
-/// Mark every root of `roots`, then scan every one: true when both phases
-/// completed, false when either met the budget, a refused allocation or the
-/// mutator's recall — at which point no color is a verdict.
+/// Trace the batch's roots in parts, posting each verdict as its part
+/// completes, and answer how many parts were opened and whether every one
+/// ran to its end.
+///
+/// A root no part can place is posted first, before any part: a count read
+/// zero, and a root with no row ([`read_the_root`]). Then each root still
+/// without a verdict, in R's order, opens a part — the mark and the scan of
+/// its closure alone, on the arena above the watermark — and when the part
+/// completes, the root and every other root the part met are posted from
+/// its rows ([`post_the_roots_the_part_met`]) and the arena is reset to the
+/// watermark for the next part, with a block budget of its own. A root met
+/// by an earlier part opens none: its closure is inside that part's, and a
+/// root read within a larger closure can read unreachable where its own part
+/// would read it live and never the reverse, the proposals over a subset of
+/// roots being a subset of the proposals over all of them; either verdict is
+/// the owner's exact validation to decide (`rfc/model/gc/rc-cycle.md`,
+/// "Worker-to-owner handoff").
+///
+/// A part that meets its budget, a refused allocation or the mutator's recall
+/// ends the batch where it stands, and every root without a verdict is left
+/// to [`FinishThePosts`]; the verdicts the earlier parts posted stand, each
+/// resting on the owner's exact validation as every verdict does. Besides its
+/// stride, the recall is read at each root of the first pass, whose every
+/// root costs a header read the stride does not count, a miss where the
+/// roots stand in blocks of their own, and before every part but the first,
+/// so that neither the pass nor the resets between parts add a walk the
+/// recall cannot stop; the lookup of met roots counts a position per root or
+/// row it visits. No reading follows the last part: a batch whose every part
+/// completed is complete, and sizes K as one.
 ///
 /// # Safety
 /// As [`mark`] through `AtomicCells`: the calling thread holds the mutator's
-/// token, and every root is an entry of the mutator's R.
-unsafe fn trace(arena: &mut TraceScratchArena, roots: &[usize]) -> bool {
-    for &entry in roots {
-        let root = crate::cycle::queue::entry_root(entry);
-        if unsafe { mark::<AtomicCells>(arena, root) } != MarkResult::Complete {
-            return false;
+/// token, every root of `posts` is an entry of the mutator's R, and
+/// `by_address` holds each index of `posts`' roots once, in the order of
+/// their roots' addresses.
+unsafe fn trace_in_parts(
+    arena: &mut TraceScratchArena,
+    posts: &mut FinishThePosts<'_>,
+    by_address: &[u16],
+) -> (usize, bool) {
+    for index in 0..posts.roots.len() {
+        if arena.read_the_recall_now().is_break() {
+            return (0, false);
         }
+
+        if let RootReading::Verdict(verdict) = unsafe { read_the_root(posts.root(index)) } {
+            posts.post(index, verdict);
+        }
+    }
+
+    let mut parts = 0;
+    for index in 0..posts.roots.len() {
+        if posts.has_a_verdict(index) {
+            continue;
+        }
+
+        // Between two parts, and not after the last: a batch whose every
+        // part completed is a completed batch, whatever the recall says.
+        if parts > 0 && arena.read_the_recall_now().is_break() {
+            return (parts, false);
+        }
+
+        parts += 1;
+        let root = posts.root(index);
+        if !unsafe { trace(arena, root) } {
+            return (parts, false);
+        }
+
+        #[cfg(test)]
+        testing::after_the_trace_of_part(parts);
+        posts.post(index, unsafe { verdict_for(root) });
+        if unsafe { post_the_roots_the_part_met(arena, posts, by_address) }.is_break() {
+            return (parts, false);
+        }
+
+        arena.reset_to_the_watermark();
+    }
+
+    (parts, true)
+}
+
+/// Post the verdict of every root without one whose row the part just
+/// completed met. For each block on the part's touched list, the roots whose
+/// addresses fall in that block are found in `by_address` by a binary search,
+/// and one of two walks is taken: the block's roots, each read for a met row,
+/// where they are no more than eight times the groups the part met there, or
+/// else the rows the part met in the block, each looked up among those roots.
+/// Either walk is bounded by eight times the part's met groups, plus the one
+/// root of a large entity's block, so a block holding many roots, each a part
+/// of its own, costs each part the rows it met rather than every root of the
+/// block (`dev/DECISIONS.md`, "A part's met roots are found by a walk its own
+/// rows bound"). Every
+/// root or row visited counts a position; answers `Break` where the mutator's
+/// recall stood at a reading.
+///
+/// # Safety
+/// As [`verdict_for`] for every root it posts: the part completed on this
+/// thread and its rows still stand; `by_address` as [`trace_in_parts`] has it.
+unsafe fn post_the_roots_the_part_met(
+    arena: &mut TraceScratchArena,
+    posts: &mut FinishThePosts<'_>,
+    by_address: &[u16],
+) -> std::ops::ControlFlow<()> {
+    let mut array = arena.touched_head();
+    while !array.is_null() {
+        let (block, population) = unsafe { ((*array).block, (*array).population) };
+        let address =
+            |posts: &FinishThePosts<'_>, index: u16| posts.root(usize::from(index)) as usize;
+        let first = by_address.partition_point(|&index| address(posts, index) < block as usize);
+        let in_the_block = &by_address[first..];
+        let in_the_block = &in_the_block[..in_the_block.partition_point(|&index| {
+            address(posts, index) < block as usize + crate::memory::block_pool::BLOCK_SIZE
+        })];
+        let rows_at_most = unsafe { shadow::groups_met(array) } * shadow::GROUP;
+        if population == crate::cycle::row::Population::SingleEntity
+            || in_the_block.len() <= rows_at_most as usize
+        {
+            for &index in in_the_block {
+                arena.inspect_position()?;
+                #[cfg(test)]
+                testing::note_a_lookup_visit();
+                unsafe { post_if_met(posts, usize::from(index)) };
+            }
+        } else {
+            unsafe {
+                shadow::for_each_met_row(array, |row| {
+                    arena.inspect_position()?;
+                    #[cfg(test)]
+                    testing::note_a_lookup_visit();
+                    let Some(entity) = crate::cycle::row::entity_at(block, population, row) else {
+                        return std::ops::ControlFlow::Continue(());
+                    };
+                    if let Ok(at) = in_the_block
+                        .binary_search_by_key(&(entity as usize), |&index| address(posts, index))
+                    {
+                        post_if_met(posts, usize::from(in_the_block[at]));
+                    }
+
+                    std::ops::ControlFlow::Continue(())
+                })?;
+            }
+        }
+
+        array = unsafe { (*array).next };
+    }
+
+    std::ops::ControlFlow::Continue(())
+}
+
+/// Post the verdict of the root at `index` if it has none and is live with a
+/// row the part met; a root read at count zero here opens a part of its own,
+/// which its count lets finish at once.
+///
+/// # Safety
+/// As [`post_the_roots_the_part_met`].
+unsafe fn post_if_met(posts: &mut FinishThePosts<'_>, index: usize) {
+    if posts.has_a_verdict(index) {
+        return;
+    }
+
+    let root = posts.root(index);
+    if let RootReading::Tracked(key) = unsafe { read_the_root(root) }
+        && unsafe { crate::cycle::arena::find_initialized_row(key) }.is_some()
+    {
+        posts.post(index, unsafe { verdict_for(root) });
+    }
+}
+
+/// Mark the closure of `root`, then scan it: true when both phases
+/// completed, false when either met the budget, a refused allocation or the
+/// mutator's recall — at which point no color of the part is a verdict.
+///
+/// # Safety
+/// As [`mark`] through `AtomicCells`: the calling thread holds the mutator's
+/// token, and `root` is an entry of the mutator's R.
+unsafe fn trace(arena: &mut TraceScratchArena, root: *mut RcHeader) -> bool {
+    if unsafe { mark::<AtomicCells>(arena, root) } != MarkResult::Complete {
+        return false;
     }
 
     #[cfg(test)]
     let hooked_at = testing::between_the_phases().then(|| arena.positions_inspected());
-    let scanned = roots.iter().all(|&entry| {
-        let root = crate::cycle::queue::entry_root(entry);
-        (unsafe { scan::<AtomicCells>(arena, root) }) == ScanResult::Complete
-    });
+    let scanned = (unsafe { scan::<AtomicCells>(arena, root) }) == ScanResult::Complete;
     #[cfg(test)]
     if let Some(from) = hooked_at {
         testing::note_positions_after_the_hook(arena.positions_inspected() - from);
@@ -2265,23 +2448,48 @@ unsafe fn trace(arena: &mut TraceScratchArena, roots: &[usize]) -> bool {
     scanned
 }
 
-/// The verdict a completed trace supports for `root`: a count read zero is
-/// [`Verdict::ZeroCount`] before any row is read, a row read potentially
-/// unreachable is [`Verdict::Proposed`], and a row read live is
-/// [`Verdict::ReadLive`] — as is a live root with no met row, one the trace
-/// could not place, which the trace's own rule reads as an external live
-/// reference and which the mutator's trace would place no better; an
-/// *unwalked* verdict would send it round P and R at every poll.
+/// What a root's header says before any row is read: the verdict of a root
+/// no trace can place, or the key of the row a trace would give it.
+enum RootReading {
+    Verdict(Verdict),
+    Tracked(crate::cycle::row::RowKey),
+}
+
+/// Read `root` for [`RootReading`]: a count read zero is
+/// [`Verdict::ZeroCount`], and a live root with no row to place it —
+/// untracked, which the trace's own rule reads as an external live reference
+/// and which the mutator's trace would place no better — is
+/// [`Verdict::ReadLive`]; an *unwalked* verdict would send it round P and R at
+/// every poll. Any other root names its row.
 ///
 /// # Safety
-/// The trace over `root` completed on this thread and its rows still stand.
-unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
+/// The calling thread holds the mutator's token, and `root` is an entry of
+/// the mutator's R.
+unsafe fn read_the_root(root: *mut RcHeader) -> RootReading {
     if unsafe { crate::refcount::slot_state(root) } != crate::refcount::SlotState::Live {
-        return Verdict::ZeroCount;
+        return RootReading::Verdict(Verdict::ZeroCount);
     }
 
-    let EdgeTarget::Tracked(key) = (unsafe { resolve_edge_target(root) }) else {
-        return Verdict::ReadLive;
+    match unsafe { resolve_edge_target(root) } {
+        EdgeTarget::Tracked(key) => RootReading::Tracked(key),
+        _ => RootReading::Verdict(Verdict::ReadLive),
+    }
+}
+
+/// The verdict a completed part supports for `root`: the verdict of
+/// [`read_the_root`] where it gives one, and otherwise the color of its row,
+/// potentially unreachable being [`Verdict::Proposed`] and live being
+/// [`Verdict::ReadLive`]. A root with no met row is read live too: the part
+/// could not place it, which the trace's own rule reads as an external live
+/// reference.
+///
+/// # Safety
+/// The part over `root`'s closure completed on this thread and its rows still
+/// stand.
+unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
+    let key = match unsafe { read_the_root(root) } {
+        RootReading::Verdict(verdict) => return verdict,
+        RootReading::Tracked(key) => key,
     };
 
     match unsafe { crate::cycle::arena::find_initialized_row(key) } {

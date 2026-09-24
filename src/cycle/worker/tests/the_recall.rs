@@ -659,14 +659,38 @@ fn record_token() -> *const crate::cycle::token::TraceToken {
 }
 
 /// A mutator whose consent the collector holds while it traces another
-/// mutator's batch, and which then asks for its token, is released within a
-/// stride of that batch, and the batch goes on to its end: the grant held
-/// behind it has no batch of its own to abandon.
+/// mutator's batch, and which then asks for its token at the start of that
+/// batch's trace, is released at the trace's first reading of the recall, the
+/// first root of the pass before the parts, and the batch goes on to its end:
+/// the grant held behind it has no batch of its own to abandon.
+#[test]
+fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
+    let released_at = released_behind_another_batch(testing::at_the_start_of_the_next_trace);
+    assert_eq!(
+        released_at, 0,
+        "the grant was released at the first reading after its mutator stood in the wait"
+    );
+}
+
+/// The same grant, its mutator asking between the mark and the scan of the
+/// other batch's one part, is released at the next reading of the stride.
+#[test]
+fn a_grant_behind_a_part_is_released_at_the_strides_next_reading() {
+    let released_at = released_behind_another_batch(testing::between_the_next_phases);
+    assert!(
+        released_at > 0 && released_at % RECALL_STRIDE == 0,
+        "the grant was released at a reading of the stride, at {released_at} positions"
+    );
+}
+
+/// Hold one mutator's grant behind another's batch over a vector of scalars,
+/// have the first ask for its token at the point `ask_at` installs its act,
+/// and answer the positions the other's trace had read when a reading released
+/// the grant. The mutator behind took its token before the other batch ended.
 ///
 /// The collector is the case's thread with a list of its own on a slot no
 /// thread stands in, as in `the_standing_list`.
-#[test]
-fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
+fn released_behind_another_batch(ask_at: fn(Box<dyn FnOnce() + Send>)) -> usize {
     const SLOT: usize = 6;
     let _g = test_guard();
     reset_lanes();
@@ -696,14 +720,14 @@ fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
         Sent(unsafe { a_root_over(&mut context, vector, tag) })
     });
 
-    // At the traced batch's start the mutator behind consents and asks for
-    // its token; the trace goes on once it stands in the token's wait.
+    // Where `ask_at` places it, the mutator behind consents and asks for its
+    // token; the trace goes on once it stands in the token's wait.
     let (took, behind_took) = std::sync::mpsc::channel::<Sent<Instant>>();
     let behind_jobs = behind.jobs.clone();
     let behind_token = unsafe { &raw const (*behind.record).token } as usize;
     let waiting_from = std::sync::Arc::new(std::sync::Mutex::new(None));
     let stamp = std::sync::Arc::clone(&waiting_from);
-    testing::at_the_start_of_the_next_trace(Box::new(move || {
+    ask_at(Box::new(move || {
         let token = unsafe { &*(behind_token as *const crate::cycle::token::TraceToken) };
         let before = token.waits();
         behind_jobs
@@ -770,8 +794,5 @@ fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
         behind_took < traced_batch_ended,
         "the mutator behind waited out the other's batch"
     );
-    assert_eq!(
-        released_at, RECALL_STRIDE,
-        "the grant was released at the first reading after its mutator stood in the wait"
-    );
+    released_at
 }

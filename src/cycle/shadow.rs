@@ -535,7 +535,42 @@ pub(crate) unsafe fn for_each_of_color(
     true
 }
 
-/// Groups of `array` the trace zeroed, counted off the bitmap.
+/// Visit the index of every row of `array` the trace met, in index order,
+/// stopping at the first `Break` `visit` answers, which it then answers.
+///
+/// Only the groups a trace met are read, as in [`for_each_of_color`], and
+/// the bitmap is read a byte at a time, a byte of no group met standing for
+/// sixty-four rows it skips: the walk costs the bitmap's bytes and the met
+/// groups' rows rather than the block's rows.
+///
+/// # Safety
+/// `array` is an initialised array of this collection, and its rows still
+/// stand.
+pub(crate) unsafe fn for_each_met_row(
+    array: *mut RowArray,
+    mut visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    let row_count = unsafe { (*array).row_count };
+    let bitmap = unsafe { groups(array) };
+    for byte in 0..group_bytes(row_count) {
+        let mut bits = unsafe { *bitmap.add(byte) };
+        while bits != 0 {
+            let group = byte as u32 * u8::BITS + bits.trailing_zeros();
+            bits &= bits - 1;
+            let first = group * GROUP;
+            for index in first..(first + GROUP).min(row_count) {
+                if color(unsafe { *row(array, index) }) != Color::Untouched {
+                    visit(index)?;
+                }
+            }
+        }
+    }
+
+    std::ops::ControlFlow::Continue(())
+}
+
+/// Groups of `array` the trace zeroed, counted off the bitmap: eight times
+/// it bounds the rows [`for_each_met_row`] visits.
 ///
 /// A popcount over [`group_bytes`] is exact rather than approximate: the
 /// bitmap is zeroed whole at [`init`], so the bits past the last group of
@@ -543,7 +578,6 @@ pub(crate) unsafe fn for_each_of_color(
 ///
 /// # Safety
 /// `array` is an initialised array.
-#[cfg(test)]
 pub(crate) unsafe fn groups_met(array: *mut RowArray) -> u32 {
     let row_count = unsafe { (*array).row_count };
     let bitmap = unsafe { groups(array) };

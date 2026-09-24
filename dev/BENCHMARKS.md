@@ -8,6 +8,85 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-24 — S65.13 the batch in parts at a grown K: the mutator's wait stays within the base's but on the wide rings, its withheld deaths fall to the mark, and a grant nobody recalls lasts 4.1–4.3 ms and 32–37 ms against 0.13–0.41 ms
+
+`cycle::worker::tests::what_a_grown_k_costs`, added for S65.13: 1,024 live
+rings, one root each, five members a ring one per block on `disjoint-live`,
+twenty on `disjoint-wide-live`, and two side by side on `dense-live`, where
+some 170 roots share a block; a collector thread of the case's serves the
+record once per batch, threshold batches whose K `size_the_next_batch` sizes,
+each batch's roots registered again after it and its verdicts discarded, so
+that R holds the same 1,024 roots and no collection over P runs. K is grown
+until it repeats with a period of one or two batches; then four arms of 21
+batches, the first five dropped and a batch P's room cut short of K made and
+not kept: `grant`, the trace's wall with nobody asking; `wait`, the mutator
+asking for its token at the trace's start, timed from its standing in the
+token's wait to its hold; `wait after`, the mutator asking once half the
+`grant` arm's median has passed, timed from its ask; `free`, the mutator
+freeing dead 64-byte slots from the trace's start, the sample the most the
+deaths' stack held. Two binaries: the base is `6e87d71` with the probe's file
+alone, the other the step.
+
+**Machine:** dev box, the process on CPUs 3 and 11 by `taskset`, so that the
+freeing mutator and the collector each have a core (on one core the mutator
+freed its whole 24,575 before the collector ran again); load average 2.5–3.1.
+**Method:** release build, the two binaries interleaved over two rounds;
+median and least of the sixteen samples, in µs unless named.
+
+K after each batch of the growth: the base oscillates 32 ↔ 64 on
+`disjoint-live` and 16 ↔ 8 on `disjoint-wide-live`, its batches meeting the
+budget at the larger size, and doubles to 1,024 on `dense-live`, whose one
+trace fits; the parts double it to 1,024 on all three.
+
+| shape, arm | base, round 1 / 2 | parts, round 1 / 2 |
+| --- | ---: | ---: |
+| `disjoint-live`, grant | 406 / 128 (least 163 / 92) | 4.05 / 4.32 ms (least 3.79 / 3.34) |
+| `disjoint-live`, wait | 58.4 / 45.3 (least 42.9 / 38.6) | 27.6 / 41.4 (least 21.4 / 28.7) |
+| `disjoint-live`, wait after | 65.8 / 40.3 (least 0.1 / 30.6) | 46.2 / 53.9 (least 29.3 / 25.2) |
+| `disjoint-live`, free, deaths held | 11,761 / 9,671 (least 8,433 / 8,444) | 9,118 / 9,141 (least 8,859 / 9,010) |
+| `disjoint-wide-live`, grant | 240 / 267 (least 196 / 207) | 36.8 / 32.1 ms (least 30.7 / 28.7) |
+| `disjoint-wide-live`, wait | 45.6 / 66.8 (least 40.3 / 57.5) | 37.1 / 26.9 (least 23.2 / 22.2) |
+| `disjoint-wide-live`, wait after | 50.8 / 71.6 (least 31.8 / 35.2) | 76.4 / 75.2 (least 49.0 / 38.6) |
+| `disjoint-wide-live`, free, deaths held | 11,217 / 11,257 (least 8,767 / 8,786) | 9,188 / 9,177 (least 9,079 / 9,094) |
+| `dense-live`, grant | 2.78 / 2.85 ms (least 2.69 / 2.65) | 3.85 / 4.01 ms (least 3.56 / 3.72) |
+| `dense-live`, wait | 126.2 / 140.4 (least 121.3 / 121.9) | 40.0 / 33.5 (least 9.2 / 22.2) |
+| `dense-live`, wait after | 84.6 / 103.7 (least 43.3 / 25.2) | 39.3 / 45.2 (least 9.3 / 13.0) |
+| `dense-live`, free, deaths held | 22,555 / 22,653 (least 19,986 / 13,824) | 9,153 / 9,177 (least 8,859 / 8,832) |
+
+The base's `grant` batches on the disjoint shapes alternate: half complete at
+the smaller K, half meet the budget at the larger. The parts' complete, 1,024
+parts each. In `wait` the parts stop in the pass before the parts, whose
+recall is read at every root, and the base pays up to a stride of its one
+trace first, so that arm does not compare like with like; `wait after` stops
+both mid-trace, the parts after 447–556 parts. Sorting 1,024 indices by the
+roots' addresses from a shuffled order, as the batch sorts its copy before
+the trace, took 8.3–12.0 µs least on both trees; no reading of the recall
+falls inside it, so a mutator asking during the sort waits it out.
+
+**The reading.** An ask lands anywhere in a grant, and `wait after` is the
+arm that says what it costs: on the parts it is 46–54 µs on
+`disjoint-live` and 39–45 µs on `dense-live`, within or under the base's,
+and 75–76 µs on `disjoint-wide-live` against 51–72 µs, a part of twenty
+blocks' rows standing between two readings. The deaths a freeing mutator
+withholds are the mark's 8,192 and what it frees before the collector reads
+the recall: 9.1–9.2 thousand on the parts on every shape, against 9.7–11.8
+thousand on the disjoint shapes and 22.6 thousand on `dense-live` on the
+base. What grows is the grant nobody recalls, 4.1–4.3 ms and 32–37 ms
+against 0.13–0.41 ms on the disjoint shapes: the collector completes 1,024
+parts where the base met its budget, and every free the mutator makes in that
+window is withheld up to the mark. The dense shape's grant, 3.9–4.0 ms
+against the base's one trace of 2.8 ms, is not the lookup of met roots: a run
+after the table's, reading `TracedBatch::lookup_visits`, counted 2,056 visits
+over a batch's 1,024 parts on `dense-live` and 1,024 on the disjoint shapes,
+the walk over the parts' own rows (`dev/DECISIONS.md`, "A part's met roots
+are found by a walk its own rows bound"); what else the parts add over one
+trace is not separated here.
+
+A first reading of the step, before the recall was read at each root of the
+pass before the parts, on CPU 3 alone, waited 317 µs median at K = 1,024 on
+`disjoint-live`: the pass reads 1,024 roots, each a header in a block of its
+own, and the stride read the recall once over all of them.
+
 ## 2026-09-24 — S65.7 the marks by stack length: a withheld death costs 0.3–0.6 ns more, 2.7–2.8 against 3.1–3.4 ns, and no cheaper form was found
 
 `cycle::deferred_slot_reuse::tests::what_a_foreign_holder_costs`, release,

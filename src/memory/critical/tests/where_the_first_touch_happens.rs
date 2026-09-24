@@ -117,6 +117,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("HEAP", false),
         ("HELD_AT_LAST_ROW_READ", false), // test-only const Cell, no drop glue
         ("LATE_CELL", false),
+        ("LOOKUP_VISITS", false), // test-only const Cell, no drop glue
         ("MEMBER_LIST", false),
         ("MEMBER_LIST_HELD", false),
         ("MUTATOR_RECORD", false), // const Cell of a pointer into a record the process keeps, no drop glue

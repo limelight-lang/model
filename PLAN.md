@@ -622,7 +622,7 @@ them.
         `when_a_withheld_stack_recalls_the_token` (the uncount's block kind
         load, `blocks_a_withheld_block_spans`, `blocks_spanned`) and the
         re-aimed `the_recall` case
-- [ ] S65.13 The batch runs in parts (package commit 3, second half)
+- [x] S65.13 The batch runs in parts (package commit 3, second half)
       done: parts on, each with the block budget of its own, after the recall
         and the marks bound the wait and the withheld memory; dead and
         untracked roots posted before any part, and a part's met roots found
@@ -642,6 +642,44 @@ them.
         root still without a verdict, a part's verdicts resting on the
         owner's exact validation
       tier: T2 · role: Critic
+      red 2026-09-24: the [r1, r3, r2] case, the second-part budget, the
+        unwind inside a part and the per-part budget each red on its
+        mutation; a first measurement waited 317 µs at K = 1,024, the pass
+        before the parts read by the stride alone — the recall is read at
+        each of its roots and between two parts
+      Critic 2026-09-24 round 1: seven findings. (1) The lookup of met roots
+        read every root of each touched block, K²/2 on roots side by side —
+        accepted, a walk the part's own met rows bound.
+        (2) The grant-behind case of S65.14 reads 0 — Edmond: the case is
+        out of date; it asserts the pass's reading and a second case asks
+        between the phases for the stride's. (3) A part at B ending the
+        batch, and the grant's length for other mutators — refused, the
+        package ends the grant there before S65.9's retry, and G is the
+        rig's (`dev/DECISIONS.md`, "Refused, from the Critic's third
+        finding"). (4) "The
+        color its own part would" — the sentence says the larger closure
+        can only propose more. (5) The probe's `wait` arms stop at different
+        points; a mid-grant ask, a dense shape and the sort are measured.
+        (6) Exit paths with no red case — four cases added, the unwind moved
+        inside the part, the reading after the last part dropped. (7) Stale
+        texts repaired
+      Critic 2026-09-24 round 2, over the repair: (1) the dense grant was
+        credited to the lookup — a run's `lookup_visits` read 2,056 per
+        batch, and the entry says the lookup is not it; (2) the dense case
+        never checked its placement — it asserts over 16 roots beside each
+        ring member; (3) texts said "every part's end", and no case held the
+        reading's absence after the last part — reworded, a case added; the
+        rfc's bound names the sort and the lookup's positions; (4) "every
+        root a header in a block of its own" and (5) "the shorter of two
+        walks" reworded; (6) the stride constant pinned in the lookup's
+        case. The first pass's per-root reading has no case of its own; the
+        probe's `wait` arm is its measure
+      handoff: `worker::trace_in_parts`, `post_the_roots_the_part_met`,
+        `shadow::for_each_met_row`, `TraceScratchArena::read_the_recall_now`;
+        `dev/BENCHMARKS.md`, "S65.13 the batch in parts at a grown K", from
+        `worker::tests::what_a_grown_k_costs`. Miri owed at the stage's close
+        for `the_batch`'s part cases, the arena's watermark cases and the two
+        grant-behind cases of `the_recall`
 - [ ] S65.8 The live core stamped from a list (package commit 6)
       done: one chain per grant of at most L blocks, its head on the hold
         line, stamped at the take from `POSTED` or at the first block or run
@@ -705,7 +743,11 @@ them.
         `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Какие опыты нужны"), each
         thread placed on a named physical core; the three placements
         measured and recorded, and the constants L, M, M_b, M_c, D, N, X,
-        N_b read off it
+        N_b read off it, and whether a grant needs G, the package's bound in
+        touched blocks (section 7), against a grant of 1,024 parts that
+        holds 32–37 ms on `disjoint-wide-live` while the other mutators
+        named to its collector wait (`dev/BENCHMARKS.md`, "S65.13 the batch
+        in parts at a grown K")
       tier: T2 · role: Critic
 
 ## Then: arrays as a performance problem

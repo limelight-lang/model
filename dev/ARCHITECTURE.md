@@ -421,10 +421,11 @@ consent whatever the number of threads, and the registry hands out no
 record while it is linked (`dev/design/the-standing-request-lives-on-the-record.md`).
 Under `COLLECTOR|s` it
 peeks up to K entries from behind R's writer, clamped to P's room, traces
-them through `cells::AtomicCells` on its own arena under a block budget,
+them through `cells::AtomicCells` on its own arena in parts, one root's
+closure each under a block budget of its own,
 stopping within `cycle::arena::RECALL_STRIDE` positions once the owner, asking
 for its token, recalls it (and releasing, at the same readings, a grant it holds
-unserved behind the batch whose owner asks), posts one verdict per root into P in R's order, advances R past them by a
+unserved behind the batch whose owner asks), posts one verdict per root into P in the parts' order, advances R past them by a
 guard that runs from the unwind too, and releases to `POSTED`, which the
 owner's next slot free or poll reads as the arming of path 5 over P. Every
 death on the owner's side while a collector holds its token is withheld

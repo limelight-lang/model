@@ -430,8 +430,8 @@ fn one_visits_clock_reading_is_shared_by_the_take_and_the_advance() {
 
 /// A take is over the ring whole and feeds K nothing: K is the collector's
 /// estimate of what a producing mutator offers per batch, and four takes of
-/// three roots each would double it toward the bound and hand the thread's
-/// first real batch to the budget with every root unwalked.
+/// three roots each would double it toward the bound, a size no batch of the
+/// thread earned.
 #[test]
 fn a_take_leaves_the_batch_size_where_it_found_it() {
     let _g = test_guard();

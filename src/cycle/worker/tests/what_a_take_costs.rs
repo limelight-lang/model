@@ -3,8 +3,9 @@
 //! roots"; the design's "Cost", `dev/design/a-standing-r-is-taken-after-n-rounds.md`).
 //!
 //! The budget ruling says a take's trace is one batch's — bounded by
-//! [`TRACE_BLOCK_BUDGET`] blocks of the collector's arena — and that an
-//! unwalked take shifts the mutator's trace rather than adding one
+//! [`TRACE_BLOCK_BUDGET`] blocks of the collector's arena, which bound each
+//! part of a batch traced in parts (`crate::cycle::worker`, "The batch") — and
+//! that an unwalked take shifts the mutator's trace rather than adding one
 //! (`dev/DECISIONS.md`, "a take's trace is budgeted as one batch's, and an
 //! unwalked take shifts the mutator's trace rather than adding one"). Two
 //! shapes of the same sixty-three roots put the two halves of that claim
@@ -15,9 +16,12 @@
 //!   trace completes inside the budget, and the mutator's collection over P
 //!   reads the verdicts it posted;
 //! - **disjoint** — every root the root of a ring of its own, one member per
-//!   block, so that the row arrays the blocks reserve pass the budget: the
-//!   trace is abandoned, every root comes back `Unwalked`, and the mutator
-//!   traces them itself at its next poll.
+//!   block, so that the row arrays the blocks reserve pass the budget
+//!   together and each ring's fit the workspace: the take runs a part per
+//!   ring, and every root comes back with a verdict of its part's. The same
+//!   take traced as one part came back `Unwalked`, and the mutator traced its
+//!   roots itself at its next poll (`dev/BENCHMARKS.md`, "S64.5 what a take
+//!   costs by the shape of its roots").
 //!
 //! Each shape is read against a baseline: the same rings collected in line
 //! over R whole with no take. The figure is the difference between the
@@ -141,8 +145,8 @@ const OVERLAPPING: Shape = Shape {
 };
 
 /// Every root the root of a ring of its own, one member per block: the sum
-/// of the closures passes the trace's block budget, and the take comes back
-/// unwalked.
+/// of the closures passes one block budget while each fits the workspace,
+/// and the take runs a part per ring.
 const DISJOINT: Shape = Shape {
     name: "disjoint",
     rings: ROOTS,
@@ -767,6 +771,61 @@ fn the_arm(
     }
 }
 
+/// The class of the members of every shape: [`MEMBER_PROPS`] counted
+/// properties, [`MEMBER_CLASS_BYTES`] bytes.
+fn member_class(name: &str) -> *const Class {
+    let mut builder = ClassBuilder::new(name);
+    for property in 0..MEMBER_PROPS {
+        builder = builder.prop(&format!("p{property}"), true);
+    }
+
+    builder.build()
+}
+
+/// A take over `disjoint-live` runs a part per ring, each inside the workspace
+/// under the block budget that the rings together pass, so every root comes
+/// back read live and the mutator's collection over P traces no root and
+/// meets no row (`dev/BENCHMARKS.md`, "S65.5 what a mutator waits for under a
+/// take in parts").
+#[test]
+fn a_take_over_disjoint_live_rings_leaves_the_mutator_no_root_to_trace() {
+    let _g = test_guard();
+    let _record = record();
+    let _end = RetireOnDrop;
+    reset_lanes();
+    let _wait = testing::HeldRequestWait::crate_own();
+    let class = member_class("DisjointLiveNode");
+
+    let mut taken = None;
+    for _ in 0..SHORT_TAKE_RETRIES {
+        let (batches, collected, whole, _) =
+            a_take(DISJOINT_LIVE, class, Reading::Census, &mut None, false);
+        if whole {
+            taken = Some((batches, collected));
+            break;
+        }
+    }
+
+    let (batches, collected) = taken.expect("a take carried the ring whole");
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| (batch.roots, batch.parts, batch.complete))
+            .collect::<Vec<_>>(),
+        vec![(ROOTS, ROOTS, true)],
+        "one part per ring, every one complete"
+    );
+    let report = collected.report.expect("the census was armed");
+    assert_eq!(
+        report
+            .scan
+            .as_ref()
+            .map(|scan| (scan.roots, scan.density.slotted.rows_met)),
+        Some((0, 0)),
+        "the mutator's collection traced no root and met no row"
+    );
+}
+
 #[test]
 #[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
 fn what_a_take_costs_by_the_shape_of_its_roots() {
@@ -776,14 +835,7 @@ fn what_a_take_costs_by_the_shape_of_its_roots() {
     reset_lanes();
     let _wait = testing::HeldRequestWait::crate_own();
     let mut control = Control::from_env();
-    let class = {
-        let mut builder = ClassBuilder::new("TakeCostNode");
-        for property in 0..MEMBER_PROPS {
-            builder = builder.prop(&format!("p{property}"), true);
-        }
-
-        builder.build()
-    };
+    let class = member_class("TakeCostNode");
 
     let shapes = [
         OVERLAPPING,
