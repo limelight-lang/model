@@ -15,7 +15,7 @@
 //! | [`MUTATOR`] | the mutator | the mutator's own claim: a collection through its close, the exit's final claim, an initialisation not yet complete |
 //! | [`REQUESTED`]`\|s` | collector s | collector s asks to trace; the mutator has not consented |
 //! | [`COLLECTOR`]`\|s` | collector s, or the consenting mutator | collector s traces; the mutator withholds every return |
-//! | [`POSTED`] | collector s | no collector holds anything; the last batch's verdicts stand in P undisposed of, and the mutator owes a collection over P |
+//! | [`POSTED`] | collector s | no collector holds anything; the last batch's verdicts stand in P undisposed of, with its live list beside them (`crate::cycle::live_list`), and the mutator owes a collection over P |
 //!
 //! `FREE`, `MUTATOR` and `POSTED` carry slot zero, so a collector's request
 //! expects exactly zero. Every transition is a compare-and-swap that names
@@ -144,10 +144,11 @@ pub(crate) enum Reading {
     Mutator,
 }
 
-/// Where a mutator's take found the byte. Production acts the same on
-/// both — every ending of a collection disposes of P whether or not the
-/// take consumed `POSTED` — so the answer is read by tests alone, which
-/// assert which state a take consumed.
+/// Where a mutator's take found the byte. Every ending of a collection
+/// disposes of P whether or not the take consumed `POSTED`; what differs is
+/// the live list the collector's grant left beside it, which a take from
+/// `POSTED` stamps from or gives back before it returns ([`HeldToken`];
+/// `crate::cycle::live_list`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TookFrom {
     /// `FREE`, or a request refused: nothing stands in P.
@@ -531,15 +532,17 @@ impl TraceToken {
             .expect("a request lands on a free byte");
     }
 
-    /// Write `FREE` over `POSTED`: a case that batches again without a
-    /// collection between, standing in for the disposition it makes by
-    /// hand afterwards (`discard_standing_verdicts`). Nothing else writes
-    /// `FREE` over `POSTED`.
+    /// Take `POSTED` as the mutator's own claim, and say whether the byte
+    /// read it: the first half of a case's clearing of `POSTED`, which gives
+    /// the grant's live list back under the claim and then releases to
+    /// `FREE` (`crate::cycle::mutator_record::MutatorRecord::clear_posted_for_test`).
+    /// One swap, so that a release to `POSTED` landing after a reading of the
+    /// byte is never cleared with its list still standing.
     #[cfg(test)]
-    pub(crate) fn clear_posted_for_test(&self) {
-        let _ = self
-            .word
-            .compare_exchange(POSTED, FREE, Ordering::AcqRel, Ordering::Relaxed);
+    pub(crate) fn take_posted_for_test(&self) -> bool {
+        self.word
+            .compare_exchange(POSTED, MUTATOR, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
     }
 
     /// Claim `COLLECTOR|slot` over `FREE` in one swap, without a request or
@@ -686,6 +689,13 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
 /// retirement pass — runs untokened, which excludes no one: a collector
 /// reaches a thread through its record, and this thread has none.
 ///
+/// **A take that consumes `POSTED` settles the live list before it
+/// returns**: stamps from it for a collection off the poll or by the explicit
+/// call, gives it back unread for a collection under pressure and for the
+/// exit ([`HeldToken::take_giving_back_the_live_list`]), so that the stamps
+/// precede every destructor and every free the claim goes on to run, and the
+/// release to `FREE` finds the word null (`crate::cycle::live_list`).
+///
 /// The drop releases on the unwind as well as on the return, so a panic
 /// inside a collection leaves no claim standing for a collector to skip
 /// forever. Not `Send`: the drop releases the byte of the thread it runs on,
@@ -699,10 +709,29 @@ pub(crate) struct HeldToken {
     thread_bound: std::marker::PhantomData<*const ()>,
 }
 
+/// What a take does at `POSTED` ([`HeldToken`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AtPosted {
+    /// Take the byte and stamp from the live list.
+    Stamp,
+    /// Take the byte and give the live list back unread.
+    GiveBack,
+    /// Leave the byte, and the list with it, as they stand.
+    Hold,
+}
+
 impl HeldToken {
-    /// Take this thread's token, waiting while a collector holds it.
+    /// Take this thread's token, waiting while a collector holds it, and
+    /// stamp from the live list a take from `POSTED` finds.
     pub(crate) fn take() -> Self {
-        Self::take_unless(false)
+        Self::take_unless(AtPosted::Stamp)
+    }
+
+    /// Take this thread's token as [`take`](Self::take) does, and give back
+    /// unread the live list a take from `POSTED` finds: the pressure path's
+    /// take and the exit's.
+    pub(crate) fn take_giving_back_the_live_list() -> Self {
+        Self::take_unless(AtPosted::GiveBack)
     }
 
     /// Take this thread's token as [`take`](Self::take) does, except that a
@@ -712,22 +741,37 @@ impl HeldToken {
     /// standing is what makes the next reading arm the collection over P
     /// that the pass, run with the gate closed, cannot be. The byte is
     /// decided on the read the swap acts on, after any wait, so a collector
-    /// that releases `POSTED` into this take is held at `POSTED` too.
+    /// that releases `POSTED` into this take is held at `POSTED` too. The
+    /// live list stays with the byte: the caller decides what the list is
+    /// owed (`crate::cycle::live_list::drop_this_threads`).
     pub(crate) fn take_or_hold_posted() -> Self {
-        Self::take_unless(true)
+        Self::take_unless(AtPosted::Hold)
     }
 
-    fn take_unless(hold_at_posted: bool) -> Self {
+    fn take_unless(at_posted: AtPosted) -> Self {
         let record = crate::cycle::mutator_record::this_thread_record();
         if record.is_null() || state(unsafe { (*record).token.read() }) == MUTATOR {
             return Self::holding_nothing();
         }
 
-        match unsafe { (*record).token.take_unless(hold_at_posted) } {
-            Some(_) => Self {
-                releases: record,
-                thread_bound: std::marker::PhantomData,
-            },
+        let record_ref = unsafe { &*record };
+        match record_ref.token.take_unless(at_posted == AtPosted::Hold) {
+            Some(took) => {
+                match took {
+                    TookFrom::Posted if at_posted == AtPosted::Stamp => unsafe {
+                        crate::cycle::live_list::stamp_from(record_ref)
+                    },
+                    TookFrom::Posted => unsafe { crate::cycle::live_list::drop_from(record_ref) },
+                    TookFrom::Free => debug_assert!(
+                        record_ref.live_list().is_null(),
+                        "FREE promises a null list word"
+                    ),
+                }
+                Self {
+                    releases: record,
+                    thread_bound: std::marker::PhantomData,
+                }
+            }
             None => Self::holding_nothing(),
         }
     }
@@ -815,6 +859,10 @@ impl Drop for HeldToken {
             return;
         }
 
+        debug_assert!(
+            unsafe { (*self.releases).live_list() }.is_null(),
+            "FREE promises a null list word"
+        );
         unsafe { (*self.releases).token.release() };
     }
 }

@@ -117,8 +117,10 @@ unsafe fn occupants_beside(entity: *mut RcHeader) -> u32 {
 /// heap it starts from.** The blocks a class can be served from are its current
 /// one and any the process abandoned at that size — an earlier case's thread
 /// leaves such a block behind, and `Heap::adopt` takes it before the pool is
-/// asked at all. Taking slots until the refusal empties whatever is there, so
-/// the refusal a case reads is the pool's.
+/// asked at all, unless the thread's budget is spent, which refuses an
+/// adoption as it refuses a draw (`block_pool::budget_refuses_a_block`).
+/// Taking slots until the refusal empties the current block, so the refusal a
+/// case reads is the budget's.
 ///
 /// `bound` is how many slots the caller expects at most; past it the budget is
 /// refusing nothing and the case has no refusal to read. The slots taken are
@@ -946,4 +948,56 @@ fn a_refusal_whose_destructor_asks_for_the_exit_is_still_served() {
     );
     assert!(heap_alive, "the thread kept its heap");
     assert!(pending, "with the exit waiting for the top");
+}
+
+/// A spent budget refuses an abandoned block as it refuses the pool: a block
+/// another thread left at its exit is adopted before the pool is asked, and a
+/// case that fills its class until the pool refuses would otherwise be served
+/// by whatever a stranger's thread abandoned after the fill
+/// (`dev/POSTMORTEM.md`, "an adopted block served a case whose budget refused
+/// the pool"). A thread leaves one slot of this width taken at its exit, so
+/// that its block goes onto the abandoned list; a fresh thread under a spent
+/// budget then asks for the width and is refused. The width, 5,120 bytes, is
+/// one no other case allocates at: the block stays on the abandoned list after
+/// the case, and a case that counts on its class having none would adopt it
+/// (`what_a_walker_reads_between_the_slots` takes 3,072 for that reason).
+#[test]
+fn a_spent_budget_refuses_an_abandoned_block_too() {
+    let _g = crate::memory::block_pool::test_guard();
+    let class = a_class_of_its_own("RefusalAbandonedBlock", 318);
+    let size = unsafe { (*class).object_size } as usize;
+
+    let left = std::thread::spawn(move || {
+        assert!(ll_thread_init(), "the pool served this thread");
+        unsafe { entity_alloc(size) as usize }
+    })
+    .join()
+    .unwrap();
+    assert_ne!(left, 0, "the leaving thread's slot was served");
+
+    let (served, requests) = std::thread::spawn(move || {
+        assert!(ll_thread_init(), "the pool served this thread");
+        crate::cycle::queue::warm_workspace_base();
+        let _budgeted = budget_blocks(0);
+        let _ = take_pool_requests();
+        let slot = unsafe { entity_alloc(size) };
+        let requests = take_pool_requests();
+        drop(_budgeted);
+        if !slot.is_null() {
+            unsafe { give_back(&[slot]) };
+        }
+        (!slot.is_null(), requests)
+    })
+    .join()
+    .unwrap();
+
+    unsafe { give_back(&[left as *mut u8]) };
+    assert!(
+        !served,
+        "the abandoned block served a thread whose budget was spent"
+    );
+    assert!(
+        requests > 0,
+        "the refusal is the pool's, asked after no block was adopted"
+    );
 }

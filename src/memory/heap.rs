@@ -922,6 +922,12 @@ impl Heap {
                 return false;
             }
 
+            // A budgeted case's refusal is every route's, this one's too.
+            #[cfg(test)]
+            if crate::memory::block_pool::budget_refuses_a_block() {
+                return false;
+            }
+
             list.heads[population][ci] = unsafe { (*head).links.owned_next };
             head
         };

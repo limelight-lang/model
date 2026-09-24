@@ -43,9 +43,7 @@ impl Mutator {
     fn start() -> Self {
         Self::start_idling_with(|_| {
             crate::cycle::token::read_and_act_on_this_thread();
-            unsafe { &*mutator_record::this_thread_record() }
-                .token
-                .clear_posted_for_test();
+            unsafe { &*mutator_record::this_thread_record() }.clear_posted_for_test();
         })
     }
 
@@ -871,6 +869,7 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
 
 mod the_batch;
 mod the_epoch_clock;
+mod the_live_list;
 mod the_merged_lane;
 mod the_reading_before_the_claim;
 mod the_recall;

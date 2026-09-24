@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// without the collection between that the byte asks for, and dispose of P
 /// by hand at their end.
 pub(super) fn served_by_a_collector() -> Served {
-    unsafe { &*record() }.token.clear_posted_for_test();
+    unsafe { &*record() }.clear_posted_for_test();
     let sent = Sent(record());
     testing::consent_while(std::thread::spawn(move || {
         assert!(
@@ -708,7 +708,7 @@ fn an_unwind_inside_the_trace_posts_every_root_unwalked_and_advances_once() {
     );
 
     discard_standing_verdicts();
-    unsafe { &*record() }.token.clear_posted_for_test();
+    unsafe { &*record() }.clear_posted_for_test();
     unsafe {
         release_keeper(keeper_a);
         release_keeper(keeper_b);
@@ -1142,7 +1142,7 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
     let mut batches_seen = 0;
     loop {
         crate::cycle::token::read_and_act_on_this_thread();
-        unsafe { &*record() }.token.clear_posted_for_test();
+        unsafe { &*record() }.clear_posted_for_test();
         while batched.try_recv().is_ok() {
             batches_seen += 1;
         }

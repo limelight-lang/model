@@ -342,6 +342,23 @@ struct HoldLine {
     /// [`HoldLine::standing_since`] is, and for the same reason; relaxed,
     /// the collector's own word; cleared at a re-take.
     merges_seen: AtomicU32,
+    /// The first block of the live list the last grant's batch wrote, for the
+    /// mutator to stamp from or to drop, and null for none
+    /// (`crate::cycle::live_list`). Written by the collector under its grant,
+    /// before the release that stores `POSTED`, with a release of its own; taken
+    /// back to null by one swap, by the mutator after its acquire reading of
+    /// `POSTED`, or by the collector the record is named to once the epoch has
+    /// advanced past the list, with an acquire swap
+    /// (`crate::cycle::live_list::give_back_a_stale_list`). Either ordering makes
+    /// the chain's blocks visible to the side that wins the swap. `FREE`
+    /// promises a null word as it promises an empty P. Not cleared at a
+    /// re-take: the exit's take consumed it, and the registry asserts so.
+    live_list: AtomicPtr<BlockHeader>,
+    /// The serve clock's reading when [`HoldLine::live_list`] was published,
+    /// in nanoseconds since the base `crate::cycle::worker` fixes: a list
+    /// published before the last advance of the epoch is the collector's to
+    /// give back. Written before the word, which its release publishes.
+    live_list_published_at: AtomicU64,
 }
 
 /// A collector is reading the rings' blocks under no claim.
@@ -491,6 +508,8 @@ impl MutatorRecord {
                 turnovers: AtomicU64::new(0),
                 advanced_at: AtomicU64::new(0),
                 merges_seen: AtomicU32::new(0),
+                live_list: AtomicPtr::new(std::ptr::null_mut()),
+                live_list_published_at: AtomicU64::new(0),
             },
         }
     }
@@ -564,6 +583,65 @@ impl MutatorRecord {
     #[inline]
     pub(crate) fn note_merges_seen(&self, merges: u32) {
         self.hold.merges_seen.store(merges, Ordering::Relaxed);
+    }
+
+    /// Publish `head`, the first block of the live list this grant's batch
+    /// wrote ([`HoldLine::live_list`]), on the collector's thread under its
+    /// grant and before the release, whose store of `POSTED` is what the
+    /// mutator reads it behind. The word reads null: the request that opened
+    /// the grant landed on `FREE`.
+    #[inline]
+    pub(crate) fn publish_live_list(&self, head: *mut BlockHeader, published_at: u64) {
+        debug_assert!(
+            self.hold.live_list.load(Ordering::Relaxed).is_null(),
+            "a grant opened over a list nobody consumed"
+        );
+        self.hold
+            .live_list_published_at
+            .store(published_at, Ordering::Relaxed);
+        self.hold.live_list.store(head, Ordering::Release);
+    }
+
+    /// When the standing live list was published
+    /// ([`HoldLine::live_list_published_at`]).
+    #[inline]
+    pub(crate) fn live_list_published_at(&self) -> u64 {
+        self.hold.live_list_published_at.load(Ordering::Relaxed)
+    }
+
+    /// The live list standing on this record, or null
+    /// ([`HoldLine::live_list`]): the mutator's filter before it reads the
+    /// byte, which decides whether the list is its own yet, and the
+    /// collector's before it reads the instant of the publication, which the
+    /// acquire orders after the word.
+    #[inline]
+    pub(crate) fn live_list(&self) -> *mut BlockHeader {
+        self.hold.live_list.load(Ordering::Acquire)
+    }
+
+    /// Write `FREE` over `POSTED`, giving back the live list the grant left
+    /// under the mutator's claim in between, so that `FREE` keeps its promise
+    /// of a null list word: a case that batches again without a collection
+    /// between, standing in for the disposition it makes by hand afterwards
+    /// (`discard_standing_verdicts`). Nothing else writes `FREE` over
+    /// `POSTED`. On the thread whose record this is.
+    #[cfg(test)]
+    pub(crate) fn clear_posted_for_test(&self) {
+        if self.token.take_posted_for_test() {
+            unsafe { crate::cycle::live_list::drop_from(self) };
+            self.token.release();
+        }
+    }
+
+    /// Take the live list off this record, leaving null: the one swap that
+    /// decides whether the mutator or the collector gives it back
+    /// ([`HoldLine::live_list`]). Acquire, for the collector, which read no
+    /// `POSTED` before it.
+    #[inline]
+    pub(crate) fn take_live_list(&self) -> *mut BlockHeader {
+        self.hold
+            .live_list
+            .swap(std::ptr::null_mut(), Ordering::Acquire)
     }
 
     /// The collector whose list this record stands in, as a slot index plus
@@ -909,6 +987,10 @@ pub(crate) unsafe fn release_thread_record() {
         "a record goes back held: under the exit's claim, or under the \
          initialisation's own hold"
     );
+    debug_assert!(
+        unsafe { (*record).live_list() }.is_null(),
+        "the exit's take consumes the live list a life left"
+    );
     #[cfg(test)]
     debug_assert!(
         crate::cycle::queue::queue_base().is_null(),
@@ -1088,6 +1170,10 @@ fn take_record() -> *mut MutatorRecord {
             (*released).hold.batches_since.store(0, Ordering::Relaxed);
             (*released).hold.advanced_at.store(0, Ordering::Relaxed);
             (*released).hold.merges_seen.store(0, Ordering::Relaxed);
+            debug_assert!(
+                (*released).hold.live_list.load(Ordering::Relaxed).is_null(),
+                "the exit's take consumes the live list a life left"
+            );
             (*released).hold.new_life.store(1, Ordering::Relaxed);
             // Last, with release: the next reading's take is what sees the
             // lines above as reset.

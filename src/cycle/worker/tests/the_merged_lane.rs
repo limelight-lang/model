@@ -72,7 +72,7 @@ fn a_lane_of(arena: &mut Arena, count: usize, name: &str) -> Vec<*mut Object> {
 /// lanes.
 fn clear_up(keepers: Vec<*mut Object>) {
     discard_standing_verdicts();
-    unsafe { &*record() }.token.clear_posted_for_test();
+    unsafe { &*record() }.clear_posted_for_test();
     for keeper in keepers {
         unsafe { release_keeper(keeper) };
     }
@@ -369,7 +369,7 @@ fn a_merge_under_a_grant_is_taken_at_the_next_round() {
 
     discard_standing_verdicts();
     let record = unsafe { &*record() };
-    record.token.clear_posted_for_test();
+    record.clear_posted_for_test();
     {
         let _claim = crate::cycle::token::HeldToken::take();
         unsafe { crate::cycle::queue::retire_candidates() };

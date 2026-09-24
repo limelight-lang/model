@@ -137,7 +137,9 @@ the reading's reordered loads and `the_merged_lane`; the retirement pass under
 the token and the reordered state line; the arena's watermark cases and
 `the_batch`'s cases; `the_recall`'s stride and growth cases, its two-mutator
 case's raw list pointer and its two grant-behind cases;
-`when_a_withheld_stack_recalls_the_token`.
+`when_a_withheld_stack_recalls_the_token`; `the_live_list`'s cases but the
+bound's (the chain's writes and reads, `refcount::stamp_as_read_live`,
+`shadow::for_each_live_met_row`, the block drawn back and filled).
 
 - [x] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
       handoff: `5014615`, three comments in `queue.rs`.
@@ -178,18 +180,51 @@ case's raw list pointer and its two grant-behind cases;
         `post_the_roots_the_part_met`; `dev/DECISIONS.md`, "the batch
         runs in parts"; `dev/BENCHMARKS.md`, "S65.13 the batch in parts
         at a grown K".
-- [ ] S65.8 The live core stamped from a list (package commit 6)
+- [x] S65.8 The live core stamped from a list (package commit 6)
       done: one chain per grant of at most L blocks, its head on the hold
         line, stamped at the take from `POSTED` or at the first block or run
         return under it, dropped under pressure; the collector reads
         `waiting` every N rows of the touched-list walk that writes the list
-        and leaves the part unstamped when it is set, so that the list adds
+        and stops when it is set, keeping what it wrote, so that the list adds
         no unbounded work before the release (`dev/S65-PLAN-CRITIC.md` F1,
         second instance), with a recall raised inside that walk measured;
         after a take over `overlapping-live` every member carries the stamp
         and the next take prunes; the handshake document records the list
         and the stamp beside E12
       tier: T2 · role: Critic
+      baseline 2026-09-24 (`ea9d092`), what the step erases: a grant draws
+        from the pool only its arena's blocks, all back before the release,
+        and no GC block crosses a thread; the take from `POSTED` is one swap
+        and writes no header; byte 6 is written by the owner's commit alone;
+        a block's return under `POSTED` reads the token once and the run arm
+        of `large_entity::free` reads nothing; a take over `overlapping-live`
+        meets all 381 rows and the next one in the same epoch prunes no edge
+        (read at the step's red run); no refusal is new.
+      Critic 2026-09-24 round 1: six findings. (1) The recall case could not
+        fail for a check before the walk: the seam moved inside it, the bound
+        asserted in positions, no wall probe. (2) A sleeping owner pinned the
+        list's blocks: the collector gives a stale list back. (3) The rewind on
+        a recall put block returns before the release and threw away live
+        rows: the walk stops and keeps them, done-line amended. (4) The
+        pressure case could not see its order: read inside a destructor. (5)
+        The non-`POSTED` arm of the return hook became a debug assertion, E13
+        corrected. (6) E11's closure must cover the list's writes: named in
+        E13. All accepted.
+      Critic 2026-09-24 round 2, over the corrections: the give-back walked a
+        chain with no happens-before (publication now a release, the swap an
+        acquire); its case called the function directly (a round-driven case
+        added); it borrowed the standing interval (keyed on the epoch's advance
+        instead, which costs no stamp). All accepted
+        (`dev/DECISIONS.md`, "the live core a batch read is stamped by the
+        owner from a list, at the take from `POSTED` or at the first return
+        under it").
+      handoff: `cycle::live_list` (writer, the owner's stamp, the return hook,
+        the collector's give-back after an advance), `HeldToken::take` /
+        `take_giving_back_the_live_list`; eleven cases in
+        `worker::tests::the_live_list`, eleven mutations red; 381 rows then 63
+        on `overlapping-live`. On the way the test block budget was made to
+        cover adoption (`dev/POSTMORTEM.md`, "an adopted block served a case
+        whose budget refused the pool").
 - [ ] S65.9 The retry at the ceiling and the parking (package commit 7)
       done: a part failing at B retried at `B_max` in the same grant, once per
         grant; the roots that attempt met parked in the chain's second section

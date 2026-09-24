@@ -232,7 +232,7 @@ fn dead_slots(count: usize) -> Vec<*mut u8> {
 /// One batch, the mutator doing `during` from the trace's start, its roots
 /// registered again after it.
 fn a_batch(collector: &Collector, during: During) -> Sample {
-    unsafe { &*record() }.token.clear_posted_for_test();
+    unsafe { &*record() }.clear_posted_for_test();
     let k = unsafe { &*record() }.batch_size();
     let (started_out, started) = std::sync::mpsc::channel::<()>();
     let waiting_from = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -501,7 +501,7 @@ fn what_a_grown_k_costs() {
 /// `built` came from [`build`] on this thread and no collection runs.
 unsafe fn let_the_rings_go(arena: &mut Arena, built: Built) {
     let arena_ptr: *mut Arena = arena;
-    unsafe { &*record() }.token.clear_posted_for_test();
+    unsafe { &*record() }.clear_posted_for_test();
     unsafe {
         for &keeper in &built.keepers {
             store_prop(arena_ptr, keeper, prop_offset(0), std::ptr::null_mut());

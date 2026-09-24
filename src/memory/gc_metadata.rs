@@ -287,6 +287,40 @@ pub(crate) fn release(block: *mut BlockHeader) {
     BlockPool::global().put(block);
 }
 
+/// Give `blocks` GC blocks, and `bytes` of use charged inside them, to
+/// another thread, which ends them there through [`release`] and
+/// [`discharge`] after its [`take_over`]: the collector's live list, drawn on
+/// its thread and given back on the mutator's (`crate::cycle::live_list`).
+///
+/// The process figures count GC memory whichever thread holds it, so nothing
+/// moves in them; the test build moves the pair off this thread's figures, so
+/// that `thread_stats` on either side answers for that thread's work alone.
+#[inline]
+pub(crate) fn hand_over(blocks: usize, bytes: usize) {
+    #[cfg(test)]
+    move_thread_figures(|figures| {
+        figures.current -= blocks as isize;
+        figures.in_use -= bytes as isize;
+    });
+    #[cfg(not(test))]
+    let _ = (blocks, bytes);
+}
+
+/// Take over what another thread's [`hand_over`] gave: the receiving side,
+/// before the release and the discharge that end the blocks here.
+#[inline]
+pub(crate) fn take_over(blocks: usize, bytes: usize) {
+    #[cfg(test)]
+    move_thread_figures(|figures| {
+        figures.current += blocks as isize;
+        figures.peak = figures.peak.max(figures.current);
+        figures.in_use += bytes as isize;
+        figures.in_use_peak = figures.in_use_peak.max(figures.in_use);
+    });
+    #[cfg(not(test))]
+    let _ = (blocks, bytes);
+}
+
 /// End GC ownership and return a block through the critical reserve.
 pub(crate) fn release_to_critical(block: *mut BlockHeader) {
     if block.is_null() {

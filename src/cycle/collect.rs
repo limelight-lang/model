@@ -188,6 +188,18 @@ impl CollectingThread {
     /// occupant list published — is the rule `memory::retained::register`
     /// states.
     fn take() -> Result<Self, GateClosed> {
+        Self::take_by(HeldToken::take)
+    }
+
+    /// [`take`](Self::take) for a collection under pressure, whose take of
+    /// the token gives back unread the live list a take from `POSTED` finds:
+    /// the thread wants the blocks, and the stamps are a later trace's
+    /// saving (`crate::cycle::live_list`).
+    fn take_under_pressure() -> Result<Self, GateClosed> {
+        Self::take_by(HeldToken::take_giving_back_the_live_list)
+    }
+
+    fn take_by(take_the_token: fn() -> HeldToken) -> Result<Self, GateClosed> {
         if let Some(closed) = gate() {
             return Err(closed);
         }
@@ -206,7 +218,7 @@ impl CollectingThread {
         // never waits for a token it could not use
         // (`rfc/model/gc/rc-cycle.md`, "Check collection eligibility before
         // waiting").
-        let token = HeldToken::take();
+        let token = take_the_token();
         Ok(Self {
             record,
             retire_on_drop: Cell::new(true),
@@ -651,7 +663,9 @@ pub(crate) const EXIT_ROUNDS: usize = 8;
 /// As [`collect_off_the_poll`], with the heaps, the buffer arena and the weak
 /// table still alive for the destructors the rounds run.
 pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
-    let claim = HeldToken::take();
+    // The live list goes back unread: no trace reads this heap after the
+    // exit's rounds, and a stamp would only prune those rounds' own traces.
+    let claim = HeldToken::take_giving_back_the_live_list();
     let mut freed = 0;
     // By lane and not as one sum: a round that defers a verdict's root moves
     // it from P to the deferred lane, which the next round re-offers and
@@ -745,6 +759,10 @@ unsafe fn refused_under_pressure(closed: GateClosed) -> usize {
     // read as dead and took out of R returns through no other.
     if closed == GateClosed::Teardown {
         let _token = HeldToken::take_or_hold_posted();
+        // The hold leaves `POSTED` and the live list beside it; the list goes
+        // back unread here, as a pressure collection's take gives it back,
+        // before the pass returns anything.
+        crate::cycle::live_list::drop_this_threads();
         unsafe {
             crate::cycle::queue::retire_candidates();
             make_withheld_returns_before_the_retry();
@@ -823,7 +841,7 @@ unsafe fn refused_under_pressure(closed: GateClosed) -> usize {
 /// As [`collect_off_the_poll`], and the caller holds no allocation in flight
 /// that the destructors below could reach.
 pub(crate) unsafe fn collect_under_pressure() -> usize {
-    let _collecting = match CollectingThread::take() {
+    let _collecting = match CollectingThread::take_under_pressure() {
         Ok(collecting) => collecting,
         Err(closed) => return unsafe { refused_under_pressure(closed) },
     };

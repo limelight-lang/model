@@ -7,6 +7,40 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-24 — an adopted block served a case whose budget refused the pool
+
+**What happened.** With S65.8's cases in the suite,
+`memory::barrier::tests::the_ordinary_store::a_refused_store_leaves_the_slot_and_the_count_alone`
+and `the_owned_store::a_refused_copy_leaves_the_mark_the_slot_and_the_counts_alone`
+failed in three of seven runs at eight threads, and in none of six on the
+tree before the step: the store's copy was served where the case had spent
+its thread's block budget. The barrier case beside
+`the_live_list::a_chain_at_its_bound_keeps_what_it_holds` and one more case
+of that group failed six of six, and with the list's publication switched
+off it still did, so the cause was the cases and not the code under them.
+
+**Why it was possible.** `block_pool::budget_blocks` refused a thread's draws
+from the pool and nothing else, while `Heap::alloc_no_block` adopts a block
+another thread abandoned before it asks the pool at all. The barrier case
+fills its class until the pool refuses and asks again; a harness thread that
+exited in between — here the one that held 8,260 members of the same 32-byte
+class — abandoned a block with room, and the budgeted thread adopted it. The
+fill read 0 slots alone and 1,659 beside the new cases.
+
+**Why it was not caught.** Before S65.8 no case left blocks of that class on
+the abandoned list while the barrier cases ran, and the heap's own refusal
+cases know of adoption and fill through it (`the_collection_a_refusal_starts`,
+`take_slots_until_refused`), which reads as the budget covering it.
+
+**The fix.** `block_pool::budget_refuses_a_block` spends the budget at an
+adoption as at a draw, so a spent budget refuses every route by which a
+thread takes a block. The red case is
+`memory::heap::tests::the_collection_a_refusal_starts::`
+`a_spent_budget_refuses_an_abandoned_block_too`, seen failing with the
+adoption's check removed.
+
+---
+
 ## 2026-09-24 — a recall stored after the grant's swap landed behind the collector's reading before the batch
 
 **What happened.** `the_recall::a_grant_recalled_before_its_batch_is_released_with_no_batch`

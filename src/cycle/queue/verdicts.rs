@@ -232,7 +232,7 @@ pub(crate) fn discard_standing_verdicts() {
     reader.advance(reader.unread());
     // The byte with it: a `POSTED` left standing over an empty P would make
     // the next case's first reading arm a collection over nothing.
-    unsafe { &*record }.token.clear_posted_for_test();
+    unsafe { &*record }.clear_posted_for_test();
 }
 
 /// Every verdict this thread's P holds and the mutator has not answered for,

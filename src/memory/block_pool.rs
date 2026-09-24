@@ -315,8 +315,9 @@ pub(crate) struct ForcedOom;
 
 #[cfg(test)]
 thread_local! {
-    /// How many more blocks this thread may take, tests only; `usize::MAX` is no
-    /// budget and is what every thread that does not set one runs under.
+    /// How many more blocks this thread may take, from the pool or off the
+    /// abandoned list, tests only; `usize::MAX` is no budget and is what every
+    /// thread that does not set one runs under ([`budget_refuses_a_block`]).
     ///
     /// **Per thread rather than a threshold on `blocks_out`**, for two reasons a
     /// process-wide cap gets wrong. `blocks_out` falls at every `put` by every
@@ -341,6 +342,28 @@ thread_local! {
 #[must_use = "the pool is budgeted only while the guard lives"]
 pub(crate) fn budget_blocks(blocks: usize) -> BlockBudget {
     BlockBudget(BLOCK_BUDGET.with(|budget| budget.replace(blocks)))
+}
+
+/// Spend one block of this thread's [`BLOCK_BUDGET`], and answer true where
+/// it is spent already and the block is refused. The pool's draw asks it, and
+/// so does the heap's adoption of an abandoned block
+/// (`memory::heap::Heap::adopt`): an adopted block is a block this thread
+/// takes as much as a drawn one, and a budgeted case that adopts one reads a
+/// refusal that never came (`dev/POSTMORTEM.md`, "an adopted block served a
+/// case whose budget refused the pool"). `try_with`, as the pool's cache does:
+/// a thread past its own TLS teardown has no budget.
+#[cfg(test)]
+pub(crate) fn budget_refuses_a_block() -> bool {
+    BLOCK_BUDGET
+        .try_with(|budget| match budget.get() {
+            usize::MAX => false,
+            0 => true,
+            left => {
+                budget.set(left - 1);
+                false
+            }
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -666,20 +689,8 @@ impl BlockPool {
         // `try_with`, like the cache below: a thread past its own TLS teardown
         // has no budget and takes the ordinary path.
         #[cfg(test)]
-        {
-            let spent = BLOCK_BUDGET
-                .try_with(|budget| match budget.get() {
-                    usize::MAX => false,
-                    0 => true,
-                    left => {
-                        budget.set(left - 1);
-                        false
-                    }
-                })
-                .unwrap_or(false);
-            if spent {
-                return std::ptr::null_mut();
-            }
+        if budget_refuses_a_block() {
+            return std::ptr::null_mut();
         }
 
         self.blocks_out.fetch_add(1, Ordering::Relaxed);
@@ -762,6 +773,11 @@ impl BlockPool {
         } {
             return;
         }
+
+        // A collector's live list may hold addresses into this block, which
+        // the mutator stamps from at its take: under `POSTED` it stamps now,
+        // before the block can serve anybody else (`cycle::live_list`).
+        crate::cycle::live_list::stamp_before_a_return();
 
         // A retained block carries promoted survivors, and it comes back
         // only through `retained::release_emptied`, which restamps it once

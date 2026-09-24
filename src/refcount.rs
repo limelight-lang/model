@@ -16,8 +16,9 @@
 //!
 //! **The region above bit 15 is the collector's own**, and byte 6 of it
 //! carries the maturation stamp: the epoch at 16-17, the age at 18-19,
-//! and a reserve at 20-23 that nothing writes yet.
-//! [`write_maturation_stamp`] is the one writer, one byte wide, and
+//! and a reserve at 20-23 that nothing writes yet. The owning thread is
+//! the one writer, one byte wide, through [`write_maturation_stamp`] and
+//! [`stamp_as_read_live`], and
 //! `refcount::tests::the_header_the_compiler_shares` is what keeps a
 //! mutator constant from drifting into any of them. Bits 24-31 are
 //! unclaimed.
@@ -211,8 +212,9 @@ pub const IS_ESCAPEE: u32 = 1 << 11;
 /// epoch it was written in at bits 16-17, the age at 18-19, and bits 20-23
 /// reserved (`rfc/model/classes.md`, "Flags layout").
 ///
-/// The byte has one writer, the owning thread's commit
-/// ([`write_maturation_stamp`]), and the fields share it, so each is written by
+/// The byte has one writer, the owning thread — its commit
+/// ([`write_maturation_stamp`]) and its take of a collector's live list
+/// ([`stamp_as_read_live`]) — and the fields share it, so each is written by
 /// a byte-wide read-modify-write rather than by a store of the whole byte: a
 /// store would carry the reserve's bits down with it once the reserve has a
 /// writer of its own.
@@ -915,7 +917,7 @@ pub(crate) unsafe fn mutator_flags(header: *const RcHeader) -> u32 {
 /// An entity no commit has stamped answers epoch 0 and age 0, which the
 /// publication gives it — [`publish_header`] writes the whole word, so a
 /// recycled slot carries no stamp of its previous occupant. A survivor the
-/// arena reset promotes arrives unstamped too: both writers stamp the members
+/// arena reset promotes arrives unstamped too: every writer stamps the members
 /// a trace met, and an arena entity resolves to no row
 /// (`crate::cycle::row::EdgeTarget::Untracked`), so nothing writes byte 6 of
 /// one before its category is rewritten. An age is read
@@ -968,6 +970,36 @@ pub(crate) unsafe fn write_maturation_stamp(header: *mut RcHeader, stamp: Matura
     let reserve = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) }
         & !(MATURATION_EPOCH_IN_BYTE | MATURATION_AGE_IN_BYTE);
     unsafe { header_byte_store(header, MATURATION_STAMP_BYTE, reserve | fields) };
+}
+
+/// Stamp the slot at `header` as read live in `epoch`, at age one, unless its
+/// stamp already carries an age of at least one in that epoch; the rest of the
+/// byte stays as it stands.
+///
+/// The writer behind a collector's list of the live core its batch read
+/// (`crate::cycle::live_list`), which the owner applies without a descent: an
+/// address in the list may name a slot its occupant left since the list was
+/// written, free or occupied again, and the stamp there is either written
+/// over by the next publication, which stores the whole word, or reduces the
+/// new occupant's suspicion until the turnover (`rfc/model/gc/rc-cycle.md`,
+/// "What a commit stamps"). One byte wide, as [`write_maturation_stamp`] is,
+/// and on the same one writer's terms.
+///
+/// # Safety
+/// `header` is the first byte of a slot of this thread's entity memory whose
+/// block this thread has not given back, and no collector holds this thread's
+/// token.
+#[inline]
+pub(crate) unsafe fn stamp_as_read_live(header: *mut RcHeader, epoch: u32) {
+    debug_assert!(epoch <= MATURATION_EPOCH_IN_BYTE as u32);
+    let byte = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) };
+    let fields = MATURATION_EPOCH_IN_BYTE | MATURATION_AGE_IN_BYTE;
+    if byte & MATURATION_EPOCH_IN_BYTE == epoch as u8 && byte & MATURATION_AGE_IN_BYTE != 0 {
+        return;
+    }
+
+    let stamp = epoch as u8 | (1 << MATURATION_AGE_SHIFT_IN_BYTE);
+    unsafe { header_byte_store(header, MATURATION_STAMP_BYTE, (byte & !fields) | stamp) };
 }
 
 /// Byte 7 of the header, whose bit 0 is the flags word's bit 24

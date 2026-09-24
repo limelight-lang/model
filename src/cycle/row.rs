@@ -263,6 +263,37 @@ pub(crate) unsafe fn for_each_live(
     }
 }
 
+/// Visit the index of every row of `block` the trace met and the scan left
+/// [`Color::Live`](crate::cycle::shadow::Color), stopping at the first
+/// `Break` `visit` answers, which it then answers.
+///
+/// [`for_each_live`] over the met groups alone, so that the walk costs the
+/// rows a part met rather than every group of the block: its reader is the
+/// collector's live list, which walks each part's rows before the reset and
+/// may meet a block holding thousands of rows the part never touched
+/// (`crate::cycle::live_list`).
+///
+/// # Safety
+/// As [`for_each_unreachable`].
+pub(crate) unsafe fn for_each_live_met(
+    array: *mut crate::cycle::shadow::RowArray,
+    block: *mut u8,
+    population: Population,
+    mut visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    if population == Population::SingleEntity {
+        crate::cycle::shadow::note_row_read();
+        let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
+        if crate::cycle::shadow::color(row) != crate::cycle::shadow::Color::Live {
+            return std::ops::ControlFlow::Continue(());
+        }
+
+        return visit(SINGLE_ENTITY_INDEX);
+    }
+
+    unsafe { crate::cycle::shadow::for_each_live_met_row(array, visit) }
+}
+
 /// The walk both colours take: a large entity's one row is read out of its
 /// block header, every other population's out of the array.
 ///

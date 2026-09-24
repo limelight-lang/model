@@ -8,6 +8,83 @@ never edited or deleted.
 
 ---
 
+## 2026-09-24 — the live core a batch read is stamped by the owner from a list, at the take from `POSTED` or at the first return under it
+
+**Decided (model, S65.8, the package's commit 6):** a part of the collector's
+batch that reads its root live appends every row it left live to one chain of
+at most `live_list::MAX_BLOCKS` GC blocks per grant, and the owner stamps each
+listed entity `{e, 1}` without a descent (`cycle::live_list`;
+`rfc/model/gc/rc-cycle.md`, "The live list of a batch";
+`rfc/dev/design/trace-token-handshake.md`, E13). On the take probe's
+`overlapping-live` shape, 381 members and 63 roots, the first take met 381
+rows and pruned no edge; after the owner's take stamped the list, the next take
+in the same epoch met 63 rows, pruned one edge and drew no block
+(`cycle::worker::tests::the_live_list`, debug build; the wall is unmeasured).
+
+**Where the code differed from the package's section 5, and what was built:**
+
+- *No `hand_over` existed, and `gc_metadata::adopt` is the critical reserve's
+  lend of an arena block.* A new pair, `gc_metadata::hand_over` and
+  `take_over`, moves the list's blocks between the two threads' test figures
+  and nothing in the process figures, which count GC memory whichever thread
+  holds it; `adopt` is untouched.
+- *The stamp writer keeps bits 20–23, where section 5 zeroes them.* The zeroing
+  was the stamp clearing the parking mark, which F4 of `dev/S65-PLAN-CRITIC.md`
+  replaced by an unpark entry the collector writes (S65.9), so
+  `refcount::stamp_as_read_live` writes epoch and age and leaves the rest of the
+  byte; it leaves a stamp that already carries an age in the epoch as it
+  stands.
+- *`TookFrom::Posted` was discarded, and the poll and the pressure path share
+  one take.* `HeldToken` settles the list inside its take from the answer:
+  `take` stamps, `take_giving_back_the_live_list` gives it back, and
+  `take_or_hold_posted` leaves it with the byte; `CollectingThread` takes the
+  second form under pressure.
+- *The run arm of `large_entity::free` has no gate.* The hook stands between
+  the unlink and the unmap; a foreign trace's gate is not needed there, a
+  death under a foreign holder being withheld whole before it reaches the free.
+- *The exit gives the list back unread*, where the package stamps at the exit's
+  take: no trace reads the exiting thread's heap after its rounds, and a stamp
+  would prune those rounds' own traces, reclaiming less.
+
+**A take after an advance gives the list back unread**: the owner reads the
+cell once and compares it with the batch's reading, a stamp of the old epoch
+reading as no stamp in the new. **A recall inside the list's walk stops it and
+keeps what it wrote**, the walk bounded by a stride of rows before the release
+(F1): the entries are live rows of a part that completed, as safe to stamp as a
+chain closed at L, and taking them back would put up to L block returns
+between the recall's reading and the release (the Critic of S65.8, its third
+finding; the done-line's "leaves the part unstamped" amended with it). **The
+poll's retirement pass leaves the list with the byte**: it runs under `POSTED`
+holding nothing, and its returns meet the hook; the teardown's refusal gives
+the list back, as the package has it.
+
+**A list the owner has not taken is given back by its collector once the
+epoch has advanced past it** (the Critic of S65.8, its second finding, in the
+form its second round gave it): the round's visit, after its advance, swaps the
+word to null and returns the blocks on the collector's thread where the last
+advance came after the publication. Without it an owner asleep under `POSTED`
+would hold up to L blocks, 1 MiB, for its whole sleep, a price the silent-owner
+ruling of the handshake document never named. Keyed on the advance rather
+than on a clock of its own: from the advance on, the owner's take would give
+the list back unread anyway, so the give-back costs no stamp, and an owner
+served no batch advances at X, which bounds the hold at X and one wait of the
+round. The standing interval was the first form and was refused by the same
+round: it would tie the list's life to a dial that means "take a small ring
+sooner". Either side takes the list by one swap, the publication a release and
+the collector's swap an acquire, so the winner reads the chain the publisher
+wrote; an unread list is always safe to drop.
+
+**Limits named rather than built.** The hook reads the calling thread's
+record, as the foreign trace's gate does, so a block of this thread's that
+another thread returns is outside it by the same disjointness rule (the
+handshake's E11). A block the pool refuses mid-list has no case of its own: it
+closes the chain through the same branch as the bound, which
+`a_chain_at_its_bound_keeps_what_it_holds` drives. The hook adds a
+thread-local load and a relaxed load to every `BlockPool::put`, unmeasured
+until the stage's close measures the free path.
+
+---
+
 ## 2026-09-24 — the consent stores the recall a mark raises ahead of its swap
 
 **Decided (model):** the consent sets the recall to whether one of the

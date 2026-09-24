@@ -1133,6 +1133,7 @@ unsafe fn read_one_record(
 
     let now = serve_clock_now();
     advance_the_epoch_if_due(unsafe { &*record }, now);
+    crate::cycle::live_list::give_back_a_stale_list(unsafe { &*record });
     let served = unsafe { serve(record, index, threshold, standing, now) };
     outcome.made_a_batch |= standing.take_batches_served() > 0;
     outcome.saw_work |= standing.take_saw_work();
@@ -2073,6 +2074,9 @@ unsafe fn batch(
     });
     arena.set_watermark();
 
+    // The live list the parts write, published below for the mutator's take;
+    // dropped on the unwind, which gives its blocks back here.
+    let mut live = crate::cycle::live_list::Writer::new(arena.turnovers());
     // From the guard on, every root is owed a verdict and R its advance, on
     // the unwind too, and the release that follows is to `POSTED`.
     posted.set(true);
@@ -2087,8 +2091,12 @@ unsafe fn batch(
     #[cfg(test)]
     let traced_from = std::time::Instant::now();
     #[cfg(test)]
-    let _ = testing::take_lookup_visits();
-    let (parts, complete) = unsafe { trace_in_parts(arena, &mut posts, by_address) };
+    let _ = (
+        testing::take_lookup_visits(),
+        crate::cycle::mark::take_edges_pruned(),
+        testing::take_rows_met(),
+    );
+    let (parts, complete) = unsafe { trace_in_parts(arena, &mut posts, by_address, &mut live) };
     #[cfg(test)]
     testing::note_traced_batch(|| testing::TracedBatch {
         roots: taken,
@@ -2098,6 +2106,8 @@ unsafe fn batch(
         wall: traced_from.elapsed(),
         positions_after_the_hook: testing::take_positions_after_the_hook(),
         lookup_visits: testing::take_lookup_visits(),
+        edges_pruned: crate::cycle::mark::take_edges_pruned(),
+        rows_met: testing::take_rows_met(),
     });
     #[cfg(not(test))]
     let _ = parts;
@@ -2110,6 +2120,7 @@ unsafe fn batch(
 
     let met_budget = arena.met_its_budget();
     arena.reset();
+    live.publish(mutator, serve_clock_now());
     mutator.note_batch();
     if at_the_threshold {
         size_the_next_batch(mutator, clamp, taken, complete, met_budget);
@@ -2275,6 +2286,11 @@ fn size_the_next_batch(
 /// the owner's exact validation to decide (`rfc/model/gc/rc-cycle.md`,
 /// "Worker-to-owner handoff").
 ///
+/// A part whose root it reads live appends the live rows it met to `live`
+/// before the reset, which the mutator stamps from at its take
+/// (`crate::cycle::live_list`); a part that read its root unreachable lists
+/// nothing.
+///
 /// A part that meets its budget, a refused allocation or the mutator's recall
 /// ends the batch where it stands, and every root without a verdict is left
 /// to [`FinishThePosts`]; the verdicts the earlier parts posted stand, each
@@ -2284,8 +2300,9 @@ fn size_the_next_batch(
 /// roots stand in blocks of their own, and before every part but the first,
 /// so that neither the pass nor the resets between parts add a walk the
 /// recall cannot stop; the lookup of met roots counts a position per root or
-/// row it visits. No reading follows the last part: a batch whose every part
-/// completed is complete, and sizes K as one.
+/// row it visits, and the list's walk one per live row. No reading follows
+/// the last part: a batch whose every part completed is complete, and sizes K
+/// as one.
 ///
 /// # Safety
 /// As [`mark`] through `AtomicCells`: the calling thread holds the mutator's
@@ -2296,6 +2313,7 @@ unsafe fn trace_in_parts(
     arena: &mut TraceScratchArena,
     posts: &mut FinishThePosts<'_>,
     by_address: &[u16],
+    live: &mut crate::cycle::live_list::Writer,
 ) -> (usize, bool) {
     for index in 0..posts.roots.len() {
         if arena.read_the_recall_now().is_break() {
@@ -2327,8 +2345,17 @@ unsafe fn trace_in_parts(
 
         #[cfg(test)]
         testing::after_the_trace_of_part(parts);
-        posts.post(index, unsafe { verdict_for(root) });
+        #[cfg(test)]
+        unsafe {
+            testing::note_rows_met(arena)
+        };
+        let verdict = unsafe { verdict_for(root) };
+        posts.post(index, verdict);
         if unsafe { post_the_roots_the_part_met(arena, posts, by_address) }.is_break() {
+            return (parts, false);
+        }
+
+        if verdict == Verdict::ReadLive && unsafe { live.append_the_part(arena) }.is_break() {
             return (parts, false);
         }
 

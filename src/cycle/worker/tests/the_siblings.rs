@@ -67,7 +67,7 @@ fn wait_for_rounds_of(index: usize, rounds: usize) {
                 // As the other mutator's loop does: the `POSTED` a batch
                 // left is cleared; the clear a wake relies on is
                 // `dispose_by_hand`'s, after this wait returns.
-                unsafe { &*record() }.token.clear_posted_for_test();
+                unsafe { &*record() }.clear_posted_for_test();
                 seen += testing::take_rounds_of(index);
                 seen >= rounds
             },
@@ -87,13 +87,9 @@ fn wait_for_rounds_of(index: usize, rounds: usize) {
 /// (`dev/POSTMORTEM.md`, "a wake inside the other mutator's tick meets a
 /// backlog of one").
 fn dispose_by_hand(others: &[&Mutator]) {
-    unsafe { &*record() }.token.clear_posted_for_test();
+    unsafe { &*record() }.clear_posted_for_test();
     for other in others {
-        other.run(|_| {
-            unsafe { &*mutator_record::this_thread_record() }
-                .token
-                .clear_posted_for_test()
-        });
+        other.run(|_| unsafe { &*mutator_record::this_thread_record() }.clear_posted_for_test());
     }
 }
 

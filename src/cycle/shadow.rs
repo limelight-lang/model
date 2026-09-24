@@ -548,6 +548,33 @@ pub(crate) unsafe fn for_each_of_color(
 /// stand.
 pub(crate) unsafe fn for_each_met_row(
     array: *mut RowArray,
+    visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    unsafe { for_each_met_row_where(array, |color| color != Color::Untouched, visit) }
+}
+
+/// Visit the index of every row of `array` the trace met and the scan left
+/// [`Color::Live`], in index order, by the walk [`for_each_met_row`] takes,
+/// stopping at the first `Break` `visit` answers, which it then answers. Its
+/// reader is the collector's live list (`crate::cycle::live_list`).
+///
+/// # Safety
+/// As [`for_each_met_row`], and the collection has been scanned.
+pub(crate) unsafe fn for_each_live_met_row(
+    array: *mut RowArray,
+    visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    unsafe { for_each_met_row_where(array, |color| color == Color::Live, visit) }
+}
+
+/// The walk of the met groups both of the above take, visiting the rows whose
+/// colour `wanted` accepts.
+///
+/// # Safety
+/// As [`for_each_met_row`].
+unsafe fn for_each_met_row_where(
+    array: *mut RowArray,
+    wanted: impl Fn(Color) -> bool,
     mut visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
 ) -> std::ops::ControlFlow<()> {
     let row_count = unsafe { (*array).row_count };
@@ -559,7 +586,7 @@ pub(crate) unsafe fn for_each_met_row(
             bits &= bits - 1;
             let first = group * GROUP;
             for index in first..(first + GROUP).min(row_count) {
-                if color(unsafe { *row(array, index) }) != Color::Untouched {
+                if wanted(color(unsafe { *row(array, index) })) {
                     visit(index)?;
                 }
             }

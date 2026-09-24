@@ -8,7 +8,9 @@
 //! proposed as unreachable whose exact validation disagreed is stamped by
 //! [`crate::cycle::finalization`]; the rows the scan coloured
 //! [`Color::Live`] — the mature live core the descent is meant to stop at —
-//! are this module's.
+//! are this module's. The live core a collector's batch reads is stamped
+//! outside any commit, from the list the batch leaves the owner
+//! ([`crate::cycle::live_list`]).
 //!
 //! # The unit is the strongly connected component
 //!

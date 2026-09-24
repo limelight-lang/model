@@ -305,6 +305,11 @@ pub(crate) struct TracedBatch {
     pub(crate) positions_after_the_hook: Option<usize>,
     /// Roots and rows the lookup of each part's met roots visited.
     pub(crate) lookup_visits: usize,
+    /// Edges the batch's marks pruned at a mature target
+    /// (`crate::cycle::mark::take_edges_pruned`).
+    pub(crate) edges_pruned: usize,
+    /// Rows the batch's parts met, summed over the parts.
+    pub(crate) rows_met: usize,
 }
 
 /// Whether a case is reading the batches: off by the module's own, so that
@@ -505,6 +510,46 @@ pub(crate) fn note_a_lookup_visit() {
 
 pub(crate) fn take_lookup_visits() -> usize {
     LOOKUP_VISITS.with(|visits| visits.replace(0))
+}
+
+thread_local! {
+    /// Rows the parts on this thread met since the last take.
+    static ROWS_MET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Count the rows a completed part met, off its touched list before the
+/// reset: every row of a block's array the trace did not leave untouched,
+/// and a large entity's one row where its colour says it was met.
+///
+/// # Safety
+/// The part's rows still stand.
+pub(crate) unsafe fn note_rows_met(arena: &crate::cycle::arena::TraceScratchArena) {
+    use crate::cycle::row::Population;
+    use crate::cycle::shadow::{self, Color};
+
+    let mut met = 0;
+    let mut array = arena.touched_head();
+    while !array.is_null() {
+        let (block, population) = unsafe { ((*array).block, (*array).population) };
+        if population == Population::SingleEntity {
+            let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
+            met += usize::from(shadow::color(row) != Color::Untouched);
+        } else {
+            let _ = unsafe {
+                shadow::for_each_met_row(array, |_| {
+                    met += 1;
+                    std::ops::ControlFlow::Continue(())
+                })
+            };
+        }
+
+        array = unsafe { (*array).next };
+    }
+    ROWS_MET.with(|rows| rows.set(rows.get() + met));
+}
+
+pub(crate) fn take_rows_met() -> usize {
+    ROWS_MET.with(|rows| rows.replace(0))
 }
 
 /// Between the next batch's mark and its scan, on the collector's thread,
