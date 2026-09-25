@@ -297,18 +297,36 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal.
       handoff: `Standing::withdraw_every_request`, the cap reading in
         `Standing::checkpoint` and `serve_the_grant`;
         `worker/tests/the_cap_set_under_work.rs`, seven cases.
-- [ ] S65.16 The N-mutators-on-N-cores rig, built and calibrated
-      done: each mutator and each collector thread is placed on a named
-        physical core with its SMT sibling named (the collector's through a
-        hook in `worker::birth`, whose thread is the crate's own
-        `pthread_create`); a throughput driver runs the loads of
-        `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Какие опыты нужны", and
-        records that section's figures together with three counters from
-        `dev/S65-PROGRESS-REVIEW.md`, section 5 (one root's P → R → P
-        rounds per turnover, the bytes past `B_max` before pressure, and
-        the share of grants recalled by M against those recalled by a take);
-        each figure is checked once on an input whose answer is known before
-        the rig is trusted; no arm is measured in this step
+- [ ] S65.16 The rig's placement and driver (structure agreed with Edmond
+        2026-09-25)
+      done: an `#[ignore]` probe `cycle::worker::tests::the_rig`, one process
+        per cell run by `dev/tools/rig.sh` into one CSV line each, as
+        `take_perf.sh` runs its arms; the script reads the topology from
+        `/sys/devices/system/cpu` and names each physical core and its SMT
+        sibling; each mutator pins itself by `sched_setaffinity`, declared
+        `extern` in the test build alone, no new dependency; each collector
+        is pinned by a test dial `begin_the_thread` reads; the three
+        placements of the S64 analysis at C = 4 (C−1 mutators and the
+        collector on its own core, C mutators and the collector competing,
+        C+1 mutators under `cap 0`); each mutator runs for a set wall time a
+        loop of build a graph of the load's shape, release it, poll, over the
+        shapes of `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Какие опыты нужны"
+        (garbage 0/25/50/75/100 %, `overlapping-live`, `disjoint-live`, one
+        large root, partly overlapping graphs, a large live core); a smoke
+        run of every cell completes
+      tier: T2 · role: —
+- [ ] S65.19 The rig's figures, calibrated
+      done: per cell, operations a second and CPU time an operation
+        (`CLOCK_THREAD_CPUTIME_ID`); the mutator's latency p50/p99/p99.9;
+        the collector's CPU and wall; the token's wait; context switches
+        (`RUSAGE_THREAD`); peak working and withheld memory off the GC
+        ledger; memory freed and the time to free it; the three counters of
+        `dev/S65-PROGRESS-REVIEW.md`, section 5 (one root's P → R → P rounds
+        a turnover, bytes past `B_max` before pressure, the share of grants
+        recalled by M against a take); each figure checked once on an input
+        whose answer is known (0 % garbage frees nothing, 100 % frees all, a
+        spinning thread reads CPU ≈ wall, a built ring's P → R → P count);
+        no arm measured
       tier: T2 · role: —
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the

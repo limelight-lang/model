@@ -32,7 +32,7 @@ taken (`dev/DECISIONS.md`, "the collector finds and the mutator judges, and a
 recall of the token bounds the mutator's wait instead of the budget"); [the
 Critic over the S65 plan](S65-PLAN-CRITIC.md), whose F1–F7 the steps carry;
 and [the S64 analysis](S64-GC-IMPROVEMENT-ANALYSIS.md) (Russian), whose
-"Какие опыты нужны" is the rig S65.16 builds and S65.17 runs. [The progress review of
+"Какие опыты нужны" is the rig S65.16 and S65.19 build and S65.17 runs. [The progress review of
 2026-09-25](S65-PROGRESS-REVIEW.md) (Russian) reads the stage before S65.12
 against the S64 analysis: what the numbers prove for the mutator, what the
 collector pays, the seven thin places of the algorithm as built, and three
