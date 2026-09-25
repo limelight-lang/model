@@ -600,22 +600,36 @@ impl<'a> Reader<'a> {
 
     /// Read `block`'s entries from its front into `out`, as many as fit, and
     /// answer how many and the tail they were read against.
+    ///
+    /// The cached tail is a past value of the writer's, so a read that
+    /// reaches it with room left loads the writer's again and goes on: a
+    /// consumer that read without consuming everything it read — a clamped
+    /// batch, the close's look at R's front — leaves the cache behind the
+    /// writer, and the next read would otherwise stop at that instant.
     fn read_block(&self, block: *mut BlockHeader, out: &mut [usize]) -> (usize, usize) {
         let b = ring(block);
         let mut index = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
         let mut tail = unsafe { *(*b).reader.local_tail.get() };
-        if index == tail {
-            tail = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
+        let mut read = 0;
+        loop {
+            while index != tail && read < out.len() {
+                out[read] = unsafe { *(*b).slots[index].get() };
+                read += 1;
+                index = step(index);
+            }
+
+            if read == out.len() {
+                return (read, tail);
+            }
+
+            let fresh = unsafe { (*b).writer.tail.load(Ordering::Acquire) };
+            if fresh == tail {
+                return (read, tail);
+            }
+
+            tail = fresh;
             unsafe { *(*b).reader.local_tail.get() = tail };
         }
-
-        let mut read = 0;
-        while index != tail && read < out.len() {
-            out[read] = unsafe { *(*b).slots[index].get() };
-            read += 1;
-            index = step(index);
-        }
-        (read, tail)
     }
 
     /// Consume what `peeked` read: advance the first block's front past its

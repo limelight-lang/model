@@ -191,6 +191,35 @@ fn a_peek_reads_without_consuming_and_a_commit_consumes_exactly_it() {
     words.dismantle();
 }
 
+/// A peek that consumed nothing leaves the reader's copy of the tail where
+/// it read it; the writer goes on, and the next peek reads what stands now
+/// rather than stopping at that copy (`PLAN.md` S65.21: the close's look at
+/// R's front split every batch that followed it).
+#[test]
+fn a_peek_after_one_that_consumed_nothing_reads_what_the_writer_added() {
+    let _g = test_guard();
+    let words = Words::new();
+    let writer = unsafe { Writer::new(words.slots()) };
+    let reader = unsafe { Reader::new(words.slots()) };
+    let mut one = [0; 1];
+    let mut out = [0; 8];
+
+    for entry in 0..2 {
+        assert!(writer.push(entry, fresh).is_ok());
+    }
+    assert_eq!(reader.peek(&mut one).len(), 1, "a look at the front");
+    for entry in 2..6 {
+        assert!(writer.push(entry, fresh).is_ok());
+    }
+
+    let peeked = reader.peek(&mut out);
+    assert_eq!(peeked.len(), 6, "every entry the writer published");
+    assert_eq!(&out[..6], &[0, 1, 2, 3, 4, 5]);
+    reader.commit(peeked);
+    assert_eq!(reader.unread(), 0);
+    words.dismantle();
+}
+
 #[test]
 fn a_rewrite_packs_across_blocks_and_over_a_wrapped_front_block() {
     let _g = test_guard();
