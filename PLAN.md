@@ -336,7 +336,7 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal.
         `pin_this_thread_to`, read in `begin_the_thread`;
         `worker/tests/the_rig.rs`; `dev/tools/rig.sh`, ten seconds a cell by
         default.
-- [ ] S65.19 The rig's figures, calibrated
+- [x] S65.19 The rig's figures, calibrated
       done: per cell, operations a second and CPU time an operation
         (`CLOCK_THREAD_CPUTIME_ID`); the mutator's latency p50/p99/p99.9;
         the collector's CPU and wall; the token's wait; context switches
@@ -349,6 +349,25 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal.
         spinning thread reads CPU ≈ wall, a built ring's P → R → P count);
         no arm measured
       tier: T2 · role: —
+      closed 2026-09-25: the figures' definitions are the probe's module
+        doc, among them the latency as an iteration's wall, the time to free
+        as the garbage outstanding integrated over the loop over the garbage
+        built, and the bytes past `B_max` as the garbage standing at the
+        loop's end; the known answers are `dev/BENCHMARKS.md`, "S65.19 the
+        rig's figures, each read once on an input whose answer is known".
+        The check on bytes standing reads `one-large-root`, which signals no
+        collector: a load that meets `B_max` costs tens of megabytes a pass
+        and was not built, so S65.17 names the load that prices it. The
+        count of deferred parts is checked against the batch's own in
+        `the_ceiling`.
+      handoff: `worker::testing`'s figures (`take_collector_lives`,
+        `take_token_waits`, `take_recalls`, `take_written_back`,
+        `take_parts_deferred`, `thread_cpu_time`,
+        `thread_context_switches`), noted from `begin_the_thread`,
+        `birth::run_the_life`, `token::take_recalling`, `TraceToken::consent`,
+        `recall_without_waiting`, `compaction::dispose_verdicts` and
+        `trace_in_parts`; the probe prints its header, which `rig.sh` writes
+        once.
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,

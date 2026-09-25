@@ -202,6 +202,8 @@ fn dispose_verdicts(
         // disposition").
         unsafe { append_entry(state, entity) };
         note_queue_work(0, 0, 1);
+        #[cfg(test)]
+        crate::cycle::worker::testing::note_written_back();
     });
 
     if prefix.is_some() {

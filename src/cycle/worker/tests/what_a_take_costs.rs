@@ -95,7 +95,7 @@ const INTERVAL: Duration = Duration::from_millis(50);
 /// collection that reads it tears it down, a live one is held by a keeper
 /// and every verdict over it reads live.
 #[derive(Clone, Copy)]
-struct Shape {
+pub(super) struct Shape {
     name: &'static str,
     /// Rings built, each a component of its own.
     rings: usize,
@@ -113,7 +113,7 @@ struct Shape {
 }
 
 impl Shape {
-    fn roots(&self) -> usize {
+    pub(super) fn roots(&self) -> usize {
         self.rings * self.roots_per_ring
     }
 
@@ -136,7 +136,7 @@ impl Shape {
 /// Every root of the take inside one component: the union of the roots'
 /// closures is the closure of one, and the take costs the rows one root
 /// costs.
-const OVERLAPPING: Shape = Shape {
+pub(super) const OVERLAPPING: Shape = Shape {
     name: "overlapping",
     rings: 1,
     members: COMPONENT,
@@ -379,7 +379,7 @@ unsafe fn kill(fillers: Vec<*mut Object>) {
 
 /// What the timed collection freed, what it cost, and what the census read
 /// of it when a case armed one.
-struct Collected {
+pub(super) struct Collected {
     freed: usize,
     wall: Duration,
     report: Option<census::CollectionReport>,
@@ -389,7 +389,7 @@ struct Collected {
 /// the census walks the touched list at the scan's end, so a wall read
 /// under one is the instrument's as much as the collection's.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Reading {
+pub(super) enum Reading {
     Wall,
     Census,
 }
@@ -432,7 +432,7 @@ fn the_collection(
 ///
 /// With `ask`, the mutator asks for its token at the start of the take's
 /// trace ([`asked_at_the_trace`]), and the sample carries what it waited.
-fn a_take(
+pub(super) fn a_take(
     shape: Shape,
     class: *const Class,
     reading: Reading,
@@ -619,7 +619,7 @@ fn census_line(report: &census::CollectionReport) -> String {
 /// written to the control fifo and its acknowledgement read from the other,
 /// so that the counting interval covers the timed collection and not the
 /// build before it (`benches/census_driver.rs` opens the same pair).
-struct Control {
+pub(super) struct Control {
     control: std::fs::File,
     ack: BufReader<std::fs::File>,
 }

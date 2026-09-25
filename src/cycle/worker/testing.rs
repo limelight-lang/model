@@ -849,6 +849,188 @@ pub(crate) fn pin_this_thread_to(cpu: usize) -> std::io::Result<()> {
     }
 }
 
+/// What the collector lives that ended since a case last asked cost, summed:
+/// the rig's reading of the collectors (`worker::tests::the_rig`).
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct CollectorLives {
+    pub(crate) lives: usize,
+    /// CPU time of the lives' threads, from their creation to their end.
+    pub(crate) cpu: std::time::Duration,
+    /// Wall time from each life's birth to its end.
+    pub(crate) wall: std::time::Duration,
+    pub(crate) voluntary_switches: u64,
+    pub(crate) involuntary_switches: u64,
+}
+
+static COLLECTOR_LIVES: Mutex<CollectorLives> = Mutex::new(CollectorLives {
+    lives: 0,
+    cpu: std::time::Duration::ZERO,
+    wall: std::time::Duration::ZERO,
+    voluntary_switches: 0,
+    involuntary_switches: 0,
+});
+/// When each slot's standing life was born, `None` for no life.
+static COLLECTOR_BORN_AT: Mutex<[Option<Instant>; super::MAX_COLLECTORS]> =
+    Mutex::new([None; super::MAX_COLLECTORS]);
+
+/// Stamp the birth of slot `index`'s life, on the thread being born.
+pub(crate) fn note_collector_born(index: usize) {
+    lock(&COLLECTOR_BORN_AT)[index] = Some(Instant::now());
+}
+
+/// Add slot `index`'s life to [`take_collector_lives`], on its own thread at
+/// the life's end; a life whose birth was refused before its stamp adds
+/// nothing.
+pub(crate) fn note_collector_life_end(index: usize) {
+    let Some(born) = lock(&COLLECTOR_BORN_AT)[index].take() else {
+        return;
+    };
+
+    let wall = born.elapsed();
+    let cpu = thread_cpu_time();
+    let (voluntary, involuntary) = thread_context_switches();
+    let mut lives = lock(&COLLECTOR_LIVES);
+    lives.lives += 1;
+    lives.cpu += cpu;
+    lives.wall += wall;
+    lives.voluntary_switches += voluntary;
+    lives.involuntary_switches += involuntary;
+}
+
+/// The collector lives that ended since the last call, and zero them.
+pub(crate) fn take_collector_lives() -> CollectorLives {
+    std::mem::take(&mut *lock(&COLLECTOR_LIVES))
+}
+
+/// The mutators' takes that waited out a collector's claim since a case last
+/// asked: how many, how long in all, and the longest, each timed from the
+/// take's first reading of the claim to the take.
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct TokenWaits {
+    pub(crate) waits: usize,
+    pub(crate) total: std::time::Duration,
+    pub(crate) longest: std::time::Duration,
+}
+
+static TOKEN_WAITS: Mutex<TokenWaits> = Mutex::new(TokenWaits {
+    waits: 0,
+    total: std::time::Duration::ZERO,
+    longest: std::time::Duration::ZERO,
+});
+
+pub(crate) fn note_token_wait(waited: std::time::Duration) {
+    let mut waits = lock(&TOKEN_WAITS);
+    waits.waits += 1;
+    waits.total += waited;
+    waits.longest = waits.longest.max(waited);
+}
+
+/// The takes' waits since the last call, and zero them.
+pub(crate) fn take_token_waits() -> TokenWaits {
+    std::mem::take(&mut *lock(&TOKEN_WAITS))
+}
+
+/// Grants recalled by a stack of withheld returns at its mark M, and by the
+/// mutator's take, since a case last asked; a grant is counted once, by
+/// whichever recalled it first.
+static RECALLS_BY_THE_MARK: AtomicUsize = AtomicUsize::new(0);
+static RECALLS_BY_A_TAKE: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn note_recall(by_the_mark: bool) {
+    match by_the_mark {
+        true => &RECALLS_BY_THE_MARK,
+        false => &RECALLS_BY_A_TAKE,
+    }
+    .fetch_add(1, Ordering::Relaxed);
+}
+
+/// Recalls by the mark and by a take since the last call, and zero both.
+pub(crate) fn take_recalls() -> (usize, usize) {
+    (
+        RECALLS_BY_THE_MARK.swap(0, Ordering::Relaxed),
+        RECALLS_BY_A_TAKE.swap(0, Ordering::Relaxed),
+    )
+}
+
+/// Roots a collection over P wrote back into R untraced since a case last
+/// asked: one round P → R → P each (`crate::cycle::queue::compaction`,
+/// `dispose_verdicts`).
+static WRITTEN_BACK: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn note_written_back() {
+    WRITTEN_BACK.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn take_written_back() -> usize {
+    WRITTEN_BACK.swap(0, Ordering::Relaxed)
+}
+
+/// Parts whose met roots a batch deferred read live since a case last asked:
+/// past B with the grant's retry spent, or past `B_max`.
+static PARTS_DEFERRED: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn note_part_deferred() {
+    PARTS_DEFERRED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn take_parts_deferred() -> usize {
+    PARTS_DEFERRED.swap(0, Ordering::Relaxed)
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The calling thread's CPU time since its creation
+/// (`CLOCK_THREAD_CPUTIME_ID`); zero off Linux and under Miri.
+pub(crate) fn thread_cpu_time() -> std::time::Duration {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    {
+        /// `CLOCK_THREAD_CPUTIME_ID` in Linux's numbering.
+        const THREAD_CPU_CLOCK: i32 = 3;
+
+        unsafe extern "C" {
+            /// `struct timespec` on a 64-bit Linux: seconds, nanoseconds.
+            fn clock_gettime(clock: i32, time: *mut [i64; 2]) -> i32;
+        }
+
+        let mut time = [0i64; 2];
+        let read = unsafe { clock_gettime(THREAD_CPU_CLOCK, &mut time) };
+        assert_eq!(read, 0, "the thread's CPU clock reads");
+        std::time::Duration::new(time[0] as u64, time[1] as u32)
+    }
+
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    std::time::Duration::ZERO
+}
+
+/// The calling thread's context switches since its creation, voluntary and
+/// involuntary (`getrusage(RUSAGE_THREAD)`); zeros off Linux and under Miri.
+pub(crate) fn thread_context_switches() -> (u64, u64) {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    {
+        /// `RUSAGE_THREAD` in Linux's numbering.
+        const THIS_THREAD: i32 = 1;
+
+        unsafe extern "C" {
+            /// `struct rusage` on a 64-bit Linux: two `timeval`s, then
+            /// fourteen longs, of which `ru_nvcsw` and `ru_nivcsw` are the
+            /// last two.
+            fn getrusage(who: i32, usage: *mut [i64; 18]) -> i32;
+        }
+
+        let mut usage = [0i64; 18];
+        let read = unsafe { getrusage(THIS_THREAD, &mut usage) };
+        assert_eq!(read, 0, "the thread's usage reads");
+        (usage[16] as u64, usage[17] as u64)
+    }
+
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    (0, 0)
+}
+
 /// Slot `index`'s byte-event sequence number as it stands.
 pub(crate) fn byte_wakes_of(index: usize) -> usize {
     super::COLLECTORS[index].byte_wakes.load(Ordering::Acquire)

@@ -71,12 +71,17 @@ run_cell() {
         tail -n 20 "$WORK/cell" >&2
         exit 1
     fi
-    # The line follows the harness's "test … ..." on the same output line.
+    # The probe prints the header before its line, the first of them after
+    # the harness's "test … ..." on the same output line; the header is
+    # written once, from the first cell.
+    if [ -z "$HEADED" ]; then
+        grep -o 'rig-header,.*' "$WORK/cell" | cut -d, -f2- >> "$OUT"
+        HEADED=1
+    fi
     grep -o 'rig,.*' "$WORK/cell" | cut -d, -f2- >> "$OUT"
 }
 
-# The fields of the probe's line, in its order.
-echo "placement,load,mutators,mutator_cpus,collector_cpus,cap,seconds,iterations,least_iterations,garbage_members,freed_by_polls,freed_at_the_end,mutators_at_the_ceiling,collectors_born,collectors_pinned" >> "$OUT"
+HEADED=
 for load in $LOADS; do
     run_cell spare "$load" "$(first_cpus $((CORES - 1)))" "$LAST" 1
     run_cell shared "$load" "$(first_cpus "$CORES")" "$LAST" 1

@@ -14,6 +14,23 @@
 //! same mix of garbage and live roots, and what memory stands is the live set
 //! plus the garbage no collection has freed yet.
 //!
+//! A cell reads, over the mutators' loops: operations a second, each
+//! mutator's iterations over its own loop's wall, summed; CPU time an
+//! operation (`CLOCK_THREAD_CPUTIME_ID`); the latency, which is an
+//! iteration's wall, at p50, p99 and p99.9 of every mutator's iterations
+//! within an eighth; context switches (`getrusage(RUSAGE_THREAD)`); the
+//! garbage built and freed, the mean time a garbage member waited for its
+//! free (the garbage outstanding integrated over the loop, over the garbage
+//! built), and the bytes left standing at the loop's end; the most deaths a
+//! mutator withheld under a foreign holder; the GC ledger's high-water
+//! marks; the turnovers, the roots written back from P into R untraced (one
+//! round P → R → P each), the parts deferred past B with the retry spent or
+//! past `B_max`, and the grants recalled by the mark and by a take; the
+//! takes' waits for the token; and the collectors' lives, CPU, wall from
+//! birth to end and context switches. Each is read once on an input whose
+//! answer is known in [`the_rigs_figures_read_their_known_answers`], and the
+//! count of deferred parts against the batch's own in `the_ceiling`.
+//!
 //! The cell is read from the environment, as `dev/tools/rig.sh` sets it; with
 //! nothing set the probe runs every load for [`SMOKE_RUN`] on
 //! [`SMOKE_MUTATORS`] unpinned mutators:
@@ -45,7 +62,7 @@ use crate::refcount::{MemoryCategory, RcHeader, SlotState, ll_release, ll_retain
 use crate::test_support::{prop_offset, store_prop};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Barrier};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The property a ring's members are linked through.
 const NEXT: u32 = 0;
@@ -466,14 +483,96 @@ unsafe fn let_the_live_graphs_go(arena: *mut Arena, graphs: &[Built], keepers: &
     }
 }
 
+/// Latencies in a log-linear histogram of nanoseconds: eight buckets to a
+/// power of two, so a quantile is read within an eighth of its samples, and a
+/// sample is recorded with no allocation.
+#[derive(Clone)]
+struct Latencies {
+    counts: [u64; 64 * 8],
+}
+
+impl Default for Latencies {
+    fn default() -> Self {
+        Self {
+            counts: [0; 64 * 8],
+        }
+    }
+}
+
+impl Latencies {
+    fn bucket(nanos: u64) -> usize {
+        if nanos < 8 {
+            return nanos as usize;
+        }
+
+        let power = 63 - nanos.leading_zeros() as usize;
+        let eighth = (nanos >> (power - 3)) as usize & 7;
+        (power - 2) * 8 + eighth
+    }
+
+    /// The largest value bucket `index` holds.
+    fn ceiling_of(index: usize) -> u64 {
+        if index < 8 {
+            return index as u64;
+        }
+
+        let (power, eighth) = (index / 8 + 2, (index % 8) as u64);
+        ((8 + eighth + 1) << (power - 3)) - 1
+    }
+
+    fn record(&mut self, sample: Duration) {
+        self.counts[Self::bucket(sample.as_nanos() as u64)] += 1;
+    }
+
+    fn add(&mut self, other: &Latencies) {
+        for (count, more) in self.counts.iter_mut().zip(other.counts) {
+            *count += more;
+        }
+    }
+
+    /// The sample below which `share` of the samples fall, read as its
+    /// bucket's ceiling; zero with no samples.
+    fn quantile(&self, share: f64) -> u64 {
+        let samples: u64 = self.counts.iter().sum();
+        let rank = (samples as f64 * share).ceil().max(1.0) as u64;
+        let mut seen = 0;
+        for (index, &count) in self.counts.iter().enumerate() {
+            seen += count;
+            if seen >= rank {
+                return Self::ceiling_of(index);
+            }
+        }
+
+        0
+    }
+}
+
 /// What one mutator's run read.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct MutatorReading {
     iterations: usize,
+    /// The loop's wall, from the start every mutator waits at to the end.
+    wall: Duration,
+    /// The thread's CPU time over the loop.
+    cpu: Duration,
+    /// Context switches over the loop, voluntary and involuntary.
+    switches: (u64, u64),
+    /// The wall of every iteration: the mutator's latency.
+    latencies: Latencies,
     /// Members of the garbage graphs the loop built.
     garbage_members: usize,
     /// What the loop's polls freed.
     freed_by_polls: usize,
+    /// The garbage built and not yet freed, integrated over the loop's time,
+    /// in members times nanoseconds: over what was built, the mean time a
+    /// member waited for its free (Little's law).
+    outstanding_time: u128,
+    /// The most deaths the thread withheld under a foreign holder of its
+    /// token at the end of an iteration.
+    withheld_peak: usize,
+    /// The turnovers of the thread's epoch clock over the loop: a record
+    /// another thread's life left keeps its count.
+    turnovers: u64,
     /// What the collection after the loop freed, the live graphs gone.
     freed_at_the_end: usize,
     /// Whether the loop ended at [`OUTSTANDING_CEILING`] rather than at the
@@ -506,6 +605,14 @@ fn a_mutator(
     let mut garbage = Built::default();
     let mut reading = MutatorReading::default();
     start.wait();
+    let (cpu_from, switches_from) = (
+        testing::thread_cpu_time(),
+        testing::thread_context_switches(),
+    );
+    let record = unsafe { &*mutator_record::this_thread_record() };
+    let turnovers_from = record.turnovers();
+    let from = Instant::now();
+    let mut last = from;
     while !stop.load(Ordering::Relaxed) {
         for _ in 0..load.garbage_graphs {
             unsafe {
@@ -523,12 +630,25 @@ fn a_mutator(
 
         reading.freed_by_polls += unsafe { crate::gc::ll_gc_maybe_collect() };
         reading.iterations += 1;
-        if reading.garbage_members - reading.freed_by_polls > OUTSTANDING_CEILING {
+        let now = Instant::now();
+        let outstanding = reading.garbage_members - reading.freed_by_polls;
+        reading.latencies.record(now - last);
+        reading.outstanding_time += outstanding as u128 * (now - last).as_nanos();
+        reading.withheld_peak = reading
+            .withheld_peak
+            .max(crate::cycle::deferred_slot_reuse::foreign_withheld_counts().0);
+        last = now;
+        if outstanding > OUTSTANDING_CEILING {
             reading.at_the_ceiling = true;
             break;
         }
     }
 
+    reading.wall = from.elapsed();
+    reading.cpu = testing::thread_cpu_time() - cpu_from;
+    let switches = testing::thread_context_switches();
+    reading.switches = (switches.0 - switches_from.0, switches.1 - switches_from.1);
+    reading.turnovers = record.turnovers() - turnovers_from;
     unsafe { let_the_live_graphs_go(arena_ptr, &live, &keepers) };
     reading.freed_at_the_end = unsafe { crate::gc::ll_gc_collect_cycles() };
     drop(arena);
@@ -584,16 +704,216 @@ fn cpus(variable: &str) -> Vec<usize> {
     }
 }
 
-/// Run `load` in `cell`: the collectors' pins and cap set and births
-/// permitted, the mutators started together and stopped together after the
-/// cell's wall time, the collectors retired. Returns the line the driver
-/// reads; change its fields and change the header in `dev/tools/rig.sh`.
-fn run(cell: &Cell, load: Load, class: *const Class) -> String {
+/// What one cell read: every mutator's reading, and what the collectors and
+/// the tokens did while the mutators ran.
+struct CellReading {
+    mutators: Vec<MutatorReading>,
+    collectors_born: usize,
+    collectors_pinned: usize,
+    collectors: testing::CollectorLives,
+    token_waits: testing::TokenWaits,
+    /// Grants recalled by a stack's mark, and by a take.
+    recalls: (usize, usize),
+    written_back: usize,
+    parts_deferred: usize,
+    /// The GC ledger's high-water marks over the process so far: blocks
+    /// reserved and bytes taken into use, both in bytes.
+    ledger_peak: (usize, usize),
+}
+
+impl CellReading {
+    fn sum(&self, field: impl Fn(&MutatorReading) -> usize) -> usize {
+        self.mutators.iter().map(field).sum()
+    }
+
+    /// Operations a second: every mutator's iterations over its own loop's
+    /// wall, summed.
+    fn operations_a_second(&self) -> f64 {
+        self.mutators
+            .iter()
+            .map(|reading| reading.iterations as f64 / reading.wall.as_secs_f64())
+            .sum()
+    }
+
+    fn cpu_an_operation(&self) -> Duration {
+        let cpu: Duration = self.mutators.iter().map(|reading| reading.cpu).sum();
+        cpu / self.sum(|reading| reading.iterations).max(1) as u32
+    }
+
+    fn latencies(&self) -> Latencies {
+        let mut all = Latencies::default();
+        for reading in &self.mutators {
+            all.add(&reading.latencies);
+        }
+
+        all
+    }
+
+    /// The mean time a garbage member waited for its free while the loops
+    /// ran, over every mutator's garbage.
+    fn time_to_free(&self) -> Duration {
+        let outstanding: u128 = self
+            .mutators
+            .iter()
+            .map(|reading| reading.outstanding_time)
+            .sum();
+        let built = self.sum(|reading| reading.garbage_members).max(1) as u128;
+        Duration::from_nanos((outstanding / built) as u64)
+    }
+
+    /// The garbage the loops left standing at their end, in bytes: built and
+    /// not freed by a poll.
+    fn standing_bytes(&self) -> usize {
+        self.sum(|reading| reading.garbage_members - reading.freed_by_polls) * MEMBER_CLASS_BYTES
+    }
+
+    /// The line's fields by name, in the line's order: the header is their
+    /// names, the line their values.
+    fn fields(&self, cell: &Cell, load: Load) -> Vec<(&'static str, String)> {
+        let listed = |cpus: Vec<String>| cpus.join(" ");
+        let latencies = self.latencies();
+        let switches = |pick: fn(&(u64, u64)) -> u64| {
+            self.mutators
+                .iter()
+                .map(|reading| pick(&reading.switches))
+                .sum::<u64>()
+        };
+        vec![
+            ("placement", cell.placement.clone()),
+            ("load", load.name.into()),
+            ("mutators", self.mutators.len().to_string()),
+            (
+                "mutator_cpus",
+                listed(
+                    cell.mutators
+                        .iter()
+                        .map(|cpu| cpu.map_or("-".into(), |cpu| cpu.to_string()))
+                        .collect(),
+                ),
+            ),
+            (
+                "collector_cpus",
+                listed(cell.collector_cpus.iter().map(usize::to_string).collect()),
+            ),
+            ("cap", cell.cap.to_string()),
+            ("seconds", cell.run_for.as_secs_f64().to_string()),
+            (
+                "iterations",
+                self.sum(|reading| reading.iterations).to_string(),
+            ),
+            (
+                "least_iterations",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.iterations)
+                    .min()
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            (
+                "operations_a_second",
+                format!("{:.0}", self.operations_a_second()),
+            ),
+            (
+                "cpu_ns_an_operation",
+                self.cpu_an_operation().as_nanos().to_string(),
+            ),
+            ("latency_p50_ns", latencies.quantile(0.5).to_string()),
+            ("latency_p99_ns", latencies.quantile(0.99).to_string()),
+            ("latency_p999_ns", latencies.quantile(0.999).to_string()),
+            ("voluntary_switches", switches(|pair| pair.0).to_string()),
+            ("involuntary_switches", switches(|pair| pair.1).to_string()),
+            (
+                "garbage_members",
+                self.sum(|reading| reading.garbage_members).to_string(),
+            ),
+            (
+                "freed_by_polls",
+                self.sum(|reading| reading.freed_by_polls).to_string(),
+            ),
+            (
+                "time_to_free_us",
+                self.time_to_free().as_micros().to_string(),
+            ),
+            ("standing_bytes", self.standing_bytes().to_string()),
+            (
+                "freed_at_the_end",
+                self.sum(|reading| reading.freed_at_the_end).to_string(),
+            ),
+            (
+                "withheld_peak",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.withheld_peak)
+                    .max()
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            ("ledger_peak_bytes", self.ledger_peak.0.to_string()),
+            ("ledger_peak_bytes_in_use", self.ledger_peak.1.to_string()),
+            (
+                "turnovers",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.turnovers)
+                    .sum::<u64>()
+                    .to_string(),
+            ),
+            ("written_back", self.written_back.to_string()),
+            ("parts_deferred", self.parts_deferred.to_string()),
+            ("recalls_by_the_mark", self.recalls.0.to_string()),
+            ("recalls_by_a_take", self.recalls.1.to_string()),
+            ("token_waits", self.token_waits.waits.to_string()),
+            (
+                "token_wait_us",
+                self.token_waits.total.as_micros().to_string(),
+            ),
+            (
+                "token_wait_longest_us",
+                self.token_waits.longest.as_micros().to_string(),
+            ),
+            ("collectors_born", self.collectors_born.to_string()),
+            ("collectors_pinned", self.collectors_pinned.to_string()),
+            (
+                "collector_cpu_us",
+                self.collectors.cpu.as_micros().to_string(),
+            ),
+            (
+                "collector_wall_us",
+                self.collectors.wall.as_micros().to_string(),
+            ),
+            (
+                "collector_voluntary_switches",
+                self.collectors.voluntary_switches.to_string(),
+            ),
+            (
+                "collector_involuntary_switches",
+                self.collectors.involuntary_switches.to_string(),
+            ),
+            (
+                "mutators_at_the_ceiling",
+                self.sum(|reading| usize::from(reading.at_the_ceiling))
+                    .to_string(),
+            ),
+        ]
+    }
+}
+
+/// Run `load` in `cell`: the collectors' pins and cap set, the figures
+/// zeroed and births permitted, the mutators started together and stopped
+/// together after the cell's wall time, the collectors retired. A dial a
+/// caller set before the call stands through it and goes at the retire.
+fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let end = RetireOnDrop;
     testing::pin_collectors_to(&cell.collector_cpus);
     set_collector_cap(cell.cap);
     let _ = testing::take_spawns();
     let _ = testing::take_collectors_pinned();
+    let _ = testing::take_collector_lives();
+    let _ = testing::take_token_waits();
+    let _ = testing::take_recalls();
+    let _ = testing::take_written_back();
+    let _ = testing::take_parts_deferred();
     testing::permit_births(true);
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -613,8 +933,8 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> String {
         .into_iter()
         .map(|thread| thread.join().expect("the mutator ran its loop"))
         .collect();
-    // Retired before the counts are read, so that a birth the last polls
-    // started has pinned itself by then.
+    // Retired before the figures are read, so that every collector life has
+    // ended and a birth the last polls started has pinned itself.
     drop(end);
     let born = testing::take_spawns();
     let (pinned, refused) = testing::take_collectors_pinned();
@@ -623,35 +943,31 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> String {
         assert_eq!(pinned, born, "every collector born pinned itself");
     }
 
-    let listed = |cpus: &mut dyn Iterator<Item = String>| cpus.collect::<Vec<_>>().join(" ");
-    let sum = |field: fn(&MutatorReading) -> usize| mutators.iter().map(field).sum::<usize>();
-    format!(
-        "rig,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-        cell.placement,
-        load.name,
-        mutators.len(),
-        listed(
-            &mut cell
-                .mutators
-                .iter()
-                .map(|cpu| cpu.map_or("-".into(), |cpu| cpu.to_string()))
-        ),
-        listed(&mut cell.collector_cpus.iter().map(usize::to_string)),
-        cell.cap,
-        cell.run_for.as_secs_f64(),
-        sum(|reading| reading.iterations),
-        mutators
-            .iter()
-            .map(|reading| reading.iterations)
-            .min()
-            .unwrap_or(0),
-        sum(|reading| reading.garbage_members),
-        sum(|reading| reading.freed_by_polls),
-        sum(|reading| reading.freed_at_the_end),
-        sum(|reading| usize::from(reading.at_the_ceiling)),
-        born,
-        pinned,
-    )
+    CellReading {
+        mutators,
+        collectors_born: born,
+        collectors_pinned: pinned,
+        collectors: testing::take_collector_lives(),
+        token_waits: testing::take_token_waits(),
+        recalls: testing::take_recalls(),
+        written_back: testing::take_written_back(),
+        parts_deferred: testing::take_parts_deferred(),
+        ledger_peak: {
+            let ledger = crate::memory::gc_metadata::stats();
+            (ledger.peak_bytes(), ledger.peak_bytes_in_use())
+        },
+    }
+}
+
+/// One cell's line, prefixed `rig,` for the driver, after the header's
+/// line, prefixed `rig-header,`, which the driver writes once.
+fn print(cell: &Cell, load: Load, reading: &CellReading) {
+    let fields = reading.fields(cell, load);
+    let column = |pick: fn(&(&'static str, String)) -> String| {
+        fields.iter().map(pick).collect::<Vec<_>>().join(",")
+    };
+    println!("rig-header,{}", column(|field| field.0.to_string()));
+    println!("rig,{}", column(|field| field.1.clone()));
 }
 
 #[test]
@@ -671,6 +987,214 @@ fn a_cell_of_the_rig() {
         cell.load
     );
     for load in loads {
-        println!("{}", run(&cell, load, class));
+        print(&cell, load, &run(&cell, load, class));
     }
+}
+
+/// Every value up to 100,000 ns lands in a bucket whose ceiling is at or
+/// above it and within an eighth of it, which is what a quantile read off
+/// the ceiling inherits.
+#[test]
+fn a_latency_lands_in_a_bucket_within_an_eighth_above_it() {
+    for nanos in 0..100_000u64 {
+        let ceiling = Latencies::ceiling_of(Latencies::bucket(nanos));
+        assert!(
+            (nanos..=nanos + nanos / 8).contains(&ceiling),
+            "{nanos} ns reads {ceiling}"
+        );
+    }
+
+    let mut latencies = Latencies::default();
+    for nanos in 1..=1000 {
+        latencies.record(Duration::from_nanos(nanos));
+    }
+
+    for (share, exact) in [(0.5, 500), (0.99, 990), (0.999, 999)] {
+        let read = latencies.quantile(share);
+        assert!(
+            (exact..=exact + exact / 8).contains(&read),
+            "the {share} quantile of 1..=1000 reads {read}"
+        );
+    }
+}
+
+/// The load named `name`.
+fn load_named(name: &str) -> Load {
+    LOADS
+        .into_iter()
+        .find(|load| load.name == name)
+        .expect("a load of the rig")
+}
+
+/// Each of the rig's figures read once on an input whose answer is known.
+#[test]
+#[ignore = "calibration of the rig's figures; run explicitly with --ignored (release mode)"]
+fn the_rigs_figures_read_their_known_answers() {
+    let _g = test_guard();
+    let _record = super::record();
+    let _wait = testing::HeldRequestWait::crate_own();
+    let class = member_class("RigCalibrationNode");
+    let cell = Cell {
+        placement: "calibration".into(),
+        load: None,
+        mutators: vec![None; SMOKE_MUTATORS],
+        collector_cpus: Vec::new(),
+        cap: DEFAULT_COLLECTOR_CAP,
+        run_for: Duration::from_millis(500),
+    };
+
+    // A spinning thread's CPU time is its wall; a sleeping one's is next to
+    // nothing, and each sleep is a voluntary switch.
+    let (cpu, wall) = std::thread::spawn(|| {
+        let (cpu, from) = (testing::thread_cpu_time(), Instant::now());
+        while from.elapsed() < Duration::from_millis(200) {
+            std::hint::spin_loop();
+        }
+
+        (testing::thread_cpu_time() - cpu, from.elapsed())
+    })
+    .join()
+    .unwrap();
+    assert!(
+        cpu >= wall * 9 / 10 && cpu <= wall + Duration::from_millis(1),
+        "a spin of {wall:?} read {cpu:?} of CPU"
+    );
+    println!("calibration: a spin of {wall:?} read {cpu:?} of CPU");
+    let (cpu, switches) = std::thread::spawn(|| {
+        let (cpu, switches) = (
+            testing::thread_cpu_time(),
+            testing::thread_context_switches(),
+        );
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        (
+            testing::thread_cpu_time() - cpu,
+            testing::thread_context_switches().0 - switches.0,
+        )
+    })
+    .join()
+    .unwrap();
+    assert!(
+        cpu < Duration::from_millis(5) && switches >= 20,
+        "twenty sleeps read {cpu:?} of CPU and {switches} voluntary switches"
+    );
+    println!("calibration: twenty sleeps read {cpu:?} of CPU and {switches} voluntary switches");
+
+    // No garbage frees nothing, withholds nothing and signals no collector.
+    let read = run(&cell, load_named("garbage-0"), class);
+    assert_eq!(
+        (
+            read.sum(|reading| reading.garbage_members),
+            read.sum(|reading| reading.freed_by_polls + reading.freed_at_the_end),
+            read.standing_bytes(),
+            read.time_to_free(),
+            read.sum(|reading| reading.withheld_peak),
+            read.written_back,
+            read.collectors_born,
+        ),
+        (0, 0, 0, Duration::ZERO, 0, 0, 0),
+        "no garbage"
+    );
+
+    // All garbage, across turnovers, frees all of it, and the collectors'
+    // CPU stays inside their wall.
+    testing::advance_epochs_after(Some(Duration::from_millis(1)));
+    let read = run(&cell, load_named("garbage-100"), class);
+    let built = read.sum(|reading| reading.garbage_members);
+    assert!(built > 0, "the loop built garbage");
+    assert_eq!(
+        read.sum(|reading| reading.freed_by_polls + reading.freed_at_the_end),
+        built,
+        "every garbage member built was freed"
+    );
+    assert!(
+        read.mutators.iter().all(|reading| reading.turnovers > 0),
+        "the epochs turned"
+    );
+    assert!(read.time_to_free() > Duration::ZERO);
+    println!(
+        "calibration: garbage-100 built {built} and freed them all, {} by polls, over {} \
+         turnovers, the mean member freed after {:?}; {} collector lives, {:?} CPU in {:?}",
+        read.sum(|reading| reading.freed_by_polls),
+        read.mutators
+            .iter()
+            .map(|reading| reading.turnovers)
+            .sum::<u64>(),
+        read.time_to_free(),
+        read.collectors.lives,
+        read.collectors.cpu,
+        read.collectors.wall,
+    );
+    assert!(
+        read.collectors_born > 0
+            && read.collectors.lives == read.collectors_born
+            && read.collectors.cpu <= read.collectors.wall,
+        "{:?} over {} births",
+        read.collectors,
+        read.collectors_born
+    );
+
+    // A load whose registrations fill no block of R signals no collector,
+    // and under a cap above zero no poll traces R whole: what was built
+    // stands at the loop's end. (The count of deferred parts is read against
+    // the batch's own in `the_ceiling`.)
+    let read = run(&cell, load_named("one-large-root"), class);
+    let built = read.sum(|reading| reading.garbage_members);
+    assert_eq!(
+        (
+            read.collectors_born,
+            read.sum(|reading| reading.freed_by_polls),
+            read.standing_bytes()
+        ),
+        (0, 0, built * MEMBER_CLASS_BYTES),
+        "every garbage member built stood at the loop's end"
+    );
+    println!(
+        "calibration: one-large-root built {built}, none freed by a poll, {} bytes standing",
+        read.standing_bytes()
+    );
+
+    // A take the mutator recalls at the start of its trace posts every root
+    // `Unwalked`, and the collection over P writes each back into R once;
+    // the take waits once, and the probe's own reading of that wait, from
+    // inside the token's wait to the hold, is the rig's to within the edges
+    // of the two, which differ by a few instructions each way.
+    use super::what_a_take_costs::{OVERLAPPING, Reading, a_take};
+    let _end = RetireOnDrop;
+    super::reset_lanes();
+    let mut taken = None;
+    for _ in 0..4 {
+        let _ = (testing::take_written_back(), testing::take_recalls());
+        let _ = testing::take_token_waits();
+        let (_, _, whole, waited) = a_take(OVERLAPPING, class, Reading::Wall, &mut None, true);
+        if whole {
+            taken = Some((
+                waited.expect("the take waited"),
+                testing::take_written_back(),
+                testing::take_recalls(),
+                testing::take_token_waits(),
+            ));
+            break;
+        }
+    }
+
+    let (waited, written_back, recalls, waits) = taken.expect("a take carried the ring whole");
+    assert_eq!(
+        (written_back, recalls, waits.waits),
+        (OVERLAPPING.roots(), (0, 1), 1),
+        "one round P → R → P a root, one recall by a take, one wait"
+    );
+    assert!(
+        waits.total.abs_diff(waited) <= Duration::from_micros(100),
+        "the rig read {:?} where the probe read {waited:?}",
+        waits.total
+    );
+    println!(
+        "calibration: a recalled take wrote back {written_back} of {} roots, recalls {recalls:?} \
+         (mark, take), the wait {:?} against the probe's {waited:?}",
+        OVERLAPPING.roots(),
+        waits.total
+    );
 }

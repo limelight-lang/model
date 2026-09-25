@@ -869,7 +869,10 @@ fn thread_body(index: usize) {
 /// allocator-issued"), and a call after the interval births again.
 fn begin_the_thread(index: usize) -> bool {
     #[cfg(test)]
-    testing::pin_this_collector(index);
+    {
+        testing::pin_this_collector(index);
+        testing::note_collector_born(index);
+    }
     let started = {
         #[cfg(test)]
         let _budget = testing::base_block_budget_for_this_birth();
@@ -2510,6 +2513,8 @@ unsafe fn trace_in_parts(
                 // root the rows met is deferred to the turnover, and the
                 // batch goes on.
                 outcome.deferred_parts += 1;
+                #[cfg(test)]
+                testing::note_part_deferred();
                 let posted = unsafe {
                     for_each_met_root(arena, posts, by_address, |posts, index| {
                         posts.post(index, Verdict::ReadLive);

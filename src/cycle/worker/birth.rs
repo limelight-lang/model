@@ -201,6 +201,8 @@ pub(super) fn run_the_life(index: usize) {
     // The word below goes unborn whether the life ended by its loop or by
     // a panic, and the case that raised the panic reads it.
     let _ = std::panic::catch_unwind(|| thread_body(index));
+    #[cfg(test)]
+    super::testing::note_collector_life_end(index);
     // Idempotent for the loop's own ending, which ran it already; on the
     // unwind this is the exit, and it runs here on the thread rather than in
     // the guard's TLS destructor, so the word below is stored after it.

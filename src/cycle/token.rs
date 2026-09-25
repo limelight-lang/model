@@ -261,6 +261,11 @@ impl TraceToken {
             return;
         }
 
+        #[cfg(test)]
+        if !self.is_recalled() {
+            crate::cycle::worker::testing::note_recall(true);
+        }
+
         self.waiting.store(true, Ordering::Relaxed);
         crate::cycle::worker::recall_the_grants_of(slot(seen));
     }
@@ -350,6 +355,11 @@ impl TraceToken {
         // the recall once before its batch, after its acquire of the grant,
         // and a recall stored after the swap can land behind that reading.
         self.waiting.store(recalled, Ordering::Relaxed);
+        #[cfg(test)]
+        if recalled {
+            crate::cycle::worker::testing::note_recall(true);
+        }
+
         let granted = word(COLLECTOR, slot(seen));
         self.word
             .compare_exchange(seen, granted, Ordering::Release, Ordering::Acquire)
@@ -466,13 +476,35 @@ impl TraceToken {
     fn take_recalling(&self, hold_at_posted: bool, recalled: &mut bool) -> Option<TookFrom> {
         let mut guard = None;
         let mut seen = self.read();
+        // The wait the rig reads, from the first reading of a claim to
+        // whatever ends the take.
+        #[cfg(test)]
+        struct TimedWait(Option<std::time::Instant>);
+        #[cfg(test)]
+        impl Drop for TimedWait {
+            fn drop(&mut self) {
+                if let Some(from) = self.0 {
+                    crate::cycle::worker::testing::note_token_wait(from.elapsed());
+                }
+            }
+        }
+        #[cfg(test)]
+        let mut waited = TimedWait(None);
         loop {
             let took = match state(seen) {
                 FREE | REQUESTED => TookFrom::Free,
                 POSTED if hold_at_posted => return None,
                 POSTED => TookFrom::Posted,
                 COLLECTOR => {
+                    #[cfg(test)]
+                    waited.0.get_or_insert_with(std::time::Instant::now);
+
                     if !*recalled {
+                        #[cfg(test)]
+                        if !self.is_recalled() {
+                            crate::cycle::worker::testing::note_recall(false);
+                        }
+
                         self.waiting.store(true, Ordering::Relaxed);
                         crate::cycle::worker::recall_the_grants_of(slot(seen));
                         *recalled = true;

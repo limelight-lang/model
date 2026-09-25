@@ -8,6 +8,35 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-25 — S65.19 the rig's figures, each read once on an input whose answer is known
+
+**`cycle::worker::tests::the_rig::the_rigs_figures_read_their_known_answers`,
+release, pinned to CPUs 2, 4, 6 and 8, load average 3.4**, two unpinned
+mutators a cell for half a second. What each figure means is the probe's
+module doc; this entry is the check that each reads what it claims.
+
+| figure | input | known answer | read |
+| --- | --- | --- | --- |
+| thread CPU time | a thread spinning 200 ms | its wall | 199.96 ms of 200.00 ms |
+| thread CPU time, voluntary switches | twenty sleeps of 5 ms | next to no CPU, twenty switches | 0.35 ms, 20 |
+| garbage freed | `garbage-0` | nothing built, nothing freed or standing, no collector born | as known |
+| garbage freed | `garbage-100`, the epoch advanced every 1 ms | every member built freed | 2,312,604 of 2,312,604, 366,588 by polls, 111 turnovers |
+| bytes standing | `one-large-root`, whose registrations fill no block of R | every member built stands, none freed by a poll | 3,063,808 members, 392,167,424 bytes |
+| rounds P → R → P | a take over the 63 roots of one ring, recalled at the start of its trace | 63, one per root | 63 |
+| recalls by the mark, by a take | the same take | 0 and 1 | 0 and 1 |
+| the take's wait | the same take, against the probe's own reading from inside the token's wait to the hold | within 100 µs of it | 104.4 µs against 84.5 µs |
+| latency quantiles | every value to 100,000 ns, and 1..=1,000 ns | within an eighth above the sample | as known (`a_latency_lands_in_a_bucket_within_an_eighth_above_it`) |
+| parts deferred | `the_ceiling`'s failed retry | the batch's own `deferred_parts` | equal |
+
+Each check was seen red on a mutation of its instrument, the tree restored
+from a copy after each: the write-back's count removed, the CPU clock halved,
+the recall's source swapped, a bucket's ceiling one short, the deferred
+part's count removed. The collectors' lives in the `garbage-100` cell read
+136 ms of CPU in 2.87 s of wall over two lives, CPU inside wall as it must
+be; the wait's two readings differ by their edges, 2 ns unpinned in an
+earlier run and 20 µs pinned here, which is why the check is a bound on
+the difference rather than an order.
+
 ## 2026-09-25 — S65.12 the poll under a cap of zero: a count read at the poll costs 3 instructions a call at any cap; the form built leaves the poll's code the base's, and a 2 ns gap between the two builds is placement
 
 **`cycle::collect::tests::what_the_poll_costs`, both arms, release, pinned

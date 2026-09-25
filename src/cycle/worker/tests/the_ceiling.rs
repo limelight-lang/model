@@ -176,6 +176,7 @@ fn a_failed_retry_posts_the_roots_it_met_read_live_until_the_turnover() {
     let mut arena = Arena::new();
     let core = unsafe { spread_core(&mut arena, "CeilingFailed", 150, 2) };
     unsafe { &*record() }.set_batch_size(2);
+    let _ = testing::take_parts_deferred();
 
     let (served, first, verdicts) = a_serve_under(1);
     assert_eq!(
@@ -195,6 +196,11 @@ fn a_failed_retry_posts_the_roots_it_met_read_live_until_the_turnover() {
         ),
         (1, 1, true, 1),
         "one part met B, and its retry met B_max"
+    );
+    assert_eq!(
+        testing::take_parts_deferred(),
+        first.deferred_parts,
+        "the rig's count of deferred parts reads the batch's own"
     );
     assert_eq!(
         verdicts,
