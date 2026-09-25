@@ -398,14 +398,15 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal;
         back one collector batch at a time, ten round trips or more — a
         premise change, S65.21; (2) the count keeps deaths the close
         already retired out of P and the overflow buffer, so passes that
-        find nothing double `retire_after` up to its bound — open, fix by
-        lowering the count by the close's own frees; (3) four sentences
+        find nothing double `retire_after` up to its bound — fixed, the
+        close over P lowers the count by its own frees, red first in
+        `the_deaths_the_fire_retires_out_of_p_leave_the_count`; (3) four sentences
         false: DECISIONS' "zeroed only by a pass that reads R" (the
         threshold branch and `release_queue_segments` zero it too), the
         field doc of `candidate_deaths`, `note_a_candidate_death`'s "since
         the last compaction", `rfc/dev/design/trace-token-handshake.md`'s
-        "nothing else arms", and `stdapi.rs`'s withheld-member comment —
-        open. Held: the writer's cached front, `standing_since`, the
+        "nothing else arms" — amended; and `stdapi.rs`'s withheld-member
+        comment, left to S65.21, whose choice decides it. Held: the writer's cached front, `standing_since`, the
         ledger, `DEFERRED_MARK`, the count's wrap.
 - [ ] S65.21 Decide how the slots of registered members a collection over
         P tears down come back (Edmond, 2026-09-25, on S65.20's Critic,

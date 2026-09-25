@@ -292,10 +292,12 @@ struct MutatorCycleState {
     /// figure the poll's note to the collector's timer reads beside what a
     /// collection freed ([`take_retired_by_the_close`]).
     retired_by_the_close: Cell<u32>,
-    /// Completed deaths of candidates the free path withheld since the last
-    /// compaction that read R, which zeroes it since it reads R whole; the
-    /// close of a collection over P reads none of R and leaves it. The one
-    /// that reaches `retire_after` arms the poll for the retirement pass
+    /// Completed deaths of candidates the free path withheld and no pass has
+    /// retired: a compaction that reads R zeroes it, since it reads R whole;
+    /// the close of a collection over P lowers it by the deaths it retired
+    /// out of P and the overflow buffer; a poll that finds R at the
+    /// threshold, which runs no pass, and the queue's release zero it too. The one that reaches
+    /// `retire_after` arms the poll for the retirement pass
     /// ([`note_a_candidate_death`]). Wrapping.
     candidate_deaths: Cell<u16>,
     /// The count that arms the pass: [`DEATHS_TO_RETIRE`], doubled up to
@@ -1232,9 +1234,9 @@ pub(crate) fn defer_candidates(mut batch: Batch, at_turnovers: u64) {
 
 /// Count a completed death the free path withholds because a queue entry
 /// names the slot, and arm the poll for the retirement pass at the count the
-/// last pass left, [`DEATHS_TO_RETIRE`] to begin with, since the last
-/// compaction ([`retire_at_the_poll`]). A thread with no queue counts
-/// nothing.
+/// last pass left, [`DEATHS_TO_RETIRE`] to begin with, of deaths no pass has
+/// retired since R was last read ([`retire_at_the_poll`]). A thread with no
+/// queue counts nothing.
 #[inline]
 pub(crate) fn note_a_candidate_death() {
     let state = mutator_state();

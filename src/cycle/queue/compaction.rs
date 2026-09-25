@@ -58,8 +58,8 @@ pub(super) enum Lanes {
 /// every marked entry the deferred lane can take, keep the rest in order.
 ///
 /// `lanes` says whether R is read; a pass that reads it zeroes the free
-/// path's count of withheld deaths, and one that does not leaves the count
-/// to the pass that will.
+/// path's count of withheld deaths, and one that does not lowers the count
+/// by the deaths it retired itself, leaving R's to the pass that will.
 ///
 /// `deferred_at` is the epoch cell a deferred lane going from empty to
 /// occupied records as its mirror, and `None` where this pass has no marks to read — every
@@ -95,6 +95,7 @@ pub(super) fn compact(
         }
         Lanes::Overflow => None,
     };
+    let retired_before = mutator_state.retired_by_the_close.get();
 
     if sweep_deferred {
         mutator_state.deferred().retain(
@@ -165,6 +166,18 @@ pub(super) fn compact(
     OverflowPass::open(state).run();
     checkpoint(6);
     dispose_verdicts(state, verdicts, deferred_at);
+    if lanes == Lanes::Overflow {
+        let retired = mutator_state
+            .retired_by_the_close
+            .get()
+            .saturating_sub(retired_before);
+        let deaths = &mutator_state.candidate_deaths;
+        deaths.set(
+            deaths
+                .get()
+                .saturating_sub(u16::try_from(retired).unwrap_or(u16::MAX)),
+        );
+    }
 }
 
 /// The pass over P. With `prefix` the batch's count of P's entries, dispose
