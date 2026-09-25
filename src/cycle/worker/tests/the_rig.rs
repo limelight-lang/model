@@ -723,6 +723,14 @@ struct MutatorReading {
     remnant_cleared: bool,
     /// What the drain's polls freed.
     freed_in_the_drain: usize,
+    /// The thread's CPU over the loop alone.
+    cpu_in_the_loop: Duration,
+    /// Garbage built and not yet freed at the loop's end.
+    backlog_at_the_stop: usize,
+    /// How long after the loop's end the drain's polls took to free every
+    /// member built and bring the withheld deaths to zero, or the whole
+    /// drain where they did not.
+    last_free: Duration,
     /// Whether the loop ended at [`OUTSTANDING_CEILING`] rather than at the
     /// cell's stop.
     at_the_ceiling: bool,
@@ -814,10 +822,14 @@ fn a_mutator(
 
         // A paced loop starts its iterations at a fixed period, so that the
         // offered load is the same in both arms of a comparison.
+        // The wait polls every millisecond, as a running program between
+        // two bursts would, so that the collections a ring needs are not
+        // bounded by the pace.
         if !pace.is_zero() {
             let due = from + pace * u32::try_from(reading.iterations).unwrap_or(u32::MAX);
-            if let Some(ahead) = due.checked_duration_since(Instant::now()) {
-                std::thread::sleep(ahead);
+            while let Some(ahead) = due.checked_duration_since(Instant::now()) {
+                reading.freed_by_polls += unsafe { crate::gc::ll_gc_maybe_collect() };
+                std::thread::sleep(ahead.min(Duration::from_millis(1)));
             }
             last = Instant::now();
         }
@@ -832,16 +844,26 @@ fn a_mutator(
     reading.withheld_by_an_entry_at_the_end = crate::cycle::queue::withheld_by_an_entry();
     // The drain: polls with no registration for the same wall in both arms,
     // so that the CPU and what stands after it compare over one window.
+    reading.cpu_in_the_loop = testing::thread_cpu_time() - cpu_from;
+    reading.backlog_at_the_stop = reading.garbage_members.saturating_sub(reading.freed_by_polls);
     let drain = millis_from_env("LL_RIG_DRAIN_MS");
     let drained_from = Instant::now();
     let mut remnant_wait = None;
+    let mut last_free = None;
     while drained_from.elapsed() < drain {
         if remnant_wait.is_none() && crate::cycle::queue::withheld_by_an_entry() == 0 {
             remnant_wait = Some(drained_from.elapsed());
         }
+        if last_free.is_none()
+            && crate::cycle::queue::withheld_by_an_entry() == 0
+            && reading.freed_by_polls + reading.freed_in_the_drain >= reading.garbage_members
+        {
+            last_free = Some(drained_from.elapsed());
+        }
         reading.freed_in_the_drain += unsafe { crate::gc::ll_gc_maybe_collect() };
         std::thread::sleep(Duration::from_millis(1));
     }
+    reading.last_free = last_free.unwrap_or(drain);
     let cpu_at_the_end = testing::thread_cpu_time();
     reading.remnant_cleared = remnant_wait.is_some();
     reading.remnant_wait = remnant_wait.unwrap_or(drain);
@@ -1211,6 +1233,27 @@ impl CellReading {
                     .iter()
                     .map(|reading| reading.cpu.as_micros())
                     .sum::<u128>()
+                    .to_string(),
+            ),
+            (
+                "mutator_cpu_in_the_loop_us",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.cpu_in_the_loop.as_micros())
+                    .sum::<u128>()
+                    .to_string(),
+            ),
+            (
+                "backlog_at_the_stop",
+                self.sum(|reading| reading.backlog_at_the_stop).to_string(),
+            ),
+            (
+                "last_free_us_max",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.last_free.as_micros())
+                    .max()
+                    .unwrap_or(0)
                     .to_string(),
             ),
             (
