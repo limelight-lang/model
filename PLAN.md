@@ -297,7 +297,7 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal.
       handoff: `Standing::withdraw_every_request`, the cap reading in
         `Standing::checkpoint` and `serve_the_grant`;
         `worker/tests/the_cap_set_under_work.rs`, seven cases.
-- [ ] S65.16 The rig's placement and driver (structure agreed with Edmond
+- [x] S65.16 The rig's placement and driver (structure agreed with Edmond
         2026-09-25)
       done: an `#[ignore]` probe `cycle::worker::tests::the_rig`, one process
         per cell run by `dev/tools/rig.sh` into one CSV line each, as
@@ -315,6 +315,27 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal.
         large root, partly overlapping graphs, a large live core); a smoke
         run of every cell completes
       tier: T2 · role: —
+      smoke 2026-09-25: all 30 cells at one second over cores 1–4 (CPUs 2,
+        4, 6, 8, their siblings idle) completed, every collector born
+        pinned. Placement choices of this step, not rulings: the spare and
+        shared placements run at cap 1; the collector sits on the fourth core
+        in the shared and cap-zero placements, where the elder still rounds
+        and asks; core 0 is left out. Two readings S65.19 inherits. A cell
+        ends with garbage in the deferred lane: `partly-overlapping` left 600
+        to 720 members unfreed after eight further collections and a re-offer
+        of the lane, shared rings read live by an earlier commit and pruned
+        at, and the gap was zero with the epoch advanced every 1 or 20 ms; so
+        "100 % frees all" holds only across a turnover. And a load whose
+        registrations fill no block of R signals no collector
+        (`one-large-root`, `large-live-core`, and the live loads under the
+        threshold until the standing interval): its garbage stands until the
+        loop ends, 790 MB a second over three mutators for `one-large-root`,
+        now bounded by the probe's `OUTSTANDING_CEILING`, 512 MiB a mutator,
+        which the line counts.
+      handoff: `worker::testing::pin_collectors_to` and
+        `pin_this_thread_to`, read in `begin_the_thread`;
+        `worker/tests/the_rig.rs`; `dev/tools/rig.sh`, ten seconds a cell by
+        default.
 - [ ] S65.19 The rig's figures, calibrated
       done: per cell, operations a second and CPU time an operation
         (`CLOCK_THREAD_CPUTIME_ID`); the mutator's latency p50/p99/p99.9;

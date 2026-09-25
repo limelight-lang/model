@@ -767,6 +767,88 @@ pub(crate) fn base_block_budget_for_this_birth() -> Option<crate::memory::block_
         .then(|| crate::memory::block_pool::budget_blocks(0))
 }
 
+/// The CPU each slot's collector pins itself to at its birth, `usize::MAX`
+/// for none: the rig's placement of the collectors
+/// (`worker::tests::the_rig`). Atomics rather than a list, because the birth
+/// that reads them asks the global allocator for nothing.
+static COLLECTOR_CPUS: [AtomicUsize; super::MAX_COLLECTORS] =
+    [const { AtomicUsize::new(usize::MAX) }; super::MAX_COLLECTORS];
+/// Births that pinned their thread, and births whose pin the kernel refused,
+/// since a case last asked.
+static COLLECTORS_PINNED: AtomicUsize = AtomicUsize::new(0);
+static COLLECTOR_PINS_REFUSED: AtomicUsize = AtomicUsize::new(0);
+
+/// Pin the collector of slot `index` to `cpus[index % cpus.len()]` at its
+/// next birth; an empty list leaves every birth where the scheduler puts it.
+/// A thread standing already stays where it is.
+pub(crate) fn pin_collectors_to(cpus: &[usize]) {
+    for (index, slot) in COLLECTOR_CPUS.iter().enumerate() {
+        let cpu = match cpus {
+            [] => usize::MAX,
+            cpus => cpus[index % cpus.len()],
+        };
+        slot.store(cpu, Ordering::Relaxed);
+    }
+}
+
+/// Pin the calling collector thread of slot `index` where
+/// [`pin_collectors_to`] said, counting the outcome for
+/// [`take_collectors_pinned`]; a refusal leaves the thread unpinned rather
+/// than failing its birth.
+pub(crate) fn pin_this_collector(index: usize) {
+    let cpu = COLLECTOR_CPUS[index].load(Ordering::Relaxed);
+    if cpu == usize::MAX {
+        return;
+    }
+
+    match pin_this_thread_to(cpu) {
+        Ok(()) => COLLECTORS_PINNED.fetch_add(1, Ordering::Relaxed),
+        Err(_) => COLLECTOR_PINS_REFUSED.fetch_add(1, Ordering::Relaxed),
+    };
+}
+
+/// Collector births pinned, and births whose pin was refused, since the last
+/// call; both counts go back to zero.
+pub(crate) fn take_collectors_pinned() -> (usize, usize) {
+    (
+        COLLECTORS_PINNED.swap(0, Ordering::Relaxed),
+        COLLECTOR_PINS_REFUSED.swap(0, Ordering::Relaxed),
+    )
+}
+
+/// Pin the calling thread to logical CPU `cpu`, numbered as
+/// `/sys/devices/system/cpu` numbers them; the error is the kernel's. Linux
+/// only, and never under Miri, which models no affinity: elsewhere every
+/// call is refused as unsupported.
+pub(crate) fn pin_this_thread_to(cpu: usize) -> std::io::Result<()> {
+    #[cfg(all(target_os = "linux", not(miri)))]
+    {
+        /// `cpu_set_t` as glibc and musl declare it: 1,024 bits.
+        type CpuSet = [u64; 16];
+
+        unsafe extern "C" {
+            fn sched_setaffinity(pid: i32, set_size: usize, set: *const CpuSet) -> i32;
+        }
+
+        let mut set: CpuSet = [0; 16];
+        let word = set
+            .get_mut(cpu / 64)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        *word = 1 << (cpu % 64);
+        // Pid zero is the calling thread, not the whole process.
+        match unsafe { sched_setaffinity(0, size_of::<CpuSet>(), &set) } {
+            0 => Ok(()),
+            _ => Err(std::io::Error::last_os_error()),
+        }
+    }
+
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    {
+        let _ = cpu;
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+    }
+}
+
 /// Slot `index`'s byte-event sequence number as it stands.
 pub(crate) fn byte_wakes_of(index: usize) -> usize {
     super::COLLECTORS[index].byte_wakes.load(Ordering::Acquire)
@@ -844,9 +926,10 @@ pub(crate) fn retiring() -> bool {
 
 /// End every collector thread and wait for it: the flag, a wake out of its
 /// wait, the join. A thread whose birth was refused is joined the same way.
-/// Closes the births again, lifts the confinement, restores the cap, the
-/// threshold and the wait, forgets the last refused birth and zeroes the
-/// rounds; a one-shot hook a case armed and never reached stays armed.
+/// Closes the births again, lifts the confinement and the collectors' pins,
+/// restores the cap, the threshold and the wait, forgets the last refused
+/// birth and zeroes the rounds; a one-shot hook a case armed and never
+/// reached stays armed.
 pub(crate) fn retire() {
     permit_births(false);
     RETIRING.store(true, Ordering::Relaxed);
@@ -864,6 +947,7 @@ pub(crate) fn retire() {
 
     RETIRING.store(false, Ordering::Relaxed);
     confine_rounds_to_records(&[]);
+    pin_collectors_to(&[]);
     serve_rounds_at(0);
     wait_between_rounds_for(None);
     advance_epochs_after(None);

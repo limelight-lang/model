@@ -868,6 +868,8 @@ fn thread_body(index: usize) {
 /// (`rfc/dev/DECISIONS.md`, "the baseline overflow segment is
 /// allocator-issued"), and a call after the interval births again.
 fn begin_the_thread(index: usize) -> bool {
+    #[cfg(test)]
+    testing::pin_this_collector(index);
     let started = {
         #[cfg(test)]
         let _budget = testing::base_block_budget_for_this_birth();

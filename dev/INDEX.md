@@ -380,6 +380,14 @@ pinned to one CPU under `perf stat --control`, the probe opening the counting
 interval around its timed collection alone. Build the test binary with
 `cargo test --release --lib --no-run` first.
 
+`dev/tools/rig.sh` — the rig's driver: every cell of
+`cycle::worker::tests::the_rig`, a placement and a load, in a process of its
+own, one CSV line each. It reads the physical cores and their SMT siblings from
+`/sys/devices/system/cpu`; the probe pins each mutator itself and each
+collector through `worker::testing::pin_collectors_to`, which
+`begin_the_thread` reads. Build the test binary with
+`cargo test --release --lib --no-run` first.
+
 `dev/tools/citations.py` — the heading-level citation check, pass 1 of
 `dev/WORKFLOW.md`'s "Checks a grep cannot make": prints every cited
 heading the named document no longer carries, and prints nothing on a

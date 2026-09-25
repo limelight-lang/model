@@ -876,6 +876,7 @@ mod the_live_list;
 mod the_merged_lane;
 mod the_reading_before_the_claim;
 mod the_recall;
+mod the_rig;
 mod the_siblings;
 mod the_standing_list;
 mod the_take_after_an_interval;

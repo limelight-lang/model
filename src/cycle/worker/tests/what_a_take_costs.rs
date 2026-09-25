@@ -69,7 +69,7 @@ const RING_MEMBERS: usize = 5;
 
 /// The members' size class: 128 bytes, so that a block holds 512 of them and
 /// a touched block's row array is about 2 KiB (`dev/BENCHMARKS.md`, S40.3).
-const MEMBER_CLASS_BYTES: usize = 128;
+pub(super) const MEMBER_CLASS_BYTES: usize = 128;
 
 /// Reference-carrying properties of a class of [`MEMBER_CLASS_BYTES`]: the
 /// header and the class word take sixteen bytes and each property sixteen.
@@ -783,7 +783,7 @@ fn the_arm(
 
 /// The class of the members of every shape: [`MEMBER_PROPS`] counted
 /// properties, [`MEMBER_CLASS_BYTES`] bytes.
-fn member_class(name: &str) -> *const Class {
+pub(super) fn member_class(name: &str) -> *const Class {
     let mut builder = ClassBuilder::new(name);
     for property in 0..MEMBER_PROPS {
         builder = builder.prop(&format!("p{property}"), true);
