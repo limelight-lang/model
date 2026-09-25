@@ -219,6 +219,25 @@ pub(crate) fn note_round(index: usize, interval: std::time::Duration) {
     }
 
     ROUNDS[index].fetch_add(1, Ordering::Release);
+    CPU_AT_THE_LAST_ROUND[index].store(thread_cpu_time().as_nanos() as u64, Ordering::Relaxed);
+}
+
+/// Each slot's standing life's CPU time at the end of its last round, in
+/// nanoseconds, zero for no life: what [`collector_cpu_to_now`] adds to the
+/// lives that ended.
+static CPU_AT_THE_LAST_ROUND: [AtomicU64; super::MAX_COLLECTORS] =
+    [const { AtomicU64::new(0) }; super::MAX_COLLECTORS];
+
+/// The collectors' CPU time so far: every life that ended since the last
+/// [`take_collector_lives`], and every standing life's to the end of its last
+/// round. The rig reads it at the instant it stops its mutators, which the
+/// lives' own figures run past.
+pub(crate) fn collector_cpu_to_now() -> std::time::Duration {
+    let standing: u64 = CPU_AT_THE_LAST_ROUND
+        .iter()
+        .map(|cpu| cpu.load(Ordering::Relaxed))
+        .sum();
+    lock(&COLLECTOR_LIVES).cpu + std::time::Duration::from_nanos(standing)
 }
 
 /// The elder's rounds since the last call as (start, end) pairs, the last
@@ -258,6 +277,8 @@ pub(crate) struct Outcomes {
     pub(crate) idle: usize,
     pub(crate) asked: usize,
     pub(crate) batches: usize,
+    /// Roots the batches carried, over all of them.
+    pub(crate) roots_served: usize,
     pub(crate) grants: usize,
     pub(crate) refusals: usize,
 }
@@ -268,6 +289,7 @@ static UNANSWERED: AtomicUsize = AtomicUsize::new(0);
 static IDLE: AtomicUsize = AtomicUsize::new(0);
 static ASKED: AtomicUsize = AtomicUsize::new(0);
 static MUTATORS_SERVED: AtomicUsize = AtomicUsize::new(0);
+static ROOTS_SERVED: AtomicUsize = AtomicUsize::new(0);
 static GRANTS: AtomicUsize = AtomicUsize::new(0);
 static REFUSALS: AtomicUsize = AtomicUsize::new(0);
 
@@ -278,7 +300,10 @@ pub(crate) fn note_served(served: super::Served) {
         super::Served::Unanswered => &UNANSWERED,
         super::Served::Idle => &IDLE,
         super::Served::Asked => &ASKED,
-        super::Served::Batch { .. } => &MUTATORS_SERVED,
+        super::Served::Batch { roots, .. } => {
+            ROOTS_SERVED.fetch_add(roots, Ordering::Relaxed);
+            &MUTATORS_SERVED
+        }
     };
     count.fetch_add(1, Ordering::Relaxed);
 }
@@ -388,6 +413,7 @@ pub(crate) fn take_outcomes() -> Outcomes {
         idle: IDLE.swap(0, Ordering::Relaxed),
         asked: ASKED.swap(0, Ordering::Relaxed),
         batches: MUTATORS_SERVED.swap(0, Ordering::Relaxed),
+        roots_served: ROOTS_SERVED.swap(0, Ordering::Relaxed),
         grants: GRANTS.swap(0, Ordering::Relaxed),
         refusals: REFUSALS.swap(0, Ordering::Relaxed),
     }
@@ -888,6 +914,7 @@ pub(crate) fn note_collector_life_end(index: usize) {
 
     let wall = born.elapsed();
     let cpu = thread_cpu_time();
+    CPU_AT_THE_LAST_ROUND[index].store(0, Ordering::Relaxed);
     let (voluntary, involuntary) = thread_context_switches();
     let mut lives = lock(&COLLECTOR_LIVES);
     lives.lives += 1;
@@ -928,6 +955,36 @@ pub(crate) fn note_token_wait(waited: std::time::Duration) {
 /// The takes' waits since the last call, and zero them.
 pub(crate) fn take_token_waits() -> TokenWaits {
     std::mem::take(&mut *lock(&TOKEN_WAITS))
+}
+
+/// The mutators' collections over P since a case last asked: how many, how
+/// long in all and at longest, and what they freed.
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct VerdictCollections {
+    pub(crate) collections: usize,
+    pub(crate) total: std::time::Duration,
+    pub(crate) longest: std::time::Duration,
+    pub(crate) freed: usize,
+}
+
+static VERDICT_COLLECTIONS: Mutex<VerdictCollections> = Mutex::new(VerdictCollections {
+    collections: 0,
+    total: std::time::Duration::ZERO,
+    longest: std::time::Duration::ZERO,
+    freed: 0,
+});
+
+pub(crate) fn note_verdict_collection(took: std::time::Duration, freed: usize) {
+    let mut collections = lock(&VERDICT_COLLECTIONS);
+    collections.collections += 1;
+    collections.total += took;
+    collections.longest = collections.longest.max(took);
+    collections.freed += freed;
+}
+
+/// The collections over P since the last call, and zero them.
+pub(crate) fn take_verdict_collections() -> VerdictCollections {
+    std::mem::take(&mut *lock(&VERDICT_COLLECTIONS))
 }
 
 /// Grants recalled by a stack of withheld returns at its mark M, and by the
@@ -1009,26 +1066,36 @@ pub(crate) fn thread_cpu_time() -> std::time::Duration {
 /// The calling thread's context switches since its creation, voluntary and
 /// involuntary (`getrusage(RUSAGE_THREAD)`); zeros off Linux and under Miri.
 pub(crate) fn thread_context_switches() -> (u64, u64) {
+    let usage = thread_usage();
+    (usage[16] as u64, usage[17] as u64)
+}
+
+/// The calling thread's minor page faults since its creation
+/// (`getrusage(RUSAGE_THREAD)`); zero off Linux and under Miri.
+pub(crate) fn thread_minor_faults() -> u64 {
+    thread_usage()[8] as u64
+}
+
+/// `struct rusage` of the calling thread as sixteen longs after the two
+/// `timeval`s' four: `ru_minflt` at 8, `ru_nvcsw` and `ru_nivcsw` at 16 and 17.
+fn thread_usage() -> [i64; 18] {
     #[cfg(all(target_os = "linux", not(miri)))]
     {
         /// `RUSAGE_THREAD` in Linux's numbering.
         const THIS_THREAD: i32 = 1;
 
         unsafe extern "C" {
-            /// `struct rusage` on a 64-bit Linux: two `timeval`s, then
-            /// fourteen longs, of which `ru_nvcsw` and `ru_nivcsw` are the
-            /// last two.
             fn getrusage(who: i32, usage: *mut [i64; 18]) -> i32;
         }
 
         let mut usage = [0i64; 18];
         let read = unsafe { getrusage(THIS_THREAD, &mut usage) };
         assert_eq!(read, 0, "the thread's usage reads");
-        (usage[16] as u64, usage[17] as u64)
+        usage
     }
 
     #[cfg(not(all(target_os = "linux", not(miri))))]
-    (0, 0)
+    [0; 18]
 }
 
 /// Slot `index`'s byte-event sequence number as it stands.

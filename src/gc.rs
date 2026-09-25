@@ -328,7 +328,12 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         Arming::Verdicts => {
             #[cfg(test)]
             VERDICT_COLLECTIONS.with(|count| count.set(count.get() + 1));
-            unsafe { crate::cycle::collect::collect_over_the_verdicts() }
+            #[cfg(test)]
+            let from = std::time::Instant::now();
+            let freed = unsafe { crate::cycle::collect::collect_over_the_verdicts() };
+            #[cfg(test)]
+            crate::cycle::worker::testing::note_verdict_collection(from.elapsed(), freed);
+            freed
         }
         Arming::AllRoots => unsafe { ll_gc_collect_cycles() },
     };

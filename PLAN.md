@@ -380,6 +380,20 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal.
         to its collector wait (`dev/BENCHMARKS.md`, "S65.13 the batch in
         parts at a grown K")
       tier: T2 · role: Critic
+      run 2026-09-25, not recorded: the matrix of three modes at three,
+        four and five mutators, twice at ten seconds a cell, and its Critic.
+        Under a background mode at cap 1 the polls freed 14–41 % of the
+        garbage built while the loops ran; under `cap 0` all of it, at
+        2.6–8.0 times the operations. The Critic read the gap as the
+        mutator's, and the rig's new counters show why: each collection over
+        P compacts R whole (`queue::compaction::compact`, "Every pass reads
+        R whole"), 260 thousand records a collection against an R of up to
+        405 thousand on `garbage-25` at three mutators, 13 ms a collection,
+        while a batch carries at most `BATCH_BOUND` roots, so R grows and
+        each judging costs more. Whether the close over P stops reading R
+        whole is put to Edmond before the run is recorded; the Critic's other
+        findings — cap 1 against siblings, p99.9 beside p99, the ceiling
+        cutting loops, a load of fresh live roots above a block — go with it.
 - [ ] S65.18 The price of a batch that goes on past a part at B (Edmond,
         2026-09-24, on S65.9's second Critic round, finding 1)
       done: with a live closure past `B_max` and a garbage ring between B

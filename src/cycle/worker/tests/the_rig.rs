@@ -261,6 +261,9 @@ const _: () = {
 /// box's swap, and the line counts the mutators that reached it.
 const OUTSTANDING_CEILING: usize = 1 << 22;
 
+/// Iterations between two readings of R's length.
+const R_SAMPLE_STRIDE: usize = 64;
+
 /// The mutators and the wall time of the run with nothing set.
 const SMOKE_MUTATORS: usize = 2;
 const SMOKE_RUN: Duration = Duration::from_millis(200);
@@ -557,6 +560,13 @@ struct MutatorReading {
     cpu: Duration,
     /// Context switches over the loop, voluntary and involuntary.
     switches: (u64, u64),
+    /// Minor page faults over the loop.
+    minor_faults: u64,
+    /// Queue records the compactions read over the loop
+    /// (`crate::cycle::queue::take_queue_work`).
+    records_read: usize,
+    /// The longest R stood at one iteration in [`R_SAMPLE_STRIDE`].
+    ring_peak: usize,
     /// The wall of every iteration: the mutator's latency.
     latencies: Latencies,
     /// Members of the garbage graphs the loop built.
@@ -609,6 +619,8 @@ fn a_mutator(
         testing::thread_cpu_time(),
         testing::thread_context_switches(),
     );
+    let faults_from = testing::thread_minor_faults();
+    let _ = crate::cycle::queue::take_queue_work();
     let record = unsafe { &*mutator_record::this_thread_record() };
     let turnovers_from = record.turnovers();
     let from = Instant::now();
@@ -638,6 +650,12 @@ fn a_mutator(
             .withheld_peak
             .max(crate::cycle::deferred_slot_reuse::foreign_withheld_counts().0);
         last = now;
+        if reading.iterations % R_SAMPLE_STRIDE == 0 {
+            reading.ring_peak = reading
+                .ring_peak
+                .max(crate::cycle::queue::candidate_count());
+        }
+
         if outstanding > OUTSTANDING_CEILING {
             reading.at_the_ceiling = true;
             break;
@@ -648,6 +666,8 @@ fn a_mutator(
     reading.cpu = testing::thread_cpu_time() - cpu_from;
     let switches = testing::thread_context_switches();
     reading.switches = (switches.0 - switches_from.0, switches.1 - switches_from.1);
+    reading.minor_faults = testing::thread_minor_faults() - faults_from;
+    reading.records_read = crate::cycle::queue::take_queue_work().records_read;
     reading.turnovers = record.turnovers() - turnovers_from;
     unsafe { let_the_live_graphs_go(arena_ptr, &live, &keepers) };
     reading.freed_at_the_end = unsafe { crate::gc::ll_gc_collect_cycles() };
@@ -711,6 +731,14 @@ struct CellReading {
     collectors_born: usize,
     collectors_pinned: usize,
     collectors: testing::CollectorLives,
+    /// The collectors' CPU at the instant the mutators were stopped.
+    collector_cpu_at_the_stop: Duration,
+    /// What the rounds did while the cell ran: batches and the roots they
+    /// carried, grants, and the rounds themselves.
+    outcomes: testing::Outcomes,
+    rounds: usize,
+    /// The mutators' collections over P.
+    verdict_collections: testing::VerdictCollections,
     token_waits: testing::TokenWaits,
     /// Grants recalled by a stack's mark, and by a take.
     recalls: (usize, usize),
@@ -821,6 +849,27 @@ impl CellReading {
             ("latency_p50_ns", latencies.quantile(0.5).to_string()),
             ("latency_p99_ns", latencies.quantile(0.99).to_string()),
             ("latency_p999_ns", latencies.quantile(0.999).to_string()),
+            (
+                "minor_faults",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.minor_faults)
+                    .sum::<u64>()
+                    .to_string(),
+            ),
+            (
+                "queue_records_read",
+                self.sum(|reading| reading.records_read).to_string(),
+            ),
+            (
+                "ring_peak",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.ring_peak)
+                    .max()
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
             ("voluntary_switches", switches(|pair| pair.0).to_string()),
             ("involuntary_switches", switches(|pair| pair.1).to_string()),
             (
@@ -872,11 +921,37 @@ impl CellReading {
                 "token_wait_longest_us",
                 self.token_waits.longest.as_micros().to_string(),
             ),
+            ("rounds", self.rounds.to_string()),
+            ("batches", self.outcomes.batches.to_string()),
+            ("roots_batched", self.outcomes.roots_served.to_string()),
+            ("grants", self.outcomes.grants.to_string()),
+            ("idle_serves", self.outcomes.idle.to_string()),
+            ("unanswered_requests", self.outcomes.unanswered.to_string()),
+            (
+                "verdict_collections",
+                self.verdict_collections.collections.to_string(),
+            ),
+            (
+                "verdict_collection_us",
+                self.verdict_collections.total.as_micros().to_string(),
+            ),
+            (
+                "verdict_collection_longest_us",
+                self.verdict_collections.longest.as_micros().to_string(),
+            ),
+            (
+                "freed_by_verdict_collections",
+                self.verdict_collections.freed.to_string(),
+            ),
             ("collectors_born", self.collectors_born.to_string()),
             ("collectors_pinned", self.collectors_pinned.to_string()),
             (
                 "collector_cpu_us",
                 self.collectors.cpu.as_micros().to_string(),
+            ),
+            (
+                "collector_cpu_at_the_stop_us",
+                self.collector_cpu_at_the_stop.as_micros().to_string(),
             ),
             (
                 "collector_wall_us",
@@ -914,6 +989,9 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let _ = testing::take_recalls();
     let _ = testing::take_written_back();
     let _ = testing::take_parts_deferred();
+    let _ = testing::take_outcomes();
+    let _ = testing::take_rounds();
+    let _ = testing::take_verdict_collections();
     testing::permit_births(true);
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -929,12 +1007,15 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     start.wait();
     std::thread::sleep(cell.run_for);
     stop.store(true, Ordering::Relaxed);
+    let collector_cpu_at_the_stop = testing::collector_cpu_to_now();
     let mutators: Vec<MutatorReading> = threads
         .into_iter()
         .map(|thread| thread.join().expect("the mutator ran its loop"))
         .collect();
-    // Retired before the figures are read, so that every collector life has
-    // ended and a birth the last polls started has pinned itself.
+    // The rounds' figures before the retire, which zeroes them; the rest
+    // after it, so that every collector life has ended and a birth the last
+    // polls started has pinned itself.
+    let (outcomes, rounds) = (testing::take_outcomes(), testing::take_rounds());
     drop(end);
     let born = testing::take_spawns();
     let (pinned, refused) = testing::take_collectors_pinned();
@@ -948,6 +1029,10 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         collectors_born: born,
         collectors_pinned: pinned,
         collectors: testing::take_collector_lives(),
+        collector_cpu_at_the_stop,
+        outcomes,
+        rounds,
+        verdict_collections: testing::take_verdict_collections(),
         token_waits: testing::take_token_waits(),
         recalls: testing::take_recalls(),
         written_back: testing::take_written_back(),
@@ -1093,8 +1178,10 @@ fn the_rigs_figures_read_their_known_answers() {
             read.sum(|reading| reading.withheld_peak),
             read.written_back,
             read.collectors_born,
+            (read.rounds, read.outcomes.batches),
+            read.verdict_collections.collections,
         ),
-        (0, 0, 0, Duration::ZERO, 0, 0, 0),
+        (0, 0, 0, Duration::ZERO, 0, 0, 0, (0, 0), 0),
         "no garbage"
     );
 
@@ -1114,10 +1201,28 @@ fn the_rigs_figures_read_their_known_answers() {
         "the epochs turned"
     );
     assert!(read.time_to_free() > Duration::ZERO);
-    println!(
-        "calibration: garbage-100 built {built} and freed them all, {} by polls, over {} \
-         turnovers, the mean member freed after {:?}; {} collector lives, {:?} CPU in {:?}",
+    // Under a cap above zero the polls free by the collections over P alone,
+    // one a batch at most, and a batch carries at most `BATCH_BOUND` roots.
+    assert_eq!(
+        read.verdict_collections.freed,
         read.sum(|reading| reading.freed_by_polls),
+        "every member a poll freed, a collection over P freed"
+    );
+    assert!(
+        read.verdict_collections.collections <= read.outcomes.batches
+            && read.outcomes.roots_served <= read.outcomes.batches * BATCH_BOUND
+            && read.outcomes.batches <= read.outcomes.grants,
+        "{:?}, {} collections over P",
+        read.outcomes,
+        read.verdict_collections.collections
+    );
+    println!(
+        "calibration: garbage-100 built {built} and freed them all, {} by polls in {} \
+         collections over P of {} batches, over {} turnovers, the mean member freed after \
+         {:?}; {} collector lives, {:?} CPU in {:?}",
+        read.sum(|reading| reading.freed_by_polls),
+        read.verdict_collections.collections,
+        read.outcomes.batches,
         read.mutators
             .iter()
             .map(|reading| reading.turnovers)

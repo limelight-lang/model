@@ -1,13 +1,20 @@
 #!/bin/bash
-# The rig's driver: every cell of `cycle::worker::tests::the_rig`, a placement
-# and a load, in a process of its own, into one CSV line each. The placements
-# are those of `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Какие опыты нужны", at
-# C physical cores:
+# The rig's driver: every cell of `cycle::worker::tests::the_rig`, a mode, a
+# mutator count and a load, in a process of its own, into one CSV line each.
+# The modes are the three arms of the Sage's report (`model`'s
+# `dev/CYCLE-SPLIT-SAGE-REPORT.md`, deleted in c7f9e56, "The arm that would
+# prove the loss"), each at C-1, C and C+1 mutators, so that the three
+# placements of `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Какие опыты нужны", are
+# three of its cells and every mode is read at the same mutator count. At C-1
+# mutators core C carries none, so `shared-core` there is a second
+# `spare-core`:
 #
-#   spare     C-1 mutators, the collector alone on the C-th core, cap 1
-#   shared    C mutators, the collector on the C-th mutator's core, cap 1
-#   cap-zero  C+1 mutators, the first core carrying two, cap 0; the elder,
-#             which still rounds and asks under cap 0, on the C-th core
+#   spare-core   the collector alone on core C+1, cap 1
+#   shared-core  the collector on core C, a mutator's, cap 1
+#   cap-zero     cap 0; the elder, which still rounds and asks, on core C
+#
+# The mutators are laid over cores 1..C in turn, so C+1 of them put two on
+# core 1.
 #
 # The topology is read from /sys/devices/system/cpu: one logical CPU stands
 # for each physical core, the lowest-numbered of its SMT siblings, and the
@@ -37,8 +44,8 @@ for dir in /sys/devices/system/cpu/cpu[0-9]*; do
          "${dir##*cpu} $(cat "$dir/topology/thread_siblings_list")"
 done | sort -n -k1,1 -k2,2 -k3,3 | awk '!seen[$1 " " $2]++ { print $3, $4 }' > "$WORK/cores"
 
-if [ $((FIRST_CORE + CORES)) -gt "$(wc -l < "$WORK/cores")" ]; then
-    echo "the box has $(wc -l < "$WORK/cores") physical cores, fewer than $FIRST_CORE + $CORES" >&2
+if [ $((FIRST_CORE + CORES + 1)) -gt "$(wc -l < "$WORK/cores")" ]; then
+    echo "the box has $(wc -l < "$WORK/cores") physical cores, fewer than $FIRST_CORE + $CORES + 1" >&2
     exit 1
 fi
 
@@ -47,15 +54,20 @@ CPU=()
 while read -r cpu siblings; do
     echo "# core $((${#CPU[@]} + 1)): cpu $cpu, siblings $siblings" >> "$OUT"
     CPU+=("$cpu")
-done < <(tail -n "+$((FIRST_CORE + 1))" "$WORK/cores" | head -n "$CORES")
+done < <(tail -n "+$((FIRST_CORE + 1))" "$WORK/cores" | head -n "$((CORES + 1))")
 
-# The CPUs of the first `count` cores, comma-separated.
-first_cpus() {
+# The CPUs of `count` mutators laid over cores 1..C in turn, comma-separated.
+mutator_cpus() {
+    local cpus=() index
+    for ((index = 0; index < $1; index++)); do
+        cpus+=("${CPU[$((index % CORES))]}")
+    done
     local IFS=,
-    echo "${CPU[*]:0:$1}"
+    echo "${cpus[*]}"
 }
 
 LAST=${CPU[$((CORES - 1))]}
+SPARE=${CPU[$CORES]}
 LIMIT=$(awk "BEGIN { print int($RUN_SECONDS * 3) + 60 }")
 run_cell() {
     local placement=$1 load=$2 mutators=$3 collectors=$4 cap=$5
@@ -83,7 +95,9 @@ run_cell() {
 
 HEADED=
 for load in $LOADS; do
-    run_cell spare "$load" "$(first_cpus $((CORES - 1)))" "$LAST" 1
-    run_cell shared "$load" "$(first_cpus "$CORES")" "$LAST" 1
-    run_cell cap-zero "$load" "$(first_cpus "$CORES"),${CPU[0]}" "$LAST" 0
+    for mutators in $((CORES - 1)) "$CORES" $((CORES + 1)); do
+        run_cell spare-core "$load" "$(mutator_cpus "$mutators")" "$SPARE" 1
+        run_cell shared-core "$load" "$(mutator_cpus "$mutators")" "$LAST" 1
+        run_cell cap-zero "$load" "$(mutator_cpus "$mutators")" "$LAST" 0
+    done
 done
