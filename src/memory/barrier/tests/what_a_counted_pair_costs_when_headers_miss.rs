@@ -279,6 +279,11 @@ unsafe fn arms_at(
     let mut plain: Vec<f64> = Vec::with_capacity(ROUNDS);
 
     for round in 0..=ROUNDS {
+        // A displaced child registers at its non-final decrement, so a round
+        // registers up to `STORES` candidates; the spares a poll fills are
+        // what the ring grows by, and past `POLL_STRIDE` registrations with
+        // no poll the overflow buffer aborts. Outside the timed rounds.
+        crate::cycle::queue::refill_and_drain();
         let per_store = |elapsed: Duration| elapsed.as_nanos() as f64 / STORES as f64;
         let (c, p) = if round % 2 == 0 {
             let c = unsafe { counted_round(arena, counted_owners, values, mask, round) };
@@ -311,7 +316,11 @@ unsafe fn arms_at(
 /// Every argument is live; no slot outside these populations names any of
 /// them.
 unsafe fn teardown(counted_owners: &[*mut Object], plain_owners: &[*mut Object], values: &[Value]) {
-    for owner in counted_owners {
+    for (index, owner) in counted_owners.iter().enumerate() {
+        // A release here registers the child it leaves, as a round's does.
+        if index % crate::cycle::queue::POLL_STRIDE == 0 {
+            crate::cycle::queue::refill_and_drain();
+        }
         unsafe {
             let slot = Object::prop_at(*owner, 16);
             let held = std::ptr::read(slot);

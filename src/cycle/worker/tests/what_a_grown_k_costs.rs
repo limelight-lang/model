@@ -12,7 +12,9 @@
 //! there with K still sized by every batch. A batch's roots are registered
 //! again once its verdicts are discarded, so that R holds the same
 //! [`RINGS`] roots whatever K asks for: the mutator's collection over P never
-//! runs, and nothing stamps a ring.
+//! runs. The freeing arm's returns under `POSTED` stamp from the live list
+//! the batch left (`crate::cycle::live_list`, `stamp_before_a_return`), so
+//! the teardown turns the epoch first.
 //!
 //! The file names nothing a tree before the batch in parts lacks, so that the
 //! same probe runs on both sides of the step.
@@ -495,7 +497,8 @@ fn what_a_grown_k_costs() {
 
 /// Take the rings apart: the keepers let go of them, and the mutator's
 /// collection over R, which holds every root, frees them; the fillers die by
-/// hand.
+/// hand. The epoch turns first: a ring the freeing arm's returns stamped
+/// live is pruned by a collection in the epoch of its stamp.
 ///
 /// # Safety
 /// `built` came from [`build`] on this thread and no collection runs.
@@ -507,6 +510,7 @@ unsafe fn let_the_rings_go(arena: &mut Arena, built: Built) {
             store_prop(arena_ptr, keeper, prop_offset(0), std::ptr::null_mut());
         }
 
+        crate::cycle::epoch::turn_this_threads_cell();
         let freed = crate::gc::ll_gc_collect_cycles();
         assert_eq!(freed, built.members.len(), "the rings were garbage");
         for object in built.keepers.into_iter().chain(built.fillers) {

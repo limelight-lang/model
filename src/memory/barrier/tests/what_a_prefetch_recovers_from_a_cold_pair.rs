@@ -158,6 +158,11 @@ unsafe fn arms_at(
     let mut prefetched: Vec<f64> = Vec::with_capacity(ROUNDS);
 
     for round in 0..=ROUNDS {
+        // A displaced child registers at its non-final decrement, so a round
+        // registers up to `STORES` candidates; the spares a poll fills are
+        // what the ring grows by, and past `POLL_STRIDE` registrations with
+        // no poll the overflow buffer aborts. Outside the timed rounds.
+        crate::cycle::queue::refill_and_drain();
         let per_store = |elapsed: Duration| elapsed.as_nanos() as f64 / STORES as f64;
         let (b, p) = if round % 2 == 0 {
             let b = unsafe { counted_round(arena, bare_owners, values, mask, round) };
@@ -196,7 +201,11 @@ unsafe fn teardown(
     prefetched_owners: &[*mut Object],
     values: &[Value],
 ) {
-    for owner in bare_owners.iter().chain(prefetched_owners) {
+    for (index, owner) in bare_owners.iter().chain(prefetched_owners).enumerate() {
+        // A release here registers the child it leaves, as a round's does.
+        if index % crate::cycle::queue::POLL_STRIDE == 0 {
+            crate::cycle::queue::refill_and_drain();
+        }
         unsafe {
             let slot = Object::prop_at(*owner, 16);
             let held = std::ptr::read(slot);
