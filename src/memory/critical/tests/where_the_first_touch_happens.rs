@@ -166,6 +166,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("VERDICT_COLLECTIONS", false), // test-only const Cell, no drop glue
         ("WEAK_TABLE", false),
         ("WINDOW", false),
+        ("WITHHELD_BY_AN_ENTRY", false), // test-only const Cell<u64>, no drop glue
         ("WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
         ("WRITTEN_BYTES", false),
     ];
