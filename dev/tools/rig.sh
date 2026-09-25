@@ -34,7 +34,8 @@ CASE=cycle::worker::tests::the_rig::a_cell_of_the_rig
 # the other.
 LOADS=${LOADS:-"garbage-0 garbage-25 garbage-50 garbage-75 garbage-100 overlapping-live
        disjoint-live one-large-root partly-overlapping large-live-core
-       registered-ring registered-ring-live"}
+       registered-ring registered-ring-live registered-ring-1000
+       registered-ring-4000 registered-ring-interleaved"}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 

@@ -116,6 +116,12 @@ struct Load {
     garbage: Graph,
     live_graphs: usize,
     live: Graph,
+    /// A ring built at every iteration and held by a keeper until the loop
+    /// ends, its members' registrations interleaved with the garbage ring's,
+    /// so that entries of a ring still live stand between the garbage
+    /// members' entries in R however far the collector lags (`PLAN.md`
+    /// S65.21). Only with one garbage graph.
+    held: Graph,
 }
 
 impl Load {
@@ -149,6 +155,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
         name,
         garbage_graphs: garbage_rings,
         garbage: SMALL_RING,
+        held: Graph::NONE,
         live_graphs: ROOTS - garbage_rings,
         live: SMALL_RING,
     }
@@ -156,7 +163,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
 
 /// The loads of the S64 analysis's list. Change a name or add a load, and
 /// change `LOADS` in `dev/tools/rig.sh` with it.
-const LOADS: [Load; 12] = [
+const LOADS: [Load; 15] = [
     // Garbage at 0, 25, 50, 75 and 100 % of the roots, rounded to whole
     // rings of 63.
     mixed("garbage-0", 0),
@@ -170,6 +177,7 @@ const LOADS: [Load; 12] = [
         name: "overlapping-live",
         garbage_graphs: 0,
         garbage: Graph::NONE,
+        held: Graph::NONE,
         live_graphs: 1,
         live: Graph {
             rings: 1,
@@ -186,6 +194,7 @@ const LOADS: [Load; 12] = [
         name: "disjoint-live",
         garbage_graphs: 0,
         garbage: Graph::NONE,
+        held: Graph::NONE,
         live_graphs: ROOTS,
         live: Graph {
             rings: 1,
@@ -206,6 +215,7 @@ const LOADS: [Load; 12] = [
             shared: 0,
             fillers: 0,
         },
+        held: Graph::NONE,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -221,6 +231,7 @@ const LOADS: [Load; 12] = [
             shared: 24,
             fillers: 0,
         },
+        held: Graph::NONE,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -230,6 +241,7 @@ const LOADS: [Load; 12] = [
         name: "large-live-core",
         garbage_graphs: 0,
         garbage: Graph::NONE,
+        held: Graph::NONE,
         live_graphs: 1,
         live: Graph {
             rings: 1,
@@ -247,6 +259,7 @@ const LOADS: [Load; 12] = [
         name: "registered-ring",
         garbage_graphs: 1,
         garbage: REGISTERED_RING,
+        held: Graph::NONE,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -256,10 +269,49 @@ const LOADS: [Load; 12] = [
         name: "registered-ring-live",
         garbage_graphs: 1,
         garbage: REGISTERED_RING,
+        held: Graph::NONE,
         live_graphs: ROOTS,
         live: SMALL_RING,
     },
+    // Rings under and over a batch's bound of 1,024 roots.
+    Load {
+        name: "registered-ring-1000",
+        garbage_graphs: 1,
+        garbage: registered_ring(1000),
+        held: Graph::NONE,
+        live_graphs: 0,
+        live: Graph::NONE,
+    },
+    Load {
+        name: "registered-ring-4000",
+        garbage_graphs: 1,
+        garbage: registered_ring(4000),
+        held: Graph::NONE,
+        live_graphs: 0,
+        live: Graph::NONE,
+    },
+    // The ring of `registered-ring` with a held ring of 64 registered
+    // between its members, one entry in 33.
+    Load {
+        name: "registered-ring-interleaved",
+        garbage_graphs: 1,
+        garbage: REGISTERED_RING,
+        held: registered_ring(64),
+        live_graphs: 0,
+        live: Graph::NONE,
+    },
 ];
+
+/// A ring of `members` whose every member is a registered candidate.
+const fn registered_ring(members: usize) -> Graph {
+    Graph {
+        rings: 1,
+        members,
+        roots: members,
+        shared: 0,
+        fillers: 0,
+    }
+}
 
 /// A ring of 2,048 whose every member is a registered candidate.
 const REGISTERED_RING: Graph = Graph {
@@ -277,7 +329,7 @@ const REGISTERED_RING: Graph = Graph {
 const _: () = {
     let mut index = 0;
     while index < LOADS.len() {
-        assert!(LOADS[index].roots_per_iteration() < POLL_STRIDE);
+        assert!(LOADS[index].roots_per_iteration() + LOADS[index].held.roots() < POLL_STRIDE);
         assert!(LOADS[index].live_members() < POLL_STRIDE);
         index += 1;
     }
@@ -411,6 +463,46 @@ unsafe fn build(
     }
 
     for &root in &built.roots {
+        unsafe { register(root) };
+    }
+}
+
+/// Build `graph` as [`build`] does and register nothing.
+///
+/// # Safety
+/// As [`build`].
+unsafe fn build_unregistered(
+    context: &mut LLContext,
+    arena: *mut Arena,
+    class: *const Class,
+    graph: Graph,
+    built: &mut Built,
+) {
+    unsafe { build(context, arena, class, Graph { roots: 0, ..graph }, built) };
+    let first = built.members.len() - graph.members;
+    built
+        .roots
+        .extend_from_slice(&built.members[first..first + graph.roots]);
+}
+
+/// Register the roots of `garbage` and of `held` interleaved, one of `held`'s
+/// after every run of `garbage`'s that keeps both spread over the whole.
+///
+/// # Safety
+/// Every root is a live object of this thread's heap that something else
+/// holds.
+unsafe fn register_interleaved(garbage: &[*mut Object], held: &[*mut Object]) {
+    let run = garbage.len().div_ceil(held.len().max(1));
+    let mut held = held.iter();
+    for chunk in garbage.chunks(run.max(1)) {
+        for &root in chunk {
+            unsafe { register(root) };
+        }
+        if let Some(&root) = held.next() {
+            unsafe { register(root) };
+        }
+    }
+    for &root in held {
         unsafe { register(root) };
     }
 }
@@ -650,6 +742,8 @@ fn a_mutator(
     let mut context = LLContext { arena: arena_ptr };
     let (live, keepers) = unsafe { hold_the_live_graphs(&mut context, arena_ptr, class, load) };
     let mut garbage = Built::default();
+    let mut held = Built::default();
+    let mut held_keepers: Vec<*mut Object> = Vec::new();
     let mut reading = MutatorReading::default();
     start.wait();
     let (cpu_from, switches_from) = (
@@ -663,10 +757,22 @@ fn a_mutator(
     let from = Instant::now();
     let mut last = from;
     while !stop.load(Ordering::Relaxed) {
-        for _ in 0..load.garbage_graphs {
+        if load.held.members() == 0 {
+            for _ in 0..load.garbage_graphs {
+                unsafe {
+                    build(&mut context, arena_ptr, class, load.garbage, &mut garbage);
+                    kill(&garbage.fillers);
+                }
+                reading.garbage_members += load.garbage.members();
+            }
+        } else {
             unsafe {
-                build(&mut context, arena_ptr, class, load.garbage, &mut garbage);
-                kill(&garbage.fillers);
+                build_unregistered(&mut context, arena_ptr, class, load.garbage, &mut garbage);
+                build_unregistered(&mut context, arena_ptr, class, load.held, &mut held);
+                let keeper = new_constructed(&mut context, class, MemoryCategory::GcHeap);
+                store_prop(arena_ptr, keeper, prop_offset(NEXT), held.heads[0]);
+                held_keepers.push(keeper);
+                register_interleaved(&garbage.roots, &held.roots);
             }
             reading.garbage_members += load.garbage.members();
         }
@@ -711,6 +817,14 @@ fn a_mutator(
     reading.records_read = crate::cycle::queue::take_queue_work().records_read;
     reading.turnovers = record.turnovers() - turnovers_from;
     unsafe { let_the_live_graphs_go(arena_ptr, &live, &keepers) };
+    // The held rings go with their keepers, garbage the collection after
+    // the loop finds.
+    for keeper in held_keepers {
+        unsafe {
+            assert!(ll_release(keeper as *mut RcHeader), "the keeper's last");
+            ll_object_die(keeper);
+        }
+    }
     reading.freed_at_the_end = unsafe { crate::gc::ll_gc_collect_cycles() };
     drop(arena);
     crate::cycle::queue::release_queue_segments();
