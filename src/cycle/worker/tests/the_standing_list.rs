@@ -28,7 +28,7 @@ use std::time::Duration;
 
 /// A slot no collector thread is born into under the default cap and no
 /// other case names.
-const SLOT: usize = 6;
+pub(super) const SLOT: usize = 6;
 
 /// Members of a sleeper's ring: the threshold, so that one batch at the
 /// initial K takes it whole.
@@ -40,8 +40,8 @@ const _: () = assert!(RING <= INITIAL_BATCH);
 
 /// A mutator with a ring in its R that reads its byte only when the case
 /// tells it to: asleep to every request until then.
-struct Sleeper {
-    mutator: Mutator,
+pub(super) struct Sleeper {
+    pub(super) mutator: Mutator,
 }
 
 impl Sleeper {
@@ -60,7 +60,7 @@ impl Sleeper {
         Self { mutator }
     }
 
-    fn start(class: *const Class) -> Self {
+    pub(super) fn start(class: *const Class) -> Self {
         let mutator = Mutator::start_idling_with(|_| {});
         let class = Sent(class);
         mutator.run(move |arena| {
@@ -69,21 +69,21 @@ impl Sleeper {
         Self { mutator }
     }
 
-    fn record(&self) -> *mut MutatorRecord {
+    pub(super) fn record(&self) -> *mut MutatorRecord {
         self.mutator.record
     }
 
-    fn byte(&self) -> u8 {
+    pub(super) fn byte(&self) -> u8 {
         unsafe { &*self.record() }.token.read()
     }
 
-    fn is_standing(&self) -> bool {
+    pub(super) fn is_standing(&self) -> bool {
         unsafe { &*self.record() }.is_standing()
     }
 
     /// One reading of the byte on the sleeper's thread: a consent to a
     /// standing request, an arming on `POSTED`.
-    fn read_the_byte(&self) {
+    pub(super) fn read_the_byte(&self) {
         self.mutator.run(|_| {
             read_and_act_on_this_thread();
         });
@@ -91,14 +91,14 @@ impl Sleeper {
 
     /// One poll on the sleeper's thread: the collection over P after a
     /// batch, which puts the byte back to `FREE`.
-    fn poll(&self) {
+    pub(super) fn poll(&self) {
         self.mutator.run(|_| unsafe {
             crate::gc::ll_gc_maybe_collect();
         });
     }
 
     /// Let the ring go and collect it, on the sleeper's thread.
-    fn end(self) {
+    pub(super) fn end(self) {
         self.mutator.run(|_| unsafe {
             crate::gc::ll_gc_collect_cycles();
         });
@@ -112,7 +112,10 @@ impl Sleeper {
 /// one of them rather than on the first
 /// [`super::super::EXPIRED_WAITS_PER_ROUND`]. What the bound does within
 /// one walk is `the_take_after_an_interval`'s.
-fn serve_as_its_own_round(record: *mut MutatorRecord, standing: &mut Standing) -> Served {
+pub(super) fn serve_as_its_own_round(
+    record: *mut MutatorRecord,
+    standing: &mut Standing,
+) -> Served {
     standing.start_a_round();
     unsafe { serve(record, SLOT, 1, standing, serve_clock_now()) }
 }

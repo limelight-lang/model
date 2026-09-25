@@ -219,10 +219,21 @@
 //! (`rfc/model/gc/rc-cycle.md`, "Decision summary"). R is read by the elder
 //! rather than by the poll, and the ask is a value of the byte the mutator
 //! reads anyway, so that the mutator's side reads no cap at all: its reading
-//! tells the ask from a batch's `POSTED` by the byte alone. A round's first
-//! checkpoint still serves the grants its standing list reads, which a cap
-//! set to zero after work began leaves behind; S65.15 replaces that with the
-//! list's withdrawal.
+//! tells the ask from a batch's `POSTED` by the byte alone.
+//!
+//! **A cap set to zero while collectors work is met at the next checkpoint
+//! and the next grant.** A checkpoint under the cap withdraws the standing
+//! list instead of reading it: a standing request is taken back, a grant the
+//! withdrawal reads back is released with no batch, and every record is
+//! unlinked. A grant read on any path after the cap is stored is released
+//! with no batch ([`serve_the_grant`]), so no trace starts after the store; a
+//! trace already running finishes, and its `POSTED` is collected over by its
+//! owner as any batch's is. A request the visit under way made after the
+//! store stands until the next checkpoint withdraws it. A sibling's own
+//! rounds withdraw its list in the same way, the elder ends it at its next
+//! round, and its list's drop takes what is left. A cap set back above zero
+//! resumes the takes at the next round, and an ask a round left standing is
+//! collected over by its owner as an ask.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -1657,6 +1668,14 @@ unsafe fn serve_the_grant(
     standing: &mut Standing,
 ) -> Served {
     standing.forget(mutator);
+    // A grant read after the cap was stored as zero traces nothing: every
+    // path to a batch passes here, so the trace that runs past this reading
+    // is the one already under way when the cap was stored.
+    if collectors_capped_at_zero() {
+        mutator.token.release_claim(slot, false);
+        return Served::Idle;
+    }
+
     // Released on the unwind too: a collector that panicked under the claim
     // would otherwise leave the mutator's wait forever; the posted fact is
     // set before the first post, so the unwind's release says what the
@@ -1922,9 +1941,15 @@ impl Standing {
     /// other is released with no batch and marked
     /// ([`MutatorRecord::note_released_unserved`]), so that a burst of
     /// wakers withholds one stranger's batch each and not a queue of them.
-    /// Answers how many batches it made.
+    /// Answers how many batches it made. Under a cap of zero it withdraws
+    /// the list instead and makes none ("Cap zero", the module doc).
     fn checkpoint(&mut self, threshold: usize) -> usize {
         if self.first.is_null() {
+            return 0;
+        }
+
+        if collectors_capped_at_zero() {
+            self.withdraw_every_request();
             return 0;
         }
 
@@ -2078,14 +2103,13 @@ impl Standing {
     fn take_consumed_a_wake(&mut self) -> bool {
         std::mem::replace(&mut self.consumed_a_wake, false)
     }
-}
 
-impl Drop for Standing {
-    /// The withdrawal of every standing request, at the thread's end and on
-    /// the unwind: a grant read back is released without a batch, and every
-    /// record is taken out of the list, so that none reaches the registry
-    /// linked to a frame that is gone.
-    fn drop(&mut self) {
+    /// Withdraw every standing request and empty the list: a grant the
+    /// withdrawal reads back is released without a batch, and every record is
+    /// taken out of the list. At the thread's end and on the unwind, and at
+    /// every round under a cap of zero, where no request may stand and no
+    /// grant be served ("Cap zero", the module doc).
+    fn withdraw_every_request(&mut self) {
         let mut cursor = self.first;
         while !cursor.is_null() {
             let following = Self::after(cursor);
@@ -2096,6 +2120,15 @@ impl Drop for Standing {
             self.forget(mutator);
             cursor = following;
         }
+    }
+}
+
+impl Drop for Standing {
+    /// The withdrawal of every standing request, at the thread's end and on
+    /// the unwind, so that no record reaches the registry linked to a frame
+    /// that is gone ([`Standing::withdraw_every_request`]).
+    fn drop(&mut self) {
+        self.withdraw_every_request();
     }
 }
 

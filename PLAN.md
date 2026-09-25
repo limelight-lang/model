@@ -142,7 +142,7 @@ bound's (the chain's writes and reads, `refcount::stamp_as_read_live`,
 `shadow::for_each_live_met_row`, the block drawn back and filled);
 `the_ceiling`'s failed retry, whose met-roots walk counts a position per
 block; `the_cap_at_zero`'s cases, the ask's reading of a record under its
-hold.
+hold; `the_cap_set_under_work`'s, the list's withdrawal.
 
 - [x] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
       handoff: `5014615`, three comments in `queue.rs`.
@@ -268,19 +268,35 @@ hold.
         `worker/tests/the_cap_at_zero.rs` (nine cases, each red on its
         mutation); the poll's machine code is the base's
         (`dev/BENCHMARKS.md`, "S65.12 the poll under a cap of zero").
-- [ ] S65.15 A cap changed while collectors work (package commit 9, second
+- [x] S65.15 A cap changed while collectors work (package commit 9, second
         half; `dev/S65-PLAN-CRITIC.md` F5)
-      done: a round that reads the cap at zero withdraws its standing list
-        by the walk of `Standing::drop`, factored out of it, releases a grant
-        it reads back with no batch, and makes no request and serves no
-        checkpoint while the cap stays zero; a trace already running
-        finishes; a cap set back resumes the takes; a sibling above the cap
-        ends at the elder's hand and its list's drop withdraws its requests;
-        cases switch with an unanswered request, a consented grant, a
-        running trace and P posted, and once more with a sibling, each
-        asserting no stranded token, no record left linked, P intact, the
-        clock turning, and the takes back after the restore
+      done: a checkpoint that reads the cap at zero withdraws its standing
+        list by the walk of `Standing::drop`, factored out of it, a grant it
+        reads back released with no batch; a grant read on any path after the
+        store is released with no batch (`serve_the_grant`), so no trace
+        starts after it; a trace already running finishes; a cap set back
+        resumes the takes; a second collector's list is withdrawn by its own
+        checkpoint; cases switch with an unanswered request, a consented
+        grant, a consent after the store, a running trace and P posted, a
+        second collector, and a restore after a withdrawn list, asserting no
+        stranded token, no record left linked, P collected over, the clock
+        turning, and the takes back
       tier: T2 · role: Critic
+      Critic 2026-09-25: (1) a grant read after the store inside a serve
+        under way was served a batch — `serve_the_grant` refuses it under the
+        cap and every checkpoint withdraws; (2) no born sibling is pinned —
+        the per-slot case stands in, the docs corrected to say the sibling's
+        own checkpoint withdraws and its drop takes what is left; (3) the
+        trace and restore cases passed on the committed code — the trace
+        case now reads the collection over P and no ask, and a restore after
+        a withdrawn list was added; (4) a take waiting on `COLLECTOR` across
+        the flip is not pinned — left, the running-trace case's owner polls
+        through it; (5) the handshake's prose on standing requests,
+        checkpoints and the withdrawal's read-back — amended. Accepted but
+        (2) and (4), named as gaps.
+      handoff: `Standing::withdraw_every_request`, the cap reading in
+        `Standing::checkpoint` and `serve_the_grant`;
+        `worker/tests/the_cap_set_under_work.rs`, seven cases.
 - [ ] S65.16 The N-mutators-on-N-cores rig, built and calibrated
       done: each mutator and each collector thread is placed on a named
         physical core with its SMT sibling named (the collector's through a

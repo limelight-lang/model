@@ -869,6 +869,7 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
 
 mod the_batch;
 mod the_cap_at_zero;
+mod the_cap_set_under_work;
 mod the_ceiling;
 mod the_epoch_clock;
 mod the_live_list;

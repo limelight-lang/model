@@ -359,9 +359,10 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
 /// the elder keeps their epoch clocks and asks a mutator whose R its round
 /// would have taken to collect in line (`crate::cycle::worker`, "Cap
 /// zero"). Without a call the cap
-/// is the crate's default. A lowered cap ends the siblings above it at the
-/// elder's next round. Set it before any mutator registers a candidate when
-/// it is zero: a change to zero while collectors work is S65.15's.
+/// is the crate's default. Callable at any time from any thread: a lowered
+/// cap ends the siblings above it at the elder's next round, and a cap of
+/// zero set while collectors work is met at each one's next round, a trace
+/// already running finishing first (`crate::cycle::worker`, "Cap zero").
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_gc_set_collector_cap(cap: usize) {
     crate::cycle::worker::set_collector_cap(cap);

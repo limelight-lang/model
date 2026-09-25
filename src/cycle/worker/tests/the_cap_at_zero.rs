@@ -14,10 +14,10 @@ use std::time::Duration;
 /// The cap at zero while the guard stands, and the crate's default again when
 /// it drops, on a panic as on a return: the cap is the process's, and a case
 /// that failed with it at zero would have every later case's polls collect.
-struct CapAtZero;
+pub(super) struct CapAtZero;
 
 impl CapAtZero {
-    fn set() -> Self {
+    pub(super) fn set() -> Self {
         crate::gc::ll_gc_set_collector_cap(0);
         Self
     }
