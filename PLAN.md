@@ -389,6 +389,45 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal;
         of R; a completed death in R is retired by the next close over P,
         and each close zeroes the count, so D − 1 deaths before the fire
         and one after it arm nothing.
+      pushed 2026-09-25 as `05f09a8` (rfc `741e39c`); gate green, each new
+        case seen red on the old tree and on a mutation of its line.
+      Critic 2026-09-25: (1) a collection over P no longer returns the
+        slots of registered members its own teardown killed, since their
+        entries stand in R; at R ≥ `SOFT_THRESHOLD` the count's pass only
+        signals, so a 10,000-member ring proposed through 64 roots comes
+        back one collector batch at a time, ten round trips or more — a
+        premise change, S65.21; (2) the count keeps deaths the close
+        already retired out of P and the overflow buffer, so passes that
+        find nothing double `retire_after` up to its bound — open, fix by
+        lowering the count by the close's own frees; (3) four sentences
+        false: DECISIONS' "zeroed only by a pass that reads R" (the
+        threshold branch and `release_queue_segments` zero it too), the
+        field doc of `candidate_deaths`, `note_a_candidate_death`'s "since
+        the last compaction", `rfc/dev/design/trace-token-handshake.md`'s
+        "nothing else arms", and `stdapi.rs`'s withheld-member comment —
+        open. Held: the writer's cached front, `standing_since`, the
+        ledger, `DEFERRED_MARK`, the count's wrap.
+- [ ] S65.21 Decide how the slots of registered members a collection over
+        P tears down come back (Edmond, 2026-09-25, on S65.20's Critic,
+        finding 1: "если коллектор собирается разрушить какие-то объекты —
+        почему он не заберёт их из R? надо подумать")
+      done: the choice and its reason in `dev/DECISIONS.md`, and the
+        step that builds it in this plan
+      tier: T2 · role: Critic
+      the question: the teardown knows its members but not where their
+        entries stand, since the candidate bit says only that an entry
+        exists in R, P, the overflow buffer or the lane; the slot is
+        withheld because an entry is an address with no generation, and a
+        reused slot would read as the entry's candidate. Forms named so far:
+        read R at the close over P only when the collection's own teardown
+        raised the count by `retire_after` or more (the Critic's); let the
+        pass the close arms read R above the threshold; an index from the
+        header to the entry's position, paid at every registration; an
+        entry that carries a generation, so the slot returns at the
+        teardown and a stale entry is dropped by its reader; or leave the
+        slots to the collector's batches. Whether the header has room for a
+        generation or a position is unread. S65.17's rerun waits for it,
+        since the rig's garbage loads measure this path.
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,
