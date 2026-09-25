@@ -295,7 +295,7 @@ const TRACE_BLOCK_BUDGET: usize = 8;
 /// `B_max`: the blocks a part that met [`TRACE_BLOCK_BUDGET`] is retried under,
 /// at once and once per grant, before the roots its rows met are posted read
 /// live (`dev/CYCLE-SPLIT-PACKAGE-3.md`, section 7). A borrowed number the stage's
-/// rig reads (`PLAN.md`, S65.12); 128 blocks are 8 MiB drawn and given back
+/// rig reads (`PLAN.md`, S65.17); 128 blocks are 8 MiB drawn and given back
 /// inside one grant.
 const RETRY_BLOCK_BUDGET: usize = 128;
 

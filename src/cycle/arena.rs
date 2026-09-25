@@ -358,7 +358,7 @@ pub(crate) static GRANTS_RELEASED_AT: std::sync::atomic::AtomicUsize =
 /// the traced mutator's recall of its token
 /// ([`TraceScratchArena::inspect_position`]): what a mutator asking for its
 /// token waits through before the trace stops, the posts and the reset
-/// aside. Not a measured figure; the rig of `PLAN.md`'s S65.12 reads it.
+/// aside. Not a measured figure; the rig of `PLAN.md`'s S65.17 reads it.
 pub(crate) const RECALL_STRIDE: usize = 1024;
 
 /// One collection's memory: the thread's workspace for as long as the arena

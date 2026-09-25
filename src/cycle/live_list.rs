@@ -68,7 +68,7 @@ use crate::refcount::RcHeader;
 /// L: the most blocks one grant's list takes, 130,560 entries — the live core
 /// of the package's largest example, 130,000 members, in one list
 /// (`dev/CYCLE-SPLIT-PACKAGE-3.md`, section 5). A borrowed number: the rig of
-/// the stage's last step reads it (`PLAN.md`, S65.12).
+/// S65.17 reads it (`PLAN.md`).
 pub(crate) const MAX_BLOCKS: usize = 16;
 
 /// Entity pointers one block's payload holds.

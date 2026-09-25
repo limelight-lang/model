@@ -1483,16 +1483,16 @@ pub(crate) fn a_mark_stands() -> bool {
 
 /// M: the deaths withheld under a foreign holder at which the mutator recalls
 /// its token. 8,192 deaths of 64 bytes are 512 KiB; the figure is the
-/// package's starting point and unmeasured, S65.12 measures it.
+/// package's starting point and unmeasured, S65.17 measures it.
 pub(crate) const DEATHS_MARK: usize = 8_192;
 
 /// M_b: the blocks withheld under a foreign holder, a run and a large
 /// entity counted by the blocks they span, at which the mutator recalls its
-/// token. 16 blocks are 1 MiB; unmeasured, S65.12 measures it.
+/// token. 16 blocks are 1 MiB; unmeasured, S65.17 measures it.
 pub(crate) const BLOCKS_MARK: usize = 16;
 
 /// M_c: the buffer chunks withheld under a foreign holder at which the
-/// mutator recalls its token. Unmeasured, S65.12 measures it.
+/// mutator recalls its token. Unmeasured, S65.17 measures it.
 pub(crate) const CHUNKS_MARK: usize = 256;
 
 thread_local! {

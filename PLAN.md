@@ -14,7 +14,7 @@ crate. The destination's last mile, the compiler that links this crate, is
 outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
 `limelight`.
 
-Updated: 2026-09-24 · Active: S65.
+Updated: 2026-09-25 · Active: S65.
 
 Review 2026-09-23: on time, found by hand, the hook still blind to this
 plan. Pass 1, code `128cefc..89bb0dc` against the thresholds (a function over
@@ -239,40 +239,68 @@ block.
         `model/gc/strategies.md`, `model/memory/critical-reserve.md`,
         `model/lowering.md` and the ruling in `rfc/dev/DECISIONS.md`; the
         crate's `gc.rs` docs. Citations 831/0, linkcheck 0.
-- [ ] S65.12 `cap 0`, then the N-mutators-on-N-cores rig (package commit 9)
-      done: the clamp lifted, the elder kept as the clock without takes, and
-        the mutator collecting at its threshold and at the merge under
-        `cap 0`; a cap set to zero at run time is met at the elder's next
-        round: the round withdraws its standing list (the walk of
-        `Standing::drop`, factored), releases a grant it reads back unserved,
-        issues no request and serves no checkpoint while the cap is zero, and
-        a trace already running finishes; a cap set back resumes the takes
-        (`dev/S65-PLAN-CRITIC.md` F5); switched with an unanswered request,
-        a consented grant, a running trace and P posted, and once more with
-        a sibling — no stranded token, no record left linked, P intact, the
-        clock still turning, the takes back after the restore; only with
-        this built is the rig run, its third arm being `cap 0` itself, the
-        in-line collection reclaiming what the collector would have (F6,
-        `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Какие опыты нужны"), each
-        thread placed on a named physical core; the three placements
-        measured and recorded, and the constants L, M, M_b, M_c, D, N, X,
-        N_b read off it, and whether a grant needs G, the package's bound in
-        touched blocks (section 7), against a grant of 1,024 parts that
-        holds 32–37 ms on `disjoint-wide-live` while the other mutators
-        named to its collector wait (`dev/BENCHMARKS.md`, "S65.13 the batch
-        in parts at a grown K"); and the price of a batch that goes on past
-        a part at B rather than ending with the rest `Unwalked` (Edmond,
-        2026-09-24, on S65.9's second Critic round, finding 1, asked to be
-        measured): with a live closure past `B_max` and a garbage ring between
-        B and `B_max` both in R, the garbage's bytes and the epochs they are
-        held before a collection frees them, against the mutator's in-line
-        time the `Unwalked` it would have traced costs, and the collector's
-        time per grant the parts after a failed retry add, with the roots
-        spread along a closure past `B_max` so that each opens a part at B
-        (S65.9's third Critic round, finding 2); `rfc/model/gc/rc-cycle.md`'s
-        "the re-offer arms no collection of the owner's" names the arming at
-        the merge under `cap 0`
+- [ ] S65.12 `cap 0` set before any work (package commit 9, first half)
+      done: `set_collector_cap` clamps to `0..=MAX_COLLECTORS`; under `cap 0`
+        the elder's round advances the epochs it is due to and serves no
+        record and no checkpoint, and the elder is still born by the poll's
+        signal, for the clock; the poll arms `AllRoots` under `cap 0` where
+        R reads at the threshold (`queue::retire_at_the_poll`'s branch and
+        the filled block's signal) and after a merge
+        (`queue::reoffer_deferred_if_epoch_moved`); red tests: a ring at
+        the threshold is collected in line, a merged lane is collected at
+        the poll after the merge, the epoch still turns, and no grant is
+        made in the whole case; `rfc/model/gc/rc-cycle.md`'s "the re-offer
+        arms no collection of the owner's" names the arming under `cap 0`
+        in the same commit (F7)
       tier: T2 · role: Critic
+- [ ] S65.15 A cap changed while collectors work (package commit 9, second
+        half; `dev/S65-PLAN-CRITIC.md` F5)
+      done: a round that reads the cap at zero withdraws its standing list
+        by the walk of `Standing::drop`, factored out of it, releases a grant
+        it reads back with no batch, and makes no request and serves no
+        checkpoint while the cap stays zero; a trace already running
+        finishes; a cap set back resumes the takes; a sibling above the cap
+        ends at the elder's hand and its list's drop withdraws its requests;
+        cases switch with an unanswered request, a consented grant, a
+        running trace and P posted, and once more with a sibling, each
+        asserting no stranded token, no record left linked, P intact, the
+        clock turning, and the takes back after the restore
+      tier: T2 · role: Critic
+- [ ] S65.16 The N-mutators-on-N-cores rig, built and calibrated
+      done: each mutator and each collector thread is placed on a named
+        physical core with its SMT sibling named (the collector's through a
+        hook in `worker::birth`, whose thread is the crate's own
+        `pthread_create`); a throughput driver runs the loads of
+        `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Какие опыты нужны", and
+        records that section's figures together with three counters from
+        `dev/S65-PROGRESS-REVIEW.md`, section 5 (one root's P → R → P
+        rounds per turnover, the bytes past `B_max` before pressure, and
+        the share of grants recalled by M against those recalled by a take);
+        each figure is checked once on an input whose answer is known before
+        the rig is trusted; no arm is measured in this step
+      tier: T2 · role: —
+- [ ] S65.17 The rig's run: three placements, three arms
+      done: the placements of F6 and the S64 analysis (C−1 mutators and the
+        collector on its own core, C mutators and the collector competing,
+        C+1 mutators under `cap 0`) measured under each arm and recorded in
+        `dev/BENCHMARKS.md`, the box's sharing named beside the figures; the
+        constants L, M, M_b, M_c, D, N, X and N_b read off them; whether a
+        grant needs G, the package's bound in touched blocks (section 7),
+        put to Edmond with the figures against a grant of 1,024 parts that
+        holds 32–37 ms on `disjoint-wide-live` while the other mutators named
+        to its collector wait (`dev/BENCHMARKS.md`, "S65.13 the batch in
+        parts at a grown K")
+      tier: T2 · role: Critic
+- [ ] S65.18 The price of a batch that goes on past a part at B (Edmond,
+        2026-09-24, on S65.9's second Critic round, finding 1)
+      done: with a live closure past `B_max` and a garbage ring between B
+        and `B_max` both in R, measured and recorded: the garbage's bytes and
+        the epochs they are held before a collection frees them, against the
+        mutator's in-line time on the `Unwalked` it would have traced, and
+        the collector's time per grant that the parts after a failed retry
+        add, with the roots spread along a closure past `B_max` so that each
+        opens a part at B (S65.9's third Critic round, finding 2)
+      tier: T2 · role: —
 
 ## Then: arrays as a performance problem
 
@@ -402,7 +430,7 @@ against the code on 2026-09-24.
   YRC's 64 (Y9's dial, `rfc/model/gc/cycle/questions.md`), the batches a
   collector makes for one mutator before it advances that mutator's epoch
   unless X (`worker::EPOCH_INTERVAL`) comes first; the package names it `N_b`
-  and S65.12's rig reads it. Both costs are
+  and S65.17's rig reads it. Both costs are
   linear in it and pull opposite ways, measured on the test heap
   (`dev/BENCHMARKS.md`, "S37.5 what a turnover re-offers, and what a
   deferral costs"). Which side pays is Edmond's; the ruling goes to
