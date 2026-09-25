@@ -7,6 +7,31 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-25 — a hook after the consent's swap raced the collector the swap had woken
+
+**What happened.** `worker::tests::the_cap_set_under_work::`
+`a_consent_after_the_cap_went_to_zero_starts_no_trace` failed once in a
+`debug-journal` gate run and once in 600 runs alone: the collector served a
+batch where the case expected the grant released idle. Under four parallel
+processes the case failed 11 times in 2,000 on `6344f3c`.
+
+**Why it was possible.** The case stored the cap as zero from
+`testing::after_the_next_consents_swap`, which runs on the mutator's thread
+after `TraceToken::consent`'s swap; the consent wakes the collector inside
+that swap (`wake_for_the_byte`), so the collector's reading of the cap in
+`serve_the_grant` could come before the store. The case meant a store that
+precedes the consent and wrote one that only usually did.
+
+**Why it was not caught.** The race lands once in hundreds of runs, and the
+step that added the case ran its gate green. The case now stores the cap
+from `testing::before_the_next_request` on the collector's own thread, which
+orders the store before the request and so before the consent: 0 in 2,000
+under the same four processes, and red with `serve_the_grant`'s check
+removed. A hook meant to land before another thread acts goes on the thread
+that acts, or ahead of the store that wakes it.
+
+---
+
 ## 2026-09-24 — an adopted block served a case whose budget refused the pool
 
 **What happened.** With S65.8's cases in the suite,

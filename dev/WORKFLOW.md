@@ -450,7 +450,8 @@ loop's, the trampoline's and the guard's. One further red came on
 `debug-journal` runs of the same tree after it were green; on 2026-09-22 it
 was 4 in 54 `debug-journal` runs, one of them under the two-core load recipe
 and two in the runs of the standing list's step, whose new cases start twenty mutator threads; on 2026-09-23 it was 1 in 7 over
-S65.2's two gates, 112 against 113 again. What would close them is
+S65.2's two gates, 112 against 113 again; on 2026-09-25 it was 1 in 11
+`debug-journal` runs over S65.20's gates, 750 against 751. What would close them is
 a reading of a named thread's figures that outlives the thread, a structure
 rather than a patch; Edmond deferred building it on 2026-09-18 ("fix it
 later"), so the watch stands and the flake is re-run past, and until it is
