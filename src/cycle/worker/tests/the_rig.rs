@@ -714,6 +714,15 @@ struct MutatorReading {
     withheld_by_an_entry_time: u128,
     /// Those deaths at the loop's end.
     withheld_by_an_entry_at_the_end: u64,
+    /// How long, after the loop's end, polls with no registration took to
+    /// bring those deaths to zero, or the whole drain where they stayed
+    /// (`LL_RIG_DRAIN_MS`). The thread's CPU is read over the loop and the
+    /// drain together.
+    remnant_wait: Duration,
+    /// Whether the drain brought them to zero.
+    remnant_cleared: bool,
+    /// What the drain's polls freed.
+    freed_in_the_drain: usize,
     /// Whether the loop ended at [`OUTSTANDING_CEILING`] rather than at the
     /// cell's stop.
     at_the_ceiling: bool,
@@ -756,6 +765,7 @@ fn a_mutator(
     let turnovers_from = record.turnovers();
     let from = Instant::now();
     let mut last = from;
+    let pace = millis_from_env("LL_RIG_PACE_MS");
     while !stop.load(Ordering::Relaxed) {
         if load.held.members() == 0 {
             for _ in 0..load.garbage_graphs {
@@ -802,6 +812,16 @@ fn a_mutator(
                 .max(crate::cycle::queue::candidate_count());
         }
 
+        // A paced loop starts its iterations at a fixed period, so that the
+        // offered load is the same in both arms of a comparison.
+        if !pace.is_zero() {
+            let due = from + pace * u32::try_from(reading.iterations).unwrap_or(u32::MAX);
+            if let Some(ahead) = due.checked_duration_since(Instant::now()) {
+                std::thread::sleep(ahead);
+            }
+            last = Instant::now();
+        }
+
         if outstanding > OUTSTANDING_CEILING {
             reading.at_the_ceiling = true;
             break;
@@ -810,7 +830,22 @@ fn a_mutator(
 
     reading.wall = from.elapsed();
     reading.withheld_by_an_entry_at_the_end = crate::cycle::queue::withheld_by_an_entry();
-    reading.cpu = testing::thread_cpu_time() - cpu_from;
+    // The drain: polls with no registration for the same wall in both arms,
+    // so that the CPU and what stands after it compare over one window.
+    let drain = millis_from_env("LL_RIG_DRAIN_MS");
+    let drained_from = Instant::now();
+    let mut remnant_wait = None;
+    while drained_from.elapsed() < drain {
+        if remnant_wait.is_none() && crate::cycle::queue::withheld_by_an_entry() == 0 {
+            remnant_wait = Some(drained_from.elapsed());
+        }
+        reading.freed_in_the_drain += unsafe { crate::gc::ll_gc_maybe_collect() };
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let cpu_at_the_end = testing::thread_cpu_time();
+    reading.remnant_cleared = remnant_wait.is_some();
+    reading.remnant_wait = remnant_wait.unwrap_or(drain);
+    reading.cpu = cpu_at_the_end - cpu_from;
     let switches = testing::thread_context_switches();
     reading.switches = (switches.0 - switches_from.0, switches.1 - switches_from.1);
     reading.minor_faults = testing::thread_minor_faults() - faults_from;
@@ -861,6 +896,13 @@ impl Cell {
             }),
         }
     }
+}
+
+/// Milliseconds `variable` names, zero when it is unset.
+fn millis_from_env(variable: &str) -> Duration {
+    std::env::var(variable).map_or(Duration::ZERO, |millis| {
+        Duration::from_secs_f64(millis.parse::<f64>().expect("a count of milliseconds") / 1000.0)
+    })
 }
 
 /// Whether the cell runs form I of `PLAN.md` S65.21, the close's free of R's
@@ -1158,6 +1200,36 @@ impl CellReading {
                     .sum::<u64>()
                     * MEMBER_CLASS_BYTES as u64)
                     .to_string(),
+            ),
+            (
+                "pace_ms",
+                (millis_from_env("LL_RIG_PACE_MS").as_secs_f64() * 1000.0).to_string(),
+            ),
+            (
+                "mutator_cpu_us",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.cpu.as_micros())
+                    .sum::<u128>()
+                    .to_string(),
+            ),
+            (
+                "remnant_wait_us_max",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.remnant_wait.as_micros())
+                    .max()
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            (
+                "remnants_cleared",
+                self.sum(|reading| usize::from(reading.remnant_cleared))
+                    .to_string(),
+            ),
+            (
+                "freed_in_the_drain",
+                self.sum(|reading| reading.freed_in_the_drain).to_string(),
             ),
             (
                 "live_bytes",
