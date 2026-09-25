@@ -842,10 +842,12 @@ fn a_mutator(
 
     reading.wall = from.elapsed();
     reading.withheld_by_an_entry_at_the_end = crate::cycle::queue::withheld_by_an_entry();
+    reading.cpu_in_the_loop = testing::thread_cpu_time() - cpu_from;
+    reading.backlog_at_the_stop = reading
+        .garbage_members
+        .saturating_sub(reading.freed_by_polls);
     // The drain: polls with no registration for the same wall in both arms,
     // so that the CPU and what stands after it compare over one window.
-    reading.cpu_in_the_loop = testing::thread_cpu_time() - cpu_from;
-    reading.backlog_at_the_stop = reading.garbage_members.saturating_sub(reading.freed_by_polls);
     let drain = millis_from_env("LL_RIG_DRAIN_MS");
     let drained_from = Instant::now();
     let mut remnant_wait = None;
