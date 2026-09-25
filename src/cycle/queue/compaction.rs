@@ -165,7 +165,59 @@ pub(super) fn compact(
     OverflowPass::open(state).run();
     checkpoint(6);
     dispose_verdicts(state, verdicts, deferred_at);
+    if lanes == Lanes::Overflow && front_run_is_on() && !std::thread::panicking() {
+        free_the_front_run();
+    }
 }
+
+/// Free the run of completed deaths standing at R's front, one entry at a
+/// time, and stop at the first entry that is not one: the close of a
+/// collection over P under `MUTATOR`, where the mutator is R's one consumer.
+/// Each entry is consumed before its slot is freed, so no freed slot is
+/// named by R at any instant. The rig's arm of `PLAN.md` S65.21, form I.
+fn free_the_front_run() {
+    let record = mutator_record::this_thread_record();
+    if record.is_null() {
+        return;
+    }
+
+    let reader = unsafe { ring::Reader::new((*record).candidate_ring()) };
+    let mut one = [0usize; 1];
+    loop {
+        let peeked = reader.peek(&mut one);
+        if peeked.len() == 0 {
+            return;
+        }
+
+        note_queue_work(0, 1, 0);
+        let entity = entry_entity(one[0]);
+        if !completed_death(entity) {
+            return;
+        }
+
+        reader.commit(peeked);
+        free(entity);
+    }
+}
+
+/// Whether the close of a collection over P frees R's front run: the rig
+/// sets it per cell (`worker::tests::the_rig`, `LL_RIG_FRONT_RUN`), and a
+/// build that is not a test never does.
+fn front_run_is_on() -> bool {
+    #[cfg(test)]
+    {
+        FRONT_RUN.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
+/// The rig's switch for [`free_the_front_run`].
+#[cfg(test)]
+pub(crate) static FRONT_RUN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// The pass over P. With `prefix` the batch's count of P's entries, dispose
 /// of each of them: a completed death is retired, a root marked or read live
@@ -283,9 +335,16 @@ pub(super) fn free(entity: *mut RcHeader) {
     unsafe { crate::memory::stdapi::ll_free(entity.cast()) };
     let state = mutator_state();
     if !state.is_null() {
-        let retired = &unsafe { mutator_state_ref(state) }.retired_by_the_close;
+        let mutator_state = unsafe { mutator_state_ref(state) };
+        let retired = &mutator_state.retired_by_the_close;
         retired.set(retired.get().saturating_add(1));
+        // A retired death leaves the free path's count, which a pass that
+        // read none of R would otherwise keep (S65.20's Critic, finding 2).
+        let deaths = &mutator_state.candidate_deaths;
+        deaths.set(deaths.get().saturating_sub(1));
     }
+    #[cfg(test)]
+    note_a_withheld_death_retired();
 }
 
 /// The overflow buffer's pass: retire completed deaths and pack the rest

@@ -1244,6 +1244,8 @@ pub(crate) fn note_a_candidate_death() {
     let mutator_state = unsafe { mutator_state_ref(state) };
     let deaths = mutator_state.candidate_deaths.get().wrapping_add(1);
     mutator_state.candidate_deaths.set(deaths);
+    #[cfg(test)]
+    let _ = WITHHELD_BY_AN_ENTRY.try_with(|count| count.set(count.get() + 1));
     if deaths == mutator_state.retire_after.get() {
         crate::gc::arm_to_retire();
     }
@@ -1436,6 +1438,8 @@ pub(crate) unsafe fn retire_candidates_and_dispose_of_verdicts(at_turnovers: u64
 }
 
 mod compaction;
+#[cfg(test)]
+pub(crate) use compaction::FRONT_RUN;
 pub(crate) mod verdicts;
 
 /// Put `entity` in the deferred lane, taking a block from a spare cell when
@@ -1520,6 +1524,27 @@ fn note_queue_work(_passes: usize, _read: usize, _moved: usize) {
         value.records_moved += _moved;
         work.set(value);
     });
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Completed deaths the free path withheld for a queue entry and no pass
+    /// has retired yet, on this thread: the rig's exact figure, never zeroed
+    /// (`PLAN.md` S65.21).
+    static WITHHELD_BY_AN_ENTRY: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Take one withheld death off [`WITHHELD_BY_AN_ENTRY`]; saturating, since a
+/// test may retire a death it registered by hand.
+#[cfg(test)]
+pub(crate) fn note_a_withheld_death_retired() {
+    let _ = WITHHELD_BY_AN_ENTRY.try_with(|count| count.set(count.get().saturating_sub(1)));
+}
+
+/// The deaths this thread withholds for a queue entry right now.
+#[cfg(test)]
+pub(crate) fn withheld_by_an_entry() -> u64 {
+    WITHHELD_BY_AN_ENTRY.with(Cell::get)
 }
 
 #[cfg(test)]

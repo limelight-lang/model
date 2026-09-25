@@ -156,7 +156,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
 
 /// The loads of the S64 analysis's list. Change a name or add a load, and
 /// change `LOADS` in `dev/tools/rig.sh` with it.
-const LOADS: [Load; 10] = [
+const LOADS: [Load; 12] = [
     // Garbage at 0, 25, 50, 75 and 100 % of the roots, rounded to whole
     // rings of 63.
     mixed("garbage-0", 0),
@@ -239,7 +239,36 @@ const LOADS: [Load; 10] = [
             fillers: 0,
         },
     },
+    // One garbage ring of 2,048 members, every one of them registered: the
+    // shape of S65.20's Critic, finding 1, where a batch proposes a part of
+    // the ring's entries and the teardown kills members whose entries stand
+    // in R behind it (`PLAN.md` S65.21).
+    Load {
+        name: "registered-ring",
+        garbage_graphs: 1,
+        garbage: REGISTERED_RING,
+        live_graphs: 0,
+        live: Graph::NONE,
+    },
+    // The same ring beside the live roots of `garbage-0`, re-registered at
+    // every iteration behind the ring's members.
+    Load {
+        name: "registered-ring-live",
+        garbage_graphs: 1,
+        garbage: REGISTERED_RING,
+        live_graphs: ROOTS,
+        live: SMALL_RING,
+    },
 ];
+
+/// A ring of 2,048 whose every member is a registered candidate.
+const REGISTERED_RING: Graph = Graph {
+    rings: 1,
+    members: 2048,
+    roots: 2048,
+    shared: 0,
+    fillers: 0,
+};
 
 // An iteration registers its roots with no poll between them, and the
 // teardown registers a member at every edge it nulls: both stay inside the
@@ -585,6 +614,14 @@ struct MutatorReading {
     turnovers: u64,
     /// What the collection after the loop freed, the live graphs gone.
     freed_at_the_end: usize,
+    /// The most completed deaths the thread withheld for a queue entry at
+    /// the end of an iteration (`crate::cycle::queue::withheld_by_an_entry`).
+    withheld_by_an_entry_peak: u64,
+    /// Those deaths integrated over the loop's time, in deaths times
+    /// nanoseconds: over the loop's wall, the mean withheld.
+    withheld_by_an_entry_time: u128,
+    /// Those deaths at the loop's end.
+    withheld_by_an_entry_at_the_end: u64,
     /// Whether the loop ended at [`OUTSTANDING_CEILING`] rather than at the
     /// cell's stop.
     at_the_ceiling: bool,
@@ -649,6 +686,9 @@ fn a_mutator(
         reading.withheld_peak = reading
             .withheld_peak
             .max(crate::cycle::deferred_slot_reuse::foreign_withheld_counts().0);
+        let by_an_entry = crate::cycle::queue::withheld_by_an_entry();
+        reading.withheld_by_an_entry_peak = reading.withheld_by_an_entry_peak.max(by_an_entry);
+        reading.withheld_by_an_entry_time += u128::from(by_an_entry) * (now - last).as_nanos();
         last = now;
         if reading.iterations % R_SAMPLE_STRIDE == 0 {
             reading.ring_peak = reading
@@ -663,6 +703,7 @@ fn a_mutator(
     }
 
     reading.wall = from.elapsed();
+    reading.withheld_by_an_entry_at_the_end = crate::cycle::queue::withheld_by_an_entry();
     reading.cpu = testing::thread_cpu_time() - cpu_from;
     let switches = testing::thread_context_switches();
     reading.switches = (switches.0 - switches_from.0, switches.1 - switches_from.1);
@@ -706,6 +747,12 @@ impl Cell {
             }),
         }
     }
+}
+
+/// Whether the cell runs form I of `PLAN.md` S65.21, the close's free of R's
+/// front run: `LL_RIG_FRONT_RUN=1`.
+fn front_run_from_env() -> bool {
+    std::env::var("LL_RIG_FRONT_RUN").is_ok_and(|value| value == "1")
 }
 
 /// The comma-separated CPU numbers of `variable`, empty when it is unset or
@@ -824,6 +871,7 @@ impl CellReading {
                 listed(cell.collector_cpus.iter().map(usize::to_string).collect()),
             ),
             ("cap", cell.cap.to_string()),
+            ("front_run", u8::from(front_run_from_env()).to_string()),
             ("seconds", cell.run_for.as_secs_f64().to_string()),
             (
                 "iterations",
@@ -966,6 +1014,42 @@ impl CellReading {
                 self.collectors.involuntary_switches.to_string(),
             ),
             (
+                "withheld_by_an_entry_peak_bytes",
+                (self
+                    .mutators
+                    .iter()
+                    .map(|reading| reading.withheld_by_an_entry_peak)
+                    .sum::<u64>()
+                    * MEMBER_CLASS_BYTES as u64)
+                    .to_string(),
+            ),
+            (
+                "withheld_by_an_entry_mean_bytes",
+                (self
+                    .mutators
+                    .iter()
+                    .map(|reading| {
+                        reading.withheld_by_an_entry_time / reading.wall.as_nanos().max(1)
+                    })
+                    .sum::<u128>()
+                    * MEMBER_CLASS_BYTES as u128)
+                    .to_string(),
+            ),
+            (
+                "withheld_by_an_entry_at_the_end_bytes",
+                (self
+                    .mutators
+                    .iter()
+                    .map(|reading| reading.withheld_by_an_entry_at_the_end)
+                    .sum::<u64>()
+                    * MEMBER_CLASS_BYTES as u64)
+                    .to_string(),
+            ),
+            (
+                "live_bytes",
+                (self.mutators.len() * load.live_members() * MEMBER_CLASS_BYTES).to_string(),
+            ),
+            (
                 "mutators_at_the_ceiling",
                 self.sum(|reading| usize::from(reading.at_the_ceiling))
                     .to_string(),
@@ -1061,6 +1145,7 @@ fn a_cell_of_the_rig() {
     let _g = test_guard();
     let _wait = testing::HeldRequestWait::crate_own();
     let cell = Cell::from_env();
+    crate::cycle::queue::FRONT_RUN.store(front_run_from_env(), Ordering::Relaxed);
     let class = member_class("RigNode");
     let loads: Vec<Load> = LOADS
         .into_iter()
