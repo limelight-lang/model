@@ -76,13 +76,16 @@ impl Arming {
 
 /// Arm this thread for a collection over R whole at its next clean point.
 ///
-/// One caller arms, and it cannot collect where it stands: the pressure
-/// collection, at every ending that leaves a prefix of the lane unread or
-/// that the gate refused, because what stands behind it is garbage the poll
-/// has to read (`crate::cycle::collect::collect_under_pressure`). The poll's
-/// re-offer of the deferred lane arms nothing, the re-offered roots being the
-/// collector's to take from R, and neither does the candidate queue's
-/// growth: a block the manager refused raises the collector's signal
+/// Two callers arm. The pressure collection cannot collect where it stands,
+/// and arms at every ending that leaves a prefix of the lane unread or that
+/// the gate refused, because what stands behind it is garbage the poll has to
+/// read (`crate::cycle::collect::collect_under_pressure`). The byte's reading
+/// arms on the ask the elder writes under a collector cap of zero, where its
+/// round would have taken R (`crate::cycle::token::ASKED`;
+/// `crate::cycle::worker`, "Cap zero"). The poll's re-offer of the deferred
+/// lane arms nothing, the re-offered roots being the collector's to take
+/// from R or to ask for, and neither does the candidate queue's growth: a
+/// block the manager refused raises the collector's signal
 /// (`crate::cycle::queue`). The arming for P alone is the byte's
 /// ([`arm_for_the_verdicts`]), and the lowest, a retirement pass with no
 /// collection, is the free path's count's ([`arm_to_retire`]). The arming is
@@ -94,7 +97,8 @@ pub(crate) fn arm() {
 
 /// Arm this thread for the collection over P, unless it is armed for more:
 /// the reading of `POSTED` on the free path and at the poll
-/// (`crate::cycle::token::read_and_act_on_this_thread`).
+/// (`crate::cycle::token::read_and_act_on_this_thread`), which arms R whole
+/// instead ([`arm`]) on the elder's ask under a collector cap of zero.
 pub(crate) fn arm_for_the_verdicts() {
     COLLECTION_ARMED.with(|armed| armed.set(armed.get().max(Arming::Verdicts as u8)));
 }
@@ -216,7 +220,9 @@ pub extern "C" fn ll_gc_reoffer_deferred() -> usize {
 /// §2 and "Collection requests and triggers"). Where the polls stand is the
 /// compiler's; what they fire is armed by the runtime — the byte's `POSTED`
 /// for P, a refused allocation for R whole, the free path's count of
-/// completed deaths for a retirement pass ([`Arming`]) — and collected here,
+/// completed deaths for a retirement pass ([`Arming`]), and under a collector
+/// cap of zero the elder's ask over an empty P for R whole ([`arm`]) — and
+/// collected here,
 /// where the graph is clean. The search is the collector thread's, which
 /// takes a batch on the count of an owner's ring it reads itself
 /// (`crate::cycle::worker`, `SOFT_THRESHOLD`) and arms nothing; the poll's
@@ -345,13 +351,17 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     freed
 }
 
-/// ABI: cap the collector threads the process may hold, from one to
-/// `cycle::worker::MAX_COLLECTORS`, `cap` clamped into that range. The
+/// ABI: cap the collector threads the process may hold, from zero to
+/// `cycle::worker::MAX_COLLECTORS`, `cap` clamped to the maximum. The
 /// embedder's one dial over the collectors: the runtime births siblings up
 /// to it on its own reading of the backlog and ends them when idle
-/// (`crate::cycle::worker`, "Siblings"). Without a call the cap is the
-/// crate's default. Callable at any time from any thread; a lowered cap
-/// ends the siblings above it at the elder's next round.
+/// (`crate::cycle::worker`, "Siblings"). Zero takes nothing off the mutators:
+/// the elder keeps their epoch clocks and asks a mutator whose R its round
+/// would have taken to collect in line (`crate::cycle::worker`, "Cap
+/// zero"). Without a call the cap
+/// is the crate's default. A lowered cap ends the siblings above it at the
+/// elder's next round. Set it before any mutator registers a candidate when
+/// it is zero: a change to zero while collectors work is S65.15's.
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_gc_set_collector_cap(cap: usize) {
     crate::cycle::worker::set_collector_cap(cap);

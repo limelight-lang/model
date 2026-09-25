@@ -256,6 +256,7 @@ pub(crate) struct Outcomes {
     pub(crate) posted: usize,
     pub(crate) unanswered: usize,
     pub(crate) idle: usize,
+    pub(crate) asked: usize,
     pub(crate) batches: usize,
     pub(crate) grants: usize,
     pub(crate) refusals: usize,
@@ -265,6 +266,7 @@ static TOKEN_HELD: AtomicUsize = AtomicUsize::new(0);
 static POSTED: AtomicUsize = AtomicUsize::new(0);
 static UNANSWERED: AtomicUsize = AtomicUsize::new(0);
 static IDLE: AtomicUsize = AtomicUsize::new(0);
+static ASKED: AtomicUsize = AtomicUsize::new(0);
 static MUTATORS_SERVED: AtomicUsize = AtomicUsize::new(0);
 static GRANTS: AtomicUsize = AtomicUsize::new(0);
 static REFUSALS: AtomicUsize = AtomicUsize::new(0);
@@ -275,6 +277,7 @@ pub(crate) fn note_served(served: super::Served) {
         super::Served::Posted => &POSTED,
         super::Served::Unanswered => &UNANSWERED,
         super::Served::Idle => &IDLE,
+        super::Served::Asked => &ASKED,
         super::Served::Batch { .. } => &MUTATORS_SERVED,
     };
     count.fetch_add(1, Ordering::Relaxed);
@@ -383,6 +386,7 @@ pub(crate) fn take_outcomes() -> Outcomes {
         posted: POSTED.swap(0, Ordering::Relaxed),
         unanswered: UNANSWERED.swap(0, Ordering::Relaxed),
         idle: IDLE.swap(0, Ordering::Relaxed),
+        asked: ASKED.swap(0, Ordering::Relaxed),
         batches: MUTATORS_SERVED.swap(0, Ordering::Relaxed),
         grants: GRANTS.swap(0, Ordering::Relaxed),
         refusals: REFUSALS.swap(0, Ordering::Relaxed),

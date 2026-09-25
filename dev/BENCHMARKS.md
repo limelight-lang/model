@@ -8,6 +8,38 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-25 — S65.12 the poll under a cap of zero: a count read at the poll costs 3 instructions a call at any cap; the form built leaves the poll's code the base's, and a 2 ns gap between the two builds is placement
+
+**`cycle::collect::tests::what_the_poll_costs`, both arms, release, pinned
+to CPU 11**, the base `e367a83` against the forms of cap 0 tried in S65.12.
+Counted by `perf stat -e instructions:u` over the whole run, two million
+polls: the base 353,604,149–353,605,913; a form that read the cap and R's
+front block at every poll 359,606,327–359,607,928, three instructions a poll
+more (176.8 → 179.8), and refused for it (`dev/DECISIONS.md`, "under a
+collector cap of zero the elder asks by a value of the byte"). The form built
+leaves `ll_gc_maybe_collect`'s machine code identical to the base's, compared
+by `objdump` with the addresses cut, and counts 353,607,288–353,608,395.
+
+| build, per-run minimum | empty lane | one deferred record |
+| --- | ---: | ---: |
+| base | 12.28–14.25 ns | 12.41–14.15 ns |
+| count read at the poll | 14.31–15.67 ns | 13.90–15.39 ns |
+| form built | 14.93–17.05 ns | 15.23–17.98 ns |
+| base, every function aligned to 64 bytes | 14.21–15.09 ns | 13.65–15.23 ns |
+| form built, every function aligned to 64 bytes | 14.00–15.28 ns | 13.96–14.92 ns |
+
+**The reading.** The form built runs 2 ns slower than the base in the
+default build with the same poll code and the same instruction count: the
+base's `ll_gc_maybe_collect` starts at `0x484500`, the step's at `0x489070`,
+and a third build whose poll differed only by instructions it never executes
+read 17.6–18.3 ns on the empty lane. With every function aligned to 64 bytes
+(`RUSTFLAGS="-C llvm-args=-align-all-functions=6"`) the two builds overlap
+in both arms and the step's run counts 1.5 % fewer cycles. This probe's
+placement term is up to 5 ns here, far past Method's 7–10 %, so an
+instruction count or an aligned pair decides a change to the poll, and a
+time from two default builds does not. Six interleaved runs a sitting, load
+average 1.1–1.7.
+
 ## 2026-09-24 — S65.10 the poll without the turnover's arming: 14.3–15.3 ns against 14.2–15.9 ns, no shift
 
 **Two arms of `cycle::collect::tests::what_the_poll_costs`, two binaries.**

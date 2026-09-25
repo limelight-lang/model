@@ -9,6 +9,23 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-09-25 — under a collector cap of zero the elder asks by a value of the byte, and the mutator reads no cap
+
+**Decided (model, S65.12):** under cap 0 a round requests no token; where
+it would have taken R (the threshold, a ring standing past its interval, a
+merged lane) it swaps the byte `FREE → ASKED`, `POSTED` with slot one, over
+an empty P, and the owner's reading of `ASKED` arms R whole. **Refused: the
+poll reading R** (3 instructions a poll at any cap, `dev/BENCHMARKS.md`,
+"S65.12 the poll under a cap of zero"), the cap read on the `POSTED` branch
+(a load on every free under a batch's `POSTED`; the Critic of the day, finding
+3), and the re-offer arming at the merge, which the round's merge branch
+already asks for. The price: a collection comes within a round's interval,
+as a take would; an ask a pressure collection consumed can leave an arming
+for R whole, one empty window. Decided by the model under the rule that the
+mutator's performance comes first, Edmond having handed the choice back.
+
+---
+
 ## 2026-09-24 — a part that meets B is retried under `B_max` once per grant, a part past the ceiling defers the roots it met, and the batch goes on
 
 **Decided (model, S65.9, the package's commit 7):** a part that meets B is

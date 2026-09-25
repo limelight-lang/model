@@ -151,7 +151,9 @@
 //! ([`signal_the_collector_if_due`]) — after the fire, whose reading of R
 //! whole lowers the flag. The byte's `POSTED` arms it for P, and the
 //! deferred re-offer arms nothing: the merge it counts is what sends the
-//! collector's next round to the re-offered roots.
+//! collector's next round to the re-offered roots. Under a collector cap of
+//! zero that round asks for the collection over R whole instead, by a value
+//! of the byte the poll reads anyway (`crate::cycle::token::ASKED`).
 //!
 //! # The second ring, P
 //!
@@ -1327,6 +1329,9 @@ pub(crate) fn reoffer_deferred_candidates() {
 /// (`crate::cycle::mutator_record::MutatorRecord::note_a_merge`), so that
 /// the collector's round takes the merged ring at its next visit however
 /// far below the threshold it reads.
+/// Under a collector cap of zero the same count sends the elder's next round
+/// to ask for the collection over R whole instead (`crate::cycle::worker`,
+/// "Cap zero").
 pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
     let state = mutator_state();
     if state.is_null() {

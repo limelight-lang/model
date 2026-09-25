@@ -141,7 +141,8 @@ case's raw list pointer and its two grant-behind cases;
 bound's (the chain's writes and reads, `refcount::stamp_as_read_live`,
 `shadow::for_each_live_met_row`, the block drawn back and filled);
 `the_ceiling`'s failed retry, whose met-roots walk counts a position per
-block.
+block; `the_cap_at_zero`'s cases, the ask's reading of a record under its
+hold.
 
 - [x] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
       handoff: `5014615`, three comments in `queue.rs`.
@@ -239,20 +240,34 @@ block.
         `model/gc/strategies.md`, `model/memory/critical-reserve.md`,
         `model/lowering.md` and the ruling in `rfc/dev/DECISIONS.md`; the
         crate's `gc.rs` docs. Citations 831/0, linkcheck 0.
-- [ ] S65.12 `cap 0` set before any work (package commit 9, first half)
+- [x] S65.12 `cap 0` set before any work (package commit 9, first half)
       done: `set_collector_cap` clamps to `0..=MAX_COLLECTORS`; under `cap 0`
-        the elder's round advances the epochs it is due to and serves no
-        record and no checkpoint, and the elder is still born by the poll's
-        signal, for the clock; the poll arms `AllRoots` under `cap 0` where
-        R reads at the threshold (`queue::retire_at_the_poll`'s branch and
-        the filled block's signal) and after a merge
-        (`queue::reoffer_deferred_if_epoch_moved`); red tests: a ring at
-        the threshold is collected in line, a merged lane is collected at
-        the poll after the merge, the epoch still turns, and no grant is
-        made in the whole case; `rfc/model/gc/rc-cycle.md`'s "the re-offer
-        arms no collection of the owner's" names the arming under `cap 0`
-        in the same commit (F7)
+        the elder's round advances the epochs it is due to and requests no
+        token, and the elder is still born by the poll's signal, for the
+        clock; where the round would have taken R (the threshold, a ring
+        standing past its interval, a merged lane) it asks the mutator by
+        `ASKED` over an empty P, and the mutator's reading of it arms R
+        whole; the mutator's side reads no cap (`dev/DECISIONS.md`, "under a
+        collector cap of zero the elder asks by a value of the byte, and the
+        mutator reads no cap"); red tests: each of the three is collected in
+        line, the epoch still turns, and no grant is made; the rfc's
+        summary, re-offer, in-line collection, strategies and handshake
+        passages amended in the same change (F7)
       tier: T2 · role: Critic
+      Critic 2026-09-25: (1) a ring standing below the threshold was never
+        asked for — the ask now reads the round's three branches; (2) the
+        handshake and rc-cycle still said `POSTED` arms P alone and "no other
+        transition" — amended; (3) the cap read on the `POSTED` branch taxed
+        every free under a batch's `POSTED` — the ask became a byte value;
+        (4) a pressure collection consuming an ask can leave an arming for R
+        whole, one empty window — accepted, recorded; (5) the hold was handed
+        back before the swap — kept across it; (6) missing cases — the
+        standing ring, the slot free, the cap raised after an ask, added. All
+        accepted.
+      handoff: `worker::ask_for_an_in_line_collection`, `token::ASKED`,
+        `worker/tests/the_cap_at_zero.rs` (nine cases, each red on its
+        mutation); the poll's machine code is the base's
+        (`dev/BENCHMARKS.md`, "S65.12 the poll under a cap of zero").
 - [ ] S65.15 A cap changed while collectors work (package commit 9, second
         half; `dev/S65-PLAN-CRITIC.md` F5)
       done: a round that reads the cap at zero withdraws its standing list

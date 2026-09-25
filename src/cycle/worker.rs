@@ -202,6 +202,27 @@
 //! one collector reads a ring at any instant is the token's, and a reclaim
 //! landing beside a slot's rebirth resolves at the token like any two
 //! claims.
+//!
+//! # Cap zero
+//!
+//! A cap of zero removes the takes and keeps the thread: the elder is born
+//! by the poll's signal as under any cap, and its rounds visit every record,
+//! advance each epoch that is due and give back a stale live list, and
+//! request no token; no sibling is born under it, and every sibling standing
+//! ends at the elder's next round without a backlog. The collections the
+//! takes would have made are the mutator's own, over R whole: the round that
+//! reads a mutator's R where it would have taken it — at the threshold,
+//! standing past its interval, or merged into — asks for one by writing
+//! [`ASKED`](crate::cycle::token::ASKED) over an empty P
+//! ([`ask_for_an_in_line_collection`]); a merged deferred lane is asked for as
+//! a take would have taken it, at the round after the merge
+//! (`rfc/model/gc/rc-cycle.md`, "Decision summary"). R is read by the elder
+//! rather than by the poll, and the ask is a value of the byte the mutator
+//! reads anyway, so that the mutator's side reads no cap at all: its reading
+//! tells the ask from a batch's `POSTED` by the byte alone. A round's first
+//! checkpoint still serves the grants its standing list reads, which a cap
+//! set to zero after work began leaves behind; S65.15 replaces that with the
+//! list's withdrawal.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
@@ -244,6 +265,10 @@ pub(crate) enum Served {
     /// its token or the peek came up empty, or at the withdrawal, when the
     /// record had moved on.
     Idle,
+    /// Under a collector cap of zero, R read where a take would have taken it
+    /// and the mutator asked to collect it in line
+    /// ([`ask_for_an_in_line_collection`]).
+    Asked,
     /// A batch was made: this many roots taken from R, each with a verdict
     /// posted into P, whether their trace completed, and whether R still
     /// held the threshold behind it, by its count under the token.
@@ -414,7 +439,7 @@ pub(crate) const ELDER: usize = 0;
 /// ([`set_collector_cap`]). Not a measured figure.
 const DEFAULT_COLLECTOR_CAP: usize = 4;
 
-/// The embedder's cap on collector threads, one to [`MAX_COLLECTORS`].
+/// The embedder's cap on collector threads, zero to [`MAX_COLLECTORS`].
 static COLLECTOR_CAP: AtomicUsize = AtomicUsize::new(DEFAULT_COLLECTOR_CAP);
 
 /// Rounds in a row a collector serves a backlog — two or more mutators of its
@@ -522,15 +547,25 @@ const STARTING: u8 = 1;
 const ALIVE: u8 = 2;
 const ENDING: u8 = 3;
 
-/// Set the embedder's cap on collector threads: `cap` clamped to one and
+/// Set the embedder's cap on collector threads: `cap` clamped to
 /// [`MAX_COLLECTORS`]. Siblings above a lowered cap end as idle ones do, at
-/// the elder's hand; a cap of one is a process with the elder alone.
+/// the elder's hand; a cap of one is a process with the elder alone, and a
+/// cap of zero one where the elder keeps the epoch clock and takes nothing
+/// ("Cap zero", the module doc).
 pub(crate) fn set_collector_cap(cap: usize) {
-    COLLECTOR_CAP.store(cap.clamp(1, MAX_COLLECTORS), Ordering::Relaxed);
+    COLLECTOR_CAP.store(cap.min(MAX_COLLECTORS), Ordering::Relaxed);
 }
 
+#[inline]
 fn collector_cap() -> usize {
     COLLECTOR_CAP.load(Ordering::Relaxed)
+}
+
+/// Whether the embedder capped the collectors at zero, so that a round asks
+/// rather than takes ("Cap zero", the module doc). A relaxed load: a round
+/// that misses a store of the cap reads it at the next one.
+fn collectors_capped_at_zero() -> bool {
+    collector_cap() == 0
 }
 
 /// Set the embedder's epoch interval: the longest a mutator's epoch stands
@@ -1115,8 +1150,9 @@ fn round(index: usize, threshold: usize, standing: &mut Standing) -> Round {
 }
 
 /// One record of a round: read its note for the timer, advance its epoch
-/// where it is due ([`advance_the_epoch_if_due`]), serve it once, and fold
-/// what the serve answered into `outcome`.
+/// where it is due ([`advance_the_epoch_if_due`]), serve it once — under a
+/// cap of zero, ask it to collect in line instead — and fold what the serve
+/// answered into `outcome`.
 ///
 /// **The advance comes before the serve.** A batch granted at the visit that
 /// advances opens its arena on the turned epoch and descends where the old
@@ -1149,7 +1185,12 @@ unsafe fn read_one_record(
     let now = serve_clock_now();
     advance_the_epoch_if_due(unsafe { &*record }, now);
     crate::cycle::live_list::give_back_a_stale_list(unsafe { &*record });
-    let served = unsafe { serve(record, index, threshold, standing, now) };
+    // Under a cap of zero the visit keeps the clock and requests nothing.
+    let served = if collectors_capped_at_zero() {
+        unsafe { ask_for_an_in_line_collection(record, threshold, now) }
+    } else {
+        unsafe { serve(record, index, threshold, standing, now) }
+    };
     outcome.made_a_batch |= standing.take_batches_served() > 0;
     outcome.saw_work |= standing.take_saw_work();
     standing.take_backlogged(&mut outcome.backlogged);
@@ -1159,7 +1200,7 @@ unsafe fn read_one_record(
             outcome.backlogged.push(record);
         }
         Served::Batch { .. } => outcome.made_a_batch = true,
-        Served::TokenHeld => outcome.saw_work = true,
+        Served::TokenHeld | Served::Asked => outcome.saw_work = true,
         Served::Idle | Served::Posted | Served::Unanswered => {}
     }
 
@@ -1299,6 +1340,59 @@ pub(crate) unsafe fn serve(
     }
 
     unsafe { wait_for_consent(mutator, slot, threshold, standing) }
+}
+
+/// Under a collector cap of zero, ask `record`'s mutator to collect R whole in
+/// line where the round would have taken R: the same three branches over the
+/// same reading as [`serve`]'s — R at `threshold`, a ring standing below it
+/// past the standing interval, a lane merged since the merges last accounted
+/// for ([`decide_the_branch_and_stamp_the_instant`]) — made under the reading
+/// hold, and the byte's swap `FREE → ASKED` over an empty P
+/// ([`crate::cycle::token::TraceToken::ask_to_collect_in_line`]) made under the
+/// same hold, so that it cannot land on the record's next life. The ask comes
+/// at the elder's round, as a batch would, so the in-line collection frees
+/// what the collector would have proposed within one fallback interval; the
+/// mutator pays nothing for the mode on any reading of its byte but the ask.
+/// An ask that lands restamps the standing instant and accounts for the
+/// merges, as a grant's release does, so that a ring the collection leaves
+/// standing waits its interval again.
+///
+/// A refused swap answers by the byte: `POSTED`, an ask or a batch's verdicts
+/// undisposed of, and every holder, which is a mutator collecting in line or
+/// the leftover of a positive cap, the skip.
+///
+/// # Safety
+/// `record` is a record of the registry's, and the calling thread is not its
+/// mutator.
+unsafe fn ask_for_an_in_line_collection(
+    record: *mut MutatorRecord,
+    threshold: usize,
+    now: u64,
+) -> Served {
+    if !unsafe { mutator_record::take_for_reading(record) } {
+        return Served::Idle;
+    }
+
+    let _hold = HandBackOnDrop(record);
+    let mutator = unsafe { &*record };
+    // The merges before the ring, as `serve` reads them.
+    let merges = mutator.merges();
+    let reading = unsafe { Reader::new(mutator.candidate_ring()) }.front_block_reading();
+    if decide_the_branch_and_stamp_the_instant(mutator, reading, merges, threshold, now)
+        == RingRound::Leaves
+    {
+        return Served::Idle;
+    }
+
+    match mutator.token.ask_to_collect_in_line() {
+        Ok(()) => {
+            mutator.note_standing_since(serve_clock_now());
+            mutator.note_merges_seen(merges);
+            Served::Asked
+        }
+        Err(seen) if state(seen) == POSTED => Served::Posted,
+        Err(_) => Served::TokenHeld,
+    }
 }
 
 /// What a round does with the mutator's R, and the three branches are one

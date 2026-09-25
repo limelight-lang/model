@@ -16,9 +16,11 @@
 //! | [`REQUESTED`]`\|s` | collector s | collector s asks to trace; the mutator has not consented |
 //! | [`COLLECTOR`]`\|s` | collector s, or the consenting mutator | collector s traces; the mutator withholds every return |
 //! | [`POSTED`] | collector s | no collector holds anything; the last batch's verdicts stand in P undisposed of, with its live list beside them (`crate::cycle::live_list`), and the mutator owes a collection over P |
+//! | [`ASKED`], `POSTED` with slot one | the elder | under a collector cap of zero: P is empty, and the mutator owes a collection over R whole ([`TraceToken::ask_to_collect_in_line`]) |
 //!
-//! `FREE`, `MUTATOR` and `POSTED` carry slot zero, so a collector's request
-//! expects exactly zero. Every transition is a compare-and-swap that names
+//! `FREE`, `MUTATOR` and a batch's `POSTED` carry slot zero, so a collector's
+//! request expects exactly zero; [`ASKED`] is `POSTED` in every reader that
+//! reads the state, and the mutator's reading alone tells the two apart. Every transition is a compare-and-swap that names
 //! the byte it expects, and a failed swap is acted on by the value it read
 //! back, never inferred; the two exceptions are the releases, stores over a
 //! value only their writer can change. The collector never writes
@@ -79,6 +81,12 @@ pub(crate) const REQUESTED: u8 = 2;
 pub(crate) const COLLECTOR: u8 = 3;
 /// The last batch posted verdicts the mutator has not disposed of.
 pub(crate) const POSTED: u8 = 4;
+
+/// `POSTED` written by the elder under a collector cap of zero over an empty
+/// P: the ask for a collection over R whole in line. Every reader that reads
+/// the state reads `POSTED`; the mutator's reading arms R whole on it
+/// ([`read_and_act_on_this_thread`]).
+pub(crate) const ASKED: u8 = word(POSTED, 1);
 
 /// The bits the state takes.
 pub(crate) const STATE_MASK: u8 = 0b111;
@@ -291,6 +299,21 @@ impl TraceToken {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
+            .map(|_| ())
+    }
+
+    /// Ask the mutator, as the elder under a collector cap of zero, to collect
+    /// R whole in line: one swap `FREE → ASKED` over an empty P, which the
+    /// mutator's next reading of its byte arms for that collection
+    /// ([`read_and_act_on_this_thread`]; `crate::cycle::worker`, "Cap zero").
+    /// `Err` is the byte read back: the mutator collecting, a `POSTED` or an
+    /// ask it has not yet collected over, or a request or a grant a positive
+    /// cap left. Relaxed: the collector published nothing of the mutator's
+    /// and reads nothing after the swap, and the mutator's take from the ask
+    /// finds the live list's word null, no grant having written it.
+    pub(crate) fn ask_to_collect_in_line(&self) -> Result<(), u8> {
+        self.word
+            .compare_exchange(FREE, ASKED, Ordering::Relaxed, Ordering::Relaxed)
             .map(|_| ())
     }
 
@@ -654,7 +677,11 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
         match state(seen) {
             FREE => return Reading::Free,
             POSTED => {
-                crate::gc::arm_for_the_verdicts();
+                if seen == ASKED {
+                    crate::gc::arm();
+                } else {
+                    crate::gc::arm_for_the_verdicts();
+                }
                 return Reading::Posted;
             }
             COLLECTOR => return Reading::Collector,
