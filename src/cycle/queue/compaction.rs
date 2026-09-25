@@ -1,7 +1,9 @@
-//! The mutator's retirement pass in ring form: one in-place compaction of R,
-//! the overflow buffer and, when asked, the deferred lane, drawing nothing;
-//! and over P, the disposition of a batch's prefix of verdicts or the
-//! in-place retirement of the completed deaths standing anywhere in it.
+//! The mutator's retirement pass in ring form: one in-place compaction of R
+//! where the pass is asked to read it, the overflow buffer and, when asked,
+//! the deferred lane, drawing nothing; and over P, the disposition of a
+//! batch's prefix of verdicts or the in-place retirement of the completed
+//! deaths standing anywhere in it. The close of a collection over P reads
+//! nothing of R ([`Lanes::Overflow`]).
 //!
 //! An entry whose entity completed its death in place is retired — its slot
 //! goes back through `ll_free` — and an entry the close marked goes to the
@@ -38,8 +40,26 @@ enum Destination {
     Free,
 }
 
+/// Which of the mutator's own lanes a pass reads beside P.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Lanes {
+    /// R whole and the overflow buffer: every pass but the close of a
+    /// collection over P.
+    RingAndOverflow,
+    /// The overflow buffer alone: the close of a collection over P, whose
+    /// batch holds no entry of R. A completed death standing in R is
+    /// retired by the collector's batch that takes it, through P, by the
+    /// free path's count below the threshold, or by a collection over R
+    /// whole (`rfc/model/gc/rc-cycle.md`, "The mutator's disposition").
+    Overflow,
+}
+
 /// Compact this thread's queue in place: retire every completed death, move
 /// every marked entry the deferred lane can take, keep the rest in order.
+///
+/// `lanes` says whether R is read; a pass that reads it zeroes the free
+/// path's count of withheld deaths, and one that does not leaves the count
+/// to the pass that will.
 ///
 /// `deferred_at` is the epoch cell a deferred lane going from empty to
 /// occupied records as its mirror, and `None` where this pass has no marks to read — every
@@ -54,7 +74,12 @@ enum Destination {
 /// `verdicts` is the batch's prefix of P, disposed of whole and advanced
 /// past ([`dispose_verdicts`]); `None` retires P's completed deaths in
 /// place and advances nothing.
-pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: Option<usize>) {
+pub(super) fn compact(
+    lanes: Lanes,
+    deferred_at: Option<u64>,
+    sweep_deferred: bool,
+    verdicts: Option<usize>,
+) {
     let state = mutator_state();
     if state.is_null() {
         return;
@@ -62,8 +87,14 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: 
     let mutator_state = unsafe { mutator_state_ref(state) };
     note_queue_work(1, 0, 0);
     checkpoint(0);
-    // Every pass reads R whole and retires what the free path counted.
-    mutator_state.candidate_deaths.set(0);
+    let ring = match lanes {
+        Lanes::RingAndOverflow => {
+            // The pass reads R whole and retires what the free path counted.
+            mutator_state.candidate_deaths.set(0);
+            candidate_ring()
+        }
+        Lanes::Overflow => None,
+    };
 
     if sweep_deferred {
         mutator_state.deferred().retain(
@@ -84,7 +115,7 @@ pub(super) fn compact(deferred_at: Option<u64>, sweep_deferred: bool, verdicts: 
         );
     }
 
-    if let Some(ring) = candidate_ring() {
+    if let Some(ring) = ring {
         let mut pass = ring.packing();
         while let Some(entry) = pass.read() {
             note_queue_work(0, 1, 0);

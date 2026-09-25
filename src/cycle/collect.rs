@@ -165,6 +165,10 @@ struct CollectingThread {
     /// between its rounds and can leave deaths behind after the last, and the
     /// second never ran a pass at all.
     retire_on_drop: Cell<bool>,
+    /// The batch this collection reads, which decides whether the drop's
+    /// pass reads R: a collection over P reads none of it, on its close or
+    /// here (`crate::cycle::queue::dispose_candidates`).
+    form: BatchForm,
     /// The epoch cell as the last reading of this collection saw it, and
     /// `None` where this collection read no component. The drop's disposition
     /// of P records it as the deferred lane's mirror, so that a root deferred
@@ -188,8 +192,8 @@ impl CollectingThread {
     /// survivor as untracked while its block stands stamped retained with no
     /// occupant list published — is the rule `memory::retained::register`
     /// states.
-    fn take() -> Result<Self, GateClosed> {
-        Self::take_by(HeldToken::take)
+    fn take(form: BatchForm) -> Result<Self, GateClosed> {
+        Self::take_by(HeldToken::take, form)
     }
 
     /// [`take`](Self::take) for a collection under pressure, whose take of
@@ -197,10 +201,13 @@ impl CollectingThread {
     /// the thread wants the blocks, and the stamps are a later trace's
     /// saving (`crate::cycle::live_list`).
     fn take_under_pressure() -> Result<Self, GateClosed> {
-        Self::take_by(HeldToken::take_giving_back_the_live_list)
+        Self::take_by(
+            HeldToken::take_giving_back_the_live_list,
+            BatchForm::AllRoots,
+        )
     }
 
-    fn take_by(take_the_token: fn() -> HeldToken) -> Result<Self, GateClosed> {
+    fn take_by(take_the_token: fn() -> HeldToken, form: BatchForm) -> Result<Self, GateClosed> {
         if let Some(closed) = gate() {
             return Err(closed);
         }
@@ -223,6 +230,7 @@ impl CollectingThread {
         Ok(Self {
             record,
             retire_on_drop: Cell::new(true),
+            form,
             at_turnovers: Cell::new(None),
             token,
         })
@@ -312,13 +320,20 @@ impl Drop for CollectingThread {
                 .at_turnovers
                 .get()
                 .unwrap_or_else(crate::cycle::epoch::this_threads_turnovers);
-            unsafe { crate::cycle::queue::retire_candidates_and_dispose_of_verdicts(at_turnovers) };
+            unsafe {
+                crate::cycle::queue::retire_candidates_and_dispose_of_verdicts(
+                    at_turnovers,
+                    self.form,
+                )
+            };
         }
 
         // An arming for P alone made before this collection is spent by it:
         // P is empty behind the close, and a collection over it would open
-        // an empty window.
+        // an empty window. The pass's arming goes with it and comes back
+        // where the close read no R and the deaths it counted stand there.
         crate::gc::spend_an_arming_for_the_verdicts();
+        crate::cycle::queue::arm_to_retire_if_the_count_stands();
     }
 }
 
@@ -427,7 +442,7 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
 /// As [`collect_off_the_poll`].
 unsafe fn collection(form: BatchForm) -> Collection {
     let zero = |ending| Collection { freed: 0, ending };
-    let Ok(_collecting) = CollectingThread::take() else {
+    let Ok(_collecting) = CollectingThread::take(form) else {
         // Reached only by the explicit fire: the poll reads the gate before it
         // spends its arming (`crate::gc::ll_gc_maybe_collect`), so a thread
         // whose gate is closed keeps the arming for the next poll at a clean

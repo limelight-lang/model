@@ -337,9 +337,11 @@ and returns the slot through `ll_free`. Live and unfinished registrations
 survive. The retained occupancy count includes registered dead survivors until
 this return spends their count.
 
-A collection takes nothing out of the candidate ring: it reads every entry
-from the front block to the tail as its batch, and its close compacts the
-ring in place (`cycle::queue::compaction`). Surviving entries are packed from
+A collection takes nothing out of the candidate ring: a collection over R
+whole reads every entry from the front block to the tail as its batch, and
+its close compacts the ring in place (`cycle::queue::compaction`); a
+collection over P reads nothing of the ring, and its close packs the
+overflow buffer alone. Surviving entries are packed from
 the front block's front in their order, every block's `tail` and the tail
 block are lowered, and the emptied blocks stay in the circle for the writer's
 next round; the overflow buffer is compacted in place by the same pass, and a

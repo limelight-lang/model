@@ -732,7 +732,7 @@ fn a_collection_reached_from_a_destructor_is_refused() {
 
     // The refusal is the flag falling with the collection rather than with the
     // process: the next collection of this thread runs.
-    assert!(CollectingThread::take().is_ok());
+    assert!(CollectingThread::take(BatchForm::AllRoots).is_ok());
 }
 
 /// A collection asked for from inside a destructor of an ordinary release —

@@ -52,8 +52,10 @@ pub(crate) enum Arming {
     None = 0,
     /// No collection, and a retirement pass over R: completed deaths the
     /// free path counted to [`crate::cycle::queue::DEATHS_TO_RETIRE`] stand
-    /// there with their slots withheld. Every collection retires them too,
-    /// so every other arming outranks this one.
+    /// there with their slots withheld. A collection over R whole retires
+    /// them too, so every other arming outranks this one, and the close of
+    /// a collection over P, which reads no R, arms it again while the count
+    /// stands (`crate::cycle::queue::arm_to_retire_if_the_count_stands`).
     Retire = 1,
     /// The collection over P: the collector's batch stands there, its
     /// release having written `POSTED` into this thread's byte
@@ -111,10 +113,11 @@ pub(crate) fn arm_to_retire() {
 }
 
 /// Lower an arming for P alone or for the retirement pass, keeping one for R
-/// whole: a collection just disposed of P whole and retired R's completed
-/// deaths, so a collection over P alone would open an empty window
-/// (`crate::cycle::collect::CollectingThread`), and a pass would read what
-/// the close has just read.
+/// whole: a collection just disposed of P whole, so a collection over P
+/// alone would open an empty window (`crate::cycle::collect::CollectingThread`),
+/// and one over R whole retired R's completed deaths, so a pass would read
+/// what the close has just read. The close of a collection over P arms the
+/// pass again where its count stands.
 pub(crate) fn spend_an_arming_for_the_verdicts() {
     COLLECTION_ARMED.with(|armed| {
         if armed.get() <= Arming::Verdicts as u8 {

@@ -158,10 +158,11 @@ fn this_threads_token() -> &'static crate::cycle::token::TraceToken {
     unsafe { &(*crate::cycle::mutator_record::this_thread_record()).token }
 }
 
-/// A ring at the collector's threshold is the collector's to batch, and the
-/// batch's collection over P compacts it whole: the arming is spent with no
-/// pass, the poll's signal raised for a collector that may not be born yet,
-/// and the count started again, so that D more deaths arm the pass again.
+/// A ring at the collector's threshold is the collector's to batch, whose
+/// batches post its completed deaths into P for the collection over P to
+/// retire: the arming is spent with no pass, the poll's signal raised for a
+/// collector that may not be born yet, and the count started again, so that
+/// D more deaths arm the pass again.
 #[test]
 fn a_ring_at_the_threshold_signals_the_collector_instead_of_a_pass() {
     let _g = test_guard();
@@ -232,8 +233,10 @@ fn the_pass_reads_r_and_not_the_deferred_lane() {
     reset();
 }
 
-/// Every compaction reads R whole and starts the count again: deaths counted
-/// before a collection do not bring the pass forward after it.
+/// A compaction that reads R reads it whole and starts the count again:
+/// deaths counted before a collection over R do not bring the pass forward
+/// after it. The collection over P reads no R and keeps the count
+/// (`what_the_byte_arms::the_fire_the_byte_arms_keeps_the_count_of_deaths`).
 #[test]
 fn a_compaction_starts_the_count_again() {
     let _g = test_guard();

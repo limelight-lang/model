@@ -142,7 +142,9 @@ bound's (the chain's writes and reads, `refcount::stamp_as_read_live`,
 `shadow::for_each_live_met_row`, the block drawn back and filled);
 `the_ceiling`'s failed retry, whose met-roots walk counts a position per
 block; `the_cap_at_zero`'s cases, the ask's reading of a record under its
-hold; `the_cap_set_under_work`'s, the list's withdrawal.
+hold; `the_cap_set_under_work`'s, the list's withdrawal;
+`queue::arm_to_retire_if_the_count_stands` and the test ring's
+`fill_tail_block`, which writes the writer's copy of the front.
 
 - [x] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
       handoff: `5014615`, three comments in `queue.rs`.
@@ -368,6 +370,25 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal.
         `recall_without_waiting`, `compaction::dispose_verdicts` and
         `trace_in_parts`; the probe prints its header, which `rig.sh` writes
         once.
+- [~] S65.20 The close over P reads no R (Edmond, 2026-09-25: "просто
+        удалить вызов", on S65.17's run)
+      done: a collection over P reads P's prefix and the overflow buffer
+        and nothing of R, on its close and on the drop of one that gave up
+        before it; the free path's count of withheld deaths is zeroed only
+        by a pass that reads R; a completed death standing in R returns
+        through the collector's batch, the count's pass below the threshold,
+        or a collection over R whole; `rfc/model/gc/rc-cycle.md` and the
+        package's section 8 amended in the same commits
+      tier: T2 · role: Critic
+      baseline 2026-09-25, before the edit: the close over P compacts R
+        whole (`queue::compaction::compact`, "Every pass reads R whole"), so
+        `the_fire_the_byte_arms_reads_nothing_of_r` reads 1,001 records for
+        one verdict behind 1,000 live registrations, and the rig's
+        `garbage-25` at three mutators about 260 thousand a collection,
+        13 ms; the pass draws nothing, and its working set is every block
+        of R; a completed death in R is retired by the next close over P,
+        and each close zeroes the count, so D − 1 deaths before the fire
+        and one after it arm nothing.
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,
@@ -390,10 +411,11 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal.
         R whole"), 260 thousand records a collection against an R of up to
         405 thousand on `garbage-25` at three mutators, 13 ms a collection,
         while a batch carries at most `BATCH_BOUND` roots, so R grows and
-        each judging costs more. Whether the close over P stops reading R
-        whole is put to Edmond before the run is recorded; the Critic's other
-        findings — cap 1 against siblings, p99.9 beside p99, the ceiling
-        cutting loops, a load of fresh live roots above a block — go with it.
+        each judging costs more. Edmond ruled that the close over P stops
+        reading R (S65.20), and the run is repeated after it with the
+        Critic's other findings: a cap-4 arm beside cap 1, p99.9 beside
+        p99, the cells the 512 MiB ceiling cut named, and a load of fresh
+        live roots above a block of R.
 - [ ] S65.18 The price of a batch that goes on past a part at B (Edmond,
         2026-09-24, on S65.9's second Critic round, finding 1)
       done: with a live closure past `B_max` and a garbage ring between B

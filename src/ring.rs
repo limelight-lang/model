@@ -924,7 +924,10 @@ impl<'a> Quiescent<'a> {
 
     /// Fill the tail block to capacity with `entry`, for a case that reaches
     /// the writer's block change without the registrations that would fill
-    /// it. A ring with no block is left as it is.
+    /// it. A ring with no block is left as it is. The writer's copy of the
+    /// front is set to the front the fill stopped at, as the writer's own
+    /// refresh at a full block would set it: a copy older than a read-out
+    /// front reads the filled block as holding room.
     #[cfg(test)]
     pub(crate) fn fill_tail_block(&self, entry: usize) {
         let tail_block = self.tail_block();
@@ -940,6 +943,7 @@ impl<'a> Quiescent<'a> {
             tail = step(tail);
         }
         unsafe { (*b).writer.tail.store(tail, Ordering::Relaxed) };
+        unsafe { *(*b).writer.local_front.get() = front };
     }
 }
 

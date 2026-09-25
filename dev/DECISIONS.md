@@ -9,6 +9,31 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-09-25 — the close of a collection over P reads no R, and the pass's count stands across it
+
+**Decided (Edmond, on S65.17's run, "просто удалить вызов"; S65.20):** the
+close of a collection over P disposes of P's prefix and packs the overflow
+buffer, and reads nothing of R. The pass over R was the close of a
+collection over R whole, reused for the collection over P when P was built
+(`7bb601f`); there its one work was to retire completed deaths standing in
+R and to zero the free path's count of them. The rig's run of the day,
+which the plan's S65.17 records as not yet entered here, read about 260
+thousand records a collection over P on `garbage-25` at three mutators,
+while a batch takes at most `worker::BATCH_BOUND` roots.
+
+**Decided by the model under that ruling:** the drop of a collection over P
+that gave up before its close reads no R either, the batch's form deciding
+both (`queue::compaction::Lanes`); the count is zeroed only by a pass that
+reads R; and the close of a collection over P arms the retirement pass
+again while the count stands at its figure, because the arming for P
+outranks the pass's at the poll and the close spends both, which with the
+count left standing would arm nothing until the count wrapped. A completed
+death in R is retired by the collector's batch that takes it, as a
+zero-count verdict in P, by the count's pass below the threshold, or by a
+collection over R whole.
+
+---
+
 ## 2026-09-25 — under a collector cap of zero the elder asks by a value of the byte, and the mutator reads no cap
 
 **Decided (model, S65.12):** under cap 0 a round requests no token; where
@@ -1106,7 +1131,9 @@ returned less than half of it doubles up to `DEATHS_TO_RETIRE_BOUND` — below
 the collector's threshold, under the thread's own token or at `POSTED`
 holding nothing, over R, its overflow and P, the deferred lane left to its
 turnover. At the threshold the pass is the collector's signal instead. What
-stands: no bounded sweep of R, and an unarmed poll reads no lane.
+stands: no bounded sweep of R, and an unarmed poll reads no lane. **Superseded
+in part 2026-09-25** ("the close of a collection over P reads no R…"): the
+collection the byte arms no longer retires a death standing in R.
 
 Edmond's ruling, on a stage that had built one. The stage was drawn from his
 line of 2026-09-17 — the collection `POSTED` arms also walks R and retires the

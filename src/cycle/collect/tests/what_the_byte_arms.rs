@@ -188,6 +188,8 @@ fn a_proposed_root_whose_trace_was_refused_is_written_back_into_r_behind_a_free_
     assert_eq!(stand_in_posts(1, Verdict::Proposed), Posted::Batch(1));
     assert_eq!(state(byte()), POSTED);
     assert_eq!(candidate_count(), members - 1);
+    let overflow = crate::cycle::queue::overflow_len();
+    let _ = crate::cycle::queue::take_queue_work();
 
     let refused = {
         crate::memory::critical::drain_for_test();
@@ -195,6 +197,11 @@ fn a_proposed_root_whose_trace_was_refused_is_written_back_into_r_behind_a_free_
         unsafe { ll_gc_maybe_collect() }
     };
     assert_eq!(refused, 0, "the trace was refused");
+    let read = crate::cycle::queue::take_queue_work().records_read;
+    assert!(
+        read <= 1 + overflow,
+        "the close of the refused collection over P read {read} records, P holding 1"
+    );
     assert_eq!(state(byte()), FREE, "the close released FREE all the same");
     assert_eq!(verdict_count(), 0, "P's front advanced past the root");
     assert_eq!(
@@ -407,52 +414,6 @@ fn the_pressure_path_spends_an_arming_for_the_verdicts() {
     reset();
 }
 
-/// The collection the byte arms reads no root of R, and retires R's
-/// completed deaths all the same: its close compacts the ring whole
-/// (`cycle::queue::dispose_candidates`), so a death registered after the
-/// batch took its own roots out gives its slot back at this fire.
-#[test]
-fn the_fire_the_byte_arms_retires_a_death_standing_in_r() {
-    let _g = test_guard();
-    reset();
-    assert!(crate::cycle::queue::refill_spares());
-    let node = node_class("ArmedFireNode");
-    let mut arena = Arena::new();
-    let keeper = unsafe { kept_root(&mut arena, node, "ArmedFireKeeper") };
-    assert_eq!(stand_in_posts(1, Verdict::ReadLive), Posted::Batch(1));
-    assert_eq!(state(byte()), POSTED);
-
-    // A death of its own, registered after the batch took its root out of R.
-    let class = ClassBuilder::new("ArmedFireDeath").build();
-    let mut context = LLContext { arena: &mut arena };
-    let dying = unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) };
-    unsafe {
-        crate::refcount::ll_retain(dying as *mut RcHeader);
-        assert!(
-            !ll_release(dying as *mut RcHeader),
-            "the non-final decrement registers it"
-        );
-        assert!(ll_release(dying as *mut RcHeader));
-        ll_object_die(dying);
-    }
-    assert_eq!(candidate_count(), 1, "the death stands in R");
-
-    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
-    assert_eq!(
-        candidate_count(),
-        0,
-        "the fire over P retired the death standing in R"
-    );
-    assert_eq!(state(byte()), FREE);
-
-    unsafe {
-        assert!(ll_release(keeper as *mut RcHeader));
-        ll_object_die(keeper);
-    }
-    unsafe { crate::cycle::queue::retire_candidates() };
-    reset();
-}
-
 /// A poll with nothing armed and a byte at `FREE` reads no lane: a completed
 /// death stands in R across any number of polls, its slot withheld from the
 /// allocator, until something runs a retirement pass. By ruling the poll runs
@@ -494,5 +455,218 @@ fn an_unarmed_poll_leaves_a_completed_death_registered() {
 
     unsafe { crate::cycle::queue::retire_candidates() };
     assert_eq!(candidate_count(), 0, "a retirement pass is what clears it");
+    reset();
+}
+
+/// `count` candidates registered and held live by the case's own count, the
+/// spares refilled every [`POLL_STRIDE`](crate::cycle::queue::POLL_STRIDE)
+/// registrations as a poll would.
+unsafe fn live_candidates(
+    arena: &mut Arena,
+    class: *const Class,
+    count: usize,
+) -> Vec<*mut RcHeader> {
+    (0..count)
+        .map(|index| {
+            if index % crate::cycle::queue::POLL_STRIDE == 0 {
+                crate::cycle::queue::refill_and_drain();
+            }
+            let mut context = LLContext { arena: &mut *arena };
+            let entity = unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) }
+                as *mut RcHeader;
+            unsafe {
+                ll_retain(entity);
+                assert!(!ll_release(entity), "the case holds it");
+            }
+            entity
+        })
+        .collect()
+}
+
+/// A candidate registered at a non-final decrement whose death then
+/// completed in place, its slot withheld by its entry in R.
+unsafe fn completed_death(arena: &mut Arena, class: *const Class) -> *mut RcHeader {
+    let mut context = LLContext { arena: &mut *arena };
+    let dying =
+        unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) } as *mut RcHeader;
+    unsafe {
+        ll_retain(dying);
+        assert!(!ll_release(dying), "the non-final decrement registers it");
+        assert!(ll_release(dying));
+        ll_object_die(dying as *mut Object);
+    }
+    dying
+}
+
+/// The collection the byte arms reads P and the overflow buffer and nothing
+/// of R: behind a thousand live registrations its close reads the one
+/// verdict, and R stands as it stood.
+#[test]
+fn the_fire_the_byte_arms_reads_nothing_of_r() {
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let node = node_class("UnreadRingNode");
+    let mut arena = Arena::new();
+    let keeper = unsafe { kept_root(&mut arena, node, "UnreadRingKeeper") };
+    assert_eq!(stand_in_posts(1, Verdict::ReadLive), Posted::Batch(1));
+    let behind = 1_000;
+    let live = unsafe { live_candidates(&mut arena, node, behind) };
+    assert_eq!(
+        candidate_count() + crate::cycle::queue::overflow_len(),
+        behind
+    );
+    let overflow = crate::cycle::queue::overflow_len();
+    let _ = crate::cycle::queue::take_queue_work();
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(state(byte()), FREE);
+    let work = crate::cycle::queue::take_queue_work();
+    assert!(
+        work.records_read <= 1 + overflow,
+        "the fire read {} records, P holding 1 and the overflow buffer {overflow}",
+        work.records_read
+    );
+    assert_eq!(
+        candidate_count() + crate::cycle::queue::overflow_len(),
+        behind,
+        "and R stands"
+    );
+
+    for entity in live {
+        unsafe {
+            assert!(ll_release(entity));
+            ll_object_die(entity as *mut Object);
+        }
+    }
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+        crate::cycle::queue::retire_candidates();
+    }
+    reset();
+}
+
+/// A completed death standing in R behind the batch outlives the collection
+/// over P, and returns its slot through the collector's next batch, whose
+/// zero-count verdict the next collection over P retires.
+#[test]
+fn a_death_standing_in_r_returns_through_the_collectors_batch() {
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let node = node_class("BatchedDeathNode");
+    let mut arena = Arena::new();
+    let keeper = unsafe { kept_root(&mut arena, node, "BatchedDeathKeeper") };
+    assert_eq!(stand_in_posts(1, Verdict::ReadLive), Posted::Batch(1));
+    let _ = unsafe { completed_death(&mut arena, ClassBuilder::new("BatchedDeath").build()) };
+    assert_eq!(candidate_count(), 1, "the death stands in R");
+    let record = unsafe { &*crate::cycle::mutator_record::this_thread_record() };
+    let _ = record.take_freeing_disposition_note();
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(state(byte()), FREE);
+    assert_eq!(candidate_count(), 1, "the fire over P left it in R");
+    assert!(
+        !record.take_freeing_disposition_note(),
+        "and retired nothing"
+    );
+
+    assert_eq!(stand_in_posts(1, Verdict::ZeroCount), Posted::Batch(1));
+    assert_eq!(candidate_count(), 0, "the batch took it out of R");
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(state(byte()), FREE);
+    assert_eq!(verdict_count(), 0);
+    assert!(
+        record.take_freeing_disposition_note(),
+        "the fire over P retired it out of P"
+    );
+
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+        crate::cycle::queue::retire_candidates();
+    }
+    reset();
+}
+
+/// The collection over P reads no R, so it leaves the free path's count of
+/// withheld deaths standing: D − 1 deaths before the fire and one after it
+/// arm the retirement pass, which returns all D.
+#[test]
+fn the_fire_the_byte_arms_keeps_the_count_of_deaths() {
+    const D: usize = crate::cycle::queue::DEATHS_TO_RETIRE as usize;
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let node = node_class("CountKeptNode");
+    let death = ClassBuilder::new("CountKeptDeath").build();
+    let mut arena = Arena::new();
+    let keeper = unsafe { kept_root(&mut arena, node, "CountKeptKeeper") };
+    assert_eq!(stand_in_posts(1, Verdict::ReadLive), Posted::Batch(1));
+    for _ in 0..D - 1 {
+        let _ = unsafe { completed_death(&mut arena, death) };
+    }
+    assert!(!crate::gc::is_armed());
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(state(byte()), FREE);
+    let _ = unsafe { completed_death(&mut arena, death) };
+    assert_eq!(
+        crate::gc::arming(),
+        Arming::Retire,
+        "the D-th death armed the pass across the fire"
+    );
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(candidate_count(), 0, "and the pass returned all D");
+
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+        crate::cycle::queue::retire_candidates();
+    }
+    reset();
+}
+
+/// An arming for the retirement pass that the arming for P outranked at the
+/// poll outlives the collection over P, which retires none of R's deaths:
+/// D deaths behind a posted batch are returned by the poll after the fire.
+#[test]
+fn the_fire_the_byte_arms_leaves_the_pass_its_count_armed() {
+    const D: usize = crate::cycle::queue::DEATHS_TO_RETIRE as usize;
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let node = node_class("OutrankedPassNode");
+    let death = ClassBuilder::new("OutrankedPassDeath").build();
+    let mut arena = Arena::new();
+    let keeper = unsafe { kept_root(&mut arena, node, "OutrankedPassKeeper") };
+    for _ in 0..D {
+        let _ = unsafe { completed_death(&mut arena, death) };
+    }
+    assert_eq!(crate::gc::arming(), Arming::Retire);
+    assert_eq!(stand_in_posts(1, Verdict::ReadLive), Posted::Batch(1));
+    assert_eq!(
+        candidate_count(),
+        D,
+        "the batch took the keeper's root alone"
+    );
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(state(byte()), FREE);
+    assert_eq!(candidate_count(), D, "the fire over P left R's deaths");
+    assert_eq!(
+        crate::gc::arming(),
+        Arming::Retire,
+        "and the pass their count armed"
+    );
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(candidate_count(), 0, "the pass returned all D");
+
+    unsafe {
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+        crate::cycle::queue::retire_candidates();
+    }
     reset();
 }

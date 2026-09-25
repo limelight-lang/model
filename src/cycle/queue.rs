@@ -293,9 +293,10 @@ struct MutatorCycleState {
     /// collection freed ([`take_retired_by_the_close`]).
     retired_by_the_close: Cell<u32>,
     /// Completed deaths of candidates the free path withheld since the last
-    /// compaction, which every compaction zeroes since each reads R whole;
-    /// the one that reaches `retire_after` arms the poll for the retirement
-    /// pass ([`note_a_candidate_death`]). Wrapping.
+    /// compaction that read R, which zeroes it since it reads R whole; the
+    /// close of a collection over P reads none of R and leaves it. The one
+    /// that reaches `retire_after` arms the poll for the retirement pass
+    /// ([`note_a_candidate_death`]). Wrapping.
     candidate_deaths: Cell<u16>,
     /// The count that arms the pass: [`DEATHS_TO_RETIRE`], doubled up to
     /// [`DEATHS_TO_RETIRE_BOUND`] after each pass that returned fewer than
@@ -1163,7 +1164,9 @@ pub(crate) fn read_batch_of_verdicts() -> Batch {
 /// goes to the deferred lane, and every other entry of R stays in the ring,
 /// in order; the batch's entries of P are disposed of the same way, the
 /// ones the close cannot dispose of written back into R, and P's front
-/// advances past all of them ([`verdicts`]).
+/// advances past all of them ([`verdicts`]). The close of a collection over
+/// P reads P and the overflow buffer and nothing of R
+/// ([`BatchForm::Verdicts`]).
 ///
 /// `at_turnovers` is the epoch cell as the reading that decided the marks
 /// saw it, and it is recorded only where the deferred lane goes from empty
@@ -1178,7 +1181,21 @@ pub(crate) fn read_batch_of_verdicts() -> Batch {
 /// cannot refuse is the one the fallback names, so no token is ever in no
 /// lane (`rfc/model/gc/cycle/questions.md`, Y12 clause 8).
 pub(crate) fn dispose_candidates(batch: Batch, at_turnovers: u64) {
-    compaction::compact(Some(at_turnovers), false, Some(batch.verdicts));
+    compaction::compact(
+        lanes_of(batch.form),
+        Some(at_turnovers),
+        false,
+        Some(batch.verdicts),
+    );
+}
+
+/// The lanes the close of `form`'s collection reads beside P: a collection
+/// over P read no entry of R, and its close reads none either.
+fn lanes_of(form: BatchForm) -> compaction::Lanes {
+    match form {
+        BatchForm::AllRoots => compaction::Lanes::RingAndOverflow,
+        BatchForm::Verdicts => compaction::Lanes::Overflow,
+    }
 }
 
 /// Move a traced batch whole into this mutator's deferred lane, sweeping out of
@@ -1205,7 +1222,12 @@ pub(crate) fn defer_candidates(mut batch: Batch, at_turnovers: u64) {
     }
 
     batch.mark_for_deferral(|_| true);
-    compaction::compact(Some(at_turnovers), true, Some(batch.verdicts));
+    compaction::compact(
+        lanes_of(batch.form),
+        Some(at_turnovers),
+        true,
+        Some(batch.verdicts),
+    );
 }
 
 /// Count a completed death the free path withholds because a queue entry
@@ -1227,6 +1249,22 @@ pub(crate) fn note_a_candidate_death() {
     }
 }
 
+/// Arm the retirement pass again where the free path's count stands at the
+/// figure that arms it: the close of a collection that read no R, whose
+/// arming outranked the pass's at the poll or spent it at the close
+/// (`crate::gc::spend_an_arming_for_the_verdicts`) and whose compaction
+/// left the counted deaths in R. A count a pass zeroed arms nothing.
+pub(crate) fn arm_to_retire_if_the_count_stands() {
+    let state = mutator_state();
+    if state.is_null() {
+        return;
+    }
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    if mutator_state.candidate_deaths.get() >= mutator_state.retire_after.get() {
+        crate::gc::arm_to_retire();
+    }
+}
+
 /// The poll's retirement pass over R, for an arming the free path's count
 /// made ([`note_a_candidate_death`]): the completed deaths in R, its
 /// overflow and P given back under this thread's own token, or at `POSTED`
@@ -1235,7 +1273,9 @@ pub(crate) fn note_a_candidate_death() {
 /// entries below the collector's threshold and the overflow buffer.
 ///
 /// A ring at the threshold is not read: it is the collector's to batch,
-/// whose collection over P compacts it, so the pass raises the poll's signal
+/// whose batches take it from the front and post its completed deaths into
+/// P as zero-count verdicts, which the collection over P retires, so the
+/// pass raises the poll's signal
 /// — which births the elder where none stands yet — and starts the count
 /// again. A byte a return consented at since the poll's reading is a grant
 /// the take would wait out, so the pass stands for the next poll. What the
@@ -1374,7 +1414,7 @@ pub(crate) fn deferred_lane_is_occupied() -> bool {
 /// holds the token, or the byte reads `POSTED`, which only this thread
 /// moves. Every entry still names its own held allocation.
 pub(crate) unsafe fn retire_candidates() {
-    compaction::compact(None, false, None);
+    compaction::compact(compaction::Lanes::RingAndOverflow, None, false, None);
 }
 
 /// [`retire_candidates`] over R, and over P the disposition of every entry
@@ -1385,13 +1425,14 @@ pub(crate) unsafe fn retire_candidates() {
 /// round"). A root the collection never finalized goes back into R as a
 /// registration is; `at_turnovers` is the mirror a root read live records,
 /// and the caller passes the cell as its own reading saw it rather than as
-/// it stands at the close, as [`defer_candidates`] states.
+/// it stands at the close, as [`defer_candidates`] states. `form` is the
+/// collection's, and a collection over P reads nothing of R here either.
 ///
 /// # Safety
 /// As [`retire_candidates`].
-pub(crate) unsafe fn retire_candidates_and_dispose_of_verdicts(at_turnovers: u64) {
+pub(crate) unsafe fn retire_candidates_and_dispose_of_verdicts(at_turnovers: u64, form: BatchForm) {
     let standing = verdicts::verdict_ring().map_or(0, |ring| ring.count());
-    compaction::compact(Some(at_turnovers), false, Some(standing));
+    compaction::compact(lanes_of(form), Some(at_turnovers), false, Some(standing));
 }
 
 mod compaction;
