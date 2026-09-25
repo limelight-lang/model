@@ -427,7 +427,15 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal;
         teardown and a stale entry is dropped by its reader; or leave the
         slots to the collector's batches. Whether the header has room for a
         generation or a position is unread. S65.17's rerun waits for it,
-        since the rig's garbage loads measure this path.
+        since the rig's garbage loads measure this path. A red probe stands
+        for it: `under_stress::what_sleeping_sub_threshold_threads_cost_the_`
+        `round_and_the_active_mutator` (`#[ignore]`, release) passed alone in
+        11.7 s on `6344f3c` and fails on `05f09a8` — "the collection over P
+        freed the ring", 0 against 64 — and then hangs the exit with its
+        sleepers standing; the reading, not instrumented, is the last
+        ring's torn-down entries at R's front, taken by the next batch as
+        zero-count verdicts, which the close retires and `freed` does not
+        count.
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,
