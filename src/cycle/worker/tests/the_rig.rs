@@ -133,11 +133,18 @@ struct Load {
     /// re-reading finds them. Their members count as garbage built from
     /// then on. Only with `live_once`.
     live_dies_at_half: bool,
+    /// Live rings of `churn` built and registered at every iteration, each
+    /// held by a keeper for [`CHURN_WINDOW`] iterations and then let go:
+    /// live roots flow into R steadily and die after they were read live.
+    churn_graphs: usize,
+    churn: Graph,
 }
 
 impl Load {
     const fn roots_per_iteration(&self) -> usize {
-        self.garbage_graphs * self.garbage.roots() + self.live_graphs * self.live.roots()
+        self.garbage_graphs * self.garbage.roots()
+            + self.live_graphs * self.live.roots()
+            + self.churn_graphs * self.churn.roots()
     }
 
     const fn live_members(&self) -> usize {
@@ -169,6 +176,8 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
         held: Graph::NONE,
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: ROOTS - garbage_rings,
         live: SMALL_RING,
     }
@@ -176,7 +185,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
 
 /// The loads of the S64 analysis's list. Change a name or add a load, and
 /// change `LOADS` in `dev/tools/rig.sh` with it.
-const LOADS: [Load; 17] = [
+const LOADS: [Load; 18] = [
     // Garbage at 0, 25, 50, 75 and 100 % of the roots, rounded to whole
     // rings of 63.
     mixed("garbage-0", 0),
@@ -193,6 +202,8 @@ const LOADS: [Load; 17] = [
         held: Graph::NONE,
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: 1,
         live: Graph {
             rings: 1,
@@ -212,6 +223,8 @@ const LOADS: [Load; 17] = [
         held: Graph::NONE,
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: ROOTS,
         live: Graph {
             rings: 1,
@@ -235,6 +248,8 @@ const LOADS: [Load; 17] = [
         held: Graph::NONE,
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -253,6 +268,8 @@ const LOADS: [Load; 17] = [
         held: Graph::NONE,
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -265,6 +282,8 @@ const LOADS: [Load; 17] = [
         held: Graph::NONE,
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: 1,
         live: Graph {
             rings: 1,
@@ -285,6 +304,8 @@ const LOADS: [Load; 17] = [
         held: Graph::NONE,
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -297,6 +318,8 @@ const LOADS: [Load; 17] = [
         held: Graph::NONE,
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: ROOTS,
         live: SMALL_RING,
     },
@@ -308,6 +331,8 @@ const LOADS: [Load; 17] = [
         held: Graph::NONE,
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -318,6 +343,8 @@ const LOADS: [Load; 17] = [
         held: Graph::NONE,
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -333,20 +360,41 @@ const LOADS: [Load; 17] = [
         held: Graph::NONE,
         live_once: true,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: DEFERRED_LARGE,
         live: registered_ring(1),
     },
-    // The live rings of `garbage-0`, registered once and deferred, let go at
-    // half the run: garbage only the deferred roots' re-reading can find.
+    // 8,192 live rings of six, registered once — the build fills a block of
+    // R and births the collector — and let go at half the run: garbage only
+    // the deferred roots' re-reading can find. A garbage ring of six
+    // trickles in each iteration (the Sage's load, S65.24).
     Load {
         name: "deferred-then-dead",
-        garbage_graphs: 0,
-        garbage: Graph::NONE,
+        garbage_graphs: 1,
+        garbage: SMALL_RING,
         held: Graph::NONE,
         live_once: true,
         live_dies_at_half: true,
-        live_graphs: ROOTS,
+        churn_graphs: 0,
+        churn: Graph::NONE,
+        live_graphs: 8192,
         live: SMALL_RING,
+    },
+    // Sixteen live rings of six built and registered each iteration, let go
+    // [`CHURN_WINDOW`] iterations later: roots read live before they die, the
+    // path the arms of S65.24 differ on.
+    Load {
+        name: "live-churn",
+        garbage_graphs: 0,
+        garbage: Graph::NONE,
+        held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
+        churn_graphs: 16,
+        churn: SMALL_RING,
+        live_graphs: 0,
+        live: Graph::NONE,
     },
     // The ring of `registered-ring` with a held ring of 64 registered
     // between its members, one entry in 33.
@@ -357,10 +405,16 @@ const LOADS: [Load; 17] = [
         held: registered_ring(64),
         live_once: false,
         live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
         live_graphs: 0,
         live: Graph::NONE,
     },
 ];
+
+/// Iterations a ring of `live-churn` is held for: at a 1 ms pace about a
+/// second, long enough for a round to read its root live first.
+const CHURN_WINDOW: usize = 1024;
 
 /// Live rings of `deferred-live-large`: past 64 batches of `BATCH_BOUND`.
 const DEFERRED_LARGE: usize = 70_000;
@@ -709,6 +763,67 @@ unsafe fn let_the_live_graphs_go(arena: *mut Arena, graphs: &[Built], keepers: &
     }
 }
 
+/// The live rings of `live-churn` a mutator holds: one slot an iteration,
+/// [`CHURN_WINDOW`] of them in turn, each the rings built at that iteration
+/// and their keepers. The vectors are reused from lap to lap.
+#[derive(Default)]
+struct Churn {
+    slots: Vec<(Vec<Built>, Vec<*mut Object>)>,
+    next: usize,
+}
+
+impl Churn {
+    /// Let go the rings of the slot the iteration takes, and build the
+    /// load's churn rings into it, registered and held; answers the members
+    /// let go, garbage from now on.
+    ///
+    /// # Safety
+    /// As [`build`].
+    unsafe fn turn(
+        &mut self,
+        context: &mut LLContext,
+        arena: *mut Arena,
+        class: *const Class,
+        load: Load,
+    ) -> usize {
+        if self.slots.len() < CHURN_WINDOW {
+            self.slots.push((
+                (0..load.churn_graphs).map(|_| Built::default()).collect(),
+                Vec::with_capacity(load.churn_graphs * load.churn.rings),
+            ));
+        }
+
+        let (graphs, keepers) = &mut self.slots[self.next];
+        self.next = (self.next + 1) % CHURN_WINDOW;
+        let let_go = keepers.len() * load.churn.members;
+        unsafe { let_the_keepers_go(arena, keepers) };
+        keepers.clear();
+        for built in graphs.iter_mut() {
+            unsafe {
+                build(context, arena, class, load.churn, built);
+                for &head in &built.heads {
+                    let keeper = new_constructed(context, class, MemoryCategory::GcHeap);
+                    store_prop(arena, keeper, prop_offset(NEXT), head);
+                    keepers.push(keeper);
+                }
+            }
+        }
+
+        let_go
+    }
+
+    /// Let every ring still held go, at the loop's end.
+    ///
+    /// # Safety
+    /// As [`let_the_keepers_go`].
+    unsafe fn let_all_go(&mut self, arena: *mut Arena) {
+        for (_, keepers) in &mut self.slots {
+            unsafe { let_the_keepers_go(arena, keepers) };
+            keepers.clear();
+        }
+    }
+}
+
 /// Latencies in a log-linear histogram of nanoseconds: eight buckets to a
 /// power of two, so a quantile is read within an eighth of its samples, and a
 /// sample is recorded with no allocation.
@@ -878,6 +993,7 @@ fn a_mutator(
     let mut last = from;
     let pace = millis_from_env("LL_RIG_PACE_MS");
     let mut keepers_let_go = false;
+    let mut churn = Churn::default();
     while !stop.load(Ordering::Relaxed) {
         if load.live_dies_at_half && !keepers_let_go && from.elapsed() >= run_for / 2 {
             unsafe { let_the_keepers_go(arena_ptr, &keepers) };
@@ -903,6 +1019,10 @@ fn a_mutator(
                 register_interleaved(&garbage.roots, &held.roots);
             }
             reading.garbage_members += load.garbage.members();
+        }
+
+        if load.churn_graphs > 0 {
+            reading.garbage_members += unsafe { churn.turn(&mut context, arena_ptr, class, load) };
         }
 
         if !load.live_once {
@@ -987,6 +1107,7 @@ fn a_mutator(
     reading.minor_faults = testing::thread_minor_faults() - faults_from;
     reading.records_read = crate::cycle::queue::take_queue_work().records_read;
     reading.turnovers = record.turnovers() - turnovers_from;
+    unsafe { churn.let_all_go(arena_ptr) };
     // A registered-once set is let go by its keepers alone, garbage the
     // collection after the loop or the thread's exit finds: taken apart by
     // hand, its null stores would register past the poll's stride.

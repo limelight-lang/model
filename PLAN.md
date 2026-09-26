@@ -522,6 +522,22 @@ the hold's read-modify-write against a take (S65.22);
         placements, the rest reported as guards; C wins at 6 of 8 deciding
         loads over B at both placements and loses none, B wins at 4 of 8
         over A; else A stays. The stamp arms run inside C only if C wins.
+        Amended by the Sage the same day, after a smoke run showed the live
+        loads exercise nothing — a root re-registered every iteration keeps
+        its bit, 63 roots never fill a block of R, and a load with no garbage
+        never signals a collector (`garbage-0` reads `collectors_born 0`, as
+        the calibration asserts): cells of 10 s, drain 12 s; five deciding
+        loads, paced — `deferred-live-large`, `deferred-then-dead` (8,192
+        rings of six, let go at 5 s, a garbage ring an iteration),
+        `live-churn` (sixteen rings an iteration held for 1,024 iterations)
+        at 1 ms, `garbage-25` and `registered-ring-live` at 15 ms — at the
+        two cap-1 placements; `garbage-0`, `overlapping-live`,
+        `disjoint-live` and `large-live-core` guards of the poll, which
+        must read `collectors_born 0`; C wins over B at 4 of 5 loads at each
+        placement losing none, B over A at 3 of 5 losing none; a cell where
+        an arm births no collector or makes no batch is void; the three
+        arms are three binaries, C's built with `--features collector-chain`
+        and its poll gated on that binary.
         Variant E (forget a live root) was refused by its Critic and the
         Sage; "B + forget-exact" becomes a fourth arm only if C leaves the
         field, by the Sage's rules of the same day.
