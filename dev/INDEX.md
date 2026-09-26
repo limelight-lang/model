@@ -397,6 +397,17 @@ collector through `worker::testing::pin_collectors_to`, which
 `begin_the_thread` reads. Build the test binary with
 `cargo test --release --lib --no-run` first.
 
+`dev/tools/arms.sh` and `dev/tools/arms_table.py` — a comparison of arms on
+the rig: one test binary per arm, interleaved inside each repeat, the deciding
+loads paced by the S65.24 protocol and the guards unpaced, then the table of
+each arm's median cycles and instructions an iteration with the protocol's
+tolerance and gates (`dev/BENCHMARKS.md`, "S65.24 A, B and C on a box with a
+PMU"). The mutators' counters need a kernel that grants `perf_event_open`.
+
+`dev/tools/stall.sh` — S65.27's loop: one short `live-churn` cell on one
+binary, RED when the drain frees less than half of what stood at the stop,
+which is how the collector's chain froze behind a stale room of P.
+
 `dev/tools/citations.py` — the heading-level citation check, pass 1 of
 `dev/WORKFLOW.md`'s "Checks a grep cannot make": prints every cited
 heading the named document no longer carries, and prints nothing on a
