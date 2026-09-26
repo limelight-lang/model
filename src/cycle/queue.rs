@@ -1748,9 +1748,15 @@ pub(crate) fn registered_by_lane() -> [usize; 4] {
         return [0; 4];
     }
     let mutator_state = unsafe { mutator_state_ref(state) };
+    // The collector's chain counts beside the lane: both hold roots read
+    // live, which a round of the exit takes back into R.
+    #[cfg(feature = "collector-chain")]
+    let chained = crate::cycle::chain::len(this_thread_record_ref());
+    #[cfg(not(feature = "collector-chain"))]
+    let chained = 0;
     [
         candidate_ring().map_or(0, |ring| ring.count()),
-        mutator_state.deferred().len(),
+        mutator_state.deferred().len() + chained,
         usize::from(mutator_state.overflow_len.get()),
         standing_verdict_count(),
     ]

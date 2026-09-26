@@ -137,6 +137,10 @@ fn a_serve_under(b: usize) -> (Served, testing::TracedBatch, Vec<Verdict>) {
 /// unwalked at every take.
 #[test]
 #[cfg_attr(miri, ignore = "300 blocks of objects are past what Miri affords")]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_part_past_b_is_retried_under_b_max_in_the_same_grant() {
     let _g = test_guard();
     reset_lanes();
@@ -169,6 +173,10 @@ fn a_part_past_b_is_retried_under_b_max_in_the_same_grant() {
 /// lane, R holding none of them for the epoch's next take, and the take after
 /// the turnover retries the part once more.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_failed_retry_posts_the_roots_it_met_read_live_until_the_turnover() {
     let _g = test_guard();
     reset_lanes();
@@ -238,6 +246,10 @@ fn a_failed_retry_posts_the_roots_it_met_read_live_until_the_turnover() {
 /// ring past `B_max`, the ring's root comes back read live from the retry and
 /// an unrelated kept root of the same batch read live from its own part.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_root_the_failed_retry_did_not_meet_opens_a_part_of_its_own() {
     let _g = test_guard();
     reset_lanes();
@@ -274,6 +286,10 @@ fn a_root_the_failed_retry_did_not_meet_opens_a_part_of_its_own() {
 /// recall saying nothing of the batch's size.
 #[test]
 #[cfg_attr(miri, ignore = "300 blocks of objects are past what Miri affords")]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_recalled_retry_leaves_its_roots_unwalked_and_k_where_it_stands() {
     let _g = test_guard();
     reset_lanes();
@@ -310,6 +326,10 @@ fn a_recalled_retry_leaves_its_roots_unwalked_and_k_where_it_stands() {
 /// `Unwalked`, the flag the deferral left not read as the recalled part's
 /// budget.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_recall_in_the_part_after_a_deferral_leaves_its_root_unwalked() {
     let _g = test_guard();
     reset_lanes();

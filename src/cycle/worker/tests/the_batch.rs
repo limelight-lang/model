@@ -117,6 +117,10 @@ fn verdicts() -> Vec<Verdict> {
 /// no part can place ahead of every part: the completed death first, then
 /// the ring's part with both its roots, then each kept root's part.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_batch_posts_one_verdict_per_root_in_the_parts_order_and_advances_past_them() {
     let _g = test_guard();
     reset_lanes();
@@ -202,6 +206,10 @@ pub(super) fn record_batch_size() -> usize {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_batch_is_clamped_to_ps_room_and_to_k() {
     let _g = test_guard();
     reset_lanes();
@@ -303,6 +311,10 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
 /// finishes, and the second's part meets B with the retry spent. A kept root
 /// registered after the rings' first pair comes after that part.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_part_past_b_with_the_retry_spent_defers_the_roots_it_met_and_the_batch_goes_on() {
     let _g = test_guard();
     reset_lanes();
@@ -452,6 +464,10 @@ unsafe fn long_rings_registered_in_turn(
 /// r2 is inside r1's closure and r3 is not, the batch runs two parts and
 /// posts three verdicts, r2's with r1's.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_root_an_earlier_part_met_is_posted_with_that_part() {
     let _g = test_guard();
     reset_lanes();
@@ -517,6 +533,10 @@ fn a_root_an_earlier_part_met_is_posted_with_that_part() {
 /// root of its own in a block above theirs, the part over r1 finds r2 past y,
 /// which in R's order stands between them and past the block both are in.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_root_of_a_higher_block_between_two_met_roots_hides_neither() {
     let _g = test_guard();
     reset_lanes();
@@ -731,6 +751,10 @@ fn every_part_draws_under_the_budget_of_its_own() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn the_advance_follows_the_last_post_from_the_unwind_as_well() {
     let _g = test_guard();
     reset_lanes();
@@ -902,6 +926,10 @@ fn parts_and_verdicts_of_a_serve() -> (Vec<usize>, Vec<Verdict>) {
 /// A recall standing when the trace starts is read at the first root of the
 /// pass before the parts: no part opens, and every root is posted `Unwalked`.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_recall_at_the_traces_start_opens_no_part() {
     let _g = test_guard();
     reset_lanes();
@@ -920,6 +948,10 @@ fn a_recall_at_the_traces_start_opens_no_part() {
 /// A recall made during a part shorter than a stride is read before the next
 /// part opens: the part's verdicts stand and every later root is `Unwalked`.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_recall_during_a_part_is_read_before_the_next_part() {
     let _g = test_guard();
     reset_lanes();
@@ -980,6 +1012,10 @@ fn a_recall_after_the_last_parts_trace_leaves_the_batch_complete() {
 /// depends on where the ring's blocks fall and in which order the touched list
 /// holds them, so the case reads the lookup's visits and not the posts.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_recall_stops_the_lookup_of_met_roots() {
     // A lookup of BATCH_BOUND visits holds a reading of the stride wherever
     // the trace left its count.
@@ -1149,6 +1185,10 @@ fn a_mutator_collecting_in_line_is_skipped() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none() {
     let _g = test_guard();
     reset_lanes();

@@ -106,6 +106,8 @@ pub(crate) mod mark;
 pub(crate) mod maturation;
 // The live core a collector's batch read, listed for the mutator to stamp at
 // its take from `POSTED` without a descent, or to drop under pressure.
+#[cfg(feature = "collector-chain")]
+pub(crate) mod chain;
 pub(crate) mod live_list;
 // The list a pressure collection takes out of its rows before the blocks go
 // back, and the region of the workspace it stands in.

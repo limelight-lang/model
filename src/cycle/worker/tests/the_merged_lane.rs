@@ -90,6 +90,10 @@ const LANE: usize = 8;
 /// about what the thread offers per batch, and K stays where it stood; red
 /// on the rule that doubled K after every completed batch of that form.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_batch_short_of_its_clamp_leaves_k_after_a_consenting_merge() {
     let _g = test_guard();
     reset_lanes();
@@ -131,6 +135,10 @@ fn a_batch_short_of_its_clamp_leaves_k_after_a_consenting_merge() {
 /// shape and stamped the instant. The grant records the count, so a ring
 /// registered after it stands its interval.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_packed_merged_lane_is_taken_at_the_next_round() {
     let _g = test_guard();
     reset_lanes();
@@ -180,6 +188,10 @@ fn a_packed_merged_lane_is_taken_at_the_next_round() {
 /// ring registered after it stands its interval rather than being taken as
 /// a merge.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_ring_read_empty_after_a_merge_sees_the_merge() {
     let _g = test_guard();
     reset_lanes();
@@ -214,6 +226,10 @@ fn a_ring_read_empty_after_a_merge_sees_the_merge() {
 /// middle block, which is not the tail block, and that reads as a ring at
 /// the threshold.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_batch_over_three_blocks_reads_no_backlog_below_the_threshold() {
     let _g = test_guard();
     reset_lanes();
@@ -274,6 +290,10 @@ fn a_batch_over_three_blocks_reads_no_backlog_below_the_threshold() {
 /// count after it, and the empty ring records as seen a merge whose roots
 /// then stand the whole interval.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_merge_between_the_count_and_the_reading_is_taken_a_round_later() {
     let _g = test_guard();
     reset_lanes();
@@ -335,6 +355,10 @@ fn a_merge_between_the_count_and_the_reading_is_taken_a_round_later() {
 /// merged ring however the owner packed it. Red with the count read at the
 /// release, which records the merge the batch never read.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_merge_under_a_grant_is_taken_at_the_next_round() {
     let _g = test_guard();
     reset_lanes();
@@ -396,6 +420,10 @@ fn a_merge_under_a_grant_is_taken_at_the_next_round() {
 /// exit splice the lane through the same call and trace what they merged
 /// at once, and a round that took those roots again would repeat the trace.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn only_the_turnovers_merge_is_counted() {
     let _g = test_guard();
     reset_lanes();

@@ -382,6 +382,10 @@ fn over_an_outside_storage_of_empty_cells() {
 /// A recall of a batch of several roots posts each of them once, unwalked,
 /// and advances R past all of them: `FinishThePosts` on the recall's path.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
 fn a_recalled_batch_posts_every_root_once_unwalked_and_advances_r() {
     const ROOTS: usize = 5;
     let _g = test_guard();

@@ -1004,6 +1004,90 @@ pub(crate) fn note_disposal(took: std::time::Duration) {
     disposals.longest = disposals.longest.max(took);
 }
 
+/// What the collector's chain did since a case last asked
+/// (`crate::cycle::chain`): roots pushed into its waiting and its ready
+/// part, pushes the pool refused a block for, blocks it holds now and at its
+/// most, headers its death checks read and deaths they posted, and the roots
+/// batches took from R and from the ready part.
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct ChainFigures {
+    pub(crate) pushed_waiting: usize,
+    pub(crate) pushed_ready: usize,
+    pub(crate) refusals: usize,
+    pub(crate) blocks: isize,
+    pub(crate) blocks_peak: isize,
+    pub(crate) headers_checked: usize,
+    pub(crate) deaths_posted: usize,
+    pub(crate) roots_from_r: usize,
+    pub(crate) roots_from_the_chain: usize,
+    /// Grants whose batch took no root of a standing R because the chain's
+    /// share filled the clamp.
+    pub(crate) grants_r_left_unread: usize,
+}
+
+static CHAIN_FIGURES: Mutex<ChainFigures> = Mutex::new(ChainFigures {
+    pushed_waiting: 0,
+    pushed_ready: 0,
+    refusals: 0,
+    blocks: 0,
+    blocks_peak: 0,
+    headers_checked: 0,
+    deaths_posted: 0,
+    roots_from_r: 0,
+    roots_from_the_chain: 0,
+    grants_r_left_unread: 0,
+});
+
+#[cfg(feature = "collector-chain")]
+pub(crate) fn note_chain_push(ready: bool) {
+    let mut figures = lock(&CHAIN_FIGURES);
+    if ready {
+        figures.pushed_ready += 1;
+    } else {
+        figures.pushed_waiting += 1;
+    }
+}
+
+#[cfg(feature = "collector-chain")]
+pub(crate) fn note_chain_refusal() {
+    lock(&CHAIN_FIGURES).refusals += 1;
+}
+
+#[cfg(feature = "collector-chain")]
+pub(crate) fn note_chain_block(change: isize) {
+    let mut figures = lock(&CHAIN_FIGURES);
+    figures.blocks += change;
+    figures.blocks_peak = figures.blocks_peak.max(figures.blocks);
+}
+
+#[cfg(feature = "collector-chain")]
+pub(crate) fn note_chain_check(read: usize, posted: usize) {
+    let mut figures = lock(&CHAIN_FIGURES);
+    figures.headers_checked += read;
+    figures.deaths_posted += posted;
+}
+
+#[cfg(feature = "collector-chain")]
+pub(crate) fn note_chain_batch(from_r: usize, from_the_chain: usize, r_left_unread: bool) {
+    let mut figures = lock(&CHAIN_FIGURES);
+    figures.roots_from_r += from_r;
+    figures.roots_from_the_chain += from_the_chain;
+    figures.grants_r_left_unread += usize::from(r_left_unread);
+}
+
+/// The chain's figures since the last call, and zero them but the blocks
+/// it holds.
+pub(crate) fn take_chain_figures() -> ChainFigures {
+    let mut figures = lock(&CHAIN_FIGURES);
+    let taken = *figures;
+    *figures = ChainFigures {
+        blocks: taken.blocks,
+        blocks_peak: taken.blocks,
+        ..ChainFigures::default()
+    };
+    taken
+}
+
 /// The dispositions of P since the last call, and zero them.
 pub(crate) fn take_disposals() -> VerdictCollections {
     std::mem::take(&mut *lock(&DISPOSALS))

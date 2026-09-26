@@ -570,6 +570,17 @@ the hold's read-modify-write against a take (S65.22);
         back; a mutator's push signals the collector; `registered_by_lane`
         counts the chain); the deferred lane deleted; the correctness cases
         the Sage listed, each seen red
+      built for the run, narrower (the Sage, 2026-09-26): behind the feature
+        `collector-chain`, the lane kept for the mutator's own collections,
+        the chain spliced into R at the exit, under pressure and before a
+        collection over R whole; `DEATHS_TO_POST` = 1; the ready part's
+        share up to half of `BATCH_BOUND` rather than half of K (the design
+        note says why); B's tests that read a live root in P or the lane
+        ignored under the feature with the reason, and `the_chain`'s cases
+        in their place. Not covered: a recall inside the death check at the
+        batch's level (the chain's own cursor case covers the resume), the
+        exit under a standing request and under a reading hold, and `cap 0`'s
+        ask over an expired block.
       tier: T2 · role: Critic
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the

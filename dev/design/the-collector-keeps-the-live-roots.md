@@ -32,6 +32,25 @@ precedence over the text below where the two differ:
 - A mutator's push into the chain signals the collector, and the exit's
   count of registered entries counts the chain (the Critic's cycle-1 finds).
 
+## The build measured (S65.26)
+
+C is built behind the feature `collector-chain`, narrower than the text
+below, as the Sage accepted on 2026-09-26: the chain serves the collector's
+path alone, and the mutator's own collections keep form D's deferred lane,
+the exit and the pressure path splicing the whole chain into R before each
+round and a collection over R whole splicing its ready part; the chain's
+words are two lines of the record (384 bytes in that build) that the round
+reads as atomics and no block of; a death found is posted in the grant that
+found it (`DEATHS_TO_POST` = 1); the batch traces in address order, so no
+source goes first. One rule departs from the Sage's halves of K: beside a
+ready part R takes what it holds up to its own clamp and the ready part up
+to half of `BATCH_BOUND`, the two sharing P's room in halves only where it
+holds less — a smoke run showed that K, which grows on R's batches at the
+threshold alone, stays small on a ring the round takes below it, and a
+ready part read at half of it drained behind its refills (`live-churn`:
+0.26 of 1.72 million members freed in 10 s, against 1.69 million under
+form D alone). If C wins, the lane's deletion is the step after.
+
 ## What changes
 
 **A root the collector read live costs the mutator nothing.** Today such a

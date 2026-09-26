@@ -149,6 +149,27 @@ pub(crate) struct MutatorRecord {
     /// The collector's hold over the rings' blocks for its pre-claim reading,
     /// and the exit's note of what it left to that hold.
     hold: HoldLine,
+    /// The collector's chain of the roots it read live
+    /// (`crate::cycle::chain`).
+    #[cfg(feature = "collector-chain")]
+    chain: ChainLine,
+}
+
+/// The collector's chain on the record: the waiting part, roots read live
+/// that wait for the record's epoch to pass their block's stamp, and the
+/// ready part, roots the next batch reads beside R, with the instant of the
+/// last death check. Written by the token's holder alone; the round reads
+/// the two counts, the oldest stamp and the instant under its reading hold,
+/// as atomic loads that touch no block (`crate::ring::RecordChain`). Two
+/// lines, the record growing from 256 to 384 bytes in this build.
+#[cfg(feature = "collector-chain")]
+#[repr(C, align(64))]
+struct ChainLine {
+    waiting: crate::ring::RecordChain,
+    ready: crate::ring::RecordChain,
+    /// The serve clock's reading at the waiting part's last death check, or
+    /// at its first push after an empty chain.
+    checked_at: AtomicU64,
 }
 
 /// The line the collector writes: where it reads R from, where it posts
@@ -446,7 +467,10 @@ impl WriterLine {
 unsafe impl Sync for MutatorRecord {}
 
 const _: () = assert!(size_of::<HoldLine>() == 64);
+#[cfg(not(feature = "collector-chain"))]
 const _: () = assert!(size_of::<MutatorRecord>() == 256);
+#[cfg(feature = "collector-chain")]
+const _: () = assert!(size_of::<MutatorRecord>() == 384);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, reader) == 64);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, writer) == 128);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, hold) == 192);
@@ -511,7 +535,44 @@ impl MutatorRecord {
                 live_list: AtomicPtr::new(std::ptr::null_mut()),
                 live_list_published_at: AtomicU64::new(0),
             },
+            #[cfg(feature = "collector-chain")]
+            chain: ChainLine {
+                waiting: crate::ring::RecordChain::empty(),
+                ready: crate::ring::RecordChain::empty(),
+                checked_at: AtomicU64::new(0),
+            },
         }
+    }
+
+    /// The collector's chain's waiting part: roots read live, waiting for the
+    /// epoch to pass their block's stamp.
+    #[cfg(feature = "collector-chain")]
+    #[inline]
+    pub(crate) fn chain_waiting(&self) -> &crate::ring::RecordChain {
+        &self.chain.waiting
+    }
+
+    /// The collector's chain's ready part: roots the next batch reads beside
+    /// R.
+    #[cfg(feature = "collector-chain")]
+    #[inline]
+    pub(crate) fn chain_ready(&self) -> &crate::ring::RecordChain {
+        &self.chain.ready
+    }
+
+    /// The serve clock's reading at the waiting part's last death check.
+    #[cfg(feature = "collector-chain")]
+    #[inline]
+    pub(crate) fn chain_checked_at(&self) -> u64 {
+        self.chain.checked_at.load(Ordering::Relaxed)
+    }
+
+    /// Note a death check of the waiting part at `now`, by the token's
+    /// holder.
+    #[cfg(feature = "collector-chain")]
+    #[inline]
+    pub(crate) fn note_chain_checked(&self, now: u64) {
+        self.chain.checked_at.store(now, Ordering::Relaxed);
     }
 
     /// The collector this mutator is named to (`crate::cycle::worker`).
@@ -1187,6 +1248,15 @@ fn take_record() -> *mut MutatorRecord {
                 (*released).hold.live_list.load(Ordering::Relaxed).is_null(),
                 "the exit's take consumes the live list a life left"
             );
+            #[cfg(feature = "collector-chain")]
+            {
+                debug_assert!(
+                    !(*released).chain.waiting.has_a_block()
+                        && !(*released).chain.ready.has_a_block(),
+                    "the exit splices the chain into R and dismantles R"
+                );
+                (*released).chain.checked_at.store(0, Ordering::Relaxed);
+            }
             (*released).hold.new_life.store(1, Ordering::Relaxed);
             // Last, with release: the next reading's take is what sees the
             // lines above as reset.

@@ -871,6 +871,8 @@ mod the_batch;
 mod the_cap_at_zero;
 mod the_cap_set_under_work;
 mod the_ceiling;
+#[cfg(feature = "collector-chain")]
+mod the_chain;
 mod the_epoch_clock;
 mod the_live_list;
 mod the_merged_lane;

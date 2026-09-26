@@ -172,6 +172,10 @@ fn served_reading_the_collectors_figures() -> (
 /// stays unstamped, and the list's blocks, drawn on the collector's thread,
 /// end on neither thread's figures.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn a_take_from_posted_stamps_the_live_core_the_batch_read() {
     let _g = test_guard();
     reset_lanes();
@@ -235,6 +239,10 @@ fn a_take_from_posted_stamps_the_live_core_the_batch_read() {
 /// first member no queue entry names: the roots are met and the rest of the
 /// core is not (`dev/CYCLE-SPLIT-PACKAGE-3.md`, section 11, commit 6).
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn the_next_take_in_the_same_epoch_prunes_at_the_stamped_core() {
     let _g = test_guard();
     reset_lanes();
@@ -290,6 +298,10 @@ fn the_next_take_in_the_same_epoch_prunes_at_the_stamped_core() {
 /// unread: a stamp of the batch's epoch would read as no stamp in the next,
 /// so the list goes back as it stands.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn an_advance_before_the_take_gives_the_list_back_unstamped() {
     let _g = test_guard();
     reset_lanes();
@@ -322,6 +334,10 @@ fn an_advance_before_the_take_gives_the_list_back_unstamped() {
 /// the later take would land in the block's next life. The block is drawn
 /// back from the pool and filled, and the take leaves the fill whole.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn a_block_emptied_under_posted_is_stamped_from_before_it_goes_back() {
     let _g = test_guard();
     reset_lanes();
@@ -376,6 +392,10 @@ fn a_block_emptied_under_posted_is_stamped_from_before_it_goes_back() {
 /// A listed member held in an OS-direct run whose death under `POSTED`
 /// unmaps the run has the list stamped from before the unmapping.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn a_run_freed_under_posted_is_stamped_from_before_it_is_unmapped() {
     let _g = test_guard();
     reset_lanes();
@@ -413,6 +433,10 @@ fn a_run_freed_under_posted_is_stamped_from_before_it_is_unmapped() {
 /// back. The stamps are a later trace's saving, and a thread short of memory
 /// wants the blocks.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn a_pressure_collection_under_posted_gives_the_list_back_before_its_teardown() {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     static GIVEN_BACK_BEFORE: AtomicBool = AtomicBool::new(false);
@@ -471,6 +495,10 @@ fn a_pressure_collection_under_posted_gives_the_list_back_before_its_teardown() 
 /// and the retirement pass its refusal runs holds the byte at `POSTED`: the
 /// list goes back unstamped there too.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn a_teardowns_refusal_under_posted_gives_the_list_back_unstamped() {
     unsafe extern "C" fn asks_under_pressure(_object: *mut Object) {
         unsafe { crate::cycle::collect::collect_under_pressure() };
@@ -521,6 +549,10 @@ fn a_teardowns_refusal_under_posted_gives_the_list_back_unstamped() {
 /// strides of live rows, so a walk that read the recall once, before it began,
 /// would pass the raise by two strides.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn a_recall_raised_inside_the_list_walk_is_read_within_a_stride() {
     use crate::cycle::arena::RECALL_STRIDE;
     let _g = test_guard();
@@ -579,6 +611,10 @@ fn a_recall_raised_inside_the_list_walk_is_read_within_a_stride() {
 /// thread of the case's that stands in for it, writing the instant of the
 /// advance as a round would.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn a_list_is_given_back_by_the_collector_after_an_advance_and_not_before() {
     let _g = test_guard();
     reset_lanes();
@@ -631,6 +667,10 @@ fn a_list_is_given_back_by_the_collector_after_an_advance_and_not_before() {
 /// does not take its token after a grant, its epoch advanced by the elder's
 /// visits, finds the word null while its byte still reads `POSTED`.
 #[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn the_round_gives_back_a_list_its_owner_left_standing() {
     let _g = test_guard();
     let _end = RetireOnDrop;
@@ -673,6 +713,10 @@ fn the_round_gives_back_a_list_its_owner_left_standing() {
 /// entries that block holds.
 #[test]
 #[cfg_attr(miri, ignore = "8,260 members are past what Miri affords")]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
 fn a_chain_at_its_bound_keeps_what_it_holds() {
     use crate::cycle::live_list::ENTRIES_PER_BLOCK;
     let _g = test_guard();

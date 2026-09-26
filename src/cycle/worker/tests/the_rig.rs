@@ -1202,6 +1202,8 @@ struct CellReading {
     verdict_collections: testing::VerdictCollections,
     /// The mutators' dispositions of P with no trace window.
     disposals: testing::VerdictCollections,
+    /// What the collector's chain did, zero without it.
+    chain: testing::ChainFigures,
     token_waits: testing::TokenWaits,
     /// Grants recalled by a stack's mark, and by a take.
     recalls: (usize, usize),
@@ -1412,6 +1414,27 @@ impl CellReading {
                 "disposal_longest_us",
                 self.disposals.longest.as_micros().to_string(),
             ),
+            (
+                "chain_pushed_waiting",
+                self.chain.pushed_waiting.to_string(),
+            ),
+            ("chain_pushed_ready", self.chain.pushed_ready.to_string()),
+            ("chain_refusals", self.chain.refusals.to_string()),
+            ("chain_blocks_peak", self.chain.blocks_peak.to_string()),
+            (
+                "chain_headers_checked",
+                self.chain.headers_checked.to_string(),
+            ),
+            ("chain_deaths_posted", self.chain.deaths_posted.to_string()),
+            ("roots_from_r", self.chain.roots_from_r.to_string()),
+            (
+                "roots_from_the_chain",
+                self.chain.roots_from_the_chain.to_string(),
+            ),
+            (
+                "grants_r_left_unread",
+                self.chain.grants_r_left_unread.to_string(),
+            ),
             ("collectors_born", self.collectors_born.to_string()),
             ("collectors_pinned", self.collectors_pinned.to_string()),
             (
@@ -1549,6 +1572,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let _ = testing::take_rounds();
     let _ = testing::take_verdict_collections();
     let _ = testing::take_disposals();
+    let _ = testing::take_chain_figures();
     testing::permit_births(true);
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -1594,6 +1618,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         rounds,
         verdict_collections: testing::take_verdict_collections(),
         disposals: testing::take_disposals(),
+        chain: testing::take_chain_figures(),
         token_waits: testing::take_token_waits(),
         recalls: testing::take_recalls(),
         written_back: testing::take_written_back(),

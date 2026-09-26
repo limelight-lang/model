@@ -832,12 +832,18 @@ fn a_take_over_disjoint_live_rings_leaves_the_mutator_no_root_to_trace() {
     );
     // Every root read live, so the batch proposed nothing and its release
     // owed P's disposition alone: the poll disposed of P and no collection
-    // opened a window for the census to read.
+    // opened a window for the census to read. Under the collector's chain
+    // the batch posted nothing into P at all, and released `FREE`.
     let report = collected.report.expect("the census was armed");
+    let dispositions = if cfg!(feature = "collector-chain") {
+        0
+    } else {
+        1
+    };
     assert_eq!(
         (disposals, report.scan.is_none()),
-        (1, true),
-        "one disposition of P, and no trace window over a batch that proposed nothing"
+        (dispositions, true),
+        "the dispositions of P, and no trace window over a batch that proposed nothing"
     );
 }
 

@@ -623,7 +623,7 @@ fn standing_interval() -> Duration {
 }
 
 /// Nanoseconds since [`SERVE_CLOCK_BASE`], at least one.
-fn serve_clock_now() -> u64 {
+pub(crate) fn serve_clock_now() -> u64 {
     let base = SERVE_CLOCK_BASE.get_or_init(Instant::now);
     (Instant::now().duration_since(*base).as_nanos() as u64).max(1)
 }
@@ -1457,6 +1457,14 @@ fn decide_the_branch_and_stamp_the_instant(
     threshold: usize,
     now: u64,
 ) -> RingRound {
+    // The collector's chain owes a grant of its own, whatever R reads: a
+    // ready part to read, or a waiting part the epoch or the check's term
+    // has come for (`crate::cycle::chain`).
+    #[cfg(feature = "collector-chain")]
+    if crate::cycle::chain::is_due(mutator, now, standing_interval().as_nanos() as u64) {
+        return RingRound::Serves;
+    }
+
     let stands = reading.filter(|reading| reading.holds_at_least(1));
     let Some(ring) = stands else {
         mutator.note_standing_since(0);
@@ -2208,17 +2216,69 @@ unsafe fn batch(
 ) -> Served {
     let verdicts = unsafe { VerdictWriter::open(mutator) };
     let reader = unsafe { Reader::new(mutator.candidate_ring()) };
+    // The chain's work before the roots: the blocks the epoch passed become
+    // ready, and the deaths the check finds are posted, each a verdict the
+    // release answers as any other.
+    #[cfg(feature = "collector-chain")]
+    unsafe {
+        crate::cycle::chain::expire(mutator);
+        let deaths = crate::cycle::chain::check_the_deaths(
+            mutator,
+            serve_clock_now(),
+            || arena.read_the_recall_now().is_break(),
+            |entity| verdicts.room() > 0 && verdicts.post(entity, Verdict::ZeroCount).is_ok(),
+        );
+        if deaths > 0 {
+            posted.set(true);
+        }
+    }
     let (at_the_threshold, clamp) = the_form_and_the_clamp(mutator, &reader, threshold);
+    // The clamp's shares: R alone takes the clamp its form reads. Beside a
+    // ready part R takes what it holds up to that clamp, and the ready part
+    // up to half the batch's bound whatever K reads — K grows only on R's
+    // batches at the threshold, and a ready part read at a small K would
+    // drain behind its own refills; where P's room holds less than both
+    // want, the two share it in halves, what one leaves the other taking.
+    #[cfg(feature = "collector-chain")]
+    let (take, chain_share) = match mutator.chain_ready().len() {
+        0 => (verdicts.room().min(clamp), 0),
+        ready => {
+            let wants_r = reader.unread_at_most(clamp);
+            let wants_chain = ready.min(BATCH_BOUND / 2);
+            let take = verdicts.room().min(BATCH_BOUND).min(wants_r + wants_chain);
+            let r_share = if wants_r + wants_chain > take {
+                wants_r.min(take.div_ceil(2).max(take.saturating_sub(wants_chain)))
+            } else {
+                wants_r
+            };
+            (take, take - r_share)
+        }
+    };
+    #[cfg(not(feature = "collector-chain"))]
     let take = verdicts.room().min(clamp);
     if take == 0 {
         return Served::Idle;
     }
     let (copy, order) = the_copy_in_the_workspace(arena, threshold, take);
 
-    // The entries copied out of R, which stay in R until the advance.
+    // The entries copied out of the ready part and out of R, which stay in
+    // both until the advance.
     let out = unsafe { std::slice::from_raw_parts_mut(copy, take) };
-    let peeked = reader.peek(out);
-    let taken = peeked.len();
+    #[cfg(feature = "collector-chain")]
+    let chain_peek =
+        unsafe { crate::cycle::chain::peek_the_ready_part(mutator, &mut out[..chain_share]) };
+    #[cfg(feature = "collector-chain")]
+    let from_the_chain = chain_peek.copied;
+    #[cfg(not(feature = "collector-chain"))]
+    let from_the_chain = 0;
+    let peeked = reader.peek(&mut out[from_the_chain..]);
+    let taken = from_the_chain + peeked.len();
+    #[cfg(all(test, feature = "collector-chain"))]
+    testing::note_chain_batch(
+        peeked.len(),
+        from_the_chain,
+        peeked.len() == 0 && reader.has_at_least_by_count(1),
+    );
     if taken == 0 {
         return Served::Idle;
     }
@@ -2237,7 +2297,10 @@ unsafe fn batch(
     let mut live = crate::cycle::live_list::Writer::new(arena.turnovers());
     // From the guard on, every root is owed a verdict and R its advance, on
     // the unwind too, and the release that follows is to `POSTED` or, with no
-    // set proposed, to `NOTHING_PROPOSED`.
+    // set proposed, to `NOTHING_PROPOSED`. With the chain a root read live
+    // or unwalked goes into it, and a batch that posted nothing into P
+    // releases `FREE`.
+    #[cfg(not(feature = "collector-chain"))]
     posted.set(true);
     let mut posts = FinishThePosts {
         verdicts: &verdicts,
@@ -2245,6 +2308,13 @@ unsafe fn batch(
         reader: &reader,
         peeked,
         proposed,
+        #[cfg(feature = "collector-chain")]
+        chain: ChainPosts {
+            mutator,
+            posted,
+            peek: chain_peek,
+            now: serve_clock_now(),
+        },
     };
     #[cfg(test)]
     testing::at_the_start_of_the_trace();
@@ -2283,9 +2353,22 @@ unsafe fn batch(
     let backlog = reader.has_at_least_by_count(threshold);
 
     arena.reset();
-    live.publish(mutator, serve_clock_now());
+    // A batch that posted nothing into P releases `FREE`, and the live list
+    // goes back here, the mutator taking no list from `FREE`.
+    if posted.get() {
+        live.publish(mutator, serve_clock_now());
+    } else {
+        drop(live);
+    }
     mutator.note_batch();
     if at_the_threshold {
+        // R's share and what R gave: the chain's roots size no K.
+        #[cfg(feature = "collector-chain")]
+        let (clamp, taken) = if from_the_chain > 0 {
+            (take - from_the_chain, taken - from_the_chain)
+        } else {
+            (clamp, taken)
+        };
         size_the_next_batch(mutator, clamp, taken, complete);
     }
 
@@ -2367,6 +2450,20 @@ struct FinishThePosts<'a> {
     /// Set at the first [`Verdict::Proposed`] posted, before the release
     /// reads it.
     proposed: &'a std::cell::Cell<bool>,
+    #[cfg(feature = "collector-chain")]
+    chain: ChainPosts<'a>,
+}
+
+/// What the batch owes the collector's chain: the roots it read out of the
+/// ready part, whose advance the drop makes beside R's, and the record the
+/// roots read live or unwalked go back into (`crate::cycle::chain`).
+#[cfg(feature = "collector-chain")]
+struct ChainPosts<'a> {
+    mutator: &'a MutatorRecord,
+    /// Set at the first post into P, which is what the release reads.
+    posted: &'a std::cell::Cell<bool>,
+    peek: crate::ring::ChainPeek,
+    now: u64,
 }
 
 impl FinishThePosts<'_> {
@@ -2381,6 +2478,32 @@ impl FinishThePosts<'_> {
     /// Post `verdict` for the root at `index`, which has none yet.
     fn post(&mut self, index: usize, verdict: Verdict) {
         debug_assert!(!self.has_a_verdict(index), "one verdict per root");
+        // A root read live, or one the trace did not reach, goes into the
+        // chain rather than into P — but not on the unwind, where a drawn
+        // block is an allocation inside a drop, and not where the pool
+        // refused the block: P takes it then, as without the chain.
+        #[cfg(feature = "collector-chain")]
+        if !std::thread::panicking() {
+            let kept = match verdict {
+                Verdict::ReadLive => unsafe {
+                    crate::cycle::chain::keep_read_live(
+                        self.chain.mutator,
+                        self.root(index),
+                        self.chain.now,
+                    )
+                },
+                Verdict::Unwalked => unsafe {
+                    crate::cycle::chain::keep_unwalked(self.chain.mutator, self.root(index))
+                },
+                Verdict::Proposed | Verdict::ZeroCount => false,
+            };
+            if kept {
+                self.roots[index] |= HAS_A_VERDICT;
+                return;
+            }
+        }
+        #[cfg(feature = "collector-chain")]
+        self.chain.posted.set(true);
         self.verdicts
             .post(self.root(index), verdict)
             .expect("the batch was clamped to P's room");
@@ -2406,6 +2529,10 @@ impl Drop for FinishThePosts<'_> {
     fn drop(&mut self) {
         self.post_the_rest_unwalked();
         self.reader.commit(self.peeked);
+        #[cfg(feature = "collector-chain")]
+        unsafe {
+            crate::cycle::chain::commit_the_ready_part(self.chain.mutator, self.chain.peek)
+        };
     }
 }
 
