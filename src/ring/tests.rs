@@ -220,6 +220,34 @@ fn a_peek_after_one_that_consumed_nothing_reads_what_the_writer_added() {
     words.dismantle();
 }
 
+/// A batch clamped short of what stands consumes part of what it read; the
+/// writer goes on in the same block, and the next peek reads past the tail
+/// the clamped one saw rather than stopping at it.
+#[test]
+fn a_peek_after_a_clamped_commit_reads_what_the_writer_added() {
+    let _g = test_guard();
+    let words = Words::new();
+    let writer = unsafe { Writer::new(words.slots()) };
+    let reader = unsafe { Reader::new(words.slots()) };
+    let mut out = [0; 8];
+
+    for entry in 0..4 {
+        assert!(writer.push(entry, fresh).is_ok());
+    }
+    let clamped = reader.peek(&mut out[..2]);
+    assert_eq!(clamped.len(), 2);
+    reader.commit(clamped);
+    for entry in 4..7 {
+        assert!(writer.push(entry, fresh).is_ok());
+    }
+
+    let peeked = reader.peek(&mut out);
+    assert_eq!(peeked.len(), 5, "the two left and the three added");
+    assert_eq!(&out[..5], &[2, 3, 4, 5, 6]);
+    reader.commit(peeked);
+    words.dismantle();
+}
+
 #[test]
 fn a_rewrite_packs_across_blocks_and_over_a_wrapped_front_block() {
     let _g = test_guard();
