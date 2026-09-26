@@ -122,6 +122,17 @@ struct Load {
     /// members' entries in R however far the collector lags (`PLAN.md`
     /// S65.21). Only with one garbage graph.
     held: Graph,
+    /// Whether the live graphs' roots are registered once, at the mutator's
+    /// start, and not again at every iteration: a live set past the poll's
+    /// stride, built with a poll after every [`LIVE_REGISTRATIONS_A_POLL`]
+    /// registrations, whose roots stand deferred once read live.
+    live_once: bool,
+    /// Whether the keepers let the live graphs go at half the cell's run,
+    /// which makes garbage of rings whose roots stand deferred, read live: no
+    /// decrement registers them again, and only the deferred roots' own
+    /// re-reading finds them. Their members count as garbage built from
+    /// then on. Only with `live_once`.
+    live_dies_at_half: bool,
 }
 
 impl Load {
@@ -156,6 +167,8 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
         garbage_graphs: garbage_rings,
         garbage: SMALL_RING,
         held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: ROOTS - garbage_rings,
         live: SMALL_RING,
     }
@@ -163,7 +176,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
 
 /// The loads of the S64 analysis's list. Change a name or add a load, and
 /// change `LOADS` in `dev/tools/rig.sh` with it.
-const LOADS: [Load; 15] = [
+const LOADS: [Load; 17] = [
     // Garbage at 0, 25, 50, 75 and 100 % of the roots, rounded to whole
     // rings of 63.
     mixed("garbage-0", 0),
@@ -178,6 +191,8 @@ const LOADS: [Load; 15] = [
         garbage_graphs: 0,
         garbage: Graph::NONE,
         held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: 1,
         live: Graph {
             rings: 1,
@@ -195,6 +210,8 @@ const LOADS: [Load; 15] = [
         garbage_graphs: 0,
         garbage: Graph::NONE,
         held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: ROOTS,
         live: Graph {
             rings: 1,
@@ -216,6 +233,8 @@ const LOADS: [Load; 15] = [
             fillers: 0,
         },
         held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -232,6 +251,8 @@ const LOADS: [Load; 15] = [
             fillers: 0,
         },
         held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -242,6 +263,8 @@ const LOADS: [Load; 15] = [
         garbage_graphs: 0,
         garbage: Graph::NONE,
         held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: 1,
         live: Graph {
             rings: 1,
@@ -260,6 +283,8 @@ const LOADS: [Load; 15] = [
         garbage_graphs: 1,
         garbage: REGISTERED_RING,
         held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -270,6 +295,8 @@ const LOADS: [Load; 15] = [
         garbage_graphs: 1,
         garbage: REGISTERED_RING,
         held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: ROOTS,
         live: SMALL_RING,
     },
@@ -279,6 +306,8 @@ const LOADS: [Load; 15] = [
         garbage_graphs: 1,
         garbage: registered_ring(1000),
         held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -287,8 +316,37 @@ const LOADS: [Load; 15] = [
         garbage_graphs: 1,
         garbage: registered_ring(4000),
         held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: 0,
         live: Graph::NONE,
+    },
+    // 70,000 live rings of one member, their roots registered once and
+    // deferred when read live: more than 64 batches of K = 1,024 hold, so
+    // the deferred set outlasts an epoch's reading of it (the Sage's load
+    // for starvation, S65.24). A garbage ring of six trickles in each
+    // iteration.
+    Load {
+        name: "deferred-live-large",
+        garbage_graphs: 1,
+        garbage: SMALL_RING,
+        held: Graph::NONE,
+        live_once: true,
+        live_dies_at_half: false,
+        live_graphs: DEFERRED_LARGE,
+        live: registered_ring(1),
+    },
+    // The live rings of `garbage-0`, registered once and deferred, let go at
+    // half the run: garbage only the deferred roots' re-reading can find.
+    Load {
+        name: "deferred-then-dead",
+        garbage_graphs: 0,
+        garbage: Graph::NONE,
+        held: Graph::NONE,
+        live_once: true,
+        live_dies_at_half: true,
+        live_graphs: ROOTS,
+        live: SMALL_RING,
     },
     // The ring of `registered-ring` with a held ring of 64 registered
     // between its members, one entry in 33.
@@ -297,10 +355,19 @@ const LOADS: [Load; 15] = [
         garbage_graphs: 1,
         garbage: REGISTERED_RING,
         held: registered_ring(64),
+        live_once: false,
+        live_dies_at_half: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
 ];
+
+/// Live rings of `deferred-live-large`: past 64 batches of `BATCH_BOUND`.
+const DEFERRED_LARGE: usize = 70_000;
+
+/// Registrations the build of a registered-once live set makes between two
+/// polls, inside the poll's stride.
+const LIVE_REGISTRATIONS_A_POLL: usize = POLL_STRIDE / 2;
 
 /// A ring of `members` whose every member is a registered candidate.
 const fn registered_ring(members: usize) -> Graph {
@@ -329,8 +396,15 @@ const REGISTERED_RING: Graph = Graph {
 const _: () = {
     let mut index = 0;
     while index < LOADS.len() {
-        assert!(LOADS[index].roots_per_iteration() + LOADS[index].held.roots() < POLL_STRIDE);
-        assert!(LOADS[index].live_members() < POLL_STRIDE);
+        let load = LOADS[index];
+        let registered_each_iteration = if load.live_once {
+            load.garbage_graphs * load.garbage.roots()
+        } else {
+            load.roots_per_iteration()
+        };
+        assert!(registered_each_iteration + load.held.roots() < POLL_STRIDE);
+        assert!(load.live_once || load.live_members() < POLL_STRIDE);
+        assert!(!load.live_dies_at_half || load.live_once);
         index += 1;
     }
 };
@@ -537,6 +611,7 @@ unsafe fn hold_the_live_graphs(
 ) -> (Vec<Built>, Vec<*mut Object>) {
     let mut graphs = Vec::with_capacity(load.live_graphs);
     let mut keepers = Vec::new();
+    let mut since_a_poll = 0;
     for _ in 0..load.live_graphs {
         let mut built = Built::default();
         unsafe {
@@ -549,9 +624,36 @@ unsafe fn hold_the_live_graphs(
         }
 
         graphs.push(built);
+        since_a_poll += load.live.roots();
+        if load.live_once && since_a_poll >= LIVE_REGISTRATIONS_A_POLL {
+            let _ = unsafe { crate::gc::ll_gc_maybe_collect() };
+            since_a_poll = 0;
+        }
     }
 
     (graphs, keepers)
+}
+
+/// Let the keepers go, which makes garbage of the live graphs whose roots
+/// stand registered: each keeper's edge nulled — a decrement a registered
+/// head does not register again — and the keeper released and died.
+///
+/// # Safety
+/// As [`let_the_live_graphs_go`], and the graphs are not touched again.
+unsafe fn let_the_keepers_go(arena: *mut Arena, keepers: &[*mut Object]) {
+    for (index, &keeper) in keepers.iter().enumerate() {
+        unsafe {
+            store_prop(arena, keeper, prop_offset(NEXT), std::ptr::null_mut());
+            assert!(
+                ll_release(keeper as *mut RcHeader),
+                "the keeper's edge is null, so its creation reference is its last"
+            );
+            ll_object_die(keeper);
+        }
+        if (index + 1) % LIVE_REGISTRATIONS_A_POLL == 0 {
+            let _ = unsafe { crate::gc::ll_gc_maybe_collect() };
+        }
+    }
 }
 
 /// Take the live graphs apart by hand: every member retained, so that no
@@ -744,6 +846,7 @@ fn a_mutator(
     class: *const Class,
     start: &Barrier,
     stop: &AtomicBool,
+    run_for: Duration,
 ) -> MutatorReading {
     if let Some(cpu) = cpu {
         testing::pin_this_thread_to(cpu)
@@ -774,7 +877,14 @@ fn a_mutator(
     let from = Instant::now();
     let mut last = from;
     let pace = millis_from_env("LL_RIG_PACE_MS");
+    let mut keepers_let_go = false;
     while !stop.load(Ordering::Relaxed) {
+        if load.live_dies_at_half && !keepers_let_go && from.elapsed() >= run_for / 2 {
+            unsafe { let_the_keepers_go(arena_ptr, &keepers) };
+            reading.garbage_members += load.live_members();
+            keepers_let_go = true;
+        }
+
         if load.held.members() == 0 {
             for _ in 0..load.garbage_graphs {
                 unsafe {
@@ -795,9 +905,11 @@ fn a_mutator(
             reading.garbage_members += load.garbage.members();
         }
 
-        for graph in &live {
-            for &root in &graph.roots {
-                unsafe { register(root) };
+        if !load.live_once {
+            for graph in &live {
+                for &root in &graph.roots {
+                    unsafe { register(root) };
+                }
             }
         }
 
@@ -875,7 +987,14 @@ fn a_mutator(
     reading.minor_faults = testing::thread_minor_faults() - faults_from;
     reading.records_read = crate::cycle::queue::take_queue_work().records_read;
     reading.turnovers = record.turnovers() - turnovers_from;
-    unsafe { let_the_live_graphs_go(arena_ptr, &live, &keepers) };
+    // A registered-once set is let go by its keepers alone, garbage the
+    // collection after the loop or the thread's exit finds: taken apart by
+    // hand, its null stores would register past the poll's stride.
+    if !load.live_once {
+        unsafe { let_the_live_graphs_go(arena_ptr, &live, &keepers) };
+    } else if !keepers_let_go {
+        unsafe { let_the_keepers_go(arena_ptr, &keepers) };
+    }
     // The held rings go with their keepers, garbage the collection after
     // the loop finds.
     for keeper in held_keepers {
@@ -960,6 +1079,8 @@ struct CellReading {
     rounds: usize,
     /// The mutators' collections over P.
     verdict_collections: testing::VerdictCollections,
+    /// The mutators' dispositions of P with no trace window.
+    disposals: testing::VerdictCollections,
     token_waits: testing::TokenWaits,
     /// Grants recalled by a stack's mark, and by a take.
     recalls: (usize, usize),
@@ -1164,6 +1285,12 @@ impl CellReading {
                 "freed_by_verdict_collections",
                 self.verdict_collections.freed.to_string(),
             ),
+            ("disposals", self.disposals.collections.to_string()),
+            ("disposal_us", self.disposals.total.as_micros().to_string()),
+            (
+                "disposal_longest_us",
+                self.disposals.longest.as_micros().to_string(),
+            ),
             ("collectors_born", self.collectors_born.to_string()),
             ("collectors_pinned", self.collectors_pinned.to_string()),
             (
@@ -1300,6 +1427,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let _ = testing::take_outcomes();
     let _ = testing::take_rounds();
     let _ = testing::take_verdict_collections();
+    let _ = testing::take_disposals();
     testing::permit_births(true);
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -1309,7 +1437,10 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         .iter()
         .map(|&cpu| {
             let (stop, start, class) = (Arc::clone(&stop), Arc::clone(&start), Sent(class));
-            std::thread::spawn(move || a_mutator(load, cpu, class.into_inner(), &start, &stop))
+            let run_for = cell.run_for;
+            std::thread::spawn(move || {
+                a_mutator(load, cpu, class.into_inner(), &start, &stop, run_for)
+            })
         })
         .collect();
     start.wait();
@@ -1341,6 +1472,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         outcomes,
         rounds,
         verdict_collections: testing::take_verdict_collections(),
+        disposals: testing::take_disposals(),
         token_waits: testing::take_token_waits(),
         recalls: testing::take_recalls(),
         written_back: testing::take_written_back(),

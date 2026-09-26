@@ -987,6 +987,21 @@ pub(crate) fn take_verdict_collections() -> VerdictCollections {
     std::mem::take(&mut *lock(&VERDICT_COLLECTIONS))
 }
 
+/// The mutators' dispositions of P with no trace window since a case last
+/// asked, counted as the collections over P are; `freed` stays zero, a
+/// disposition returning the slots of deaths and freeing no set.
+static DISPOSALS: Mutex<VerdictCollections> = Mutex::new(VerdictCollections {
+    collections: 0,
+    total: std::time::Duration::ZERO,
+    longest: std::time::Duration::ZERO,
+    freed: 0,
+});
+
+/// The dispositions of P since the last call, and zero them.
+pub(crate) fn take_disposals() -> VerdictCollections {
+    std::mem::take(&mut *lock(&DISPOSALS))
+}
+
 /// Grants recalled by a stack of withheld returns at its mark M, and by the
 /// mutator's take, since a case last asked; a grant is counted once, by
 /// whichever recalled it first.
