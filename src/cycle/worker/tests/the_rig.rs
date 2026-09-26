@@ -42,7 +42,16 @@
 //! - `LL_RIG_COLLECTOR_CPUS` — the CPUs the collectors pin to, slot by slot
 //!   (`worker::testing::pin_collectors_to`);
 //! - `LL_RIG_CAP` — the collector cap, the crate's own when unset;
-//! - `LL_RIG_SECONDS` — how long the mutators run their loops.
+//! - `LL_RIG_SECONDS` — how long the mutators run their loops;
+//! - `LL_RIG_CHURN_GRAPHS`, `LL_RIG_CHURN_WINDOW` — a churn load's rings an
+//!   iteration and the iterations each is held, 16 and 1,024 unless set: the
+//!   live set it keeps is their product.
+//!
+//! Where the kernel grants them, each mutator's user-mode cycles and
+//! instructions over its loop are read beside its CPU
+//! ([`testing::ThreadCycles`]); they sum to `perf stat`'s count of the whole
+//! process within 0.01 % on a cell with no collector (`dev/BENCHMARKS.md`,
+//! "S65.24 A, B and C on a box with a PMU").
 //!
 //! Run in a release build:
 //! `cargo test --release --lib -- --ignored --exact
@@ -134,7 +143,7 @@ struct Load {
     /// then on. Only with `live_once`.
     live_dies_at_half: bool,
     /// Live rings of `churn` built and registered at every iteration, each
-    /// held by a keeper for [`CHURN_WINDOW`] iterations and then let go:
+    /// held by a keeper for [`churn_window`] iterations and then let go:
     /// live roots flow into R steadily and die after they were read live.
     churn_graphs: usize,
     churn: Graph,
@@ -382,7 +391,7 @@ const LOADS: [Load; 18] = [
         live: SMALL_RING,
     },
     // Sixteen live rings of six built and registered each iteration, let go
-    // [`CHURN_WINDOW`] iterations later: roots read live before they die, the
+    // [`churn_window`] iterations later: roots read live before they die, the
     // path the arms of S65.24 differ on.
     Load {
         name: "live-churn",
@@ -413,8 +422,16 @@ const LOADS: [Load; 18] = [
 ];
 
 /// Iterations a ring of `live-churn` is held for: at a 1 ms pace about a
-/// second, long enough for a round to read its root live first.
-const CHURN_WINDOW: usize = 1024;
+/// second, long enough for a round to read its root live first; 1,024 unless
+/// `LL_RIG_CHURN_WINDOW` says otherwise.
+fn churn_window() -> usize {
+    static WINDOW: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *WINDOW.get_or_init(|| {
+        std::env::var("LL_RIG_CHURN_WINDOW").map_or(1024, |window| {
+            window.parse().expect("LL_RIG_CHURN_WINDOW is a count")
+        })
+    })
+}
 
 /// Live rings of `deferred-live-large`: past 64 batches of `BATCH_BOUND`.
 const DEFERRED_LARGE: usize = 70_000;
@@ -764,7 +781,7 @@ unsafe fn let_the_live_graphs_go(arena: *mut Arena, graphs: &[Built], keepers: &
 }
 
 /// The live rings of `live-churn` a mutator holds: one slot an iteration,
-/// [`CHURN_WINDOW`] of them in turn, each the rings built at that iteration
+/// [`churn_window`] of them in turn, each the rings built at that iteration
 /// and their keepers. The vectors are reused from lap to lap.
 #[derive(Default)]
 struct Churn {
@@ -786,7 +803,8 @@ impl Churn {
         class: *const Class,
         load: Load,
     ) -> usize {
-        if self.slots.len() < CHURN_WINDOW {
+        let window = churn_window();
+        if self.slots.len() < window {
             self.slots.push((
                 (0..load.churn_graphs).map(|_| Built::default()).collect(),
                 Vec::with_capacity(load.churn_graphs * load.churn.rings),
@@ -794,7 +812,7 @@ impl Churn {
         }
 
         let (graphs, keepers) = &mut self.slots[self.next];
-        self.next = (self.next + 1) % CHURN_WINDOW;
+        self.next = (self.next + 1) % window;
         let let_go = keepers.len() * load.churn.members;
         unsafe { let_the_keepers_go(arena, keepers) };
         keepers.clear();
@@ -942,6 +960,12 @@ struct MutatorReading {
     freed_in_the_drain: usize,
     /// The thread's CPU over the loop alone.
     cpu_in_the_loop: Duration,
+    /// The thread's user-mode cycles and instructions over the loop alone,
+    /// and the share of the loop the counters ran; zeros where the kernel
+    /// refused them ([`testing::ThreadCycles`]).
+    cycles_in_the_loop: u64,
+    instructions_in_the_loop: u64,
+    counter_share: f64,
     /// Garbage built and not yet freed at the loop's end.
     backlog_at_the_stop: usize,
     /// How long after the loop's end the drain's polls took to free every
@@ -986,6 +1010,7 @@ fn a_mutator(
         testing::thread_context_switches(),
     );
     let faults_from = testing::thread_minor_faults();
+    let counters = testing::ThreadCycles::open();
     let _ = crate::cycle::queue::take_queue_work();
     let record = unsafe { &*mutator_record::this_thread_record() };
     let turnovers_from = record.turnovers();
@@ -1075,6 +1100,14 @@ fn a_mutator(
     reading.wall = from.elapsed();
     reading.withheld_by_an_entry_at_the_end = crate::cycle::queue::withheld_by_an_entry();
     reading.cpu_in_the_loop = testing::thread_cpu_time() - cpu_from;
+    if let Some(counters) = &counters {
+        (
+            reading.cycles_in_the_loop,
+            reading.instructions_in_the_loop,
+            reading.counter_share,
+        ) = counters.read();
+    }
+
     reading.backlog_at_the_stop = reading
         .garbage_members
         .saturating_sub(reading.freed_by_polls);
@@ -1510,6 +1543,30 @@ impl CellReading {
                     .to_string(),
             ),
             (
+                "mutator_cycles_in_the_loop",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.cycles_in_the_loop)
+                    .sum::<u64>()
+                    .to_string(),
+            ),
+            (
+                "mutator_instructions_in_the_loop",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.instructions_in_the_loop)
+                    .sum::<u64>()
+                    .to_string(),
+            ),
+            (
+                "mutator_counter_share_min",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.counter_share)
+                    .fold(1.0f64, f64::min)
+                    .to_string(),
+            ),
+            (
                 "backlog_at_the_stop",
                 self.sum(|reading| reading.backlog_at_the_stop).to_string(),
             ),
@@ -1651,6 +1708,16 @@ fn a_cell_of_the_rig() {
     let loads: Vec<Load> = LOADS
         .into_iter()
         .filter(|load| cell.load.as_deref().is_none_or(|name| name == load.name))
+        .map(|mut load| {
+            // `LL_RIG_CHURN_GRAPHS` scales a churn load's rings an iteration.
+            if load.churn_graphs > 0
+                && let Ok(graphs) = std::env::var("LL_RIG_CHURN_GRAPHS")
+            {
+                load.churn_graphs = graphs.parse().expect("LL_RIG_CHURN_GRAPHS is a count");
+            }
+
+            load
+        })
         .collect();
     assert!(
         !loads.is_empty(),
@@ -1752,6 +1819,46 @@ fn the_rigs_figures_read_their_known_answers() {
         "twenty sleeps read {cpu:?} of CPU and {switches} voluntary switches"
     );
     println!("calibration: twenty sleeps read {cpu:?} of CPU and {switches} voluntary switches");
+
+    // Ten million turns of a loop retire at least one instruction each, and
+    // twenty sleeps retire next to none in user mode. A box whose kernel
+    // refuses the counters reads zeros in the line and skips this.
+    let counted = std::thread::spawn(|| {
+        let counters = testing::ThreadCycles::open()?;
+        let mut sum = 0u64;
+        for turn in 0..10_000_000u64 {
+            sum = std::hint::black_box(sum.wrapping_add(turn));
+        }
+
+        let (cycles, instructions, share) = counters.read();
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        Some((
+            cycles,
+            instructions,
+            share,
+            counters.read().1 - instructions,
+        ))
+    })
+    .join()
+    .unwrap();
+    if let Some((cycles, instructions, share, slept)) = counted {
+        assert!(
+            (10_000_000..100_000_000).contains(&instructions) && cycles > 0 && share == 1.0,
+            "a loop of ten million turns read {instructions} instructions and {cycles} \
+             cycles, the counters running {share} of it"
+        );
+        assert!(
+            slept < 1_000_000,
+            "twenty sleeps read {slept} user-mode instructions"
+        );
+        println!(
+            "calibration: ten million turns read {instructions} instructions and {cycles} \
+             cycles; twenty sleeps {slept} instructions"
+        );
+    }
 
     // No garbage frees nothing, withholds nothing and signals no collector.
     let read = run(&cell, load_named("garbage-0"), class);

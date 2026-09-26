@@ -1169,6 +1169,107 @@ pub(crate) fn thread_cpu_time() -> std::time::Duration {
     std::time::Duration::ZERO
 }
 
+/// Two hardware counters of the calling thread, user mode only: the cycles
+/// and the instructions it retired since [`ThreadCycles::open`]. `None`
+/// where the kernel refuses them (no PMU, `perf_event_paranoid` above 2),
+/// off x86-64 Linux and under Miri.
+pub(crate) struct ThreadCycles {
+    /// The two descriptors, cycles first.
+    descriptors: [i32; 2],
+}
+
+impl ThreadCycles {
+    pub(crate) fn open() -> Option<ThreadCycles> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+        {
+            let cycles = open_counter(0)?;
+            let Some(instructions) = open_counter(1) else {
+                unsafe { close(cycles) };
+                return None;
+            };
+            Some(ThreadCycles {
+                descriptors: [cycles, instructions],
+            })
+        }
+
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64", not(miri))))]
+        None
+    }
+
+    /// Cycles and instructions since the open, each scaled by the share of
+    /// the interval its counter ran, and the lower share: below 1 only when
+    /// the kernel multiplexed the counters, a reading not to be quoted.
+    pub(crate) fn read(&self) -> (u64, u64, f64) {
+        let mut values = [0u64; 2];
+        let mut share = 1.0f64;
+        for (value, &descriptor) in values.iter_mut().zip(&self.descriptors) {
+            // `PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING`:
+            // the count, the time enabled, the time running.
+            let mut buffer = [0u64; 3];
+            let read = unsafe { read(descriptor, buffer.as_mut_ptr().cast(), 24) };
+            assert_eq!(read, 24, "the counter reads");
+            let ran = if buffer[1] == 0 {
+                1.0
+            } else {
+                buffer[2] as f64 / buffer[1] as f64
+            };
+            share = share.min(ran);
+            *value = if ran > 0.0 {
+                (buffer[0] as f64 / ran) as u64
+            } else {
+                0
+            };
+        }
+
+        (values[0], values[1], share)
+    }
+}
+
+impl Drop for ThreadCycles {
+    fn drop(&mut self) {
+        for &descriptor in &self.descriptors {
+            unsafe { close(descriptor) };
+        }
+    }
+}
+
+unsafe extern "C" {
+    fn syscall(number: i64, ...) -> i64;
+    fn read(descriptor: i32, buffer: *mut u8, count: usize) -> isize;
+    fn close(descriptor: i32) -> i32;
+}
+
+/// One `PERF_TYPE_HARDWARE` counter of `config` on the calling thread, any
+/// CPU, user mode only, counting from the open.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", not(miri)))]
+fn open_counter(config: u64) -> Option<i32> {
+    /// `perf_event_open` in x86-64 Linux's numbering.
+    const PERF_EVENT_OPEN: i64 = 298;
+    /// `PERF_ATTR_SIZE_VER7`: the kernel accepts every size it knows.
+    const ATTRIBUTE_SIZE: usize = 128;
+    /// `exclude_kernel | exclude_hv`, bits 5 and 6 of the flag word.
+    const USER_ONLY: u64 = 1 << 5 | 1 << 6;
+
+    let mut attribute = [0u64; ATTRIBUTE_SIZE / 8];
+    // The type (`PERF_TYPE_HARDWARE`, zero) in the low half, the size in
+    // the high.
+    attribute[0] = (ATTRIBUTE_SIZE as u64) << 32;
+    attribute[1] = config;
+    attribute[4] = 1 | 2;
+    attribute[5] = USER_ONLY;
+    let descriptor = unsafe {
+        syscall(
+            PERF_EVENT_OPEN,
+            attribute.as_ptr(),
+            0i32,
+            -1i32,
+            -1i32,
+            0u64,
+        )
+    };
+    (descriptor >= 0).then_some(descriptor as i32)
+}
+
 /// The calling thread's context switches since its creation, voluntary and
 /// involuntary (`getrusage(RUSAGE_THREAD)`); zeros off Linux and under Miri.
 pub(crate) fn thread_context_switches() -> (u64, u64) {
