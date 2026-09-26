@@ -52,6 +52,9 @@ pub(crate) enum Checked {
     Keep,
     /// The entry is taken out of the chain: tombstoned in place.
     Take,
+    /// The entry stays and the check ends on it, the cursor kept on the
+    /// entry, so the next check reads it first.
+    KeepAndStop,
 }
 
 impl RecordChain {
@@ -146,16 +149,21 @@ impl RecordChain {
     }
 
     /// Detach the leading blocks whose stamp `due` answers true for, in
-    /// their order.
+    /// their order. `stop` is asked before each block, and a true answer
+    /// detaches what was read before it.
     ///
     /// # Safety
     /// The caller holds the token.
-    pub(crate) unsafe fn detach_while(&self, due: impl Fn(u64) -> bool) -> Option<Detached> {
+    pub(crate) unsafe fn detach_while(
+        &self,
+        due: impl Fn(u64) -> bool,
+        mut stop: impl FnMut() -> bool,
+    ) -> Option<Detached> {
         let first = self.first.load(Ordering::Relaxed);
         let mut last = std::ptr::null_mut();
         let mut entries = 0;
         let mut block = first;
-        while !block.is_null() && due(unsafe { *(*ring(block)).link.stamp.get() }) {
+        while !block.is_null() && due(unsafe { *(*ring(block)).link.stamp.get() }) && !stop() {
             entries += unsafe { live_entries(block) };
             last = block;
             block = unsafe { (*ring(block)).link.next.load(Ordering::Relaxed) };
@@ -184,16 +192,18 @@ impl RecordChain {
     }
 
     /// Hand every leading block that holds no entry but tombstones to
-    /// `give_back`.
+    /// `give_back`. `stop` is asked before each block, and a true answer
+    /// leaves the rest.
     ///
     /// # Safety
     /// The caller holds the token.
     pub(crate) unsafe fn give_back_leading_empty_blocks(
         &self,
         mut give_back: impl FnMut(*mut BlockHeader),
+        mut stop: impl FnMut() -> bool,
     ) {
         let mut block = self.first.load(Ordering::Relaxed);
-        while !block.is_null() && unsafe { live_entries(block) } == 0 {
+        while !block.is_null() && !stop() && unsafe { live_entries(block) } == 0 {
             let next = unsafe { (*ring(block)).link.next.load(Ordering::Relaxed) };
             self.set_first(next);
             if next.is_null() {
@@ -299,10 +309,11 @@ impl RecordChain {
 
     /// Read up to `budget` entries past the check's cursor, block by block
     /// from the first, and answer each by `visit`: an entry taken is
-    /// tombstoned. A lap that finds every block read to its tail starts the
-    /// cursors again from each block's front. Answers the entries read;
-    /// `stop` is asked before each, and a true answer ends the check where it
-    /// stands, the cursor kept.
+    /// tombstoned, and [`Checked::KeepAndStop`] ends the check with the
+    /// cursor on the entry it answered. A lap that finds every block read to
+    /// its tail starts the cursors again from each block's front. Answers the
+    /// entries read; `stop` is asked before each, and a true answer ends the
+    /// check where it stands, the cursor kept.
     ///
     /// # Safety
     /// The caller holds the token.
@@ -332,9 +343,13 @@ impl RecordChain {
                     let slot = unsafe { &mut *(*b).slots[*checked].get() };
                     if *slot != 0 {
                         read += 1;
-                        if let Checked::Take = visit(*slot) {
-                            *slot = 0;
-                            self.entries.fetch_sub(1, Ordering::Relaxed);
+                        match visit(*slot) {
+                            Checked::Keep => {}
+                            Checked::Take => {
+                                *slot = 0;
+                                self.entries.fetch_sub(1, Ordering::Relaxed);
+                            }
+                            Checked::KeepAndStop => return read,
                         }
                     }
                     *checked += 1;

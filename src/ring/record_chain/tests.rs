@@ -1,8 +1,9 @@
 //! A record's chain: entries come out of the front in the order they went in,
 //! across blocks, a commit gives back every block it consumed whole, the
 //! death check's tombstones are skipped by every reading and its cursor
-//! resumes where a stop left it, the expiry detaches whole blocks by their
-//! stamps, and the pack for a splice leaves ring blocks R's reader reads.
+//! resumes where a stop left it or on the entry it stopped at, the expiry
+//! detaches whole blocks by their stamps up to a stop, and the pack for a
+//! splice leaves ring blocks R's reader reads.
 
 use super::*;
 use crate::memory::block_pool::test_guard;
@@ -198,11 +199,92 @@ fn the_expiry_detaches_whole_blocks_by_their_stamps_in_order() {
     filled(&waiting, 4, 3);
     assert_eq!(waiting.oldest_stamp(), 1);
 
-    let detached = unsafe { waiting.detach_while(|stamp| stamp < 3) }.expect("two blocks due");
+    let detached =
+        unsafe { waiting.detach_while(|stamp| stamp < 3, || false) }.expect("two blocks due");
     unsafe { ready.append(detached) };
     assert_eq!((ready.len(), waiting.len()), (2 * BLOCK_ENTRIES, 4));
     assert_eq!((ready.oldest_stamp(), waiting.oldest_stamp()), (1, 3));
-    assert!(unsafe { waiting.detach_while(|stamp| stamp < 3) }.is_none());
+    assert!(unsafe { waiting.detach_while(|stamp| stamp < 3, || false) }.is_none());
+    dismantle(&waiting);
+    dismantle(&ready);
+}
+
+#[test]
+fn a_check_stopped_on_an_entry_reads_that_entry_first_the_next_time() {
+    let _g = test_guard();
+    let chain = RecordChain::empty();
+    filled(&chain, 10, 1);
+    let read = unsafe {
+        chain.check(
+            usize::MAX,
+            || false,
+            |seen| {
+                if seen == entry(3) {
+                    Checked::KeepAndStop
+                } else {
+                    Checked::Keep
+                }
+            },
+        )
+    };
+    assert_eq!(read, 4, "the entry it stopped on was read");
+    assert_eq!(chain.len(), 10, "and kept");
+
+    let mut next = Vec::new();
+    let _ = unsafe {
+        chain.check(
+            2,
+            || false,
+            |seen| {
+                next.push(seen);
+                Checked::Keep
+            },
+        )
+    };
+    assert_eq!(next, vec![entry(3), entry(4)]);
+    dismantle(&chain);
+}
+
+#[test]
+fn a_stopped_expiry_detaches_the_blocks_it_read_before_the_stop() {
+    let _g = test_guard();
+    let waiting = RecordChain::empty();
+    filled(&waiting, BLOCK_ENTRIES, 1);
+    filled(&waiting, BLOCK_ENTRIES, 1);
+    let mut asked = 0;
+    let detached = unsafe {
+        waiting.detach_while(
+            |_| true,
+            || {
+                asked += 1;
+                asked > 1
+            },
+        )
+    }
+    .expect("one block before the stop");
+    assert_eq!(
+        (detached.entries, waiting.len()),
+        (BLOCK_ENTRIES, BLOCK_ENTRIES)
+    );
+    assert!(
+        unsafe { waiting.detach_while(|_| true, || true) }.is_none(),
+        "a stop before the first block detaches nothing"
+    );
+
+    // Two blocks of tombstones alone: a stop after the first gives back one.
+    let ready = RecordChain::empty();
+    unsafe { ready.append(detached) };
+    filled(&ready, BLOCK_ENTRIES, 2);
+    let _ = unsafe { ready.check(usize::MAX, || false, |_| Checked::Take) };
+    assert_eq!(unsafe { ready.block_count() }, 2);
+    let mut asked = 0;
+    unsafe {
+        ready.give_back_leading_empty_blocks(gc_metadata::release, || {
+            asked += 1;
+            asked > 1
+        })
+    };
+    assert_eq!(unsafe { ready.block_count() }, 1);
     dismantle(&waiting);
     dismantle(&ready);
 }

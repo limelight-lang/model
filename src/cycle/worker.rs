@@ -2233,7 +2233,7 @@ unsafe fn batch(
     // release answers as any other.
     #[cfg(feature = "collector-chain")]
     unsafe {
-        crate::cycle::chain::expire(mutator);
+        crate::cycle::chain::expire(mutator, || arena.read_the_recall_now().is_break());
         let deaths = crate::cycle::chain::check_the_deaths(
             mutator,
             serve_clock_now(),

@@ -1464,6 +1464,10 @@ pub(crate) fn deferred_lane_is_occupied() -> bool {
 /// holds the token, or the byte reads `POSTED`, which only this thread
 /// moves. Every entry still names its own held allocation.
 pub(crate) unsafe fn retire_candidates() {
+    debug_assert!(
+        !crate::memory::reset_window::is_open(),
+        "a retirement inside a reset"
+    );
     compaction::compact(compaction::Lanes::RingAndOverflow, None, false, None);
 }
 
@@ -1482,6 +1486,10 @@ pub(crate) unsafe fn retire_candidates() {
 /// # Safety
 /// As [`retire_candidates`].
 pub(crate) unsafe fn retire_candidates_and_dispose_of_verdicts(at_turnovers: u64, form: BatchForm) {
+    debug_assert!(
+        !crate::memory::reset_window::is_open(),
+        "a retirement inside a reset"
+    );
     let standing = verdicts::verdict_ring().map_or(0, |ring| ring.count());
     compaction::compact(lanes_of(form), Some(at_turnovers), false, Some(standing));
 }

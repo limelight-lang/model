@@ -179,7 +179,9 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal;
 `what_the_poll_owes_the_queue::a_front_block_moved_under_a_reading_stays_in_the_circle`,
 the hold's read-modify-write against a take (S65.22);
 `queue::arm_to_retire_if_the_count_stands` and the test ring's
-`fill_tail_block`, which writes the writer's copy of the front.
+`fill_tail_block`, which writes the writer's copy of the front; under
+`collector-chain`, `ring::record_chain::tests` whole, for the check's and the
+expiry's stops (S65.28).
 
 - [x] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
       handoff: `5014615`, three comments in `queue.rs`.
@@ -677,12 +679,16 @@ the hold's read-modify-write against a take (S65.22);
         otherwise the step closes on the figure with `chain.rs`'s rule "every
         operation here is the token holder's" kept. Put to Edmond with the
         figures.
-      built on the way (T1, before the re-measurement): the expiry reads the
-        recall between blocks; a death P had no room for keeps the check's
-        cursor on it (`record_chain.rs` advances `checked` past a `Keep` for
-        want of room, against `chain.rs`'s contract); a
-        `debug_assert!(!reset_window::is_open())` at the retirement's
-        precondition in `queue.rs`.
+      built on the way 2026-09-26 (T1): the expiry reads the recall before
+        each block it detaches or gives back; a death P had no room for is
+        answered `Checked::KeepAndStop`, which leaves the check's cursor on
+        it; `retire_candidates` and `retire_candidates_and_dispose_of_verdicts`
+        assert that no reset window is open. Cases, each red on its
+        mutation: `the_chain::a_death_p_had_no_room_for_is_the_next_checks_`
+        `first_post`, `record_chain::tests::a_check_stopped_on_an_entry_reads_`
+        `that_entry_first_the_next_time` and `a_stopped_expiry_detaches_the_`
+        `blocks_it_read_before_the_stop`. Next: the rig's load of completed
+        deaths behind chained roots, then the per-grant segment timing.
       the form if built (the Sage, Final): `CHAIN|s`, state 5 with the slot
         bits, taken from `FREE` by one acquire CAS with no request and no
         consent, released by a store to `FREE`, or to `NOTHING_PROPOSED` when

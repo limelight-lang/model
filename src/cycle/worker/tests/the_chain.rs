@@ -5,9 +5,10 @@
 //! reads them beside R, the clamp shared; a pool that refuses the chain a
 //! block sends the root into P as without the chain; a chained root that
 //! dies is found by the death check and posted `ZeroCount`, and the
-//! mutator's disposition of P frees it; the round serves a chain that is
-//! due whatever R reads; and the mutator's collections under pressure and
-//! at the exit take the chain back into R.
+//! mutator's disposition of P frees it, a death P had no room for being the
+//! next check's first; the round serves a chain that is due whatever R reads;
+//! and the mutator's collections under pressure and at the exit take the
+//! chain back into R.
 
 use super::the_batch::{keeper_class, kept_root, object, release_keeper, served_by_a_collector};
 use super::*;
@@ -254,6 +255,46 @@ fn a_chained_root_that_dies_is_posted_zero_count_and_the_disposition_frees_it() 
     );
 
     unsafe { let_go(&kept[1..]) };
+    reset();
+}
+
+#[test]
+fn a_death_p_had_no_room_for_is_the_next_checks_first_post() {
+    let _g = test_guard();
+    reset();
+    let node = node_class("ChainNoRoomNode");
+    let mut arena = Arena::new();
+    let kept = unsafe { kept_roots(&mut arena, node, 3) };
+    assert!(matches!(
+        served_by_a_collector(),
+        Served::Batch { roots: 3, .. }
+    ));
+
+    // Two chained roots die, and P holds one slot: the first death takes
+    // it, the second is refused.
+    unsafe {
+        release_keeper(kept[0].1);
+        release_keeper(kept[1].1);
+        crate::cycle::queue::verdicts::testing::fill_for_test(crate::ring::BLOCK_ENTRIES - 1);
+    }
+    testing::take_standing_after(Some(std::time::Duration::ZERO));
+    let _ = served_by_a_collector();
+    assert_eq!(
+        roots_of_this_threads().1,
+        vec![kept[1].0, kept[2].0],
+        "the refused death stays in the chain"
+    );
+
+    // The disposition empties P; the next check starts on the refused death
+    // rather than past it.
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    let _ = served_by_a_collector();
+    testing::take_standing_after(None);
+    assert_eq!(standing_verdicts(), vec![(kept[1].0, Verdict::ZeroCount)]);
+    assert_eq!(roots_of_this_threads().1, vec![kept[2].0]);
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    unsafe { let_go(&kept[2..]) };
     reset();
 }
 

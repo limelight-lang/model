@@ -97,13 +97,19 @@ pub(crate) fn is_due(record: &MutatorRecord, now: u64, term: u64) -> bool {
 }
 
 /// Move the waiting part's blocks whose stamp the record's epoch has passed
-/// to the ready part's tail, whole and in order.
+/// to the ready part's tail, whole and in order. `stop` is read before each
+/// block, the recall's reading, and a true answer leaves the rest for the
+/// next grant.
 ///
 /// # Safety
 /// The caller holds `record`'s token.
-pub(crate) unsafe fn expire(record: &MutatorRecord) {
+pub(crate) unsafe fn expire(record: &MutatorRecord, mut stop: impl FnMut() -> bool) {
     let epoch = record.turnovers();
-    if let Some(due) = unsafe { record.chain_waiting().detach_while(|stamp| stamp < epoch) } {
+    if let Some(due) = unsafe {
+        record
+            .chain_waiting()
+            .detach_while(|stamp| stamp < epoch, &mut stop)
+    } {
         unsafe { record.chain_ready().append(due) };
     }
     // A ready block the death check left with tombstones alone holds no
@@ -111,16 +117,17 @@ pub(crate) unsafe fn expire(record: &MutatorRecord) {
     unsafe {
         record
             .chain_ready()
-            .give_back_leading_empty_blocks(give_back)
+            .give_back_leading_empty_blocks(give_back, stop)
     };
 }
 
 /// Read up to [`DEATH_CHECK_BUDGET`] headers of the waiting part past its
 /// cursor and hand every completed death found to `post`, which answers
-/// whether P took it; a death P has no room for stays in the chain, and the
-/// check ends there. `stop` is read before each header, the recall's
-/// reading, and ends the check with the cursor kept. Notes the check's
-/// instant. Answers the deaths posted.
+/// whether P took it; a death P has no room for stays in the chain with the
+/// cursor on it, and the check ends there, so the next check posts it first.
+/// `stop` is read before each header, the recall's reading, and ends the
+/// check with the cursor kept. Notes the check's instant. Answers the deaths
+/// posted.
 ///
 /// A completed death is final: its count reached zero and its teardown
 /// ended, and its slot stays withheld by the candidate bit until the
@@ -138,26 +145,22 @@ pub(crate) unsafe fn check_the_deaths(
 ) -> usize {
     record.note_chain_checked(now);
     let mut posted = 0;
-    let room = std::cell::Cell::new(true);
     let read = unsafe {
-        record.chain_waiting().check(
-            DEATH_CHECK_BUDGET,
-            || !room.get() || stop(),
-            |entry| {
+        record
+            .chain_waiting()
+            .check(DEATH_CHECK_BUDGET, stop, |entry| {
                 let entity = crate::cycle::queue::entry_root(entry);
                 if !is_a_completed_death(entity) {
                     return Checked::Keep;
                 }
 
                 if !post(entity) {
-                    room.set(false);
-                    return Checked::Keep;
+                    return Checked::KeepAndStop;
                 }
 
                 posted += 1;
                 Checked::Take
-            },
-        )
+            })
     };
     #[cfg(test)]
     crate::cycle::worker::testing::note_chain_check(read, posted);
@@ -262,7 +265,7 @@ pub(crate) unsafe fn splice_the_whole_chain_into_r(record: &MutatorRecord) {
 /// As [`splice_the_whole_chain_into_r`].
 pub(crate) unsafe fn splice_the_ready_part_into_r(record: &MutatorRecord) {
     unsafe {
-        expire(record);
+        expire(record, || false);
         splice(record, record.chain_ready());
     }
 }
