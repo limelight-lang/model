@@ -280,6 +280,11 @@ fn a_cap_set_back_resumes_the_takes() {
 /// and released with no batch: no trace starts after the store. Red on the
 /// wait that served every grant it read, which traced a full batch under the
 /// cap (the Critic of S65.15, finding 1).
+///
+/// The store is the collector's own, between its reading and its request, so
+/// that it precedes the consent: a store made on the mutator's thread after
+/// its consent's swap races the collector the swap has already woken, which
+/// can read the grant under the positive cap.
 #[test]
 fn a_consent_after_the_cap_went_to_zero_starts_no_trace() {
     let _g = test_guard();
@@ -293,7 +298,7 @@ fn a_consent_after_the_cap_went_to_zero_starts_no_trace() {
     });
     let cap = std::sync::Arc::new(std::sync::Mutex::new(None));
     let set = Arc::clone(&cap);
-    testing::after_the_next_consents_swap(Box::new(move || {
+    testing::before_the_next_request(Box::new(move || {
         *set.lock().expect("the case holds no lock") = Some(CapAtZero::set());
     }));
     let _ = testing::take_outcomes();

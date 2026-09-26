@@ -813,3 +813,36 @@ unsafe fn let_go(live: Vec<*mut RcHeader>, keeper: *mut Object) {
         crate::cycle::queue::retire_candidates();
     }
 }
+
+/// The deaths the collection over P retires out of P leave the count: D − 1
+/// deaths posted as zero-count verdicts and retired by the fire, and one
+/// more death after it, arm nothing, since only one death stands.
+#[test]
+fn the_deaths_the_fire_retires_out_of_p_leave_the_count() {
+    const D: usize = crate::cycle::queue::DEATHS_TO_RETIRE as usize;
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let death = ClassBuilder::new("RetiredOutOfPDeath").build();
+    let mut arena = Arena::new();
+    for _ in 0..D - 1 {
+        let _ = unsafe { completed_death(&mut arena, death) };
+    }
+    assert_eq!(
+        stand_in_posts(D - 1, Verdict::ZeroCount),
+        Posted::Batch(D - 1)
+    );
+    assert_eq!(candidate_count(), 0);
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(state(byte()), FREE);
+    assert_eq!(verdict_count(), 0, "the fire retired every death out of P");
+    let _ = unsafe { completed_death(&mut arena, death) };
+    assert!(
+        !crate::gc::is_armed(),
+        "one death stands, and the count reads one"
+    );
+
+    unsafe { crate::cycle::queue::retire_candidates() };
+    reset();
+}
