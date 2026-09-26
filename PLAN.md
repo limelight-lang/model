@@ -14,7 +14,7 @@ crate. The destination's last mile, the compiler that links this crate, is
 outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
 `limelight`.
 
-Updated: 2026-09-25 · Active: S65.
+Updated: 2026-09-26 · Active: S65.
 
 Review 2026-09-23: on time, found by hand, the hook still blind to this
 plan. Pass 1, code `128cefc..89bb0dc` against the thresholds (a function over
@@ -398,36 +398,45 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal;
         back one collector batch at a time, ten round trips or more — a
         premise change, S65.21; (2) the count keeps deaths the close
         already retired out of P and the overflow buffer, so passes that
-        find nothing double `retire_after` up to its bound — open, fix by
-        lowering the count by the close's own frees; (3) four sentences
-        false: DECISIONS' "zeroed only by a pass that reads R" (the
+        find nothing double `retire_after` up to its bound — fixed in
+        `e6765ff`: every retirement lowers the count, saturating; (3) four
+        sentences false: DECISIONS' "zeroed only by a pass that reads R" (the
         threshold branch and `release_queue_segments` zero it too), the
         field doc of `candidate_deaths`, `note_a_candidate_death`'s "since
         the last compaction", `rfc/dev/design/trace-token-handshake.md`'s
         "nothing else arms", and `stdapi.rs`'s withheld-member comment —
-        open. Held: the writer's cached front, `standing_since`, the
-        ledger, `DEFERRED_MARK`, the count's wrap.
-- [ ] S65.21 Decide how the slots of registered members a collection over
-        P tears down come back (Edmond, 2026-09-25, on S65.20's Critic,
-        finding 1: "если коллектор собирается разрушить какие-то объекты —
-        почему он не заберёт их из R? надо подумать")
-      done: the choice and its reason in `dev/DECISIONS.md`, and the
-        step that builds it in this plan
+        open, and carried by S65.23, which rewrites the same sentences.
+        Held: the writer's cached front, `standing_since`, the ledger,
+        `DEFERRED_MARK`, the count's wrap.
+- [x] S65.21 Decide how the slots of registered members a collection over
+        P tears down come back — the close frees the run of completed deaths
+        at R's front, and the poll's unlink waits on a reading's hold
+        (`dev/DECISIONS.md`, 2026-09-26; measured in `dev/BENCHMARKS.md`,
+        "S65.21 the front run against leaving the deaths in R"); on the way,
+        the ring's stale tail copy (`02b25cf`, `dev/POSTMORTEM.md`).
+- [ ] S65.22 No block leaves R while a collector's reading holds it
+      done: `ring::Writer::unlink_after_tail` reads the record's hold word
+        by a read-modify-write after its decision loads and before its two
+        stores, and leaves the block linked while `READING` is set; the
+        ordering argument in `unlink_surplus_block`'s doc; a case at
+        `worker::testing::between_the_take_and_the_reading` sees the reading
+        complete on a block still linked, red without the gate; the
+        store-buffering shape added to the stage's Miri list
       tier: T2 · role: Critic
-      the question: the teardown knows its members but not where their
-        entries stand, since the candidate bit says only that an entry
-        exists in R, P, the overflow buffer or the lane; the slot is
-        withheld because an entry is an address with no generation, and a
-        reused slot would read as the entry's candidate. Forms named so far:
-        read R at the close over P only when the collection's own teardown
-        raised the count by `retire_after` or more (the Critic's); let the
-        pass the close arms read R above the threshold; an index from the
-        header to the entry's position, paid at every registration; an
-        entry that carries a generation, so the slot returns at the
-        teardown and a stale entry is dropped by its reader; or leave the
-        slots to the collector's batches. Whether the header has room for a
-        generation or a position is unread. S65.17's rerun waits for it,
-        since the rig's garbage loads measure this path.
+- [ ] S65.23 The close of a collection over P frees the run of completed
+        deaths at R's front (after S65.22)
+      done: `compaction::free_the_front_run` runs at every ending of a
+        collection over P but an unwinding drop, with no switch; the run's
+        own checkpoint and the cases the two design rounds listed — D
+        deaths then a live entry (D + 1 read, D freed), an unwind at the
+        k-th free, a run across a block, a marked first entry, a zero count
+        mid-teardown stops it, the gave-up drop, the 10,000-member ring
+        returned at its own close — each seen red; the tests that encode
+        "reads nothing of R" rewritten to the stop's one read;
+        `rfc/model/gc/rc-cycle.md` (the close over P, the count's arming),
+        the package's section 8, and S65.20's false sentences amended in the
+        same commits
+      tier: T2 · role: Critic
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,
@@ -452,9 +461,9 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal;
         while a batch carries at most `BATCH_BOUND` roots, so R grows and
         each judging costs more. Edmond ruled that the close over P stops
         reading R (S65.20), and the run is repeated after it with the
-        Critic's other findings: a cap-4 arm beside cap 1, p99.9 beside
-        p99, the cells the 512 MiB ceiling cut named, and a load of fresh
-        live roots above a block of R.
+        Critic's other findings, and after S65.23: a cap-4 arm beside
+        cap 1, p99.9 beside p99, the cells the 512 MiB ceiling cut named,
+        and a load of fresh live roots above a block of R.
 - [ ] S65.18 The price of a batch that goes on past a part at B (Edmond,
         2026-09-24, on S65.9's second Critic round, finding 1)
       done: with a live closure past `B_max` and a garbage ring between B

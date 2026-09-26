@@ -9,6 +9,46 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-09-26 — the close of a collection over P frees the run of completed deaths at R's front, and no block leaves R while a collector's reading holds it
+
+**Decided (Edmond, 2026-09-26, "делай", on S65.21; two design rounds, each
+model → Critic → Sage):** every ending of a collection over P, after it
+disposes of P's prefix and packs the overflow buffer, reads R one entry at a
+time from the front under `MUTATOR`, frees each entry whose entity completed
+its death in place, the entry consumed before its slot is freed, and stops at
+the first entry that is not one. It reads one entry more than it frees, so
+its reading of R is bounded by the slots it returns. This amends the letter
+of the entry below: the close reads no entry of R past the first that is not
+a completed death. Every free a pass makes lowers the free path's count of
+withheld deaths, saturating at zero. Because the close now moves R's front
+block, the poll's unlink of the empty block after the tail block reads the
+record's hold word by a read-modify-write before its stores and leaves the
+block linked while a collector's pre-claim reading holds it (the Sage of
+round 2: a plain load there is the store-buffering shape and unsound).
+
+**Measured** (`dev/BENCHMARKS.md`, "S65.21 the front run against leaving the
+deaths in R"): at equal paced load, on registered rings standing whole at R's
+front, the collector's CPU falls 4–34 % and the mutator's 2–6 %, and a ring
+costs one collection over P instead of two to four; the withheld peak falls
+from 0.25–1.3 MB to none. On roots-only garbage the arms are equal, and on a
+ring interleaved with live entries neither leads.
+
+**Rejected.** The collector moving deaths from R into P, at the front (G) or
+by a sweep of R in place (H): the mutator's close reads each `ZeroCount`'s
+header again before it frees, so the collector saves the mutator nothing per
+slot, and a sweep past live entries needs a cursor across grants, which
+`rfc/dev/DECISIONS.md` 2026-09-15 excludes. A block of R taken by the
+collector and returned later (Edmond's idea, which he offered as possibly
+wrong): its entries would stand in neither R nor P, and a collection over R
+whole would wait for their return. A generation or an index in the header or
+the entry: the header does not grow (Y7), and an entry has two free bits.
+Reading R whole at the close or at the count's pass: the cost S65.20 removed.
+Deaths standing behind live entries stay for the collector's batch, as
+`rfc/model/gc/cycle/questions.md` Y12 clause 7 allows; the rig's exact tally
+of withheld deaths is what would reopen this.
+
+---
+
 ## 2026-09-25 — the close of a collection over P reads no R, and the pass's count stands across it
 
 **Decided (Edmond, on S65.17's run, "просто удалить вызов"; S65.20):** the

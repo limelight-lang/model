@@ -8,6 +8,52 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-26 — S65.21 the front run against leaving the deaths in R: at equal load the collector's CPU falls 4–34 % and the mutator's 2–6 % on rings standing at R's front, and neither arm leads elsewhere
+
+**`cycle::worker::tests::the_rig`, release, a 4-CPU container with no SMT,
+not the development box.** Two arms of one binary: *leave*, the tree after
+S65.20, where a completed death in R waits for the collector's batch; *front*,
+`LL_RIG_FRONT_RUN=1`, where the close of a collection over P frees the run of
+completed deaths at R's front. Both on the ring of `02b25cf` and with the
+count's saturating decrement. The figures of record are the paced run:
+iterations started every 15–50 ms, the wait polling every millisecond, 4 s of
+loop and 3 s of polls with no registration, five repeats an arm, arm order
+alternated; a cell counts where the garbage standing at the loop's end is at
+most one iteration's in both arms. Medians; CPU over the loop alone.
+
+| load, cap 1 | mutator CPU, front/leave | collector CPU, front/leave | collections over P, leave → front |
+| --- | ---: | ---: | ---: |
+| `registered-ring-1000` | 0.96–1.03 | 0.94–1.00 | 590 → 522 (2 mutators) |
+| `registered-ring` (2,048) | 0.94–0.98 | 0.75–0.78 | 708 → 322 |
+| `registered-ring-4000` | 0.93–0.96 | 0.64–0.71 | 705 → 161 |
+| `registered-ring-interleaved` | 1.00–1.03 | 0.93–1.01 | 790 → 747 |
+| `garbage-25` | 0.98–0.99 | 0.92–0.99 | 146 → 146 |
+
+Every contiguous-ring cell reads front ≤ leave in both CPUs; one mutator cell
+of twelve separates over its five repeats (`registered-ring`, spare-core, 3
+mutators), the collector's separate by load. The withheld peak under leave
+is 0.25–1.3 MB summed over the mutators against none under front, and the
+ledger's peak in use is 1–24 % higher. On the interleaved ring neither arm
+leads: at 3 mutators front ends its loop 1–4 rings behind and clears them in
+about 0.1 s, at 2 mutators leave does. `garbage-25` fails the acceptance in
+both arms by the load's shape: R below `SOFT_THRESHOLD` waits for the
+standing interval, 4 s, past the 3 s of polls.
+
+**Readings withdrawn on the way**, each by a Critic of the measurement: an
+unpaced matrix ran saturated, where the collector falls behind and the arms
+do different work, so its "mutator CPU per member freed" was the inverse of
+the freeing rate; the first paced run polled once an iteration, and a poll
+fires at most one collection, so leave fell behind for want of polls; its
+"remnants wait 1–2.4 s" and "collector CPU 16–39 % lower" went with it. The
+front run's look at R's front also split about 40 % of the batches on
+`garbage-25` (148 → 248 batches for the same roots) through the reader's
+stale copy of the writer's tail, which `02b25cf` fixed in the ring for both
+arms (`dev/POSTMORTEM.md`, 2026-09-26).
+
+**What the rig does not show:** a real program's order of registrations. The
+front run pays where a torn-down ring's entries stand together at R's front,
+and gives nothing where live entries stand between them.
+
 ## 2026-09-25 — S65.19 the rig's figures, each read once on an input whose answer is known
 
 **`cycle::worker::tests::the_rig::the_rigs_figures_read_their_known_answers`,

@@ -7,6 +7,29 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-26 — a read of the ring stopped at a tail another read had cached
+
+**What happened.** In S65.21's rig the close's look at R's front, one entry
+peeked and nothing committed, made the collector's batches on `garbage-25`
+come in 248 instead of 148 for the same roots, and the extra grants read as
+the front run's cost through two rounds of measuring.
+
+**Why it was possible.** `ring::Reader::read_block` loaded the writer's tail
+into the reader's copy only when the front had caught up with the copy. A
+read that consumed less than it read left the copy at the tail of its own
+instant, and the next read stopped there, with the front block the tail
+block, though the writer had gone on. Today's collector reaches it too: a
+batch clamped to K commits part of its peek. `02b25cf` reloads the tail when
+a read reaches the copy with room left; the two cases for it in
+`ring::tests` read 2 of 6 and 2 of 5 entries on the old ring.
+
+**Why it was not caught.** The ring's cases peeked and then committed all
+they peeked, or took; none read, left entries, let the writer append in the
+same block and read again. The collector's short batch looked like a ring
+below K, which K's doubling rule treats as normal.
+
+---
+
 ## 2026-09-24 — an adopted block served a case whose budget refused the pool
 
 **What happened.** With S65.8's cases in the suite,
