@@ -85,18 +85,22 @@ criterion, and it leaves when it gets one or when it is ruled on.
 - **Whether the collector keeps the live roots.** A root the collector read
   live costs the mutator a collection over P each epoch that frees nothing;
   the proposal moves live and unwalked roots into a chain the collector
-  keeps on the record, drops the mutator's deferred lane, and opens no trace
-  window for a P of dead counts alone. Two design rounds of 2026-09-26 stand
-  behind it (`dev/design/the-collector-keeps-the-live-roots.md`); the chain
-  amends Edmond's rulings and waits for his word, the collector's live-core
-  stamps wait for a three-arm measurement, and validation by a member list
-  was dropped with the figure that would reopen it.
+  keeps on the record, drops the mutator's deferred lane, publishes no live
+  list for a batch that posted nothing, and opens no trace window for a P
+  without `Proposed`. Three design rounds of 2026-09-26 stand behind it
+  (`dev/design/the-collector-keeps-the-live-roots.md`); the chain amends
+  Edmond's rulings and waits for his word, the collector's live-core stamps
+  wait for a three-arm measurement, and validation by a member list was
+  dropped with the figure that would reopen it.
 
-- **How long a completed death behind a live entry holds its slot.** Such a
-  death waits for the collector's batch to reach it; the rig's exact tally
-  (`queue::withheld_by_an_entry`) reads how much memory that holds on a real
-  load. Edmond, 2026-09-26: "the memory of the object itself is held until
-  the collector comes again — this needs thought".
+- **How long a completed death behind a live entry holds its slot.** In R
+  it waits for the retirement pass below 64 entries, or for the collector's
+  batches to reach it above; behind a chain entry, under the proposal, for
+  the next grant that posts anything, 32 such deaths, or its block's expiry.
+  The rig's tally (`queue::withheld_by_an_entry`, `cfg(test)`) counts deaths
+  withheld by any entry, not only those behind a live one. Edmond,
+  2026-09-26: "the memory of the object itself is held until the collector
+  comes again — this needs thought".
 
 ## Cross-cutting (every stage)
 
