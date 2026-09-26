@@ -8,6 +8,145 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-26 — S65.24 A, B and C on a box with a PMU: form D cuts the mutator's instructions by 16.6 % on `deferred-live-large` and by at most 1.6 % elsewhere; C stalls on `live-churn` and frees none of its 259,104-member remnant in the drain
+
+**The same three arms as the entry below, measured with hardware counters.**
+The tree is `dfeeb30` with a rig that reads each mutator's user-mode cycles and
+instructions over its loop (`worker::testing::ThreadCycles`, columns
+`mutator_cycles_in_the_loop`, `mutator_instructions_in_the_loop`,
+`mutator_counter_share_min`). A, B and C are built as the entry below says.
+The verdict by the Sage's protocol is unchanged: B wins on one deciding load of
+five, below its three, so A stays. What follows is what the counters show
+beyond it, and a Critic's reading of it.
+
+**Machine and method.** Edmond's box: i7-11700K, 8 cores and 16 threads,
+WSL2, `perf_event_paranoid` 2, so user mode only. Mutators on CPUs 2 and 4
+(physical cores 1 and 2, their SMT siblings idle); the collector on CPU 6
+(`spare-core`) or 4 (`shared-core`); cap 1. Deciding cells of 10 s, drain
+12 s, paced as below; guards unpaced, 3 s, drain 1 s; three repeats, the arms
+always in the order A, B, C inside a repeat. The instrument was checked on an
+unpaced `garbage-0` cell, which births no collector: the mutators' counters
+summed to 27,509.9 M cycles against 27,512.6 M from `perf stat -e cycles:u`
+over the whole process (0.01 %), instructions to 0.003 %. The driver and the
+analysis are scripts of the session and are not in the tree.
+
+**Medians of three** (instructions and cycles in thousands an iteration,
+cycles the minimum of three; collector CPU in seconds a cell; heap garbage is
+`standing_bytes` at the loop's stop; the wait is `time_to_free_us`, the mean
+time from a death to its free by Little's law):
+
+| load | placement | instructions A / B / C | cycles min A / B / C | collector s A / B / C | heap garbage MB A / B / C | wait ms A / B / C |
+| --- | --- | --- | --- | --- | --- | --- |
+| deferred-live-large | spare | 34.8 / 29.1 / 26.0 | 34.1 / 29.6 / 29.4 | 1.64 / 1.63 / 0.98 | 0.32 / 0.39 / 0.01 | 3.18 / 2.79 / 0.23 |
+| deferred-live-large | shared | 34.7 / 28.9 / 26.1 | 33.6 / 31.0 / 29.6 | 1.67 / 1.64 / 1.01 | 0.50 / 0.51 / 0.01 | 2.65 / 2.39 / 0.18 |
+| live-churn | spare | 375.3 / 372.0 / 390.1 | 206.0 / 203.0 / 197.6 | 1.33 / 1.31 / 0.87 | 6.25 / 7.09 / 31.63 | 15.6 / 14.5 / 66.4 |
+| live-churn | shared | 364.3 / 363.0 / 393.5 | 202.2 / 195.2 / 200.0 | 1.32 / 1.30 / 0.87 | 13.12 / 12.61 / 31.63 | 14.0 / 14.1 / 68.1 |
+| deferred-then-dead | spare | 34.3 / 33.8 / 34.3 | 27.3 / 25.9 / 27.7 | 0.08 / 0.07 / 0.08 | 0.09 / 0.06 / 0.12 | 9.5 / 9.4 / 10.0 |
+| deferred-then-dead | shared | 33.0 / 32.8 / 33.2 | 25.5 / 26.1 / 26.6 | 0.07 / 0.07 / 0.08 | 0.06 / 0.04 / 0.04 | 8.7 / 8.7 / 7.8 |
+| garbage-25 | spare | 281.2 / 281.4 / 281.3 | 253.7 / 241.8 / 242.4 | 0.02 / 0.02 / 0.02 | 0.07 / 0.07 / 0.07 | 5.6 / 4.2 / 4.0 |
+| garbage-25 | shared | 280.6 / 281.0 / 280.6 | 253.8 / 249.8 / 252.6 | 0.02 / 0.02 / 0.02 | 0.12 / 0.09 / 0.12 | 4.9 / 4.5 / 4.0 |
+| registered-ring-live | spare | 5,569.7 / 5,570.0 / 5,562.7 | 1,835.8 / 1,804.5 / 1,767.7 | 0.28 / 0.28 / 0.27 | 0 / 0 / 0 | 0.09 / 0.09 / 0.09 |
+| registered-ring-live | shared | 5,570.2 / 5,569.8 / 5,563.3 | 1,863.4 / 1,825.5 / 1,806.9 | 0.26 / 0.28 / 0.25 | 0 / 0 / 0 | 0.09 / 0.10 / 0.08 |
+
+Instructions vary by less than 2 % between repeats of one arm; cycles by up to
+96 %, from outside load (up to 1,057 involuntary switches a mutator), in more
+than one repeat. Instructions are the reading this run can carry.
+
+- **Form D.** B executes 16.6 % fewer instructions than A on
+  `deferred-live-large`, lower in all six paired runs; about 1.2 µs of the
+  mutator's time an iteration, a disposition costing about 16 µs against a
+  29 µs collection over P. It fires on `live-churn` too, 1,213–1,294
+  dispositions a cell of 1,523–1,607 batches in five runs, and saves about 1 % of the
+  mutator's GC time there. Elsewhere instructions move within ±1.6 %. B had
+  one token wait of 5,777 µs (`deferred-live-large`, shared, repeat 1) where
+  A's longest is 26 µs; not explained. Judging B on instructions rather than
+  on the protocol's metric was chosen after the data was seen, so it is a
+  proposal for Edmond, not a reading of the protocol.
+- **C on `live-churn` stalls.** At the loop's stop 259,104 members stand
+  (43,184 rings, spare, repeat 1); the drains free 0–174 of them in 12 s, where B frees its
+  whole backlog (61,248 of 61,248 in spare, repeat 1). The count is
+  259,104–259,170 in 5 of 6 runs (162,234 in the disturbed one) and 259,104
+  again in the scale run below. The chain's death check did
+  not post anything (`chain_deaths_posted` 0): it matches deaths completed in
+  place only (`chain::is_a_completed_death`), and a dropped ring of six is
+  cycle garbage with a non-zero count. The rig's counters account for the
+  remnant: of 320,682 roots pushed into the waiting part 271,211 were read
+  back, 49,471 staying in the chain; of 320,000 registered 293,519 were
+  batched from R, 26,481 never; 49,471 + 26,481 less the 32,768 rings still
+  held at the stop is the 43,184 rings. Why they are not read in the drain is
+  not established; S65.27 finds it. The earlier entry's explanation, the
+  ready part's cap of 512 a batch, does not bind here: C averages 156 roots a
+  batch.
+- **C on `deferred-live-large`.** The garbage is freed 10–15 times sooner
+  (0.18–0.23 ms against 2.4–2.8 ms for B) and the heap garbage at the stop is
+  2–15 KB against 315–546 KB. The ledger's peak is 1.35–1.64 times A's, over
+  the 1.10 gate. The collector's CPU is 40 % lower because C reads 1.98 M
+  roots a cell against B's 3.80 M at the same batch count: the parked live set
+  is re-read at most 512 a batch, about once in two epochs where B re-reads it
+  once in one. That is a rate, which B could be given by a lane spliced every
+  other epoch; it is not a property of the chain.
+- **The p999 of an iteration** reads 98–115 µs for C against 492–524 µs for
+  B on `deferred-live-large`. B's 54 collections over P of about 490 µs each
+  free the load's garbage in lumps, and about 27 of them fall inside the 20
+  slowest iterations the quantile reads. The p99 (49–98 µs) is the same in
+  the three arms, and the longest collection over P is of one size in all of
+  them (A 652–1,488, B 664–921 and 7,855 in one disturbed run, C 602–835 µs),
+  so this is where the quantile falls and not a shorter tail.
+- **The guards and the poll.** On the four guards, which birth no collector,
+  instructions are equal to 0.02 % and cycles differ by −1 to +22 % from A.
+  The body of `ll_gc_maybe_collect` is instruction for instruction the same in
+  the three binaries (A at `0x4b99a0`, B at `0x4b99b0`, C at `0x4c8d90`); its
+  callees were not compared. The poll probe, pinned to CPU 6, six interleaved
+  runs: minima A 15.64–16.41, B 15.39–15.76, C 13.55–14.26 ns. The earlier
+  entry's C at 6 ns over A does not reproduce, and A's own spread of 0.77 ns
+  is wider than the 0.3 ns gate: the gate is not decidable by timing, and the
+  cycle differences of 8–13 % in the deciding cells cannot be attributed to an
+  arm while placement and run order are not separated.
+- **Pacing hides most of the mutator's gain from the protocol's metric.**
+  User cycles per thread-CPU second are 1.4–1.5 GHz on `deferred-live-large`
+  and about 0.95 GHz on `garbage-25`, against 4.57 GHz on the unpaced guards;
+  the rest of the CPU is outside user mode, most of it the 1 ms pacing sleep.
+  B's 8–13 % fewer user cycles show as 2.8–5 % of CPU. A paced mutator is busy
+  2–6 % of its core, so the collector's CPU does not reach it on either
+  placement.
+
+**The Critic's reading, 2026-09-26.** Ten findings over the conclusions drawn
+from this run; four of them changed the reading above: C's remnant is a stall
+and not a late detection (F1), C's collector saving is the re-read rate (F2),
+the memory cost is the heap's garbage and not the ledger (F3), the p999 is a
+quantile effect (F4). A re-run is proposed under a protocol fixed in advance:
+the order of the arms rotated, instructions as the gate, heap garbage and the
+last free as the memory gates, a count of iterations over 200 µs in place of
+p999, and collector CPU read only beside completion.
+
+**`live-churn` by the size of its live set.** One run per arm, `spare-core`,
+paced 1 ms, drain 12 s, sixteen rings of six an iteration (so the garbage rate
+is the base load's) held for longer windows (`LL_RIG_CHURN_WINDOW`); the live
+set is two mutators × window × 16 rings × 7 objects of 128 bytes. Peak RSS is
+`/usr/bin/time`'s:
+
+| live set | window | cell | heap garbage at the stop, MB A / B / C | freed in the drain A / B / C | peak RSS, MB A / B / C | collector CPU, s A / B / C |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| 28 MB | 1,024 | 10 s | 7.3 / 7.8 / 31.6 | all / all / 6 of 259,110 | 62 / 62 / 86 | 1.3 / 1.3 / 0.9 |
+| 224 MB | 8,192 | 25 s | 21.9 / 21.8 / 208.8 | all / all / 45,096 of 1,710,228 | 356 / 354 / 536 | 11.0 / 11.2 / 3.3 |
+| 896 MB | 32,768 | 50 s | 251.2 / 244.4 / 392.0 | 1.61 M of 2.06 M / 1.58 M of 2.00 M / 0 of 3.21 M | 1,496 / 1,492 / 1,639 | 27.0 / 26.5 / 12.1 |
+
+- At 224 MB C holds 9.5 times A's garbage at the stop and its process 181 MB
+  (51 %) more; A and B clear their remnant within 1.06 s of the stop.
+- At 896 MB the collector falls behind in every arm, A and B at 27 s of
+  collector CPU over 62 s of cell; C frees 97,608 of 3,308,544 garbage
+  members in the loop and none in the drain, its collector at 12.1 s: the
+  stall of the table above, at twelve times the size, with the collector
+  idle beside it.
+- A fourth cell, a 3.6 GB live set at 32 rings an iteration held 65,536
+  iterations for 90 s, is void: B's and C's mutators made 57,740 and 63,353
+  iterations each, short of the window, so no ring was let go and there was
+  no garbage to compare.
+- A first attempt at the scale, raising the rings an iteration instead
+  (160 to 1,600), is void too: at 160 the collector fell behind in all three
+  arms alike, 830–913 MB standing each, and at 800 and 1,600 the mutators
+  never completed a window.
+
 ## 2026-09-26 — S65.24 A, B and C on the rig: no arm beats another on the mutator's CPU beyond the box's noise; C holds more memory on `live-churn` and frees its remnant later, so A stays
 
 **Three binaries of one tree, `4fb9c05`.** B is the default build (form D,

@@ -548,6 +548,13 @@ the hold's read-modify-write against a take (S65.22);
         taken, and the `rfc` is not amended; both stay in the tree, form D in
         the default build and the chain behind its feature, for a run on a
         box that can read the mutator below this spread — Edmond's call.
+      run 2026-09-26 on `dfeeb30`, Edmond's box, with the mutators' hardware
+        counters (`dev/BENCHMARKS.md`, "S65.24 A, B and C on a box with a
+        PMU"): the verdict by the protocol is still "A stays"; B cuts the
+        mutator's instructions by 16.6 % on `deferred-live-large` alone; C
+        stalls on `live-churn`, its drain freeing none of a 259,104-member
+        remnant (S65.27). A Critic over the reading changed four of its
+        conclusions and proposed a protocol fixed before the next run.
       tier: T2 · role: Critic, Sage
 - [x] S65.25 Form D: a batch that proposed no set owes P's disposition and
         no trace window
@@ -602,6 +609,15 @@ the hold's read-modify-write against a take (S65.22);
         the exit under a hold or a standing request, a deferred part past B
         into the chain, the ready and waiting counts in the rig;
         (8) the record grows by two lines, 384 bytes, not one.
+      tier: T2 · role: Critic
+- [ ] S65.27 Find why C's drain frees nothing on `live-churn` (Edmond,
+        2026-09-26: "найди")
+      done: the cause of the stall named and shown by the counters that
+        exhibit it (`dev/BENCHMARKS.md`, "S65.24 A, B and C on a box with a
+        PMU": 49,471 roots left in the chain's waiting part and 26,481 never
+        batched from R, none read in a 12 s drain); a case that is red on it
+        under `collector-chain`; the repair, or the reason there is none, put
+        to Edmond before C is measured again
       tier: T2 · role: Critic
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
