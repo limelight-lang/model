@@ -372,7 +372,7 @@ the hold's read-modify-write against a take (S65.22);
         `recall_without_waiting`, `compaction::dispose_verdicts` and
         `trace_in_parts`; the probe prints its header, which `rig.sh` writes
         once.
-- [~] S65.20 The close over P reads no R (Edmond, 2026-09-25: "просто
+- [x] S65.20 The close over P reads no R (Edmond, 2026-09-25: "просто
         удалить вызов", on S65.17's run)
       done: a collection over P reads P's prefix and the overflow buffer
         and nothing of R, on its close and on the drop of one that gave up
@@ -407,7 +407,8 @@ the hold's read-modify-write against a take (S65.22);
         field doc of `candidate_deaths`, `note_a_candidate_death`'s "since
         the last compaction", `rfc/dev/design/trace-token-handshake.md`'s
         "nothing else arms", and `stdapi.rs`'s withheld-member comment —
-        open, and carried by S65.23, which rewrites the same sentences.
+        amended by S65.23 with the rest it found. Finding 1 was decided
+        by S65.21 and built by S65.22 and S65.23.
         Held: the writer's cached front, `standing_since`, the ledger,
         `DEFERRED_MARK`, the count's wrap.
 - [x] S65.21 Decide how the slots of registered members a collection over
