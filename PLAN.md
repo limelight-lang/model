@@ -94,6 +94,18 @@ criterion, and it leaves when it gets one or when it is ruled on.
   wait for a three-arm measurement, and validation by a member list was
   dropped with the figure that would reopen it.
 
+- **Whether a root read live should leave every queue until it is
+  decremented again.** Variant S (2026-09-26): the owner clears the candidate
+  bit of a root read live and writes the epoch into byte 6; a later
+  registration whose stamp is the current epoch goes to the deferred lane
+  without a trace, an older one is traced. A live root nobody touches then
+  costs neither thread anything, where the lane and the chain re-trace it
+  every epoch (70,000 roots a mutator on `deferred-live-large`); a ring that
+  dies in the stamped epoch is found at the next turn, as today. It amends
+  `rc-cycle.md`'s rule that the maturation prune never spares a queue root,
+  and the claim that a ring whose external reference goes registers a root is
+  unproved. Waits for S65.27 and a measurement of D against H.
+
 - **How long a completed death behind a live entry holds its slot.** In R
   it waits for the retirement pass below 64 entries, or for the collector's
   batches to reach it above; behind a chain entry, under the proposal, for
@@ -648,6 +660,26 @@ the hold's read-modify-write against a take (S65.22);
         `cycle::queue::verdicts::tests` and `worker::tests::the_batch` less
         its 16,000-member budget case, and under `collector-chain`
         `the_chain::where_p_holds_less_than_both_want_r_and_the_chain_share_it_in_halves`.
+- [ ] S65.28 The collector's chain worked outside the token (Edmond,
+        2026-09-26: "the collector can enter it without taking the token"; after
+        S65.27, before C is measured again)
+      done: a design, reviewed by the Critic and ruled by the Sage, for the
+        collector's chain as the collector's own structure: the expiry and
+        the death check run outside the token, and the trace and the posts
+        into P stay under it; the mutator, which touches the chain only on its
+        own collections (the exit, the pressure path, a collection over R
+        whole) and already takes the token for them, excludes the collector's
+        outside work by a second claim on the record, one compare-and-swap a
+        side; the questions answered: how the exit takes the chain without an
+        unbounded wait, where a death found outside a grant waits for the
+        next one, and which readings the outside work makes and why no slot
+        a chained root names can be reissued under them (the candidate bit);
+        the rfc's rule that every chain operation is the token holder's
+        (`chain.rs`, module doc, "Who touches it") amended or kept, and put to
+        Edmond. Refused on the way: one epoch-ordered chain in place of the
+        waiting and ready parts, which saves a block move and nothing a
+        workload would read (Edmond, 2026-09-26)
+      tier: T2 · role: Critic, Sage
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,
