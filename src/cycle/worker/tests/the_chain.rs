@@ -228,8 +228,17 @@ fn a_chained_root_that_dies_is_posted_zero_count_and_the_disposition_frees_it() 
     assert_eq!(crate::cycle::queue::withheld_by_an_entry(), withheld + 1);
 
     testing::take_standing_after(Some(std::time::Duration::ZERO));
-    let _ = served_by_a_collector();
+    let served = served_by_a_collector();
     testing::take_standing_after(None);
+    assert_eq!(
+        served,
+        Served::Batch {
+            roots: 0,
+            complete: true,
+            backlog: false
+        },
+        "a grant that posted a death made a batch of no roots, which the round reads as work"
+    );
     assert_eq!(
         byte(),
         NOTHING_PROPOSED,

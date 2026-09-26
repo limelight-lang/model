@@ -5,6 +5,11 @@
 //! and releases `FREE`, a request is consented to at a slot free and at the
 //! poll, and a byte at `POSTED` is a skip for the round.
 //!
+//! Of R, the collection over P reads the run of completed deaths at R's front
+//! and the entry that stops it: the run is freed on the close and on the drop
+//! of a collection that gave up, and the free path's count of withheld deaths
+//! is lowered by each death freed and kept for the deaths left standing.
+//!
 //! The stand-in collector is `cycle::queue::verdicts::testing::post_batch`
 //! on a thread of its own, which claims, posts and releases as the
 //! collector's batch does, less the trace.
@@ -540,8 +545,9 @@ fn the_fire_the_byte_arms_reads_one_entry_of_r() {
 
 /// The members a collection over P tears down behind its batch come back at
 /// its own close: a ring whose every member is registered, proposed through
-/// one root, returns every slot, and R is empty behind it (S65.20's Critic,
-/// finding 1).
+/// one root, returns every slot, and R is empty behind it (`dev/DECISIONS.md`,
+/// "the close of a collection over P frees the run of completed deaths at
+/// R's front").
 #[test]
 fn the_fire_over_p_returns_the_members_its_teardown_killed_in_r() {
     let _g = test_guard();
@@ -670,9 +676,9 @@ fn a_death_behind_a_live_entry_returns_through_the_collectors_batch() {
         "and retired nothing"
     );
 
-    // The batch takes both. The live entry's zero-count verdict stands in for
-    // a resurrection, which the collector does post: a zero count read is not
-    // a completed death, so the close writes the entry back into R.
+    // The live entry's zero-count verdict stands in for a resurrection, which
+    // the collector does post: a zero count read is not a completed death, so
+    // the close writes the entry back into R.
     assert_eq!(stand_in_posts(2, Verdict::ZeroCount), Posted::Batch(2));
     assert_eq!(candidate_count(), 0, "the batch took them out of R");
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);

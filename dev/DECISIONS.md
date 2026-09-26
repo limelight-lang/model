@@ -9,6 +9,20 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-09-26 — the collector's chain gets no second claim on the record, and work on it outside a grant waits for a figure
+
+**Decided (the Sage, Final, on S65.28):** a second per-record claim for the
+chain is refused: at a cap of two or more it does not exclude a grant, which
+writes the chain too, and a death found outside a grant has no place to wait
+that is neither lost nor posted twice. Chain work outside a grant is built only
+as the token's sixth state `CHAIN|s`, and only if the re-measurement of D
+against H shows the expiry and the death check above 10 % of the mutator's
+token wait or withheld-return time on some cell; until then `cycle::chain`'s
+rule, every operation is the token holder's, stands. The form, if built, is
+`PLAN.md` S65.28.
+
+---
+
 ## 2026-09-26 — the close of a collection over P frees the run of completed deaths at R's front, and no block leaves R while a collector's reading holds it
 
 **Decided (Edmond, 2026-09-26, "делай", on S65.21; two design rounds, each

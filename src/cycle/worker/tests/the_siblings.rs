@@ -52,8 +52,9 @@ unsafe fn let_go_and_collect(roots: Vec<Sent<*mut Object>>) {
     // lane back into R for the next.
     let freed_first = unsafe { crate::gc::ll_gc_collect_cycles() };
     crate::cycle::queue::reoffer_deferred_candidates();
-    // Under the collector's chain the roots it read live wait there, and the
-    // exit's splice brings it back whole.
+    // Under the collector's chain the roots a collector read live stand in
+    // this thread's chain; the splice the exit makes puts the whole chain
+    // into R.
     #[cfg(feature = "collector-chain")]
     unsafe {
         let _claim = crate::cycle::token::HeldToken::take();

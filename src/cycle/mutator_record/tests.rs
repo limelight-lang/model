@@ -282,7 +282,7 @@ fn a_record_is_carved_from_a_gc_block_on_a_line_boundary() {
 }
 
 #[test]
-fn a_record_is_four_lines_and_a_block_holds_255() {
+fn a_record_is_whole_lines_and_a_block_holds_as_many_as_fit() {
     // The collector's chain adds two lines after the four
     // (`crate::cycle::chain`).
     #[cfg(feature = "collector-chain")]

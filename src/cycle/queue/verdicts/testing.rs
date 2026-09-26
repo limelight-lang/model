@@ -22,14 +22,14 @@ pub(crate) enum Posted {
 /// One stand-in batch over `record`'s mutator, `verdict_for` answering the verdict
 /// for each root in R's order.
 ///
+/// The release is to `POSTED` whenever the batch posted, whatever it posted:
+/// the stand-in for a batch after which the mutator owes the collection over
+/// P. [`post_batch_released_as_the_collector_does`] releases a batch that
+/// proposed nothing to `NOTHING_PROPOSED` instead.
+///
 /// # Safety
 /// `record` is a live record of the registry's and the calling thread is
 /// not its mutator.
-///
-/// The release is to `POSTED` whenever the batch posted, whatever it posted:
-/// the stand-in for a batch whose verdicts owe the collection over P.
-/// [`post_batch_released_as_the_collector_does`] releases a batch that
-/// proposed nothing to `NOTHING_PROPOSED` instead.
 pub(crate) unsafe fn post_batch(
     record: *mut MutatorRecord,
     k: usize,
@@ -52,6 +52,11 @@ pub(crate) unsafe fn post_batch_released_as_the_collector_does(
     unsafe { post_batch_releasing(record, k, verdict_for, true) }
 }
 
+/// The body of both: with `by_the_rule` the batch is released as the
+/// collector's is, and without it to `POSTED` whenever it posted.
+///
+/// # Safety
+/// As [`post_batch`].
 unsafe fn post_batch_releasing(
     record: *mut MutatorRecord,
     k: usize,

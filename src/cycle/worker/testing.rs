@@ -932,7 +932,8 @@ pub(crate) fn take_collector_lives() -> CollectorLives {
 /// The mutators' takes that waited out a collector's claim since a case last
 /// asked: how many, how long in all, and the longest, each timed from the
 /// take's first reading of the claim to the take; and the waits and their
-/// time split by the [grant segment](SEGMENTS) the take's first reading met.
+/// time split by the [grant segment](SEGMENT_AROUND) the take's first reading
+/// met.
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct TokenWaits {
     pub(crate) waits: usize,
@@ -961,11 +962,11 @@ pub(crate) fn note_token_wait(waited: std::time::Duration, segment: u8) {
     waits.total_by_segment[usize::from(segment)] += waited;
 }
 
-/// The parts of a grant the rig splits the mutator's costs by (`PLAN.md`
-/// S65.28): around the batch — the arena's open, the reset and the release
-/// — then, on the chain's arm, the expiry and the death check, and the trace
-/// with its posts. A slot's segment is [`SEGMENT_AROUND`] whenever its
-/// collector is not inside a batch.
+/// The parts of a grant the rig splits the mutator's costs by: around the
+/// batch — the arena's open, the reset and the release — then, on the
+/// chain's arm, the expiry and the death check, and the trace with its
+/// posts. A slot's segment is [`SEGMENT_AROUND`] whenever its collector is
+/// not inside a batch.
 pub(crate) const SEGMENT_AROUND: u8 = 0;
 pub(crate) const SEGMENT_EXPIRY: u8 = 1;
 #[cfg_attr(
@@ -1361,9 +1362,9 @@ pub(crate) fn thread_cpu_time() -> std::time::Duration {
 }
 
 /// Two hardware counters of the calling thread, user mode only: the cycles
-/// and the instructions it retired since [`ThreadCycles::open`]. `None`
-/// where the kernel refuses them (no PMU, `perf_event_paranoid` above 2),
-/// off x86-64 Linux and under Miri.
+/// it ran and the instructions it retired since [`ThreadCycles::open`], which
+/// answers `None` where the kernel refuses them (no PMU,
+/// `perf_event_paranoid` above 2), off x86-64 Linux and under Miri.
 pub(crate) struct ThreadCycles {
     /// The two descriptors, cycles first.
     descriptors: [i32; 2],
@@ -1387,7 +1388,7 @@ impl ThreadCycles {
         None
     }
 
-    /// Cycles and instructions since the open, each scaled by the share of
+    /// Cycles and instructions since the open, each divided by the share of
     /// the interval its counter ran, and the lower share: below 1 only when
     /// the kernel multiplexed the counters, a reading not to be quoted.
     pub(crate) fn read(&self) -> (u64, u64, f64) {
@@ -1446,6 +1447,8 @@ fn open_counter(config: u64) -> Option<i32> {
     // the high.
     attribute[0] = (ATTRIBUTE_SIZE as u64) << 32;
     attribute[1] = config;
+    // `read_format`: `PERF_FORMAT_TOTAL_TIME_ENABLED | ..._RUNNING`, the two
+    // times that follow the count in `ThreadCycles::read`'s buffer.
     attribute[4] = 1 | 2;
     attribute[5] = USER_ONLY;
     let descriptor = unsafe {

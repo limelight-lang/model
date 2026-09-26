@@ -2,7 +2,10 @@
 //! window: its release writes `NOTHING_PROPOSED`, the mutator's reading arms
 //! [`Arming::Disposal`], and the poll answers every verdict of P without a
 //! collection — completed deaths freed, live roots deferred, unwalked ones
-//! written back — and releases `FREE`.
+//! written back — and releases `FREE`. A batch with a proposed root among its
+//! verdicts releases `POSTED` and arms the collection over P, and the
+//! disposal's arming outranks the retirement pass's and is outranked by both
+//! collections'.
 //!
 //! The stand-in collector here is
 //! `cycle::queue::verdicts::testing::post_batch_released_as_the_collector_does`,
@@ -187,7 +190,7 @@ fn the_disposition_writes_an_unwalked_root_back_into_r() {
 }
 
 #[test]
-fn a_batch_that_proposed_a_set_still_releases_posted() {
+fn a_batch_that_proposed_a_set_releases_posted() {
     let _g = test_guard();
     reset();
     assert!(crate::cycle::queue::refill_spares());

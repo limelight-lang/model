@@ -1,6 +1,6 @@
-//! The collector's chain of the roots it read live: variant C of `PLAN.md`
-//! S65.24, built behind the feature `collector-chain` to be measured against
-//! today's code and form D (`dev/design/the-collector-keeps-the-live-roots.md`).
+//! The collector's chain of the roots it read live: variant C of
+//! `dev/design/the-collector-keeps-the-live-roots.md`, built behind the
+//! feature `collector-chain`; the build without it is form D alone.
 //!
 //! **What changes.** A root the collector reads live under its grant is not
 //! posted into P: it goes into the chain's waiting part on the mutator's
@@ -40,12 +40,15 @@ use crate::ring::{ChainPeek, Checked, RecordChain};
 /// Headers the death check reads of the waiting part per grant: a grant
 /// already reads up to [`crate::cycle::worker`]'s `BATCH_BOUND` roots' headers
 /// on its first pass, so the check adds no more cold reads than the batch's
-/// own (the Sage, 2026-09-26).
+/// own (`dev/design/the-collector-keeps-the-live-roots.md`, "After the
+/// owner's review").
 pub(crate) const DEATH_CHECK_BUDGET: usize = 1024;
 
 /// Completed deaths the check must find before it posts them: one, so every
-/// death found is posted in the grant that found it. The Sage's 32 stays
-/// named for the arm that would batch them (2026-09-26).
+/// death found is posted in the grant that found it. The design's count of
+/// 32 belongs to an arm that would batch them
+/// (`dev/design/the-collector-keeps-the-live-roots.md`, "Completed deaths in
+/// the chain (the Sage's)").
 pub(crate) const DEATHS_TO_POST: usize = 1;
 
 const _: () = assert!(

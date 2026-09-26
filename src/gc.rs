@@ -62,12 +62,12 @@ pub(crate) enum Arming {
     /// there with no set proposed, its release having written
     /// `NOTHING_PROPOSED` into this thread's byte, so every verdict is
     /// answered without a trace window — completed deaths freed, live roots
-    /// deferred, unwalked ones written back — together with the retirement
-    /// pass's reading of R's front run (`crate::cycle::collect::dispose_of_p`).
+    /// deferred, unwalked ones written back — and the run of completed deaths
+    /// at R's front is freed with them (`crate::cycle::collect::dispose_of_p`).
     /// It reads of R only that run, and its close arms the retirement pass
     /// again where the count stands, as a collection over P's does, which is
-    /// what lets it outrank [`Retire`](Self::Retire); every collection does
-    /// all it does.
+    /// what lets it outrank [`Retire`](Self::Retire): an arming does all that
+    /// the armings it outranks do.
     Disposal = 2,
     /// The collection over P: the collector's batch stands there, its
     /// release having written `POSTED` into this thread's byte
@@ -101,9 +101,10 @@ impl Arming {
 /// lane arms nothing, the re-offered roots being the collector's to take
 /// from R or to ask for, and neither does the candidate queue's growth: a
 /// block the manager refused raises the collector's signal
-/// (`crate::cycle::queue`). The arming for P alone is the byte's
-/// ([`arm_for_the_verdicts`]), and the lowest, a retirement pass with no
-/// collection, is the free path's count's ([`arm_to_retire`]). The arming is
+/// (`crate::cycle::queue`). The armings for P alone are the byte's
+/// ([`arm_for_the_verdicts`], [`arm_for_the_disposal`]), and the lowest, a
+/// retirement pass with no collection, is the free path's count's
+/// ([`arm_to_retire`]). The arming is
 /// how the poll hears about any of them (`rfc/model/gc/strategies.md`,
 /// "Collection requests and triggers").
 pub(crate) fn arm() {
@@ -133,9 +134,10 @@ pub(crate) fn arm_to_retire() {
     COLLECTION_ARMED.with(|armed| armed.set(armed.get().max(Arming::Retire as u8)));
 }
 
-/// Lower an arming for P alone or for the retirement pass, keeping one for R
-/// whole: a collection just disposed of P whole, so a collection over P
-/// alone would open an empty window (`crate::cycle::collect::CollectingThread`),
+/// Lower an arming for P alone, the collection over it or its disposition, or
+/// for the retirement pass, keeping one for R whole: a collection just
+/// disposed of P whole, so a collection over P alone would open an empty
+/// window (`crate::cycle::collect::CollectingThread`),
 /// and one over R whole retired R's completed deaths, so a pass would read
 /// what the close has just read. The close of a collection over P arms the
 /// pass again where its count stands.
@@ -252,8 +254,9 @@ pub extern "C" fn ll_gc_reoffer_deferred() -> usize {
 /// boundary, allocation slow path, request end (`rfc/model/gc/strategies.md`,
 /// §2 and "Collection requests and triggers"). Where the polls stand is the
 /// compiler's; what they fire is armed by the runtime — the byte's `POSTED`
-/// for P and its `NOTHING_PROPOSED` for P's disposition, a refused allocation for R whole, the free path's count of
-/// completed deaths for a retirement pass ([`Arming`]), and under a collector
+/// for P and its `NOTHING_PROPOSED` for P's disposition, a refused
+/// allocation for R whole, the free path's count of completed deaths for a
+/// retirement pass ([`Arming`]), and under a collector
 /// cap of zero the elder's ask over an empty P for R whole ([`arm`]) — and
 /// collected here,
 /// where the graph is clean. The search is the collector thread's, which

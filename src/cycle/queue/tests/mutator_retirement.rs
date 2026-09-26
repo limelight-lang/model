@@ -1,6 +1,10 @@
 //! The retirement pass in ring form: every completed death gives its slot
 //! back, every other record stays in its lane in order, and an unwind at any
 //! boundary of the pass leaves every lane whole.
+//!
+//! The run a collection over P frees at R's front on its close: it stops at
+//! the first entry that is not a completed death, marked or not, crosses a
+//! block, and an unwind inside it leaves the rest of the run to the next close.
 
 use super::*;
 use crate::memory::block_pool::{BLOCK_PAYLOAD, budget_blocks};

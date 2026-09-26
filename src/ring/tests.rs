@@ -193,8 +193,9 @@ fn a_peek_reads_without_consuming_and_a_commit_consumes_exactly_it() {
 
 /// A peek that consumed nothing leaves the reader's copy of the tail where
 /// it read it; the writer goes on, and the next peek reads what stands now
-/// rather than stopping at that copy (`PLAN.md` S65.21: the close's look at
-/// R's front split every batch that followed it).
+/// rather than stopping at that copy. The close of a collection over P makes
+/// such a peek, a look at R's front; a copy left behind would split every
+/// batch after it.
 #[test]
 fn a_peek_after_one_that_consumed_nothing_reads_what_the_writer_added() {
     let _g = test_guard();

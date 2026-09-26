@@ -138,7 +138,7 @@ fn a_stopped_check_resumes_at_its_cursor_and_a_finished_lap_starts_again() {
     filled(&chain, BLOCK_ENTRIES + 20, 1);
     let mut seen = Vec::new();
     let mut stops = 0;
-    // A budget of 30 over two checks, the second stopped after five.
+    // A check that spends a budget of 30, then one stopped after five.
     let read = unsafe {
         chain.check(
             30,

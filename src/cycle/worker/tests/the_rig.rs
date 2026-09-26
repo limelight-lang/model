@@ -12,7 +12,10 @@
 //! live graphs it built at its start, and poll. The live graphs are held by
 //! keepers until the loop ends, so every iteration hands the collector the
 //! same mix of garbage and live roots, and what memory stands is the live set
-//! plus the garbage no collection has freed yet.
+//! plus the garbage no collection has freed yet. Some loads vary this, each
+//! described at its field of [`Load`]: a live set registered once and let go
+//! at half the run, live rings let go a window of iterations after their
+//! build, a live ring whose registrations interleave the garbage ring's.
 //!
 //! A cell reads, over the mutators' loops: operations a second, each
 //! mutator's iterations over its own loop's wall, summed; CPU time an
@@ -26,15 +29,25 @@
 //! marks; the turnovers, the roots written back from P into R untraced (one
 //! round P → R → P each), the parts deferred past B with the retry spent or
 //! past `B_max`, and the grants recalled by the mark and by a take; the
-//! takes' waits for the token; the iterations longer than
-//! [`A_LONG_ITERATION`]; per grant segment (`testing::SEGMENT_AROUND` and
-//! its neighbours), the takes' waits by the segment they met, the returns
-//! withheld in it and their time withheld, and the collector's time in it;
-//! and the collectors' lives, CPU, wall from birth to end and context
-//! switches. Each is read once on an input whose answer is known in
+//! takes' waits for the token; per grant segment (`testing::SEGMENT_AROUND`
+//! and its neighbours), the takes' waits by the segment they met and the
+//! returns withheld in it with their time withheld; and the collectors'
+//! lives, CPU, wall from birth to end and context switches. Each is read once
+//! on an input whose answer is known in
 //! [`the_rigs_figures_read_their_known_answers`], the split by segment in
 //! [`the_split_by_segment_reads_a_hold_the_case_sets`], and the count of
 //! deferred parts against the batch's own in `the_ceiling`.
+//!
+//! Beside those, with no case of known answer, a cell reads: the iterations
+//! longer than [`A_LONG_ITERATION`]; the collector's time in each grant
+//! segment; the mutators' dispositions of P with no trace window; the
+//! collector's chain's figures ([`testing::ChainFigures`]), zero without the
+//! chain; the completed deaths withheld by a queue entry, at the peak, on the
+//! mean and at the loop's end; and, over the drain, what it freed and how
+//! long it took to bring those deaths to zero and to free every garbage
+//! member. With a drain, a mutator's CPU, context switches and minor faults
+//! are read over the loop and the drain together, the CPU time an operation
+//! included; the figures named `_in_the_loop` are the loop's alone.
 //!
 //! The cell is read from the environment, as `dev/tools/rig.sh` sets it; with
 //! nothing set the probe runs every load for [`SMOKE_RUN`] on
@@ -48,6 +61,11 @@
 //!   (`worker::testing::pin_collectors_to`);
 //! - `LL_RIG_CAP` — the collector cap, the crate's own when unset;
 //! - `LL_RIG_SECONDS` — how long the mutators run their loops;
+//! - `LL_RIG_PACE_MS` — the period, in milliseconds, at which an iteration
+//!   starts, the wait between two iterations polling every millisecond;
+//!   unpaced when unset;
+//! - `LL_RIG_DRAIN_MS` — how long, in milliseconds, each mutator polls with
+//!   no registration after its loop, the drain; no drain when unset;
 //! - `LL_RIG_CHURN_GRAPHS`, `LL_RIG_CHURN_WINDOW` — a churn load's rings an
 //!   iteration and the iterations each is held, 16 and 1,024 unless set: the
 //!   live set it keeps is their product.
@@ -133,8 +151,8 @@ struct Load {
     /// A ring built at every iteration and held by a keeper until the loop
     /// ends, its members' registrations interleaved with the garbage ring's,
     /// so that entries of a ring still live stand between the garbage
-    /// members' entries in R however far the collector lags (`PLAN.md`
-    /// S65.21). Only with one garbage graph.
+    /// members' entries in R however far the collector lags
+    /// (`registered-ring-interleaved`). Only with one garbage graph.
     held: Graph,
     /// Whether the live graphs' roots are registered once, at the mutator's
     /// start, and not again at every iteration: a live set past the poll's
@@ -149,7 +167,8 @@ struct Load {
     live_dies_at_half: bool,
     /// Live rings of `churn` built and registered at every iteration, each
     /// held by a keeper for [`churn_window`] iterations and then let go:
-    /// live roots flow into R steadily and die after they were read live.
+    /// every iteration registers live roots, each dying after a round has
+    /// read it live.
     churn_graphs: usize,
     churn: Graph,
     /// Whether a churn ring's closing edge, its last member's into its
@@ -204,8 +223,10 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
     }
 }
 
-/// The loads of the S64 analysis's list. Change a name or add a load, and
-/// change `LOADS` in `dev/tools/rig.sh` with it.
+/// The loads of the S64 analysis's list, then those of `dev/BENCHMARKS.md`,
+/// "S65.21 the front run against leaving the deaths in R" and "S65.24 A, B
+/// and C on the rig". Change a name or add a load, and change `LOADS` in
+/// `dev/tools/rig.sh` with it.
 const LOADS: [Load; 19] = [
     // Garbage at 0, 25, 50, 75 and 100 % of the roots, rounded to whole
     // rings of 63.
@@ -319,10 +340,10 @@ const LOADS: [Load; 19] = [
             fillers: 0,
         },
     },
-    // One garbage ring of 2,048 members, every one of them registered: the
-    // shape of S65.20's Critic, finding 1, where a batch proposes a part of
-    // the ring's entries and the teardown kills members whose entries stand
-    // in R behind it (`PLAN.md` S65.21).
+    // One garbage ring of 2,048 members, every one of them registered: a
+    // batch proposes a part of the ring's entries, and the teardown kills
+    // members whose entries stand in R behind it (`dev/BENCHMARKS.md`,
+    // "S65.21 the front run against leaving the deaths in R").
     Load {
         name: "registered-ring",
         garbage_graphs: 1,
@@ -380,9 +401,8 @@ const LOADS: [Load; 19] = [
     },
     // 70,000 live rings of one member, their roots registered once and
     // deferred when read live: more than 64 batches of K = 1,024 hold, so
-    // the deferred set outlasts an epoch's reading of it (the Sage's load
-    // for starvation, S65.24). A garbage ring of six trickles in each
-    // iteration.
+    // the deferred set outlasts an epoch's reading of it. Each iteration
+    // builds one garbage ring of six.
     Load {
         name: "deferred-live-large",
         garbage_graphs: 1,
@@ -398,8 +418,8 @@ const LOADS: [Load; 19] = [
     },
     // 8,192 live rings of six, registered once — the build fills a block of
     // R and births the collector — and let go at half the run: garbage only
-    // the deferred roots' re-reading can find. A garbage ring of six
-    // trickles in each iteration (the Sage's load, S65.24).
+    // the deferred roots' re-reading can find. Each iteration builds one
+    // garbage ring of six.
     Load {
         name: "deferred-then-dead",
         garbage_graphs: 1,
@@ -415,7 +435,8 @@ const LOADS: [Load; 19] = [
     },
     // Sixteen live rings of six built and registered each iteration, let go
     // [`churn_window`] iterations later: roots read live before they die, the
-    // path the arms of S65.24 differ on.
+    // path the arms of `dev/BENCHMARKS.md`, "S65.24 A, B and C on the rig",
+    // differ on.
     Load {
         name: "live-churn",
         garbage_graphs: 0,
@@ -431,7 +452,7 @@ const LOADS: [Load; 19] = [
     },
     // `live-churn` whose rings die by their counts: each root read live
     // dies a completed death behind its entry, the deaths the chain's check
-    // finds and the deferred lane's turnover retires (S65.28).
+    // finds and the deferred lane's turnover retires.
     Load {
         name: "live-churn-dies-by-count",
         garbage_graphs: 0,
@@ -528,8 +549,9 @@ const _: () = {
 /// box's swap, and the line counts the mutators that reached it.
 const OUTSTANDING_CEILING: usize = 1 << 22;
 
-/// The wall past which an iteration counts as long: the S65.24 protocol's
-/// tail reading, in place of a quantile a few collections decide.
+/// The wall past which an iteration counts as long: the tail reading of the
+/// protocol in `dev/BENCHMARKS.md`, "The Critic's reading, 2026-09-26", in
+/// place of a quantile a few collections decide.
 const A_LONG_ITERATION: Duration = Duration::from_micros(200);
 
 /// Iterations between two readings of R's length.
@@ -837,7 +859,7 @@ struct Churn {
 impl Churn {
     /// Let go the rings of the slot the iteration takes, and build the
     /// load's churn rings into it, registered and held; answers the members
-    /// let go, garbage from now on.
+    /// let go as garbage, none when the rings die by their counts.
     ///
     /// # Safety
     /// As [`build`].
@@ -981,20 +1003,22 @@ struct MutatorReading {
     iterations: usize,
     /// The loop's wall, from the start every mutator waits at to the end.
     wall: Duration,
-    /// The thread's CPU time over the loop.
+    /// The thread's CPU time over the loop and the drain.
     cpu: Duration,
-    /// Context switches over the loop, voluntary and involuntary.
+    /// Context switches over the loop and the drain, voluntary and
+    /// involuntary.
     switches: (u64, u64),
-    /// Minor page faults over the loop.
+    /// Minor page faults over the loop and the drain.
     minor_faults: u64,
-    /// Queue records the compactions read over the loop
+    /// Queue records the compactions read over the loop and the drain
     /// (`crate::cycle::queue::take_queue_work`).
     records_read: usize,
     /// The longest R stood at one iteration in [`R_SAMPLE_STRIDE`].
     ring_peak: usize,
     /// The wall of every iteration: the mutator's latency.
     latencies: Latencies,
-    /// Members of the garbage graphs the loop built.
+    /// Members of the garbage graphs the loop built, and of the live and
+    /// churn rings it let go.
     garbage_members: usize,
     /// What the loop's polls freed.
     freed_by_polls: usize,
@@ -1005,8 +1029,8 @@ struct MutatorReading {
     /// The most deaths the thread withheld under a foreign holder of its
     /// token at the end of an iteration.
     withheld_peak: usize,
-    /// The turnovers of the thread's epoch clock over the loop: a record
-    /// another thread's life left keeps its count.
+    /// The turnovers of the thread's epoch clock over the loop and the
+    /// drain: a record another thread's life left keeps its count.
     turnovers: u64,
     /// What the collection after the loop freed, the live graphs gone.
     freed_at_the_end: usize,
@@ -1020,8 +1044,7 @@ struct MutatorReading {
     withheld_by_an_entry_at_the_end: u64,
     /// How long, after the loop's end, polls with no registration took to
     /// bring those deaths to zero, or the whole drain where they stayed
-    /// (`LL_RIG_DRAIN_MS`). The thread's CPU is read over the loop and the
-    /// drain together.
+    /// (`LL_RIG_DRAIN_MS`).
     remnant_wait: Duration,
     /// Whether the drain brought them to zero.
     remnant_cleared: bool,
@@ -1041,12 +1064,12 @@ struct MutatorReading {
     long_iterations: usize,
     /// The returns the thread withheld under a foreign holder over the loop,
     /// by the grant segment the holder was in, with their time withheld up
-    /// to the drain that gave them back; a return still withheld at the
-    /// loop's end is counted and not timed.
+    /// to the drain of the withheld stacks that gave them back; a return
+    /// still withheld at the loop's end is counted and not timed.
     withheld_by_segment: testing::WithheldBySegment,
     /// How long after the loop's end the drain's polls took to free every
-    /// member built and bring the withheld deaths to zero, or the whole
-    /// drain where they did not.
+    /// garbage member built and bring the withheld deaths to zero, or the
+    /// whole drain where they did not.
     last_free: Duration,
     /// Whether the loop ended at [`OUTSTANDING_CEILING`] rather than at the
     /// cell's stop.
@@ -1209,6 +1232,14 @@ fn a_mutator(
         reading.freed_in_the_drain += unsafe { crate::gc::ll_gc_maybe_collect() };
         std::thread::sleep(Duration::from_millis(1));
     }
+    // What the drain's last poll freed, and the whole state for a drain of
+    // zero, is read once more at its end.
+    if crate::cycle::queue::withheld_by_an_entry() == 0 {
+        remnant_wait.get_or_insert(drain);
+        if reading.freed_by_polls + reading.freed_in_the_drain >= reading.garbage_members {
+            last_free.get_or_insert(drain);
+        }
+    }
     reading.last_free = last_free.unwrap_or(drain);
     let cpu_at_the_end = testing::thread_cpu_time();
     reading.remnant_cleared = remnant_wait.is_some();
@@ -1342,8 +1373,14 @@ impl CellReading {
             .sum()
     }
 
+    /// The mutators' CPU over their loops, over their iterations: the drain's
+    /// polls are not an operation.
     fn cpu_an_operation(&self) -> Duration {
-        let cpu: Duration = self.mutators.iter().map(|reading| reading.cpu).sum();
+        let cpu: Duration = self
+            .mutators
+            .iter()
+            .map(|reading| reading.cpu_in_the_loop)
+            .sum();
         cpu / self.sum(|reading| reading.iterations).max(1) as u32
     }
 
@@ -1698,9 +1735,10 @@ impl CellReading {
         .collect()
     }
 
-    /// Per grant segment, in [`testing::SEGMENT_AROUND`]'s order: the takes whose wait
-    /// met it and their wait, the returns withheld in it and their time
-    /// withheld, and the collector's time in it, summed and at the longest.
+    /// Per grant segment, in [`testing::SEGMENT_AROUND`]'s order: the takes
+    /// whose wait met it and their wait, the returns withheld in it and their
+    /// time withheld, and for the three inside the batch the collector's time
+    /// in it, summed and at the longest.
     fn segment_fields(&self) -> Vec<(&'static str, String)> {
         const TAKES: [&str; testing::SEGMENTS] = [
             "token_waits_around",
@@ -1726,14 +1764,11 @@ impl CellReading {
             "withheld_return_us_check",
             "withheld_return_us_trace",
         ];
-        const SEGMENT_US: [&str; testing::SEGMENTS] = [
-            "segment_us_around",
-            "segment_us_expiry",
-            "segment_us_check",
-            "segment_us_trace",
-        ];
-        const SEGMENT_LONGEST_US: [&str; testing::SEGMENTS] = [
-            "segment_longest_us_around",
+        // The collector's time is taken inside the batch alone, so the
+        // segment around it has no column of its own.
+        const SEGMENT_US: [&str; testing::SEGMENTS - 1] =
+            ["segment_us_expiry", "segment_us_check", "segment_us_trace"];
+        const SEGMENT_LONGEST_US: [&str; testing::SEGMENTS - 1] = [
             "segment_longest_us_expiry",
             "segment_longest_us_check",
             "segment_longest_us_trace",
@@ -1759,15 +1794,19 @@ impl CellReading {
                 ),
                 (RETURNS[segment], returns.to_string()),
                 (RETURN_US[segment], returned.as_micros().to_string()),
-                (
-                    SEGMENT_US[segment],
-                    self.segment_times.total[segment].as_micros().to_string(),
-                ),
-                (
-                    SEGMENT_LONGEST_US[segment],
-                    self.segment_times.longest[segment].as_micros().to_string(),
-                ),
             ]);
+            if segment > 0 {
+                fields.extend([
+                    (
+                        SEGMENT_US[segment - 1],
+                        self.segment_times.total[segment].as_micros().to_string(),
+                    ),
+                    (
+                        SEGMENT_LONGEST_US[segment - 1],
+                        self.segment_times.longest[segment].as_micros().to_string(),
+                    ),
+                ]);
+            }
         }
 
         fields

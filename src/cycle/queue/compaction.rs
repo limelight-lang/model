@@ -181,8 +181,8 @@ pub(super) fn compact(
 /// time, and stop at the first entry that is not one — a live entry, or a
 /// zero count whose teardown has not ended: every ending of a collection over
 /// P, under `MUTATOR`, where the mutator is R's one consumer
-/// (`dev/DECISIONS.md`, 2026-09-26, "the close of a collection over P frees
-/// the run of completed deaths at R's front"). It reads one entry more than
+/// (`dev/DECISIONS.md`, "the close of a collection over P frees the run of
+/// completed deaths at R's front"). It reads one entry more than
 /// it frees, so its reading of R is bounded by the slots it returns. Each
 /// entry is consumed before its slot is freed, so no freed slot is named by R
 /// at any instant; an unwind inside a free leaves the front past that entry
@@ -336,8 +336,9 @@ pub(super) fn free(entity: *mut RcHeader) {
         let mutator_state = unsafe { mutator_state_ref(state) };
         let retired = &mutator_state.retired_by_the_close;
         retired.set(retired.get().saturating_add(1));
-        // A retired death leaves the free path's count, which a pass that
-        // read none of R would otherwise keep (S65.20's Critic, finding 2).
+        // Every retired death leaves the free path's count: only a pass that
+        // reads R whole zeroes it, and a count the other passes left high
+        // would arm the retirement pass for deaths already returned.
         let deaths = &mutator_state.candidate_deaths;
         deaths.set(deaths.get().saturating_sub(1));
     }

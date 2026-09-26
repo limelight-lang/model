@@ -31,7 +31,7 @@ FIRST_CORE=${FIRST_CORE:-1}
 BIN=$(ls -t target/release/deps/ll_model-* | grep -vE '\.(d|ll|bc)$' | head -1)
 CASE=cycle::worker::tests::the_rig::a_cell_of_the_rig
 # `LOADS` in `src/cycle/worker/tests/the_rig.rs`, by name: change one, change
-# the other.
+# the other. A `LOADS` set in the environment runs those loads alone.
 LOADS=${LOADS:-"garbage-0 garbage-25 garbage-50 garbage-75 garbage-100 overlapping-live
        disjoint-live one-large-root partly-overlapping large-live-core
        registered-ring registered-ring-live registered-ring-1000

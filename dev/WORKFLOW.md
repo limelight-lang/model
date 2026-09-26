@@ -324,7 +324,7 @@ re-run after any deletion of a module, a document or a feature:
    of 2026-08-30 renamed sections under 73 citations that the file test read
    as clean. `python3 dev/tools/citations.py`, run from the crate root, pulls
    every `` `…md`, "…" `` pair out of `src/`, `benches/`, `docs/`, every
-   document under `dev/` and `dev/design/`, and `PLAN.md`, resolves `rfc/…`
+   document under `dev/`, `dev/design/` and `dev/plans/`, and `PLAN.md`, resolves `rfc/…`
    against the sibling repository, and prints each citation whose quoted text
    is not in the named file.
 

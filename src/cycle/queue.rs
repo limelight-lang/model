@@ -295,8 +295,8 @@ struct MutatorCycleState {
     retired_by_the_close: Cell<u32>,
     /// Completed deaths of candidates the free path withheld and no pass has
     /// retired: every retirement lowers it by one, saturating, and a pass
-    /// that reads R whole zeroes it, as the count's pass does where it leaves
-    /// R to the collector and the thread's exit does. The one that reaches
+    /// that reads R whole zeroes it, and so do the count's pass where it
+    /// leaves R to the collector and the queue's release. The one that reaches
     /// `retire_after` arms the poll for the retirement pass
     /// ([`note_a_candidate_death`]). Wrapping on the way up.
     candidate_deaths: Cell<u16>,
@@ -845,26 +845,27 @@ pub(crate) fn refill_and_drain() {
 /// while a collector reads the ring under the token, since that reader never
 /// walks past the tail block (`crate::ring::Writer::unlink_after_tail`,
 /// which answers null for the front block and for a block with an entry
-/// standing in it); a reading before the claim is the gate's, below. One block per call: a circle a burst grew by several
+/// standing in it); a reading before the claim is excluded by the hold
+/// check below. One block per call: a circle a burst grew by several
 /// blocks gives them back over as many polls, and the poll's price stays
 /// one link per call.
 ///
 /// **No block leaves while a collector's reading holds the record**
-/// (`dev/DECISIONS.md`, 2026-09-26, "no block leaves R while a collector's
-/// reading holds it"). A collector's round loads R's front block under the
+/// (`dev/DECISIONS.md`, "no block leaves R while a collector's reading
+/// holds it"). A collector's round loads R's front block under the
 /// hold and no claim (`crate::ring::Reader::front_block_reading`), and the
 /// front block moves on under it: by another collector's batch in a grant,
 /// which the hold does not exclude, and by the close of a collection over P.
 /// The block it loaded can then be the one after the tail block here, and
 /// unlinked it could reach the pool through a cell while the loads read it.
-/// The question is a read-modify-write on the hold word, asked by
+/// The hold check is a read-modify-write on the hold word, made by
 /// `unlink_after_tail` after its decision loads and before its stores. Two
 /// RMWs on one word are ordered: either the take comes first, and this reads
 /// `READING` and leaves the block; or this comes first, and the take reads
 /// from it, after which the collector's acquire load of the front block sees
 /// every store this thread's decision loads saw — the front block they read,
 /// whichever thread moved it there — and names that block or a later one,
-/// never the one unlinked. Asked before the decision loads, the RMW could
+/// never the one unlinked. Made before the decision loads, the RMW could
 /// precede a move by another collector that the loads then see; a load in
 /// its place would let both sides read the old values (the store-buffering
 /// shape).
@@ -1324,7 +1325,8 @@ pub(crate) fn arm_to_retire_if_the_count_stands() {
 ///
 /// A ring at the threshold is not read: it is the collector's to batch,
 /// whose batches take it from the front and post its completed deaths into
-/// P as zero-count verdicts, which the collection over P retires, so the
+/// P as zero-count verdicts, which the collection over P or P's disposition
+/// retires, so the
 /// pass raises the poll's signal
 /// — which births the elder where none stands yet — and starts the count
 /// again. A byte a return consented at since the poll's reading is a grant
@@ -1584,8 +1586,7 @@ fn note_queue_work(_passes: usize, _read: usize, _moved: usize) {
 #[cfg(test)]
 thread_local! {
     /// Completed deaths the free path withheld for a queue entry and no pass
-    /// has retired yet, on this thread: the rig's exact figure, never zeroed
-    /// (`PLAN.md` S65.21).
+    /// has retired yet, on this thread: the rig's exact figure, never zeroed.
     static WITHHELD_BY_AN_ENTRY: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -1740,8 +1741,9 @@ pub(crate) fn overflow_len() -> usize {
     }
 }
 
-/// Registrations this thread holds by lane — the ring, the deferred lane,
-/// the overflow buffer, and the verdicts standing in P — by the indices and
+/// Registrations this thread holds by lane — the ring, the deferred lane
+/// with the collector's chain under `collector-chain`, the overflow buffer,
+/// and the verdicts standing in P — by the indices and
 /// the counts; P's entries are read for the null of a disposed one and
 /// dereferenced no more than any other entry.
 ///

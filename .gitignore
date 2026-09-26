@@ -14,3 +14,6 @@ bench-external/canary/pair_canary
 
 # Working copies of subagents (dev/WORKFLOW.md, delegation).
 /.claude/worktrees/
+
+# Python's bytecode cache, written beside dev/tools/ by every run of a script.
+__pycache__/

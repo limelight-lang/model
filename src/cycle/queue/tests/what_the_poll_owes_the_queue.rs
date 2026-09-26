@@ -1,7 +1,9 @@
 //! The three duties the safepoint poll has towards the queue: unlinking
 //! the block a burst left empty behind R's tail block, refilling the spare
 //! cells, and firing the collection a reserve draw or an overflow append
-//! asked for.
+//! asked for. The unlink leaves the block in the circle while a collector's
+//! reading holds the record, since the reading may have loaded it as R's
+//! front block.
 //!
 //! The first two are asked as counts rather than remembered as flags. The
 //! surplus is read off the ring's own words, and the cells
@@ -124,8 +126,8 @@ impl Drop for HandBack {
 
 /// A collector's reading holds the record: the poll leaves the empty block
 /// behind the tail block in the circle with a cell short, since the reading
-/// may have loaded it as R's front block (`unlink_surplus_block`, `PLAN.md`
-/// S65.22). Without the hold the same poll unlinks it, which
+/// may have loaded it as R's front block (`unlink_surplus_block`). Without
+/// the hold the same poll unlinks it, which
 /// [`the_poll_unlinks_the_block_a_burst_left_empty_behind_the_tail`] reads.
 #[test]
 fn the_poll_leaves_the_circle_alone_while_a_reading_holds_the_record() {
@@ -154,12 +156,24 @@ fn the_poll_leaves_the_circle_alone_while_a_reading_holds_the_record() {
 /// took the hold; the case runs under `test_guard`, one at a time.
 static TAKEN_INSIDE_THE_POLL: AtomicBool = AtomicBool::new(false);
 
-/// The interleaving the gate's place decides: the poll begins, a reading
-/// takes the hold and a batch on another thread moves R's front block past
-/// the first block, and only then does the unlink read the circle. The first
-/// block is empty and behind the tail block by then, and the reading may have
-/// loaded it as the front block before the batch moved it; asked after the
-/// unlink's decision loads, the hold keeps it in the circle.
+/// Hand back the hold the act took, an unwind included; nothing where the act
+/// did not take it.
+struct HandBackIfTaken(*mut MutatorRecord);
+
+impl Drop for HandBackIfTaken {
+    fn drop(&mut self) {
+        if TAKEN_INSIDE_THE_POLL.load(Ordering::Relaxed) {
+            unsafe { mutator_record::hand_back_reading(self.0) };
+        }
+    }
+}
+
+/// The poll begins, a reading takes the hold and a batch on another thread
+/// moves R's front block past the first block, and only then does the unlink
+/// read the circle. The first block is empty and behind the tail block by
+/// then, and the reading may have loaded it as the front block before the
+/// batch moved it; the unlink asks the hold after its decision loads, so the
+/// block stays in the circle. Red with the hold asked ahead of those loads.
 #[test]
 fn a_front_block_moved_under_a_reading_stays_in_the_circle() {
     let _g = test_guard();
@@ -169,8 +183,8 @@ fn a_front_block_moved_under_a_reading_stays_in_the_circle() {
     burst_read_behind_by_another_thread(&mut headers, 0);
     assert!(needs_spares(), "a cell is short, so the poll would unlink");
 
-    let record = mutator_record::this_thread_record();
     TAKEN_INSIDE_THE_POLL.store(false, Ordering::Relaxed);
+    let hand_back = HandBackIfTaken(mutator_record::this_thread_record());
     at_the_next_surplus_unlink(|| {
         let record = mutator_record::this_thread_record();
         let taken = unsafe { mutator_record::take_for_reading(record) };
@@ -182,7 +196,6 @@ fn a_front_block_moved_under_a_reading_stays_in_the_circle() {
         TAKEN_INSIDE_THE_POLL.load(Ordering::Relaxed),
         "the act took the hold inside the poll"
     );
-    let hand_back = HandBack(record);
     assert_eq!(
         candidate_count(),
         0,

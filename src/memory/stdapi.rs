@@ -497,8 +497,9 @@ unsafe fn free_taken<const ENTITY: bool>(ptr: *mut u8, block: *mut u8, kind: u32
     // death, clears CANDIDATE_BIT and DEAD_IN_PLACE, and calls this same free:
     // the close of a collection over P for the run at R's front, where the
     // members its own teardown killed stand unless a live entry is ahead of
-    // them; the collector's batch for a death behind a live entry; and, through the count below, the
-    // retirement pass of a thread whose ring stands below the collector's
+    // them; P's disposition for a death behind a live entry, which the
+    // collector's batch posted as a zero count; and, through the count below,
+    // the retirement pass of a thread whose ring stands below the collector's
     // threshold.
     if crate::refcount::is_registered_candidate(flags) {
         crate::cycle::queue::note_a_candidate_death();

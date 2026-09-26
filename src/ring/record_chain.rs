@@ -1,4 +1,4 @@
-//! A chain of ring blocks whose three words stand in a mutator's record: the
+//! A chain of ring blocks whose four words stand in a mutator's record: the
 //! form the collector's chain of roots it read live takes
 //! (`crate::cycle::chain`; `dev/design/the-collector-keeps-the-live-roots.md`).
 //!

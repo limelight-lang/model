@@ -1,8 +1,10 @@
+#!/usr/bin/env python3
 """The verdict table over `dev/tools/arms.sh`'s CSV: per load and placement,
-each arm's median of the mutators' cycles and instructions an iteration, the
-first arms' spread as the tolerance (max 3 %, twice the spread), and the gates
-the S65.24 protocol reads. The arms are A, B and C, as the S65.24 runs named
-them. Usage: dev/tools/arms_table.py <csv>"""
+each arm's median of the mutators' cycles, instructions and CPU an iteration,
+each comparison's verdict with the older arm's spread of cycles as the
+tolerance (max 3 %, twice the spread), and the medians of the gates of the
+protocol in `dev/BENCHMARKS.md`, "S65.24 A, B and C on the rig". The arms must
+be named A, B and C. Usage: dev/tools/arms_table.py <csv>"""
 import csv
 import statistics
 import sys

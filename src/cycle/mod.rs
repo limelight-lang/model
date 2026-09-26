@@ -104,10 +104,12 @@ pub(crate) mod mark;
 // The stamp a commit writes into the live components its trace read, which is
 // what a later trace's descent stops at.
 pub(crate) mod maturation;
-// The live core a collector's batch read, listed for the mutator to stamp at
-// its take from `POSTED` without a descent, or to drop under pressure.
+// The roots a collector read live, kept in a chain on the mutator's record
+// rather than posted into P: the measured arm behind `collector-chain`.
 #[cfg(feature = "collector-chain")]
 pub(crate) mod chain;
+// The live core a collector's batch read, listed for the mutator to stamp at
+// its take from `POSTED` without a descent, or to drop under pressure.
 pub(crate) mod live_list;
 // The list a pressure collection takes out of its rows before the blocks go
 // back, and the region of the workspace it stands in.

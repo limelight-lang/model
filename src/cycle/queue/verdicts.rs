@@ -45,8 +45,8 @@
 //! arms P's disposition with no trace window
 //! (`crate::cycle::collect::dispose_of_p`). In the collection over P the
 //! proposed entries standing at the batch's reading are its roots and are
-//! traced from P's slots, with no entry of R written for them and nothing of R read
-//! (`crate::cycle::queue::Batch`). An unwalked entry is no root of it: the
+//! traced from P's slots, with no entry of R written for them and nothing of
+//! R traced (`crate::cycle::queue::Batch`). An unwalked entry is no root of it: the
 //! collector never read that root, and the collection over P validates what
 //! the collector read rather than searching, so its close writes the root
 //! back into R for the collector's next batch (`rfc/model/gc/rc-cycle.md`,
@@ -179,14 +179,14 @@ impl<'a> VerdictWriter<'a> {
 
     /// Verdicts P takes before it is full, which is what a batch is clamped
     /// to before its roots are taken from R: exact, the writer's copy of P's
-    /// front brought up to the reader's first. The copy a push reads is
-    /// refreshed only when it says the block is full, so every batch that
-    /// posted short of a full block left it behind what the mutator had
-    /// answered for, and a batch that posts nothing never moves it; a room
-    /// read off it clamped the batches after to what the last posting batch
-    /// left, one root at the worst (`dev/BENCHMARKS.md`, "S65.24 A, B and C on
-    /// a box with a PMU"). One load of the reader's line a call; under the
-    /// token, where that line is quiet.
+    /// front brought up to the reader's first. A push refreshes that copy
+    /// only when it reads the block full, so after a batch that posted short
+    /// of a full block the copy lags by every verdict the mutator has answered
+    /// for since, and a batch that posts nothing never refreshes it; a room
+    /// read off the lagging copy clamps a batch to what the last posting batch
+    /// left, down to one root (`dev/BENCHMARKS.md`, "S65.24 A, B and C on a
+    /// box with a PMU"). One load of the reader's line a call; under the
+    /// token, where no other thread writes that line.
     pub(crate) fn room(&self) -> usize {
         self.0.catch_up_with_the_reader();
         self.0.room_in_tail_block()

@@ -433,9 +433,9 @@ fn a_recalled_batch_posts_every_root_once_unwalked_and_advances_r() {
     reset_lanes();
 }
 
-/// Under the collector's chain the recalled batch's roots go to its ready
-/// part, each once, behind the retries already waiting; nothing goes into P,
-/// and R advances past them as without the chain.
+/// Under the collector's chain the recalled batch's roots go to the chain's
+/// ready part, each once, behind the retries already waiting; nothing goes
+/// into P, and R advances past them as without the chain.
 #[test]
 #[cfg(feature = "collector-chain")]
 fn under_the_chain_a_recalled_batch_puts_every_root_once_in_the_ready_part() {

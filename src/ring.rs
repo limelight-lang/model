@@ -748,8 +748,8 @@ impl<'a> Reader<'a> {
     /// that has left. A reading taken against a pack in flight can be
     /// stale; the peek under the token is what decides. The block it loads
     /// as the front block stays in the circle while the reading lasts, since
-    /// the owner's unlink waits on the reading's hold (`crate::cycle::queue`,
-    /// `unlink_surplus_block`).
+    /// the owner's unlink leaves a block while the reading's hold stands
+    /// (`crate::cycle::queue`, `unlink_surplus_block`).
     ///
     /// One reading answers several counts at once, which is why the
     /// collector's round takes it rather than asking [`Reader::has_at_least`]
@@ -801,8 +801,9 @@ impl<'a> Reader<'a> {
         self.unread_up_to(entries) >= entries
     }
 
-    /// Entries not yet taken, exact up to `limit` and `limit` or more past
-    /// it: [`Reader::has_at_least_by_count`]'s walk, its count answered.
+    /// Entries not yet taken, exact below `limit` and `limit` for a ring that
+    /// holds `limit` or more: [`Reader::has_at_least_by_count`]'s walk, its
+    /// count answered.
     #[cfg(feature = "collector-chain")]
     pub(crate) fn unread_at_most(&self, limit: usize) -> usize {
         self.unread_up_to(limit).min(limit)

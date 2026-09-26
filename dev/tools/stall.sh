@@ -1,9 +1,12 @@
 #!/bin/bash
-# S65.27's loop: one short `live-churn` cell of the rig on one binary, the
-# counts that showed the collector's chain frozen, and RED when the drain
-# freed less than half of what stood at the loop's stop. Seconds, not minutes.
+# One short `live-churn` cell of the rig on one binary: the counts of the
+# batches' roots, grants and the chain's pushes, then RED when the drain freed
+# less than half of the garbage standing at the loop's stop, GREEN otherwise.
+# RED is the collector's chain stalled as in `dev/BENCHMARKS.md`, "S65.24 A, B
+# and C on a box with a PMU".
 #
-# Usage: dev/tools/stall.sh <test binary>   (SECS, DRAIN, CPUS to vary)
+# Usage: dev/tools/stall.sh <test binary>   (SECS, DRAIN, CPUS, COLLECTOR to
+# vary)
 BIN=$1
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
@@ -15,8 +18,12 @@ timeout 120 "$BIN" --ignored --exact --test-threads=1 --nocapture \
 python3 - "$LOG" <<'P'
 import re, sys
 text = open(sys.argv[1]).read()
-header = re.search(r'rig-header,(.*)', text).group(1).split(',')
-values = re.search(r'\brig,(.*)', text).group(1).split(',')
+header, values = re.search(r'rig-header,(.*)', text), re.search(r'\brig,(.*)', text)
+if header is None or values is None:
+    print("FAILED: the cell printed no line; its log ends:")
+    print("\n".join(text.splitlines()[-20:]))
+    sys.exit(1)
+header, values = header.group(1).split(','), values.group(1).split(',')
 line = dict(zip(header, values))
 keys = ['iterations', 'garbage_members', 'freed_by_polls', 'backlog_at_the_stop',
         'freed_in_the_drain', 'batches', 'grants', 'verdict_collections',
