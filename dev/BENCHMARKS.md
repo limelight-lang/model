@@ -14,7 +14,8 @@ what was tried, measured, and accepted or rejected.
 not the development box.** Two arms of one binary: *leave*, the tree after
 S65.20, where a completed death in R waits for the collector's batch; *front*,
 `LL_RIG_FRONT_RUN=1`, where the close of a collection over P frees the run of
-completed deaths at R's front. Both on the ring of `02b25cf` and with the
+completed deaths at R's front. S65.23 made *front* the tree's one behaviour
+and took the switch out, so the comparison is rerun only by restoring it. Both on the ring of `02b25cf` and with the
 count's saturating decrement. The figures of record are the paced run:
 iterations started every 15–50 ms, the wait polling every millisecond, 4 s of
 loop and 3 s of polls with no registration, five repeats an arm, arm order

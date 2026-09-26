@@ -166,8 +166,9 @@ struct CollectingThread {
     /// second never ran a pass at all.
     retire_on_drop: Cell<bool>,
     /// The batch this collection reads, which decides whether the drop's
-    /// pass reads R: a collection over P reads none of it, on its close or
-    /// here (`crate::cycle::queue::dispose_candidates`).
+    /// pass reads R whole: a collection over P reads of it only the run of
+    /// completed deaths at its front, on its close or here
+    /// (`crate::cycle::queue::dispose_candidates`).
     form: BatchForm,
     /// The epoch cell as the last reading of this collection saw it, and
     /// `None` where this collection read no component. The drop's disposition
@@ -365,9 +366,10 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
 
 /// The collection over P alone, which `POSTED` arms
 /// (`crate::gc::Arming::Verdicts`): the collector's proposed roots,
-/// validated exactly and finalized as any batch is, with nothing of R read
-/// or traced, and P disposed of whole at the close, an unwalked root
-/// written back into R untraced ([`BatchForm::Verdicts`]). Returns entities
+/// validated exactly and finalized as any batch is, with nothing of R traced
+/// and nothing of it read but the close's run of completed deaths at its
+/// front, and P disposed of whole at the close, an unwalked root written back
+/// into R untraced ([`BatchForm::Verdicts`]). Returns entities
 /// reclaimed.
 ///
 /// # Safety

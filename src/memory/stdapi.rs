@@ -495,9 +495,9 @@ unsafe fn free_taken<const ENTITY: bool>(ptr: *mut u8, block: *mut u8, kind: u32
     // The commit withholds registered members until its last membership read
     // and row sweep. The owner's queue retirement then removes each completed
     // death, clears CANDIDATE_BIT and DEAD_IN_PLACE, and calls this same free:
-    // the close of a collection over P for the run at R's front, which is
-    // where the members its own teardown killed stand; the collector's batch
-    // for a death behind a live entry; and, through the count below, the
+    // the close of a collection over P for the run at R's front, where the
+    // members its own teardown killed stand unless a live entry is ahead of
+    // them; the collector's batch for a death behind a live entry; and, through the count below, the
     // retirement pass of a thread whose ring stands below the collector's
     // threshold.
     if crate::refcount::is_registered_candidate(flags) {

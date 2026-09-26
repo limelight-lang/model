@@ -244,7 +244,7 @@ fn a_posted_mutator_is_a_skip_for_the_round_and_p_stands() {
     assert_eq!(
         unsafe { ll_gc_maybe_collect() },
         2,
-        "the first ring is collected out of P, and nothing of R is read"
+        "the first ring is collected out of P, and R is not traced"
     );
     assert_eq!(state(byte()), FREE);
     assert_eq!(candidate_count(), 2);
@@ -606,6 +606,39 @@ fn the_fire_over_p_stops_its_run_at_a_live_entry() {
     reset();
 }
 
+/// A collection over P that gives up before its close frees R's front run on
+/// its drop: P holds an unwalked root alone, which is no root of the
+/// collection, so its batch is empty; the drop writes the root back into R
+/// and frees the deaths standing at R's front ahead of it.
+#[test]
+fn a_collection_over_p_that_gave_up_frees_the_run_on_its_drop() {
+    const DEATHS: usize = 4;
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let node = node_class("GaveUpRunNode");
+    let death = ClassBuilder::new("GaveUpRunDeath").build();
+    let mut arena = Arena::new();
+    let keeper = unsafe { kept_root(&mut arena, node, "GaveUpRunKeeper") };
+    for _ in 0..DEATHS {
+        let _ = unsafe { completed_death(&mut arena, death) };
+    }
+    assert_eq!(stand_in_posts(1, Verdict::Unwalked), Posted::Batch(1));
+    assert_eq!(candidate_count(), DEATHS);
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(state(byte()), FREE);
+    assert_eq!(verdict_count(), 0);
+    assert_eq!(
+        candidate_count(),
+        1,
+        "the drop freed the deaths and wrote the root back"
+    );
+
+    unsafe { let_go(Vec::new(), keeper) };
+    reset();
+}
+
 /// A completed death standing in R behind a live entry outlives the
 /// collection over P, whose run stops at the live entry, and returns its slot
 /// through the collector's next batch, whose zero-count verdict the next
@@ -637,8 +670,9 @@ fn a_death_behind_a_live_entry_returns_through_the_collectors_batch() {
         "and retired nothing"
     );
 
-    // The batch takes both; the live entry's zero-count verdict is a count
-    // read and not a death, so the close writes it back into R.
+    // The batch takes both. The live entry's zero-count verdict stands in for
+    // a resurrection, which the collector does post: a zero count read is not
+    // a completed death, so the close writes the entry back into R.
     assert_eq!(stand_in_posts(2, Verdict::ZeroCount), Posted::Batch(2));
     assert_eq!(candidate_count(), 0, "the batch took them out of R");
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);

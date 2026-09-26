@@ -442,20 +442,35 @@ the hold's read-modify-write against a take (S65.22);
         unlink's docs cited "no link followed" as the safety — amended;
         (4) the RMW's cost: only on polls that would unlink; (5) the hold
         handed back by a guard; (6) this done-line.
-- [ ] S65.23 The close of a collection over P frees the run of completed
+- [x] S65.23 The close of a collection over P frees the run of completed
         deaths at R's front (after S65.22)
       done: `compaction::free_the_front_run` runs at every ending of a
-        collection over P but an unwinding drop, with no switch; the run's
-        own checkpoint and the cases the two design rounds listed — D
-        deaths then a live entry (D + 1 read, D freed), an unwind at the
-        k-th free, a run across a block, a marked first entry, a zero count
-        mid-teardown stops it, the gave-up drop, the 10,000-member ring
-        returned at its own close — each seen red; the tests that encode
-        "reads nothing of R" rewritten to the stop's one read;
-        `rfc/model/gc/rc-cycle.md` (the close over P, the count's arming),
-        the package's section 8, and S65.20's false sentences amended in the
-        same commits
+        collection over P but an unwinding drop, with no switch; checkpoint
+        8 after each of its frees; cases, each seen red on the mutation it
+        guards: D deaths then a live entry (D + 1 read), an unwind inside a
+        free (checkpoint 2, red with the free before the commit) and after
+        one (checkpoint 8), a run across a block, a marked first entry, a
+        zero count mid-teardown stops it, the gave-up drop, and a ring of
+        2,000 registered members returned at its own close (2,000 because a
+        ring registers with no poll between, under `POLL_STRIDE`); the tests
+        that encoded "reads nothing of R" rewritten to the stop's one read or
+        a live entry ahead of the deaths they keep; `rfc/model/gc/rc-cycle.md`,
+        `rfc/dev/design/trace-token-handshake.md`, the package's section 8,
+        `docs/memory-manager.md` and S65.20's false sentences amended
       tier: T2 · role: Critic
+      Critic 2026-09-26: no soundness hole; (1) nothing caught a free before
+        its entry's commit — the checkpoint-2 case added, red on the swap;
+        (2) the gave-up drop and the marked entry unwritten — added, both red
+        without the run; the ring's size stated; (3) ten sentences still
+        false in code, docs, the package and the rfc — amended;
+        (4) `Reader::new`'s contract allows the collector's loads-only
+        reading, and the run's `Reader` carries its SAFETY line; (5) the
+        run's frees in the timer's note recorded in DECISIONS; (6) the
+        count after a close is "about" the deaths it left; (7) the unwinding
+        skip's reason and its place in DECISIONS; (8) "unless a live entry is
+        ahead" added; (9) the fabricated zero-count verdict said so;
+        (10) BENCHMARKS names the switch gone. The k-th free past the first
+        is not injected: `FAIL_AT` fires at a point's first hit.
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,

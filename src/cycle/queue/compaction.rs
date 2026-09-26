@@ -61,8 +61,9 @@ pub(super) enum Lanes {
 ///
 /// `lanes` says whether R is read whole; a pass that reads it zeroes the free
 /// path's count of withheld deaths, and every retirement lowers the count by
-/// one ([`free`]), so the count a close leaves is the deaths it left
-/// standing.
+/// one ([`free`]), so the count a close leaves is about the deaths it left
+/// standing — one high after an unwind inside a free, lower where the count
+/// was zeroed with deaths still standing.
 ///
 /// `deferred_at` is the epoch cell a deferred lane going from empty to
 /// occupied records as its mirror, and `None` where this pass has no marks to read — every
@@ -169,8 +170,8 @@ pub(super) fn compact(
     checkpoint(6);
     dispose_verdicts(state, verdicts, deferred_at);
     // A drop that unwinds disposes of P, which the release to `FREE` needs,
-    // and leaves the run to the next close: a free that raised inside the
-    // drop would abort.
+    // and leaves the run, which nothing needs at once, to the next close, so
+    // that the unwind meets no more frees than it must.
     if lanes == Lanes::Overflow && !std::thread::panicking() {
         free_the_front_run();
     }
@@ -193,6 +194,9 @@ fn free_the_front_run() {
         return;
     }
 
+    // SAFETY: the close holds the token at `MUTATOR`, so this thread is R's
+    // one consumer; the Overflow arm opened no pass over R, and a collector's
+    // reading before its claim consumes nothing.
     let reader = unsafe { ring::Reader::new((*record).candidate_ring()) };
     let mut one = [0usize; 1];
     loop {

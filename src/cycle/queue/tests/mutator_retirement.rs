@@ -477,3 +477,76 @@ fn the_front_run_crosses_a_block() {
     assert_eq!(candidate_count(), 0);
     reset();
 }
+
+/// An unwind inside a free of the run, between the flag clear and the
+/// allocator's return, finds the entry already out of R: the entry is
+/// consumed before its slot is freed, so no slot R still names is returned,
+/// and the rest of the run stands for the next close.
+#[test]
+fn an_unwind_inside_a_free_of_the_front_run_finds_its_entry_out_of_r() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut arena = Arena::new();
+    let class = candidate_class("RunUnwoundInAFree");
+    let deaths: Vec<_> = (0..3)
+        .map(|_| append_real(&mut arena, class, false))
+        .collect();
+    let survivor = append_real(&mut arena, class, false);
+    for &entity in &deaths {
+        unsafe { dismantle_candidate(entity) };
+    }
+
+    // Nothing stands in P or the overflow buffer, so the first free the close
+    // reaches is the run's.
+    let raised = {
+        let _injection = compaction::inject(2);
+        std::panic::catch_unwind(close_over_p)
+    };
+    assert!(raised.is_err(), "the run's first free raised");
+    let mut left = Vec::new();
+    collect_lane_tokens(&mut left);
+    assert_eq!(
+        left,
+        vec![deaths[1], deaths[2], survivor],
+        "the freed slot's entry had left R before the free"
+    );
+
+    close_over_p();
+    assert_eq!(ring_tokens(), vec![survivor]);
+    unsafe { dismantle_candidate(survivor) };
+    close_over_p();
+    assert_eq!(candidate_count(), 0);
+    reset();
+}
+
+/// A mark an earlier reading left over R's front entries is no answer to the
+/// run: a marked completed death is freed, `Free` outranking `Deferred`, and
+/// a marked survivor stops the run and stays in R.
+#[test]
+fn a_marked_entry_at_rs_front_is_freed_when_its_death_completed() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut arena = Arena::new();
+    let class = candidate_class("RunOverMarks");
+    let dead = append_real(&mut arena, class, false);
+    let survivor = append_real(&mut arena, class, false);
+    let mut batch = read_batch();
+    assert_eq!(batch.mark_for_deferral(|_| true), 2, "both marked");
+    drop(batch);
+    unsafe { dismantle_candidate(dead) };
+
+    close_over_p();
+    assert_eq!(
+        candidate_count(),
+        1,
+        "the marked death freed, the run stopped"
+    );
+    assert_eq!(ring_tokens(), vec![survivor]);
+
+    unsafe { dismantle_candidate(survivor) };
+    unsafe { retire_candidates() };
+    assert_eq!(candidate_count(), 0);
+    reset();
+}

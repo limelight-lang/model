@@ -1210,8 +1210,8 @@ pub(crate) fn read_batch_of_verdicts() -> Batch {
 /// in order; the batch's entries of P are disposed of the same way, the
 /// ones the close cannot dispose of written back into R, and P's front
 /// advances past all of them ([`verdicts`]). The close of a collection over
-/// P reads P and the overflow buffer and nothing of R
-/// ([`BatchForm::Verdicts`]).
+/// P reads P, the overflow buffer and of R the run of completed deaths at its
+/// front ([`BatchForm::Verdicts`], `compaction::free_the_front_run`).
 ///
 /// `at_turnovers` is the epoch cell as the reading that decided the marks
 /// saw it, and it is recorded only where the deferred lane goes from empty
@@ -1235,7 +1235,8 @@ pub(crate) fn dispose_candidates(batch: Batch, at_turnovers: u64) {
 }
 
 /// The lanes the close of `form`'s collection reads beside P: a collection
-/// over P read no entry of R, and its close reads none either.
+/// over P read no entry of R, and its close reads of R only the run of
+/// completed deaths at its front.
 fn lanes_of(form: BatchForm) -> compaction::Lanes {
     match form {
         BatchForm::AllRoots => compaction::Lanes::RingAndOverflow,
@@ -1276,10 +1277,10 @@ pub(crate) fn defer_candidates(mut batch: Batch, at_turnovers: u64) {
 }
 
 /// Count a completed death the free path withholds because a queue entry
-/// names the slot, and arm the poll for the retirement pass at the count the
-/// last pass left, [`DEATHS_TO_RETIRE`] to begin with, since the last
-/// compaction ([`retire_at_the_poll`]). A thread with no queue counts
-/// nothing.
+/// names the slot, and arm the poll for the retirement pass when the count
+/// of withheld deaths no pass has retired reaches the figure the last pass
+/// left, [`DEATHS_TO_RETIRE`] to begin with ([`retire_at_the_poll`]). A
+/// thread with no queue counts nothing.
 #[inline]
 pub(crate) fn note_a_candidate_death() {
     let state = mutator_state();

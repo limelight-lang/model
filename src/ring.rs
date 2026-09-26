@@ -475,8 +475,8 @@ impl Peeked {
     }
 }
 
-/// The one consumer's handle: the owner's over P, and the collector's over
-/// R.
+/// The one consumer's handle: the owner's over P; over R the token's holder
+/// — the collector under a grant, or the owner under its own claim.
 pub(crate) struct Reader<'a>(Slots<'a>);
 
 impl<'a> Reader<'a> {
@@ -484,7 +484,9 @@ impl<'a> Reader<'a> {
     ///
     /// # Safety
     /// The calling thread is the ring's one consumer, and no other `Reader`
-    /// or [`Quiescent`] over these slots is in use.
+    /// or [`Quiescent`] over these slots is in use but a reading by loads
+    /// alone ([`Reader::front_block_reading`]), which a collector makes
+    /// before its claim and which consumes nothing.
     pub(crate) unsafe fn new(slots: Slots<'a>) -> Self {
         Self(slots)
     }

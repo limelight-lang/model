@@ -12,7 +12,8 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 ## 2026-09-26 — the close of a collection over P frees the run of completed deaths at R's front, and no block leaves R while a collector's reading holds it
 
 **Decided (Edmond, 2026-09-26, "делай", on S65.21; two design rounds, each
-model → Critic → Sage):** every ending of a collection over P, after it
+model → Critic → Sage):** every ending of a collection over P but a drop
+that unwinds, which disposes of P and leaves the run to the next close, after it
 disposes of P's prefix and packs the overflow buffer, reads R one entry at a
 time from the front under `MUTATOR`, frees each entry whose entity completed
 its death in place, the entry consumed before its slot is freed, and stops at
@@ -24,7 +25,11 @@ withheld deaths, saturating at zero. Because the close now moves R's front
 block, the poll's unlink of the empty block after the tail block reads the
 record's hold word by a read-modify-write before its stores and leaves the
 block linked while a collector's pre-claim reading holds it (the Sage of
-round 2: a plain load there is the store-buffering shape and unsound).
+round 2: a plain load there is the store-buffering shape and unsound). The
+run's frees count as the close's retirements in the poll's note to the
+collector's timer, as a batch's zero-count verdicts did (the Sage of round 2,
+over the model's proposal to keep them out: they are the fruit of the
+collector's proposal).
 
 **Measured** (`dev/BENCHMARKS.md`, "S65.21 the front run against leaving the
 deaths in R"): at equal paced load, on registered rings standing whole at R's

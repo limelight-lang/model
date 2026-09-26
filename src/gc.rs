@@ -352,8 +352,8 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
 
     // The soft signal, last: a fire over R whole above read R and started
     // the count again, so a signal sent here is for entries still in R; a
-    // fire over P alone read nothing of R and lowers no flag, the
-    // block-filled wake being for an R it did not read. Either way the
+    // fire over P alone read of R only the deaths at its front and lowers no
+    // flag, the block-filled wake being for the R behind them. Either way the
     // round it starts meets no collection of this thread's at the token. A
     // wake, and no arming.
     crate::cycle::queue::signal_the_collector_if_due();
