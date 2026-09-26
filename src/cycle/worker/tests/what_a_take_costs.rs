@@ -808,15 +808,20 @@ fn a_take_over_disjoint_live_rings_leaves_the_mutator_no_root_to_trace() {
 
     let mut taken = None;
     for _ in 0..SHORT_TAKE_RETRIES {
+        let disposals = crate::gc::disposals_on_this_thread();
         let (batches, collected, whole, _) =
             a_take(DISJOINT_LIVE, class, Reading::Census, &mut None, false);
         if whole {
-            taken = Some((batches, collected));
+            taken = Some((
+                batches,
+                collected,
+                crate::gc::disposals_on_this_thread() - disposals,
+            ));
             break;
         }
     }
 
-    let (batches, collected) = taken.expect("a take carried the ring whole");
+    let (batches, collected, disposals) = taken.expect("a take carried the ring whole");
     assert_eq!(
         batches
             .iter()
@@ -825,14 +830,14 @@ fn a_take_over_disjoint_live_rings_leaves_the_mutator_no_root_to_trace() {
         vec![(ROOTS, ROOTS, true)],
         "one part per ring, every one complete"
     );
+    // Every root read live, so the batch proposed nothing and its release
+    // owed P's disposition alone: the poll disposed of P and no collection
+    // opened a window for the census to read.
     let report = collected.report.expect("the census was armed");
     assert_eq!(
-        report
-            .scan
-            .as_ref()
-            .map(|scan| (scan.roots, scan.density.slotted.rows_met)),
-        Some((0, 0)),
-        "the mutator's collection traced no root and met no row"
+        (disposals, report.scan.is_none()),
+        (1, true),
+        "one disposition of P, and no trace window over a batch that proposed nothing"
     );
 }
 

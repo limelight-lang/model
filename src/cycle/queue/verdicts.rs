@@ -34,14 +34,18 @@
 //!
 //! # When the mutator reads P
 //!
-//! **P is read by in-line collections alone, and no poll reads a verdict.**
-//! The collector's release after a batch that posted writes `POSTED` into
-//! the mutator's token byte, and the mutator's reading of it — on its slot
-//! free entry and at its poll — arms the collection over P
+//! **P is read under the mutator's token alone: by in-line collections, and by
+//! the poll's disposition of a batch that proposed nothing.** The collector's
+//! release after a batch that proposed a set writes `POSTED` into the
+//! mutator's token byte, and the mutator's reading of it — on its slot free
+//! entry and at its poll — arms the collection over P
 //! (`crate::cycle::token::read_and_act_on_this_thread`,
-//! `crate::cycle::collect::collect_over_the_verdicts`): the proposed entries
-//! standing at the batch's reading are its roots and are traced from P's
-//! slots, with no entry of R written for them and nothing of R read
+//! `crate::cycle::collect::collect_over_the_verdicts`); after a batch that
+//! posted and proposed nothing it writes `NOTHING_PROPOSED`, whose reading
+//! arms P's disposition with no trace window
+//! (`crate::cycle::collect::dispose_of_p`). In the collection over P the
+//! proposed entries standing at the batch's reading are its roots and are
+//! traced from P's slots, with no entry of R written for them and nothing of R read
 //! (`crate::cycle::queue::Batch`). An unwalked entry is no root of it: the
 //! collector never read that root, and the collection over P validates what
 //! the collector read rather than searching, so its close writes the root

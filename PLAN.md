@@ -82,7 +82,8 @@ criterion, and it leaves when it gets one or when it is ruled on.
   nothing per thread — which nobody has read, on any target. Named when the
   reserve's first touch was decided on 2026-08-29 and priced nowhere since.
 
-- **Whether the collector keeps the live roots.** A root the collector read
+- **Whether the collector keeps the live roots** (S65.24 builds and
+  measures it against today's and form D alone). A root the collector read
   live costs the mutator a collection over P each epoch that frees nothing;
   the proposal moves live and unwalked roots into a chain the collector
   keeps on the record, drops the mutator's deferred lane, publishes no live
@@ -492,6 +493,68 @@ the hold's read-modify-write against a take (S65.22);
         ahead" added; (9) the fabricated zero-count verdict said so;
         (10) BENCHMARKS names the switch gone. The k-th free past the first
         is not injected: `FAIL_AT` fires at a point's first hit.
+- [ ] S65.24 Build and measure A, B and C (Edmond, 2026-09-26: "one or two
+        variants beside today's, no more than three; build them all, then
+        prove by tests which is better"; and "implement, measure, show the
+        result")
+      done: three trees measured on one rig in one session — A, today's
+        code; B, A with form D (S65.25); C, B with the collector's chain
+        (S65.26) — by the Sage's protocol of 2026-09-26 (below) and recorded
+        in `dev/BENCHMARKS.md` with the verdict "C wins", "B wins" or "A
+        stays"; the winner's amendments of `rfc` put to Edmond with the
+        figures. The design and its review are
+        `dev/design/the-collector-keeps-the-live-roots.md` and
+        `dev/THE-COLLECTOR-KEEPS-THE-LIVE-ROOTS-REVIEW.md` (F1–F6).
+      protocol (the Sage, cycle 1, 2026-09-26): deciding metric the
+        mutators' CPU an iteration (`CLOCK_THREAD_CPUTIME_ID`, the rig's
+        `mutator_cpu_in_the_loop_us` over its iterations) — the Sage named
+        cycles, and this box has no PMU ("no PMU driver, software events
+        only"), so CPU time stands in; a win is a median lower by more than
+        max(3 %, twice A's spread of three); gates on every cell: withheld
+        memory and the ledger's peak at most 1.10 × A's, no chain block
+        refused, R's oldest entry at its first attempt at most 2 × A's,
+        remnants cleared with the last free at most A's plus 4 s (drain
+        12 s), the longest token wait at most 1.25 × A's; the poll within
+        0.3 ns of A's minimum; three repeats interleaved A, B, C per cell;
+        deciding loads `overlapping-live`, `disjoint-live`,
+        `large-live-core`, `garbage-0`, `garbage-25`, `registered-ring-live`,
+        `deferred-live-large`, `deferred-then-dead` at the two cap-1
+        placements, the rest reported as guards; C wins at 6 of 8 deciding
+        loads over B at both placements and loses none, B wins at 4 of 8
+        over A; else A stays. The stamp arms run inside C only if C wins.
+        Variant E (forget a live root) was refused by its Critic and the
+        Sage; "B + forget-exact" becomes a fourth arm only if C leaves the
+        field, by the Sage's rules of the same day.
+      tier: T2 · role: Critic, Sage
+- [ ] S65.25 Form D: a batch that proposed no set owes P's disposition and
+        no trace window
+      done: the release to `NOTHING_PROPOSED` (`word(POSTED, 2)`), the
+        reading's third arm, `Arming::Disposal` between `Retire` and
+        `Verdicts`, `collect::dispose_of_p`; the deferred lane, its mirror
+        and splice untouched, so B − A is form D's alone; the rig counts and
+        times the dispositions beside the collections over P
+      tier: T2 · role: Critic
+      Critic 2026-09-26: no soundness hole — every reader of the byte reads
+        its state or swaps from an exact value, and the disposition is the
+        collection over P's take and close; (1) eight sentences still said
+        `POSTED` is the one release or that only collections read P —
+        amended; (2) the design note said read-live roots are written back —
+        it says what was built; (3) the rig did not see the dispositions —
+        `disposals`, `disposal_us`, `disposal_longest_us` added; (4) the
+        rank's reason restated; (5) `NOTHING_PROPOSED` against
+        `Ending::NothingProposed` said in the doc.
+- [ ] S65.26 The collector's chain (C, on top of S65.25)
+      done: the design note's rules as the Sage ruled them on 2026-09-26
+        (F1: the exit and the pressure path read the whole chain; F2: a
+        waiting and a ready part, K split in halves with the first source
+        alternating, chain roots out of K's growth; F3: at most 1,024 headers
+        checked a grant, the cursor in the block; F4: a check term of 4 s;
+        deaths found posted with a batch that posts, at 32, or after 4 s; a
+        batch that posted nothing releases `FREE` and gives its live list
+        back; a mutator's push signals the collector; `registered_by_lane`
+        counts the chain); the deferred lane deleted; the correctness cases
+        the Sage listed, each seen red
+      tier: T2 · role: Critic
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,

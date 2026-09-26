@@ -3,8 +3,9 @@
 //! candidates from behind its writer, trace them on a copy through
 //! `cells::AtomicCells` in parts, one root's closure each under a block
 //! budget, post one verdict per root into the mutator's verdict ring P in the
-//! parts' order, advance R past them, and release — to `POSTED`, which tells the mutator to collect over P
-//! (`rfc/dev/design/trace-token-handshake.md`;
+//! parts' order, advance R past them, and release — to `POSTED`, which tells
+//! the mutator to collect over P, or to `NOTHING_PROPOSED` when no verdict
+//! proposed a set, which owes it P's disposition alone (`rfc/dev/design/trace-token-handshake.md`;
 //! `rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff";
 //! `rfc/dev/DECISIONS.md`, "the candidate queue is read behind its writer,
 //! and the collector's verdicts come back by a second ring", "The
@@ -227,8 +228,8 @@
 //! withdrawal reads back is released with no batch, and every record is
 //! unlinked. A grant read on any path after the cap is stored is released
 //! with no batch ([`serve_the_grant`]), so no trace starts after the store; a
-//! trace already running finishes, and its `POSTED` is collected over by its
-//! owner as any batch's is. A request the visit under way made after the
+//! trace already running finishes, and its release is answered by its owner
+//! as any batch's is. A request the visit under way made after the
 //! store stands until the next checkpoint withdraws it. A sibling's own
 //! rounds withdraw its list in the same way, the elder ends it at its next
 //! round, and its list's drop takes what is left. A cap set back above zero
@@ -1226,8 +1227,10 @@ unsafe fn read_one_record(
 
 /// Serve `record`'s mutator once: request its token, wait for the mutator's
 /// consent, make one batch (module doc) under the grant and release —
-/// to `POSTED` when the batch posted verdicts, which is what tells the
-/// mutator to collect, and to `FREE` when it posted nothing. `threshold`
+/// to `POSTED` when the batch proposed a set, which is what tells the
+/// mutator to collect, to `NOTHING_PROPOSED` when it posted verdicts and
+/// none proposed a set, which owes the mutator P's disposition and no trace
+/// window, and to `FREE` when it posted nothing. `threshold`
 /// is the count of R, read before any request, at which the mutator is
 /// served outright; below it the serve goes on only for a ring that has
 /// stood an interval ([`decide_the_branch_and_stamp_the_instant`]), and the round
@@ -1661,8 +1664,9 @@ unsafe fn answer_the_withdrawal(
 /// Serve a grant this collector holds: the record taken out of the standing
 /// list first, so that an unwind inside the batch leaves the list whole;
 /// then the arena opened, the batch under `COLLECTOR|slot`, the arena's
-/// reset, the release — to `POSTED` when the batch posted, and to `FREE` at
-/// once when the pool refuses the workspace, which is `Idle`.
+/// reset, the release — to `POSTED` or `NOTHING_PROPOSED` when the batch
+/// posted, and to `FREE` at once when the pool refuses the workspace, which
+/// is `Idle`.
 ///
 /// # Safety
 /// The calling collector holds `mutator`'s token as `COLLECTOR|slot`.
@@ -1689,6 +1693,10 @@ unsafe fn serve_the_grant(
         mutator: &'a MutatorRecord,
         slot: usize,
         posted: std::cell::Cell<bool>,
+        /// Whether the batch posted a [`Verdict::Proposed`]: without one the
+        /// release is to `NOTHING_PROPOSED`, which owes the mutator P's
+        /// disposition and no trace window.
+        proposed: std::cell::Cell<bool>,
         /// The mutator's merge count as the grant read it, before the
         /// batch's peek: every merge it counts has its entries in the ring
         /// the batch reads.
@@ -1714,15 +1722,19 @@ unsafe fn serve_the_grant(
             // instant as soon as the store lands.
             #[cfg(test)]
             testing::note_release();
-            self.mutator
-                .token
-                .release_claim(self.slot, self.posted.get());
+            let released = match (self.posted.get(), self.proposed.get()) {
+                (false, _) => crate::cycle::token::FREE,
+                (true, true) => crate::cycle::token::POSTED,
+                (true, false) => crate::cycle::token::NOTHING_PROPOSED,
+            };
+            self.mutator.token.release_claim_to(self.slot, released);
         }
     }
     let held = ReleaseOnDrop {
         mutator,
         slot,
         posted: std::cell::Cell::new(false),
+        proposed: std::cell::Cell::new(false),
         merges: mutator.merges(),
     };
     crate::cycle::token::note_traced_mutator(std::ptr::from_ref(mutator).cast_mut());
@@ -1752,7 +1764,7 @@ unsafe fn serve_the_grant(
             std::ptr::from_mut(standing).cast(),
         )
     });
-    unsafe { batch(mutator, &mut arena, threshold, &held.posted) }
+    unsafe { batch(mutator, &mut arena, threshold, &held.posted, &held.proposed) }
 }
 
 /// A request between its swap and its grant, withdrawn on the unwind.
@@ -2192,6 +2204,7 @@ unsafe fn batch(
     arena: &mut TraceScratchArena,
     threshold: usize,
     posted: &std::cell::Cell<bool>,
+    proposed: &std::cell::Cell<bool>,
 ) -> Served {
     let verdicts = unsafe { VerdictWriter::open(mutator) };
     let reader = unsafe { Reader::new(mutator.candidate_ring()) };
@@ -2223,13 +2236,15 @@ unsafe fn batch(
     // dropped on the unwind, which gives its blocks back here.
     let mut live = crate::cycle::live_list::Writer::new(arena.turnovers());
     // From the guard on, every root is owed a verdict and R its advance, on
-    // the unwind too, and the release that follows is to `POSTED`.
+    // the unwind too, and the release that follows is to `POSTED` or, with no
+    // set proposed, to `NOTHING_PROPOSED`.
     posted.set(true);
     let mut posts = FinishThePosts {
         verdicts: &verdicts,
         roots: &mut out[..taken],
         reader: &reader,
         peeked,
+        proposed,
     };
     #[cfg(test)]
     testing::at_the_start_of_the_trace();
@@ -2349,6 +2364,9 @@ struct FinishThePosts<'a> {
     roots: &'a mut [usize],
     reader: &'a Reader<'a>,
     peeked: crate::ring::Peeked,
+    /// Set at the first [`Verdict::Proposed`] posted, before the release
+    /// reads it.
+    proposed: &'a std::cell::Cell<bool>,
 }
 
 impl FinishThePosts<'_> {
@@ -2367,6 +2385,9 @@ impl FinishThePosts<'_> {
             .post(self.root(index), verdict)
             .expect("the batch was clamped to P's room");
         self.roots[index] |= HAS_A_VERDICT;
+        if verdict == Verdict::Proposed {
+            self.proposed.set(true);
+        }
     }
 
     /// Post [`Verdict::Unwalked`] for every root still without a verdict: no

@@ -378,6 +378,25 @@ pub(crate) unsafe fn collect_over_the_verdicts() -> usize {
     unsafe { collection(BatchForm::Verdicts) }.freed
 }
 
+/// The disposition of P with no trace window, which `NOTHING_PROPOSED` arms
+/// (`crate::gc::Arming::Disposal`): the collector's batch proposed no set,
+/// so every verdict in P is answered without a trace — a completed death
+/// freed, a root read live deferred, an unwalked one written back into R —
+/// and the run of completed deaths at R's front goes with it, as at the close
+/// of a collection over P.
+///
+/// It is the collection over P's take and close with nothing between: the
+/// take of the token from `POSTED` stamps the batch's live list, and the
+/// guard's drop runs the disposition, spends the arming and arms the
+/// retirement pass where its count stands (`CollectingThread`'s drop). No
+/// window, arena or membership is opened.
+///
+/// # Safety
+/// As [`collect_off_the_poll`].
+pub(crate) unsafe fn dispose_of_p() {
+    let _ = CollectingThread::take(BatchForm::Verdicts);
+}
+
 /// Where a collection off the poll ended. Every arm but the last is a zero
 /// answer, and the exit names the one its residue stands behind.
 ///

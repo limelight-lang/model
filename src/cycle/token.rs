@@ -17,10 +17,12 @@
 //! | [`COLLECTOR`]`\|s` | collector s, or the consenting mutator | collector s traces; the mutator withholds every return |
 //! | [`POSTED`] | collector s | no collector holds anything; the last batch's verdicts stand in P undisposed of, with its live list beside them (`crate::cycle::live_list`), and the mutator owes a collection over P |
 //! | [`ASKED`], `POSTED` with slot one | the elder | under a collector cap of zero: P is empty, and the mutator owes a collection over R whole ([`TraceToken::ask_to_collect_in_line`]) |
+//! | [`NOTHING_PROPOSED`], `POSTED` with slot two | collector s | as `POSTED`, and no verdict in P proposes a set: the mutator owes the disposition of P with no trace window |
 //!
 //! `FREE`, `MUTATOR` and a batch's `POSTED` carry slot zero, so a collector's
 //! request expects exactly zero; [`ASKED`] is `POSTED` in every reader that
-//! reads the state, and the mutator's reading alone tells the two apart. Every transition is a compare-and-swap that names
+//! reads the state, and the mutator's reading alone tells it and
+//! [`NOTHING_PROPOSED`] from a batch's `POSTED`. Every transition is a compare-and-swap that names
 //! the byte it expects, and a failed swap is acted on by the value it read
 //! back, never inferred; the two exceptions are the releases, stores over a
 //! value only their writer can change. The collector never writes
@@ -88,6 +90,16 @@ pub(crate) const POSTED: u8 = 4;
 /// ([`read_and_act_on_this_thread`]).
 pub(crate) const ASKED: u8 = word(POSTED, 1);
 
+/// `POSTED` written by a collector whose batch posted no
+/// [`Verdict::Proposed`](crate::cycle::queue::verdicts::Verdict::Proposed):
+/// every verdict in P is disposed of without a trace, and the mutator owes
+/// the disposition of P alone, with no trace window
+/// ([`crate::gc::Arming::Disposal`]). Every reader that reads the state reads
+/// `POSTED`, as for [`ASKED`]. It names the collector's batch, which proposed
+/// nothing; `crate::cycle::collect::Ending::NothingProposed` is a collection's
+/// own ending, whose scan proposed nothing.
+pub(crate) const NOTHING_PROPOSED: u8 = word(POSTED, 2);
+
 /// The bits the state takes.
 pub(crate) const STATE_MASK: u8 = 0b111;
 /// The bit the slot starts at; three bits hold `MAX_COLLECTORS` of 8.
@@ -143,8 +155,10 @@ pub(crate) enum Reading {
     NoRecord,
     /// `FREE`: return memory at once.
     Free,
-    /// `POSTED`: the collector's last batch stands in P; this thread is
-    /// armed for the collection over it, and returns memory at once.
+    /// `POSTED`: the collector's last batch stands in P, or the elder asked
+    /// for R whole; this thread is armed for the collection over P, for R
+    /// whole at [`ASKED`], or for P's disposition at [`NOTHING_PROPOSED`], and
+    /// returns memory at once.
     Posted,
     /// `COLLECTOR|s`, found or just consented to: withhold every return.
     Collector,
@@ -373,17 +387,26 @@ impl TraceToken {
     /// Release collector `slot`'s claim: one store — `POSTED` when the batch
     /// posted verdicts into P, `FREE` when it posted nothing — then the wake
     /// of the mutator, if it waits.
+    pub(crate) fn release_claim(&self, slot: usize, posted: bool) {
+        self.release_claim_to(slot, if posted { POSTED } else { FREE });
+    }
+
+    /// Release collector `slot`'s claim to `released`, one of `FREE`,
+    /// `POSTED` and [`NOTHING_PROPOSED`], then wake the mutator, if it waits.
     ///
     /// The notify is made under the mutex so that a waiter which read the
     /// byte before this store and is about to wait cannot miss it.
-    pub(crate) fn release_claim(&self, slot: usize, posted: bool) {
+    pub(crate) fn release_claim_to(&self, slot: usize, released: u8) {
         debug_assert_eq!(
             self.word.load(Ordering::Relaxed),
             word(COLLECTOR, slot),
             "a release of a claim this collector does not hold"
         );
-        self.word
-            .store(if posted { POSTED } else { FREE }, Ordering::Release);
+        debug_assert!(
+            matches!(released, FREE | POSTED | NOTHING_PROPOSED),
+            "a release to {released:#x}"
+        );
+        self.word.store(released, Ordering::Release);
         let _guard = self
             .wait
             .lock()
@@ -591,13 +614,16 @@ impl TraceToken {
     /// read it: the first half of a case's clearing of `POSTED`, which gives
     /// the grant's live list back under the claim and then releases to
     /// `FREE` (`crate::cycle::mutator_record::MutatorRecord::clear_posted_for_test`).
-    /// One swap, so that a release to `POSTED` landing after a reading of the
+    /// One swap per value a batch's release writes, `POSTED` and
+    /// [`NOTHING_PROPOSED`], so that a release landing after a reading of the
     /// byte is never cleared with its list still standing.
     #[cfg(test)]
     pub(crate) fn take_posted_for_test(&self) -> bool {
-        self.word
-            .compare_exchange(POSTED, MUTATOR, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok()
+        [POSTED, NOTHING_PROPOSED].into_iter().any(|posted| {
+            self.word
+                .compare_exchange(posted, MUTATOR, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+        })
     }
 
     /// Claim `COLLECTOR|slot` over `FREE` in one swap, without a request or
@@ -687,7 +713,8 @@ pub(crate) fn forget_this_threads_recall() {
 /// asks for — at `REQUESTED|s` the consent and the wake, and the grant's
 /// recall where a stack of withheld returns already holds its mark
 /// (`crate::cycle::deferred_slot_reuse`, "The marks by stack length"); at
-/// `POSTED` the arming for the collection over P — then the answer the caller decides
+/// `POSTED` the arming for the collection over P, or for P's disposition
+/// alone at [`NOTHING_PROPOSED`] — then the answer the caller decides
 /// its return by ([`Reading`]). A swap that fails is acted on by the value
 /// it read back.
 ///
@@ -709,10 +736,10 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
         match state(seen) {
             FREE => return Reading::Free,
             POSTED => {
-                if seen == ASKED {
-                    crate::gc::arm();
-                } else {
-                    crate::gc::arm_for_the_verdicts();
+                match seen {
+                    ASKED => crate::gc::arm(),
+                    NOTHING_PROPOSED => crate::gc::arm_for_the_disposal(),
+                    _ => crate::gc::arm_for_the_verdicts(),
                 }
                 return Reading::Posted;
             }

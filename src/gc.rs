@@ -58,12 +58,23 @@ pub(crate) enum Arming {
     /// at its front, arms it again while the count stands
     /// (`crate::cycle::queue::arm_to_retire_if_the_count_stands`).
     Retire = 1,
+    /// No collection, and P's disposition: the collector's batch stands
+    /// there with no set proposed, its release having written
+    /// `NOTHING_PROPOSED` into this thread's byte, so every verdict is
+    /// answered without a trace window — completed deaths freed, live roots
+    /// deferred, unwalked ones written back — together with the retirement
+    /// pass's reading of R's front run (`crate::cycle::collect::dispose_of_p`).
+    /// It reads of R only that run, and its close arms the retirement pass
+    /// again where the count stands, as a collection over P's does, which is
+    /// what lets it outrank [`Retire`](Self::Retire); every collection does
+    /// all it does.
+    Disposal = 2,
     /// The collection over P: the collector's batch stands there, its
     /// release having written `POSTED` into this thread's byte
     /// (`crate::cycle::token::read_and_act_on_this_thread`).
-    Verdicts = 2,
+    Verdicts = 3,
     /// The collection over R whole, with P disposed of in it.
-    AllRoots = 3,
+    AllRoots = 4,
 }
 
 impl Arming {
@@ -71,7 +82,8 @@ impl Arming {
         match word {
             0 => Self::None,
             1 => Self::Retire,
-            2 => Self::Verdicts,
+            2 => Self::Disposal,
+            3 => Self::Verdicts,
             _ => Self::AllRoots,
         }
     }
@@ -101,9 +113,17 @@ pub(crate) fn arm() {
 /// Arm this thread for the collection over P, unless it is armed for more:
 /// the reading of `POSTED` on the free path and at the poll
 /// (`crate::cycle::token::read_and_act_on_this_thread`), which arms R whole
-/// instead ([`arm`]) on the elder's ask under a collector cap of zero.
+/// instead ([`arm`]) on the elder's ask under a collector cap of zero, and
+/// P's disposition alone ([`arm_for_the_disposal`]) on `NOTHING_PROPOSED`.
 pub(crate) fn arm_for_the_verdicts() {
     COLLECTION_ARMED.with(|armed| armed.set(armed.get().max(Arming::Verdicts as u8)));
+}
+
+/// Arm this thread for P's disposition with no trace window, unless it is
+/// armed for more: the reading of `NOTHING_PROPOSED`
+/// (`crate::cycle::token::read_and_act_on_this_thread`).
+pub(crate) fn arm_for_the_disposal() {
+    COLLECTION_ARMED.with(|armed| armed.set(armed.get().max(Arming::Disposal as u8)));
 }
 
 /// Arm this thread for the retirement pass, unless it is armed for more:
@@ -154,6 +174,15 @@ thread_local! {
     /// Collections over P this thread's polls fired, for the stress probe's
     /// count of `POSTED` skips against batches minus collections.
     static VERDICT_COLLECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Dispositions of P with no trace window this thread's polls fired.
+    static DISPOSALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Dispositions of P with no trace window this thread's polls have fired so
+/// far.
+#[cfg(test)]
+pub(crate) fn disposals_on_this_thread() -> usize {
+    DISPOSALS.with(|count| count.get())
 }
 
 /// Collections over P this thread's polls have fired so far.
@@ -223,7 +252,7 @@ pub extern "C" fn ll_gc_reoffer_deferred() -> usize {
 /// boundary, allocation slow path, request end (`rfc/model/gc/strategies.md`,
 /// §2 and "Collection requests and triggers"). Where the polls stand is the
 /// compiler's; what they fire is armed by the runtime — the byte's `POSTED`
-/// for P, a refused allocation for R whole, the free path's count of
+/// for P and its `NOTHING_PROPOSED` for P's disposition, a refused allocation for R whole, the free path's count of
 /// completed deaths for a retirement pass ([`Arming`]), and under a collector
 /// cap of zero the elder's ask over an empty P for R whole ([`arm`]) — and
 /// collected here,
@@ -327,6 +356,16 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         Arming::None => 0,
         Arming::Retire => {
             unsafe { crate::cycle::queue::retire_at_the_poll() };
+            0
+        }
+        Arming::Disposal => {
+            #[cfg(test)]
+            DISPOSALS.with(|count| count.set(count.get() + 1));
+            #[cfg(test)]
+            let from = std::time::Instant::now();
+            unsafe { crate::cycle::collect::dispose_of_p() };
+            #[cfg(test)]
+            crate::cycle::worker::testing::note_disposal(from.elapsed());
             0
         }
         Arming::Verdicts => {

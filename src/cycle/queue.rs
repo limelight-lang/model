@@ -144,7 +144,8 @@
 //! the epoch against the lane's mirror and re-offers the lane where it moved
 //! ([`reoffer_deferred_if_epoch_moved`]);
 //! reads the token byte, consenting to a collector's request and arming for the
-//! collection over P on `POSTED` ([`verdicts`]); armed and behind an open
+//! collection over P on `POSTED`, or for P's disposition alone on
+//! `NOTHING_PROPOSED` ([`verdicts`]); armed and behind an open
 //! gate, fires a collection; and last, behind the same gate, signals the
 //! collector when a registration has filled a block of R, drawn the
 //! reserve or overflowed since the last signal

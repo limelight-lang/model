@@ -7,6 +7,31 @@ it can** — with only the mutator freeing memory. The chain amends earlier
 rulings and waits for Edmond's word; the rest is the Sage's to decide and is
 marked so.
 
+## After the owner's review
+
+Edmond's review (`dev/THE-COLLECTOR-KEEPS-THE-LIVE-ROOTS-REVIEW.md`, F1–F6)
+holds on the code in every finding, and the Sage ruled its open choices on
+2026-09-26; `PLAN.md` S65.24–S65.26 carry the rulings, and they take
+precedence over the text below where the two differ:
+
+- The exit and the pressure path read the whole chain before each round;
+  `cap 0`'s asked collection reads its ready part (F1, S8).
+- The chain has a waiting part (roots read live, stamped per block) and a
+  ready part (expired blocks relinked whole, then unwalked retries, then
+  deaths found); with R and the ready part both standing, K is split in
+  halves and the first source alternates; chain roots do not grow K (F2).
+- The death check reads at most 1,024 headers a grant, the recall read before
+  each, its cursor in the chain block's own header; the record holds two
+  words, the waiting head and the ready head (F3).
+- A standing chain is served after 4 s whatever its stamps, the term the
+  round already has for a standing R; deaths found are posted with any
+  batch that posts, alone at 32 or after 4 s (F4).
+- The 15,365 figure predates the list's stamping (F5).
+- A, B (form D alone) and C (form D and the chain) are built and measured
+  (F6); the stamp arms wait inside C for C's win.
+- A mutator's push into the chain signals the collector, and the exit's
+  count of registered entries counts the chain (the Critic's cycle-1 finds).
+
 ## What changes
 
 **A root the collector read live costs the mutator nothing.** Today such a
@@ -17,8 +42,8 @@ into the deferred lane (`queue::compaction::dispose_verdicts`,
 poll reads the record's epoch byte only while the lane is occupied, behind a
 thread-local load, `gc.rs:288-291`). A batch of 63 live roots left the
 mutator 15,365 instructions against 658,832 in line (`dev/BENCHMARKS.md`,
-the live-roots arm); that figure also holds the mutator's stamping of the
-381 listed members, which the arm does not split out.
+the live-roots arm, measured on 2026-09-22, before the live list's stamping
+existed).
 
 **The collector's chain.** Under a grant the collector puts a root it read
 live into the chain: pool blocks the collector draws, each stamped with the
@@ -80,14 +105,15 @@ that is mutator work for deaths the collector already finds.
 final).** `ReadLive`, `Unwalked` and `ZeroCount` are all disposed of by the
 pass over P alone (`compaction.rs:243-306`), so a batch that posted no
 `Proposed` releases to a third value of the byte, `word(POSTED, 2)`, beside
-`ASKED`. The pass takes the token from that value, settles the live list as
-`HeldToken::take` does (`live_list::stamp_from`), retires completed deaths,
-writes back resurrected and read-live roots, advances P and writes `FREE`.
-It cannot reuse `take_or_hold_posted` (`queue.rs:1364`), which leaves the
-byte and the list standing. It has its own `Arming` rank between `Retire`
-and `Verdicts` and runs `spend_an_arming_for_the_verdicts`
-(`gc.rs:50-66, 120-127`); `read_and_act_on_this_thread` gains a third arm
-(`token.rs:708-717`).
+`ASKED`, `NOTHING_PROPOSED`. Built in S65.25 as `collect::dispose_of_p`:
+the collection over P's take and close with nothing between. The take of
+the token from that value stamps the live list (`live_list::stamp_from`);
+the guard's drop retires completed deaths, defers roots read live into the
+deferred lane (under the chain, where `ReadLive` is only a pool refusal's,
+writes them back into R), writes unwalked roots back, frees R's front run,
+advances P, spends the arming, re-arms the retirement pass where its count
+stands and writes `FREE`. `Arming::Disposal` ranks between `Retire` and
+`Verdicts`, and `read_and_act_on_this_thread` has a third arm.
 
 **The mutator's deferred lane goes,** with its mirror, the poll's epoch
 compare and the splice. A pool refusal of a chain block posts the root into

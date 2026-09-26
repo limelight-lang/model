@@ -997,6 +997,13 @@ static DISPOSALS: Mutex<VerdictCollections> = Mutex::new(VerdictCollections {
     freed: 0,
 });
 
+pub(crate) fn note_disposal(took: std::time::Duration) {
+    let mut disposals = lock(&DISPOSALS);
+    disposals.collections += 1;
+    disposals.total += took;
+    disposals.longest = disposals.longest.max(took);
+}
+
 /// The dispositions of P since the last call, and zero them.
 pub(crate) fn take_disposals() -> VerdictCollections {
     std::mem::take(&mut *lock(&DISPOSALS))

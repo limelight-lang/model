@@ -104,6 +104,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("DISPATCHES_AT_DESCENT_BOUNDARY", false), // test-only const Cell, no drop glue
         ("DISPATCHES_AT_PHASE_BOUNDARY", false),
         ("DISPATCHES_IN_DESCENT", false), // test-only const Cell, no drop glue
+        ("DISPOSALS", false),             // test-only const Cell, no drop glue
         ("EARLY_RETIREMENT", false),      // test-only const Cell, no destructor registration
         ("EARLY_RETURNED_SLOTS", false),  // test-only const Cell, no destructor registration
         ("EDGES_PRUNED", false),          // test-only const Cell, no drop glue

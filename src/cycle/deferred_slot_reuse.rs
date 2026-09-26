@@ -823,6 +823,7 @@ pub(crate) unsafe fn withhold_under_a_trace_or_make_returns(ptr: *mut u8, kind: 
 
     // The slot entry is one of the two readers that act on the byte: a
     // request is consented to here, and `POSTED` arms the collection over P
+    // or, at `NOTHING_PROPOSED`, P's disposition
     // (`crate::cycle::token::read_and_act_on_this_thread`).
     if crate::cycle::token::read_and_act_on_this_thread() == crate::cycle::token::Reading::Collector
     {
