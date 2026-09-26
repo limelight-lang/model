@@ -662,23 +662,50 @@ the hold's read-modify-write against a take (S65.22);
         `the_chain::where_p_holds_less_than_both_want_r_and_the_chain_share_it_in_halves`.
 - [ ] S65.28 The collector's chain worked outside the token (Edmond,
         2026-09-26: "the collector can enter it without taking the token"; after
-        S65.27, before C is measured again)
-      done: a design, reviewed by the Critic and ruled by the Sage, for the
-        collector's chain as the collector's own structure: the expiry and
-        the death check run outside the token, and the trace and the posts
-        into P stay under it; the mutator, which touches the chain only on its
-        own collections (the exit, the pressure path, a collection over R
-        whole) and already takes the token for them, excludes the collector's
-        outside work by a second claim on the record, one compare-and-swap a
-        side; the questions answered: how the exit takes the chain without an
-        unbounded wait, where a death found outside a grant waits for the
-        next one, and which readings the outside work makes and why no slot
-        a chained root names can be reissued under them (the candidate bit);
-        the rfc's rule that every chain operation is the token holder's
-        (`chain.rs`, module doc, "Who touches it") amended or kept, and put to
-        Edmond. Refused on the way: one epoch-ordered chain in place of the
-        waiting and ready parts, which saves a block move and nothing a
-        workload would read (Edmond, 2026-09-26)
+        S65.27)
+      done (the Sage, 2026-09-26, Final): D re-measured against H on the
+        repaired build (S65.27) by the S65.24 protocol, and on H each grant
+        timed in three segments — the expiry, the death check, the trace with
+        its posts — with the frees the mutator withheld under each and its
+        token wait split by the segment the take met; the rig given a load
+        where roots the chain holds die as completed deaths
+        (`withheld_by_an_entry` reads zero in every cell today, so the check's
+        yield is unmeasured); the second per-record claim refused. If H stays
+        and the expiry's and the check's share of the mutator's token wait or
+        of its withheld-free time exceeds 10 % on any cell, the chain's work
+        outside the grant is built as the token's sixth state `CHAIN|s` (below);
+        otherwise the step closes on the figure with `chain.rs`'s rule "every
+        operation here is the token holder's" kept. Put to Edmond with the
+        figures.
+      built on the way (T1, before the re-measurement): the expiry reads the
+        recall between blocks; a death P had no room for keeps the check's
+        cursor on it (`record_chain.rs` advances `checked` past a `Keep` for
+        want of room, against `chain.rs`'s contract); a
+        `debug_assert!(!reset_window::is_open())` at the retirement's
+        precondition in `queue.rs`.
+      the form if built (the Sage, Final): `CHAIN|s`, state 5 with the slot
+        bits, taken from `FREE` by one acquire CAS with no request and no
+        consent, released by a store to `FREE`, or to `NOTHING_PROPOSED` when
+        it posted; the mutator's frees are not withheld under it (the
+        candidate bit pins what it reads); under it the collector reads the
+        chain's words and blocks and chained roots' headers, writes P, and
+        touches nothing else; the mutator's take waits at it on the existing
+        recall flag and condvar, read before each header and between expiry
+        blocks, so the exit's wait is one header or one block step and is not
+        admitted under F3; found deaths are posted under it as the check-only
+        grant posts them, `DEATHS_TO_POST` 1; it runs exactly when `is_due`
+        would serve a check-only grant, never per round, and never under
+        `cap 0`; the holder never requests or waits. The rfc (`rc-cycle.md`
+        "Concurrency", `rfc/dev/DECISIONS.md` 2026-08-27, `questions.md` Y12
+        clause 8, the handshake table) is amended in the commit that makes H
+        the default, both repositories together.
+      Critic 2026-09-26: the second claim does not exclude a second collector
+        at cap >= 2 (the grant writes the chain too); a death found outside a
+        grant is lost, stale or doubly posted in every reading of where it
+        waits; outside the grant the check is not recalled, so the exit waits
+        longer; the exit's kept token and double splice self-deadlock a claim
+        held like the token; the benefit is bounded and unmeasured; the rule
+        to amend is the crate's, the rfc's contradictions are H's own.
       tier: T2 · role: Critic, Sage
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
