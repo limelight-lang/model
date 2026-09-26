@@ -365,3 +365,115 @@ fn a_deferring_pass_survives_an_unwind_at_each_of_its_boundaries() {
 
     reset();
 }
+
+/// The close's run over R's front, as a collection over P ends
+/// (`compaction::free_the_front_run`), with nothing in P.
+fn close_over_p() {
+    compaction::compact(compaction::Lanes::Overflow, None, false, None);
+}
+
+/// The run stops at a zero count whose teardown has not ended: the entry ahead
+/// of the death stays, and so does the death; the teardown's end lets the
+/// next close free both.
+#[test]
+fn the_front_run_stops_at_a_zero_count_whose_teardown_has_not_ended() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut arena = Arena::new();
+    let class = candidate_class("RunStoppedMidTeardown");
+    let unfinished = append_real(&mut arena, class, false);
+    let dead = append_real(&mut arena, class, false);
+    assert!(
+        unsafe { ll_release(unfinished) },
+        "a zero count, its teardown not run"
+    );
+    unsafe { dismantle_candidate(dead) };
+    let _ = take_queue_work();
+
+    close_over_p();
+    assert_eq!(
+        take_queue_work().records_read,
+        1,
+        "the stop read, and nothing past it"
+    );
+    assert_eq!(candidate_count(), 2, "both stand");
+
+    unsafe { ll_object_die(unfinished.cast()) };
+    close_over_p();
+    assert_eq!(candidate_count(), 0, "the next close freed both");
+    reset();
+}
+
+/// An unwind after the first free of the run leaves R's front past that entry,
+/// the freed slot freed once, and the rest of the run standing for the next
+/// close.
+#[test]
+fn an_unwind_inside_the_front_run_leaves_the_rest_for_the_next_close() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut arena = Arena::new();
+    let class = candidate_class("RunUnwound");
+    let deaths: Vec<_> = (0..3)
+        .map(|_| append_real(&mut arena, class, false))
+        .collect();
+    let survivor = append_real(&mut arena, class, false);
+    for &entity in &deaths {
+        unsafe { dismantle_candidate(entity) };
+    }
+
+    let raised = {
+        let _injection = compaction::inject(compaction::FRONT_RUN_CHECKPOINT);
+        std::panic::catch_unwind(close_over_p)
+    };
+    assert!(raised.is_err(), "the run reached its checkpoint");
+    let mut left = Vec::new();
+    collect_lane_tokens(&mut left);
+    assert_eq!(
+        left,
+        vec![deaths[1], deaths[2], survivor],
+        "the first death left R, the rest stand in order"
+    );
+
+    close_over_p();
+    assert_eq!(
+        ring_tokens(),
+        vec![survivor],
+        "the next close freed the rest"
+    );
+    unsafe { dismantle_candidate(survivor) };
+    close_over_p();
+    assert_eq!(candidate_count(), 0);
+    reset();
+}
+
+/// A run longer than a block crosses into the next one: every death is freed,
+/// R's front moves into the second block, and both blocks stay in the circle.
+#[test]
+fn the_front_run_crosses_a_block() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut arena = Arena::new();
+    let class = candidate_class("RunAcrossABlock");
+    let deaths: Vec<_> = (0..BLOCK_ENTRIES + 5)
+        .map(|_| append_real(&mut arena, class, false))
+        .collect();
+    let survivor = append_real(&mut arena, class, false);
+    assert_eq!(segment_count(), 2);
+    for &entity in &deaths {
+        unsafe { dismantle_candidate(entity) };
+    }
+    let _ = take_queue_work();
+
+    close_over_p();
+    assert_eq!(take_queue_work().records_read, deaths.len() + 1);
+    assert_eq!(ring_tokens(), vec![survivor], "the survivor is R's front");
+    assert_eq!(segment_count(), 2, "no block left the circle");
+
+    unsafe { dismantle_candidate(survivor) };
+    close_over_p();
+    assert_eq!(candidate_count(), 0);
+    reset();
+}

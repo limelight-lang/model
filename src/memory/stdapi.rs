@@ -486,17 +486,20 @@ unsafe fn free_taken<const ENTITY: bool>(ptr: *mut u8, block: *mut u8, kind: u32
     // (`rfc/model/gc/rc-cycle.md`, "Zero-count entities pending slot reuse"). The entry is a raw
     // pointer and carries nothing of its own, so whoever retires it reads the
     // count out of the body — which a recycled slot no longer holds.
-    // Withholding is the whole of it: nothing is recorded, because
-    // the entry *is* the record, and the block's `used` therefore falls at the
+    // Nothing is recorded of the slot but a count, because the entry *is*
+    // the record, and the block's `used` therefore falls at the
     // return and never here, which is what keeps a block with a withheld
     // zero-count member out of the pool (`dev/DECISIONS.md`, "A block's `used`
     // falls at the slot's return").
     //
     // The commit withholds registered members until its last membership read
     // and row sweep. The owner's queue retirement then removes each completed
-    // death, clears CANDIDATE_BIT and DEAD_IN_PLACE, and calls this same free;
-    // the count below is what brings that retirement to a thread whose ring
-    // stands below the collector's threshold.
+    // death, clears CANDIDATE_BIT and DEAD_IN_PLACE, and calls this same free:
+    // the close of a collection over P for the run at R's front, which is
+    // where the members its own teardown killed stand; the collector's batch
+    // for a death behind a live entry; and, through the count below, the
+    // retirement pass of a thread whose ring stands below the collector's
+    // threshold.
     if crate::refcount::is_registered_candidate(flags) {
         crate::cycle::queue::note_a_candidate_death();
         return;

@@ -331,7 +331,7 @@ impl Drop for CollectingThread {
         // An arming for P alone made before this collection is spent by it:
         // P is empty behind the close, and a collection over it would open
         // an empty window. The pass's arming goes with it and comes back
-        // where the close read no R and the deaths it counted stand there.
+        // where the deaths it counted stand in R behind the close's run.
         crate::gc::spend_an_arming_for_the_verdicts();
         crate::cycle::queue::arm_to_retire_if_the_count_stands();
     }

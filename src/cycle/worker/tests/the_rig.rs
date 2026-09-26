@@ -929,12 +929,6 @@ fn millis_from_env(variable: &str) -> Duration {
     })
 }
 
-/// Whether the cell runs form I of `PLAN.md` S65.21, the close's free of R's
-/// front run: `LL_RIG_FRONT_RUN=1`.
-fn front_run_from_env() -> bool {
-    std::env::var("LL_RIG_FRONT_RUN").is_ok_and(|value| value == "1")
-}
-
 /// The comma-separated CPU numbers of `variable`, empty when it is unset or
 /// empty.
 fn cpus(variable: &str) -> Vec<usize> {
@@ -1051,7 +1045,6 @@ impl CellReading {
                 listed(cell.collector_cpus.iter().map(usize::to_string).collect()),
             ),
             ("cap", cell.cap.to_string()),
-            ("front_run", u8::from(front_run_from_env()).to_string()),
             ("seconds", cell.run_for.as_secs_f64().to_string()),
             (
                 "iterations",
@@ -1376,7 +1369,6 @@ fn a_cell_of_the_rig() {
     let _g = test_guard();
     let _wait = testing::HeldRequestWait::crate_own();
     let cell = Cell::from_env();
-    crate::cycle::queue::FRONT_RUN.store(front_run_from_env(), Ordering::Relaxed);
     let class = member_class("RigNode");
     let loads: Vec<Load> = LOADS
         .into_iter()

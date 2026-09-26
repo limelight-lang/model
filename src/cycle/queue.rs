@@ -292,11 +292,12 @@ struct MutatorCycleState {
     /// figure the poll's note to the collector's timer reads beside what a
     /// collection freed ([`take_retired_by_the_close`]).
     retired_by_the_close: Cell<u32>,
-    /// Completed deaths of candidates the free path withheld since the last
-    /// compaction that read R, which zeroes it since it reads R whole; the
-    /// close of a collection over P reads none of R and leaves it. The one
-    /// that reaches `retire_after` arms the poll for the retirement pass
-    /// ([`note_a_candidate_death`]). Wrapping.
+    /// Completed deaths of candidates the free path withheld and no pass has
+    /// retired: every retirement lowers it by one, saturating, and a pass
+    /// that reads R whole zeroes it, as the count's pass does where it leaves
+    /// R to the collector and the thread's exit does. The one that reaches
+    /// `retire_after` arms the poll for the retirement pass
+    /// ([`note_a_candidate_death`]). Wrapping on the way up.
     candidate_deaths: Cell<u16>,
     /// The count that arms the pass: [`DEATHS_TO_RETIRE`], doubled up to
     /// [`DEATHS_TO_RETIRE_BOUND`] after each pass that returned fewer than
@@ -1296,10 +1297,11 @@ pub(crate) fn note_a_candidate_death() {
 }
 
 /// Arm the retirement pass again where the free path's count stands at the
-/// figure that arms it: the close of a collection that read no R, whose
-/// arming outranked the pass's at the poll or spent it at the close
-/// (`crate::gc::spend_an_arming_for_the_verdicts`) and whose compaction
-/// left the counted deaths in R. A count a pass zeroed arms nothing.
+/// figure that arms it: the close of a collection over P, whose arming
+/// outranked the pass's at the poll or spent it at the close
+/// (`crate::gc::spend_an_arming_for_the_verdicts`) and which left counted
+/// deaths in R behind the first entry that was not one. A count the close's
+/// own frees brought below the figure arms nothing.
 pub(crate) fn arm_to_retire_if_the_count_stands() {
     let state = mutator_state();
     if state.is_null() {
@@ -1472,7 +1474,8 @@ pub(crate) unsafe fn retire_candidates() {
 /// registration is; `at_turnovers` is the mirror a root read live records,
 /// and the caller passes the cell as its own reading saw it rather than as
 /// it stands at the close, as [`defer_candidates`] states. `form` is the
-/// collection's, and a collection over P reads nothing of R here either.
+/// collection's, and a collection over P reads of R here only the run of
+/// completed deaths at its front, as at its close.
 ///
 /// # Safety
 /// As [`retire_candidates`].
@@ -1482,8 +1485,6 @@ pub(crate) unsafe fn retire_candidates_and_dispose_of_verdicts(at_turnovers: u64
 }
 
 mod compaction;
-#[cfg(test)]
-pub(crate) use compaction::FRONT_RUN;
 pub(crate) mod verdicts;
 
 /// Put `entity` in the deferred lane, taking a block from a spare cell when

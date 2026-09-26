@@ -51,6 +51,11 @@ of withheld deaths is what would reopen this.
 
 ## 2026-09-25 — the close of a collection over P reads no R, and the pass's count stands across it
 
+**Superseded in part 2026-09-26** ("the close of a collection over P frees the
+run of completed deaths at R's front…"): the close reads of R the run of
+completed deaths at its front and frees it, and every retirement lowers the
+count.
+
 **Decided (Edmond, on S65.17's run, "просто удалить вызов"; S65.20):** the
 close of a collection over P disposes of P's prefix and packs the overflow
 buffer, and reads nothing of R. The pass over R was the close of a
@@ -63,8 +68,9 @@ while a batch takes at most `worker::BATCH_BOUND` roots.
 
 **Decided by the model under that ruling:** the drop of a collection over P
 that gave up before its close reads no R either, the batch's form deciding
-both (`queue::compaction::Lanes`); the count is zeroed only by a pass that
-reads R; and the close of a collection over P arms the retirement pass
+both (`queue::compaction::Lanes`); the count is zeroed by a pass that reads
+R whole, by the count's pass that leaves R to the collector and by the
+queue's release; and the close of a collection over P arms the retirement pass
 again while the count stands at its figure, because the arming for P
 outranks the pass's at the poll and the close spends both, which with the
 count left standing would arm nothing until the count wrapped. A completed

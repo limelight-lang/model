@@ -235,8 +235,9 @@ fn the_pass_reads_r_and_not_the_deferred_lane() {
 
 /// A compaction that reads R reads it whole and starts the count again:
 /// deaths counted before a collection over R do not bring the pass forward
-/// after it. The collection over P reads no R and keeps the count
-/// (`what_the_byte_arms::the_fire_the_byte_arms_keeps_the_count_of_deaths`).
+/// after it. The collection over P lowers the count by the deaths it frees
+/// at R's front and keeps the rest
+/// (`what_the_byte_arms::the_fire_the_byte_arms_keeps_the_count_of_the_deaths_it_leaves`).
 #[test]
 fn a_compaction_starts_the_count_again() {
     let _g = test_guard();

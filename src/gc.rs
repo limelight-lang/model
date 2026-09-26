@@ -54,8 +54,9 @@ pub(crate) enum Arming {
     /// free path counted to [`crate::cycle::queue::DEATHS_TO_RETIRE`] stand
     /// there with their slots withheld. A collection over R whole retires
     /// them too, so every other arming outranks this one, and the close of
-    /// a collection over P, which reads no R, arms it again while the count
-    /// stands (`crate::cycle::queue::arm_to_retire_if_the_count_stands`).
+    /// a collection over P, which reads of R only the run of completed deaths
+    /// at its front, arms it again while the count stands
+    /// (`crate::cycle::queue::arm_to_retire_if_the_count_stands`).
     Retire = 1,
     /// The collection over P: the collector's batch stands there, its
     /// release having written `POSTED` into this thread's byte

@@ -3,7 +3,8 @@
 //! the deferred lane, drawing nothing; and over P, the disposition of a
 //! batch's prefix of verdicts or the in-place retirement of the completed
 //! deaths standing anywhere in it. The close of a collection over P reads
-//! nothing of R ([`Lanes::Overflow`]).
+//! of R only the run of completed deaths at its front, and the entry that
+//! stops the run ([`Lanes::Overflow`], [`free_the_front_run`]).
 //!
 //! An entry whose entity completed its death in place is retired — its slot
 //! goes back through `ll_free` — and an entry the close marked goes to the
@@ -46,8 +47,9 @@ pub(super) enum Lanes {
     /// R whole and the overflow buffer: every pass but the close of a
     /// collection over P.
     RingAndOverflow,
-    /// The overflow buffer alone: the close of a collection over P, whose
-    /// batch holds no entry of R. A completed death standing in R is
+    /// The overflow buffer, and of R the run of completed deaths at its front:
+    /// the close of a collection over P, whose batch holds no entry of R. A
+    /// completed death standing in R behind an entry that is not one is
     /// retired by the collector's batch that takes it, through P, by the
     /// free path's count below the threshold, or by a collection over R
     /// whole (`rfc/model/gc/rc-cycle.md`, "The mutator's disposition").
@@ -57,9 +59,10 @@ pub(super) enum Lanes {
 /// Compact this thread's queue in place: retire every completed death, move
 /// every marked entry the deferred lane can take, keep the rest in order.
 ///
-/// `lanes` says whether R is read; a pass that reads it zeroes the free
-/// path's count of withheld deaths, and one that does not leaves the count
-/// to the pass that will.
+/// `lanes` says whether R is read whole; a pass that reads it zeroes the free
+/// path's count of withheld deaths, and every retirement lowers the count by
+/// one ([`free`]), so the count a close leaves is the deaths it left
+/// standing.
 ///
 /// `deferred_at` is the epoch cell a deferred lane going from empty to
 /// occupied records as its mirror, and `None` where this pass has no marks to read — every
@@ -165,16 +168,25 @@ pub(super) fn compact(
     OverflowPass::open(state).run();
     checkpoint(6);
     dispose_verdicts(state, verdicts, deferred_at);
-    if lanes == Lanes::Overflow && front_run_is_on() && !std::thread::panicking() {
+    // A drop that unwinds disposes of P, which the release to `FREE` needs,
+    // and leaves the run to the next close: a free that raised inside the
+    // drop would abort.
+    if lanes == Lanes::Overflow && !std::thread::panicking() {
         free_the_front_run();
     }
 }
 
 /// Free the run of completed deaths standing at R's front, one entry at a
-/// time, and stop at the first entry that is not one: the close of a
-/// collection over P under `MUTATOR`, where the mutator is R's one consumer.
-/// Each entry is consumed before its slot is freed, so no freed slot is
-/// named by R at any instant. The rig's arm of `PLAN.md` S65.21, form I.
+/// time, and stop at the first entry that is not one — a live entry, or a
+/// zero count whose teardown has not ended: every ending of a collection over
+/// P, under `MUTATOR`, where the mutator is R's one consumer
+/// (`dev/DECISIONS.md`, 2026-09-26, "the close of a collection over P frees
+/// the run of completed deaths at R's front"). It reads one entry more than
+/// it frees, so its reading of R is bounded by the slots it returns. Each
+/// entry is consumed before its slot is freed, so no freed slot is named by R
+/// at any instant; an unwind inside a free leaves the front past that entry
+/// and the rest of the run to the next close. A marked entry is freed like
+/// any other, `Free` outranking `Deferred`.
 fn free_the_front_run() {
     let record = mutator_record::this_thread_record();
     if record.is_null() {
@@ -197,27 +209,9 @@ fn free_the_front_run() {
 
         reader.commit(peeked);
         free(entity);
+        checkpoint(FRONT_RUN_CHECKPOINT);
     }
 }
-
-/// Whether the close of a collection over P frees R's front run: the rig
-/// sets it per cell (`worker::tests::the_rig`, `LL_RIG_FRONT_RUN`), and a
-/// build that is not a test never does.
-fn front_run_is_on() -> bool {
-    #[cfg(test)]
-    {
-        FRONT_RUN.load(std::sync::atomic::Ordering::Relaxed)
-    }
-    #[cfg(not(test))]
-    {
-        false
-    }
-}
-
-/// The rig's switch for [`free_the_front_run`].
-#[cfg(test)]
-pub(crate) static FRONT_RUN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 /// The pass over P. With `prefix` the batch's count of P's entries, dispose
 /// of each of them: a completed death is retired, a root marked or read live
@@ -420,8 +414,9 @@ thread_local! {
 /// clear and its free, 3 after an entry joined the deferred lane, 4 between
 /// the ring's pass and the overflow buffer's, 5 after an overflow entry is
 /// kept, 6 after the overflow buffer's pass and before P's, 7 after every
-/// entry of P's prefix is answered for and before the advance. A free that
-/// raises inside P's pass is point 2, the same as inside the ring's.
+/// entry of P's prefix is answered for and before the advance, 8 after an
+/// entry of R's front run is freed. A free that raises inside P's pass or the
+/// front run is point 2, the same as inside the ring's.
 #[inline]
 fn checkpoint(_point: usize) {
     #[cfg(test)]
@@ -445,6 +440,9 @@ pub(super) const LAST_CHECKPOINT: usize = 6;
 /// The checkpoint before P's advance.
 #[cfg(test)]
 pub(super) const VERDICT_ADVANCE_CHECKPOINT: usize = 7;
+
+/// The checkpoint after each free of R's front run, past P's advance.
+pub(super) const FRONT_RUN_CHECKPOINT: usize = 8;
 
 /// Arm one unwind at `point` for this thread's next pass.
 #[cfg(test)]
