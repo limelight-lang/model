@@ -24,6 +24,15 @@ refused stays in `dev/`, and the rfc moves only on adoption"):
 §3.1 is the chunked form `cycle::census::replay` prices against the flat one
 (`dev/BENCHMARKS.md`, 2026-09-12).
 
+[The collector keeps the live roots: review and possible repairs](THE-COLLECTOR-KEEPS-THE-LIVE-ROOTS-REVIEW.md)
+(Russian, 2026-09-26) reviews the [proposed collector-owned root
+chain](design/the-collector-keeps-the-live-roots.md) at `5020d2a`: exit,
+progress between R and the chain, recall, death-check scheduling, the
+measurement's provenance and an experiment separating form D from the chain.
+The preferred repairs keep retries, death checks and their schedule on the
+collector, following the rule that the mutator should do less work.
+The repairs are proposals, not adopted changes to the algorithm or plan.
+
 The design S65 builds, kept until the stage closes: **[the package, third
 version](CYCLE-SPLIT-PACKAGE-3.md)** (Russian), with [the lane
 amendment](CYCLE-SPLIT-PACKAGE-3-LANE.md) and [its
