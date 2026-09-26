@@ -196,6 +196,38 @@ fn p_is_one_block_drawn_with_the_record_and_clamps_the_batch_to_its_room() {
     reset();
 }
 
+/// The room a batch is clamped to is P's room now, whatever the writer read
+/// of the reader's front before: a batch that finds P answered for takes the
+/// whole block. A room read off a stale front stays at what the last batch
+/// left while no batch posts, and a collector whose roots go into its chain
+/// posts nothing, so its every batch took one root (`dev/BENCHMARKS.md`,
+/// "S65.24 A, B and C on a box with a PMU").
+#[test]
+fn a_batch_after_p_was_answered_for_is_clamped_to_ps_whole_room() {
+    let _g = test_guard();
+    start();
+    let mut first = bare_headers(BLOCK_ENTRIES - 1);
+    let _first = register_bare(&mut first);
+    assert_eq!(
+        stand_in_posts(BLOCK_ENTRIES - 1, |_| Verdict::Proposed),
+        Posted::Batch(BLOCK_ENTRIES - 1)
+    );
+    // The mutator answers for every verdict, as its close does.
+    discard_standing_verdicts();
+    assert_eq!(verdict_count(), 0, "P is empty");
+
+    let mut second = bare_headers(100);
+    let _second = register_bare(&mut second);
+    assert_eq!(
+        stand_in_posts(100, |_| Verdict::Proposed),
+        Posted::Batch(100),
+        "the batch after an empty P is clamped to the whole block, not to the \
+         one entry the last batch left"
+    );
+    drop((first, second));
+    reset();
+}
+
 #[test]
 fn verdicts_come_back_in_rs_order_and_r_s_front_moves_by_the_count_posted() {
     let _g = test_guard();

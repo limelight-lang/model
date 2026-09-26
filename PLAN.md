@@ -610,7 +610,7 @@ the hold's read-modify-write against a take (S65.22);
         into the chain, the ready and waiting counts in the rig;
         (8) the record grows by two lines, 384 bytes, not one.
       tier: T2 · role: Critic
-- [ ] S65.27 Find why C's drain frees nothing on `live-churn` (Edmond,
+- [x] S65.27 Find why C's drain frees nothing on `live-churn` (Edmond,
         2026-09-26: "найди")
       done: the cause of the stall named and shown by the counters that
         exhibit it (`dev/BENCHMARKS.md`, "S65.24 A, B and C on a box with a
@@ -619,6 +619,35 @@ the hold's read-modify-write against a take (S65.22);
         under `collector-chain`; the repair, or the reason there is none, put
         to Edmond before C is measured again
       tier: T2 · role: Critic
+      found 2026-09-26: P's room was read off the writer's copy of P's
+        front, which a push refreshes only when the copy says full; a batch
+        that posts nothing never moves it, so under the chain the room froze
+        at what the last posting batch left (1 on the rig), every batch took
+        one root of R and the ready part's share was zero. Shown by a probe
+        in the drain (P empty, room 1) and by re-reading the front at every
+        sizing, which freed the whole remnant (0 of 277,368 before, 91,488 of
+        91,488 after). The default build had it too, milder: every posting
+        batch lowered the copy's room, and once per 8,159 roots posted a batch
+        was cut to the leftover, the "short take" the S64.5 and S65.13 probes
+        re-took. Repair: `VerdictWriter::room` re-reads the reader's front
+        before it answers (`ring::Writer::catch_up_with_the_reader`), exact
+        under the token; the idle test ahead of the claim keeps its loads.
+        Cases red on the defect: `verdicts::tests::`
+        `a_batch_after_p_was_answered_for_is_clamped_to_ps_whole_room` and
+        `worker::tests::the_batch::`
+        `a_batch_after_p_was_answered_for_takes_ps_whole_room`, each red again
+        with the re-read taken out.
+      Critic 2026-09-26: sound (only P's producer stores the copy; the
+        acquire pairs with the reader's release of `front`); (1) the first
+        form, a catch-up in a separate constructor, could be regressed at the
+        worker's call with no test red — the re-read moved into `room` and a
+        case added at the worker's seam; (2) the default build changes, and
+        the probes' comments described the defect as P's design — amended,
+        and recorded here; (3) the ring's contracts said the writer loads
+        `front` only at a full block — amended. Miri owed at S65's close:
+        `cycle::queue::verdicts::tests` and `worker::tests::the_batch` less
+        its 16,000-member budget case, and under `collector-chain`
+        `the_chain::where_p_holds_less_than_both_want_r_and_the_chain_share_it_in_halves`.
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,

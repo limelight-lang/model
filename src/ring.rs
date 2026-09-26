@@ -14,10 +14,11 @@
 //! [`CAPACITY`] with one slot always left empty, so that `front == tail` is
 //! the empty block and never the full one. `front` is the reader's word,
 //! `tail` the writer's, and each stands on its own line beside a local copy
-//! of the other's: the writer reads `front` only when its local copy says
-//! the block is full, the reader reads `tail` only when its local copy says
-//! the block is empty, so the common case of both touches no line the other
-//! thread writes.
+//! of the other's: a push reads `front` only when its local copy says the
+//! block is full, the reader reads `tail` only when its local copy says the
+//! block is empty, so the common case of both touches no line the other
+//! thread writes. A writer that sizes its writes by the exact room reads
+//! `front` at the sizing instead ([`Writer::catch_up_with_the_reader`]).
 //!
 //! ```text
 //!         writer ──▶ tail block ──next──▶ consumed ──next──▶ consumed ─┐
@@ -76,7 +77,8 @@ pub(crate) const BLOCK_ENTRIES: usize = CAPACITY - 1;
 #[repr(C, align(64))]
 struct ReaderLine {
     /// Elements are read from here. Written by the reader with release,
-    /// loaded by the writer with acquire when its local copy says full.
+    /// loaded by the writer with acquire when its local copy says full and
+    /// at a catch-up.
     front: AtomicUsize,
     /// The reader's copy of [`WriterLine::tail`], refreshed when it says
     /// the block is empty. The reader's alone.
@@ -91,7 +93,7 @@ struct WriterLine {
     /// copy says empty.
     tail: AtomicUsize,
     /// The writer's copy of [`ReaderLine::front`], refreshed when it says
-    /// the block is full. The writer's alone.
+    /// the block is full and at a catch-up. The writer's alone.
     local_front: UnsafeCell<usize>,
 }
 
@@ -304,11 +306,31 @@ impl<'a> Writer<'a> {
         next_tail != front
     }
 
+    /// Replace the local copy of the tail block's `front` with the reader's
+    /// word, read with acquire: one load of the reader's line. For a writer
+    /// that sizes its writes by [`Writer::room_in_tail_block`] and needs the
+    /// exact room: the copy lags the reader by all it consumed since the
+    /// last refresh, and only a push that finds the block full refreshes it.
+    pub(crate) fn catch_up_with_the_reader(&self) {
+        let tail_block = self.0.tail_block.load(Ordering::Relaxed);
+        if tail_block.is_null() {
+            return;
+        }
+
+        let b = ring(tail_block);
+        let front = unsafe { (*b).reader.front.load(Ordering::Acquire) };
+        unsafe { *(*b).writer.local_front.get() = front };
+    }
+
     /// Entries the tail block takes before it is full, read the way a push
     /// reads its room: the local copy of `front` first, the reader's word
     /// only when the copy says the block is full. Zero for a ring with no
     /// block. A writer that may not take a fresh block — P's, which never
     /// grows — bounds what it writes by this before it writes.
+    ///
+    /// The answer is a lower bound, exact after
+    /// [`Writer::catch_up_with_the_reader`]: the reader may have moved past
+    /// the copy.
     pub(crate) fn room_in_tail_block(&self) -> usize {
         let tail_block = self.0.tail_block.load(Ordering::Relaxed);
         if tail_block.is_null() {

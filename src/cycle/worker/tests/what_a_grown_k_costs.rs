@@ -421,9 +421,8 @@ fn what_a_grown_k_costs() {
                 2 => During::AsksAfter(half_a_grant),
                 _ => During::Frees,
             };
-            // A batch P's room cut short of K prices another batch, and P's
-            // room walks down its block by every batch, so such a batch is
-            // made and not kept.
+            // A batch P's room cut short of K prices another batch, so such a
+            // batch is made and not kept.
             let mut samples = Vec::with_capacity(SAMPLES);
             let mut made = 0;
             while samples.len() < SAMPLES {

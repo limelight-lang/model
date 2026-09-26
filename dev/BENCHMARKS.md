@@ -110,6 +110,20 @@ than one repeat. Instructions are the reading this run can carry.
   2–6 % of its core, so the collector's CPU does not reach it on either
   placement.
 
+**The cause of the stall, found the same day (S65.27).** P's room was read
+off the collector's copy of P's front, which a push refreshes only when the
+copy says full. A batch of the chain whose roots all read live posts nothing,
+so the copy stayed where the last posting batch left it, one entry of room
+on the rig, while the mutator had emptied P: every batch took one root of R,
+and the ready part, whose share is what the take leaves beyond R's, got none.
+Every figure of C in this entry and the one below was taken with it. The
+default build had the same stale copy, milder: once per 8,159 roots posted
+one batch was cut to the leftover room, which also kept K from doubling on
+it, so A's and B's figures carry that too. With the room re-read at each
+sizing, the 3 s `live-churn` cell that froze now frees its whole remnant in
+the drain (91,488 of 91,488, against 0 of 277,368), and a 10 s cell frees
+1,600,752 of 1,723,392 members in the loop and the rest in the drain.
+
 **The Critic's reading, 2026-09-26.** Ten findings over the conclusions drawn
 from this run; four of them changed the reading above: C's remnant is a stall
 and not a late detection (F1), C's collector saving is the re-read rate (F2),

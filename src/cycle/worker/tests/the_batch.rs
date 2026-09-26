@@ -205,6 +205,46 @@ pub(super) fn record_batch_size() -> usize {
     unsafe { &*record() }.batch_size()
 }
 
+/// P is empty at every grant, since the byte is `FREE` only over an empty P,
+/// and the batch is clamped to the whole block whatever the posts before it
+/// left in the writer's copy of P's front. The copy below is left reading
+/// one entry of room over an empty P, which is where the collector's chain
+/// left it when its batches posted nothing (`dev/BENCHMARKS.md`, "S65.24 A,
+/// B and C on a box with a PMU").
+#[test]
+fn a_batch_after_p_was_answered_for_takes_ps_whole_room() {
+    let _g = test_guard();
+    reset_lanes();
+    // A full block refreshes the copy wherever it stood; then a block one
+    // short of full leaves it reading one entry of room, and the mutator
+    // answers for both.
+    unsafe { crate::cycle::queue::verdicts::testing::fill_for_test(BLOCK_ENTRIES) };
+    discard_standing_verdicts();
+    unsafe { crate::cycle::queue::verdicts::testing::fill_for_test(BLOCK_ENTRIES - 1) };
+    discard_standing_verdicts();
+    assert_eq!(verdict_count(), 0, "P is empty");
+
+    let node = node_class("WholeRoomNode");
+    let mut arena = Arena::new();
+    let keepers: Vec<*mut Object> = (0..3)
+        .map(|index| unsafe { kept_root(&mut arena, node, &format!("WholeRoomKeeper{index}")) }.1)
+        .collect();
+    assert_eq!(
+        served_by_a_collector(),
+        Served::Batch {
+            roots: 3,
+            complete: true,
+            backlog: false,
+        },
+        "the batch took every root, not the one entry the stale copy read"
+    );
+
+    discard_standing_verdicts();
+    for keeper in keepers {
+        unsafe { release_keeper(keeper) };
+    }
+}
+
 #[test]
 #[cfg_attr(
     feature = "collector-chain",

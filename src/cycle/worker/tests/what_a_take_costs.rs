@@ -80,9 +80,7 @@ const MEMBER_PROPS: usize = (MEMBER_CLASS_BYTES - 16) / 16;
 const SAMPLES: usize = 21;
 const WARM_UP: usize = 5;
 
-/// Samples a short take may cost an arm before the case gives up: P's room
-/// walks down its block by the roots of every take, so a short one is
-/// followed by a whole one as soon as the block wraps.
+/// Samples a short take may cost an arm before the case gives up.
 const SHORT_TAKE_RETRIES: usize = 4;
 
 /// The standing interval the arms run under: short of the crate's four
@@ -486,11 +484,10 @@ pub(super) fn a_take(
     let collected = the_collection(reading, control, || unsafe {
         crate::gc::ll_gc_maybe_collect()
     });
-    // A take is clamped by P's room as well as by the threshold, and P's
-    // room walks down its one block from sample to sample, so now and then a
-    // batch carries fewer roots than the ring holds. Such a sample prices a
-    // different take and is re-taken; it is finished first, so that the heap
-    // goes back whatever it took.
+    // A take is clamped by P's room as well as by the threshold, and a
+    // batch that carries fewer roots than the ring holds prices a different
+    // take: the sample is re-taken, and finished first, so that the heap goes
+    // back whatever it took.
     let taken: usize = batches.iter().map(|batch| batch.roots).sum();
     let whole = taken == shape.roots();
     // A recalled take posts its roots `Unwalked`, which the collection over P
