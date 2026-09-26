@@ -502,12 +502,12 @@ impl TraceToken {
         // The wait the rig reads, from the first reading of a claim to
         // whatever ends the take.
         #[cfg(test)]
-        struct TimedWait(Option<std::time::Instant>);
+        struct TimedWait(Option<(std::time::Instant, u8)>);
         #[cfg(test)]
         impl Drop for TimedWait {
             fn drop(&mut self) {
-                if let Some(from) = self.0 {
-                    crate::cycle::worker::testing::note_token_wait(from.elapsed());
+                if let Some((from, segment)) = self.0 {
+                    crate::cycle::worker::testing::note_token_wait(from.elapsed(), segment);
                 }
             }
         }
@@ -520,7 +520,12 @@ impl TraceToken {
                 POSTED => TookFrom::Posted,
                 COLLECTOR => {
                     #[cfg(test)]
-                    waited.0.get_or_insert_with(std::time::Instant::now);
+                    waited.0.get_or_insert_with(|| {
+                        (
+                            std::time::Instant::now(),
+                            crate::cycle::worker::testing::segment_of_the_holder(seen),
+                        )
+                    });
 
                     if !*recalled {
                         #[cfg(test)]

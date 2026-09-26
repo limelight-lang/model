@@ -26,10 +26,15 @@
 //! marks; the turnovers, the roots written back from P into R untraced (one
 //! round P → R → P each), the parts deferred past B with the retry spent or
 //! past `B_max`, and the grants recalled by the mark and by a take; the
-//! takes' waits for the token; and the collectors' lives, CPU, wall from
-//! birth to end and context switches. Each is read once on an input whose
-//! answer is known in [`the_rigs_figures_read_their_known_answers`], and the
-//! count of deferred parts against the batch's own in `the_ceiling`.
+//! takes' waits for the token; the iterations longer than
+//! [`A_LONG_ITERATION`]; per grant segment (`testing::SEGMENT_AROUND` and
+//! its neighbours), the takes' waits by the segment they met, the returns
+//! withheld in it and their time withheld, and the collector's time in it;
+//! and the collectors' lives, CPU, wall from birth to end and context
+//! switches. Each is read once on an input whose answer is known in
+//! [`the_rigs_figures_read_their_known_answers`], the split by segment in
+//! [`the_split_by_segment_reads_a_hold_the_case_sets`], and the count of
+//! deferred parts against the batch's own in `the_ceiling`.
 //!
 //! The cell is read from the environment, as `dev/tools/rig.sh` sets it; with
 //! nothing set the probe runs every load for [`SMOKE_RUN`] on
@@ -147,6 +152,12 @@ struct Load {
     /// live roots flow into R steadily and die after they were read live.
     churn_graphs: usize,
     churn: Graph,
+    /// Whether a churn ring's closing edge, its last member's into its
+    /// first, is nulled before its keeper lets it go: the ring then dies by
+    /// its counts, no member is garbage a collection must find, and each
+    /// root read live before it dies is a completed death whose slot the
+    /// entry naming it withholds until a retirement.
+    churn_dies_by_count: bool,
 }
 
 impl Load {
@@ -187,6 +198,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: ROOTS - garbage_rings,
         live: SMALL_RING,
     }
@@ -194,7 +206,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
 
 /// The loads of the S64 analysis's list. Change a name or add a load, and
 /// change `LOADS` in `dev/tools/rig.sh` with it.
-const LOADS: [Load; 18] = [
+const LOADS: [Load; 19] = [
     // Garbage at 0, 25, 50, 75 and 100 % of the roots, rounded to whole
     // rings of 63.
     mixed("garbage-0", 0),
@@ -213,6 +225,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: 1,
         live: Graph {
             rings: 1,
@@ -234,6 +247,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: ROOTS,
         live: Graph {
             rings: 1,
@@ -259,6 +273,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -279,6 +294,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -293,6 +309,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: 1,
         live: Graph {
             rings: 1,
@@ -315,6 +332,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -329,6 +347,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: ROOTS,
         live: SMALL_RING,
     },
@@ -342,6 +361,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -354,6 +374,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -371,6 +392,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: DEFERRED_LARGE,
         live: registered_ring(1),
     },
@@ -387,6 +409,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: true,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: 8192,
         live: SMALL_RING,
     },
@@ -402,6 +425,23 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 16,
         churn: SMALL_RING,
+        churn_dies_by_count: false,
+        live_graphs: 0,
+        live: Graph::NONE,
+    },
+    // `live-churn` whose rings die by their counts: each root read live
+    // dies a completed death behind its entry, the deaths the chain's check
+    // finds and the deferred lane's turnover retires (S65.28).
+    Load {
+        name: "live-churn-dies-by-count",
+        garbage_graphs: 0,
+        garbage: Graph::NONE,
+        held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
+        churn_graphs: 16,
+        churn: SMALL_RING,
+        churn_dies_by_count: true,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -416,6 +456,7 @@ const LOADS: [Load; 18] = [
         live_dies_at_half: false,
         churn_graphs: 0,
         churn: Graph::NONE,
+        churn_dies_by_count: false,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -486,6 +527,10 @@ const _: () = {
 /// garbage stands until the loop ends; the ceiling keeps such a cell off the
 /// box's swap, and the line counts the mutators that reached it.
 const OUTSTANDING_CEILING: usize = 1 << 22;
+
+/// The wall past which an iteration counts as long: the S65.24 protocol's
+/// tail reading, in place of a quantile a few collections decide.
+const A_LONG_ITERATION: Duration = Duration::from_micros(200);
 
 /// Iterations between two readings of R's length.
 const R_SAMPLE_STRIDE: usize = 64;
@@ -813,7 +858,12 @@ impl Churn {
 
         let (graphs, keepers) = &mut self.slots[self.next];
         self.next = (self.next + 1) % window;
-        let let_go = keepers.len() * load.churn.members;
+        let let_go = if load.churn_dies_by_count {
+            unsafe { open_the_rings(arena, graphs, load.churn) };
+            0
+        } else {
+            keepers.len() * load.churn.members
+        };
         unsafe { let_the_keepers_go(arena, keepers) };
         keepers.clear();
         for built in graphs.iter_mut() {
@@ -834,10 +884,29 @@ impl Churn {
     ///
     /// # Safety
     /// As [`let_the_keepers_go`].
-    unsafe fn let_all_go(&mut self, arena: *mut Arena) {
-        for (_, keepers) in &mut self.slots {
+    unsafe fn let_all_go(&mut self, arena: *mut Arena, load: Load) {
+        for (graphs, keepers) in &mut self.slots {
+            if load.churn_dies_by_count && !keepers.is_empty() {
+                unsafe { open_the_rings(arena, graphs, load.churn) };
+            }
             unsafe { let_the_keepers_go(arena, keepers) };
             keepers.clear();
+        }
+    }
+}
+
+/// Null the closing edge of every ring of `graphs`, built of `graph`, so
+/// that each ring hangs from its keeper alone and dies by its counts when
+/// the keeper lets it go.
+///
+/// # Safety
+/// The graphs were built by [`build`] on this thread and are still held,
+/// and `arena` is this thread's.
+unsafe fn open_the_rings(arena: *mut Arena, graphs: &[Built], graph: Graph) {
+    for built in graphs {
+        for ring in built.members[graph.shared..].chunks(graph.members) {
+            let last = ring[graph.members - 1];
+            unsafe { store_prop(arena, last, prop_offset(NEXT), std::ptr::null_mut()) };
         }
     }
 }
@@ -968,6 +1037,13 @@ struct MutatorReading {
     counter_share: f64,
     /// Garbage built and not yet freed at the loop's end.
     backlog_at_the_stop: usize,
+    /// Iterations whose wall passed [`A_LONG_ITERATION`].
+    long_iterations: usize,
+    /// The returns the thread withheld under a foreign holder over the loop,
+    /// by the grant segment the holder was in, with their time withheld up
+    /// to the drain that gave them back; a return still withheld at the
+    /// loop's end is counted and not timed.
+    withheld_by_segment: testing::WithheldBySegment,
     /// How long after the loop's end the drain's polls took to free every
     /// member built and bring the withheld deaths to zero, or the whole
     /// drain where they did not.
@@ -1012,6 +1088,7 @@ fn a_mutator(
     let faults_from = testing::thread_minor_faults();
     let counters = testing::ThreadCycles::open();
     let _ = crate::cycle::queue::take_queue_work();
+    let _ = testing::take_withheld_by_segment();
     let record = unsafe { &*mutator_record::this_thread_record() };
     let turnovers_from = record.turnovers();
     let from = Instant::now();
@@ -1063,6 +1140,7 @@ fn a_mutator(
         let now = Instant::now();
         let outstanding = reading.garbage_members - reading.freed_by_polls;
         reading.latencies.record(now - last);
+        reading.long_iterations += usize::from(now - last > A_LONG_ITERATION);
         reading.outstanding_time += outstanding as u128 * (now - last).as_nanos();
         reading.withheld_peak = reading
             .withheld_peak
@@ -1098,6 +1176,7 @@ fn a_mutator(
     }
 
     reading.wall = from.elapsed();
+    reading.withheld_by_segment = testing::take_withheld_by_segment();
     reading.withheld_by_an_entry_at_the_end = crate::cycle::queue::withheld_by_an_entry();
     reading.cpu_in_the_loop = testing::thread_cpu_time() - cpu_from;
     if let Some(counters) = &counters {
@@ -1140,7 +1219,7 @@ fn a_mutator(
     reading.minor_faults = testing::thread_minor_faults() - faults_from;
     reading.records_read = crate::cycle::queue::take_queue_work().records_read;
     reading.turnovers = record.turnovers() - turnovers_from;
-    unsafe { churn.let_all_go(arena_ptr) };
+    unsafe { churn.let_all_go(arena_ptr, load) };
     // A registered-once set is let go by its keepers alone, garbage the
     // collection after the loop or the thread's exit finds: taken apart by
     // hand, its null stores would register past the poll's stride.
@@ -1238,6 +1317,8 @@ struct CellReading {
     /// What the collector's chain did, zero without it.
     chain: testing::ChainFigures,
     token_waits: testing::TokenWaits,
+    /// The collector's time in each segment of its batches.
+    segment_times: testing::SegmentTimes,
     /// Grants recalled by a stack's mark, and by a take.
     recalls: (usize, usize),
     written_back: usize,
@@ -1606,7 +1687,90 @@ impl CellReading {
                 self.sum(|reading| usize::from(reading.at_the_ceiling))
                     .to_string(),
             ),
+            (
+                "long_iterations",
+                self.sum(|reading| reading.long_iterations).to_string(),
+            ),
+            ("batches_timed", self.segment_times.batches.to_string()),
         ]
+        .into_iter()
+        .chain(self.segment_fields())
+        .collect()
+    }
+
+    /// Per grant segment, in [`testing::SEGMENT_AROUND`]'s order: the takes whose wait
+    /// met it and their wait, the returns withheld in it and their time
+    /// withheld, and the collector's time in it, summed and at the longest.
+    fn segment_fields(&self) -> Vec<(&'static str, String)> {
+        const TAKES: [&str; testing::SEGMENTS] = [
+            "token_waits_around",
+            "token_waits_expiry",
+            "token_waits_check",
+            "token_waits_trace",
+        ];
+        const TAKE_US: [&str; testing::SEGMENTS] = [
+            "token_wait_us_around",
+            "token_wait_us_expiry",
+            "token_wait_us_check",
+            "token_wait_us_trace",
+        ];
+        const RETURNS: [&str; testing::SEGMENTS] = [
+            "withheld_returns_around",
+            "withheld_returns_expiry",
+            "withheld_returns_check",
+            "withheld_returns_trace",
+        ];
+        const RETURN_US: [&str; testing::SEGMENTS] = [
+            "withheld_return_us_around",
+            "withheld_return_us_expiry",
+            "withheld_return_us_check",
+            "withheld_return_us_trace",
+        ];
+        const SEGMENT_US: [&str; testing::SEGMENTS] = [
+            "segment_us_around",
+            "segment_us_expiry",
+            "segment_us_check",
+            "segment_us_trace",
+        ];
+        const SEGMENT_LONGEST_US: [&str; testing::SEGMENTS] = [
+            "segment_longest_us_around",
+            "segment_longest_us_expiry",
+            "segment_longest_us_check",
+            "segment_longest_us_trace",
+        ];
+        let mut fields = Vec::new();
+        for segment in 0..testing::SEGMENTS {
+            let returns = self.sum(|reading| reading.withheld_by_segment.returns[segment]);
+            let returned: Duration = self
+                .mutators
+                .iter()
+                .map(|reading| reading.withheld_by_segment.time[segment])
+                .sum();
+            fields.extend([
+                (
+                    TAKES[segment],
+                    self.token_waits.waits_by_segment[segment].to_string(),
+                ),
+                (
+                    TAKE_US[segment],
+                    self.token_waits.total_by_segment[segment]
+                        .as_micros()
+                        .to_string(),
+                ),
+                (RETURNS[segment], returns.to_string()),
+                (RETURN_US[segment], returned.as_micros().to_string()),
+                (
+                    SEGMENT_US[segment],
+                    self.segment_times.total[segment].as_micros().to_string(),
+                ),
+                (
+                    SEGMENT_LONGEST_US[segment],
+                    self.segment_times.longest[segment].as_micros().to_string(),
+                ),
+            ]);
+        }
+
+        fields
     }
 }
 
@@ -1622,6 +1786,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let _ = testing::take_collectors_pinned();
     let _ = testing::take_collector_lives();
     let _ = testing::take_token_waits();
+    let _ = testing::take_segment_times();
     let _ = testing::take_recalls();
     let _ = testing::take_written_back();
     let _ = testing::take_parts_deferred();
@@ -1677,6 +1842,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         disposals: testing::take_disposals(),
         chain: testing::take_chain_figures(),
         token_waits: testing::take_token_waits(),
+        segment_times: testing::take_segment_times(),
         recalls: testing::take_recalls(),
         written_back: testing::take_written_back(),
         parts_deferred: testing::take_parts_deferred(),
@@ -1965,12 +2131,15 @@ fn the_rigs_figures_read_their_known_answers() {
     let mut taken = None;
     for _ in 0..4 {
         let _ = (testing::take_written_back(), testing::take_recalls());
-        let _ = testing::take_token_waits();
+        let _ = (testing::take_token_waits(), testing::take_chain_figures());
         let (_, _, whole, waited) = a_take(OVERLAPPING, class, Reading::Wall, &mut None, true);
         if whole {
             taken = Some((
                 waited.expect("the take waited"),
-                testing::take_written_back(),
+                (
+                    testing::take_written_back(),
+                    testing::take_chain_figures().pushed_ready,
+                ),
                 testing::take_recalls(),
                 testing::take_token_waits(),
             ));
@@ -1978,11 +2147,27 @@ fn the_rigs_figures_read_their_known_answers() {
         }
     }
 
-    let (waited, written_back, recalls, waits) = taken.expect("a take carried the ring whole");
+    let (waited, (written_back, into_the_ready_part), recalls, waits) =
+        taken.expect("a take carried the ring whole");
+    // Without the chain an `Unwalked` root goes round P → R → P once; with
+    // it the root goes to the ready part's tail and P carries nothing back.
+    let retried = if cfg!(feature = "collector-chain") {
+        (0, OVERLAPPING.roots())
+    } else {
+        (OVERLAPPING.roots(), 0)
+    };
     assert_eq!(
-        (written_back, recalls, waits.waits),
-        (OVERLAPPING.roots(), (0, 1), 1),
-        "one round P → R → P a root, one recall by a take, one wait"
+        ((written_back, into_the_ready_part), recalls, waits.waits),
+        (retried, (0, 1), 1),
+        "every root once back for its retry, one recall by a take, one wait"
+    );
+    assert_eq!(
+        (
+            waits.waits_by_segment[usize::from(testing::SEGMENT_TRACE)],
+            waits.total_by_segment[usize::from(testing::SEGMENT_TRACE)]
+        ),
+        (1, waits.total),
+        "the take met the trace"
     );
     assert!(
         waits.total.abs_diff(waited) <= Duration::from_micros(100),
@@ -1994,5 +2179,44 @@ fn the_rigs_figures_read_their_known_answers() {
          (mark, take), the wait {:?} against the probe's {waited:?}",
         OVERLAPPING.roots(),
         waits.total
+    );
+}
+
+/// The split by grant segment, on a hold whose segment and length the case
+/// sets: this thread claims its own token as the elder in the trace's
+/// segment, withholds three returns under it and gives them back 20 ms
+/// later, which reads three returns in that segment and at least 60 ms.
+#[test]
+fn the_split_by_segment_reads_a_hold_the_case_sets() {
+    const HELD: Duration = Duration::from_millis(20);
+    let _g = test_guard();
+    let token = &unsafe { &*super::record() }.token;
+    let _ = testing::take_withheld_by_segment();
+    assert!(token.claim_for_test(ELDER), "the token was free");
+    testing::note_serving_slot(ELDER);
+    let from = Instant::now();
+    {
+        let _segments = testing::BatchSegments::open(testing::SEGMENT_TRACE);
+        for _ in 0..3 {
+            testing::note_a_return_withheld();
+        }
+        std::thread::sleep(HELD);
+    }
+    testing::note_the_returns_given_back();
+    let held = from.elapsed();
+    token.release_claim_to(ELDER, crate::cycle::token::FREE);
+
+    let withheld = testing::take_withheld_by_segment();
+    let trace = usize::from(testing::SEGMENT_TRACE);
+    assert_eq!(withheld.returns, [0, 0, 0, 3]);
+    assert!(
+        withheld.time[trace] >= 3 * HELD && withheld.time[trace] <= 3 * held,
+        "three returns held {held:?} read {:?}",
+        withheld.time[trace]
+    );
+    assert_eq!(
+        testing::segment_of_the_holder(token.read()),
+        testing::SEGMENT_AROUND,
+        "a free token names no segment"
     );
 }

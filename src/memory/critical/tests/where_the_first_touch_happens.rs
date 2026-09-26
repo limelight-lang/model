@@ -150,6 +150,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("ROWS_LISTED", false), // test-only const Cell, no drop glue
         ("ROWS_MET", false),    // test-only const Cell, no drop glue
         ("ROWS_READ", false),
+        ("SERVING_SLOT", false),   // test-only const Cell, no drop glue
         ("SINCE_THE_TURN", false), // test-only const Cell<u8>, no drop glue
         ("SLOTS_POPPED", false),   // test-only const Cell, no drop glue
         ("STALE_LISTS_GIVEN_BACK", false), // test-only const Cell, no drop glue
@@ -169,6 +170,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("WEAK_TABLE", false),
         ("WINDOW", false),
         ("WITHHELD_BY_AN_ENTRY", false), // test-only const Cell<u64>, no drop glue
+        ("WITHHELD_BY_SEGMENT", false),  // test-only const RefCell of Copy arrays, no drop glue
         ("WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
         ("WRITTEN_BYTES", false),
     ];

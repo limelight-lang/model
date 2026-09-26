@@ -1784,6 +1784,8 @@ unsafe fn serve_the_grant(
             std::ptr::from_mut(standing).cast(),
         )
     });
+    #[cfg(test)]
+    testing::note_serving_slot(slot);
     unsafe { batch(mutator, &mut arena, threshold, &held.posted, &held.proposed) }
 }
 
@@ -2226,6 +2228,13 @@ unsafe fn batch(
     posted: &std::cell::Cell<bool>,
     proposed: &std::cell::Cell<bool>,
 ) -> Served {
+    // Dropped last, so that the trace's segment holds the posts.
+    #[cfg(test)]
+    let mut segments = testing::BatchSegments::open(if cfg!(feature = "collector-chain") {
+        testing::SEGMENT_EXPIRY
+    } else {
+        testing::SEGMENT_TRACE
+    });
     let verdicts = unsafe { VerdictWriter::open(mutator) };
     let reader = unsafe { Reader::new(mutator.candidate_ring()) };
     // The chain's work before the roots: the blocks the epoch passed become
@@ -2234,6 +2243,8 @@ unsafe fn batch(
     #[cfg(feature = "collector-chain")]
     unsafe {
         crate::cycle::chain::expire(mutator, || arena.read_the_recall_now().is_break());
+        #[cfg(test)]
+        segments.enter(testing::SEGMENT_CHECK);
         let deaths = crate::cycle::chain::check_the_deaths(
             mutator,
             serve_clock_now(),
@@ -2244,6 +2255,8 @@ unsafe fn batch(
             posted.set(true);
         }
     }
+    #[cfg(test)]
+    segments.enter(testing::SEGMENT_TRACE);
     let (at_the_threshold, clamp) = the_form_and_the_clamp(mutator, &reader, threshold);
     // The clamp's shares: R alone takes the clamp its form reads. Beside a
     // ready part R takes what it holds up to that clamp, and the ready part

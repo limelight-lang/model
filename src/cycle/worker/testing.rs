@@ -931,25 +931,216 @@ pub(crate) fn take_collector_lives() -> CollectorLives {
 
 /// The mutators' takes that waited out a collector's claim since a case last
 /// asked: how many, how long in all, and the longest, each timed from the
-/// take's first reading of the claim to the take.
+/// take's first reading of the claim to the take; and the waits and their
+/// time split by the [grant segment](SEGMENTS) the take's first reading met.
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct TokenWaits {
     pub(crate) waits: usize,
     pub(crate) total: std::time::Duration,
     pub(crate) longest: std::time::Duration,
+    pub(crate) waits_by_segment: [usize; SEGMENTS],
+    pub(crate) total_by_segment: [std::time::Duration; SEGMENTS],
 }
 
 static TOKEN_WAITS: Mutex<TokenWaits> = Mutex::new(TokenWaits {
     waits: 0,
     total: std::time::Duration::ZERO,
     longest: std::time::Duration::ZERO,
+    waits_by_segment: [0; SEGMENTS],
+    total_by_segment: [std::time::Duration::ZERO; SEGMENTS],
 });
 
-pub(crate) fn note_token_wait(waited: std::time::Duration) {
+/// Count a take's wait of `waited`, whose first reading met the holder in
+/// `segment`.
+pub(crate) fn note_token_wait(waited: std::time::Duration, segment: u8) {
     let mut waits = lock(&TOKEN_WAITS);
     waits.waits += 1;
     waits.total += waited;
     waits.longest = waits.longest.max(waited);
+    waits.waits_by_segment[usize::from(segment)] += 1;
+    waits.total_by_segment[usize::from(segment)] += waited;
+}
+
+/// The parts of a grant the rig splits the mutator's costs by (`PLAN.md`
+/// S65.28): around the batch — the arena's open, the reset and the release
+/// — then, on the chain's arm, the expiry and the death check, and the trace
+/// with its posts. A slot's segment is [`SEGMENT_AROUND`] whenever its
+/// collector is not inside a batch.
+pub(crate) const SEGMENT_AROUND: u8 = 0;
+pub(crate) const SEGMENT_EXPIRY: u8 = 1;
+#[cfg_attr(
+    not(feature = "collector-chain"),
+    expect(dead_code, reason = "the death check is the chain's")
+)]
+pub(crate) const SEGMENT_CHECK: u8 = 2;
+pub(crate) const SEGMENT_TRACE: u8 = 3;
+pub(crate) const SEGMENTS: usize = 4;
+
+/// Each slot's segment, stored by its collector and read by the mutator
+/// whose token the slot holds.
+static GRANT_SEGMENTS: [std::sync::atomic::AtomicU8; MAX_COLLECTORS] =
+    [const { std::sync::atomic::AtomicU8::new(SEGMENT_AROUND) }; MAX_COLLECTORS];
+
+thread_local! {
+    /// The slot this collector thread serves a grant as.
+    static SERVING_SLOT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Name the slot this collector thread serves its next grant as.
+pub(crate) fn note_serving_slot(slot: usize) {
+    SERVING_SLOT.with(|serving| serving.set(slot));
+}
+
+/// The segment the collector named by `byte`, a token byte, is in;
+/// [`SEGMENT_AROUND`] for a byte no collector holds.
+pub(crate) fn segment_of_the_holder(byte: u8) -> u8 {
+    if crate::cycle::token::state(byte) != crate::cycle::token::COLLECTOR {
+        return SEGMENT_AROUND;
+    }
+
+    GRANT_SEGMENTS[crate::cycle::token::slot(byte)].load(Ordering::Relaxed)
+}
+
+/// The collector's time in each segment of the batches since a case last
+/// asked, summed and at the longest in one batch, and the batches timed.
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct SegmentTimes {
+    pub(crate) batches: usize,
+    pub(crate) total: [std::time::Duration; SEGMENTS],
+    pub(crate) longest: [std::time::Duration; SEGMENTS],
+}
+
+static SEGMENT_TIMES: Mutex<SegmentTimes> = Mutex::new(SegmentTimes {
+    batches: 0,
+    total: [std::time::Duration::ZERO; SEGMENTS],
+    longest: [std::time::Duration::ZERO; SEGMENTS],
+});
+
+/// The batches' segment times since the last call, and zero them.
+pub(crate) fn take_segment_times() -> SegmentTimes {
+    std::mem::take(&mut *lock(&SEGMENT_TIMES))
+}
+
+/// One batch's segments: [`enter`](Self::enter) stores the segment in the
+/// serving slot's cell and closes the one before it; the drop closes the
+/// last, adds the batch's times to [`take_segment_times`] and stores
+/// [`SEGMENT_AROUND`].
+pub(crate) struct BatchSegments {
+    slot: usize,
+    segment: u8,
+    from: Instant,
+    spent: [std::time::Duration; SEGMENTS],
+}
+
+impl BatchSegments {
+    /// Open the batch's timing in `segment`, on the thread serving it.
+    pub(crate) fn open(segment: u8) -> Self {
+        let slot = SERVING_SLOT.with(std::cell::Cell::get);
+        GRANT_SEGMENTS[slot].store(segment, Ordering::Relaxed);
+        Self {
+            slot,
+            segment,
+            from: Instant::now(),
+            spent: [std::time::Duration::ZERO; SEGMENTS],
+        }
+    }
+
+    pub(crate) fn enter(&mut self, segment: u8) {
+        let now = Instant::now();
+        self.spent[usize::from(self.segment)] += now - self.from;
+        GRANT_SEGMENTS[self.slot].store(segment, Ordering::Relaxed);
+        (self.segment, self.from) = (segment, now);
+    }
+}
+
+impl Drop for BatchSegments {
+    fn drop(&mut self) {
+        self.enter(SEGMENT_AROUND);
+        let mut times = lock(&SEGMENT_TIMES);
+        times.batches += 1;
+        for (segment, spent) in self.spent.iter().enumerate() {
+            times.total[segment] += *spent;
+            times.longest[segment] = times.longest[segment].max(*spent);
+        }
+    }
+}
+
+/// A mutator thread's returns withheld under a foreign holder, by the
+/// segment the holder was in at the withholding: how many, and their time
+/// withheld, from each withholding to the drain that gave every stack back.
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct WithheldBySegment {
+    pub(crate) returns: [usize; SEGMENTS],
+    pub(crate) time: [std::time::Duration; SEGMENTS],
+    /// Per segment, the returns not yet given back and the sum of their
+    /// instants of withholding, in nanoseconds from [`SEGMENT_CLOCK`]'s
+    /// origin: at the drain their time is `pending × now − instants`.
+    pending: [u128; SEGMENTS],
+    instants: [u128; SEGMENTS],
+}
+
+static SEGMENT_CLOCK: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn segment_clock_now() -> u128 {
+    SEGMENT_CLOCK.get_or_init(Instant::now).elapsed().as_nanos()
+}
+
+impl WithheldBySegment {
+    const EMPTY: Self = Self {
+        returns: [0; SEGMENTS],
+        time: [std::time::Duration::ZERO; SEGMENTS],
+        pending: [0; SEGMENTS],
+        instants: [0; SEGMENTS],
+    };
+}
+
+thread_local! {
+    static WITHHELD_BY_SEGMENT: std::cell::RefCell<WithheldBySegment> =
+        const { std::cell::RefCell::new(WithheldBySegment::EMPTY) };
+}
+
+/// Count a return this thread withholds under a foreign holder of its token.
+pub(crate) fn note_a_return_withheld() {
+    let record = crate::cycle::mutator_record::this_thread_record();
+    if record.is_null() {
+        return;
+    }
+
+    let segment = usize::from(segment_of_the_holder(unsafe { (*record).token.read() }));
+    let now = segment_clock_now();
+    WITHHELD_BY_SEGMENT.with(|withheld| {
+        let mut withheld = withheld.borrow_mut();
+        withheld.returns[segment] += 1;
+        withheld.pending[segment] += 1;
+        withheld.instants[segment] += now;
+    });
+}
+
+/// Close the time of every return this thread withheld: the drain gave
+/// every stack back.
+pub(crate) fn note_the_returns_given_back() {
+    let now = segment_clock_now();
+    WITHHELD_BY_SEGMENT.with(|withheld| {
+        let mut withheld = withheld.borrow_mut();
+        for segment in 0..SEGMENTS {
+            let nanos = withheld.pending[segment] * now - withheld.instants[segment];
+            withheld.time[segment] +=
+                std::time::Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX));
+            (withheld.pending[segment], withheld.instants[segment]) = (0, 0);
+        }
+    });
+}
+
+/// This thread's returns withheld by segment since its last call, and zero
+/// the counts and times; returns still withheld keep their instants.
+pub(crate) fn take_withheld_by_segment() -> WithheldBySegment {
+    WITHHELD_BY_SEGMENT.with(|withheld| {
+        let mut withheld = withheld.borrow_mut();
+        let taken = *withheld;
+        withheld.returns = [0; SEGMENTS];
+        withheld.time = [std::time::Duration::ZERO; SEGMENTS];
+        taken
+    })
 }
 
 /// The takes' waits since the last call, and zero them.

@@ -404,6 +404,13 @@ each arm's median cycles and instructions an iteration with the protocol's
 tolerance and gates (`dev/BENCHMARKS.md`, "S65.24 A, B and C on a box with a
 PMU"). The mutators' counters need a kernel that grants `perf_event_open`.
 
+`dev/tools/two_arms_table.py` — two arms of `arms.sh`'s CSV by the S65.24
+protocol as S65.28 fixed it: instructions an iteration as the gate, heap
+garbage and the last free as the memory gates, iterations over 200 µs, the
+collector's CPU beside completion, and each arm's share of the token wait and
+of the withheld returns' time spent in the grant's expiry and death check
+(`worker::testing::BatchSegments`).
+
 `dev/tools/stall.sh` — S65.27's loop: one short `live-churn` cell on one
 binary, RED when the drain frees less than half of what stood at the stop,
 which is how the collector's chain froze behind a stale room of P.

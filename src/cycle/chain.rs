@@ -140,7 +140,7 @@ pub(crate) unsafe fn expire(record: &MutatorRecord, mut stop: impl FnMut() -> bo
 pub(crate) unsafe fn check_the_deaths(
     record: &MutatorRecord,
     now: u64,
-    mut stop: impl FnMut() -> bool,
+    stop: impl FnMut() -> bool,
     mut post: impl FnMut(*mut RcHeader) -> bool,
 ) -> usize {
     record.note_chain_checked(now);

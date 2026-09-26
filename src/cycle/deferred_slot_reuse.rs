@@ -969,6 +969,8 @@ pub(crate) unsafe fn withhold_chunk_under_a_foreign_trace(chunk: *mut u8, capaci
         stack.head.set(chunk);
         stack.count(1, CHUNKS_MARK);
     });
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_a_return_withheld();
     true
 }
 
@@ -999,6 +1001,8 @@ pub(crate) unsafe fn withhold_block_under_a_foreign_trace(block: *mut u8, blocks
         stack.head.set(block);
         stack.count(blocks, BLOCKS_MARK);
     });
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_a_return_withheld();
     true
 }
 
@@ -1034,6 +1038,8 @@ unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8, kind: u32) {
     if large {
         unsafe { count_a_large_death(ptr, kind) };
     }
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_a_return_withheld();
 }
 
 /// Count a large entity's withheld death toward the blocks' mark, by the
@@ -1139,6 +1145,8 @@ pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
     // (`crate::cycle::token::forget_this_threads_recall`).
     if [deaths, chunks, blocks].contains(&Drained::Whole) {
         crate::cycle::token::forget_this_threads_recall();
+        #[cfg(test)]
+        crate::cycle::worker::testing::note_the_returns_given_back();
     }
 }
 

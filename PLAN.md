@@ -687,8 +687,20 @@ expiry's stops (S65.28).
         mutation: `the_chain::a_death_p_had_no_room_for_is_the_next_checks_`
         `first_post`, `record_chain::tests::a_check_stopped_on_an_entry_reads_`
         `that_entry_first_the_next_time` and `a_stopped_expiry_detaches_the_`
-        `blocks_it_read_before_the_stop`. Next: the rig's load of completed
-        deaths behind chained roots, then the per-grant segment timing.
+        `blocks_it_read_before_the_stop`.
+      rig built 2026-09-26: the load `live-churn-dies-by-count` (a churn
+        ring opened before its keeper goes, so each root read live dies a
+        completed death behind its entry; a 3 s smoke cell read 2.7 MB
+        withheld by an entry at the peak in both builds); every batch timed
+        in the segments around, expiry, check and trace
+        (`worker::testing::BatchSegments`), the takes' waits and the
+        withheld returns split by the segment the holder was in, the count
+        of iterations over 200 µs; `dev/tools/two_arms_table.py` reads the
+        protocol and the 10 % shares, `arms.sh` rotates the arms' order.
+        Checked on known answers: `the_split_by_segment_reads_a_hold_the_`
+        `case_sets` (red with the segment unread), the calibration's take
+        met in the trace on both builds, the table on a synthetic CSV.
+        Next: the D-vs-H run, `ARMS="dispose hold"`, three repeats.
       the form if built (the Sage, Final): `CHAIN|s`, state 5 with the slot
         bits, taken from `FREE` by one acquire CAS with no request and no
         consent, released by a store to `FREE`, or to `NOTHING_PROPOSED` when
