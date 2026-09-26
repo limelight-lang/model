@@ -433,6 +433,52 @@ fn a_recalled_batch_posts_every_root_once_unwalked_and_advances_r() {
     reset_lanes();
 }
 
+/// Under the collector's chain the recalled batch's roots go to its ready
+/// part, each once, behind the retries already waiting; nothing goes into P,
+/// and R advances past them as without the chain.
+#[test]
+#[cfg(feature = "collector-chain")]
+fn under_the_chain_a_recalled_batch_puts_every_root_once_in_the_ready_part() {
+    const ROOTS: usize = 5;
+    let _g = test_guard();
+    let _end = RetireOnDrop;
+    crate::cycle::chain::testing::dismantle_this_threads();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let roots: Vec<*mut Object> = (0..ROOTS)
+        .map(|_| unsafe {
+            let (built, tag) = build(&mut context, Container::NullFields);
+            a_root_over(&mut context, built, tag)
+        })
+        .collect();
+
+    let (batch, _) = a_batch_asked_between_its_phases(|| {
+        drop(crate::cycle::token::HeldToken::take_or_hold_posted());
+    });
+    assert!(!batch.complete, "the recalled trace was abandoned");
+    assert_eq!(standing_verdicts(), Vec::new(), "nothing in P");
+    let (ready, waiting) = crate::cycle::chain::testing::roots_of_this_threads();
+    assert_eq!(
+        (
+            ready
+                .iter()
+                .map(|&root| root as *mut Object)
+                .collect::<Vec<_>>(),
+            waiting.len()
+        ),
+        (roots.clone(), 0),
+        "every root once, in R's order, in the ready part"
+    );
+    assert_eq!(candidate_count(), 0, "R advanced past the batch");
+
+    for root in roots {
+        unsafe { let_go(root) };
+    }
+    crate::cycle::chain::testing::dismantle_this_threads();
+    reset_lanes();
+}
+
 /// Both phases through the collector's reader on an arena opened for a
 /// mutator whose recall stands answer `Recalled` at the first reading of it,
 /// one stride of positions in, and a mark through the owner's reader over the

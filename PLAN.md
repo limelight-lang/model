@@ -581,6 +581,20 @@ the hold's read-modify-write against a take (S65.22);
         batch's level (the chain's own cursor case covers the resume), the
         exit under a standing request and under a reading hold, and `cap 0`'s
         ask over an expired block.
+      Critic 2026-09-26 on 61f286b: (1) BLOCKING — beside a ready part K
+        doubled on R's share whatever R filled; K is sized against the clamp
+        and R's own part again, a case added, red on the old sizing; (2) the
+        check's term made `cap 0` ask for R whole every 4 s and each
+        collection over R whole restamped it — the ask reads no term and
+        the splice restamps nothing; (3) ready blocks of tombstones alone go
+        back at the expiry; (4) no guard that the round reads no chain
+        block — not added, the round's reading is four atomic loads
+        (`chain::is_due`); (5) cases added: a recalled batch into the ready
+        part, P's one slot, a batch that proposes publishing its list;
+        still not covered: concurrent registration across R and the chain,
+        the exit under a hold or a standing request, a deferred part past B
+        into the chain, the ready and waiting counts in the rig;
+        (8) the record grows by two lines, 384 bytes, not one.
       tier: T2 · role: Critic
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the

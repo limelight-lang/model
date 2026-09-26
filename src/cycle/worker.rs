@@ -1305,7 +1305,14 @@ pub(crate) unsafe fn serve(
     testing::between_the_take_and_the_reading();
     let reading = unsafe { Reader::new(mutator.candidate_ring()) }.front_block_reading();
     let room = unsafe { VerdictWriter::open(mutator) }.room_by_loads();
-    let branch = decide_the_branch_and_stamp_the_instant(mutator, reading, merges, threshold, now);
+    let branch = decide_the_branch_and_stamp_the_instant(
+        mutator,
+        reading,
+        merges,
+        threshold,
+        now,
+        standing_interval().as_nanos() as u64,
+    );
     if branch == RingRound::Leaves || room == 0 {
         return Served::Idle;
     }
@@ -1397,7 +1404,9 @@ unsafe fn ask_for_an_in_line_collection(
     // The merges before the ring, as `serve` reads them.
     let merges = mutator.merges();
     let reading = unsafe { Reader::new(mutator.candidate_ring()) }.front_block_reading();
-    if decide_the_branch_and_stamp_the_instant(mutator, reading, merges, threshold, now)
+    // No term for the chain's death check here: under a cap of zero no grant
+    // follows to check, and only a ready part or an epoch past a block asks.
+    if decide_the_branch_and_stamp_the_instant(mutator, reading, merges, threshold, now, u64::MAX)
         == RingRound::Leaves
     {
         return Served::Idle;
@@ -1456,14 +1465,17 @@ fn decide_the_branch_and_stamp_the_instant(
     merges: u32,
     threshold: usize,
     now: u64,
+    chain_term: u64,
 ) -> RingRound {
     // The collector's chain owes a grant of its own, whatever R reads: a
-    // ready part to read, or a waiting part the epoch or the check's term
-    // has come for (`crate::cycle::chain`).
+    // ready part to read, or a waiting part the epoch or the check's term,
+    // `chain_term`, has come for (`crate::cycle::chain`).
     #[cfg(feature = "collector-chain")]
-    if crate::cycle::chain::is_due(mutator, now, standing_interval().as_nanos() as u64) {
+    if crate::cycle::chain::is_due(mutator, now, chain_term) {
         return RingRound::Serves;
     }
+    #[cfg(not(feature = "collector-chain"))]
+    let _ = chain_term;
 
     let stands = reading.filter(|reading| reading.holds_at_least(1));
     let Some(ring) = stands else {
@@ -2362,14 +2374,9 @@ unsafe fn batch(
     }
     mutator.note_batch();
     if at_the_threshold {
-        // R's share and what R gave: the chain's roots size no K.
-        #[cfg(feature = "collector-chain")]
-        let (clamp, taken) = if from_the_chain > 0 {
-            (take - from_the_chain, taken - from_the_chain)
-        } else {
-            (clamp, taken)
-        };
-        size_the_next_batch(mutator, clamp, taken, complete);
+        // K against what R gave: the chain's roots size no K, and R's part
+        // must fill K itself, as without the chain.
+        size_the_next_batch(mutator, clamp, taken - from_the_chain, complete);
     }
 
     Served::Batch {
@@ -2406,7 +2413,8 @@ fn the_form_and_the_clamp(
 /// Room for `take` entries in the batch's workspace, `arena`, and for their
 /// indices in the order of their roots' addresses, with the budget of each
 /// part set on it first; `threshold` is the batch's, which bounds the copy of
-/// a take as K bounds a threshold batch's. Neither is null, by both bounds
+/// a take as K bounds a threshold batch's, and a take beside the collector's
+/// chain is bounded by [`BATCH_BOUND`] itself. Neither is null, by the bounds
 /// ([`BATCH_BOUND`]).
 fn the_copy_in_the_workspace(
     arena: &mut TraceScratchArena,

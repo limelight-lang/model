@@ -365,7 +365,8 @@ fn the_round_serves_a_due_chain_whatever_r_reads() {
             None,
             record.merges(),
             64,
-            serve_clock_now()
+            serve_clock_now(),
+            u64::MAX
         ),
         RingRound::Serves,
         "an empty R, and a chain the epoch came for"
@@ -442,5 +443,96 @@ fn the_exit_takes_the_chain_back_into_r_before_its_rounds() {
         (0, 0, withheld),
         "the rounds took the chain back and returned the slots"
     );
+    reset();
+}
+
+#[test]
+fn beside_a_ready_part_k_grows_only_on_what_r_filled() {
+    let _g = test_guard();
+    reset();
+    let node = node_class("ChainKNode");
+    let mut arena = Arena::new();
+    let chained = unsafe { kept_roots(&mut arena, node, 8) };
+    assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    crate::cycle::epoch::turn_this_threads_cell();
+    let record = unsafe { &*record() };
+    record.set_batch_size(INITIAL_BATCH);
+    // R at the threshold, P's room cut below K: R takes what the room leaves
+    // it, short of K, and K stands, as without the chain.
+    let in_r = unsafe { kept_roots(&mut arena, node, 2 * INITIAL_BATCH) };
+    unsafe {
+        crate::cycle::queue::verdicts::testing::fill_for_test(
+            crate::ring::BLOCK_ENTRIES - INITIAL_BATCH / 2,
+        )
+    };
+    assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    assert_eq!(record.batch_size(), INITIAL_BATCH, "K stands");
+
+    unsafe {
+        let_go(&chained);
+        let_go(&in_r);
+    }
+    reset();
+}
+
+#[test]
+fn with_one_slot_of_p_r_takes_it() {
+    let _g = test_guard();
+    reset();
+    let node = node_class("ChainOneSlotNode");
+    let mut arena = Arena::new();
+    let chained = unsafe { kept_roots(&mut arena, node, 4) };
+    assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    crate::cycle::epoch::turn_this_threads_cell();
+    let in_r = unsafe { kept_roots(&mut arena, node, 4) };
+    unsafe {
+        crate::cycle::queue::verdicts::testing::fill_for_test(crate::ring::BLOCK_ENTRIES - 1)
+    };
+    let _ = testing::take_chain_figures();
+
+    assert!(matches!(
+        served_by_a_collector(),
+        Served::Batch { roots: 1, .. }
+    ));
+    let figures = testing::take_chain_figures();
+    assert_eq!((figures.roots_from_r, figures.roots_from_the_chain), (1, 0));
+
+    unsafe {
+        let_go(&chained);
+        let_go(&in_r);
+    }
+    reset();
+}
+
+#[test]
+fn a_batch_that_proposes_a_set_beside_live_roots_publishes_its_live_list() {
+    let _g = test_guard();
+    reset();
+    let node = node_class("ChainMixedNode");
+    let mut arena = Arena::new();
+    let kept = unsafe { kept_roots(&mut arena, node, 2) };
+    // A garbage ring of two, both members registered.
+    let _ring = unsafe { crate::cycle::testing::long_ring(&mut arena, node, 2) };
+
+    assert!(matches!(
+        served_by_a_collector(),
+        Served::Batch { roots: 4, .. }
+    ));
+    assert_eq!(state(byte()), crate::cycle::token::POSTED);
+    assert!(
+        !unsafe { &*record() }.live_list().is_null(),
+        "a batch that posted publishes its list, the live roots' cores in it"
+    );
+    assert_eq!(
+        roots_of_this_threads().1.len(),
+        2,
+        "the live roots wait in the chain"
+    );
+
+    // The collection over P stamps from the list and frees the ring.
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
+    assert!(unsafe { &*record() }.live_list().is_null());
+
+    unsafe { let_go(&kept) };
     reset();
 }

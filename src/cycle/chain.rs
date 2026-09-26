@@ -106,6 +106,13 @@ pub(crate) unsafe fn expire(record: &MutatorRecord) {
     if let Some(due) = unsafe { record.chain_waiting().detach_while(|stamp| stamp < epoch) } {
         unsafe { record.chain_ready().append(due) };
     }
+    // A ready block the death check left with tombstones alone holds no
+    // root, and no peek walks it: it goes back here.
+    unsafe {
+        record
+            .chain_ready()
+            .give_back_leading_empty_blocks(give_back)
+    };
 }
 
 /// Read up to [`DEATH_CHECK_BUDGET`] headers of the waiting part past its
@@ -257,11 +264,6 @@ pub(crate) unsafe fn splice_the_ready_part_into_r(record: &MutatorRecord) {
     unsafe {
         expire(record);
         splice(record, record.chain_ready());
-    }
-    // The ask a due waiting part made is answered: under a collector cap of
-    // zero no grant checks it, and its term starts again here.
-    if record.chain_waiting().len() > 0 {
-        record.note_chain_checked(crate::cycle::worker::serve_clock_now());
     }
 }
 

@@ -183,6 +183,27 @@ impl RecordChain {
         })
     }
 
+    /// Hand every leading block that holds no entry but tombstones to
+    /// `give_back`.
+    ///
+    /// # Safety
+    /// The caller holds the token.
+    pub(crate) unsafe fn give_back_leading_empty_blocks(
+        &self,
+        mut give_back: impl FnMut(*mut BlockHeader),
+    ) {
+        let mut block = self.first.load(Ordering::Relaxed);
+        while !block.is_null() && unsafe { live_entries(block) } == 0 {
+            let next = unsafe { (*ring(block)).link.next.load(Ordering::Relaxed) };
+            self.set_first(next);
+            if next.is_null() {
+                self.last.store(std::ptr::null_mut(), Ordering::Relaxed);
+            }
+            give_back(block);
+            block = next;
+        }
+    }
+
     /// Append `detached` after the last block.
     ///
     /// # Safety
