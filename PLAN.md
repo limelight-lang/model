@@ -82,6 +82,22 @@ criterion, and it leaves when it gets one or when it is ruled on.
   nothing per thread — which nobody has read, on any target. Named when the
   reserve's first touch was decided on 2026-08-29 and priced nowhere since.
 
+- **Whether the collector keeps the live roots.** A root the collector read
+  live costs the mutator a collection over P each epoch that frees nothing;
+  the proposal moves live and unwalked roots into a chain the collector
+  keeps on the record, drops the mutator's deferred lane, and opens no trace
+  window for a P of dead counts alone. Two design rounds of 2026-09-26 stand
+  behind it (`dev/design/the-collector-keeps-the-live-roots.md`); the chain
+  amends Edmond's rulings and waits for his word, the collector's live-core
+  stamps wait for a three-arm measurement, and validation by a member list
+  was dropped with the figure that would reopen it.
+
+- **How long a completed death behind a live entry holds its slot.** Such a
+  death waits for the collector's batch to reach it; the rig's exact tally
+  (`queue::withheld_by_an_entry`) reads how much memory that holds on a real
+  load. Edmond, 2026-09-26: "the memory of the object itself is held until
+  the collector comes again — this needs thought".
+
 ## Cross-cutting (every stage)
 
 - The old collectors are reachable at `archive/pre-rc-cycle` and nowhere else.
