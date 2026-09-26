@@ -8,6 +8,98 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-26 — S65.24 A, B and C on the rig: no arm beats another on the mutator's CPU beyond the box's noise; C holds more memory on `live-churn` and frees its remnant later, so A stays
+
+**Three binaries of one tree, `4fb9c05`.** B is the default build (form D,
+S65.25); C is the same tree built with `--features collector-chain` (S65.26,
+the narrower build the Sage accepted); A is the default build with the
+batch's release to `NOTHING_PROPOSED` written back to `POSTED`, so that form
+D never fires and every batch that posted owes the collection over P, as
+before S65.25. The rig is the same in all three.
+
+**Machine and method.** This session's container: four CPUs, a virtual
+machine with no PMU ("no PMU driver, software events only" at boot), so the
+Sage's cycles are replaced by the mutators' CPU in the loop over their
+iterations (`CLOCK_THREAD_CPUTIME_ID`). Mutators on CPUs 1 and 2; the
+collector on CPU 3 (`spare-core`) or 2 (`shared-core`); cap 1; 10 s a cell,
+drain 12 s; paced 1 ms (`live-churn`, `deferred-then-dead`,
+`deferred-live-large`) or 15 ms (`garbage-25`, `registered-ring-live`); three
+repeats interleaved A, B, C per cell. Guards unpaced, 3 s. The poll probe
+pinned to CPU 3, six interleaved runs.
+
+**The deciding metric**, median of three, µs an iteration (A's spread sets
+each cell's tolerance, max(3 %, twice the spread)):
+
+| load | placement | A | B | C | tolerance | B vs A | C vs B |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| live-churn | spare | 90.5 | 91.1 | 85.3 | 8.8 % | tie | tie (−6.4 %) |
+| live-churn | shared | 89.2 | 87.0 | 83.4 | 12.5 % | tie | tie (−4.2 %) |
+| deferred-then-dead | spare | 31.1 | 30.2 | 31.8 | 13.7 % | tie | tie |
+| deferred-then-dead | shared | 33.4 | 34.0 | 30.5 | 35.8 % | tie | tie |
+| deferred-live-large | spare | 34.9 | 32.8 | 33.4 | 8.0 % | tie | tie |
+| deferred-live-large | shared | 33.0 | 31.2 | 30.4 | 33.8 % | tie | tie |
+| garbage-25 | spare | 405.0 | 412.9 | 403.6 | 7.9 % | tie | tie |
+| garbage-25 | shared | 411.3 | 441.8 | 429.7 | 19.5 % | tie | tie |
+| registered-ring-live | spare | 790.5 | 807.6 | 827.1 | 16.6 % | tie | tie |
+| registered-ring-live | shared | 775.5 | 806.2 | 808.8 | 7.6 % | tie | tie |
+
+No cell is a win or a loss by the protocol: the box's spread between repeats
+of one arm runs 3–18 %, wider than any difference between arms. C reads the
+lowest median on both `live-churn` cells (−6 % against A), inside that
+spread.
+
+**What the arms do differently**, medians, per cell of two mutators:
+
+| load | placement | collections over P A / B / C | dispositions B / C | collector CPU A / B / C | ledger peak A / C | last free after the stop A / B / C | members standing at the stop A / B / C |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| live-churn | spare | 1,508 / 314 / 756 | 1,194 / 0 | 1.71 / 1.70 / 1.14 s | 2.4 / 6.8 MB | 9.4 / 9.5 / >12 s | 16,326 / 12,942 / 259,212 |
+| deferred-live-large | spare | 3,658 / 58 / 1,519 | 3,601 / 0 | 2.23 / 2.23 / 1.36 s | 3.3 / 4.8 MB | 0.70 / 0.55 / 0.006 s | 1,692 / 3,528 / 102 |
+| deferred-then-dead | spare | 300 / 262 / 300 | 38 / 0 | 0.10 / 0.10 / 0.12 s | 1.9 / 2.2 MB | 4.25 / 4.25 / 4.28 s | 450 / 456 / 336 |
+
+- Form D takes the collections over P that freed nothing off the mutator:
+  on `deferred-live-large` 3,601 of 3,658 became dispositions, on
+  `live-churn` 1,194 of 1,508. The mutator's CPU does not show it past the
+  noise.
+- C's silent batches leave the mutator nothing to do for a live batch (no
+  disposition at all), and on `deferred-live-large` its collector spends
+  40 % less CPU — the ready part is read beside R, not re-offered through
+  R — and the garbage there is freed within 6 ms of the stop against
+  0.55–0.7 s.
+- **C fails two gates on `live-churn`**: the ledger's peak is 2.8 times A's
+  (6.8 MB against 2.4 MB; the gate is 1.10), and the remnant is not freed
+  within the 12 s drain (259,212 members standing at the stop against
+  16,326; A frees the last at 9.4 s). A ring that dies behind a root the
+  chain holds is found only when the chain's block expires with the epoch
+  and its root is re-read; the lane's splice puts the same roots into R,
+  where K grows to 1,024 on them, while the ready part is read at most 512 a
+  batch beside R. On `deferred-live-large` C's ledger peak is 1.46 times A's,
+  also over the gate.
+- `deferred-then-dead` reads the same in all three: its rings die behind
+  roots read live and are found at the epoch's turn in every arm; the death
+  check finds completed deaths only, and a ring whose members hold each
+  other is no such death.
+- **The poll**: medians 15.5–20.2 ns in A, 16.0–21.7 in B, 22.1–28.1 in C;
+  minima 15.4 / 15.8 (B's empty arm 19.0) / 21.8 ns. C's poll reads 6 ns
+  over A's on both arms, over the 0.3 ns gate. Nothing on the poll's path
+  reads the chain; the record grows to 384 bytes in C and the binary's layout
+  moves, which S65.12 found worth 2 ns once, but the poll's machine code was
+  not compared and the cause is not established. The guards agree in sign:
+  `overlapping-live` reads C 7 % over A (outside its 5.2 % tolerance),
+  `disjoint-live` 7 % (inside 31 %).
+- Every cell births one collector and batches, but the four guards, which
+  birth none, as the calibration says; no mutator reached the ceiling; the
+  `withheld_by_an_entry` tally reads zero in every cell, the loads' deaths
+  being rings rather than completed deaths behind entries.
+
+**Verdict by the protocol: A stays.** B beats A on no deciding load; C beats B
+on none and fails the ledger, remnant and poll gates. What the run shows
+beyond the verdict: form D moves the live batches' collections over P to
+dispositions as designed, at no cost the rig can see; the chain halves the
+collector's CPU and the memory latency where the parked set is large and
+live, and holds three times the memory and the remnant longer where live
+roots churn. On a box with a PMU and a quieter core the mutator's side of
+form D and of C could be read below this run's 8–36 % tolerances.
+
 ## 2026-09-26 — S65.21 the front run against leaving the deaths in R: at equal load the collector's CPU falls 4–34 % and the mutator's 2–6 % on rings standing at R's front, and neither arm leads elsewhere
 
 **`cycle::worker::tests::the_rig`, release, a 4-CPU container with no SMT,

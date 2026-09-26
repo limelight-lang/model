@@ -493,7 +493,7 @@ the hold's read-modify-write against a take (S65.22);
         ahead" added; (9) the fabricated zero-count verdict said so;
         (10) BENCHMARKS names the switch gone. The k-th free past the first
         is not injected: `FAIL_AT` fires at a point's first hit.
-- [ ] S65.24 Build and measure A, B and C (Edmond, 2026-09-26: "one or two
+- [x] S65.24 Build and measure A, B and C (Edmond, 2026-09-26: "one or two
         variants beside today's, no more than three; build them all, then
         prove by tests which is better"; and "implement, measure, show the
         result")
@@ -541,8 +541,15 @@ the hold's read-modify-write against a take (S65.22);
         Variant E (forget a live root) was refused by its Critic and the
         Sage; "B + forget-exact" becomes a fourth arm only if C leaves the
         field, by the Sage's rules of the same day.
+      run 2026-09-26 on `4fb9c05` (`dev/BENCHMARKS.md`, "S65.24 A, B and
+        C on the rig"): every deciding cell a tie inside the box's 8–36 %
+        spread; C over the ledger, remnant and poll gates on `live-churn`
+        and the poll; the verdict "A stays". Neither form D nor the chain is
+        taken, and the `rfc` is not amended; both stay in the tree, form D in
+        the default build and the chain behind its feature, for a run on a
+        box that can read the mutator below this spread — Edmond's call.
       tier: T2 · role: Critic, Sage
-- [ ] S65.25 Form D: a batch that proposed no set owes P's disposition and
+- [x] S65.25 Form D: a batch that proposed no set owes P's disposition and
         no trace window
       done: the release to `NOTHING_PROPOSED` (`word(POSTED, 2)`), the
         reading's third arm, `Arming::Disposal` between `Retire` and
@@ -559,7 +566,7 @@ the hold's read-modify-write against a take (S65.22);
         `disposals`, `disposal_us`, `disposal_longest_us` added; (4) the
         rank's reason restated; (5) `NOTHING_PROPOSED` against
         `Ending::NothingProposed` said in the doc.
-- [ ] S65.26 The collector's chain (C, on top of S65.25)
+- [x] S65.26 The collector's chain (C, on top of S65.25)
       done: the design note's rules as the Sage ruled them on 2026-09-26
         (F1: the exit and the pressure path read the whole chain; F2: a
         waiting and a ready part, K split in halves with the first source
