@@ -1032,6 +1032,19 @@ pub(crate) unsafe fn take_for_reading(record: *mut MutatorRecord) -> bool {
         .is_ok()
 }
 
+/// Whether a collector holds `record`'s blocks for a reading before its
+/// claim, read by a read-modify-write rather than a load: the owner's poll
+/// asks it between the decision loads and the stores of a block's unlink
+/// from R (`crate::cycle::queue`, `unlink_surplus_block`, which states the
+/// ordering), and a load there could miss a take that has already read R's
+/// front block.
+///
+/// # Safety
+/// `record` is this thread's record.
+pub(crate) unsafe fn is_held_for_reading(record: *mut MutatorRecord) -> bool {
+    unsafe { &(*record).hold.reading }.fetch_or(0, Ordering::AcqRel) & READING != 0
+}
+
 /// End the reading [`take_for_reading`] began, and return the blocks an
 /// exit left to it meanwhile: R's through the queue's give-back, P's here.
 /// Clearing the hold before the returns is what keeps an exit from leaving

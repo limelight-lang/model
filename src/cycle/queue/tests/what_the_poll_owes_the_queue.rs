@@ -15,6 +15,7 @@ use super::*;
 
 use crate::cycle::testing::Sent;
 use crate::ring::Reader;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Grow R to two blocks by a burst of registrations over `headers`, one
 /// past a block's worth, and have a reader on another thread take `take`
@@ -108,6 +109,92 @@ fn the_poll_unlinks_the_block_a_burst_left_empty_behind_the_tail() {
     );
     assert_eq!(segment_count(), 1);
 
+    reset();
+}
+
+/// Hand a reading's hold back on the way out, an unwind included, so that a
+/// failing case leaves the harness thread's record free for the next.
+struct HandBack(*mut MutatorRecord);
+
+impl Drop for HandBack {
+    fn drop(&mut self) {
+        unsafe { mutator_record::hand_back_reading(self.0) };
+    }
+}
+
+/// A collector's reading holds the record: the poll leaves the empty block
+/// behind the tail block in the circle with a cell short, since the reading
+/// may have loaded it as R's front block (`unlink_surplus_block`, `PLAN.md`
+/// S65.22). Without the hold the same poll unlinks it, which
+/// [`the_poll_unlinks_the_block_a_burst_left_empty_behind_the_tail`] reads.
+#[test]
+fn the_poll_leaves_the_circle_alone_while_a_reading_holds_the_record() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut headers: Box<[RcHeader]> = (0..BLOCK_ENTRIES + 1).map(|_| candidate(2)).collect();
+    burst_read_behind_by_another_thread(&mut headers, BLOCK_ENTRIES + 1);
+    assert!(needs_spares(), "a cell is short, so the poll would unlink");
+
+    let record = mutator_record::this_thread_record();
+    assert!(unsafe { mutator_record::take_for_reading(record) });
+    let hand_back = HandBack(record);
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    assert_eq!(
+        segment_count(),
+        2,
+        "the block a reading may name stays in the circle"
+    );
+
+    drop(hand_back);
+    reset();
+}
+
+/// Whether [`a_front_block_moved_under_a_reading_stays_in_the_circle`]'s act
+/// took the hold; the case runs under `test_guard`, one at a time.
+static TAKEN_INSIDE_THE_POLL: AtomicBool = AtomicBool::new(false);
+
+/// The interleaving the gate's place decides: the poll begins, a reading
+/// takes the hold and a batch on another thread moves R's front block past
+/// the first block, and only then does the unlink read the circle. The first
+/// block is empty and behind the tail block by then, and the reading may have
+/// loaded it as the front block before the batch moved it; asked after the
+/// unlink's decision loads, the hold keeps it in the circle.
+#[test]
+fn a_front_block_moved_under_a_reading_stays_in_the_circle() {
+    let _g = test_guard();
+    reset();
+    assert!(refill_spares());
+    let mut headers: Box<[RcHeader]> = (0..BLOCK_ENTRIES + 1).map(|_| candidate(2)).collect();
+    burst_read_behind_by_another_thread(&mut headers, 0);
+    assert!(needs_spares(), "a cell is short, so the poll would unlink");
+
+    let record = mutator_record::this_thread_record();
+    TAKEN_INSIDE_THE_POLL.store(false, Ordering::Relaxed);
+    at_the_next_surplus_unlink(|| {
+        let record = mutator_record::this_thread_record();
+        let taken = unsafe { mutator_record::take_for_reading(record) };
+        TAKEN_INSIDE_THE_POLL.store(taken, Ordering::Relaxed);
+        assert_eq!(take_on_another_thread(BLOCK_ENTRIES + 1), BLOCK_ENTRIES + 1);
+    });
+    let _ = unsafe { crate::gc::ll_gc_maybe_collect() };
+    assert!(
+        TAKEN_INSIDE_THE_POLL.load(Ordering::Relaxed),
+        "the act took the hold inside the poll"
+    );
+    let hand_back = HandBack(record);
+    assert_eq!(
+        candidate_count(),
+        0,
+        "the batch moved the front past every entry"
+    );
+    assert_eq!(
+        segment_count(),
+        2,
+        "the emptied first block stays while the reading holds the record"
+    );
+
+    drop(hand_back);
     reset();
 }
 

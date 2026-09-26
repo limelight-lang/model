@@ -417,11 +417,14 @@ impl<'a> Writer<'a> {
     }
 
     /// Unlink and answer the block after the tail block when it is empty and
-    /// not the front block, or null: the one block the circle can spare
-    /// while the reader runs, since the reader never walks past the tail
-    /// block. Its emptiness is read with acquire, after the reader's release
-    /// of its last read there.
-    pub(crate) fn unlink_after_tail(&self) -> *mut BlockHeader {
+    /// not the front block, and `may_leave` answers true, or null: the one
+    /// block the circle can spare while the reader runs, since the reader
+    /// never walks past the tail block. Its emptiness is read with acquire,
+    /// after the reader's release of its last read there. `may_leave` is
+    /// asked after those decision loads and before the two stores, which is
+    /// where the owner asks whether a reading holds the ring's blocks
+    /// (`crate::cycle::queue`, `unlink_surplus_block`).
+    pub(crate) fn unlink_after_tail(&self, may_leave: impl FnOnce() -> bool) -> *mut BlockHeader {
         let tail = self.0.tail_block.load(Ordering::Relaxed);
         if tail.is_null() {
             return std::ptr::null_mut();
@@ -437,7 +440,7 @@ impl<'a> Writer<'a> {
         let empty = unsafe {
             (*s).reader.front.load(Ordering::Acquire) == (*s).writer.tail.load(Ordering::Relaxed)
         };
-        if !empty {
+        if !empty || !may_leave() {
             return std::ptr::null_mut();
         }
 
@@ -712,7 +715,10 @@ impl<'a> Reader<'a> {
     /// block past it out of the circle and nulls that block's link, and a
     /// walk of the chain from a stale tail would read the link of a block
     /// that has left. A reading taken against a pack in flight can be
-    /// stale; the peek under the token is what decides.
+    /// stale; the peek under the token is what decides. The block it loads
+    /// as the front block stays in the circle while the reading lasts, since
+    /// the owner's unlink waits on the reading's hold (`crate::cycle::queue`,
+    /// `unlink_surplus_block`).
     ///
     /// One reading answers several counts at once, which is why the
     /// collector's round takes it rather than asking [`Reader::has_at_least`]

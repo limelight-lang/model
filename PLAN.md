@@ -143,6 +143,8 @@ bound's (the chain's writes and reads, `refcount::stamp_as_read_live`,
 `the_ceiling`'s failed retry, whose met-roots walk counts a position per
 block; `the_cap_at_zero`'s cases, the ask's reading of a record under its
 hold; `the_cap_set_under_work`'s, the list's withdrawal;
+`what_the_poll_owes_the_queue::a_front_block_moved_under_a_reading_stays_in_the_circle`,
+the hold's read-modify-write against a take (S65.22);
 `queue::arm_to_retire_if_the_count_stands` and the test ring's
 `fill_tail_block`, which writes the writer's copy of the front.
 
@@ -414,15 +416,32 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal;
         (`dev/DECISIONS.md`, 2026-09-26; measured in `dev/BENCHMARKS.md`,
         "S65.21 the front run against leaving the deaths in R"); on the way,
         the ring's stale tail copy (`02b25cf`, `dev/POSTMORTEM.md`).
-- [ ] S65.22 No block leaves R while a collector's reading holds it
-      done: `ring::Writer::unlink_after_tail` reads the record's hold word
+- [x] S65.22 No block leaves R while a collector's reading holds it
+      done: `ring::Writer::unlink_after_tail` asks the record's hold word
         by a read-modify-write after its decision loads and before its two
         stores, and leaves the block linked while `READING` is set; the
-        ordering argument in `unlink_surplus_block`'s doc; a case at
-        `worker::testing::between_the_take_and_the_reading` sees the reading
-        complete on a block still linked, red without the gate; the
-        store-buffering shape added to the stage's Miri list
+        ordering argument, which covers a front block another collector's
+        grant moved, in `unlink_surplus_block`'s doc; a case where the poll
+        leaves the block under a held reading, and a case where the hold is
+        taken and the front moved on inside the poll before the unlink reads
+        the circle, red with the question asked ahead of the decision loads;
+        the store-buffering shape on the stage's Miri list
       tier: T2 · role: Critic
+      baseline 2026-09-26, before the edit: the poll's unlink reads no hold,
+        so a block an elder's pre-claim reading loaded as R's front block can
+        leave the circle once another collector's grant moves the front past
+        it (cap ≥ 2); after the edit the poll pays one locked RMW on the hold
+        line per block it would unlink, on a path that runs when a spare cell
+        is short.
+      Critic 2026-09-26: (1) the RMW asked at the head of
+        `unlink_surplus_block`, before the decision loads, misses a front
+        another collector moves after it — blocking; moved into
+        `unlink_after_tail` between the loads and the stores, with the
+        interleaving case, red on the old place; (2) the new case's doc
+        split its neighbour's — fixed; (3) `front_block_reading`'s and the
+        unlink's docs cited "no link followed" as the safety — amended;
+        (4) the RMW's cost: only on polls that would unlink; (5) the hold
+        handed back by a guard; (6) this done-line.
 - [ ] S65.23 The close of a collection over P frees the run of completed
         deaths at R's front (after S65.22)
       done: `compaction::free_the_front_run` runs at every ending of a

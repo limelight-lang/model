@@ -840,26 +840,70 @@ pub(crate) fn refill_and_drain() {
 /// the pool and the next growth draw it back, so a circle a burst grew
 /// keeps its consumed blocks while the cells are full and gives one back at
 /// each poll that finds a cell spent. The one block the mutator may take out
-/// while a collector reads the ring, since a reader under the token never
+/// while a collector reads the ring under the token, since that reader never
 /// walks past the tail block (`crate::ring::Writer::unlink_after_tail`,
 /// which answers null for the front block and for a block with an entry
-/// standing in it). One block per call: a circle a burst grew by several
+/// standing in it); a reading before the claim is the gate's, below. One block per call: a circle a burst grew by several
 /// blocks gives them back over as many polls, and the poll's price stays
 /// one link per call.
+///
+/// **No block leaves while a collector's reading holds the record**
+/// (`dev/DECISIONS.md`, 2026-09-26, "no block leaves R while a collector's
+/// reading holds it"). A collector's round loads R's front block under the
+/// hold and no claim (`crate::ring::Reader::front_block_reading`), and the
+/// front block moves on under it: by another collector's batch in a grant,
+/// which the hold does not exclude, and by the close of a collection over P.
+/// The block it loaded can then be the one after the tail block here, and
+/// unlinked it could reach the pool through a cell while the loads read it.
+/// The question is a read-modify-write on the hold word, asked by
+/// `unlink_after_tail` after its decision loads and before its stores. Two
+/// RMWs on one word are ordered: either the take comes first, and this reads
+/// `READING` and leaves the block; or this comes first, and the take reads
+/// from it, after which the collector's acquire load of the front block sees
+/// every store this thread's decision loads saw — the front block they read,
+/// whichever thread moved it there — and names that block or a later one,
+/// never the one unlinked. Asked before the decision loads, the RMW could
+/// precede a move by another collector that the loads then see; a load in
+/// its place would let both sides read the old values (the store-buffering
+/// shape).
 fn unlink_surplus_block() {
     let state = mutator_state();
     if state.is_null() || !needs_spares() {
         return;
     }
 
-    let block =
-        unsafe { Writer::new(this_thread_record_ref().candidate_ring()) }.unlink_after_tail();
+    #[cfg(test)]
+    at_the_surplus_unlink();
+    let record = mutator_record::this_thread_record();
+    let block = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) }
+        .unlink_after_tail(|| !unsafe { mutator_record::is_held_for_reading(record) });
     if block.is_null() {
         return;
     }
 
     discharge_block();
     return_surplus_block(unsafe { mutator_state_ref(state) }, block);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What a case runs at the head of [`unlink_surplus_block`], once: an
+    /// fn pointer, so the cell has no drop glue.
+    static AT_THE_SURPLUS_UNLINK: Cell<Option<fn()>> = const { Cell::new(None) };
+}
+
+/// Run `act` at the head of this thread's next [`unlink_surplus_block`], before
+/// its decision loads.
+#[cfg(test)]
+pub(crate) fn at_the_next_surplus_unlink(act: fn()) {
+    AT_THE_SURPLUS_UNLINK.with(|slot| slot.set(Some(act)));
+}
+
+#[cfg(test)]
+fn at_the_surplus_unlink() {
+    if let Some(act) = AT_THE_SURPLUS_UNLINK.with(Cell::take) {
+        act();
+    }
 }
 
 /// Move overflow entries back into the queue, as far as the room a poll

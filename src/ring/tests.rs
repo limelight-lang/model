@@ -589,13 +589,16 @@ fn the_spare_block_after_the_tail_is_unlinked_and_never_the_front_block() {
     let reader = unsafe { Reader::new(words.slots()) };
     let quiet = unsafe { Quiescent::new(words.slots()) };
 
-    assert!(writer.unlink_after_tail().is_null(), "no block at all");
+    assert!(
+        writer.unlink_after_tail(|| true).is_null(),
+        "no block at all"
+    );
     for entry in 0..2 * BLOCK_ENTRIES + 1 {
         assert!(writer.push(entry, fresh).is_ok());
     }
     assert_eq!(quiet.block_count(), 3);
     assert!(
-        writer.unlink_after_tail().is_null(),
+        writer.unlink_after_tail(|| true).is_null(),
         "the block after the tail is the front block, which the reader is in"
     );
 
@@ -604,12 +607,12 @@ fn the_spare_block_after_the_tail_is_unlinked_and_never_the_front_block() {
     // tail block around the circle, empty, and the one after the tail.
     let mut out = vec![0; 2 * BLOCK_ENTRIES];
     assert_eq!(reader.take(&mut out), 2 * BLOCK_ENTRIES);
-    let spare = writer.unlink_after_tail();
+    let spare = writer.unlink_after_tail(|| true);
     assert!(!spare.is_null());
     assert_eq!(quiet.block_count(), 2);
     gc_metadata::release(spare);
     assert!(
-        writer.unlink_after_tail().is_null(),
+        writer.unlink_after_tail(|| true).is_null(),
         "the second block is empty but the reader has not left it"
     );
 
@@ -617,12 +620,12 @@ fn the_spare_block_after_the_tail_is_unlinked_and_never_the_front_block() {
     // block for it; then that block is the spare.
     assert_eq!(reader.take(&mut out[..2]), 1);
     assert_eq!(out[0], 2 * BLOCK_ENTRIES);
-    let spare = writer.unlink_after_tail();
+    let spare = writer.unlink_after_tail(|| true);
     assert!(!spare.is_null(), "and the next empty one");
     assert_eq!(quiet.block_count(), 1);
     gc_metadata::release(spare);
     assert!(
-        writer.unlink_after_tail().is_null(),
+        writer.unlink_after_tail(|| true).is_null(),
         "a circle of one has nothing to spare"
     );
     words.dismantle();
