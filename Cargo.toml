@@ -31,6 +31,13 @@ probe-counters = []
 # default and on no gate but its own; the run builds it as its own binary.
 collector-chain = []
 
+# S65.31 on form D: a root the collector reads live is deferred only once it
+# has outlived an epoch, and a younger one goes back into R with its core
+# unstamped (`dev/plans/S65.md`, S65.31). Off by default and on no gate but
+# its own; measured against the default build. Not combined with
+# `collector-chain`.
+deferral-by-generation = []
+
 # The loads `PLAN.md` S40.3 reads and the one fixture hook its driver in
 # `benches/` needs, compiled into the ordinary library for that driver
 # alone. Off by default and on no gate: the driver's file compiles to an

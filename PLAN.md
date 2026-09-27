@@ -380,6 +380,14 @@ Notes: dev/plans/S65.md
         S65.28's protocol; the verdict and the figures put to Edmond; the
         first approach — no trace of a first-generation root — noted beside
         the figures, not built
+      built 2026-09-27 behind `deferral-by-generation`: the Sage's Final
+        but the case of a list refused (the fixture's bound takes no zero);
+        `worker/tests/the_generations.rs`, five cases, each red on the
+        mutation of the line it guards; the kept roots of `the_batch`,
+        `the_ceiling` and `the_epoch_clock` stamped of the second
+        generation under the feature, and seven cases of `the_live_list`
+        ignored under it for listing the core at the first reading.
+        Next: the run against D, with the seventh cell.
       tier: T2 · role: Critic, Sage
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the

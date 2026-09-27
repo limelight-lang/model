@@ -108,9 +108,18 @@ unsafe fn post_batch_releasing(
         release
             .proposed
             .set(release.proposed.get() || verdict == Verdict::Proposed);
-        verdicts
-            .post(entity, verdict)
-            .expect("the batch was clamped to P's room");
+        // The collector's `ReadLive` is the marked one under
+        // `deferral-by-generation`, the unmarked one being a root of the
+        // first generation, which only a traced part posts.
+        #[cfg(feature = "deferral-by-generation")]
+        let posted = if verdict == Verdict::ReadLive {
+            verdicts.post_marked(entity, verdict)
+        } else {
+            verdicts.post(entity, verdict)
+        };
+        #[cfg(not(feature = "deferral-by-generation"))]
+        let posted = verdicts.post(entity, verdict);
+        posted.expect("the batch was clamped to P's room");
     }
 
     reader.commit(peeked);

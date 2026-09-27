@@ -874,6 +874,8 @@ mod the_ceiling;
 #[cfg(feature = "collector-chain")]
 mod the_chain;
 mod the_epoch_clock;
+#[cfg(feature = "deferral-by-generation")]
+mod the_generations;
 mod the_live_list;
 mod the_merged_lane;
 mod the_reading_before_the_claim;

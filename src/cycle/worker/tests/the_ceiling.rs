@@ -78,6 +78,7 @@ unsafe fn spread_core(arena: &mut Arena, name: &str, members: usize, roots: usiz
         for &root in &ring[..roots] {
             ll_retain(root as *mut RcHeader);
             assert!(!ll_release(root as *mut RcHeader), "an edge holds the root");
+            crate::cycle::testing::as_of_the_second_generation(root as *mut RcHeader);
         }
 
         store_prop(arena_ptr, keeper, prop_offset(0), ring[0]);

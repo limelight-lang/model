@@ -195,6 +195,16 @@ impl Writer {
         }
     }
 
+    /// Append `root` alone, a root a completed part read live: under
+    /// `deferral-by-generation` a root of the first generation is listed
+    /// without its core, so that the core stays unstamped and the next
+    /// reading in the epoch meets it again (`dev/plans/S65.md`, S65.31).
+    /// False once the chain takes no more.
+    #[cfg(feature = "deferral-by-generation")]
+    pub(crate) fn list_a_root(&mut self, root: *mut RcHeader) -> bool {
+        !self.closed && self.push(root)
+    }
+
     /// Leave the chain on `mutator`'s hold line for the mutator's take, and
     /// with it this thread's hold on its blocks, `published_at` being the
     /// serve clock's reading ([`give_back_a_stale_list`]). Under the grant,

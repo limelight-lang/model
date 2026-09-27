@@ -85,6 +85,28 @@ pub(crate) unsafe fn row_color(entity: *mut RcHeader) -> Color {
     shadow::color(unsafe { row_word(entity) })
 }
 
+/// Stamp `entity` as read live in the epoch before this thread's, age one:
+/// under `deferral-by-generation` a batch that reads it live defers it as the
+/// build without the feature does, which is what a case written for that
+/// build asks of a root (`dev/plans/S65.md`, S65.31). Nothing without the
+/// feature.
+///
+/// # Safety
+/// `entity` is a live entity of this thread's GC heap, and no collector holds
+/// this thread's token.
+pub(crate) unsafe fn as_of_the_second_generation(entity: *mut RcHeader) {
+    #[cfg(feature = "deferral-by-generation")]
+    unsafe {
+        let epoch = (crate::cycle::epoch::current() + 3) % 4;
+        crate::refcount::write_maturation_stamp(
+            entity,
+            crate::refcount::MaturationStamp { epoch, age: 1 },
+        );
+    }
+    #[cfg(not(feature = "deferral-by-generation"))]
+    let _ = entity;
+}
+
 /// The epoch and the age `entity`'s maturation stamp carries.
 ///
 /// Read by both trees the stamp has: the commit that writes it

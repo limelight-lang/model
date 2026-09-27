@@ -176,6 +176,10 @@ fn served_reading_the_collectors_figures() -> (
     feature = "collector-chain",
     ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
 )]
+#[cfg_attr(
+    feature = "deferral-by-generation",
+    ignore = "a part whose root is of the first generation lists the root alone, and the core only once the root has outlived an epoch (`dev/plans/S65.md`, S65.31); the core's listing is `the_generations`'"
+)]
 fn a_take_from_posted_stamps_the_live_core_the_batch_read() {
     let _g = test_guard();
     reset_lanes();
@@ -242,6 +246,10 @@ fn a_take_from_posted_stamps_the_live_core_the_batch_read() {
 #[cfg_attr(
     feature = "collector-chain",
     ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
+#[cfg_attr(
+    feature = "deferral-by-generation",
+    ignore = "a part whose root is of the first generation lists the root alone, and the core only once the root has outlived an epoch (`dev/plans/S65.md`, S65.31); the core's listing is `the_generations`'"
 )]
 fn the_next_take_in_the_same_epoch_prunes_at_the_stamped_core() {
     let _g = test_guard();
@@ -338,6 +346,10 @@ fn an_advance_before_the_take_gives_the_list_back_unstamped() {
     feature = "collector-chain",
     ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
 )]
+#[cfg_attr(
+    feature = "deferral-by-generation",
+    ignore = "a part whose root is of the first generation lists the root alone, and the core only once the root has outlived an epoch (`dev/plans/S65.md`, S65.31); the core's listing is `the_generations`'"
+)]
 fn a_block_emptied_under_posted_is_stamped_from_before_it_goes_back() {
     let _g = test_guard();
     reset_lanes();
@@ -395,6 +407,10 @@ fn a_block_emptied_under_posted_is_stamped_from_before_it_goes_back() {
 #[cfg_attr(
     feature = "collector-chain",
     ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
+#[cfg_attr(
+    feature = "deferral-by-generation",
+    ignore = "a part whose root is of the first generation lists the root alone, and the core only once the root has outlived an epoch (`dev/plans/S65.md`, S65.31); the core's listing is `the_generations`'"
 )]
 fn a_run_freed_under_posted_is_stamped_from_before_it_is_unmapped() {
     let _g = test_guard();
@@ -499,6 +515,10 @@ fn a_pressure_collection_under_posted_gives_the_list_back_before_its_teardown() 
     feature = "collector-chain",
     ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
 )]
+#[cfg_attr(
+    feature = "deferral-by-generation",
+    ignore = "a part whose root is of the first generation lists the root alone, and the core only once the root has outlived an epoch (`dev/plans/S65.md`, S65.31); the core's listing is `the_generations`'"
+)]
 fn a_teardowns_refusal_under_posted_gives_the_list_back_unstamped() {
     unsafe extern "C" fn asks_under_pressure(_object: *mut Object) {
         unsafe { crate::cycle::collect::collect_under_pressure() };
@@ -552,6 +572,10 @@ fn a_teardowns_refusal_under_posted_gives_the_list_back_unstamped() {
 #[cfg_attr(
     feature = "collector-chain",
     ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
+#[cfg_attr(
+    feature = "deferral-by-generation",
+    ignore = "a part whose root is of the first generation lists the root alone, and the core only once the root has outlived an epoch (`dev/plans/S65.md`, S65.31); the core's listing is `the_generations`'"
 )]
 fn a_recall_raised_inside_the_list_walk_is_read_within_a_stride() {
     use crate::cycle::arena::RECALL_STRIDE;
@@ -716,6 +740,10 @@ fn the_round_gives_back_a_list_its_owner_left_standing() {
 #[cfg_attr(
     feature = "collector-chain",
     ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
+)]
+#[cfg_attr(
+    feature = "deferral-by-generation",
+    ignore = "a part whose root is of the first generation lists the root alone, and the core only once the root has outlived an epoch (`dev/plans/S65.md`, S65.31); the core's listing is `the_generations`'"
 )]
 fn a_chain_at_its_bound_keeps_what_it_holds() {
     use crate::cycle::live_list::ENTRIES_PER_BLOCK;

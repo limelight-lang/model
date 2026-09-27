@@ -1359,6 +1359,9 @@ struct CellReading {
     recalls: (usize, usize),
     written_back: usize,
     parts_deferred: usize,
+    /// What `deferral-by-generation` did with the roots read live; zero
+    /// without the feature.
+    generations: testing::Generations,
     /// The GC ledger's high-water marks over the process so far: blocks
     /// reserved and bytes taken into use, both in bytes.
     ledger_peak: (usize, usize),
@@ -1531,6 +1534,22 @@ impl CellReading {
             ),
             ("written_back", self.written_back.to_string()),
             ("parts_deferred", self.parts_deferred.to_string()),
+            (
+                "posted_first_generation",
+                self.generations.posted_first.to_string(),
+            ),
+            (
+                "posted_second_generation",
+                self.generations.posted_second.to_string(),
+            ),
+            (
+                "posted_unlisted",
+                self.generations.posted_unlisted.to_string(),
+            ),
+            (
+                "written_back_first_generation",
+                self.generations.written_back_first.to_string(),
+            ),
             ("recalls_by_the_mark", self.recalls.0.to_string()),
             ("recalls_by_a_take", self.recalls.1.to_string()),
             ("token_waits", self.token_waits.waits.to_string()),
@@ -1834,6 +1853,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let _ = testing::take_recalls();
     let _ = testing::take_written_back();
     let _ = testing::take_parts_deferred();
+    let _ = testing::take_generations();
     let _ = testing::take_outcomes();
     let _ = testing::take_rounds();
     let _ = testing::take_verdict_collections();
@@ -1890,6 +1910,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         recalls: testing::take_recalls(),
         written_back: testing::take_written_back(),
         parts_deferred: testing::take_parts_deferred(),
+        generations: testing::take_generations(),
         ledger_peak: {
             let ledger = crate::memory::gc_metadata::stats();
             (ledger.peak_bytes(), ledger.peak_bytes_in_use())

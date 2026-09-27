@@ -91,6 +91,11 @@ are in `docs/history/`, superseded by the collector thread that was built.
   | `drops` | the queue a teardown's displaced children wait in until the last member's free | `cycle::reclamation` |
   | `density`, `census`, `loads` | test builds only: the share of a touched block's slots a trace met, the census of one collection with its counters and its replay through both row forms (`dev/BENCHMARKS.md`, 2026-09-12), and the rings the census and `benches/census_driver.rs` build under the `bench-loads` feature | none |
 
+  The feature `deferral-by-generation` is S65.31's arm on form D
+  (`dev/plans/S65.md`, S65.31): `worker::post_by_generation` reads a root's
+  generation at the post, `verdicts::VERDICT_DEFER_MARK` carries the
+  collector's deferral, and the cases are `worker/tests/the_generations.rs`.
+
   Two numbers about a row are pinned by tests: a count at the field's bound
   is a floor (`shadow::is_saturated`), and a block's first touch writes 121
   bytes against the 16 320 its rows reserve (`dev/BENCHMARKS.md`, 2026-08-27).

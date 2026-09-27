@@ -1061,7 +1061,9 @@ impl Batch {
     /// standing on an entry is overwritten rather than kept: it is one an
     /// unwound close left behind, and this close's reading is the one that
     /// decides. P's entries that are not roots — read live, zero-count,
-    /// disposed — are not asked and not marked.
+    /// disposed — are not asked and not marked; under
+    /// `deferral-by-generation` a `ReadLive` that is not a root keeps the mark
+    /// the collector posted it with, which this close never wrote.
     pub(crate) fn mark_for_deferral(
         &mut self,
         mut deferrable: impl FnMut(*mut RcHeader) -> bool,
@@ -1085,11 +1087,15 @@ impl Batch {
             ring.map_prefix_in_place(self.verdicts, |slot| {
                 let entry = *slot;
                 let unmarked = entry & !verdicts::VERDICT_DEFER_MARK;
-                *slot = if verdicts::is_batch_root(entry, form)
-                    && deferrable(verdicts::verdict_entity(entry))
-                {
+                let root = verdicts::is_batch_root(entry, form);
+                *slot = if root && deferrable(verdicts::verdict_entity(entry)) {
                     marked += 1;
                     unmarked | verdicts::VERDICT_DEFER_MARK
+                } else if cfg!(feature = "deferral-by-generation")
+                    && !root
+                    && verdicts::entry_verdict(entry) == verdicts::Verdict::ReadLive
+                {
+                    entry
                 } else {
                     unmarked
                 };

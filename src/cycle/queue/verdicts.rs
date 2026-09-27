@@ -19,9 +19,13 @@
 //! copy of the candidates and the entities the trace reaches, under a budget, so none of the four is a fact the
 //! mutator acts on without reading again. The mutator is the one party that
 //! changes state (`rfc/model/gc/rc-cycle.md`, "The mutator's disposition").
-//! Bit 2 is the mutator's: the mark a close writes over a root it read live
-//! ([`VERDICT_DEFER_MARK`]). An entry whose address is null is one the mutator
-//! has answered for in place and the next advance of P's front drops.
+//! Bit 2 is the mark that defers an entry ([`VERDICT_DEFER_MARK`]): the
+//! mutator's, written by a close over a root it read live, and under
+//! `deferral-by-generation` also the collector's, posted on a `ReadLive` whose
+//! root has outlived an epoch or could not be listed, an unmarked `ReadLive`
+//! being a root of the first generation that goes back into R
+//! (`dev/plans/S65.md`, S65.31). An entry whose address is null is one the
+//! mutator has answered for in place and the next advance of P's front drops.
 //!
 //! # Who writes P's slots
 //!
@@ -156,10 +160,31 @@ pub(super) fn is_disposed(entry: usize) -> bool {
     entry & !LOW_BITS == 0
 }
 
-/// Whether an entry of P is a root of the mutator's batch of `form`.
+/// Whether an entry of P is a root of the mutator's batch of `form`. Under
+/// `deferral-by-generation` an unmarked `ReadLive` is a root of a batch over R
+/// whole, as an unwalked one is: the root of the first generation it names
+/// stands where R's would, and the close defers it only on its own reading.
 #[inline]
 pub(super) fn is_batch_root(entry: usize, form: BatchForm) -> bool {
-    !is_disposed(entry) && entry_verdict(entry).is_root_in(form)
+    if is_disposed(entry) {
+        return false;
+    }
+
+    #[cfg(feature = "deferral-by-generation")]
+    if form == BatchForm::AllRoots && is_of_the_first_generation(entry) {
+        return true;
+    }
+
+    entry_verdict(entry).is_root_in(form)
+}
+
+/// Whether an entry is the collector's `ReadLive` of a root of the first
+/// generation: the verdict with no mark, which the disposition writes back
+/// into R rather than deferring.
+#[cfg(feature = "deferral-by-generation")]
+#[inline]
+pub(super) fn is_of_the_first_generation(entry: usize) -> bool {
+    entry_verdict(entry) == Verdict::ReadLive && entry & VERDICT_DEFER_MARK == 0
 }
 
 /// The collector's handle over one mutator's P: how much room it has, and the
@@ -203,6 +228,23 @@ impl<'a> VerdictWriter<'a> {
     pub(crate) fn post(&self, entity: *mut RcHeader, verdict: Verdict) -> Result<(), NoBlock> {
         self.0
             .push(verdict_entry(entity, verdict), std::ptr::null_mut)
+            .map(|_| ())
+    }
+
+    /// Post `verdict` about `entity` with [`VERDICT_DEFER_MARK`] set, which
+    /// the disposition defers on: a `ReadLive` whose root has outlived an
+    /// epoch or was not listed. As [`VerdictWriter::post`] otherwise.
+    #[cfg(feature = "deferral-by-generation")]
+    pub(crate) fn post_marked(
+        &self,
+        entity: *mut RcHeader,
+        verdict: Verdict,
+    ) -> Result<(), NoBlock> {
+        self.0
+            .push(
+                verdict_entry(entity, verdict) | VERDICT_DEFER_MARK,
+                std::ptr::null_mut,
+            )
             .map(|_| ())
     }
 }

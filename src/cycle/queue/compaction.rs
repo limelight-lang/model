@@ -268,8 +268,16 @@ fn dispose_verdicts(
         // the marking batch alone, so an unwalked entry of a collection over P
         // carries one only where a collection over R whole marked it and
         // unwound before disposing of it, and that reading defers it.
-        let deferrable = verdicts::entry_verdict(entry) == verdicts::Verdict::ReadLive
+        // Under `deferral-by-generation` the collector marks the `ReadLive`
+        // it defers, and one it left unmarked names a root of the first
+        // generation, written back below (`dev/plans/S65.md`, S65.31).
+        let deferrable = (!cfg!(feature = "deferral-by-generation")
+            && verdicts::entry_verdict(entry) == verdicts::Verdict::ReadLive)
             || entry & verdicts::VERDICT_DEFER_MARK != 0;
+        #[cfg(all(test, feature = "deferral-by-generation"))]
+        if verdicts::is_of_the_first_generation(entry) {
+            crate::cycle::worker::testing::note_first_generation_written_back();
+        }
         // Nulled before the move, so that no unwind between the two finds
         // the entity in P and in a lane.
         *slot = 0;

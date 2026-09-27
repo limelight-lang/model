@@ -177,6 +177,9 @@ fn a_lane_behind_all_live_takes_oftener_than_x_is_reoffered_after_x() {
         keepers.push(mutator.run(move |arena| {
             let ring = unsafe { crate::cycle::testing::long_ring(arena, class.into_inner(), 2) };
             unsafe { crate::refcount::ll_retain(ring[0].cast()) };
+            for &member in &ring {
+                unsafe { crate::cycle::testing::as_of_the_second_generation(member.cast()) };
+            }
             Sent(ring[0])
         }));
         assert!(

@@ -462,6 +462,16 @@ the third thread another case's ledger reading cannot survive"; the per-thread
 ledger is `DECISIONS.md`, "the test-facing reading of the GC ledger is per
 thread").
 
+A case of another class joined the watch on 2026-09-27:
+`worker::tests::the_batch::every_part_draws_under_the_budget_of_its_own`
+read `Idle` where it asserts a batch of two, once in 15 plain runs at eight
+threads of a tree whose default build behaves as `c27a551`'s, against 0 in 10
+on `c27a551` and 0 in 40 runs of `cycle::worker::tests` under the two-core
+load. `worker::serve` answers `Idle` on seven paths — among them a reading of
+the record another thread holds, a cap stored as zero, a recall standing
+before the batch and a refused workspace — and which one fired is not
+established.
+
 **Never mute, skip, weaken or delete an existing test to go green.** A
 failing old test is a signal: either the change broke behaviour, or the
 contract genuinely moved. Those cannot be told apart silently — ask.

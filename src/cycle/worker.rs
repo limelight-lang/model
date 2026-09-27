@@ -2561,13 +2561,33 @@ impl FinishThePosts<'_> {
         }
         #[cfg(feature = "collector-chain")]
         self.chain.posted.set(true);
-        self.verdicts
-            .post(self.root(index), verdict)
-            .expect("the batch was clamped to P's room");
+        // Every `ReadLive` posted here is deferred: a root of the first
+        // generation is posted by `post_first_generation` alone.
+        #[cfg(feature = "deferral-by-generation")]
+        let posted = if verdict == Verdict::ReadLive {
+            self.verdicts.post_marked(self.root(index), verdict)
+        } else {
+            self.verdicts.post(self.root(index), verdict)
+        };
+        #[cfg(not(feature = "deferral-by-generation"))]
+        let posted = self.verdicts.post(self.root(index), verdict);
+        posted.expect("the batch was clamped to P's room");
         self.roots[index] |= HAS_A_VERDICT;
         if verdict == Verdict::Proposed {
             self.proposed.set(true);
         }
+    }
+
+    /// Post `ReadLive` unmarked for the root at `index`, which has none yet: a
+    /// root of the first generation a completed part read live and listed
+    /// alone, which the disposition writes back into R.
+    #[cfg(feature = "deferral-by-generation")]
+    fn post_first_generation(&mut self, index: usize) {
+        debug_assert!(!self.has_a_verdict(index), "one verdict per root");
+        self.verdicts
+            .post(self.root(index), Verdict::ReadLive)
+            .expect("the batch was clamped to P's room");
+        self.roots[index] |= HAS_A_VERDICT;
     }
 
     /// Post [`Verdict::Unwalked`] for every root still without a verdict: no
@@ -2740,18 +2760,14 @@ unsafe fn trace_in_parts(
         unsafe {
             testing::note_rows_met(arena)
         };
-        let verdict = unsafe { verdict_for(root) };
-        posts.post(index, verdict);
-        let posted = unsafe {
-            for_each_met_root(arena, posts, by_address, |posts, index| {
-                posts.post(index, verdict_for(posts.root(index)));
-            })
-        };
-        if posted.is_break() {
+        let lists_the_core = unsafe { post_the_part(arena, posts, by_address, index, live) };
+        if lists_the_core.is_break() {
             return outcome;
         }
 
-        if verdict == Verdict::ReadLive && unsafe { live.append_the_part(arena) }.is_break() {
+        if lists_the_core == std::ops::ControlFlow::Continue(true)
+            && unsafe { live.append_the_part(arena) }.is_break()
+        {
             return outcome;
         }
 
@@ -2979,6 +2995,128 @@ unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
             _ => Verdict::ReadLive,
         },
         None => Verdict::ReadLive,
+    }
+}
+
+/// Post the verdicts a completed part supports: its root's, at `index`, and
+/// every met root's, as [`for_each_met_root`] finds them. Answers whether the
+/// part's live core is listed, or `Break` where the lookup read the recall.
+///
+/// # Safety
+/// As [`for_each_met_root`].
+#[cfg(not(feature = "deferral-by-generation"))]
+unsafe fn post_the_part(
+    arena: &mut TraceScratchArena,
+    posts: &mut FinishThePosts<'_>,
+    by_address: &[u16],
+    index: usize,
+    _live: &mut crate::cycle::live_list::Writer,
+) -> std::ops::ControlFlow<(), bool> {
+    let verdict = unsafe { verdict_for(posts.root(index)) };
+    posts.post(index, verdict);
+    unsafe {
+        for_each_met_root(arena, posts, by_address, |posts, index| {
+            posts.post(index, verdict_for(posts.root(index)));
+        })
+    }?;
+    std::ops::ControlFlow::Continue(verdict == Verdict::ReadLive)
+}
+
+/// [`post_the_part`] under `deferral-by-generation`: each root by its
+/// generation ([`post_by_generation`]), and the core listed only when the
+/// part's root, read live, has outlived an epoch.
+///
+/// # Safety
+/// As [`for_each_met_root`].
+#[cfg(feature = "deferral-by-generation")]
+unsafe fn post_the_part(
+    arena: &mut TraceScratchArena,
+    posts: &mut FinishThePosts<'_>,
+    by_address: &[u16],
+    index: usize,
+    live: &mut crate::cycle::live_list::Writer,
+) -> std::ops::ControlFlow<(), bool> {
+    let epoch = arena.epoch();
+    let root = posts.root(index);
+    let verdict = unsafe { verdict_for(root) };
+    let lists_the_core =
+        verdict == Verdict::ReadLive && unsafe { has_outlived_an_epoch(root, epoch) };
+    unsafe { post_by_generation(posts, index, verdict, epoch, live) };
+    unsafe {
+        for_each_met_root(arena, posts, by_address, |posts, index| {
+            let verdict = verdict_for(posts.root(index));
+            post_by_generation(posts, index, verdict, epoch, live);
+        })
+    }?;
+    std::ops::ControlFlow::Continue(lists_the_core)
+}
+
+/// Post `verdict`, which a completed part supports, for the root at `index`
+/// by its generation (`dev/plans/S65.md`, S65.31). A `ReadLive` on a root the
+/// part placed is listed alone, the list taking the root's stamp to this
+/// epoch; it is posted unmarked when the root is of the first generation and
+/// the list took it, so that its core stays unstamped and the next reading in
+/// the epoch can see it die, and marked otherwise, the disposition deferring
+/// it as the build without the feature does. Any other verdict is posted as
+/// [`FinishThePosts::post`] posts it.
+///
+/// # Safety
+/// As [`verdict_for`]: the part completed on this thread and its rows still
+/// stand; `epoch` is the batch's arena's, the one its mark pruned against.
+#[cfg(feature = "deferral-by-generation")]
+unsafe fn post_by_generation(
+    posts: &mut FinishThePosts<'_>,
+    index: usize,
+    verdict: Verdict,
+    epoch: u32,
+    live: &mut crate::cycle::live_list::Writer,
+) {
+    let root = posts.root(index);
+    if verdict != Verdict::ReadLive || !unsafe { has_a_met_row(root) } {
+        posts.post(index, verdict);
+        return;
+    }
+
+    let first = !unsafe { has_outlived_an_epoch(root, epoch) };
+    let listed = live.list_a_root(root);
+    #[cfg(test)]
+    testing::note_generation_posted(first, listed);
+    if first && listed {
+        posts.post_first_generation(index);
+    } else {
+        posts.post(index, verdict);
+    }
+}
+
+/// Whether `root`, read live, has outlived an epoch: its maturation stamp
+/// carries an age under an epoch other than `epoch`, the one its batch read.
+/// A stamp with no age, or one of this epoch, is the first generation's; a
+/// stamp four turnovers old reads as this epoch's and costs one more lap of
+/// R (`crate::cycle::epoch`, "A reading that missed an advance is
+/// conservative").
+///
+/// # Safety
+/// `root` is a live entity of the mutator whose token the calling thread
+/// holds; byte 6's one writer, the owner, does not write under that hold.
+#[cfg(feature = "deferral-by-generation")]
+unsafe fn has_outlived_an_epoch(root: *mut RcHeader, epoch: u32) -> bool {
+    let stamp = unsafe { crate::refcount::read_maturation_stamp(root) };
+    stamp.age != 0 && stamp.epoch != epoch
+}
+
+/// Whether `root` has a row the part just traced met: a root [`verdict_for`]
+/// reads live for want of one was not placed, and is deferred as the build
+/// without the feature defers it.
+///
+/// # Safety
+/// As [`verdict_for`].
+#[cfg(feature = "deferral-by-generation")]
+unsafe fn has_a_met_row(root: *mut RcHeader) -> bool {
+    match unsafe { read_the_root(root) } {
+        RootReading::Tracked(key) => {
+            unsafe { crate::cycle::arena::find_initialized_row(key) }.is_some()
+        }
+        RootReading::Verdict(_) => false,
     }
 }
 

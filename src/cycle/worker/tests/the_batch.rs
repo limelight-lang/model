@@ -87,6 +87,7 @@ pub(super) unsafe fn kept_root(
     unsafe {
         crate::test_support::store_prop(arena, keeper, crate::test_support::prop_offset(0), root);
         assert!(!ll_release(root as *mut RcHeader), "the keeper holds it");
+        crate::cycle::testing::as_of_the_second_generation(root as *mut RcHeader);
     }
     (root as *mut RcHeader, keeper)
 }

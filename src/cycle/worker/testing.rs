@@ -1320,6 +1320,48 @@ pub(crate) fn take_written_back() -> usize {
     WRITTEN_BACK.swap(0, Ordering::Relaxed)
 }
 
+/// What `deferral-by-generation` did with the roots the collector read live
+/// since a case last asked (`dev/plans/S65.md`, S65.31); zero without the
+/// feature.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Generations {
+    /// Posted unmarked: of the first generation, and listed alone.
+    pub(crate) posted_first: usize,
+    /// Posted marked for having outlived an epoch.
+    pub(crate) posted_second: usize,
+    /// Posted marked because the list took no more, the root being of the
+    /// first generation.
+    pub(crate) posted_unlisted: usize,
+    /// Unmarked `ReadLive` entries the disposition wrote back into R.
+    pub(crate) written_back_first: usize,
+}
+
+static GENERATIONS: Mutex<Generations> = Mutex::new(Generations {
+    posted_first: 0,
+    posted_second: 0,
+    posted_unlisted: 0,
+    written_back_first: 0,
+});
+
+#[cfg(feature = "deferral-by-generation")]
+pub(crate) fn note_generation_posted(first: bool, listed: bool) {
+    let mut generations = lock(&GENERATIONS);
+    match (first, listed) {
+        (true, true) => generations.posted_first += 1,
+        (true, false) => generations.posted_unlisted += 1,
+        (false, _) => generations.posted_second += 1,
+    }
+}
+
+#[cfg(feature = "deferral-by-generation")]
+pub(crate) fn note_first_generation_written_back() {
+    lock(&GENERATIONS).written_back_first += 1;
+}
+
+pub(crate) fn take_generations() -> Generations {
+    std::mem::take(&mut *lock(&GENERATIONS))
+}
+
 /// Parts whose met roots a batch deferred read live since a case last asked:
 /// past B with the grant's retry spent, or past `B_max`.
 static PARTS_DEFERRED: AtomicUsize = AtomicUsize::new(0);
