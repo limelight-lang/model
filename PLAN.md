@@ -418,6 +418,22 @@ Notes: dev/plans/S65.md
       handoff: `hold-by-generation`, `FinishThePosts::is_young` (`4b1bcff`);
         `dev/BENCHMARKS.md`, "S65.32 H by generation against H and D"; put to
         Edmond with the figures 2026-09-27, no ruling on adoption yet.
+- [ ] S65.33 Compare MutatorDeferral and GenerationalHold, and tighten each
+        (Edmond, 2026-09-27: "дай имена D и HG версиям алгоритма. попроси
+        критика сравнить их между собой и попроси оптимизировать каждый ещё
+        сильнее если это можно. но это уже не сейчас")
+      names: MutatorDeferral for D (the default build: the mutator disposes
+        of the collector's results and defers the roots read live into
+        EpochQueue(M)); GenerationalHold for HG (`hold-by-generation`: the
+        collector holds in EpochQueue(GC) only a root that outlived an
+        epoch, a younger one goes MutatorDeferral's way). Proposed
+        2026-09-27, Edmond may rename.
+      done: a Critic's comparison of the two by operation count per fate and
+        by the rig's figures (`dev/BENCHMARKS.md`, the S65.32 entries), and
+        for each scheme the optimizations it proposes, each with its expected
+        effect; recorded in `dev/plans/S65.md`, the ones worth building made
+        steps, and put to Edmond
+      tier: T2 · role: Critic
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,
