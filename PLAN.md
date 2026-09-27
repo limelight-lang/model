@@ -14,7 +14,7 @@ crate. The destination's last mile, the compiler that links this crate, is
 outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
 `limelight`.
 
-Updated: 2026-09-27 · Active: S65.
+Updated: 2026-09-27 · Active: S65, S67.
 
 Review 2026-09-26: three days late, before the push of S65.21–S65.28 to main.
 Pass 1, code `89bb0dc..49b544a` against the thresholds (a function over 50
@@ -395,7 +395,7 @@ Notes: dev/plans/S65.md
         collector's re-reads and slow the garbage (`dev/BENCHMARKS.md`,
         "S65.31 deferral by generation against D"). Put to Edmond.
       tier: T2 · role: Critic, Sage
-- [ ] S65.32 H by generation: the collector keeps in its chain only a root of
+- [x] S65.32 H by generation: the collector keeps in its chain only a root of
         the second generation (Edmond, 2026-09-27: "моя схема — это H, которая
         не ложит в EpochQueue(GC) первое поколение, а только второе"; S65.31
         built the rule on D, which was not his scheme)
@@ -409,6 +409,9 @@ Notes: dev/plans/S65.md
         read cell by cell without a verdict, the seventh cell in a CSV of
         its own and not deciding; the verdict put to Edmond
       tier: T2 · role: Critic, Sage
+      handoff: `hold-by-generation`, `FinishThePosts::is_young` (`4b1bcff`);
+        `dev/BENCHMARKS.md`, "S65.32 H by generation against H and D"; put to
+        Edmond with the figures 2026-09-27, no ruling on adoption yet.
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,
@@ -468,6 +471,51 @@ Notes: dev/plans/S65.md
         turnover, S65.23's k-th free past the first never fault-injected;
         then the Code Reviewer over the stage
       tier: T2 · role: Code Reviewer
+
+## S67 — A web-server load on the rig  [in progress]
+
+Goal: the schemes D, H and HG are compared on the memory load a request
+server puts on the runtime, instead of on the rig's synthetic rings alone
+(Edmond, 2026-09-27: "я хочу кейс web-сервер - типичная нагрузка на память
+что наблюдается на сервере").
+Done when: `web-arena` and `web-heap` run on the rig with their parameters
+cited to sources or marked as assumptions, the rig's idle poll no longer
+hides the mutator's token wait, and D, H and HG are measured on them by a
+rule fixed before the run; the figures put to Edmond.
+Notes: dev/plans/S67.md
+
+- [ ] S67.1 Decide the load's parameters and the protocol
+      done: `dev/plans/S67.md` holds the load's specification (the loads'
+        Critic of 2026-09-27, its facts cited, its assumptions marked) and
+        the decision rule — metric, gates, repeats, A/A cells — written
+        before any run
+      tier: T2 · role: Critic
+- [ ] S67.2 A mutator that blocks without polling
+      done: a rig mutator can sleep in a blocking wait that makes no poll,
+        as a worker in `accept` or on a database read does; a case shows a
+        grant request standing until the mutator's next poll, and the rig
+        reports the token wait it then pays
+      tier: T2 · role: Critic
+- [ ] S67.3 Request graphs: lifetimes, payload and sizes
+      done: the rig builds per-request graphs with lifetimes drawn from a
+        distribution, an acyclic payload tree under each cycle, at least two
+        object sizes, and counts garbage in bytes, mean and peak; each
+        figure checked once on an input whose answer is known
+      tier: T2 · role: Critic
+- [ ] S67.4 Long-lived state: a shared core, a cache and sessions
+      done: each mutator holds a strongly connected core the request graphs
+        point into, an LRU cache whose hits register and whose evictions die
+        silently, and sessions with an idle lifetime
+      tier: T2 · role: Critic
+- [ ] S67.5 The loads `web-heap` and `web-arena`
+      done: both loads in the rig's table; `web-arena`'s request objects in
+        the mutator's `Arena`, reset at the request's end with the release
+        log; a smoke cell of each completes under D, H and HG
+      tier: T2 · role: Critic
+- [ ] S67.6 Measure D, H and HG on the web loads
+      done: the run by S67.1's rule, the arms fresh and interleaved, the
+        figures in `dev/BENCHMARKS.md`, the verdict put to Edmond
+      tier: T2 · role: Critic
 
 ## Then: arrays as a performance problem
 
