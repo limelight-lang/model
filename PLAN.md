@@ -418,7 +418,7 @@ Notes: dev/plans/S65.md
       handoff: `hold-by-generation`, `FinishThePosts::is_young` (`4b1bcff`);
         `dev/BENCHMARKS.md`, "S65.32 H by generation against H and D"; put to
         Edmond with the figures 2026-09-27, no ruling on adoption yet.
-- [ ] S65.33 Compare the schemes EpochQueue(M) and EpochQueue(GC), and
+- [x] S65.33 Compare the schemes EpochQueue(M) and EpochQueue(GC), and
         tighten each (Edmond, 2026-09-27: "дай имена D и HG версиям
         алгоритма. попроси критика сравнить их между собой и попроси
         оптимизировать каждый ещё сильнее если это можно. но это уже не
@@ -435,6 +435,42 @@ Notes: dev/plans/S65.md
         for each scheme the optimizations it proposes, each with its expected
         effect; recorded in `dev/plans/S65.md`, the ones worth building made
         steps, and put to Edmond
+      tier: T2 · role: Critic
+      handoff: three Critics and the Sage, 2026-09-27 (`dev/plans/S65.md`,
+        S65.33): S1 and G2 built as S65.34 and S65.35, G1, G3, M1 and S1b
+        measured first under S65.36; S2, M3, G4 and a sound dirty bit put to
+        Edmond; the S65.32 picture unchanged.
+- [ ] S65.34 The part's own root is not listed (S65.33, the Sage's S1; both
+        schemes)
+      done: `live_list::Writer::append_the_part` skips the part's root,
+        passed from `worker.rs:2800-2801`, gated
+        `not(deferral-by-generation)`; red first on "a part's root is never
+        listed", with the guard that a core entered in the same epoch
+        through an unregistered member still prunes; `the_live_list`'s
+        stamp counts restated; the gate green on the D and HG builds
+      tier: T1 · role: Critic
+- [ ] S65.35 EpochQueue(GC) carries the generation in the entry (S65.33, the
+        Sage's G2)
+      done: `keep_read_live` pushes `root | REOFFERED_MARK`, `keep_unwalked`
+        keeps the copy's bit 2, `is_young` tests bit 2 alone, a young
+        `Unwalked` goes into P, and the compaction's `Keep` and
+        `mark_for_deferral` keep bit 2; each red first on its case (an
+        unwalked young root read live from the ready part goes into P; a
+        root spliced at pressure and read live goes into the chain; a
+        re-offered root kept by a retirement pass over R below 64 entries
+        reaches the chain at its next live reading); the gate green on the
+        D and HG builds
+      tier: T2 · role: Critic
+- [ ] S65.36 The rig's counters S65.33 owes, and G1, G3, M1 and S1b measured
+      done: the rig emits list entries stamped (root / registered / other),
+        `EDGES_PRUNED`, the check's reads and deaths split fresh / lap with
+        laps started, R's share against the chain's per batch, roots
+        re-offered per turn, marks stripped and young `Unwalked` sent to the
+        ready part; G1 (the check's back-off), G3 (R first while the chain
+        holds at most 512 × 64 roots), M1 (the lane handed back by blocks)
+        and S1b (no registered row listed) each built behind its own feature
+        and measured against its scheme on a quiet box, on S67.6's run if it
+        comes first; the verdicts put to Edmond
       tier: T2 · role: Critic
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
