@@ -7,7 +7,8 @@
 #
 # Usage: dev/tools/arms.sh <out.csv> <repeats> <deciding|guards>
 # Env: ARMS_DIR (binaries named by arm, default target/arms), ARMS ("A B C"),
-#      MUTATORS (2,4), SPARE (6), SHARED (4): CPUs for the two placements.
+#      MUTATORS (2,4), SPARE (6), SHARED (4): CPUs for the two placements;
+#      LOADS, the deciding phase's loads as load:pace, default all six.
 # Build each arm with `cargo test --release --lib --no-run [--features …]` and
 # copy the binary into ARMS_DIR under the arm's name.
 set -u
@@ -19,6 +20,7 @@ ARMS=${ARMS:-"A B C"}
 MUTATORS=${MUTATORS:-2,4}
 SPARE=${SPARE:-6}
 SHARED=${SHARED:-4}
+LOADS=${LOADS:-"live-churn:1 live-churn-dies-by-count:1 deferred-then-dead:1 deferred-live-large:1 garbage-25:15 registered-ring-live:15"}
 CASE=cycle::worker::tests::the_rig::a_cell_of_the_rig
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
@@ -59,8 +61,7 @@ for repeat in $(seq 1 "$REPEATS"); do
     ORDER=$(rotated "$repeat")
     for placement in spare-core shared-core; do
         if [ "$PHASE" = deciding ]; then
-            for spec in live-churn:1 live-churn-dies-by-count:1 deferred-then-dead:1 \
-                        deferred-live-large:1 garbage-25:15 registered-ring-live:15; do
+            for spec in $LOADS; do
                 for arm in $ORDER; do
                     cell "$arm" "$placement" "${spec%%:*}" "${spec##*:}" 10 12000 "$repeat"
                 done
