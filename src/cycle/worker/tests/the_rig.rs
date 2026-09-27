@@ -1547,6 +1547,10 @@ impl CellReading {
                 self.generations.posted_unlisted.to_string(),
             ),
             (
+                "posted_in_an_old_core",
+                self.generations.posted_in_an_old_core.to_string(),
+            ),
+            (
                 "written_back_first_generation",
                 self.generations.written_back_first.to_string(),
             ),

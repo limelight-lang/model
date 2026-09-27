@@ -381,7 +381,9 @@ pub(crate) unsafe fn collect_over_the_verdicts() -> usize {
 /// The disposition of P with no trace window, which `NOTHING_PROPOSED` arms
 /// (`crate::gc::Arming::Disposal`): the collector's batch proposed no set,
 /// so every verdict in P is answered without a trace — a completed death
-/// freed, a root read live deferred, an unwalked one written back into R —
+/// freed, a root read live deferred (under `deferral-by-generation` one the
+/// collector marked, an unmarked one written back), an unwalked one written
+/// back into R —
 /// and the run of completed deaths at R's front goes with it, as at the close
 /// of a collection over P.
 ///

@@ -56,7 +56,8 @@
 //! back into R for the collector's next batch (`rfc/model/gc/rc-cycle.md`,
 //! "The mutator's disposition"). The pressure path, the exit and the
 //! explicit fire read P into their batch first, ahead of R, with its
-//! unwalked entries among the roots, so that a proposal never stands through
+//! unwalked entries — and under `deferral-by-generation` its unmarked
+//! `ReadLive` ones — among the roots, so that a proposal never stands through
 //! a collection short of memory ([`BatchForm`]). The invariant the byte
 //! carries: P holds an entry the mutator has not disposed of only while the
 //! byte reads `POSTED` or `MUTATOR`, so a byte at `FREE` promises an empty
@@ -66,7 +67,9 @@
 //! ([`crate::cycle::queue::compaction`];
 //! `crate::cycle::queue::retire_candidates_and_dispose_of_verdicts`): a root
 //! whose death completed is retired, a root read live — by the close's own
-//! reading or by the collector's — goes to the deferred lane, a zero-count
+//! reading or by the collector's — goes to the deferred lane (under
+//! `deferral-by-generation`, a collector's `ReadLive` only when it carries
+//! the mark, an unmarked one being written back into R), a zero-count
 //! verdict is retired only on the completed-free bit re-read there, and
 //! every entry the close cannot dispose of — a component refused,
 //! resurrected or never traced, a resurrected zero count, a root the
@@ -118,9 +121,11 @@ impl Verdict {
 /// The bits of an entry that carry the verdict.
 const VERDICT_BITS: usize = 3;
 
-/// The mutator's mark over a root of the batch that a close read live, written
-/// in place by [`crate::cycle::queue::Batch::mark_for_deferral`] and read
-/// once by the pass that disposes of the batch. Bit 2: the third of the
+/// The mark that defers an entry, read once by the pass that disposes of the
+/// batch: the mutator's over a root of the batch that a close read live,
+/// written in place by [`crate::cycle::queue::Batch::mark_for_deferral`], and
+/// under `deferral-by-generation` the collector's, posted by
+/// `VerdictWriter::post_marked` on a `ReadLive` it defers. Bit 2: the third of the
 /// three bits a fixture's eight-byte header alignment frees
 /// (`crate::cycle::queue`, [`ENTRY_MARK_BITS`]).
 pub(super) const VERDICT_DEFER_MARK: usize = 4;

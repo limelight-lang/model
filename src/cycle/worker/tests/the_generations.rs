@@ -60,10 +60,18 @@ impl KeptRing {
 /// # Safety
 /// A quiescent heap under `test_guard`.
 unsafe fn a_kept_ring(arena: &mut Arena, name: &str) -> KeptRing {
+    unsafe { a_kept_ring_of(arena, name, MEMBERS) }
+}
+
+/// [`a_kept_ring`] of `members` members.
+///
+/// # Safety
+/// As [`a_kept_ring`].
+unsafe fn a_kept_ring_of(arena: &mut Arena, name: &str, members: usize) -> KeptRing {
     let class = member_class(name);
     let arena_ptr: *mut Arena = arena;
     let mut context = LLContext { arena };
-    let members: Vec<*mut Object> = (0..MEMBERS)
+    let members: Vec<*mut Object> = (0..members)
         .map(|_| unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) })
         .collect();
     let keeper = unsafe {
@@ -75,7 +83,11 @@ unsafe fn a_kept_ring(arena: &mut Arena, name: &str) -> KeptRing {
     };
     unsafe {
         for (position, &member) in members.iter().enumerate() {
-            move_prop(member, prop_offset(0), members[(position + 1) % MEMBERS]);
+            move_prop(
+                member,
+                prop_offset(0),
+                members[(position + 1) % members.len()],
+            );
         }
 
         ll_retain(members[0] as *mut RcHeader);
@@ -102,9 +114,13 @@ unsafe fn free_the_ring(arena: &mut Arena, mut ring: KeptRing) {
     reset_lanes();
 }
 
-/// A class of one counted Box property, which the ring links through.
+/// A class of two counted Box properties: the first the ring links through,
+/// the second free for an edge into another ring.
 fn member_class(name: &str) -> *const Class {
-    ClassBuilder::new(name).prop("next", true).build()
+    ClassBuilder::new(name)
+        .prop("next", true)
+        .prop("held", true)
+        .build()
 }
 
 /// The epoch this thread's cell stands in, moved off zero first so that a
@@ -329,4 +345,76 @@ fn a_collection_over_r_whole_traces_a_root_of_the_first_generation() {
     assert_eq!(unsafe { ll_gc_collect_cycles() }, MEMBERS);
     assert_eq!(candidate_count() + deferred_count(), 0);
     reset_lanes();
+}
+
+/// A young root that a part whose root has outlived an epoch meets is posted
+/// marked and deferred with the old root: the old part lists its core, the
+/// young ring's rows among them, so a write-back would only re-read a ring
+/// the prune stops at. Red with the young root posted by its generation
+/// alone, which writes it back.
+#[test]
+fn a_young_root_an_old_part_meets_is_deferred_with_the_old_core() {
+    let _g = test_guard();
+    reset_lanes();
+    let _ = a_nonzero_epoch();
+    let mut arena = Arena::new();
+    let old = unsafe { a_kept_ring(&mut arena, "GenerationOldHolder") };
+    unsafe { crate::cycle::testing::as_of_the_second_generation(old.root() as *mut RcHeader) };
+    let young = unsafe { a_kept_ring(&mut arena, "GenerationHeldYoung") };
+    unsafe {
+        store_prop(&mut arena, old.members[1], prop_offset(1), young.root());
+    }
+
+    let (generations, _) = a_serve_and_its_poll();
+    assert_eq!(
+        (
+            generations.posted_second,
+            generations.posted_in_an_old_core,
+            generations.posted_first
+        ),
+        (1, 1, 0)
+    );
+    assert_eq!(
+        (candidate_count(), deferred_count()),
+        (0, 2),
+        "both deferred"
+    );
+
+    unsafe {
+        free_the_ring(&mut arena, young);
+        free_the_ring(&mut arena, old);
+    }
+}
+
+/// A young root the list has no room for is posted marked and deferred: a
+/// root listed with no stamp would come back young at every lap. The list is
+/// bounded to one block and an old part's core fills it first. Red with the
+/// refusal read as a listing, which writes the root back.
+#[test]
+#[cfg_attr(miri, ignore = "8,200 members are past what Miri affords")]
+fn a_young_root_the_list_refuses_is_deferred() {
+    let _g = test_guard();
+    reset_lanes();
+    let _ = a_nonzero_epoch();
+    let _bound = crate::cycle::live_list::testing::bound_the_chain(1);
+    let mut arena = Arena::new();
+    let old = unsafe { a_kept_ring_of(&mut arena, "GenerationFillsTheList", 8_200) };
+    unsafe { crate::cycle::testing::as_of_the_second_generation(old.root() as *mut RcHeader) };
+    let young = unsafe { a_kept_ring(&mut arena, "GenerationRefused") };
+
+    let (generations, _) = a_serve_and_its_poll();
+    assert_eq!(
+        (
+            generations.posted_second,
+            generations.posted_unlisted,
+            generations.posted_first
+        ),
+        (1, 1, 0)
+    );
+    assert_eq!((candidate_count(), deferred_count()), (0, 2));
+
+    unsafe {
+        free_the_ring(&mut arena, young);
+        free_the_ring(&mut arena, old);
+    }
 }

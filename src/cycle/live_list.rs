@@ -24,7 +24,9 @@
 //! its payload and its count and the epoch cell's reading in its header line
 //! ([`ListBlock`]). The collector appends after each part whose root it read
 //! live, walking that part's live rows before the arena's reset
-//! ([`Writer::append_the_part`]), and publishes the head on the record's hold
+//! ([`Writer::append_the_part`]) — under `deferral-by-generation` only after
+//! a part whose root has outlived an epoch, every other root read live being
+//! listed alone (`Writer::list_a_root`) — and publishes the head on the record's hold
 //! line before the release that stores `POSTED`. A block the pool refuses and
 //! a chain at its bound keep what is written and take no more: any subset of
 //! the live core is safe to stamp. The walk reads the recall every

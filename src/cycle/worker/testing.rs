@@ -1322,7 +1322,8 @@ pub(crate) fn take_written_back() -> usize {
 
 /// What `deferral-by-generation` did with the roots the collector read live
 /// since a case last asked (`dev/plans/S65.md`, S65.31); zero without the
-/// feature.
+/// feature. One relaxed atomic a note, as [`note_written_back`] is, so that
+/// the arm the rig times pays no lock the other does not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Generations {
     /// Posted unmarked: of the first generation, and listed alone.
@@ -1332,34 +1333,43 @@ pub(crate) struct Generations {
     /// Posted marked because the list took no more, the root being of the
     /// first generation.
     pub(crate) posted_unlisted: usize,
+    /// Posted marked, the root being of the first generation and met by a
+    /// part that lists its core.
+    pub(crate) posted_in_an_old_core: usize,
     /// Unmarked `ReadLive` entries the disposition wrote back into R.
     pub(crate) written_back_first: usize,
 }
 
-static GENERATIONS: Mutex<Generations> = Mutex::new(Generations {
-    posted_first: 0,
-    posted_second: 0,
-    posted_unlisted: 0,
-    written_back_first: 0,
-});
+static POSTED_FIRST: AtomicUsize = AtomicUsize::new(0);
+static POSTED_SECOND: AtomicUsize = AtomicUsize::new(0);
+static POSTED_UNLISTED: AtomicUsize = AtomicUsize::new(0);
+static POSTED_IN_AN_OLD_CORE: AtomicUsize = AtomicUsize::new(0);
+static WRITTEN_BACK_FIRST: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(feature = "deferral-by-generation")]
-pub(crate) fn note_generation_posted(first: bool, listed: bool) {
-    let mut generations = lock(&GENERATIONS);
-    match (first, listed) {
-        (true, true) => generations.posted_first += 1,
-        (true, false) => generations.posted_unlisted += 1,
-        (false, _) => generations.posted_second += 1,
-    }
+pub(crate) fn note_generation_posted(first: bool, listed: bool, in_an_old_core: bool) {
+    let counter = match (first, listed, in_an_old_core) {
+        (false, _, _) => &POSTED_SECOND,
+        (true, false, _) => &POSTED_UNLISTED,
+        (true, true, true) => &POSTED_IN_AN_OLD_CORE,
+        (true, true, false) => &POSTED_FIRST,
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(feature = "deferral-by-generation")]
 pub(crate) fn note_first_generation_written_back() {
-    lock(&GENERATIONS).written_back_first += 1;
+    WRITTEN_BACK_FIRST.fetch_add(1, Ordering::Relaxed);
 }
 
 pub(crate) fn take_generations() -> Generations {
-    std::mem::take(&mut *lock(&GENERATIONS))
+    Generations {
+        posted_first: POSTED_FIRST.swap(0, Ordering::Relaxed),
+        posted_second: POSTED_SECOND.swap(0, Ordering::Relaxed),
+        posted_unlisted: POSTED_UNLISTED.swap(0, Ordering::Relaxed),
+        posted_in_an_old_core: POSTED_IN_AN_OLD_CORE.swap(0, Ordering::Relaxed),
+        written_back_first: WRITTEN_BACK_FIRST.swap(0, Ordering::Relaxed),
+    }
 }
 
 /// Parts whose met roots a batch deferred read live since a case last asked:

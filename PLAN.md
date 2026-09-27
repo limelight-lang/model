@@ -380,10 +380,12 @@ Notes: dev/plans/S65.md
         S65.28's protocol; the verdict and the figures put to Edmond; the
         first approach — no trace of a first-generation root — noted beside
         the figures, not built
-      built 2026-09-27 behind `deferral-by-generation`: the Sage's Final
-        but the case of a list refused (the fixture's bound takes no zero);
-        `worker/tests/the_generations.rs`, five cases, each red on the
-        mutation of the line it guards; the kept roots of `the_batch`,
+      built 2026-09-27 behind `deferral-by-generation`: the Sage's Final,
+        with the code Critic's repair of a young root in an old core;
+        `worker/tests/the_generations.rs`, seven cases, each red on the
+        mutation of the line it guards (uncovered: a young root past B,
+        untracked or with no met row, the census, unwinds over an unmarked
+        `ReadLive`); the kept roots of `the_batch`,
         `the_ceiling` and `the_epoch_clock` stamped of the second
         generation under the feature, and seven cases of `the_live_list`
         ignored under it for listing the core at the first reading.

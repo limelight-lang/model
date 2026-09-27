@@ -219,7 +219,8 @@ fn free_the_front_run() {
 
 /// The pass over P. With `prefix` the batch's count of P's entries, dispose
 /// of each of them: a completed death is retired, a root marked or read live
-/// goes to the deferred lane, and everything else — a component refused or
+/// goes to the deferred lane — under `deferral-by-generation` a root marked,
+/// the collector's unmarked `ReadLive` being written back — and everything else — a component refused or
 /// resurrected, a resurrected zero count, a root the lane had no block
 /// for, an unwalked root the collection over P did not trace — is written
 /// back into R as a registration, before P's front advances past the whole

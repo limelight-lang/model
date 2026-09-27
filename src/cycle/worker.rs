@@ -40,7 +40,10 @@
 //! [`RETRY_BLOCK_BUDGET`], `B_max`, once per grant. A retry that meets it too,
 //! and a part that meets B with the retry spent, post every live root their
 //! rows met *read live*, which defers each to the turnover, and the batch goes
-//! on with the next root. A refused allocation or the mutator's recall of its
+//! on with the next root. Under `deferral-by-generation` a completed part's
+//! root read live is deferred only once it has outlived an epoch, and a
+//! younger one goes back into R with its core unstamped (`dev/plans/S65.md`,
+//! S65.31). A refused allocation or the mutator's recall of its
 //! token ends the batch: no color of such a part is a verdict, so its root
 //! and every root still without one are posted *unwalked*, which the
 //! mutator's collection over P writes back into R untraced for the next
@@ -2653,7 +2656,9 @@ fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, compl
 /// A part whose root it reads live appends the live rows it met to `live`
 /// before the reset, which the mutator stamps from at its take
 /// (`crate::cycle::live_list`); a part that read its root unreachable lists
-/// nothing.
+/// nothing. Under `deferral-by-generation` the core is listed only when the
+/// part's root has outlived an epoch, and each root read live is listed alone
+/// and posted by its generation (`post_by_generation`).
 ///
 /// A part that meets its budget is retried at once under `B_max`
 /// ([`retry_under_the_ceiling`]), once per grant. A retry that meets `B_max`,
@@ -3041,11 +3046,11 @@ unsafe fn post_the_part(
     let verdict = unsafe { verdict_for(root) };
     let lists_the_core =
         verdict == Verdict::ReadLive && unsafe { has_outlived_an_epoch(root, epoch) };
-    unsafe { post_by_generation(posts, index, verdict, epoch, live) };
+    unsafe { post_by_generation(posts, index, verdict, epoch, lists_the_core, live) };
     unsafe {
         for_each_met_root(arena, posts, by_address, |posts, index| {
             let verdict = verdict_for(posts.root(index));
-            post_by_generation(posts, index, verdict, epoch, live);
+            post_by_generation(posts, index, verdict, epoch, lists_the_core, live);
         })
     }?;
     std::ops::ControlFlow::Continue(lists_the_core)
@@ -3054,21 +3059,28 @@ unsafe fn post_the_part(
 /// Post `verdict`, which a completed part supports, for the root at `index`
 /// by its generation (`dev/plans/S65.md`, S65.31). A `ReadLive` on a root the
 /// part placed is listed alone, the list taking the root's stamp to this
-/// epoch; it is posted unmarked when the root is of the first generation and
-/// the list took it, so that its core stays unstamped and the next reading in
-/// the epoch can see it die, and marked otherwise, the disposition deferring
-/// it as the build without the feature does. Any other verdict is posted as
+/// epoch; it is posted unmarked when the root is of the first generation, the
+/// list took it and the part lists no core, so that its core stays unstamped
+/// and the next reading in the epoch can see it die, and marked otherwise, the
+/// disposition deferring it as the build without the feature does. A young
+/// root met by a part whose own root has outlived an epoch is marked: the
+/// part lists its core, the young ring's rows among them, and a re-read in
+/// the epoch would prune at them. A young root posted by an earlier part of
+/// the batch and met again by a later such part keeps its unmarked post, and
+/// pays laps of R until the turn. Any other verdict is posted as
 /// [`FinishThePosts::post`] posts it.
 ///
 /// # Safety
 /// As [`verdict_for`]: the part completed on this thread and its rows still
-/// stand; `epoch` is the batch's arena's, the one its mark pruned against.
+/// stand; `epoch` is the batch's arena's, the one its mark pruned against;
+/// `lists_the_core` is whether the part lists its live core.
 #[cfg(feature = "deferral-by-generation")]
 unsafe fn post_by_generation(
     posts: &mut FinishThePosts<'_>,
     index: usize,
     verdict: Verdict,
     epoch: u32,
+    lists_the_core: bool,
     live: &mut crate::cycle::live_list::Writer,
 ) {
     let root = posts.root(index);
@@ -3080,8 +3092,8 @@ unsafe fn post_by_generation(
     let first = !unsafe { has_outlived_an_epoch(root, epoch) };
     let listed = live.list_a_root(root);
     #[cfg(test)]
-    testing::note_generation_posted(first, listed);
-    if first && listed {
+    testing::note_generation_posted(first, listed, lists_the_core);
+    if first && listed && !lists_the_core {
         posts.post_first_generation(index);
     } else {
         posts.post(index, verdict);
