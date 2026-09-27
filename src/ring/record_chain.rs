@@ -343,6 +343,10 @@ impl RecordChain {
                     let slot = unsafe { &mut *(*b).slots[*checked].get() };
                     if *slot != 0 {
                         read += 1;
+                        #[cfg(test)]
+                        if lapped {
+                            LAP_READS.fetch_add(1, Ordering::Relaxed);
+                        }
                         match visit(*slot) {
                             Checked::Keep => {}
                             Checked::Take => {
@@ -364,6 +368,8 @@ impl RecordChain {
             // Every block read to its tail: the lap ends here, and the next
             // starts from each block's front.
             lapped = true;
+            #[cfg(test)]
+            LAPS.fetch_add(1, Ordering::Relaxed);
             let mut block = self.first.load(Ordering::Relaxed);
             while !block.is_null() {
                 let b = ring(block);
@@ -490,6 +496,23 @@ unsafe fn live_entries(block: *mut BlockHeader) -> usize {
     (front..tail)
         .filter(|&index| unsafe { *(*b).slots[index].get() } != 0)
         .count()
+}
+
+// Entries the checks read after they started a lap, and the laps they
+// started, since the last `take_lap_figures`.
+#[cfg(test)]
+static LAP_READS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static LAPS: AtomicUsize = AtomicUsize::new(0);
+
+/// Entries [`RecordChain::check`] read after it started a lap, and the laps it
+/// started, since the last call; zeroed.
+#[cfg(test)]
+pub(crate) fn take_lap_figures() -> (usize, usize) {
+    (
+        LAP_READS.swap(0, Ordering::Relaxed),
+        LAPS.swap(0, Ordering::Relaxed),
+    )
 }
 
 #[cfg(test)]

@@ -1462,6 +1462,8 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
     }
 
     mutator_state.turnover_mirror.set(byte);
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_reoffered(mutator_state.deferred().len());
     reoffer_deferred_candidates();
     this_thread_record_ref().note_a_merge();
     true

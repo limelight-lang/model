@@ -2296,6 +2296,10 @@ unsafe fn batch(
             } else {
                 wants_r
             };
+            #[cfg(test)]
+            if r_share < wants_r {
+                testing::note_r_cut();
+            }
             (take, take - r_share)
         }
     };
@@ -2374,6 +2378,10 @@ unsafe fn batch(
     let outcome = unsafe { trace_in_parts(arena, &mut posts, by_address, &mut live) };
     let (parts, complete) = (outcome.parts, outcome.complete);
     #[cfg(test)]
+    let edges_pruned = crate::cycle::mark::take_edges_pruned();
+    #[cfg(test)]
+    testing::note_edges_pruned(edges_pruned);
+    #[cfg(test)]
     testing::note_traced_batch(|| testing::TracedBatch {
         roots: taken,
         parts,
@@ -2382,7 +2390,7 @@ unsafe fn batch(
         wall: traced_from.elapsed(),
         positions_after_the_hook: testing::take_positions_after_the_hook(),
         lookup_visits: testing::take_lookup_visits(),
-        edges_pruned: crate::cycle::mark::take_edges_pruned(),
+        edges_pruned,
         rows_met: testing::take_rows_met(),
         parts_met_budget: outcome.parts_met_budget,
         retried: outcome.retried,

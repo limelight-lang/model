@@ -186,6 +186,13 @@ impl Writer {
                     }
 
                     #[cfg(test)]
+                    crate::cycle::worker::testing::note_listed(
+                        crate::refcount::is_registered_candidate(crate::refcount::mutator_flags(
+                            entity,
+                        )),
+                    );
+
+                    #[cfg(test)]
                     if testing::after_a_listed_row() {
                         raised_at = Some(arena.positions_inspected());
                     }

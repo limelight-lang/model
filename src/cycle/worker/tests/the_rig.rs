@@ -1362,6 +1362,8 @@ struct CellReading {
     disposals: testing::VerdictCollections,
     /// What the collector's chain did, zero without it.
     chain: testing::ChainFigures,
+    /// What the live list and the lane cost, in every build.
+    scheme: testing::SchemeFigures,
     token_waits: testing::TokenWaits,
     /// The collector's time in each segment of its batches.
     segment_times: testing::SegmentTimes,
@@ -1624,6 +1626,19 @@ impl CellReading {
                 "grants_r_left_unread",
                 self.chain.grants_r_left_unread.to_string(),
             ),
+            (
+                "chain_headers_checked_in_a_lap",
+                self.chain.headers_checked_in_a_lap.to_string(),
+            ),
+            ("chain_laps", self.chain.laps.to_string()),
+            ("batches_r_cut", self.chain.batches_r_cut.to_string()),
+            (
+                "listed_registered",
+                self.scheme.listed_registered.to_string(),
+            ),
+            ("listed_other", self.scheme.listed_other.to_string()),
+            ("edges_pruned", self.scheme.edges_pruned.to_string()),
+            ("roots_reoffered", self.scheme.roots_reoffered.to_string()),
             ("collectors_born", self.collectors_born.to_string()),
             ("collectors_pinned", self.collectors_pinned.to_string()),
             (
@@ -1873,6 +1888,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let _ = testing::take_verdict_collections();
     let _ = testing::take_disposals();
     let _ = testing::take_chain_figures();
+    let _ = testing::take_scheme_figures();
     testing::permit_births(true);
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -1919,6 +1935,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         verdict_collections: testing::take_verdict_collections(),
         disposals: testing::take_disposals(),
         chain: testing::take_chain_figures(),
+        scheme: testing::take_scheme_figures(),
         token_waits: testing::take_token_waits(),
         segment_times: testing::take_segment_times(),
         recalls: testing::take_recalls(),

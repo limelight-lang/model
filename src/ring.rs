@@ -1539,6 +1539,8 @@ pub(crate) unsafe fn next_block(block: *mut BlockHeader) -> *mut BlockHeader {
 
 #[cfg(feature = "collector-chain")]
 mod record_chain;
+#[cfg(all(test, feature = "collector-chain"))]
+pub(crate) use record_chain::take_lap_figures;
 #[cfg(feature = "collector-chain")]
 pub(crate) use record_chain::{ChainPeek, Checked, RecordChain};
 
