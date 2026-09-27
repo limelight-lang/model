@@ -439,7 +439,8 @@ Notes: dev/plans/S65.md
       handoff: three Critics and the Sage, 2026-09-27 (`dev/plans/S65.md`,
         S65.33): S1 and G2 built as S65.34 and S65.35, G1, G3, M1 and S1b
         measured first under S65.36; S2, M3, G4 and a sound dirty bit put to
-        Edmond; the S65.32 picture unchanged.
+        Edmond, each ruled to be tried (S65.37–S65.40); the S65.32 picture
+        unchanged.
 - [ ] S65.34 The part's own root is not listed (S65.33, the Sage's S1; both
         schemes)
       done: `live_list::Writer::append_the_part` skips the part's root,
@@ -471,6 +472,44 @@ Notes: dev/plans/S65.md
         and S1b (no registered row listed) each built behind its own feature
         and measured against its scheme on a quiet box, on S67.6's run if it
         comes first; the verdicts put to Edmond
+      tier: T2 · role: Critic
+- [ ] S65.37 EpochQueue(M) re-offers at the turn only the roots a decrement
+        or a pruned reading touched (S65.33; Edmond, 2026-09-27)
+      done: the Sage rules the dirty bit sound or names its counter-example
+        before the first edit (the bit in byte 6's reserve bits 20–23, set
+        by the mutator at registration and on a non-final decrement of a
+        candidate; a `ReadLive` whose reading pruned an edge deferred dirty;
+        the turn's pass re-offering the dirty entries and keeping the clean
+        ones in the lane); if sound, built behind its own feature, the
+        Sage's counter-example and Critic 2's four cases red first, and
+        measured against HG and D on a quiet box
+      tier: T2 · role: Critic, Sage
+- [ ] S65.38 A core is listed only when its size reaches a threshold
+        (S65.33, S2; Edmond, 2026-09-27: "давай попробуем - как подбор
+        замером")
+      done: the part's size (edges or rows) counted in its trace; behind its
+        own feature, a part below the threshold lists none of its rows; the
+        threshold chosen by measurement on `overlapping-live` and
+        `partly-overlapping` beside the rig's loads, in both schemes, with
+        `EDGES_PRUNED` read; red first on "a core above the threshold,
+        entered by a second root in the same epoch, prunes"; put to Edmond
+      tier: T2 · role: Critic
+- [ ] S65.39 A batch of re-offered roots alone does not advance the epoch
+        (S65.33, M3; Edmond, 2026-09-27: "попробуй")
+      done: behind its own feature, `note_batch` skipped at `worker.rs:2408`
+        when every root of the batch carries `REOFFERED_MARK`; measured in
+        both schemes against the build without it, the epoch's length, the
+        re-reads, the garbage held and the withheld peak read; put to
+        Edmond, `BATCHES_PER_EPOCH` being his ruling
+      tier: T2 · role: Critic
+- [ ] S65.40 A third generation in EpochQueue(GC) (S65.33, G4; Edmond,
+        2026-09-27: "попробуй")
+      done: behind its own feature, a chain root read live without bit 0 of
+        its entry is not traced but kept with the bit, one with the bit is
+        traced and loses it, `take_compacted` clears bit 0; only while the
+        chain holds more than 512 × 64 roots; red first on "a ring let go
+        while its root is skipped is freed by the pass after it";
+        `deferred-then-dead`'s last free green; measured against HG
       tier: T2 · role: Critic
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
