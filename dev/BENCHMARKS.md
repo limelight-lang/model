@@ -8,6 +8,56 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-27 — S65.31 deferral by generation against D: D stays, the arm winning no deciding load and losing 4 of 6 shared and 5 of 6 spare; writing young live roots back into R doubles the collector's re-reads and slows the garbage it was built to free sooner
+
+**The run the protocol of S65.28 decides, on `0224fa4`.** Baseline D, the
+default build; candidate `--features deferral-by-generation` (`dev/plans/S65.md`,
+S65.31). Box, placements and driver as the entry below; `ARMS_DIR=target/arms31
+ARMS="dispose generation"`, three repeats; a seventh cell, `live-churn` with
+`LL_RIG_CHURN_WINDOW=256`, rings living a quarter as long. Load average
+1.3–3.7 at the phases' ends. A run on `01bf7d6` was stopped and discarded: its
+generation counters took a mutex a root in the timed arm alone.
+
+| load | placement | instructions D / G | verdict | heap MB D / G | last free ms D / G | long D / G | collector s D / G |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| live-churn-dies-by-count | spare | 73,868 / 102,069 | loss +38.2 % | 0 / 0 | 8,552 / 387 | 85 / 188 | 1.07 / 6.22 |
+| live-churn-dies-by-count | shared | 73,805 / 107,494 | loss +45.6 % | 0 / 0 | 9,341 / 420 | 56 / 217 | 1.02 / 7.02 |
+| deferred-live-large | spare | 29,058 / 31,253 | loss +7.6 %, heap | 0.43 / 0.70 | 529 / 340 | 36 / 45 | 1.54 / 1.79 |
+| deferred-live-large | shared | 28,825 / 30,957 | loss +7.4 %, heap | 0.65 / 1.02 | 376 / 150 | 51 / 57 | 1.66 / 1.77 |
+| live-churn | spare | 372,484 / 371,754 | loss: heap | 7.50 / 16.82 | 8,616 / 917 | 381 / 363 | 1.30 / 2.43 |
+| live-churn | shared | 368,360 / 368,924 | loss: heap | 10.34 / 18.83 | 89 / 735 | 353 / 413 | 1.30 / 2.40 |
+| garbage-25 | spare | 282,597 / 282,794 | loss: heap, last free | 0.00 / 0.07 | 0 / 4,236 | 1 / 2 | 0.02 / 0.02 |
+| garbage-25 | shared | 282,625 / 283,394 | loss: last free | 0.00 / 0.05 | 0 / 4,241 | 2 / 2 | 0.02 / 0.03 |
+| deferred-then-dead | spare | 32,780 / 33,785 | loss +3.1 % | 0.06 / 0.02 | 4,245 / 4,272 | 22 / 19 | 0.07 / 0.14 |
+| deferred-then-dead | shared | 32,785 / 33,734 | tie +2.9 % | 0.06 / 0.07 | 4,246 / 4,235 | 19 / 32 | 0.06 / 0.17 |
+| registered-ring-live | spare | 5,574,344 / 5,571,308 | tie | 0 / 0 | 0 / 0 | 10 / 11 | 0.22 / 0.22 |
+| registered-ring-live | shared | 5,574,712 / 5,571,511 | tie | 0 / 0 | 0 / 0 | 46 / 39 | 0.26 / 0.28 |
+| live-churn, window 256 | spare | 326,000 / 333,894 | loss +2.4 %, heap, long | 1.30 / 5.21 | 42 / 354 | 333 / 1,089 | 0.72 / 2.14 |
+| live-churn, window 256 | shared | 324,319 / 336,144 | loss +3.6 %, heap, long | 2.75 / 5.00 | 9,297 / 378 | 341 / 1,136 | 0.75 / 1.63 |
+
+The guards birth no collector and read instructions equal to 0.1 %.
+
+**What the write-backs cost**, medians at `spare-core`. On `live-churn` the
+collector batched 1.77 M roots against 0.94 M (1.11 M first-generation
+write-backs), spent 2.43 s of CPU against 1.30 s, and the mean wait from a
+death to its free rose from 15.1 to 27.6 ms, with 131,424 garbage members
+standing at the stop against 58,626: a ring that dies waits behind the young
+live roots written back ahead of it in R. On `live-churn-dies-by-count` the
+batches rose from 1,714 to 4,801 and the roots batched from 0.78 M to 4.90 M;
+the batch clock turned the epoch 76 times against 27, which shortens the
+first generation the rule rests on (the code Critic's finding 5); the
+mutator's 3.60 M write-backs cost it 38–46 % more instructions an iteration.
+On `garbage-25` 5,076 write-backs kept a remnant in R below the threshold,
+freed by the standing take 4.2 s after the stop where D freed all inside the
+loop. The Sage's estimate of the mutator's price, under the 3 % floor, is
+contradicted by the `dies-by-count` cells.
+
+**The rings the rule was for are not freed sooner.** At a quarter of the
+lifetime, where most rings die inside the epoch they were registered in,
+the arm holds 1.8–4 times D's heap garbage. What decides is not the epoch
+the ring dies in but the lap of R its root waits in, and write-backs
+lengthen the lap.
+
 ## 2026-09-27 — S65.28 D against H on the repaired build: D stays at both placements, H winning 2 deciding loads, tying 2 and losing 2; the expiry's and the check's share stays under 10 % in every cell
 
 **The run the decision rule of `PLAN.md` S65.28 fixed before any figure was

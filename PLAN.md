@@ -390,6 +390,10 @@ Notes: dev/plans/S65.md
         generation under the feature, and seven cases of `the_live_list`
         ignored under it for listing the core at the first reading.
         Next: the run against D, with the seventh cell.
+      run 2026-09-27 on `0224fa4`: D stays, the arm winning no deciding load
+        and losing 4 shared and 5 spare; the write-backs double the
+        collector's re-reads and slow the garbage (`dev/BENCHMARKS.md`,
+        "S65.31 deferral by generation against D"). Put to Edmond.
       tier: T2 · role: Critic, Sage
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
