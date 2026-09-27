@@ -292,6 +292,11 @@ struct MutatorCycleState {
     /// inequality is asked of it, so eight bits tell every advance apart but
     /// the 256th.
     turnover_mirror: Cell<u8>,
+    /// Blocks of the deferred lane the turn made due and the polls have not
+    /// yet handed back into R, under `lane-back-by-blocks`
+    /// ([`reoffer_an_owed_block`]). In the padding before the next word.
+    #[cfg(feature = "lane-back-by-blocks")]
+    reoffer_owed: Cell<u16>,
     /// Completed deaths a compaction retired since the poll last asked: the
     /// figure the poll's note to the collector's timer reads beside what a
     /// collection freed ([`take_retired_by_the_close`]).
@@ -331,6 +336,8 @@ impl MutatorCycleState {
             overflow_len: Cell::new(0),
             signal_due: Cell::new(false),
             turnover_mirror: Cell::new(0),
+            #[cfg(feature = "lane-back-by-blocks")]
+            reoffer_owed: Cell::new(0),
             retired_by_the_close: Cell::new(0),
             candidate_deaths: Cell::new(0),
             retire_after: Cell::new(DEATHS_TO_RETIRE),
@@ -1418,12 +1425,62 @@ pub(crate) fn reoffer_deferred_candidates() {
         return;
     }
     let mutator_state = unsafe { mutator_state_ref(state) };
+    #[cfg(feature = "lane-back-by-blocks")]
+    mutator_state.reoffer_owed.set(0);
     let Some((first, last)) = mutator_state.deferred().take() else {
         return;
     };
 
     let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
     unsafe { writer.splice_after_tail(first, last) };
+}
+
+/// Hand the deferred lane's first block back into R, counting the merge as
+/// the turn's is counted; false for an empty lane. Under
+/// `lane-back-by-blocks`, the turn's and the polls' unit.
+#[cfg(feature = "lane-back-by-blocks")]
+fn reoffer_the_lanes_first_block(mutator_state: &MutatorCycleState) -> bool {
+    let Some((block, in_block)) = mutator_state.deferred().take_first_block() else {
+        return false;
+    };
+
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_reoffered(in_block);
+    #[cfg(not(test))]
+    let _ = in_block;
+    let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
+    unsafe { writer.splice_after_tail(block, block) };
+    this_thread_record_ref().note_a_merge();
+    true
+}
+
+/// Hand one block the turn made due back into R where R holds fewer than
+/// the soft threshold's entries, so that the collector reads the lane as R
+/// drains rather than all of it ahead of what registers after the turn.
+/// Answers whether it moved one. The poll's, under `lane-back-by-blocks`;
+/// every block of the lane is due at the next turn in any case.
+#[cfg(feature = "lane-back-by-blocks")]
+pub(crate) fn reoffer_an_owed_block() -> bool {
+    let state = mutator_state();
+    if state.is_null() {
+        return false;
+    }
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    let owed = mutator_state.reoffer_owed.get();
+    if owed == 0 {
+        return false;
+    }
+
+    let reader = unsafe { crate::ring::Reader::new(this_thread_record_ref().candidate_ring()) };
+    if reader.has_at_least(crate::cycle::worker::SOFT_THRESHOLD) {
+        return false;
+    }
+
+    let moved = reoffer_the_lanes_first_block(mutator_state);
+    mutator_state
+        .reoffer_owed
+        .set(if moved { owed - 1 } else { 0 });
+    moved
 }
 
 /// Re-offer the deferred lane exactly once after the collector advanced this
@@ -1462,10 +1519,33 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
     }
 
     mutator_state.turnover_mirror.set(byte);
-    #[cfg(test)]
-    crate::cycle::worker::testing::note_reoffered(mutator_state.deferred().len());
-    reoffer_deferred_candidates();
-    this_thread_record_ref().note_a_merge();
+    // Under `lane-back-by-blocks` the first block goes now, and the last where
+    // it is not full, so that what the lane takes after the turn starts a
+    // block of its own; the full blocks between go at the polls that find R
+    // low. Every block the lane holds is due.
+    #[cfg(feature = "lane-back-by-blocks")]
+    {
+        if let Some((block, in_block)) = mutator_state.deferred().take_last_block_if_partial() {
+            #[cfg(test)]
+            crate::cycle::worker::testing::note_reoffered(in_block);
+            #[cfg(not(test))]
+            let _ = in_block;
+            let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
+            unsafe { writer.splice_after_tail(block, block) };
+        }
+        let _ = reoffer_the_lanes_first_block(mutator_state);
+        let owed = mutator_state.deferred().block_count();
+        mutator_state
+            .reoffer_owed
+            .set(u16::try_from(owed).unwrap_or(u16::MAX));
+    }
+    #[cfg(not(feature = "lane-back-by-blocks"))]
+    {
+        #[cfg(test)]
+        crate::cycle::worker::testing::note_reoffered(mutator_state.deferred().len());
+        reoffer_deferred_candidates();
+        this_thread_record_ref().note_a_merge();
+    }
     true
 }
 

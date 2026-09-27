@@ -321,6 +321,12 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     if open && crate::cycle::queue::deferred_lane_is_occupied() {
         let _ = crate::cycle::queue::reoffer_deferred_if_epoch_moved();
     }
+    // Under `lane-back-by-blocks` the blocks the turn made due go back one a
+    // poll, each once R runs below the soft threshold.
+    #[cfg(feature = "lane-back-by-blocks")]
+    if open {
+        let _ = crate::cycle::queue::reoffer_an_owed_block();
+    }
 
     // The returns a foreign trace left this thread withholding, made here so
     // that a thread which frees nothing after the holder let go still gives

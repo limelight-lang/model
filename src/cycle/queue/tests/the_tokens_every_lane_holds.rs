@@ -286,6 +286,10 @@ fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
 /// and what the queue's release has to discharge, and the re-offer splices
 /// every block of it into the circle.
 #[test]
+#[cfg_attr(
+    feature = "lane-back-by-blocks",
+    ignore = "under `lane-back-by-blocks` the turn hands back one block (`the_turn_hands_back_one_block_and_the_polls_the_rest`)"
+)]
 fn a_deferred_lane_of_two_blocks_is_spliced_back_whole() {
     let _g = test_guard();
     reset();
@@ -361,6 +365,10 @@ fn a_deferred_lane_of_two_blocks_is_spliced_back_whole() {
 /// into the circle after the tail block and read after what stood there,
 /// with no allocation and no pool request.
 #[test]
+#[cfg_attr(
+    feature = "lane-back-by-blocks",
+    ignore = "under `lane-back-by-blocks` the turn hands back one block (`the_turn_hands_back_one_block_and_the_polls_the_rest`)"
+)]
 fn a_reoffer_at_a_poll_with_nothing_to_draw_splices_the_lane_in() {
     let _g = test_guard();
     reset();
@@ -524,5 +532,57 @@ fn a_deferral_retires_the_record_of_a_completed_death() {
     assert!(reoffer_after_an_advance());
     unsafe { retire_candidates() };
     assert_eq!(candidate_count(), 0);
+    reset();
+}
+
+/// Under `lane-back-by-blocks` the turn hands back the lane's first block
+/// and its last where not full, and owes the full blocks between, which a poll
+/// hands back once R holds fewer than the soft threshold's entries, one block
+/// a poll; what the lane takes after the turn starts a block of its own and
+/// waits for the next turn (`dev/plans/S65.md`, S65.36).
+#[test]
+#[cfg(feature = "lane-back-by-blocks")]
+fn the_turn_hands_back_one_block_and_the_polls_the_rest() {
+    let _g = test_guard();
+    reset();
+
+    // A lane of three blocks, as the whole-lane splice's case builds it.
+    let mut first_filler = candidate(2);
+    let mut second_filler = candidate(2);
+    let mut first_grew = candidate(2);
+    let mut second_grew = candidate(2);
+    let fillers = [&raw mut first_filler, &raw mut second_filler];
+    let grew = [&raw mut first_grew, &raw mut second_grew];
+    for (round, &filler_entity) in fillers.iter().enumerate() {
+        assert!(refill_spares());
+        unsafe { ring_of_two_blocks(filler_entity, grew[round]) };
+        assert!(refill_spares());
+        defer_candidates(read_batch(), 0);
+        assert_eq!(candidate_count(), 0);
+    }
+    assert_eq!(deferred_count(), 2 * (BLOCK_ENTRIES + 1));
+    assert_eq!(deferred_segment_count(), 3);
+
+    assert!(reoffer_after_an_advance());
+    assert_eq!(
+        (candidate_count(), deferred_count()),
+        (BLOCK_ENTRIES + 2, BLOCK_ENTRIES),
+        "the first block and the last back, the full one between owed"
+    );
+    assert!(!reoffer_an_owed_block(), "R holds past the soft threshold");
+
+    // A collection defers R's records again, into blocks of their own.
+    assert!(refill_spares());
+    defer_candidates(read_batch(), 0);
+    assert_eq!(candidate_count(), 0);
+    assert_eq!(deferred_segment_count(), 3);
+    assert!(reoffer_an_owed_block());
+    assert_eq!(
+        (candidate_count(), deferred_count()),
+        (BLOCK_ENTRIES, BLOCK_ENTRIES + 2),
+        "the owed block back, the new deferrals waiting for the turn"
+    );
+    assert!(!reoffer_an_owed_block(), "nothing owed");
+
     reset();
 }
