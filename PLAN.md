@@ -406,9 +406,8 @@ Notes: dev/plans/S65.md
         the rfc unchanged; its operation count per fate beside
         `dev/OPERATION-COUNT-BY-SCHEME.md`'s; measured, D, H and HG fresh and
         interleaved, S65.28's rule deciding HG against D and HG against H
-        read cell by cell without a verdict,
-        by S65.28's protocol against H and against D, the seventh cell
-        included; the verdict put to Edmond
+        read cell by cell without a verdict, the seventh cell in a CSV of
+        its own and not deciding; the verdict put to Edmond
       tier: T2 · role: Critic, Sage
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
