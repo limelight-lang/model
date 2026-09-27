@@ -418,16 +418,18 @@ Notes: dev/plans/S65.md
       handoff: `hold-by-generation`, `FinishThePosts::is_young` (`4b1bcff`);
         `dev/BENCHMARKS.md`, "S65.32 H by generation against H and D"; put to
         Edmond with the figures 2026-09-27, no ruling on adoption yet.
-- [ ] S65.33 Compare MutatorDeferral and GenerationalHold, and tighten each
-        (Edmond, 2026-09-27: "дай имена D и HG версиям алгоритма. попроси
-        критика сравнить их между собой и попроси оптимизировать каждый ещё
-        сильнее если это можно. но это уже не сейчас")
-      names: MutatorDeferral for D (the default build: the mutator disposes
-        of the collector's results and defers the roots read live into
-        EpochQueue(M)); GenerationalHold for HG (`hold-by-generation`: the
-        collector holds in EpochQueue(GC) only a root that outlived an
-        epoch, a younger one goes MutatorDeferral's way). Proposed
-        2026-09-27, Edmond may rename.
+- [ ] S65.33 Compare the schemes EpochQueue(M) and EpochQueue(GC), and
+        tighten each (Edmond, 2026-09-27: "дай имена D и HG версиям
+        алгоритма. попроси критика сравнить их между собой и попроси
+        оптимизировать каждый ещё сильнее если это можно. но это уже не
+        сейчас")
+      names (Edmond, 2026-09-27): the scheme **EpochQueue(M)** is D, the
+        default build (the mutator disposes of the collector's results and
+        defers the roots read live into EpochQueue(M)); the scheme
+        **EpochQueue(GC)** is HG, `hold-by-generation` (the collector holds in
+        EpochQueue(GC) only a root that outlived an epoch, a younger one going
+        the EpochQueue(M) way). H without the generation rule is superseded
+        by it.
       done: a Critic's comparison of the two by operation count per fate and
         by the rig's figures (`dev/BENCHMARKS.md`, the S65.32 entries), and
         for each scheme the optimizations it proposes, each with its expected
