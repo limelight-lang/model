@@ -53,6 +53,12 @@ slices, the citation checks — is `dev/WORKFLOW.md`.
 A line here is an unresolved question rather than a step: it carries no
 criterion, and it leaves when it gets one or when it is ruled on.
 
+- **A counter of live readings per root, more than two generations.** Byte
+  6's reserve, bits 20–23, could count how many times the collector read a
+  root live, so that a root read live N times is re-read less often (Edmond,
+  2026-09-27). The collector would write it under its grant, a second writer
+  of byte 6 the rfc does not admit; to be measured after S65.32's run.
+
 - **Whether a survivor list should prefer a block this reset has already
   retained.** `Arena::alloc_preferring` tries the described block's tail, the
   reset's current block, then a fresh pool block. A bump arena's survivor
