@@ -59,6 +59,13 @@ unlisted-registered-members = []
 # (`dev/plans/S65.md`, S65.33). Off by default; measured against HG.
 r-first-under-a-small-chain = ["collector-chain"]
 
+# S65.36, the Sage's G1, on `collector-chain`: the death check reads no entry
+# at the grant after its push, and starts a lap over the waiting part only in
+# the second half of an epoch and at most once in 2^k epochs, k growing after
+# a lap that found almost nothing (`dev/plans/S65.md`, S65.33). Off by
+# default; measured against HG.
+death-check-back-off = ["collector-chain"]
+
 # The loads `PLAN.md` S40.3 reads and the one fixture hook its driver in
 # `benches/` needs, compiled into the ordinary library for that driver
 # alone. Off by default and on no gate: the driver's file compiles to an

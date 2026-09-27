@@ -170,6 +170,13 @@ struct ChainLine {
     /// The serve clock's reading at the waiting part's last death check, or
     /// at its first push after an empty chain.
     checked_at: AtomicU64,
+    /// The turnovers at the death check's last lap, and the exponent k of
+    /// its back-off: a lap starts at most once in 2^k epochs
+    /// (`crate::cycle::chain`, under `death-check-back-off`).
+    #[cfg(feature = "death-check-back-off")]
+    lapped_at: AtomicU64,
+    #[cfg(feature = "death-check-back-off")]
+    lap_back_off: AtomicU8,
 }
 
 /// The line the collector writes: where it reads R from, where it posts
@@ -540,6 +547,10 @@ impl MutatorRecord {
                 waiting: crate::ring::RecordChain::empty(),
                 ready: crate::ring::RecordChain::empty(),
                 checked_at: AtomicU64::new(0),
+                #[cfg(feature = "death-check-back-off")]
+                lapped_at: AtomicU64::new(0),
+                #[cfg(feature = "death-check-back-off")]
+                lap_back_off: AtomicU8::new(0),
             },
         }
     }
@@ -565,6 +576,26 @@ impl MutatorRecord {
     #[inline]
     pub(crate) fn chain_checked_at(&self) -> u64 {
         self.chain.checked_at.load(Ordering::Relaxed)
+    }
+
+    /// The turnovers at the death check's last lap, and its back-off
+    /// exponent.
+    #[cfg(feature = "death-check-back-off")]
+    #[inline]
+    pub(crate) fn lap_state(&self) -> (u64, u8) {
+        (
+            self.chain.lapped_at.load(Ordering::Relaxed),
+            self.chain.lap_back_off.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Note a lap of the death check at `turnovers`, with the back-off
+    /// exponent the lap's yield leaves, by the token's holder.
+    #[cfg(feature = "death-check-back-off")]
+    #[inline]
+    pub(crate) fn note_lap(&self, turnovers: u64, back_off: u8) {
+        self.chain.lapped_at.store(turnovers, Ordering::Relaxed);
+        self.chain.lap_back_off.store(back_off, Ordering::Relaxed);
     }
 
     /// Note a death check of the waiting part at `now`, by the token's
@@ -1256,6 +1287,11 @@ fn take_record() -> *mut MutatorRecord {
                     "the exit splices the chain into R and dismantles R"
                 );
                 (*released).chain.checked_at.store(0, Ordering::Relaxed);
+                #[cfg(feature = "death-check-back-off")]
+                {
+                    (*released).chain.lapped_at.store(0, Ordering::Relaxed);
+                    (*released).chain.lap_back_off.store(0, Ordering::Relaxed);
+                }
             }
             (*released).hold.new_life.store(1, Ordering::Relaxed);
             // Last, with release: the next reading's take is what sees the

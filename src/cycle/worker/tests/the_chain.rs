@@ -183,6 +183,10 @@ fn the_waiting_part_becomes_ready_when_the_epoch_passes_and_the_next_batch_reads
 }
 
 #[test]
+#[cfg_attr(
+    feature = "death-check-back-off",
+    ignore = "under the back-off the check reads no entry at the grant after its push (`under_the_back_off_a_fresh_entry_waits_for_a_lap`)"
+)]
 fn a_waiting_part_unchecked_for_the_term_is_served_with_its_stamps_fresh() {
     let _g = test_guard();
     reset();
@@ -212,6 +216,10 @@ fn a_waiting_part_unchecked_for_the_term_is_served_with_its_stamps_fresh() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "death-check-back-off",
+    ignore = "under the back-off the check reads no entry at the grant after its push (`under_the_back_off_a_fresh_entry_waits_for_a_lap`)"
+)]
 fn a_chained_root_that_dies_is_posted_zero_count_and_the_disposition_frees_it() {
     let _g = test_guard();
     reset();
@@ -270,6 +278,10 @@ fn a_chained_root_that_dies_is_posted_zero_count_and_the_disposition_frees_it() 
 }
 
 #[test]
+#[cfg_attr(
+    feature = "death-check-back-off",
+    ignore = "under the back-off the check reads no entry at the grant after its push (`under_the_back_off_a_fresh_entry_waits_for_a_lap`)"
+)]
 fn a_death_p_had_no_room_for_is_the_next_checks_first_post() {
     let _g = test_guard();
     reset();
@@ -649,5 +661,86 @@ fn a_batch_that_proposes_a_set_beside_live_roots_publishes_its_live_list() {
     for ring in kept {
         unsafe { free_the_ring(&mut arena, ring) };
     }
+    reset();
+}
+
+/// One serve with the waiting part due for its check.
+#[cfg(feature = "death-check-back-off")]
+fn a_checking_serve() -> Served {
+    testing::take_standing_after(Some(std::time::Duration::ZERO));
+    let served = served_by_a_collector();
+    testing::take_standing_after(None);
+    served
+}
+
+/// Under `death-check-back-off` the check reads no entry at the grants after
+/// its push, and a lap in the second half of the epoch finds the death:
+/// posted `ZeroCount` as without the back-off (`dev/plans/S65.md`, S65.36).
+#[test]
+#[cfg(feature = "death-check-back-off")]
+fn under_the_back_off_a_fresh_entry_waits_for_a_lap() {
+    let _g = test_guard();
+    reset();
+    crate::cycle::epoch::turn_this_threads_cell();
+    let node = node_class("ChainBackOffNode");
+    let mut arena = Arena::new();
+    let kept = unsafe { kept_roots(&mut arena, node, 2) };
+    assert!(matches!(
+        served_by_a_collector(),
+        Served::Batch { roots: 2, .. }
+    ));
+    unsafe { release_keeper(kept[0].1) };
+    let _ = testing::take_chain_figures();
+
+    let _ = a_checking_serve();
+    assert_eq!(testing::take_chain_figures().headers_checked, 0);
+    assert!(standing_verdicts().is_empty(), "no death found yet");
+    assert_eq!(roots_of_this_threads().1.len(), 2);
+
+    let record = unsafe { &*record() };
+    while record.batches_since_the_advance() < crate::cycle::epoch::BATCHES_PER_EPOCH / 2 {
+        record.note_batch();
+    }
+    let _ = a_checking_serve();
+    let figures = testing::take_chain_figures();
+    assert_eq!((figures.laps, figures.headers_checked_in_a_lap), (1, 2));
+    assert_eq!(standing_verdicts(), vec![(kept[0].0, Verdict::ZeroCount)]);
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+
+    unsafe { let_go(&kept[1..]) };
+    reset();
+}
+
+/// A lap that posted nothing raises the back-off, so the next lap waits two
+/// epochs; one that posted a death resets it.
+#[test]
+#[cfg(feature = "death-check-back-off")]
+fn a_lap_that_found_nothing_raises_the_back_off_and_one_that_found_a_death_resets_it() {
+    let _g = test_guard();
+    reset();
+    crate::cycle::epoch::turn_this_threads_cell();
+    let node = node_class("ChainBackOffYieldNode");
+    let mut arena = Arena::new();
+    let kept = unsafe { kept_roots(&mut arena, node, 2) };
+    assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    let record = unsafe { &*record() };
+    while record.batches_since_the_advance() < crate::cycle::epoch::BATCHES_PER_EPOCH / 2 {
+        record.note_batch();
+    }
+
+    let _ = a_checking_serve();
+    assert_eq!(record.lap_state(), (record.turnovers(), 1), "nothing found");
+    let _ = testing::take_chain_figures();
+    let _ = a_checking_serve();
+    assert_eq!(testing::take_chain_figures().laps, 0, "not in this epoch");
+
+    // A back-off of two epochs that have passed, and a death to find.
+    record.note_lap(record.turnovers() - 4, 2);
+    unsafe { release_keeper(kept[0].1) };
+    let _ = a_checking_serve();
+    assert_eq!(record.lap_state(), (record.turnovers(), 0), "a death found");
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+
+    unsafe { let_go(&kept[1..]) };
     reset();
 }

@@ -148,10 +148,10 @@ pub(crate) unsafe fn check_the_deaths(
 ) -> usize {
     record.note_chain_checked(now);
     let mut posted = 0;
-    let read = unsafe {
+    let reading = unsafe {
         record
             .chain_waiting()
-            .check(DEATH_CHECK_BUDGET, stop, |entry| {
+            .check_bounded(DEATH_CHECK_BUDGET, may_lap(record), stop, |entry| {
                 let entity = crate::cycle::queue::entry_root(entry);
                 if !is_a_completed_death(entity) {
                     return Checked::Keep;
@@ -165,11 +165,50 @@ pub(crate) unsafe fn check_the_deaths(
                 Checked::Take
             })
     };
+    #[cfg(feature = "death-check-back-off")]
+    if reading.lapped {
+        let (_, back_off) = record.lap_state();
+        let yielded = posted * LAP_YIELD_SHARE >= reading.in_a_lap.max(1);
+        let back_off = if yielded {
+            0
+        } else {
+            (back_off + 1).min(LAP_BACK_OFF_MAX)
+        };
+        record.note_lap(record.turnovers(), back_off);
+    }
     #[cfg(test)]
-    crate::cycle::worker::testing::note_chain_check(read, posted);
-    #[cfg(not(test))]
-    let _ = read;
+    crate::cycle::worker::testing::note_chain_check(reading.read, posted);
+    #[cfg(not(any(test, feature = "death-check-back-off")))]
+    let _ = reading;
     posted
+}
+
+/// A lap that posts at least one death in this many headers it read resets
+/// the back-off; fewer raise it (`death-check-back-off`).
+#[cfg(feature = "death-check-back-off")]
+const LAP_YIELD_SHARE: usize = 32;
+
+/// The largest back-off exponent: a lap at least once in eight epochs.
+#[cfg(feature = "death-check-back-off")]
+const LAP_BACK_OFF_MAX: u8 = 3;
+
+/// Whether the death check may start a lap over `record`'s waiting part:
+/// always without `death-check-back-off`; under it, in the second half of an
+/// epoch and once 2^k epochs have passed since the last lap, k its back-off.
+/// A death a lap does not reach is found by the ready part's reading after
+/// the turn, at the same count of operations, its slot held longer.
+fn may_lap(record: &MutatorRecord) -> bool {
+    #[cfg(feature = "death-check-back-off")]
+    {
+        let (lapped_at, back_off) = record.lap_state();
+        record.batches_since_the_advance() >= crate::cycle::epoch::BATCHES_PER_EPOCH / 2
+            && record.turnovers().wrapping_sub(lapped_at) >= 1 << back_off
+    }
+    #[cfg(not(feature = "death-check-back-off"))]
+    {
+        let _ = record;
+        true
+    }
 }
 
 /// Whether `entity`'s death has completed in place, the one state the
