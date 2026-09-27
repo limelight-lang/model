@@ -7,6 +7,31 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-27 — a poll whose count the rig discarded read as garbage never freed
+
+**What happened.** S65.28's decision run read H's `deferred-then-dead` at
+`spare-core` as incomplete in one repeat of three, a failed gate. Repeats
+found the same shortfall in both builds, D 1 in 9 cells and H 4 in 9, 450 to
+990 members short and still short after a 40 s drain, and it was taken for a
+collector that loses garbage until a count of the heap at the drain's end
+found every member freed and R empty.
+
+**Why it was possible.** The rig's figure of frees is the sum of what its
+polls return, and one poll site did not add: `let_the_keepers_go` polls every
+`LIVE_REGISTRATIONS_A_POLL` keepers and discarded the count with `let _ =`.
+A collection that ran there freed the iteration rings standing in R and was
+lost from the tally, more often under H. The rig keeps no second count to
+hold the sum against. Inside the loop only `deferred-then-dead` reaches that
+poll: a churn turn lets 16 keepers go against a stride of 2,038.
+
+**Why it was not caught.** The site came with the `deferred-then-dead` load
+(`ec1df7a`), the one load that lets live graphs go in the middle of the
+loop, and it shorts the tally in about one cell in ten under D. Until
+S65.28's table made completion a gate, a short tally read as a longer last
+free in one cell of several. What found it was reading the heap rather than
+the tally: the let-go graphs' members and every iteration ring's slots, at
+the drain's end, all dead.
+
 ## 2026-09-26 — a read of the ring stopped at a tail another read had cached
 
 **What happened.** In S65.21's rig the close's look at R's front, one entry

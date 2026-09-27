@@ -775,10 +775,13 @@ unsafe fn hold_the_live_graphs(
 /// Let the keepers go, which makes garbage of the live graphs whose roots
 /// stand registered: each keeper's edge nulled — a decrement a registered
 /// head does not register again — and the keeper released and died.
+/// Returns the members the polls between the keepers freed, which the
+/// cell's tally of frees counts beside the loop's.
 ///
 /// # Safety
 /// As [`let_the_live_graphs_go`], and the graphs are not touched again.
-unsafe fn let_the_keepers_go(arena: *mut Arena, keepers: &[*mut Object]) {
+unsafe fn let_the_keepers_go(arena: *mut Arena, keepers: &[*mut Object]) -> usize {
+    let mut freed = 0;
     for (index, &keeper) in keepers.iter().enumerate() {
         unsafe {
             store_prop(arena, keeper, prop_offset(NEXT), std::ptr::null_mut());
@@ -789,9 +792,11 @@ unsafe fn let_the_keepers_go(arena: *mut Arena, keepers: &[*mut Object]) {
             ll_object_die(keeper);
         }
         if (index + 1) % LIVE_REGISTRATIONS_A_POLL == 0 {
-            let _ = unsafe { crate::gc::ll_gc_maybe_collect() };
+            freed += unsafe { crate::gc::ll_gc_maybe_collect() };
         }
     }
+
+    freed
 }
 
 /// Take the live graphs apart by hand: every member retained, so that no
@@ -1121,7 +1126,7 @@ fn a_mutator(
     let mut churn = Churn::default();
     while !stop.load(Ordering::Relaxed) {
         if load.live_dies_at_half && !keepers_let_go && from.elapsed() >= run_for / 2 {
-            unsafe { let_the_keepers_go(arena_ptr, &keepers) };
+            reading.freed_by_polls += unsafe { let_the_keepers_go(arena_ptr, &keepers) };
             reading.garbage_members += load.live_members();
             keepers_let_go = true;
         }
