@@ -8,6 +8,34 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-27 — S65.32 HG after the Sage's repair: the lane's mark reads the generation exactly, and HG's mutator reads as H's on the long-lived set and within 2 % of H elsewhere; the timed figures of this run are void
+
+**The run, on `a590bc9`**, arms rebuilt from that tree (the mark is written in
+every build) and told apart by their test lists, the S65.32 protocol as before.
+**The box was not quiet**: another session ran builds and test suites on 12–16
+cores from 18:56 to about 19:12 and an earlier one from 16:40 to 18:38, which
+covers the middle of the main phase and all of the window-256 cell (load
+average 10.8 at its end). The instruction counts and the rig's counters do not
+depend on the box's load and stand; heap garbage, long iterations, collection
+times and collector CPU of this run are not recorded, and the window-256 cell
+is owed a quiet re-run. The run of `04ed821` below also overlaps the earlier
+window, which its load averages (1.1–4.6) did not show.
+
+| load (spare-core) | instructions D / H / HG | disposals D / H / HG | roots read from R, HG | young readings, HG |
+| --- | --- | --- | --- | --- |
+| deferred-live-large | 29,037 / 26,136 / 26,388 | 3,705 / 0 / 142 | 300,001 | 140,000 |
+| live-churn | 372,916 / 371,391 / 372,221 | 1,218 / 0 / 939 | 640,064 | 320,032 |
+| live-churn-dies-by-count | 73,762 / 69,328 / 70,675 | 1,641 / 946 / 1,325 | 636,275 | 320,016 |
+
+The repair does what the Sage ruled: young readings equal the roots
+registered (140,000 on `deferred-live-large`, 320,000 on the churn loads),
+disposals on `deferred-live-large` fall from 874 to 142 and the reads from R
+from 602,273 to 300,001 — the registrations and one re-offer of each, which
+the rule implies (the Sage's forecast of about 160,000 left the re-offer out).
+Instructions HG against H: +1.0 % and +0.3 % on `deferred-live-large`,
+tie on `live-churn`, +1.9 % and +3.1 % on `live-churn-dies-by-count`; against D:
+−9 % on `deferred-live-large`, −4 % on `live-churn-dies-by-count`.
+
 ## 2026-09-27 — S65.32 H by generation against H and D: on rings that die inside their first epoch HG holds the least garbage of the three; elsewhere it reads as H on the long-lived set and as D on the young, the mutator paying D's price for young deaths
 
 **The run, on `04ed821`.** Arms built fresh from that tree and told apart by
