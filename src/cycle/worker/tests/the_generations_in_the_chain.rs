@@ -1,6 +1,7 @@
 //! A root the collector reads live under `hold-by-generation`: once it has
-//! outlived an epoch — it came back from the deferred lane at a turn with the
-//! lane's mark on its entry, or out of the chain — it goes into the chain's
+//! outlived an epoch — its entry carries the lane's mark, which the deferred
+//! lane writes on the entries it hands back at a turn and the chain on every
+//! entry it takes — it goes into the chain's
 //! waiting part as without the feature;
 //! a younger one goes on into P as a root the chain has no block for goes,
 //! and the mutator's disposition defers it (`dev/plans/S65.md`, S65.32).
@@ -109,6 +110,101 @@ fn a_young_root_read_again_after_the_turn_goes_into_the_waiting_part() {
     crate::cycle::epoch::turn_this_threads_cell();
     crate::cycle::queue::reoffer_deferred_candidates();
     assert_eq!((candidate_count(), deferred_count()), (1, 0));
+    let generations = a_complete_serve();
+    assert_eq!(
+        (generations.posted_first, generations.posted_second),
+        (0, 1)
+    );
+    assert_eq!(roots_of_this_threads(), (Vec::new(), vec![root_of(&ring)]));
+
+    unsafe { free_the_ring(&mut arena, ring) };
+    reset();
+}
+
+/// Raise a recall from the collector's thread at the start of its next trace,
+/// so that the pass before the parts reads it and every root is `Unwalked`.
+fn recall_at_the_next_trace() {
+    let token = unsafe { &raw const (*record()).token } as usize;
+    testing::at_the_start_of_the_next_trace(Box::new(move || {
+        unsafe { &*(token as *const crate::cycle::token::TraceToken) }.recall_for_test(true)
+    }));
+}
+
+/// One serve under a recall raised at its trace's start, the recall cleared
+/// after it.
+fn a_recalled_serve() {
+    recall_at_the_next_trace();
+    assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    unsafe { &*record() }.token.recall_for_test(false);
+}
+
+/// A young root the recall left unread goes into P as without the chain, and
+/// the disposition writes it back into R: it waits there, not behind the
+/// ready part, and the recall does not promote it. Red with an unwalked root
+/// kept in the ready part whatever its generation.
+#[test]
+fn a_young_root_the_recall_left_unread_goes_into_p() {
+    let _g = test_guard();
+    reset();
+    let _ = a_nonzero_epoch();
+    let mut arena = Arena::new();
+    let ring = unsafe { a_kept_ring(&mut arena, "HoldUnwalkedYoung") };
+
+    a_recalled_serve();
+    assert_eq!(roots_of_this_threads(), (Vec::new(), Vec::new()));
+    assert_eq!(
+        standing_verdicts(),
+        vec![(root_of(&ring), Verdict::Unwalked)]
+    );
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!((candidate_count(), deferred_count()), (1, 0));
+    assert_eq!(a_complete_serve().posted_first, 1, "read young");
+
+    unsafe { free_the_ring(&mut arena, ring) };
+    reset();
+}
+
+/// A root of the second generation the recall left unread goes into the
+/// ready part, and read live from there goes into the waiting part. Red with
+/// the ready part's entry pushed without the lane's mark.
+#[test]
+fn an_old_root_the_recall_left_unread_keeps_its_generation() {
+    let _g = test_guard();
+    reset();
+    let _ = a_nonzero_epoch();
+    let mut arena = Arena::new();
+    let ring = unsafe { a_kept_ring(&mut arena, "HoldUnwalkedOld") };
+    unsafe { crate::cycle::testing::as_of_the_second_generation(root_of(&ring)) };
+
+    a_recalled_serve();
+    assert_eq!(roots_of_this_threads(), (vec![root_of(&ring)], Vec::new()));
+    assert!(standing_verdicts().is_empty(), "nothing in P");
+    assert_eq!(a_complete_serve().posted_second, 1);
+    assert_eq!(roots_of_this_threads(), (Vec::new(), vec![root_of(&ring)]));
+
+    unsafe { free_the_ring(&mut arena, ring) };
+    reset();
+}
+
+/// A root the chain held, spliced into R as the exit and a collection under
+/// pressure splice it, keeps its generation: read live again, it goes back
+/// into the waiting part. Red with the chain's entries pushed bare.
+#[test]
+fn a_chained_root_spliced_into_r_goes_back_into_the_chain() {
+    let _g = test_guard();
+    reset();
+    let _ = a_nonzero_epoch();
+    let mut arena = Arena::new();
+    let ring = unsafe { a_kept_ring(&mut arena, "HoldSpliced") };
+    unsafe { crate::cycle::testing::as_of_the_second_generation(root_of(&ring)) };
+    assert_eq!(a_complete_serve().posted_second, 1);
+
+    unsafe {
+        let _claim = crate::cycle::token::HeldToken::take();
+        crate::cycle::chain::splice_this_threads_chain_into_r(true)
+    };
+    assert_eq!(roots_of_this_threads(), (Vec::new(), Vec::new()));
+    assert_eq!(candidate_count(), 1);
     let generations = a_complete_serve();
     assert_eq!(
         (generations.posted_first, generations.posted_second),

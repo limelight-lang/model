@@ -34,14 +34,14 @@
 //! entry's low three bits are free in every population that registers, and
 //! the fourth is not; the three carry the marks a reading writes over an
 //! entry it read. **Bit 0 is the close's**, which is where it says a root
-//! belongs to the deferred lane ([`DEFERRED_MARK`]); **bit 2 is the lane's
-//! own**, written on every entry the lane takes, so that the entry spliced
-//! back into R at the turn still says it was read live before it
+//! belongs to the deferred lane ([`DEFERRED_MARK`]), written over the entries
+//! a collection read and read once, by the pass that disposes of them;
+//! **bit 2 is the lane's own**, written on every entry the lane or the
+//! collector's chain takes and kept by every rewrite of R, so that the entry
+//! spliced back into R still says a reading found the root live before it
 //! ([`REOFFERED_MARK`]); bit 1 is unused here, and P's ledger is
-//! `queue::verdicts`. The mark is written over the
-//! entries a collection read and read once, by the pass that disposes of
-//! them: every walk that hands an entry out as an address masks it
-//! ([`ENTRY_MARK_BITS`]).
+//! `queue::verdicts`. Every walk that hands an entry out as an address masks
+//! both ([`ENTRY_MARK_BITS`]).
 //!
 //! **The active lane is a ring R of the form `crate::ring` builds**: 64 KiB
 //! pool blocks linked in a circle, each carrying its own `front` and `tail`
@@ -1060,11 +1060,12 @@ impl Batch {
     /// Mark every root whose entity `deferrable` answers true for, in both
     /// rings, and answer how many were marked.
     ///
-    /// The entity handed to the predicate carries no mark, and a mark already
-    /// standing on an entry is overwritten rather than kept: it is one an
-    /// unwound close left behind, and this close's reading is the one that
-    /// decides. P's entries that are not roots — read live, zero-count,
-    /// disposed — are not asked and not marked; under
+    /// The entity handed to the predicate carries no mark, and a deferral's
+    /// mark already standing on an entry is overwritten rather than kept: it
+    /// is one an unwound close left behind, and this close's reading is the
+    /// one that decides. The lane's mark ([`REOFFERED_MARK`]) is kept. P's
+    /// entries that are not roots — read live, zero-count, disposed — are not
+    /// asked and not marked; under
     /// `deferral-by-generation` a `ReadLive` that is not a root keeps the mark
     /// the collector posted it with, which this close never wrote.
     pub(crate) fn mark_for_deferral(
@@ -1077,12 +1078,12 @@ impl Batch {
 
         let mut marked = 0;
         ring.map_prefix_in_place(self.len, |slot| {
-            let entity = *slot & !ENTRY_MARK_BITS;
+            let undeferred = *slot & !DEFERRED_MARK;
             *slot = if deferrable(entry_entity(*slot)) {
                 marked += 1;
-                entity | DEFERRED_MARK
+                undeferred | DEFERRED_MARK
             } else {
-                entity
+                undeferred
             };
         });
         if let Some(ring) = verdicts::verdict_ring() {
@@ -1120,13 +1121,16 @@ impl Batch {
 /// anything else masks it off first (`crate::cycle::queue::compaction`).
 pub(crate) const DEFERRED_MARK: usize = 1;
 
-/// Bit 2 of the stored address: the entry came into the deferred lane, so the
-/// root it names was read live before the turn that re-offered the lane. It
-/// is written by [`defer_entry`] in every build and read by the collector's
-/// batch under `hold-by-generation` alone, where a root so marked has outlived
-/// an epoch (`dev/plans/S65.md`, S65.32); a pass that rewrites an entry of R
-/// drops it, which costs that root one more reading as young and never the
-/// reverse.
+/// Bit 2 of the stored address: a reading before this entry's found the root
+/// live, and the entry has been kept since. [`defer_entry`] writes it on every
+/// entry the deferred lane takes, in every build, and the collector's chain on
+/// every entry it takes; the passes that rewrite an entry of R keep it, so a
+/// re-offer of the lane and a splice of the chain carry it into R. The
+/// collector's batch reads it under `hold-by-generation` alone, as the root
+/// having outlived an epoch (`dev/plans/S65.md`, S65.32 and S65.33): the lane
+/// comes back at a turn, except under pressure (`collect_under_pressure`) and
+/// at `ll_gc_reoffer_deferred`, which re-offer it without one, so a root read
+/// live there reads old one epoch early and goes into the chain.
 pub(crate) const REOFFERED_MARK: usize = 4;
 
 /// The low bits of an entry that carry a mark, masked off wherever an entry
@@ -1809,8 +1813,9 @@ fn standing_verdict_count() -> usize {
 /// Put the lane's mark on every entry of this thread's R that names
 /// `entity`, as if the root had come back from the deferred lane at a turn: a
 /// case's way to hand the collector a root of the second generation under
-/// `hold-by-generation` ([`REOFFERED_MARK`]).
-#[cfg(all(test, feature = "hold-by-generation"))]
+/// `hold-by-generation`, or to give an entry the mark the passes over R keep
+/// ([`REOFFERED_MARK`]).
+#[cfg(test)]
 pub(crate) fn mark_as_reoffered(entity: *mut RcHeader) {
     let Some(ring) = candidate_ring() else {
         return;
@@ -1821,6 +1826,24 @@ pub(crate) fn mark_as_reoffered(entity: *mut RcHeader) {
             *slot |= REOFFERED_MARK;
         }
     });
+}
+
+/// The entries this thread's ring holds as they are stored, marks and all,
+/// from its front.
+#[cfg(test)]
+pub(crate) fn candidate_entries() -> Vec<usize> {
+    let mut stored = Vec::new();
+    if mutator_state().is_null() {
+        return stored;
+    }
+
+    if let Some(ring) = candidate_ring() {
+        ring.walk(|entry| {
+            stored.push(entry);
+            true
+        });
+    }
+    stored
 }
 
 /// Entries this thread's ring holds, by its indices.

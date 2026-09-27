@@ -69,8 +69,8 @@ pub(super) enum Lanes {
 /// occupied records as its mirror, and `None` where this pass has no marks to read — every
 /// caller but the close's own ([`crate::cycle::queue::dispose_candidates`]
 /// and [`crate::cycle::queue::defer_candidates`]). A pass given `None` over a
-/// marked entry keeps it in the ring with its mark taken off, which is the
-/// fallback rather than a defect.
+/// marked entry keeps it in the ring with the deferral's mark taken off and
+/// the lane's kept, which is the fallback rather than a defect.
 ///
 /// `sweep_deferred` asks for the deferred lane's own entries to be read for
 /// completed deaths too, ahead of the ring's marked entries joining it.
@@ -151,15 +151,16 @@ pub(super) fn compact(
                         // Both cells empty: the root stays in the ring and
                         // is offered to the next collection rather than to
                         // the turnover.
-                        pass.write(entity_entry(entity));
+                        pass.write(entity_entry(entity) | (entry & REOFFERED_MARK));
                         continue;
                     }
 
                     checkpoint(3);
                 }
                 Destination::Keep => {
+                    // The deferral's mark off, the lane's kept.
                     note_queue_work(0, 0, 1);
-                    pass.write(entity_entry(entity));
+                    pass.write(entity_entry(entity) | (entry & REOFFERED_MARK));
                 }
             }
         }

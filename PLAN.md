@@ -459,7 +459,7 @@ Notes: dev/plans/S65.md
         `list_a_root` (`dev/plans/S65.md`, S65.34); the rfc's "The live list
         of a batch" ("every row it left live") owed its clause, put to
         Edmond with the branch's landing.
-- [ ] S65.35 EpochQueue(GC) carries the generation in the entry (S65.33, the
+- [x] S65.35 EpochQueue(GC) carries the generation in the entry (S65.33, the
         Sage's G2)
       done: `keep_read_live` pushes `root | REOFFERED_MARK`, `keep_unwalked`
         keeps the copy's bit 2, `is_young` tests bit 2 alone, a young
@@ -471,6 +471,11 @@ Notes: dev/plans/S65.md
         reaches the chain at its next live reading); the gate green on the
         D and HG builds
       tier: T2 · role: Critic
+      handoff: built as ruled, `keep_unwalked` marking every entry as
+        `keep_read_live` does; the mark's contract restated as "a reading
+        before this entry's found the root live", the pressure re-offer and
+        `ll_gc_reoffer_deferred` bringing the lane back without a turn
+        (`dev/plans/S65.md`, S65.35)
 - [ ] S65.36 The rig's counters S65.33 owes, and G1, G3, M1 and S1b measured
       done: the rig emits list entries stamped (root / registered / other),
         `EDGES_PRUNED`, the check's reads and deaths split fresh / lap with

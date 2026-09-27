@@ -2548,18 +2548,22 @@ impl FinishThePosts<'_> {
                 // Under `hold-by-generation` only a root that has outlived an
                 // epoch goes into the chain; a younger one goes on into P, as
                 // a root the pool refused a block goes (`dev/plans/S65.md`,
-                // S65.32).
-                Verdict::ReadLive if !self.is_young(index) => unsafe {
+                // S65.32), and so does a younger one the trace did not reach,
+                // which the disposition writes back into R rather than behind
+                // the ready part (S65.33).
+                Verdict::ReadLive if !self.is_young_read_live(index) => unsafe {
                     crate::cycle::chain::keep_read_live(
                         self.chain.mutator,
                         self.root(index),
                         self.chain.now,
                     )
                 },
-                Verdict::Unwalked => unsafe {
+                Verdict::Unwalked if !self.is_young(index) => unsafe {
                     crate::cycle::chain::keep_unwalked(self.chain.mutator, self.root(index))
                 },
-                Verdict::ReadLive | Verdict::Proposed | Verdict::ZeroCount => false,
+                Verdict::ReadLive | Verdict::Unwalked | Verdict::Proposed | Verdict::ZeroCount => {
+                    false
+                }
             };
             if kept {
                 self.roots[index] |= HAS_A_VERDICT;
@@ -2597,27 +2601,31 @@ impl FinishThePosts<'_> {
         self.roots[index] |= HAS_A_VERDICT;
     }
 
-    /// Whether the root at `index`, read live, has not outlived an epoch: it
-    /// came from R without the lane's mark, so no reading before the last
-    /// turn found it live. A root copied out of the chain, which the copy
-    /// holds first, or one the deferred lane handed back at the turn has
-    /// outlived one (`crate::cycle::queue::REOFFERED_MARK`). Always false
-    /// without `hold-by-generation`.
+    /// Whether the root at `index` has not outlived an epoch: its entry lacks
+    /// the lane's mark (`crate::cycle::queue::REOFFERED_MARK`), so no reading
+    /// before this one found it live and kept the entry — the deferred lane
+    /// and the chain write the mark on every entry they take, and the lane
+    /// comes back at a turn. Always false without `hold-by-generation`.
     #[cfg(feature = "collector-chain")]
     fn is_young(&self, index: usize) -> bool {
         #[cfg(feature = "hold-by-generation")]
         {
-            let young = index >= self.chain.peek.copied
-                && self.roots[index] & crate::cycle::queue::REOFFERED_MARK == 0;
-            #[cfg(test)]
-            testing::note_generation_posted(young, true, false);
-            young
+            self.roots[index] & crate::cycle::queue::REOFFERED_MARK == 0
         }
         #[cfg(not(feature = "hold-by-generation"))]
         {
             let _ = index;
             false
         }
+    }
+
+    /// [`Self::is_young`] for a root read live, the cases' count noted.
+    #[cfg(feature = "collector-chain")]
+    fn is_young_read_live(&self, index: usize) -> bool {
+        let young = self.is_young(index);
+        #[cfg(all(test, feature = "hold-by-generation"))]
+        testing::note_generation_posted(young, true, false);
+        young
     }
 
     /// Post [`Verdict::Unwalked`] for every root still without a verdict: no

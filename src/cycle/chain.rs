@@ -200,8 +200,9 @@ pub(crate) unsafe fn commit_the_ready_part(record: &MutatorRecord, peek: ChainPe
 }
 
 /// Put `root`, read live, in the waiting part, its block stamped with the
-/// record's epoch; false when the pool refused a block and the root is not
-/// in the chain.
+/// record's epoch and its entry with the lane's mark
+/// (`crate::cycle::queue::REOFFERED_MARK`), which a splice into R carries;
+/// false when the pool refused a block and the root is not in the chain.
 ///
 /// # Safety
 /// The caller holds `record`'s token as a collector's grant.
@@ -213,8 +214,8 @@ pub(crate) unsafe fn keep_read_live(record: &MutatorRecord, root: *mut RcHeader,
         record.note_chain_checked(now);
     }
 
-    let kept =
-        unsafe { waiting.push(root.expose_provenance(), record.turnovers(), fresh_block) }.is_ok();
+    let entry = root.expose_provenance() | crate::cycle::queue::REOFFERED_MARK;
+    let kept = unsafe { waiting.push(entry, record.turnovers(), fresh_block) }.is_ok();
     #[cfg(test)]
     if kept {
         crate::cycle::worker::testing::note_chain_push(false);
@@ -222,16 +223,19 @@ pub(crate) unsafe fn keep_read_live(record: &MutatorRecord, root: *mut RcHeader,
     kept
 }
 
-/// Put `root`, which the trace did not reach, at the ready part's tail;
-/// false when the pool refused a block.
+/// Put `root`, which the trace did not reach, at the ready part's tail, its
+/// entry with the lane's mark as [`keep_read_live`] writes it; false when the
+/// pool refused a block. Under `hold-by-generation` only a root with the mark
+/// comes here, a younger one going into P.
 ///
 /// # Safety
 /// The caller holds `record`'s token as a collector's grant.
 pub(crate) unsafe fn keep_unwalked(record: &MutatorRecord, root: *mut RcHeader) -> bool {
+    let entry = root.expose_provenance() | crate::cycle::queue::REOFFERED_MARK;
     let kept = unsafe {
         record
             .chain_ready()
-            .push(root.expose_provenance(), record.turnovers(), fresh_block)
+            .push(entry, record.turnovers(), fresh_block)
     }
     .is_ok();
     #[cfg(test)]

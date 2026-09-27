@@ -383,7 +383,7 @@ fn over_an_outside_storage_of_empty_cells() {
 /// and advances R past all of them: `FinishThePosts` on the recall's path.
 #[test]
 #[cfg_attr(
-    feature = "collector-chain",
+    all(feature = "collector-chain", not(feature = "hold-by-generation")),
     ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
 )]
 fn a_recalled_batch_posts_every_root_once_unwalked_and_advances_r() {
@@ -435,7 +435,9 @@ fn a_recalled_batch_posts_every_root_once_unwalked_and_advances_r() {
 
 /// Under the collector's chain the recalled batch's roots go to the chain's
 /// ready part, each once, behind the retries already waiting; nothing goes
-/// into P, and R advances past them as without the chain.
+/// into P, and R advances past them as without the chain. The roots are of
+/// the second generation: under `hold-by-generation` a younger one the trace
+/// did not reach goes into P (`the_generations_in_the_chain`).
 #[test]
 #[cfg(feature = "collector-chain")]
 fn under_the_chain_a_recalled_batch_puts_every_root_once_in_the_ready_part() {
@@ -452,6 +454,9 @@ fn under_the_chain_a_recalled_batch_puts_every_root_once_in_the_ready_part() {
             a_root_over(&mut context, built, tag)
         })
         .collect();
+    for &root in &roots {
+        unsafe { crate::cycle::testing::as_of_the_second_generation(root as *mut RcHeader) };
+    }
 
     let (batch, _) = a_batch_asked_between_its_phases(|| {
         drop(crate::cycle::token::HeldToken::take_or_hold_posted());
