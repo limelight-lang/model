@@ -306,6 +306,27 @@ const INITIAL_BATCH: usize = 64;
 /// start by growing; and an index of the copy fits the order's `u16`.
 const BATCH_BOUND: usize = 1024;
 
+/// Whether a batch beside `mutator`'s ready part gives R what it offers
+/// first: under `r-first-under-a-small-chain`, while the chain holds at most
+/// half the batch's bound for each batch of an epoch, where every chained root
+/// is read once an epoch whatever the ready part's share
+/// (`dev/plans/S65.md`, S65.36, the Sage's G3). The ready part otherwise takes
+/// up to half the bound, and above that mass the half is what keeps a large
+/// live set from being read twice as often.
+#[cfg(feature = "collector-chain")]
+fn r_goes_first(mutator: &MutatorRecord) -> bool {
+    #[cfg(feature = "r-first-under-a-small-chain")]
+    {
+        crate::cycle::chain::len(mutator)
+            <= BATCH_BOUND / 2 * usize::from(crate::cycle::epoch::BATCHES_PER_EPOCH)
+    }
+    #[cfg(not(feature = "r-first-under-a-small-chain"))]
+    {
+        let _ = mutator;
+        false
+    }
+}
+
 const _: () = assert!(BATCH_BOUND < BLOCK_ENTRIES);
 const _: () = assert!(
     BATCH_BOUND * (size_of::<usize>() + size_of::<u16>()) * 4
@@ -2291,10 +2312,23 @@ unsafe fn batch(
             let wants_r = reader.unread_at_most(clamp);
             let wants_chain = ready.min(BATCH_BOUND / 2);
             let take = verdicts.room().min(BATCH_BOUND).min(wants_r + wants_chain);
-            let r_share = if wants_r + wants_chain > take {
-                wants_r.min(take.div_ceil(2).max(take.saturating_sub(wants_chain)))
-            } else {
+            let r_share = if wants_r + wants_chain <= take {
                 wants_r
+            } else if r_goes_first(mutator) {
+                // R first, and the ready part its share of the epoch's
+                // batches left, so that it drains before the turn, up to half
+                // the batch, so that R still comes first in a small one.
+                let batches_left = usize::from(
+                    crate::cycle::epoch::BATCHES_PER_EPOCH
+                        .saturating_sub(mutator.batches_since_the_advance()),
+                );
+                let least_for_the_chain = ready
+                    .div_ceil(batches_left.max(1))
+                    .min(wants_chain)
+                    .min(take / 2);
+                wants_r.min(take - least_for_the_chain)
+            } else {
+                wants_r.min(take.div_ceil(2).max(take.saturating_sub(wants_chain)))
             };
             #[cfg(test)]
             if r_share < wants_r {

@@ -340,7 +340,53 @@ fn beside_a_ready_part_r_takes_its_clamp_and_the_chain_up_to_half_the_bound() {
     reset();
 }
 
+/// Where P holds less than both want, the two share it in halves; under
+/// `r-first-under-a-small-chain`, in a chain of at most 512 x 64 roots, R
+/// takes what it offers first and the ready part the rest, at least its share
+/// of the epoch's batches left (`dev/plans/S65.md`, S65.36).
 #[test]
+fn where_p_holds_less_than_both_want_the_share_follows_the_chains_mass() {
+    let _g = test_guard();
+    reset();
+    let node = node_class("ChainMassNode");
+    let mut arena = Arena::new();
+    let chained = unsafe { kept_roots(&mut arena, node, 2 * INITIAL_BATCH) };
+    while candidate_count() > 0 {
+        assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    }
+    crate::cycle::epoch::turn_this_threads_cell();
+    unsafe { &*record() }.set_batch_size(INITIAL_BATCH);
+    let in_r = unsafe { kept_roots(&mut arena, node, INITIAL_BATCH) };
+    unsafe {
+        crate::cycle::queue::verdicts::testing::fill_for_test(crate::ring::BLOCK_ENTRIES - 100)
+    };
+    let _ = testing::take_chain_figures();
+
+    assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    let figures = testing::take_chain_figures();
+    let expected = if cfg!(feature = "r-first-under-a-small-chain") {
+        // 128 ready roots over the epoch's 64 batches: two a batch.
+        (INITIAL_BATCH, 100 - INITIAL_BATCH)
+    } else {
+        (50, 50)
+    };
+    assert_eq!(
+        (figures.roots_from_r, figures.roots_from_the_chain),
+        expected
+    );
+
+    unsafe {
+        let_go(&chained);
+        let_go(&in_r);
+    }
+    reset();
+}
+
+#[test]
+#[cfg_attr(
+    feature = "r-first-under-a-small-chain",
+    ignore = "in a small chain R takes what it offers first (`where_p_holds_less_than_both_want_the_share_follows_the_chains_mass`)"
+)]
 fn where_p_holds_less_than_both_want_r_and_the_chain_share_it_in_halves() {
     let _g = test_guard();
     reset();

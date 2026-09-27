@@ -47,6 +47,18 @@ deferral-by-generation = []
 # `deferral-by-generation`.
 hold-by-generation = ["collector-chain"]
 
+# S65.36, the Sage's S1b: the collector lists no registered member of a live
+# core, a registered member's stamp being one no prune reads
+# (`dev/plans/S65.md`, S65.33). Off by default; measured against the build
+# without it, on D and on HG.
+unlisted-registered-members = []
+
+# S65.36, the Sage's G3, on `collector-chain`: while the chain holds at most
+# 512 x 64 roots, a batch gives R what it offers first and the ready part the
+# rest, at least its share of the batches left in the epoch
+# (`dev/plans/S65.md`, S65.33). Off by default; measured against HG.
+r-first-under-a-small-chain = ["collector-chain"]
+
 # The loads `PLAN.md` S40.3 reads and the one fixture hook its driver in
 # `benches/` needs, compiled into the ordinary library for that driver
 # alone. Off by default and on no gate: the driver's file compiles to an

@@ -223,17 +223,28 @@ fn a_take_from_posted_stamps_the_live_core_the_batch_read() {
         unsafe { &*record() }.live_list().is_null(),
         "the take consumed it"
     );
+    // The part's root, the first registered, is not listed, and under
+    // `unlisted-registered-members` no registered member is.
+    let unlisted = if cfg!(feature = "unlisted-registered-members") {
+        ROOTS
+    } else {
+        1
+    };
     assert_eq!(
         take_stamps(),
-        MEMBERS - 1,
-        "one stamp per member listed, the part's root left out"
+        MEMBERS - unlisted,
+        "one stamp per member listed"
+    );
+    assert!(
+        stamps(&core.members[..unlisted])
+            .iter()
+            .all(|&(_, age)| age == 0),
+        "the members left out"
     );
     assert_eq!(
-        unsafe { stamp_of(core.members[0]) }.1,
-        0,
-        "the part's root, the first registered"
+        stamps(&core.members[unlisted..]),
+        vec![(epoch, 1); MEMBERS - unlisted]
     );
-    assert_eq!(stamps(&core.members[1..]), vec![(epoch, 1); MEMBERS - 1]);
     assert_eq!(
         unsafe { stamp_of(core.keeper) }.1,
         0,

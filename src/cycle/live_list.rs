@@ -181,6 +181,16 @@ impl Writer {
                         return ControlFlow::Continue(());
                     }
 
+                    // Under `unlisted-registered-members` no registered
+                    // member is listed, for the same reason, at one read of
+                    // its flags here (`dev/plans/S65.md`, S65.36).
+                    #[cfg(feature = "unlisted-registered-members")]
+                    if crate::refcount::is_registered_candidate(crate::refcount::mutator_flags(
+                        entity,
+                    )) {
+                        return ControlFlow::Continue(());
+                    }
+
                     if !self.push(entity) {
                         return ControlFlow::Break(());
                     }
