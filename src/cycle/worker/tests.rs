@@ -867,6 +867,131 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
     assert_eq!(testing::take_spawns(), 2);
 }
 
+/// The kept ring the two generation groups build on, `the_generations`
+/// (S65.31, on form D) and `the_generations_in_the_chain` (S65.32, on H).
+#[cfg(any(feature = "deferral-by-generation", feature = "hold-by-generation"))]
+mod generation_fixtures {
+    use super::reset_lanes;
+    use super::the_batch::keeper_class;
+    use crate::class::{Class, ClassBuilder};
+    use crate::cycle::testing::move_prop;
+    use crate::gc::ll_gc_collect_cycles;
+    use crate::memory::arena::Arena;
+    use crate::memory::context::LLContext;
+    use crate::object::{Object, ll_object_die, new_constructed};
+    use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain};
+    use crate::test_support::{prop_offset, store_prop};
+
+    /// The rig's `SMALL_RING`: six members, one of them registered.
+    pub(super) const MEMBERS: usize = 6;
+
+    /// A ring of [`MEMBERS`] linked through each member's first property with its
+    /// creation reference, its first member registered and held by a keeper from
+    /// outside.
+    pub(super) struct KeptRing {
+        pub(super) members: Vec<*mut Object>,
+        pub(super) keeper: *mut Object,
+    }
+
+    impl KeptRing {
+        pub(super) fn root(&self) -> *mut Object {
+            self.members[0]
+        }
+
+        /// Null the keeper's edge, a decrement the registered root does not
+        /// register again, and let the keeper die: the ring is garbage whose one
+        /// entry stands wherever the root's does.
+        ///
+        /// # Safety
+        /// The ring came from [`a_kept_ring`] on this thread and its keeper is
+        /// still held.
+        pub(super) unsafe fn let_the_keeper_go(&mut self, arena: &mut Arena) {
+            unsafe {
+                store_prop(arena, self.keeper, prop_offset(0), std::ptr::null_mut());
+                assert!(
+                    ll_release(self.keeper as *mut RcHeader),
+                    "the keeper's last"
+                );
+                ll_object_die(self.keeper);
+            }
+            self.keeper = std::ptr::null_mut();
+        }
+    }
+
+    /// # Safety
+    /// A quiescent heap under `test_guard`.
+    pub(super) unsafe fn a_kept_ring(arena: &mut Arena, name: &str) -> KeptRing {
+        unsafe { a_kept_ring_of(arena, name, MEMBERS) }
+    }
+
+    /// [`a_kept_ring`] of `members` members.
+    ///
+    /// # Safety
+    /// As [`a_kept_ring`].
+    pub(super) unsafe fn a_kept_ring_of(arena: &mut Arena, name: &str, members: usize) -> KeptRing {
+        let class = member_class(name);
+        let arena_ptr: *mut Arena = arena;
+        let mut context = LLContext { arena };
+        let members: Vec<*mut Object> = (0..members)
+            .map(|_| unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) })
+            .collect();
+        let keeper = unsafe {
+            new_constructed(
+                &mut context,
+                keeper_class("GenerationKeeper"),
+                MemoryCategory::GcHeap,
+            )
+        };
+        unsafe {
+            for (position, &member) in members.iter().enumerate() {
+                move_prop(
+                    member,
+                    prop_offset(0),
+                    members[(position + 1) % members.len()],
+                );
+            }
+
+            ll_retain(members[0] as *mut RcHeader);
+            assert!(
+                !ll_release(members[0] as *mut RcHeader),
+                "an edge holds the root"
+            );
+            store_prop(arena_ptr, keeper, prop_offset(0), members[0]);
+        }
+        KeptRing { members, keeper }
+    }
+
+    /// Let the ring go and free it by the explicit collection, then empty the
+    /// lanes of whatever entry is left.
+    ///
+    /// # Safety
+    /// As [`KeptRing::let_the_keeper_go`], or the keeper already went.
+    pub(super) unsafe fn free_the_ring(arena: &mut Arena, mut ring: KeptRing) {
+        if !ring.keeper.is_null() {
+            unsafe { ring.let_the_keeper_go(arena) };
+        }
+
+        unsafe { ll_gc_collect_cycles() };
+        reset_lanes();
+    }
+
+    /// A class of two counted Box properties: the first the ring links through,
+    /// the second free for an edge into another ring.
+    pub(super) fn member_class(name: &str) -> *const Class {
+        ClassBuilder::new(name)
+            .prop("next", true)
+            .prop("held", true)
+            .build()
+    }
+
+    /// The epoch this thread's cell stands in, moved off zero first so that a
+    /// stamp of this epoch is told apart from a fresh header's zero byte.
+    pub(super) fn a_nonzero_epoch() -> u32 {
+        crate::cycle::epoch::turn_to_a_nonzero_epoch();
+        crate::cycle::epoch::current()
+    }
+}
+
 mod the_batch;
 mod the_cap_at_zero;
 mod the_cap_set_under_work;
@@ -876,6 +1001,8 @@ mod the_chain;
 mod the_epoch_clock;
 #[cfg(feature = "deferral-by-generation")]
 mod the_generations;
+#[cfg(feature = "hold-by-generation")]
+mod the_generations_in_the_chain;
 mod the_live_list;
 mod the_merged_lane;
 mod the_reading_before_the_claim;

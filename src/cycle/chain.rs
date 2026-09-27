@@ -17,6 +17,11 @@
 //! out of the chain and posted into P as `ZeroCount`, which the mutator's
 //! disposition of P frees.
 //!
+//! **Under `hold-by-generation`** a root read live goes to the waiting part
+//! only once it has outlived an epoch, by the stamp in its header; a younger
+//! one is stamped by the collector and kept at the ready part's tail
+//! (`keep_young`), to be read again beside R (`dev/plans/S65.md`, S65.32).
+//!
 //! **What stays with the mutator.** Its own collections are form D's: they
 //! defer the roots they read live into the deferred lane. Before them the
 //! chain comes back into R, R's one writer being the mutator: whole before
@@ -239,6 +244,18 @@ pub(crate) unsafe fn keep_unwalked(record: &MutatorRecord, root: *mut RcHeader) 
         crate::cycle::worker::testing::note_chain_push(true);
     }
     kept
+}
+
+/// Put `root`, read live in its first generation, at the ready part's tail,
+/// where the next batches read it again beside R until it dies or outlives
+/// an epoch (`dev/plans/S65.md`, S65.32); false when the pool refused a
+/// block.
+///
+/// # Safety
+/// The caller holds `record`'s token as a collector's grant.
+#[cfg(feature = "hold-by-generation")]
+pub(crate) unsafe fn keep_young(record: &MutatorRecord, root: *mut RcHeader) -> bool {
+    unsafe { keep_unwalked(record, root) }
 }
 
 /// Entries the chain holds, both parts: the exit's count of registrations

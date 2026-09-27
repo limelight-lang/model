@@ -500,8 +500,9 @@ unsafe fn visit_child<R: CellReader>(
 ///
 /// # Safety
 /// As [`visit_child`]: `child` is a live published entity header. The reader
-/// is the owning thread or a collector tracing for it, and the byte is the
-/// owner's to write, so the stamp read here is whole either way
+/// is the owning thread or a collector tracing for it, and the byte is written
+/// one byte wide, by the owner or under `hold-by-generation` by a collector
+/// under its grant, so the stamp read here is whole either way
 /// (`crate::refcount::read_maturation_stamp`).
 #[inline]
 unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, prune: Prune) -> bool {

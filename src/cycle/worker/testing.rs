@@ -1346,7 +1346,7 @@ static POSTED_UNLISTED: AtomicUsize = AtomicUsize::new(0);
 static POSTED_IN_AN_OLD_CORE: AtomicUsize = AtomicUsize::new(0);
 static WRITTEN_BACK_FIRST: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(feature = "deferral-by-generation")]
+#[cfg(any(feature = "deferral-by-generation", feature = "hold-by-generation"))]
 pub(crate) fn note_generation_posted(first: bool, listed: bool, in_an_old_core: bool) {
     let counter = match (first, listed, in_an_old_core) {
         (false, _, _) => &POSTED_SECOND,

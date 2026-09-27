@@ -442,6 +442,9 @@ fn a_collection_under_pressure_finds_garbage_the_chain_held() {
             crate::test_support::prop_offset(0),
             ring[0],
         );
+        for &member in &ring {
+            crate::cycle::testing::as_of_the_second_generation(member as *mut RcHeader);
+        }
     }
     assert!(matches!(
         served_by_a_collector(),

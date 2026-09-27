@@ -9,7 +9,10 @@
 //! The collector is a thread of the case's that serves this thread's record,
 //! as in `the_batch`.
 
-use super::the_batch::{keeper_class, served_by_a_collector};
+use super::generation_fixtures::{
+    KeptRing, MEMBERS, a_kept_ring, a_kept_ring_of, a_nonzero_epoch, free_the_ring, member_class,
+};
+use super::the_batch::served_by_a_collector;
 use super::*;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::queue::{candidate_count, deferred_count};
@@ -20,115 +23,6 @@ use crate::memory::context::LLContext;
 use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain};
 use crate::test_support::{prop_offset, store_prop};
-
-/// The rig's `SMALL_RING`: six members, one of them registered.
-const MEMBERS: usize = 6;
-
-/// A ring of [`MEMBERS`] linked through each member's first property with its
-/// creation reference, its first member registered and held by a keeper from
-/// outside.
-struct KeptRing {
-    members: Vec<*mut Object>,
-    keeper: *mut Object,
-}
-
-impl KeptRing {
-    fn root(&self) -> *mut Object {
-        self.members[0]
-    }
-
-    /// Null the keeper's edge, a decrement the registered root does not
-    /// register again, and let the keeper die: the ring is garbage whose one
-    /// entry stands wherever the root's does.
-    ///
-    /// # Safety
-    /// The ring came from [`a_kept_ring`] on this thread and its keeper is
-    /// still held.
-    unsafe fn let_the_keeper_go(&mut self, arena: &mut Arena) {
-        unsafe {
-            store_prop(arena, self.keeper, prop_offset(0), std::ptr::null_mut());
-            assert!(
-                ll_release(self.keeper as *mut RcHeader),
-                "the keeper's last"
-            );
-            ll_object_die(self.keeper);
-        }
-        self.keeper = std::ptr::null_mut();
-    }
-}
-
-/// # Safety
-/// A quiescent heap under `test_guard`.
-unsafe fn a_kept_ring(arena: &mut Arena, name: &str) -> KeptRing {
-    unsafe { a_kept_ring_of(arena, name, MEMBERS) }
-}
-
-/// [`a_kept_ring`] of `members` members.
-///
-/// # Safety
-/// As [`a_kept_ring`].
-unsafe fn a_kept_ring_of(arena: &mut Arena, name: &str, members: usize) -> KeptRing {
-    let class = member_class(name);
-    let arena_ptr: *mut Arena = arena;
-    let mut context = LLContext { arena };
-    let members: Vec<*mut Object> = (0..members)
-        .map(|_| unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) })
-        .collect();
-    let keeper = unsafe {
-        new_constructed(
-            &mut context,
-            keeper_class("GenerationKeeper"),
-            MemoryCategory::GcHeap,
-        )
-    };
-    unsafe {
-        for (position, &member) in members.iter().enumerate() {
-            move_prop(
-                member,
-                prop_offset(0),
-                members[(position + 1) % members.len()],
-            );
-        }
-
-        ll_retain(members[0] as *mut RcHeader);
-        assert!(
-            !ll_release(members[0] as *mut RcHeader),
-            "an edge holds the root"
-        );
-        store_prop(arena_ptr, keeper, prop_offset(0), members[0]);
-    }
-    KeptRing { members, keeper }
-}
-
-/// Let the ring go and free it by the explicit collection, then empty the
-/// lanes of whatever entry is left.
-///
-/// # Safety
-/// As [`KeptRing::let_the_keeper_go`], or the keeper already went.
-unsafe fn free_the_ring(arena: &mut Arena, mut ring: KeptRing) {
-    if !ring.keeper.is_null() {
-        unsafe { ring.let_the_keeper_go(arena) };
-    }
-
-    unsafe { ll_gc_collect_cycles() };
-    reset_lanes();
-}
-
-/// A class of two counted Box properties: the first the ring links through,
-/// the second free for an edge into another ring.
-fn member_class(name: &str) -> *const Class {
-    ClassBuilder::new(name)
-        .prop("next", true)
-        .prop("held", true)
-        .build()
-}
-
-/// The epoch this thread's cell stands in, moved off zero first so that a
-/// stamp of this epoch is told apart from a fresh header's zero byte.
-fn a_nonzero_epoch() -> u32 {
-    crate::cycle::epoch::turn_to_a_nonzero_epoch();
-    crate::cycle::epoch::current()
-}
 
 /// One serve, reading the batch the collector traced.
 fn a_traced_serve() -> (Served, testing::TracedBatch) {
