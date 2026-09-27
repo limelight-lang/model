@@ -8,6 +8,60 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-27 — S65.34 and S65.35 on D and HG: the root off the live list cuts D's mutator by 5–6 % on `deferred-live-large` and moves nothing else past the spread; the generation in the entry changes no figure on the rig; D against HG reads as in S65.32
+
+**The run, on a quiet box.** Five arms built fresh and told apart by their
+test lists: D0 and HG0 on `7060b97` (before S65.34), D1 and HG1 on `33cc5bf`
+(S65.34, the part's root not listed), HG2 on `b128bf0` (S65.35, the generation
+in the entry); HG is `hold-by-generation`. `dev/tools/arms.sh`, interleaved and
+rotated, three repeats, both placements, paced 1 ms, 10 s and a 12 s drain, on
+`live-churn`, `live-churn-dies-by-count` and `deferred-live-large`, and
+`live-churn` at `LL_RIG_CHURN_WINDOW=256` in a CSV of its own; 22:12–22:57.
+The two other sessions paused; load average 3.3 at the start (falling from an
+earlier build), 0.4 at the main phase's end and 0.3 at the window's. Timed
+figures stand. Verdicts by `dev/tools/two_arms_table.py` (S65.28's rule).
+
+| load | placement | instructions D0 / D1 / HG0 / HG1 / HG2 | heap MB D1 / HG2 | long D1 / HG2 | collector s D1 / HG2 |
+| --- | --- | --- | --- | --- | --- |
+| deferred-live-large | spare | 29,063 / 27,515 / 26,480 / 25,805 / 25,678 | 0.51 / 0.01 | 49 / 10 | 1.61 / 0.93 |
+| deferred-live-large | shared | 28,998 / 27,343 / 26,369 / 25,698 / 25,731 | 0.70 / 0.01 | 38 / 11 | 1.51 / 0.91 |
+| live-churn | spare | 370,681 / 368,946 / 368,990 / 368,115 / 371,201 | 9.35 / 10.00 | 324 / 586 | 1.18 / 1.36 |
+| live-churn | shared | 360,914 / 372,125 / 367,005 / 368,223 / 368,256 | 8.06 / 11.83 | 415 / 543 | 1.30 / 1.22 |
+| live-churn-dies-by-count | spare | 74,533 / 74,905 / 72,792 / 72,399 / 70,735 | 0 / 0 | 151 / 255 | 1.44 / 1.58 |
+| live-churn-dies-by-count | shared | 74,021 / 73,883 / 71,682 / 71,136 / 71,851 | 0 / 0 | 78 / 25 | 1.06 / 1.32 |
+| live-churn, window 256 | spare | 325,407 / 326,305 / 325,340 / 327,113 / 326,206 | 1.06 / 1.28 | 330 / 335 | 0.65 / 0.70 |
+| live-churn, window 256 | shared | 322,420 / 323,764 / 322,557 / 322,611 / 320,497 | 3.05 / 5.81 | 345 / 363 | 0.68 / 0.74 |
+
+**S65.34 on D** (D0 → D1): a win past the 3 % tolerance on
+`deferred-live-large` at both placements, −5.3 % and −5.7 % instructions an
+iteration, where every root is a core of one and the whole list and its block
+go; ties elsewhere on instructions. The rule reads a loss on `live-churn`
+shared by its long-iteration gate (306 → 415, repeats 305/373/306 against
+415/426/296), with D1 at spare lower than D0 (361 → 324); the change removes
+work from the take and adds none, so this reads as the load's spread, not the
+change, but the rule's verdict is recorded as it fell. **S65.34 on HG** (HG0 →
+HG1): −2.5 % and −2.6 % on `deferred-live-large`, under the tolerance; ties
+elsewhere. HG lists the core only of a young root, so less of its list goes.
+
+**S65.35** (HG1 → HG2): ties on instructions in every cell, as the model
+said: the paths it changes do not run on these loads. The counters show it —
+`recalls_by_the_mark` and `recalls_by_a_take` are 0 in both arms, and the
+young readings equal the roots registered in both (320,000 on the churn
+loads, 140,000 on `deferred-live-large`), so no root read young a second
+time and none was spliced out of the chain. The rule reads a loss by the last-free gate on `live-churn` shared and
+by the heap gate at window 256; the last free on `live-churn` is bimodal in
+every arm (under 300 ms or 7.5–9.5 s, repeat by repeat), and heap at the stop
+at window 256 moves by that much between D0 and D1, which differ in nothing
+the window reads, so neither is read as the change's.
+
+**D1 against HG2**, the two schemes as they stand: HG wins
+`deferred-live-large` (−5.9 % and −6.7 % instructions, 0.01 MB of garbage
+against 0.5–0.7, collector 0.9 s against 1.5–1.6); D keeps `live-churn`
+(long iterations 324–415 against 543–586) and `live-churn-dies-by-count` at
+spare (long 151 against 255, though HG's instructions are 5.6 % lower). D
+stays by S65.28's rule at both placements, the picture of S65.32's run now on
+a quiet box.
+
 ## 2026-09-27 — S65.32 HG after the Sage's repair: the lane's mark reads the generation exactly, and HG's mutator reads as H's on the long-lived set and within 2 % of H elsewhere; the timed figures of this run are void
 
 **The run, on `a590bc9`**, arms rebuilt from that tree (the mark is written in

@@ -476,6 +476,10 @@ Notes: dev/plans/S65.md
         before this entry's found the root live", the pressure re-offer and
         `ll_gc_reoffer_deferred` bringing the lane back without a turn
         (`dev/plans/S65.md`, S65.35)
+      measured 2026-09-27 with S65.34 (`dev/BENCHMARKS.md`, "S65.34 and
+        S65.35 on D and HG"): S65.34 −5.3 % and −5.7 % of D's mutator on
+        `deferred-live-large`, −2.5 % of HG's, ties elsewhere; S65.35 ties,
+        its paths not run by the rig's loads; D against HG as in S65.32.
 - [ ] S65.36 The rig's counters S65.33 owes, and G1, G3, M1 and S1b measured
       done: the rig emits list entries stamped (root / registered / other),
         `EDGES_PRUNED`, the check's reads and deaths split fresh / lap with
