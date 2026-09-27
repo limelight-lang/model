@@ -34,8 +34,11 @@
 //! entry's low three bits are free in every population that registers, and
 //! the fourth is not; the three carry the marks a reading writes over an
 //! entry it read. **Bit 0 is the close's**, which is where it says a root
-//! belongs to the deferred lane ([`DEFERRED_MARK`]); bits 1 and 2 are unused
-//! here, and P's ledger is `queue::verdicts`. The mark is written over the
+//! belongs to the deferred lane ([`DEFERRED_MARK`]); **bit 2 is the lane's
+//! own**, written on every entry the lane takes, so that the entry spliced
+//! back into R at the turn still says it was read live before it
+//! ([`REOFFERED_MARK`]); bit 1 is unused here, and P's ledger is
+//! `queue::verdicts`. The mark is written over the
 //! entries a collection read and read once, by the pass that disposes of
 //! them: every walk that hands an entry out as an address masks it
 //! ([`ENTRY_MARK_BITS`]).
@@ -1117,12 +1120,21 @@ impl Batch {
 /// anything else masks it off first (`crate::cycle::queue::compaction`).
 pub(crate) const DEFERRED_MARK: usize = 1;
 
+/// Bit 2 of the stored address: the entry came into the deferred lane, so the
+/// root it names was read live before the turn that re-offered the lane. It
+/// is written by [`defer_entry`] in every build and read by the collector's
+/// batch under `hold-by-generation` alone, where a root so marked has outlived
+/// an epoch (`dev/plans/S65.md`, S65.32); a pass that rewrites an entry of R
+/// drops it, which costs that root one more reading as young and never the
+/// reverse.
+pub(crate) const REOFFERED_MARK: usize = 4;
+
 /// The low bits of an entry that carry a mark, masked off wherever an entry
-/// is handed out as an address. The one bit written and not the three an
+/// is handed out as an address. The two bits written and not the three an
 /// entry's alignment frees: a fixture's header stands on any eight-byte
 /// boundary, and a mask over bits nothing writes would fold two such headers
 /// into one.
-pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK;
+pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK | REOFFERED_MARK;
 
 /// Give every block of `record`'s R back and leave its two words null,
 /// whichever thread does it: the exit, or the collector whose hold the exit
@@ -1522,13 +1534,15 @@ fn defer_entry(
     at_turnovers: Option<u64>,
 ) -> Result<(), ring::NoBlock> {
     let lane_was_empty = mutator_state.deferred().is_empty();
-    mutator_state.deferred().push(entity_entry(entity), || {
-        let block = take_spare(mutator_state);
-        if !block.is_null() {
-            charge_block();
-        }
-        block
-    })?;
+    mutator_state
+        .deferred()
+        .push(entity_entry(entity) | REOFFERED_MARK, || {
+            let block = take_spare(mutator_state);
+            if !block.is_null() {
+                charge_block();
+            }
+            block
+        })?;
 
     if lane_was_empty {
         if let Some(at_turnovers) = at_turnovers {
@@ -1790,6 +1804,23 @@ fn standing_verdict_count() -> usize {
         });
     }
     count
+}
+
+/// Put the lane's mark on every entry of this thread's R that names
+/// `entity`, as if the root had come back from the deferred lane at a turn: a
+/// case's way to hand the collector a root of the second generation under
+/// `hold-by-generation` ([`REOFFERED_MARK`]).
+#[cfg(all(test, feature = "hold-by-generation"))]
+pub(crate) fn mark_as_reoffered(entity: *mut RcHeader) {
+    let Some(ring) = candidate_ring() else {
+        return;
+    };
+
+    ring.map_prefix_in_place(ring.count(), |slot| {
+        if entry_entity(*slot) == entity {
+            *slot |= REOFFERED_MARK;
+        }
+    });
 }
 
 /// Entries this thread's ring holds, by its indices.

@@ -2359,8 +2359,6 @@ unsafe fn batch(
             posted,
             peek: chain_peek,
             now: serve_clock_now(),
-            #[cfg(feature = "hold-by-generation")]
-            epoch: arena.epoch(),
         },
     };
     #[cfg(test)]
@@ -2526,10 +2524,6 @@ struct ChainPosts<'a> {
     /// The serve clock's reading, in nanoseconds, that starts the death
     /// check's term when a root read live enters an empty waiting part.
     now: u64,
-    /// The epoch the batch's arena read, against which a root's stamp says
-    /// whether it has outlived an epoch.
-    #[cfg(feature = "hold-by-generation")]
-    epoch: u32,
 }
 
 impl FinishThePosts<'_> {
@@ -2603,22 +2597,20 @@ impl FinishThePosts<'_> {
         self.roots[index] |= HAS_A_VERDICT;
     }
 
-    /// Whether the root at `index`, read live, has not outlived an epoch, by
-    /// its header's stamp: always false without `hold-by-generation`.
+    /// Whether the root at `index`, read live, has not outlived an epoch: it
+    /// came from R without the lane's mark, so no reading before the last
+    /// turn found it live. A root copied out of the chain, which the copy
+    /// holds first, or one the deferred lane handed back at the turn has
+    /// outlived one (`crate::cycle::queue::REOFFERED_MARK`). Always false
+    /// without `hold-by-generation`.
     #[cfg(feature = "collector-chain")]
     fn is_young(&self, index: usize) -> bool {
         #[cfg(feature = "hold-by-generation")]
         {
-            let young = !unsafe { has_outlived_an_epoch(self.root(index), self.chain.epoch) };
+            let young = index >= self.chain.peek.copied
+                && self.roots[index] & crate::cycle::queue::REOFFERED_MARK == 0;
             #[cfg(test)]
-            {
-                testing::note_generation_posted(young, true, false);
-                if young
-                    && unsafe { crate::refcount::read_maturation_stamp(self.root(index)) }.age != 0
-                {
-                    testing::note_young_with_an_age();
-                }
-            }
+            testing::note_generation_posted(young, true, false);
             young
         }
         #[cfg(not(feature = "hold-by-generation"))]
@@ -3145,7 +3137,7 @@ unsafe fn post_by_generation(
 /// # Safety
 /// `root` is a live entity of the mutator whose token the calling thread
 /// holds; byte 6's one writer, the owner, does not write under that hold.
-#[cfg(any(feature = "deferral-by-generation", feature = "hold-by-generation"))]
+#[cfg(feature = "deferral-by-generation")]
 unsafe fn has_outlived_an_epoch(root: *mut RcHeader, epoch: u32) -> bool {
     let stamp = unsafe { crate::refcount::read_maturation_stamp(root) };
     stamp.age != 0 && stamp.epoch != epoch

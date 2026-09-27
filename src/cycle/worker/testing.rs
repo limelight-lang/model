@@ -1337,11 +1337,6 @@ pub(crate) struct Generations {
     pub(crate) posted_in_an_old_core: usize,
     /// Unmarked `ReadLive` entries the disposition wrote back into R.
     pub(crate) written_back_first: usize,
-    /// Under `hold-by-generation`, roots read young whose stamp already
-    /// carried an age in the batch's epoch: read young before in this epoch,
-    /// or a stamp four turnovers old read as this epoch's. The rest of
-    /// `posted_first` carried no age.
-    pub(crate) young_with_an_age: usize,
 }
 
 static POSTED_FIRST: AtomicUsize = AtomicUsize::new(0);
@@ -1349,12 +1344,6 @@ static POSTED_SECOND: AtomicUsize = AtomicUsize::new(0);
 static POSTED_UNLISTED: AtomicUsize = AtomicUsize::new(0);
 static POSTED_IN_AN_OLD_CORE: AtomicUsize = AtomicUsize::new(0);
 static WRITTEN_BACK_FIRST: AtomicUsize = AtomicUsize::new(0);
-static YOUNG_WITH_AN_AGE: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(feature = "hold-by-generation")]
-pub(crate) fn note_young_with_an_age() {
-    YOUNG_WITH_AN_AGE.fetch_add(1, Ordering::Relaxed);
-}
 
 #[cfg(any(feature = "deferral-by-generation", feature = "hold-by-generation"))]
 pub(crate) fn note_generation_posted(first: bool, listed: bool, in_an_old_core: bool) {
@@ -1379,7 +1368,6 @@ pub(crate) fn take_generations() -> Generations {
         posted_unlisted: POSTED_UNLISTED.swap(0, Ordering::Relaxed),
         posted_in_an_old_core: POSTED_IN_AN_OLD_CORE.swap(0, Ordering::Relaxed),
         written_back_first: WRITTEN_BACK_FIRST.swap(0, Ordering::Relaxed),
-        young_with_an_age: YOUNG_WITH_AN_AGE.swap(0, Ordering::Relaxed),
     }
 }
 

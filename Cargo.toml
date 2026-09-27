@@ -39,7 +39,8 @@ collector-chain = []
 deferral-by-generation = []
 
 # S65.32 on H: a root the collector reads live goes into the chain only once
-# it has outlived an epoch, read off its header's stamp; a younger one goes on
+# it has outlived an epoch — it came out of the chain, or back from the
+# deferred lane with the lane's mark on its entry; a younger one goes on
 # into P as without the chain (`dev/plans/S65.md`, S65.32). Off by default and
 # on no gate but its own; measured against H and D. Not combined with
 # `deferral-by-generation`.

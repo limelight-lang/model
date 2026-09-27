@@ -1,6 +1,7 @@
 //! A root the collector reads live under `hold-by-generation`: once it has
-//! outlived an epoch — its stamp carries an age under an epoch other than the
-//! batch's — it goes into the chain's waiting part as without the feature;
+//! outlived an epoch — it came back from the deferred lane at a turn with the
+//! lane's mark on its entry, or out of the chain — it goes into the chain's
+//! waiting part as without the feature;
 //! a younger one goes on into P as a root the chain has no block for goes,
 //! and the mutator's disposition defers it (`dev/plans/S65.md`, S65.32).
 //!

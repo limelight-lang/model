@@ -87,8 +87,9 @@ pub(crate) unsafe fn row_color(entity: *mut RcHeader) -> Color {
 
 /// Stamp `entity` as read live in the epoch before this thread's, age one:
 /// under `deferral-by-generation` a batch that reads it live defers it, and
-/// under `hold-by-generation` keeps it in the chain's waiting part, as the
-/// build without the feature does, which is what a case written for that
+/// under `hold-by-generation` — where the generation is the lane's mark on the
+/// root's entry in R, put there instead — keeps it in the chain's waiting part,
+/// as the build without the feature does, which is what a case written for that
 /// build asks of a root (`dev/plans/S65.md`, S65.31 and S65.32). Nothing
 /// without either feature.
 ///
@@ -96,7 +97,9 @@ pub(crate) unsafe fn row_color(entity: *mut RcHeader) -> Color {
 /// `entity` is a live entity of this thread's GC heap, and no collector holds
 /// this thread's token.
 pub(crate) unsafe fn as_of_the_second_generation(entity: *mut RcHeader) {
-    #[cfg(any(feature = "deferral-by-generation", feature = "hold-by-generation"))]
+    #[cfg(feature = "hold-by-generation")]
+    crate::cycle::queue::mark_as_reoffered(entity);
+    #[cfg(feature = "deferral-by-generation")]
     unsafe {
         let epoch = (crate::cycle::epoch::current() + 3) % 4;
         crate::refcount::write_maturation_stamp(

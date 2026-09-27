@@ -1564,10 +1564,6 @@ impl CellReading {
                 "written_back_first_generation",
                 self.generations.written_back_first.to_string(),
             ),
-            (
-                "young_with_an_age",
-                self.generations.young_with_an_age.to_string(),
-            ),
             ("recalls_by_the_mark", self.recalls.0.to_string()),
             ("recalls_by_a_take", self.recalls.1.to_string()),
             ("token_waits", self.token_waits.waits.to_string()),
