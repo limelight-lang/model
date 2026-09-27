@@ -8,6 +8,52 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-27 — S65.32 H by generation against H and D: on rings that die inside their first epoch HG holds the least garbage of the three; elsewhere it reads as H on the long-lived set and as D on the young, the mutator paying D's price for young deaths
+
+**The run, on `04ed821`.** Arms built fresh from that tree and told apart by
+their test lists: D the default, H `collector-chain`, HG `hold-by-generation`
+(`dev/plans/S65.md`, S65.32, the rule as Edmond ruled it). Interleaved and
+rotated, three repeats, both placements, paced 1 ms, 10 s and a 12 s drain, on
+the three loads the schemes differ on — `live-churn`,
+`live-churn-dies-by-count`, `deferred-live-large` — and, in a CSV of its own and
+not deciding, `live-churn` at `LL_RIG_CHURN_WINDOW=256`. `garbage-25`,
+`registered-ring-live` and `deferred-then-dead` were left out: the rule of
+S65.28 cannot take HG over D (H ties D on those two and HG cannot beat H's
+instructions), and a second critic of the loads found those three decide no
+scheme (the rig's idle poll, the last free set by X). Load average 1.1–4.6 at
+the phases' ends; two other sessions paused. An earlier run of the day, on
+`fc8d7b1`, measured a misreading of the rule and is not recorded.
+
+| load | placement | instructions D / H / HG | heap MB D / H / HG | long D / H / HG | collector s D / H / HG |
+| --- | --- | --- | --- | --- | --- |
+| deferred-live-large | spare | 29,030 / 26,282 / 26,590 | 0.57 / 0.01 / 0.01 | 62 / 17 / 13 | 1.97 / 1.16 / 1.16 |
+| deferred-live-large | shared | 29,011 / 26,154 / 26,698 | 0.55 / 0.02 / 0.01 | 44 / 8 / 14 | 1.73 / 1.02 / 1.33 |
+| live-churn | spare | 374,390 / 371,568 / 374,588 | 6.30 / 15.61 / 10.22 | 493 / 932 / 640 | 1.41 / 1.76 / 1.48 |
+| live-churn | shared | 363,664 / 379,798 / 379,774 | 13.42 / 10.75 / 12.47 | 358 / 972 / 657 | 1.33 / 1.39 / 1.53 |
+| live-churn-dies-by-count | spare | 74,190 / 69,239 / 72,230 | 0 / 0 / 0 | 76 / 79 / 64 | 1.12 / 1.17 / 1.56 |
+| live-churn-dies-by-count | shared | 74,096 / 69,277 / 72,035 | 0 / 0 / 0 | 141 / 79 / 71 | 1.21 / 1.19 / 1.50 |
+| live-churn, window 256 | spare | 317,257 / 328,691 / 326,746 | 8.53 / 7.74 / 2.21 | 385 / 623 / 342 | 0.86 / 0.81 / 0.76 |
+| live-churn, window 256 | shared | 321,417 / 335,403 / 326,431 | 5.07 / 7.61 / 1.51 | 346 / 613 / 361 | 0.75 / 0.82 / 0.82 |
+
+By S65.28's rule HG against D: a win on `deferred-live-large` shared, ties on
+`live-churn-dies-by-count`, losses on `live-churn` (long iterations); D stays.
+Against H, read without a verdict: instructions tie on `deferred-live-large`
+and `live-churn` and are 4 % higher on `live-churn-dies-by-count`, where a
+young ring's death goes D's way through P; heap garbage at the stop is a
+fifth to a third of H's and D's at window 256, and long iterations are D's
+there and a third under H's on `live-churn`. The last free after the stop is
+D's, 8.3–8.6 s at window 256 against H's 0.13 s spare: a young ring that dies
+in the drain waits in the deferred lane for X.
+
+**The counters** (medians at `spare-core`): on `live-churn` HG read 320,000
+roots young, exactly the rings registered, and none of them with an age, so no
+root cycled young; on `deferred-live-large` it read 467,000 young, 327,000 of
+them carrying an age in the batch's epoch — a chained root whose stamp no list
+refreshed reads as this epoch's four turnovers on and takes D's path once (the
+setup critic's finding 4), which is the 1–2 % of instructions HG pays over H
+there. Garbage members at the stop: `live-churn` 49,248 / 121,956 / 79,872,
+window 256 66,636 / 60,474 / 17,280 (D / H / HG).
+
 ## 2026-09-27 — S65.31 deferral by generation against D: D stays, the arm winning no deciding load and losing 4 of 6 shared and 5 of 6 spare; writing young live roots back into R doubles the collector's re-reads and slows the garbage it was built to free sooner
 
 **The run the protocol of S65.28 decides, on `0224fa4`.** Baseline D, the
