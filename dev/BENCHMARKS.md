@@ -39,10 +39,13 @@ The guards birth no collector and read instructions equal to 0.1 %.
 
 **What the write-backs cost**, medians at `spare-core`. On `live-churn` the
 collector batched 1.77 M roots against 0.94 M (1.11 M first-generation
-write-backs), spent 2.43 s of CPU against 1.30 s, and the mean wait from a
-death to its free rose from 15.1 to 27.6 ms, with 131,424 garbage members
-standing at the stop against 58,626: a ring that dies waits behind the young
-live roots written back ahead of it in R. On `live-churn-dies-by-count` the
+write-backs), spent 2.43 s of CPU against 1.30 s, and 131,424 garbage members stood at the
+stop against 58,626: a ring that dies waits behind the young live roots
+written back ahead of it in R. The rig's mean wait read 15.1 against 27.6 ms
+here, but its integral left out each iteration's paced sleep, which Little's
+law puts at a factor of about 25 (`dev/POSTMORTEM.md`, "a figure the rig
+integrates over an iteration left out the paced sleep"); read the pair as a
+ratio. On `live-churn-dies-by-count` the
 batches rose from 1,714 to 4,801 and the roots batched from 0.78 M to 4.90 M;
 the batch clock turned the epoch 76 times against 27, which shortens the
 first generation the rule rests on (the code Critic's finding 5); the
@@ -176,6 +179,11 @@ time from a death to its free by Little's law):
 | garbage-25 | shared | 280.6 / 281.0 / 280.6 | 253.8 / 249.8 / 252.6 | 0.02 / 0.02 / 0.02 | 0.12 / 0.09 / 0.12 | 4.9 / 4.5 / 4.0 |
 | registered-ring-live | spare | 5,569.7 / 5,570.0 / 5,562.7 | 1,835.8 / 1,804.5 / 1,767.7 | 0.28 / 0.28 / 0.27 | 0 / 0 / 0 | 0.09 / 0.09 / 0.09 |
 | registered-ring-live | shared | 5,570.2 / 5,569.8 / 5,563.3 | 1,863.4 / 1,825.5 / 1,806.9 | 0.26 / 0.28 / 0.25 | 0 / 0 / 0 | 0.09 / 0.10 / 0.08 |
+
+The wait column integrates the busy part of each iteration only, the paced
+sleep left out (found on 2026-09-27, `dev/POSTMORTEM.md`, "a figure the rig
+integrates over an iteration left out the paced sleep"): it compares arms and
+is not a time.
 
 Instructions vary by less than 2 % between repeats of one arm; cycles by up to
 96 %, from outside load (up to 1,057 involuntary switches a mutator), in more

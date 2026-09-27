@@ -7,6 +7,29 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-27 — a figure the rig integrates over an iteration left out the paced sleep
+
+**What happened.** The rig's `time_to_free_us` and
+`withheld_by_an_entry_mean_bytes` integrate the garbage and the withheld
+deaths standing over time, and on a paced load they read about 25 times too
+low: `live-churn` under the default build read 14–15 ms, where the garbage
+standing at the stop over its rate puts the wait at 0.34–0.35 s. The S65.24
+entry's wait column and the S65.31 entry's "15.1 to 27.6 ms" were read as
+times.
+
+**Why it was possible.** Both integrals add `now − last` at the iteration's
+end, and the paced wait after it resets `last`, which the iteration's latency
+needs and the integrals do not: the sleep, most of a paced iteration, never
+entered them. The two figures share the latency's clock and nothing
+separated them.
+
+**Why it was not caught.** No known answer checks the integrals: the rig's
+calibration reads CPU, switches and counters, and the drain's figures are
+times of their own. Found by the operation-count analysis
+(`dev/OPERATION-COUNT-BY-SCHEME.md`), which set the column against Little's
+law; the repair integrates the wait too, and a `live-churn` cell then read
+322 ms against 230 ms at the stop's single sample of the sawtooth.
+
 ## 2026-09-27 — a poll whose count the rig discarded read as garbage never freed
 
 **What happened.** S65.28's decision run read H's `deferred-then-dead` at

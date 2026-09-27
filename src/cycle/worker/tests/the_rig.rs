@@ -1194,7 +1194,17 @@ fn a_mutator(
                 reading.freed_by_polls += unsafe { crate::gc::ll_gc_maybe_collect() };
                 std::thread::sleep(ahead.min(Duration::from_millis(1)));
             }
-            last = Instant::now();
+
+            // Garbage and withheld deaths stand through the wait, so it
+            // counts in their integrals; only the iteration's latency leaves
+            // it out.
+            let woke = Instant::now();
+            let waited = (woke - last).as_nanos();
+            let outstanding = reading.garbage_members - reading.freed_by_polls;
+            reading.outstanding_time += outstanding as u128 * waited;
+            reading.withheld_by_an_entry_time +=
+                u128::from(crate::cycle::queue::withheld_by_an_entry()) * waited;
+            last = woke;
         }
 
         if outstanding > OUTSTANDING_CEILING {

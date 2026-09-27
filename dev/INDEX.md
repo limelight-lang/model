@@ -33,6 +33,12 @@ The preferred repairs keep retries, death checks and their schedule on the
 collector, following the rule that the mutator should do less work.
 The repairs are proposals, not adopted changes to the algorithm or plan.
 
+[Operations by scheme](OPERATION-COUNT-BY-SCHEME.md) (Russian, 2026-09-27)
+counts, from the code, the operations over objects and over the queues that
+the four schemes V, D, H and G spend per root and fate, split between the
+mutator and the collector, and checks the model against the rig's counters of
+S65.28 and S65.31.
+
 The design S65 builds, kept until the stage closes: **[the package, third
 version](CYCLE-SPLIT-PACKAGE-3.md)** (Russian), with [the lane
 amendment](CYCLE-SPLIT-PACKAGE-3-LANE.md) and [its
