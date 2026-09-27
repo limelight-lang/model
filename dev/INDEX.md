@@ -103,9 +103,9 @@ are in `docs/history/`, superseded by the collector thread that was built.
   collector's deferral, and the cases are `worker/tests/the_generations.rs`.
 
   The feature `hold-by-generation` is S65.32's arm on the collector's chain
-  (`dev/plans/S65.md`, S65.32): `worker::post_by_generation` under it keeps a
-  young root read live in the chain's ready part, stamped by the collector
-  (`refcount::stamp_as_read_live_by_the_collector`), and the cases are
+  (`dev/plans/S65.md`, S65.32): `FinishThePosts::post` sends a root read live
+  into the chain only once it has outlived an epoch
+  (`FinishThePosts::is_young`), and the cases are
   `worker/tests/the_generations_in_the_chain.rs`.
 
   Two numbers about a row are pinned by tests: a count at the field's bound

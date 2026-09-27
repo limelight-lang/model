@@ -18,9 +18,7 @@
 //! carries the maturation stamp: the epoch at 16-17, the age at 18-19,
 //! and a reserve at 20-23 that nothing writes yet. The owning thread is
 //! the one writer, one byte wide, through [`write_maturation_stamp`] and
-//! [`stamp_as_read_live`] — and under the measured arm `hold-by-generation`
-//! a collector too, under its grant (`stamp_as_read_live_by_the_collector`) —
-//! and
+//! [`stamp_as_read_live`], and
 //! `refcount::tests::the_header_the_compiler_shares` is what keeps a
 //! mutator constant from drifting into any of them. Bits 24-31 are
 //! unclaimed.
@@ -216,9 +214,7 @@ pub const IS_ESCAPEE: u32 = 1 << 11;
 ///
 /// The byte has one writer, the owning thread — its commit
 /// ([`write_maturation_stamp`]) and its take of a collector's live list
-/// ([`stamp_as_read_live`]) — and a second under `hold-by-generation`, a
-/// collector under its grant, which excludes the owner's writes; the fields
-/// share it, so each is written by
+/// ([`stamp_as_read_live`]) — and the fields share it, so each is written by
 /// a byte-wide read-modify-write rather than by a store of the whole byte: a
 /// store would carry the reserve's bits down with it once the reserve has a
 /// writer of its own.
@@ -940,9 +936,8 @@ pub(crate) struct MaturationStamp {
 ///
 /// # Safety
 /// `header` points at a live published entity, and the read is the owning
-/// thread's or a collector's — the byte is written one byte wide, by the owner
-/// or under `hold-by-generation` by a collector under its grant, so either
-/// sees a whole stamp rather than a torn one.
+/// thread's or a collector's — the byte is written by the owner alone, so
+/// either sees a whole stamp rather than a torn one.
 #[inline]
 pub(crate) unsafe fn read_maturation_stamp(header: *const RcHeader) -> MaturationStamp {
     let byte = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) };
@@ -996,30 +991,6 @@ pub(crate) unsafe fn write_maturation_stamp(header: *mut RcHeader, stamp: Matura
 /// token.
 #[inline]
 pub(crate) unsafe fn stamp_as_read_live(header: *mut RcHeader, epoch: u32) {
-    unsafe { stamp_read_live_in_place(header, epoch) };
-}
-
-/// [`stamp_as_read_live`] written by a collector under its grant, on a root
-/// its batch read live: the second writer of byte 6 that `hold-by-generation`
-/// measures (`dev/plans/S65.md`, S65.32), which `rfc/model/classes.md`,
-/// "Flags layout", does not admit. The owner writes byte 6 only under its own
-/// token, so a grant excludes it; the store is one byte wide, as the owner's.
-///
-/// # Safety
-/// The calling thread holds the owner's token as a collector's grant, which
-/// withholds every return of the owner's, and `header` is an entity the batch
-/// took from one of the owner's queues, whose candidate bit keeps its slot
-/// from reuse: the owner may have let it die since the batch read it live, and
-/// the store then lands on a slot withheld until the owner retires it.
-#[cfg(feature = "hold-by-generation")]
-#[inline]
-pub(crate) unsafe fn stamp_as_read_live_by_the_collector(header: *mut RcHeader, epoch: u32) {
-    unsafe { stamp_read_live_in_place(header, epoch) };
-}
-
-/// The one body of the two stamps above, on the caller's terms.
-#[inline]
-unsafe fn stamp_read_live_in_place(header: *mut RcHeader, epoch: u32) {
     debug_assert!(epoch <= MATURATION_EPOCH_IN_BYTE as u32);
     let byte = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) };
     let fields = MATURATION_EPOCH_IN_BYTE | MATURATION_AGE_IN_BYTE;

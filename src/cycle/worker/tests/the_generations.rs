@@ -10,18 +10,15 @@
 //! as in `the_batch`.
 
 use super::generation_fixtures::{
-    KeptRing, MEMBERS, a_kept_ring, a_kept_ring_of, a_nonzero_epoch, free_the_ring, member_class,
+    MEMBERS, a_kept_ring, a_kept_ring_of, a_nonzero_epoch, free_the_ring, member_class,
 };
 use super::the_batch::served_by_a_collector;
 use super::*;
-use crate::class::{Class, ClassBuilder};
 use crate::cycle::queue::{candidate_count, deferred_count};
-use crate::cycle::testing::{move_prop, ring, stamp_of};
+use crate::cycle::testing::{ring, stamp_of};
 use crate::gc::{ll_gc_collect_cycles, ll_gc_maybe_collect};
 use crate::memory::arena::Arena;
-use crate::memory::context::LLContext;
-use crate::object::{Object, ll_object_die, new_constructed};
-use crate::refcount::{MemoryCategory, RcHeader, ll_release, ll_retain};
+use crate::refcount::RcHeader;
 use crate::test_support::{prop_offset, store_prop};
 
 /// One serve, reading the batch the collector traced.

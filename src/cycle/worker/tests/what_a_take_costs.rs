@@ -830,9 +830,11 @@ fn a_take_over_disjoint_live_rings_leaves_the_mutator_no_root_to_trace() {
     // Every root read live, so the batch proposed nothing and its release
     // owed P's disposition alone: the poll disposed of P and no collection
     // opened a window for the census to read. Under the collector's chain
-    // the batch posted nothing into P at all, and released `FREE`.
+    // the batch posted nothing into P at all, and released `FREE`; under
+    // `hold-by-generation` the rings, young, went on into P as without it.
     let report = collected.report.expect("the census was armed");
-    let dispositions = if cfg!(feature = "collector-chain") {
+    let dispositions = if cfg!(feature = "collector-chain") && !cfg!(feature = "hold-by-generation")
+    {
         0
     } else {
         1

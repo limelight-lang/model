@@ -38,12 +38,11 @@ collector-chain = []
 # `collector-chain`.
 deferral-by-generation = []
 
-# S65.32 on H: a root the collector reads live goes to the chain's waiting
-# part only once it has outlived an epoch, read off its header's stamp, which
-# the collector writes at the root's first live reading; a younger one goes to
-# the ready part and is read again beside R (`dev/plans/S65.md`, S65.32). Off
-# by default and on no gate but its own; measured against H and D. Not
-# combined with `deferral-by-generation`.
+# S65.32 on H: a root the collector reads live goes into the chain only once
+# it has outlived an epoch, read off its header's stamp; a younger one goes on
+# into P as without the chain (`dev/plans/S65.md`, S65.32). Off by default and
+# on no gate but its own; measured against H and D. Not combined with
+# `deferral-by-generation`.
 hold-by-generation = ["collector-chain"]
 
 # The loads `PLAN.md` S40.3 reads and the one fixture hook its driver in

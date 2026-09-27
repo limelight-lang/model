@@ -399,12 +399,14 @@ Notes: dev/plans/S65.md
         the second generation (Edmond, 2026-09-27: "моя схема — это H, которая
         не ложит в EpochQueue(GC) первое поколение, а только второе"; S65.31
         built the rule on D, which was not his scheme)
-      done: Edmond's rule (`dev/plans/S65.md`, S65.32, ruled 2026-09-27): a
-        root read live whose `RcHeader` epoch is the batch's own, or which
-        carries none, is stamped by the collector and goes to the due part;
-        one that outlived an epoch goes to the pending part; its operation
-        count per fate set beside `dev/OPERATION-COUNT-BY-SCHEME.md`'s before
-        the build; built behind a feature on H, the rfc unchanged; measured
+      done: Edmond's rule (`dev/plans/S65.md`, S65.32, ruled 2026-09-27,
+        final): H, with a root read live put into the chain only when its
+        `RcHeader` stamp shows it has outlived an epoch, a younger one going
+        on into P as without the chain; built behind `hold-by-generation`,
+        the rfc unchanged; its operation count per fate beside
+        `dev/OPERATION-COUNT-BY-SCHEME.md`'s; measured, D, H and HG fresh and
+        interleaved, S65.28's rule deciding HG against D and HG against H
+        read cell by cell without a verdict,
         by S65.28's protocol against H and against D, the seventh cell
         included; the verdict put to Edmond
       tier: T2 · role: Critic, Sage
