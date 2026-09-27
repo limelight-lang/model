@@ -40,8 +40,9 @@ fn a_complete_serve() -> testing::Generations {
 }
 
 /// A young root read live goes on into P, not into the chain, and the
-/// mutator's disposition defers it with its core stamped. Red with the
-/// generation not asked: the root goes into the chain's waiting part.
+/// mutator's disposition defers it with its core stamped, the root itself
+/// not listed. Red with the generation not asked: the root goes into the
+/// chain's waiting part.
 #[test]
 fn a_young_root_read_live_goes_on_into_p_and_is_deferred() {
     let _g = test_guard();
@@ -60,11 +61,12 @@ fn a_young_root_read_live_goes_on_into_p_and_is_deferred() {
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
     assert_eq!((candidate_count(), deferred_count()), (0, 1));
     assert!(
-        ring.members
+        ring.members[1..]
             .iter()
             .all(|&member| unsafe { stamp_of(member) } == (epoch, 1)),
         "the list stamped the core at the take"
     );
+    assert_eq!(unsafe { stamp_of(ring.root()) }.1, 0, "the part's root");
 
     unsafe { free_the_ring(&mut arena, ring) };
     reset();

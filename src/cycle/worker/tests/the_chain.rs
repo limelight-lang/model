@@ -10,12 +10,14 @@
 //! and the mutator's collections under pressure and at the exit take the
 //! chain back into R.
 
+use super::generation_fixtures::{KeptRing, a_kept_ring_of, free_the_ring};
 use super::the_batch::{keeper_class, kept_root, object, release_keeper, served_by_a_collector};
 use super::*;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::chain::testing::{REFUSE_BLOCKS, dismantle_this_threads, roots_of_this_threads};
 use crate::cycle::queue::verdicts::{Verdict, standing_verdicts, verdict_count};
 use crate::cycle::queue::{candidate_count, deferred_count};
+use crate::cycle::testing::stamp_of;
 use crate::cycle::token::{FREE, NOTHING_PROPOSED, state};
 use crate::gc::ll_gc_maybe_collect;
 use crate::memory::arena::Arena;
@@ -563,7 +565,15 @@ fn a_batch_that_proposes_a_set_beside_live_roots_publishes_its_live_list() {
     reset();
     let node = node_class("ChainMixedNode");
     let mut arena = Arena::new();
-    let kept = unsafe { kept_roots(&mut arena, node, 2) };
+    // Two live rings of two, each with its root of the second generation: a
+    // part's own root is not listed, so a core of the root alone lists nothing.
+    let kept: Vec<KeptRing> = (0..2)
+        .map(|index| unsafe {
+            let ring = a_kept_ring_of(&mut arena, &format!("ChainMixedRing{index}"), 2);
+            crate::cycle::testing::as_of_the_second_generation(ring.root() as *mut RcHeader);
+            ring
+        })
+        .collect();
     // A garbage ring of two, both members registered.
     let _ring = unsafe { crate::cycle::testing::long_ring(&mut arena, node, 2) };
 
@@ -585,7 +595,13 @@ fn a_batch_that_proposes_a_set_beside_live_roots_publishes_its_live_list() {
     // The collection over P stamps from the list and frees the ring.
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
     assert!(unsafe { &*record() }.live_list().is_null());
+    for ring in &kept {
+        assert_eq!(unsafe { stamp_of(ring.members[1]) }.1, 1, "the core");
+        assert_eq!(unsafe { stamp_of(ring.root()) }.1, 0, "the part's root");
+    }
 
-    unsafe { let_go(&kept) };
+    for ring in kept {
+        unsafe { free_the_ring(&mut arena, ring) };
+    }
     reset();
 }

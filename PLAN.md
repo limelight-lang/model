@@ -441,7 +441,7 @@ Notes: dev/plans/S65.md
         measured first under S65.36; S2, M3, G4 and a sound dirty bit put to
         Edmond, each ruled to be tried (S65.37–S65.40); the S65.32 picture
         unchanged.
-- [ ] S65.34 The part's own root is not listed (S65.33, the Sage's S1; both
+- [x] S65.34 The part's own root is not listed (S65.33, the Sage's S1; both
         schemes)
       done: `live_list::Writer::append_the_part` skips the part's root,
         passed from `worker.rs:2800-2801`, gated
@@ -449,7 +449,16 @@ Notes: dev/plans/S65.md
         listed", with the guard that a core entered in the same epoch
         through an unregistered member still prunes; `the_live_list`'s
         stamp counts restated; the gate green on the D and HG builds
+      baseline (`7060b97`): a part whose root reads live lists every live
+        row it met, the root among them: m entries a reading (collector m q),
+        m stamps at the take (mutator m q, m h); at m = 1 one list block
+        drawn, handed over and released a batch
       tier: T1 · role: Critic
+      handoff: built in every build, `deferral-by-generation` included, the
+        Critic having found that build's root listed already by
+        `list_a_root` (`dev/plans/S65.md`, S65.34); the rfc's "The live list
+        of a batch" ("every row it left live") owed its clause, put to
+        Edmond with the branch's landing.
 - [ ] S65.35 EpochQueue(GC) carries the generation in the entry (S65.33, the
         Sage's G2)
       done: `keep_read_live` pushes `root | REOFFERED_MARK`, `keep_unwalked`
@@ -469,7 +478,9 @@ Notes: dev/plans/S65.md
         re-offered per turn, marks stripped and young `Unwalked` sent to the
         ready part; G1 (the check's back-off), G3 (R first while the chain
         holds at most 512 × 64 roots), M1 (the lane handed back by blocks)
-        and S1b (no registered row listed) each built behind its own feature
+        and S1b (no registered row listed; it restates on purpose
+        `a_take_from_posted_stamps_the_live_core_the_batch_read`, which
+        expects the part's 62 met roots stamped) each built behind its own feature
         and measured against its scheme on a quiet box, on S67.6's run if it
         comes first; the verdicts put to Edmond
       tier: T2 · role: Critic

@@ -27,7 +27,9 @@
 //! ([`Writer::append_the_part`]) — under `deferral-by-generation` only after
 //! a part whose root has outlived an epoch, every other root read live being
 //! listed alone (`Writer::list_a_root`) — and publishes the head on the record's hold
-//! line before the release that stores `POSTED`. A block the pool refuses and
+//! line before the release that stores `POSTED`. The walk leaves out the
+//! part's own root, whose stamp no prune reads; under
+//! `deferral-by-generation` `Writer::list_a_root` has listed it already. A block the pool refuses and
 //! a chain at its bound keep what is written and take no more: any subset of
 //! the live core is safe to stamp. The walk reads the recall every
 //! `crate::cycle::arena::RECALL_STRIDE` rows and stops at a recall, keeping
@@ -139,11 +141,12 @@ impl Writer {
         }
     }
 
-    /// Append the address of every entity a completed part's rows left live,
-    /// reading the recall every stride of rows: `Break` where it stood, with
-    /// the entries written before the reading kept. They are live rows of a
-    /// part that completed, as safe to stamp as a chain closed at its bound,
-    /// and keeping them puts nothing between the reading and the release.
+    /// Append the address of every entity a completed part's rows left live
+    /// but `root`, the part's own, reading the recall every stride of rows:
+    /// `Break` where it stood, with the entries written before the reading
+    /// kept. They are live rows of a part that completed, as safe to stamp as
+    /// a chain closed at its bound, and keeping them puts nothing between the
+    /// reading and the release.
     ///
     /// # Safety
     /// The part completed on this thread and its rows still stand: after the
@@ -151,6 +154,7 @@ impl Writer {
     pub(crate) unsafe fn append_the_part(
         &mut self,
         arena: &mut TraceScratchArena,
+        root: *mut RcHeader,
     ) -> ControlFlow<()> {
         let mut recalled = false;
         #[cfg(test)]
@@ -170,6 +174,13 @@ impl Writer {
                     let Some(entity) = row::entity_at(block, population, index) else {
                         return ControlFlow::Continue(());
                     };
+                    // The root stays registered until its free, and the prune
+                    // never stops at a registered candidate
+                    // (`crate::cycle::mark`): its stamp would prune nothing.
+                    if entity == root {
+                        return ControlFlow::Continue(());
+                    }
+
                     if !self.push(entity) {
                         return ControlFlow::Break(());
                     }

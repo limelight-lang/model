@@ -2680,12 +2680,12 @@ fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, compl
 /// the owner's exact validation to decide (`rfc/model/gc/rc-cycle.md`,
 /// "Worker-to-owner handoff").
 ///
-/// A part whose root it reads live appends the live rows it met to `live`
-/// before the reset, which the mutator stamps from at its take
-/// (`crate::cycle::live_list`); a part that read its root unreachable lists
-/// nothing. Under `deferral-by-generation` the core is listed only when the
-/// part's root has outlived an epoch, and each root read live is listed alone
-/// and posted by its generation (`post_by_generation`).
+/// A part whose root it reads live appends the live rows it met, its own
+/// root left out, to `live` before the reset, which the mutator stamps from
+/// at its take (`crate::cycle::live_list`); a part that read its root
+/// unreachable lists nothing. Under `deferral-by-generation` the core is
+/// listed only when the part's root has outlived an epoch, and each root read
+/// live is listed alone and posted by its generation (`post_by_generation`).
 ///
 /// A part that meets its budget is retried at once under `B_max`
 /// ([`retry_under_the_ceiling`]), once per grant. A retry that meets `B_max`,
@@ -2798,7 +2798,7 @@ unsafe fn trace_in_parts(
         }
 
         if lists_the_core == std::ops::ControlFlow::Continue(true)
-            && unsafe { live.append_the_part(arena) }.is_break()
+            && unsafe { live.append_the_part(arena, root) }.is_break()
         {
             return outcome;
         }

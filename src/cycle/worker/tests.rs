@@ -868,8 +868,13 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
 }
 
 /// The kept ring the two generation groups build on, `the_generations`
-/// (S65.31, on form D) and `the_generations_in_the_chain` (S65.32, on H).
-#[cfg(any(feature = "deferral-by-generation", feature = "hold-by-generation"))]
+/// (S65.31, on form D) and `the_generations_in_the_chain` (S65.32, on H), and
+/// `the_chain`'s live cores.
+#[cfg(any(feature = "deferral-by-generation", feature = "collector-chain"))]
+#[cfg_attr(
+    not(any(feature = "deferral-by-generation", feature = "hold-by-generation")),
+    allow(dead_code, reason = "`the_chain` takes the ring alone")
+)]
 mod generation_fixtures {
     use super::reset_lanes;
     use super::the_batch::keeper_class;
