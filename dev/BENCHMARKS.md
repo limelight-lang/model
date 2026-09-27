@@ -8,6 +8,85 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-27 — S65.28 D against H on the repaired build: D stays at both placements, H winning 2 deciding loads, tying 2 and losing 2; the expiry's and the check's share stays under 10 % in every cell
+
+**The run the decision rule of `PLAN.md` S65.28 fixed before any figure was
+read.** Baseline D, the default build (the disposition, form D); candidate H,
+`--features collector-chain` (the collector's chain, S65.26 with S65.27's
+repair). Both binaries built at `7493bed` and compared byte for byte with a
+fresh build before the run. Edmond's box as in the entry below: i7-11700K,
+WSL2, `perf_event_paranoid` 2; mutators on CPUs 2 and 4, the collector on 6
+(`spare-core`) or 4 (`shared-core`), cap 1. `ARMS="dispose hold"
+dev/tools/arms.sh <csv> 3 deciding`, then `… 3 guards`; the table is
+`dev/tools/two_arms_table.py <csv> dispose hold`. The load average read
+0.5–1.9 at each phase's end, and 6.6 at the start, decaying from a disk search
+stopped before the first cell; the instructions' spread between repeats of one arm is 0–3.2 %, so
+every tolerance is the 3 % floor.
+
+**The deciding loads**, medians of three; instructions in an iteration,
+heap garbage at the stop in MB, the last free after the stop in ms,
+iterations over 200 µs, collector CPU in s:
+
+| load | placement | instructions D / H | verdict | heap D / H | last free D / H | long D / H | collector D / H |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| deferred-live-large | spare | 28,895 / 26,158 | win −9.5 % | 0.59 / 0.00 | 426 / 11 | 26 / 4 | 1.43 / 0.83 |
+| deferred-live-large | shared | 28,889 / 26,042 | win −9.9 % | 0.56 / 0.01 | 438 / 8 | 30 / 6 | 1.51 / 0.85 |
+| live-churn-dies-by-count | spare | 74,987 / 69,187 | win −7.7 % | 0 / 0 | 8,550 / 8,600 | 73 / 4 | 1.13 / 0.92 |
+| live-churn-dies-by-count | shared | 73,505 / 68,804 | win −6.4 % | 0 / 0 | 9,280 / 8,527 | 33 / 7 | 0.88 / 0.87 |
+| garbage-25 | spare | 280,554 / 280,656 | tie | 0.12 / 0.10 | 6 / 8 | 1 / 1 | 0.02 / 0.02 |
+| garbage-25 | shared | 280,965 / 280,597 | tie | 0.10 / 0.12 | 2 / 3 | 3 / 1 | 0.02 / 0.02 |
+| registered-ring-live | spare | 5,574,434 / 5,574,221 | tie | 0 / 0 | 0 / 0 | 6 / 6 | 0.19 / 0.21 |
+| registered-ring-live | shared | 5,574,294 / 5,574,105 | tie | 0 / 0 | 0 / 0 | 7 / 4 | 0.20 / 0.19 |
+| live-churn | spare | 369,247 / 374,243 | loss: heap, long | 9.28 / 13.50 | 9,350 / 7,962 | 302 / 929 | 1.15 / 1.23 |
+| live-churn | shared | 371,658 / 377,451 | loss: heap, last free, long | 7.99 / 12.14 | 102 / 8,639 | 293 / 922 | 1.08 / 1.10 |
+| deferred-then-dead | spare | 32,786 / 33,404 | loss: long | 0.06 / 0.01 | 4,246 / 4,276 | 21 / 39 | 0.08 / 0.09 |
+| deferred-then-dead | shared | 32,737 / 34,877 | loss +6.5 %, long | 0.09 / 0.07 | 4,222 / 4,237 | 22 / 44 | 0.07 / 0.08 |
+
+The two `deferred-then-dead` rows are the re-run on the repaired rig, below;
+the first run read them +1.5 % and +1.6 %, both a loss on the long
+iterations as here. The verdict at each placement: H wins 2, ties 2, loses
+2, against the 4 wins and no loss the rule asks, so **D stays**.
+`live-churn` fails the heap gate by 45–52 % and the long iterations
+threefold at both placements; `deferred-then-dead` fails the long
+iterations alone at `spare-core`.
+
+**The guards** birth no collector in any of the 48 cells, both arms, and
+read instructions equal to 0.02 %. `garbage-0` at `spare-core` fails the
+long-iteration gate, 17 against 3, in a cell where no collector exists: that
+is the gate's noise at a median of three, and it is the size of the
+`deferred-then-dead` losses above (39–44 against 21–22).
+
+**The share of the expiry and the death check**, H's per-cell median over
+repeats: of the withheld returns' time 3.2 % (`live-churn-dies-by-count`,
+shared; 5.1 s of 166.7 s summed over the returns), 3.5 % (spare; 6.5 s of
+186.8 s), 0.8 % and 0.1 % on `live-churn`, zero on the other loads. Of the
+token wait there is no share to read: no mutator of H waited for its token
+in any cell, and D's mutators waited once in all their cells, 15 µs in the
+trace (`deferred-live-large`, shared, repeat 1). Under 10 % everywhere,
+so the Sage's rule keeps `chain.rs`'s "every operation here is the token
+holder's" if H were taken. The absolute figures stand beside the shares;
+the Critic's floor they would be read against is not recorded in the tree.
+
+**What H does beyond the verdict.** Its chain posts completed deaths the
+check finds (`chain_deaths_posted` a median of 336 and 5,805 a cell on
+`live-churn-dies-by-count`) and holds less memory behind entries there
+(2.3–2.5 MB at the peak against 3.2–3.4 MB). On `deferred-live-large` it frees
+the garbage within 8–11 ms of the stop against 0.43 s and spends 42–44 %
+less collector CPU, as S65.24 read for C. On `live-churn` it holds 45–52 % more
+heap garbage at the stop and makes three times D's iterations over 200 µs.
+
+**The rig's defect this run found.** The first run read H's
+`deferred-then-dead` at `spare-core` as incomplete in one repeat of three.
+Repeats showed incompletion in both arms, D 1 in 9 cells and H 4 in 9, 450
+to 990 members short, and still short after a 40 s drain. At the drain's end
+no member of the let-go graphs and no member of an iteration's garbage ring
+read live and R was empty: every member had been freed, and the rig had not
+counted the frees. `let_the_keepers_go` polled between keepers and discarded
+what the polls freed. With the count kept, H read 0 incomplete cells of 30
+against 4 of 18 before, D 0 of 30; the two rows above are the re-run.
+`dev/POSTMORTEM.md`, "a poll whose count the rig discarded read as garbage
+never freed".
+
 ## 2026-09-26 — S65.24 A, B and C on a box with a PMU: form D cuts the mutator's instructions by 16.6 % on `deferred-live-large` and by at most 1.6 % elsewhere; C stalls on `live-churn` and frees none of its 259,104-member remnant in the drain
 
 **The same three arms as the entry below, measured with hardware counters.**

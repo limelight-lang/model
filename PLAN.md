@@ -14,7 +14,7 @@ crate. The destination's last mile, the compiler that links this crate, is
 outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
 `limelight`.
 
-Updated: 2026-09-26 · Active: S65.
+Updated: 2026-09-27 · Active: S65.
 
 Review 2026-09-26: three days late, before the push of S65.21–S65.28 to main.
 Pass 1, code `89bb0dc..49b544a` against the thresholds (a function over 50
@@ -313,6 +313,15 @@ Notes: dev/plans/S65.md
         with `a_chained_root_that_dies_is_posted_zero_count_…`'s assertion red
         on the old answer. The run is repeated on the repaired build, its
         figures not read.
+      second run 2026-09-27 on `7493bed`: D stays by the rule, H winning 2,
+        tying 2 and losing 2 at each placement; the expiry's and the check's
+        share under 10 % in every cell, no token wait under H to take a share
+        of; the guards birth no collector. On the way the rig's tally of
+        frees at the keepers' let-go was repaired and `deferred-then-dead`
+        re-run (`dev/POSTMORTEM.md`, "a poll whose count the rig discarded
+        read as garbage never freed"). `dev/BENCHMARKS.md`, "S65.28 D against
+        H on the repaired build". Next: Edmond's ruling on the three
+        questions below, then the step closes.
       if D stays: "B + forget-exact" is the fourth arm the Sage named for a
         field C leaves (`dev/plans/S65.md`, S65.24), put to Edmond with the
         figures.
