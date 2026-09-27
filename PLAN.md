@@ -372,6 +372,15 @@ Notes: dev/plans/S65.md
         clause 8, the handshake table) is amended in the commit that makes H
         the default, both repositories together.
       tier: T2 · role: Critic, Sage
+- [ ] S65.31 A root read live waits in the deferred lane only once it has
+        outlived an epoch (Edmond, 2026-09-27: "корни которые быстро умирают
+        не ложатся в отложенные")
+      done: the rule of `dev/plans/S65.md`, S65.31, polished by the Critic
+        and the Sage, built behind a feature on D, and measured against D by
+        S65.28's protocol; the verdict and the figures put to Edmond; the
+        first approach — no trace of a first-generation root — noted beside
+        the figures, not built
+      tier: T2 · role: Critic, Sage
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,
