@@ -321,6 +321,50 @@ fn a_death_p_had_no_room_for_is_the_next_checks_first_post() {
     reset();
 }
 
+/// Under `death-check-back-off` a death P had no room for in a lap is where
+/// the lap's next check starts, as without the back-off.
+#[test]
+#[cfg(feature = "death-check-back-off")]
+fn under_the_back_off_a_death_p_had_no_room_for_is_the_laps_next_post() {
+    let _g = test_guard();
+    reset();
+    crate::cycle::epoch::turn_this_threads_cell();
+    let node = node_class("ChainBackOffNoRoomNode");
+    let mut arena = Arena::new();
+    let kept = unsafe { kept_roots(&mut arena, node, 3) };
+    assert!(matches!(
+        served_by_a_collector(),
+        Served::Batch { roots: 3, .. }
+    ));
+    let record = unsafe { &*record() };
+    while record.batches_since_the_advance() < crate::cycle::epoch::BATCHES_PER_EPOCH / 2 {
+        record.note_batch();
+    }
+
+    unsafe {
+        release_keeper(kept[0].1);
+        release_keeper(kept[1].1);
+        crate::cycle::queue::verdicts::testing::fill_for_test(crate::ring::BLOCK_ENTRIES - 1);
+    }
+    let _ = testing::take_chain_figures();
+    let _ = a_checking_serve();
+    assert_eq!(testing::take_chain_figures().laps, 1);
+    assert_eq!(
+        roots_of_this_threads().1,
+        vec![kept[1].0, kept[2].0],
+        "the refused death stays in the chain"
+    );
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    let _ = a_checking_serve();
+    assert_eq!(standing_verdicts(), vec![(kept[1].0, Verdict::ZeroCount)]);
+    assert_eq!(roots_of_this_threads().1, vec![kept[2].0]);
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    unsafe { let_go(&kept[2..]) };
+    reset();
+}
+
 #[test]
 fn beside_a_ready_part_r_takes_its_clamp_and_the_chain_up_to_half_the_bound() {
     let _g = test_guard();
