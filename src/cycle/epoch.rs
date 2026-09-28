@@ -1,5 +1,7 @@
 //! The collection epoch: the mutator's epoch clock, which the collector keeps,
-//! and the two-bit stamp a maturation carries.
+//! and the two-bit stamp a maturation carries — four bits under
+//! `wait-by-readings`, whose longest wait between two readings of a root would
+//! meet a two-bit epoch again (`crate::refcount::MATURATION_EPOCH_MASK`).
 //!
 //! A maturation stamp says that the collection of one epoch read a component
 //! as held from outside — its exact validation reading it as externally
@@ -68,11 +70,13 @@ use crate::refcount::MATURATION_EPOCH_MASK;
 /// turnover re-offers, and what a deferral costs").
 pub(crate) const BATCHES_PER_EPOCH: u8 = 64;
 
-/// Epochs the header's field tells apart, past which the count wraps.
-const EPOCHS: u64 = 4;
+/// Epochs the header's field tells apart, past which the count wraps: four,
+/// and sixteen under `wait-by-readings`
+/// (`crate::refcount::MATURATION_EPOCH_MASK`).
+const EPOCHS: u64 = (MATURATION_EPOCH_MASK >> MATURATION_EPOCH_MASK.trailing_zeros()) as u64 + 1;
 
 const _: () = assert!(
-    EPOCHS == (MATURATION_EPOCH_MASK >> MATURATION_EPOCH_MASK.trailing_zeros()) as u64 + 1,
+    EPOCHS.is_power_of_two(),
     "the epoch wraps at what the stamp's field holds"
 );
 
@@ -90,7 +94,7 @@ pub(crate) fn current() -> u32 {
 }
 
 /// The epoch this thread prunes and stamps against for a reading of
-/// `turnovers`: its two low bits, or the case's pin.
+/// `turnovers`: its low bits the stamp's field holds, or the case's pin.
 pub(crate) fn epoch_this_thread_reads(turnovers: u64) -> u32 {
     #[cfg(test)]
     if let Some(pinned) = pinned() {

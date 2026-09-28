@@ -673,10 +673,13 @@ fn advance_the_epoch_if_due(record: &MutatorRecord, now: u64) {
         return;
     }
 
-    if record.batches_since_the_advance() >= crate::cycle::epoch::BATCHES_PER_EPOCH
-        || now.saturating_sub(last) >= epoch_interval().as_nanos() as u64
-    {
+    let by_batches = record.batches_since_the_advance() >= crate::cycle::epoch::BATCHES_PER_EPOCH;
+    if by_batches || now.saturating_sub(last) >= epoch_interval().as_nanos() as u64 {
         record.advance_the_epoch(now);
+        #[cfg(feature = "wait-by-readings")]
+        if !by_batches {
+            record.note_an_x_turn();
+        }
     }
 }
 
@@ -2650,7 +2653,13 @@ impl FinishThePosts<'_> {
     /// comes back at a turn. Always false without `hold-by-generation`.
     #[cfg(feature = "collector-chain")]
     fn is_young(&self, index: usize) -> bool {
-        #[cfg(feature = "hold-by-generation")]
+        // Under `wait-by-readings` the count of live readings decides:
+        // a root read live once or twice before waits in the mutator's lanes.
+        #[cfg(all(feature = "hold-by-generation", feature = "wait-by-readings"))]
+        {
+            unsafe { crate::refcount::survived_readings(self.root(index)) < 2 }
+        }
+        #[cfg(all(feature = "hold-by-generation", not(feature = "wait-by-readings")))]
         {
             self.roots[index] & crate::cycle::queue::REOFFERED_MARK == 0
         }

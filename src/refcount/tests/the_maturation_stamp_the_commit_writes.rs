@@ -18,7 +18,14 @@ use super::*;
 /// commit that stored the whole byte would carry these down with it, and the
 /// day the reserve has a writer that store would be a lost field rather than a
 /// visible one.
+#[cfg(not(feature = "wait-by-readings"))]
 const RESERVE: u32 = 0b1111 << 20;
+
+/// Under `wait-by-readings` the rest of byte 6 beside the stamp is the count
+/// of live readings, bits 22-23, which has a writer of its own: the store that
+/// carried it down would lose the count.
+#[cfg(feature = "wait-by-readings")]
+const RESERVE: u32 = crate::refcount::SURVIVED_READINGS_MASK;
 
 /// Every epoch against every age, through the byte and back. The pair is one
 /// field in two parts, so a packing that crossed them would answer some

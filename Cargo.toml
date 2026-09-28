@@ -75,6 +75,16 @@ death-check-back-off = ["collector-chain"]
 # measured against D.
 lane-back-by-blocks = []
 
+# S65.42, the Sage's round-2 spec: a root read live waits longer the more
+# consecutive live readings it has survived — 1, 3 and 7 batch turns, the
+# count kept in byte 6's reserve by the mutator at the deferral; D keeps three
+# lanes, HG two lanes and its chain at the longest wait. A turn the X arm made
+# releases every wait, and a root whose members' stamps may read current
+# after a gap that is a multiple of four turns is not traced on the stamps of
+# a reading four turns old (`dev/plans/S65.md`, S65.42). Off by default; the
+# best build of each scheme, measured against D and HG.
+wait-by-readings = []
+
 # The loads `PLAN.md` S40.3 reads and the one fixture hook its driver in
 # `benches/` needs, compiled into the ordinary library for that driver
 # alone. Off by default and on no gate: the driver's file compiles to an

@@ -438,7 +438,14 @@ fn only_the_turnovers_merge_is_counted() {
 
     assert_eq!(unsafe { crate::gc::ll_gc_collect_cycles() }, 0);
     assert_eq!(deferred_count(), 2, "deferred again");
-    crate::cycle::epoch::turn_this_threads_cell();
+    // A second live reading waits three turns under `wait-by-readings`.
+    #[cfg(not(feature = "wait-by-readings"))]
+    let turns = 1;
+    #[cfg(feature = "wait-by-readings")]
+    let turns = 3;
+    for _ in 0..turns {
+        crate::cycle::epoch::turn_this_threads_cell();
+    }
     assert!(reoffer_deferred_if_epoch_moved());
     assert_eq!(
         record.merges(),

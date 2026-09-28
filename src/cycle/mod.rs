@@ -119,6 +119,22 @@ compile_error!(
 // would carry has no entry to ride on.
 #[cfg(all(feature = "collector-chain", feature = "deferral-by-generation"))]
 compile_error!("`deferral-by-generation` is built on form D and not beside `collector-chain`");
+// A young root cannot both lap R and wait in the first lane.
+#[cfg(all(feature = "wait-by-readings", feature = "deferral-by-generation"))]
+compile_error!(
+    "`wait-by-readings` defers every root read live, which `deferral-by-generation` refuses"
+);
+// Without the generations every root read live would wait in the chain from
+// its first reading.
+#[cfg(all(
+    feature = "wait-by-readings",
+    feature = "collector-chain",
+    not(feature = "hold-by-generation")
+))]
+compile_error!("`wait-by-readings` under `collector-chain` is built on `hold-by-generation`");
+// Two rules for when a lane goes back into R.
+#[cfg(all(feature = "wait-by-readings", feature = "lane-back-by-blocks"))]
+compile_error!("`wait-by-readings` and `lane-back-by-blocks` each own the lane's release");
 // The live core a collector's batch read, listed for the mutator to stamp at
 // its take from `POSTED` without a descent, or to drop under pressure.
 pub(crate) mod live_list;

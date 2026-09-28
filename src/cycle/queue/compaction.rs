@@ -115,7 +115,7 @@ pub(super) fn compact(
             discharge_block();
             return_surplus_block(mutator_state, block);
         };
-        mutator_state.deferred().retain(&mut keep, &mut give_back);
+        mutator_state.for_each_lane(|lane| lane.retain(&mut keep, &mut give_back));
         // The blocks a turn made due are swept in place: the close appends
         // to the lane alone, so a repack here moves no deferral of its own
         // among them.

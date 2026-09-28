@@ -56,6 +56,32 @@ const _: () = assert!(
     "a floor above one needs its accumulation"
 );
 
+/// Batch turns a root read live more than twice waits in the waiting part
+/// under `wait-by-readings`: the longest of the mutator's lanes' waits
+/// (`crate::cycle::queue`), so that both schemes read an old root at the same
+/// cadence. The block's stamp is the turn it becomes ready after.
+#[cfg(feature = "wait-by-readings")]
+pub(crate) const CHAIN_WAIT: u64 = 7;
+
+#[cfg(feature = "wait-by-readings")]
+const _: () = assert!(
+    CHAIN_WAIT % 4 != 0,
+    "a wait of a multiple of four meets the stamp's epoch again sooner"
+);
+
+/// The stamp a block of the waiting part takes at `turnovers`: the turn after
+/// which it becomes ready.
+fn stamp_at(turnovers: u64) -> u64 {
+    #[cfg(feature = "wait-by-readings")]
+    {
+        turnovers + CHAIN_WAIT - 1
+    }
+    #[cfg(not(feature = "wait-by-readings"))]
+    {
+        turnovers
+    }
+}
+
 /// A block for the chain, drawn on the collector's thread and charged whole
 /// to the GC ledger as a lane's block is; null when the pool refuses.
 fn fresh_block() -> *mut BlockHeader {
@@ -86,16 +112,22 @@ fn give_back(block: *mut BlockHeader) {
 }
 
 /// Whether `record`'s chain owes a grant: a ready part standing, or a
-/// waiting part whose oldest block the epoch has passed or whose last death
-/// check is `term` old at `now`. Atomic loads of the record alone.
+/// waiting part whose oldest block the epoch has passed, which an X turn owes
+/// whole under `wait-by-readings`, or whose last death check is `term` old at
+/// `now`. Atomic loads of the record alone.
 pub(crate) fn is_due(record: &MutatorRecord, now: u64, term: u64) -> bool {
     if record.chain_ready().len() > 0 {
         return true;
     }
 
     let waiting = record.chain_waiting();
+    #[cfg(feature = "wait-by-readings")]
+    let x_release = record.owes_the_x_release();
+    #[cfg(not(feature = "wait-by-readings"))]
+    let x_release = false;
     waiting.len() > 0
-        && (record.turnovers() > waiting.oldest_stamp()
+        && (x_release
+            || record.turnovers() > waiting.oldest_stamp()
             || now.saturating_sub(record.chain_checked_at()) >= term)
 }
 
@@ -108,12 +140,24 @@ pub(crate) fn is_due(record: &MutatorRecord, now: u64, term: u64) -> bool {
 /// The caller holds `record`'s token.
 pub(crate) unsafe fn expire(record: &MutatorRecord, mut stop: impl FnMut() -> bool) {
     let epoch = record.turnovers();
+    // An X turn makes every block ready, whatever its stamp: a wait counted in
+    // X turns would hold a dead ring seven of them.
+    #[cfg(feature = "wait-by-readings")]
+    let x_release = record.take_the_x_release();
+    #[cfg(feature = "wait-by-readings")]
+    let epoch = if x_release { u64::MAX } else { epoch };
     if let Some(due) = unsafe {
         record
             .chain_waiting()
             .detach_while(|stamp| stamp < epoch, &mut stop)
     } {
         unsafe { record.chain_ready().append(due) };
+    }
+    // A recall that stopped the release partway owes the rest of it to the
+    // next grant.
+    #[cfg(feature = "wait-by-readings")]
+    if x_release && record.chain_waiting().len() > 0 {
+        record.owe_the_x_release();
     }
     // A ready block the death check left with tombstones alone holds no
     // root, and no peek walks it: it goes back here.
@@ -265,7 +309,9 @@ pub(crate) unsafe fn commit_the_ready_part(record: &MutatorRecord, peek: ChainPe
 }
 
 /// Put `root`, read live, in the waiting part, its block stamped with the
-/// record's epoch and its entry with the lane's mark
+/// record's epoch — under `wait-by-readings` with the turn after which it is
+/// ready, `CHAIN_WAIT` − 1 past the epoch — and its entry with the lane's
+/// mark
 /// (`crate::cycle::queue::REOFFERED_MARK`), which a splice into R carries;
 /// false when the pool refused a block and the root is not in the chain.
 ///
@@ -280,7 +326,7 @@ pub(crate) unsafe fn keep_read_live(record: &MutatorRecord, root: *mut RcHeader,
     }
 
     let entry = root.expose_provenance() | crate::cycle::queue::REOFFERED_MARK;
-    let kept = unsafe { waiting.push(entry, record.turnovers(), fresh_block) }.is_ok();
+    let kept = unsafe { waiting.push(entry, stamp_at(record.turnovers()), fresh_block) }.is_ok();
     #[cfg(test)]
     if kept {
         crate::cycle::worker::testing::note_chain_push(false);
@@ -327,6 +373,9 @@ pub(crate) unsafe fn splice_the_whole_chain_into_r(record: &MutatorRecord) {
         splice(record, record.chain_ready());
         splice(record, record.chain_waiting());
     }
+    // Nothing is left for an X turn's release to make ready.
+    #[cfg(feature = "wait-by-readings")]
+    let _ = record.take_the_x_release();
 }
 
 /// Splice the ready part into R after its tail, packed, the waiting part's

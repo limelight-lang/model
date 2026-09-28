@@ -285,6 +285,10 @@ fn a_bulk_release_polls_on_its_own_backedge() {
 /// compaction has emptied the block after the tail block, the next growth
 /// moves into it and takes no spare and no reserve block.
 #[test]
+#[cfg_attr(
+    feature = "wait-by-readings",
+    ignore = "the fixture registers one entity a block over, so under `wait-by-readings` its third and later copies go to the third lane and the spare cells fund two lanes, not three; the lanes are `worker::tests::the_waits_by_readings`"
+)]
 fn a_consumed_block_is_written_again_without_a_spare() {
     let _g = test_guard();
     reset();

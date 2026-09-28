@@ -290,6 +290,10 @@ fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
     feature = "lane-back-by-blocks",
     ignore = "under `lane-back-by-blocks` the turn hands back one block (`the_turn_hands_back_one_block_and_the_polls_the_rest`)"
 )]
+#[cfg_attr(
+    feature = "wait-by-readings",
+    ignore = "the fixture registers one entity a block over, so under `wait-by-readings` its third and later copies go to the third lane and the spare cells fund two lanes, not three; the lanes are `worker::tests::the_waits_by_readings`"
+)]
 fn a_deferred_lane_of_two_blocks_is_spliced_back_whole() {
     let _g = test_guard();
     reset();
@@ -368,6 +372,10 @@ fn a_deferred_lane_of_two_blocks_is_spliced_back_whole() {
 #[cfg_attr(
     feature = "lane-back-by-blocks",
     ignore = "under `lane-back-by-blocks` the turn hands back one block (`the_turn_hands_back_one_block_and_the_polls_the_rest`)"
+)]
+#[cfg_attr(
+    feature = "wait-by-readings",
+    ignore = "the fixture registers one entity a block over, so under `wait-by-readings` its third and later copies go to the third lane and the spare cells fund two lanes, not three; the lanes are `worker::tests::the_waits_by_readings`"
 )]
 fn a_reoffer_at_a_poll_with_nothing_to_draw_splices_the_lane_in() {
     let _g = test_guard();

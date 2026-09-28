@@ -868,11 +868,19 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
 }
 
 /// The kept ring the two generation groups build on, `the_generations`
-/// (S65.31, on form D) and `the_generations_in_the_chain` (S65.32, on H), and
-/// `the_chain`'s live cores.
-#[cfg(any(feature = "deferral-by-generation", feature = "collector-chain"))]
+/// (S65.31, on form D) and `the_generations_in_the_chain` (S65.32, on H),
+/// `the_chain`'s live cores and `the_waits_by_readings` (S65.42).
+#[cfg(any(
+    feature = "deferral-by-generation",
+    feature = "collector-chain",
+    feature = "wait-by-readings"
+))]
 #[cfg_attr(
-    not(any(feature = "deferral-by-generation", feature = "hold-by-generation")),
+    not(any(
+        feature = "deferral-by-generation",
+        feature = "hold-by-generation",
+        feature = "wait-by-readings"
+    )),
     allow(dead_code, reason = "`the_chain` takes the ring alone")
 )]
 mod generation_fixtures {
@@ -1016,6 +1024,8 @@ mod the_rig;
 mod the_siblings;
 mod the_standing_list;
 mod the_take_after_an_interval;
+#[cfg(feature = "wait-by-readings")]
+mod the_waits_by_readings;
 mod under_stress;
 mod what_a_grown_k_costs;
 mod what_a_take_costs;

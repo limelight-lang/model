@@ -154,7 +154,7 @@ fn the_waiting_part_becomes_ready_when_the_epoch_passes_and_the_next_batch_reads
     ));
     assert_eq!(served_by_a_collector(), Served::Idle);
 
-    crate::cycle::epoch::turn_this_threads_cell();
+    turn_until_the_waiting_part_is_ready();
     assert!(crate::cycle::chain::is_due(
         record,
         serve_clock_now(),
@@ -376,7 +376,7 @@ fn beside_a_ready_part_r_takes_its_clamp_and_the_chain_up_to_half_the_bound() {
     while candidate_count() > 0 {
         assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
     }
-    crate::cycle::epoch::turn_this_threads_cell();
+    turn_until_the_waiting_part_is_ready();
     unsafe { &*record() }.set_batch_size(INITIAL_BATCH);
     let in_r = unsafe { kept_roots(&mut arena, node, 2 * INITIAL_BATCH) };
     let _ = testing::take_chain_figures();
@@ -410,7 +410,7 @@ fn where_p_holds_less_than_both_want_the_share_follows_the_chains_mass() {
     while candidate_count() > 0 {
         assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
     }
-    crate::cycle::epoch::turn_this_threads_cell();
+    turn_until_the_waiting_part_is_ready();
     unsafe { &*record() }.set_batch_size(INITIAL_BATCH);
     let in_r = unsafe { kept_roots(&mut arena, node, INITIAL_BATCH) };
     unsafe {
@@ -450,7 +450,7 @@ fn where_p_holds_less_than_both_want_r_and_the_chain_share_it_in_halves() {
     let mut arena = Arena::new();
     let chained = unsafe { kept_roots(&mut arena, node, 40) };
     assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
-    crate::cycle::epoch::turn_this_threads_cell();
+    turn_until_the_waiting_part_is_ready();
     let in_r = unsafe { kept_roots(&mut arena, node, 40) };
     unsafe {
         crate::cycle::queue::verdicts::testing::fill_for_test(crate::ring::BLOCK_ENTRIES - 10)
@@ -480,7 +480,7 @@ fn a_ready_part_alone_takes_the_whole_clamp() {
     let mut arena = Arena::new();
     let kept = unsafe { kept_roots(&mut arena, node, INITIAL_BATCH / 2) };
     assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
-    crate::cycle::epoch::turn_this_threads_cell();
+    turn_until_the_waiting_part_is_ready();
     let _ = testing::take_chain_figures();
 
     assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
@@ -510,7 +510,7 @@ fn the_round_serves_a_due_chain_whatever_r_reads() {
         served_by_a_collector(),
         Served::Batch { roots: 1, .. }
     ));
-    crate::cycle::epoch::turn_this_threads_cell();
+    turn_until_the_waiting_part_is_ready();
 
     let record = unsafe { &*record() };
     assert_eq!(
@@ -945,4 +945,17 @@ fn a_barren_laps_back_off_holds_the_next_epochs_lap() {
 
     unsafe { let_go(&kept) };
     reset();
+}
+
+/// Turn this thread's cell until the waiting part a batch filled now is
+/// ready: once, and under `wait-by-readings` the chain's wait
+/// (`crate::cycle::chain::CHAIN_WAIT`).
+fn turn_until_the_waiting_part_is_ready() {
+    #[cfg(feature = "wait-by-readings")]
+    let turns = crate::cycle::chain::CHAIN_WAIT;
+    #[cfg(not(feature = "wait-by-readings"))]
+    let turns = 1;
+    for _ in 0..turns {
+        crate::cycle::epoch::turn_this_threads_cell();
+    }
 }

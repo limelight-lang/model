@@ -97,6 +97,10 @@ fn a_root_that_outlived_an_epoch_goes_into_the_waiting_part() {
 /// puts it in the waiting part. Red with the generation not asked after the
 /// turn: the root goes on into P again.
 #[test]
+#[cfg_attr(
+    feature = "wait-by-readings",
+    ignore = "under `wait-by-readings` a root is young for two readings (`the_waits_by_readings::a_root_goes_into_the_chain_at_its_third_live_reading`)"
+)]
 fn a_young_root_read_again_after_the_turn_goes_into_the_waiting_part() {
     let _g = test_guard();
     reset();

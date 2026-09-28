@@ -11,7 +11,11 @@ use super::*;
 fn the_epoch_is_the_cells_low_two_bits() {
     assert_eq!(epoch_of(0), 0);
     assert_eq!(epoch_of(1), 1);
+    // Four bits under `wait-by-readings` (`crate::refcount::MATURATION_EPOCH_MASK`).
+    #[cfg(not(feature = "wait-by-readings"))]
     assert_eq!(epoch_of(EPOCHS - 1), 3);
+    #[cfg(feature = "wait-by-readings")]
+    assert_eq!(epoch_of(EPOCHS - 1), 15);
     assert_eq!(epoch_of(EPOCHS), 0);
     assert_eq!(epoch_of(EPOCHS * 5 + 2), 2);
 }

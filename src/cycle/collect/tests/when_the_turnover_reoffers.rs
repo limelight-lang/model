@@ -245,6 +245,9 @@ fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_advances_it
     assert_eq!(take_dispatches_in_mark_phase(), 0, "no mark ran");
     assert_eq!(deferred_count(), 0);
     assert_eq!(candidate_count(), 2, "the ring's roots stand in R");
+    // Under `wait-by-readings` a lane mirrors the byte when it fills, not
+    // when it goes back (`crate::cycle::queue::reoffer_the_lanes_due`).
+    #[cfg(not(feature = "wait-by-readings"))]
     assert_eq!(
         deferred_turnover_mirror(),
         (turnovers + 1) as u8,

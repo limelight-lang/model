@@ -277,6 +277,18 @@ struct MutatorCycleState {
     /// left of them whole.
     #[cfg(feature = "lane-back-by-blocks")]
     due: UnsafeCell<Chain>,
+    /// Under `wait-by-readings` the lanes of roots read live a second
+    /// time and a third or more, beside [`Self::deferred`], which holds roots
+    /// read live once; each goes back into R after its own wait
+    /// ([`LANE_WAITS`]), mirrored in `older_mirrors`, or at an X turn its
+    /// `x_mirrors` entry has not seen ([`reoffer_deferred_if_epoch_moved`]).
+    /// Every reader of the lane reads them too ([`Self::for_each_lane`]).
+    #[cfg(feature = "wait-by-readings")]
+    older: [UnsafeCell<Chain>; LANES - 1],
+    #[cfg(feature = "wait-by-readings")]
+    older_mirrors: [Cell<u8>; LANES - 1],
+    #[cfg(feature = "wait-by-readings")]
+    x_mirrors: [Cell<u8>; LANES],
     /// Entries in the base block no allocation path could fund a block
     /// for, written oldest first, which is the order every walk of the buffer
     /// reads them in. [`drain_overflow`] empties it from the other end, so
@@ -301,7 +313,9 @@ struct MutatorCycleState {
     /// deferred lane saw them, or as the poll that last re-offered it read
     /// the collector's byte ([`reoffer_deferred_if_epoch_moved`]). Only
     /// inequality is asked of it, so eight bits tell every advance apart but
-    /// the 256th.
+    /// the 256th. Under `wait-by-readings` it is the first lane's mirror,
+    /// set when the lane fills and read as a signed difference against the
+    /// lane's wait (`reoffer_the_lanes_due`).
     turnover_mirror: Cell<u8>,
     /// The collector's byte at the turn that made the blocks in `due` due,
     /// on `turnover_mirror`'s terms: the next advance past it hands them
@@ -332,11 +346,36 @@ thread_local! {
     static MUTATOR_STATE: Cell<*mut MutatorCycleState> = const { Cell::new(std::ptr::null_mut()) };
 }
 
-#[cfg(not(feature = "lane-back-by-blocks"))]
+#[cfg(not(any(feature = "lane-back-by-blocks", feature = "wait-by-readings")))]
 const _: () = assert!(size_of::<MutatorCycleState>() == 64);
-// The due blocks' chain takes the state past one line.
-#[cfg(feature = "lane-back-by-blocks")]
+// The due blocks' chain, or the older lanes, take the state past one line.
+#[cfg(any(feature = "lane-back-by-blocks", feature = "wait-by-readings"))]
 const _: () = assert!(size_of::<MutatorCycleState>() == 128);
+
+/// Deferred lanes under `wait-by-readings`: a root read live for the
+/// k-th time waits in lane k − 1, the third lane taking every reading past
+/// the second.
+#[cfg(feature = "wait-by-readings")]
+const LANES: usize = 3;
+
+/// Batch turns a root waits in each lane before it goes back into R. None is
+/// a multiple of four: the stamp's epoch is sixteen wide under the feature,
+/// and a wait of four or eight beside a turn of lag would still meet it
+/// again sooner than the waits' least common gap (`dev/plans/S65.md`, S65.42).
+#[cfg(feature = "wait-by-readings")]
+const LANE_WAITS: [u8; LANES] = [1, 3, 7];
+
+#[cfg(feature = "wait-by-readings")]
+const _: () = assert!(LANE_WAITS[0] % 4 != 0 && LANE_WAITS[1] % 4 != 0 && LANE_WAITS[2] % 4 != 0);
+
+/// The lanes a root read live is deferred into: all three in D; under
+/// `collector-chain` the first two, the chain holding a root read live more
+/// than twice at the third wait (`crate::cycle::chain::CHAIN_WAIT`), and a
+/// root the chain refused waiting in the second.
+#[cfg(all(feature = "wait-by-readings", not(feature = "collector-chain")))]
+const LANES_DEFERRED_INTO: usize = LANES;
+#[cfg(all(feature = "wait-by-readings", feature = "collector-chain"))]
+const LANES_DEFERRED_INTO: usize = 2;
 const _: () = assert!(align_of::<MutatorCycleState>() == 64);
 const _: () = assert!(POLL_STRIDE * 2 <= OVERFLOW_CAPACITY);
 const _: () = assert!(ring::BLOCK_ENTRIES > OVERFLOW_CAPACITY / 2);
@@ -349,6 +388,12 @@ impl MutatorCycleState {
             deferred: UnsafeCell::new(Chain::empty()),
             #[cfg(feature = "lane-back-by-blocks")]
             due: UnsafeCell::new(Chain::empty()),
+            #[cfg(feature = "wait-by-readings")]
+            older: [const { UnsafeCell::new(Chain::empty()) }; LANES - 1],
+            #[cfg(feature = "wait-by-readings")]
+            older_mirrors: [const { Cell::new(0) }; LANES - 1],
+            #[cfg(feature = "wait-by-readings")]
+            x_mirrors: [const { Cell::new(0) }; LANES],
             spare_count: Cell::new(0),
             overflow_len: Cell::new(0),
             signal_due: Cell::new(false),
@@ -377,14 +422,46 @@ impl MutatorCycleState {
         unsafe { &mut *self.due.get() }
     }
 
-    /// Records in the deferred lane and, under `lane-back-by-blocks`, in the
+    /// Lane `index`, the first being [`Self::deferred`], on its terms.
+    #[cfg(feature = "wait-by-readings")]
+    #[allow(clippy::mut_from_ref)]
+    fn lane(&self, index: usize) -> &mut Chain {
+        match index {
+            0 => self.deferred(),
+            // As `deferred`.
+            _ => unsafe { &mut *self.older[index - 1].get() },
+        }
+    }
+
+    /// The turnover byte lane `index` mirrored when it last filled.
+    #[cfg(feature = "wait-by-readings")]
+    fn lane_mirror(&self, index: usize) -> &Cell<u8> {
+        match index {
+            0 => &self.turnover_mirror,
+            _ => &self.older_mirrors[index - 1],
+        }
+    }
+
+    /// `visit` over every deferred lane: the one lane, and under
+    /// `wait-by-readings` the older ones after it.
+    fn for_each_lane(&self, mut visit: impl FnMut(&mut Chain)) {
+        visit(self.deferred());
+        #[cfg(feature = "wait-by-readings")]
+        for index in 1..LANES {
+            visit(self.lane(index));
+        }
+    }
+
+    /// Records in the deferred lanes and, under `lane-back-by-blocks`, in the
     /// blocks a turn made due.
     fn deferred_len(&self) -> usize {
         #[cfg(feature = "lane-back-by-blocks")]
         let due = self.due().len();
         #[cfg(not(feature = "lane-back-by-blocks"))]
         let due = 0;
-        self.deferred().len() + due
+        let mut lanes = 0;
+        self.for_each_lane(|lane| lanes += lane.len());
+        lanes + due
     }
 
     /// Whether [`Self::deferred_len`] is zero.
@@ -393,7 +470,9 @@ impl MutatorCycleState {
         let due = self.due().is_empty();
         #[cfg(not(feature = "lane-back-by-blocks"))]
         let due = true;
-        self.deferred().is_empty() && due
+        let mut lanes = true;
+        self.for_each_lane(|lane| lanes &= lane.is_empty());
+        lanes && due
     }
 }
 
@@ -1181,7 +1260,10 @@ pub(crate) const DEFERRED_MARK: usize = 1;
 /// having outlived an epoch (`dev/plans/S65.md`, S65.32 and S65.33): the lane
 /// comes back at a turn, except under pressure (`collect_under_pressure`) and
 /// at `ll_gc_reoffer_deferred`, which re-offer it without one, so a root read
-/// live there reads old one epoch early and goes into the chain.
+/// live there reads old one epoch early and goes into the chain. Under
+/// `wait-by-readings` the mark is written and kept as here and read by no
+/// batch: the count of live readings in the header decides the generation
+/// (`crate::refcount::SURVIVED_READINGS_MASK`).
 pub(crate) const REOFFERED_MARK: usize = 4;
 
 /// The low bits of an entry that carry a mark, masked off wherever an entry
@@ -1472,12 +1554,12 @@ pub(crate) fn reoffer_deferred_candidates() {
     let mutator_state = unsafe { mutator_state_ref(state) };
     #[cfg(feature = "lane-back-by-blocks")]
     reoffer_the_due_blocks(mutator_state);
-    let Some((first, last)) = mutator_state.deferred().take() else {
-        return;
-    };
-
-    let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
-    unsafe { writer.splice_after_tail(first, last) };
+    mutator_state.for_each_lane(|lane| {
+        if let Some((first, last)) = lane.take() {
+            let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
+            unsafe { writer.splice_after_tail(first, last) };
+        }
+    });
 }
 
 /// Splice the blocks `first` to `last` into R after its tail block.
@@ -1526,8 +1608,9 @@ pub(crate) fn reoffer_an_owed_block() -> bool {
 }
 
 /// Re-offer the deferred lane exactly once after the collector advanced this
-/// mutator's epoch past the mirror the lane recorded. Returns whether it
-/// moved any records.
+/// mutator's epoch past the mirror the lane recorded, or under
+/// `wait-by-readings` each lane whose wait the advances passed
+/// (`reoffer_the_lanes_due`). Returns whether it moved any records.
 ///
 /// The caller is the safepoint poll. The comparison reads the byte the
 /// collector stores beside the token at every advance
@@ -1556,6 +1639,20 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
     }
 
     let byte = this_thread_record_ref().turnover_byte();
+    #[cfg(feature = "wait-by-readings")]
+    {
+        reoffer_the_lanes_due(mutator_state, byte)
+    }
+    #[cfg(not(feature = "wait-by-readings"))]
+    {
+        reoffer_the_lane_at_the_turn(mutator_state, byte)
+    }
+}
+
+/// The one lane's re-offer of [`reoffer_deferred_if_epoch_moved`], and under
+/// `lane-back-by-blocks` the blocks a turn made due.
+#[cfg(not(feature = "wait-by-readings"))]
+fn reoffer_the_lane_at_the_turn(mutator_state: &MutatorCycleState, byte: u8) -> bool {
     // Under `lane-back-by-blocks` the blocks a turn made due go at the next
     // advance, even where a close has since filled the lane and moved its
     // mirror past that advance.
@@ -1598,6 +1695,43 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
     reoffer_deferred_candidates();
     this_thread_record_ref().note_a_merge();
     true
+}
+
+/// Hand back into R, under `wait-by-readings`, every lane whose wait the
+/// collector's byte `byte` has passed since the lane filled, and every lane
+/// filled before an X turn it did not see; answers whether any moved. The
+/// difference is read signed, so a byte a racing advance left behind the
+/// mirror (`crate::cycle::mutator_record::MutatorRecord::advance_the_epoch`)
+/// reads as not yet due rather than as 255 turns late.
+#[cfg(feature = "wait-by-readings")]
+fn reoffer_the_lanes_due(mutator_state: &MutatorCycleState, byte: u8) -> bool {
+    let x_turns = this_thread_record_ref().x_turns();
+    let mut moved = false;
+    for index in 0..LANES {
+        let lane = mutator_state.lane(index);
+        if lane.is_empty() {
+            continue;
+        }
+
+        let behind = byte.wrapping_sub(mutator_state.lane_mirror(index).get()) as i8;
+        if behind < LANE_WAITS[index] as i8 && x_turns == mutator_state.x_mirrors[index].get() {
+            continue;
+        }
+
+        #[cfg(test)]
+        crate::cycle::worker::testing::note_reoffered(lane.len());
+        let Some((first, last)) = lane.take() else {
+            continue;
+        };
+        let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
+        unsafe { writer.splice_after_tail(first, last) };
+        moved = true;
+    }
+
+    if moved {
+        this_thread_record_ref().note_a_merge();
+    }
+    moved
 }
 
 /// Whether this mutator's deferred lane holds a record, or under
@@ -1671,19 +1805,43 @@ fn defer_entry(
     entity: *mut RcHeader,
     at_turnovers: Option<u64>,
 ) -> Result<(), ring::NoBlock> {
-    let lane_was_empty = mutator_state.deferred().is_empty();
-    mutator_state
-        .deferred()
-        .push(entity_entry(entity) | REOFFERED_MARK, || {
-            let block = take_spare(mutator_state);
-            if !block.is_null() {
-                charge_block();
-            }
-            block
-        })?;
+    // The lane of this reading's count, which a refused push leaves unmoved.
+    #[cfg(feature = "wait-by-readings")]
+    let index = (unsafe { crate::refcount::survived_readings(entity) } as usize + 1)
+        .min(LANES_DEFERRED_INTO)
+        - 1;
+    #[cfg(feature = "wait-by-readings")]
+    let lane = mutator_state.lane(index);
+    #[cfg(not(feature = "wait-by-readings"))]
+    let lane = mutator_state.deferred();
+    let lane_was_empty = lane.is_empty();
+    lane.push(entity_entry(entity) | REOFFERED_MARK, || {
+        let block = take_spare(mutator_state);
+        if !block.is_null() {
+            charge_block();
+        }
+        block
+    })?;
+    #[cfg(feature = "wait-by-readings")]
+    unsafe {
+        crate::refcount::count_a_survived_reading(entity)
+    };
 
     if lane_was_empty {
         if let Some(at_turnovers) = at_turnovers {
+            #[cfg(feature = "wait-by-readings")]
+            {
+                // The X count is read now and the turnovers at the reading:
+                // where the clock moved between the two, the move may have
+                // been an X turn, and the mirror takes the count before it,
+                // so the lane goes at the next poll rather than at the next
+                // X turn.
+                let record = this_thread_record_ref();
+                let moved = (record.turnover_byte().wrapping_sub(at_turnovers as u8) as i8) > 0;
+                mutator_state.lane_mirror(index).set(at_turnovers as u8);
+                mutator_state.x_mirrors[index].set(record.x_turns().wrapping_sub(u8::from(moved)));
+            }
+            #[cfg(not(feature = "wait-by-readings"))]
             mutator_state.turnover_mirror.set(at_turnovers as u8);
         }
         // The signal births the elder whose rounds advance the clock the
@@ -1872,7 +2030,7 @@ pub(crate) fn release_queue_segments() {
         discharge_block();
         gc_metadata::release_to_critical(block);
     };
-    mutator_state.deferred().dismantle(give_back);
+    mutator_state.for_each_lane(|lane| lane.dismantle(give_back));
     #[cfg(feature = "lane-back-by-blocks")]
     mutator_state.due().dismantle(give_back);
 
@@ -1952,12 +2110,19 @@ fn standing_verdict_count() -> usize {
 /// `entity`, as if the root had come back from the deferred lane at a turn: a
 /// case's way to hand the collector a root of the second generation under
 /// `hold-by-generation`, or to give an entry the mark the passes over R keep
-/// ([`REOFFERED_MARK`]).
+/// ([`REOFFERED_MARK`]). Under `wait-by-readings`, where the count of live
+/// readings in the header decides the generation, the root is given the two
+/// readings that make it old as well.
 #[cfg(test)]
 pub(crate) fn mark_as_reoffered(entity: *mut RcHeader) {
     let Some(ring) = candidate_ring() else {
         return;
     };
+
+    #[cfg(feature = "wait-by-readings")]
+    while unsafe { crate::refcount::survived_readings(entity) } < 2 {
+        unsafe { crate::refcount::count_a_survived_reading(entity) };
+    }
 
     ring.map_prefix_in_place(ring.count(), |slot| {
         if entry_entity(*slot) == entity {
@@ -2027,9 +2192,7 @@ pub(crate) fn collect_lane_tokens(out: &mut Vec<*mut RcHeader>) {
         });
     }
 
-    mutator_state
-        .deferred()
-        .walk(|entry| out.push(entry_entity(entry)));
+    mutator_state.for_each_lane(|lane| lane.walk(|entry| out.push(entry_entity(entry))));
     #[cfg(feature = "lane-back-by-blocks")]
     mutator_state
         .due()
@@ -2073,7 +2236,9 @@ pub(crate) fn deferred_segment_count() -> usize {
     let due = mutator_state.due().block_count();
     #[cfg(not(feature = "lane-back-by-blocks"))]
     let due = 0;
-    mutator_state.deferred().block_count() + due
+    let mut lanes = 0;
+    mutator_state.for_each_lane(|lane| lanes += lane.block_count());
+    lanes + due
 }
 
 /// Spares this thread holds.

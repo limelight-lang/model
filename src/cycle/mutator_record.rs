@@ -126,13 +126,22 @@ pub(crate) struct MutatorRecord {
     /// ([`HoldLine::turnovers`]), stored by the collector at every advance
     /// and by nobody else. The poll that finds the deferred lane occupied
     /// compares it with the lane's mirror and re-offers the lane when the two
-    /// differ (`crate::gc`, the poll; `crate::cycle::queue`, the deferred
+    /// differ — under `wait-by-readings`, when the byte is a lane's wait past
+    /// it (`crate::gc`, the poll; `crate::cycle::queue`, the deferred
     /// lane). On this line because the poll reads the token beside it.
     /// Relaxed on both sides: nothing is published beside it, and a byte read
     /// late delays the re-offer by one poll, never a wrong free. Eight bits
     /// wrap at 256 turnovers, which at X is over half an hour of a thread
     /// that never polls; the price of the alias is one more X.
     turnover: AtomicU8,
+    /// Turns the collector's X arm made, as against its 64 batches, counted
+    /// modulo 256 by the collector alone at each advance that arm makes
+    /// (`wait-by-readings`). A deferred lane mirrors it when it fills and
+    /// goes back into R at the first poll that reads it moved, whatever the
+    /// lane's wait: an X turn comes at X, so a wait counted in such turns would
+    /// hold a dead ring 7 X. Relaxed on both sides, as `turnover` is.
+    #[cfg(feature = "wait-by-readings")]
+    x_turns: AtomicU8,
     /// The next free record, meaningful while this one is on the registry's
     /// free list and written under its lock alone.
     free_link: Cell<*mut MutatorRecord>,
@@ -185,6 +194,11 @@ struct ChainLine {
     lap_read: AtomicUsize,
     #[cfg(any(test, feature = "death-check-back-off"))]
     lap_taken: AtomicUsize,
+    /// Set by the collector's X arm at its advance and taken by the next
+    /// expiry, which then makes the whole waiting part ready
+    /// (`wait-by-readings`): the chain's wait is counted in batch turns.
+    #[cfg(feature = "wait-by-readings")]
+    x_release_owed: std::sync::atomic::AtomicBool,
 }
 
 /// The line the collector writes: where it reads R from, where it posts
@@ -532,6 +546,8 @@ impl MutatorRecord {
         Self {
             token: TraceToken::new_held(),
             turnover: AtomicU8::new(0),
+            #[cfg(feature = "wait-by-readings")]
+            x_turns: AtomicU8::new(0),
             free_link: Cell::new(std::ptr::null_mut()),
             #[cfg(test)]
             pinned: AtomicBool::new(false),
@@ -565,6 +581,8 @@ impl MutatorRecord {
                 lap_read: AtomicUsize::new(0),
                 #[cfg(any(test, feature = "death-check-back-off"))]
                 lap_taken: AtomicUsize::new(0),
+                #[cfg(feature = "wait-by-readings")]
+                x_release_owed: std::sync::atomic::AtomicBool::new(false),
             },
         }
     }
@@ -904,6 +922,48 @@ impl MutatorRecord {
         self.turnover.store(turnovers as u8, Ordering::Relaxed);
         self.hold.advanced_at.store(now, Ordering::Relaxed);
         self.hold.batches_since.store(0, Ordering::Relaxed);
+    }
+
+    /// Count one turn the X arm made, on the collector's thread, after
+    /// [`Self::advance_the_epoch`]: the byte the lanes mirror, and under
+    /// `collector-chain` the chain's release of its whole waiting part.
+    #[cfg(feature = "wait-by-readings")]
+    #[inline]
+    pub(crate) fn note_an_x_turn(&self) {
+        self.x_turns.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "collector-chain")]
+        self.chain.x_release_owed.store(true, Ordering::Relaxed);
+    }
+
+    /// The count [`Self::note_an_x_turn`] keeps, on the mutator's thread.
+    #[cfg(feature = "wait-by-readings")]
+    #[inline]
+    pub(crate) fn x_turns(&self) -> u8 {
+        self.x_turns.load(Ordering::Relaxed)
+    }
+
+    /// Whether an X turn is owed the chain's whole waiting part, and clear it:
+    /// the token holder's expiry.
+    #[cfg(all(feature = "wait-by-readings", feature = "collector-chain"))]
+    #[inline]
+    pub(crate) fn take_the_x_release(&self) -> bool {
+        self.chain.x_release_owed.swap(false, Ordering::Relaxed)
+    }
+
+    /// Owe the chain's release again: an expiry a recall stopped with blocks
+    /// of the waiting part left.
+    #[cfg(all(feature = "wait-by-readings", feature = "collector-chain"))]
+    #[inline]
+    pub(crate) fn owe_the_x_release(&self) {
+        self.chain.x_release_owed.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether [`Self::take_the_x_release`] would answer true: the round's
+    /// reading of whether the chain owes a grant.
+    #[cfg(all(feature = "wait-by-readings", feature = "collector-chain"))]
+    #[inline]
+    pub(crate) fn owes_the_x_release(&self) -> bool {
+        self.chain.x_release_owed.load(Ordering::Relaxed)
     }
 
     /// The collector's clock at the last advance, or zero for a life no

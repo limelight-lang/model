@@ -516,7 +516,7 @@ Notes: dev/plans/S65.md
         отложенных корней чтобы не читалась каждый раз по 10000 раз!!!!! 2
         круга критик и мудрец")
       done: the Sage's round-2 spec (`dev/plans/S65.md`, S65.42) built behind
-        `wait-by-live-readings` in both schemes — the waits 1, 3 and 7 batch
+        `wait-by-readings` in both schemes — the waits 1, 3 and 7 batch
         turns by the count of live readings in byte 6, the X arm's release on
         a byte of its own, an aliased root skipped untraced; red first on the
         Sage's cases; the gate green on D, HG and both best builds; best D

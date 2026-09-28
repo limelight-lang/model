@@ -210,7 +210,10 @@ pub const IS_ESCAPEE: u32 = 1 << 11;
 
 /// Byte 6 of the header, where the collector keeps the maturation stamp: the
 /// epoch it was written in at bits 16-17, the age at 18-19, and bits 20-23
-/// reserved (`rfc/model/classes.md`, "Flags layout").
+/// reserved (`rfc/model/classes.md`, "Flags layout"). Under
+/// `wait-by-readings` the byte is laid out again whole: the epoch at 16-19,
+/// the age at 20-21 and the count of live readings at 22-23
+/// (`SURVIVED_READINGS_MASK`).
 ///
 /// The byte has one writer, the owning thread — its commit
 /// ([`write_maturation_stamp`]) and its take of a collector's live list
@@ -223,12 +226,76 @@ const MATURATION_STAMP_BYTE: usize = 6;
 /// The maturation epoch, bits 16-17: which epoch's collection wrote the age
 /// beside it. An age under any other epoch reads as no age at all, which is
 /// what retires a stamp without clearing it in place.
+#[cfg(not(feature = "wait-by-readings"))]
 pub(crate) const MATURATION_EPOCH_MASK: u32 = 0b11 << 16;
+
+/// The maturation epoch under `wait-by-readings`, bits 16-19: a root
+/// that waits up to seven turns between two readings would meet a two-bit
+/// epoch again after four, and its members' stamps of the last reading would
+/// read current and be pruned at; sixteen epochs put that gap past the
+/// longest wait (`dev/plans/S65.md`, S65.42).
+#[cfg(feature = "wait-by-readings")]
+pub(crate) const MATURATION_EPOCH_MASK: u32 = 0b1111 << 16;
 
 /// The maturation age, bits 18-19: how many consecutive collections of the
 /// epoch read the entity's component as externally referenced, counted from
 /// one and saturated at [`MATURATION_AGE_MAX`].
+#[cfg(not(feature = "wait-by-readings"))]
 pub(crate) const MATURATION_AGE_MASK: u32 = 0b11 << 18;
+
+/// The maturation age under `wait-by-readings`, bits 20-21, above the
+/// wider epoch.
+#[cfg(feature = "wait-by-readings")]
+pub(crate) const MATURATION_AGE_MASK: u32 = 0b11 << 20;
+
+/// Bits 22-23 under `wait-by-readings`: how many times a collection read
+/// this candidate live and its root was deferred, saturated at three, which
+/// picks the deferred lane it waits in (`crate::cycle::queue`). Written by the
+/// owning thread alone, at the deferral, by the byte-wide read-modify-write
+/// the stamp's writers use; read by a collector at its post under the token,
+/// whose hand-off orders the two. Zeroed by the publication's store of the
+/// whole word, and not otherwise: the candidate bit is cleared only before the
+/// free, so a root registers once a life and its count never needs a reset.
+#[cfg(feature = "wait-by-readings")]
+pub(crate) const SURVIVED_READINGS_MASK: u32 = 0b11 << 22;
+
+/// [`SURVIVED_READINGS_MASK`] inside byte 6.
+#[cfg(feature = "wait-by-readings")]
+const SURVIVED_READINGS_IN_BYTE: u8 = (SURVIVED_READINGS_MASK >> MATURATION_STAMP_SHIFT) as u8;
+
+/// The count [`SURVIVED_READINGS_MASK`] holds for `header`.
+///
+/// # Safety
+/// `header` points at a live published entity, read by its owner or by a
+/// collector holding the owner's token.
+#[cfg(feature = "wait-by-readings")]
+#[inline]
+pub(crate) unsafe fn survived_readings(header: *const RcHeader) -> u32 {
+    let byte = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) };
+    ((byte & SURVIVED_READINGS_IN_BYTE) >> SURVIVED_READINGS_IN_BYTE.trailing_zeros()) as u32
+}
+
+/// Count one live reading of `header`'s root, saturating, and answer the new
+/// count; the rest of byte 6 stays as it stands.
+///
+/// # Safety
+/// As [`write_maturation_stamp`].
+#[cfg(feature = "wait-by-readings")]
+#[inline]
+pub(crate) unsafe fn count_a_survived_reading(header: *mut RcHeader) -> u32 {
+    let byte = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) };
+    let shift = SURVIVED_READINGS_IN_BYTE.trailing_zeros();
+    let count =
+        (((byte & SURVIVED_READINGS_IN_BYTE) >> shift) + 1).min(SURVIVED_READINGS_IN_BYTE >> shift);
+    unsafe {
+        header_byte_store(
+            header,
+            MATURATION_STAMP_BYTE,
+            (byte & !SURVIVED_READINGS_IN_BYTE) | (count << shift),
+        )
+    };
+    count as u32
+}
 
 /// The two fields as they sit inside byte 6, derived from the flags-word masks
 /// above so that the two forms cannot drift apart: the byte's bit 0 is the
