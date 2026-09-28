@@ -63,7 +63,10 @@ criterion, and it leaves when it gets one or when it is ruled on.
   for.
 - **D and HG, one or both; the four features of S65.36.** The Sage of
   2026-09-28 keeps D and would delete the loser after one bounded experiment,
-  not keep both; Edmond is inclined to keep both. Whether G1, G3, M1 and S1b
+  not keep both; Edmond is inclined to keep both. On the repaired rig
+  (S65.42) the two best builds tie in every cell but one, the chain carrying
+  little once a root waits by its readings, and the model recommends D, the
+  scheme with less machinery at the same price. Whether G1, G3, M1 and S1b
   stay or go is Edmond's (`dev/BENCHMARKS.md`, "S65.36: G1, G3, M1 and S1b").
 - **The long-iteration gate against the tail.** On `live-churn` HG has more
   iterations over 200 µs than D but p99 0.98–1.18 ms against 1.57–1.70 ms and
@@ -546,6 +549,24 @@ Notes: dev/plans/S65.md
         2026-09-27: "попробуй")
       handoff: superseded by S65.42 (the Sage, 2026-09-28, Final): the ladder
         of waits carries it in both schemes; not built.
+- [ ] S65.43 The memory manager's draw of a fresh block hands the older
+        lanes back early (Edmond, 2026-09-28: "запиши это как следующую
+        оптимизацию, которая должна сократить объём памяти, что висит")
+      done: on S65.42's build, behind its own feature: where the mutator's
+        allocation finds no free slot and the memory manager draws a fresh
+        block, the lanes waiting 3 and 7 turns go back into R at the next
+        poll whatever their waits, so that without a shortage a long-lived
+        root is still read seldom and under a growing heap a ring dead
+        behind an old root is found at the next batch; the design through
+        the Critic and the Sage first (the signal's cost on the allocation's
+        slow path, a bound on how often it releases, the chain's wait under
+        HG); red first on "a ring dead behind a root of the longest wait is
+        freed at the batch after a fresh block's draw"; measured against
+        S65.42's best builds on the five loads, the heap at the stop of
+        `live-churn` (36.9 MB against D's 10.0) and `deferred-then-dead`'s
+        remnant (12.7 MB, last free 8.6 s) the figures it is built to cut,
+        the mutator's instructions and the re-reads beside them
+      tier: T2 · role: Critic, Sage
 - [ ] S65.41 The epoch turns no sooner than a floor of time, whatever the
         batches (the Sage, 2026-09-28: on `registered-ring-interleaved` HG
         re-reads its chained live roots 1.93 M times a cell, about 83 epochs
