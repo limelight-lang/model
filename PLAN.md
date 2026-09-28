@@ -567,10 +567,26 @@ Notes: dev/plans/S65.md
         HG); red first on "a ring dead behind a root of the longest wait is
         freed at the batch after a fresh block's draw"; measured against
         S65.42's best builds on the five loads, the heap at the stop of
-        `live-churn` (36.9 MB against D's 10.0) and `deferred-then-dead`'s
-        remnant (12.7 MB, last free 8.6 s) the figures it is built to cut,
-        the mutator's instructions and the re-reads beside them
+        `live-churn` (36.9 MB against D's 10.0) the figure it is built to
+        cut, the mutator's instructions and the re-reads beside them
+      amended by the Sage, 2026-09-28, Final (`dev/plans/S65.md`, S65.43):
+        the draw is read as the entity heap's net count of blocks owned, a
+        crossing at a quarter over its low-water level hands back every lane
+        a turn old and under HG owes the chain's release; the cases a–i of
+        the ruling; instructions over the loop and the drain read against
+        the best builds; `deferred-then-dead`'s remnant (12.7 MB, last free
+        8.6 s) is not a figure this signal can cut, the drain drawing no
+        block, and stays in the table
       tier: T2 · role: Critic, Sage
+      Critic, Sage 2026-09-28: `dev/plans/S65.md`, S65.43
+- [ ] S65.44 A silent death on an old candidate releases the lanes (the
+        Critic of S65.43, 2026-09-28; put to Edmond, not built)
+      done: Edmond rules whether a per-thread count of non-final decrements
+        on an entity already a candidate with two or more live readings,
+        read at the poll, releases the lanes as S65.43's crossing does —
+        the signal that fires on `deferred-then-dead`, where no block is
+        drawn; if yes, built and measured as S65.43 is
+      tier: T2 · role: Critic
 - [ ] S65.41 The epoch turns no sooner than a floor of time, whatever the
         batches (the Sage, 2026-09-28: on `registered-ring-interleaved` HG
         re-reads its chained live roots 1.93 M times a cell, about 83 epochs
