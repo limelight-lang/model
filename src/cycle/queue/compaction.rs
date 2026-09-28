@@ -101,22 +101,26 @@ pub(super) fn compact(
     };
 
     if sweep_deferred {
-        mutator_state.deferred().retain(
-            |entry| {
-                note_queue_work(0, 1, 0);
-                let entity = entry_entity(entry);
-                if !completed_death(entity) {
-                    return true;
-                }
+        let mut keep = |entry| {
+            note_queue_work(0, 1, 0);
+            let entity = entry_entity(entry);
+            if !completed_death(entity) {
+                return true;
+            }
 
-                free(entity);
-                false
-            },
-            |block| {
-                discharge_block();
-                return_surplus_block(mutator_state, block);
-            },
-        );
+            free(entity);
+            false
+        };
+        let mut give_back = |block| {
+            discharge_block();
+            return_surplus_block(mutator_state, block);
+        };
+        mutator_state.deferred().retain(&mut keep, &mut give_back);
+        // The blocks a turn made due are swept in place: the close appends
+        // to the lane alone, so a repack here moves no deferral of its own
+        // among them.
+        #[cfg(feature = "lane-back-by-blocks")]
+        mutator_state.due().retain(&mut keep, &mut give_back);
     }
 
     if let Some(ring) = ring {

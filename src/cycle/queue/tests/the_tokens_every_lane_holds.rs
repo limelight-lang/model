@@ -587,13 +587,14 @@ fn the_turn_hands_back_one_block_and_the_polls_the_rest() {
     reset();
 }
 
-/// Under `lane-back-by-blocks` the blocks the turn made due are out of the
-/// close's reach: a sweep that frees a death among them does not repack them,
-/// so the poll hands back what the turn made due and none of what the lane
-/// took after it (`dev/plans/S65.md`, S65.36, the Critic's finding 1).
+/// Under `lane-back-by-blocks` the close's sweep frees a completed death among
+/// the blocks the turn made due and appends none of its deferrals to them, so
+/// the poll hands back what the turn made due, less the death, and none of
+/// what the lane took after it (`dev/plans/S65.md`, S65.36, the Critic's
+/// findings 1 and, of the second round, D).
 #[test]
 #[cfg(feature = "lane-back-by-blocks")]
-fn a_sweep_after_the_turn_leaves_the_due_blocks_as_the_turn_made_them() {
+fn a_sweep_after_the_turn_frees_a_due_death_and_keeps_its_deferrals_off_the_due_blocks() {
     let _g = test_guard();
     reset();
     let mut arena = Arena::new();
@@ -632,11 +633,50 @@ fn a_sweep_after_the_turn_leaves_the_due_blocks_as_the_turn_made_them() {
     assert!(reoffer_an_owed_block());
     assert_eq!(
         (candidate_count(), deferred_count()),
-        (BLOCK_ENTRIES, BLOCK_ENTRIES + 2),
-        "the due block back whole, every deferral after the turn waiting"
+        (BLOCK_ENTRIES - 1, BLOCK_ENTRIES + 2),
+        "the due block back less the death, every deferral after the turn waiting"
     );
 
-    unsafe { retire_candidates() };
+    reset();
+}
+
+/// Under `lane-back-by-blocks` the blocks a turn made due go back at the next
+/// advance even where a close filled the empty lane after that advance, which
+/// moves the lane's mirror past it.
+#[test]
+#[cfg(feature = "lane-back-by-blocks")]
+fn the_due_blocks_go_at_the_next_advance_whatever_the_lanes_mirror_reads() {
+    let _g = test_guard();
+    reset();
+
+    // A lane of three blocks: after the turn, one due block and an empty lane.
+    let mut fillers = [candidate(2), candidate(2)];
+    let mut grew = [candidate(2), candidate(2)];
+    for round in 0..2 {
+        assert!(refill_spares());
+        unsafe { ring_of_two_blocks(&raw mut fillers[round], &raw mut grew[round]) };
+        assert!(refill_spares());
+        defer_candidates(read_batch(), 0);
+    }
+    assert!(reoffer_after_an_advance());
+    assert_eq!(deferred_count(), BLOCK_ENTRIES, "the middle block due");
+
+    // The collector advances, and a close reads the new byte and defers R's
+    // records into the empty lane, its mirror that byte.
+    let record = crate::cycle::mutator_record::this_thread_record();
+    crate::cycle::epoch::turn_this_threads_cell();
+    let turnovers = unsafe { (*record).turnovers() };
+    assert!(refill_spares());
+    defer_candidates(read_batch(), turnovers);
+    assert_eq!(deferred_turnover_mirror(), turnovers as u8);
+
+    assert!(reoffer_deferred_if_epoch_moved());
+    assert_eq!(
+        (candidate_count(), deferred_count()),
+        (BLOCK_ENTRIES, BLOCK_ENTRIES + 2),
+        "the due block back, the close's deferrals waiting for the next advance"
+    );
+
     reset();
 }
 

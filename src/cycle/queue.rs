@@ -270,11 +270,11 @@ struct MutatorCycleState {
     /// The full blocks of the deferred lane a turn made due and the polls
     /// have not yet handed back into R, under `lane-back-by-blocks`
     /// ([`reoffer_an_owed_block`]). The turn takes them off the lane whole,
-    /// so a close's sweep of the lane does not repack them and what the close
-    /// defers after the turn starts on an empty lane. The next turn, a
-    /// pressure collection and the exit hand back what is left of them
-    /// whole, which bounds their records' withheld slots as the lane's are
-    /// bounded, one turn later.
+    /// so what the close defers after the turn starts on an empty lane; the
+    /// close's sweep reads them beside the lane and frees their completed
+    /// deaths, which repacks no block the lane appends to. The collector's
+    /// next advance, a pressure collection and the exit hand back what is
+    /// left of them whole.
     #[cfg(feature = "lane-back-by-blocks")]
     due: UnsafeCell<Chain>,
     /// Entries in the base block no allocation path could fund a block
@@ -303,6 +303,11 @@ struct MutatorCycleState {
     /// inequality is asked of it, so eight bits tell every advance apart but
     /// the 256th.
     turnover_mirror: Cell<u8>,
+    /// The collector's byte at the turn that made the blocks in `due` due,
+    /// on `turnover_mirror`'s terms: the next advance past it hands them
+    /// back, whatever the lane's own mirror records since.
+    #[cfg(feature = "lane-back-by-blocks")]
+    due_mirror: Cell<u8>,
     /// Completed deaths a compaction retired since the poll last asked: the
     /// figure the poll's note to the collector's timer reads beside what a
     /// collection freed ([`take_retired_by_the_close`]).
@@ -348,6 +353,8 @@ impl MutatorCycleState {
             overflow_len: Cell::new(0),
             signal_due: Cell::new(false),
             turnover_mirror: Cell::new(0),
+            #[cfg(feature = "lane-back-by-blocks")]
+            due_mirror: Cell::new(0),
             retired_by_the_close: Cell::new(0),
             candidate_deaths: Cell::new(0),
             retire_after: Cell::new(DEATHS_TO_RETIRE),
@@ -1549,15 +1556,28 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
     }
 
     let byte = this_thread_record_ref().turnover_byte();
-    if byte == mutator_state.turnover_mirror.get() {
-        return false;
+    // Under `lane-back-by-blocks` the blocks a turn made due go at the next
+    // advance, even where a close has since filled the lane and moved its
+    // mirror past that advance.
+    #[cfg(feature = "lane-back-by-blocks")]
+    let moved = !mutator_state.due().is_empty() && byte != mutator_state.due_mirror.get();
+    #[cfg(feature = "lane-back-by-blocks")]
+    if moved {
+        reoffer_the_due_blocks(mutator_state);
+    }
+    #[cfg(not(feature = "lane-back-by-blocks"))]
+    let moved = false;
+    if mutator_state.deferred().is_empty() || byte == mutator_state.turnover_mirror.get() {
+        if moved {
+            this_thread_record_ref().note_a_merge();
+        }
+        return moved;
     }
 
     mutator_state.turnover_mirror.set(byte);
     #[cfg(test)]
     crate::cycle::worker::testing::note_reoffered(mutator_state.deferred().len());
-    // Under `lane-back-by-blocks` the blocks the last turn made due go first,
-    // whole. Of the lane, the first block goes now, and the last where it is
+    // Under `lane-back-by-blocks` any block still due goes first. Of the lane, the first block goes now, and the last where it is
     // not full, so that what the lane takes after the turn starts a block of
     // its own; the full blocks between are made due, for the polls that find
     // R low.
@@ -1572,6 +1592,7 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
             reoffer_blocks(block, block);
         }
         *mutator_state.due() = std::mem::replace(lane, Chain::empty());
+        mutator_state.due_mirror.set(byte);
     }
     #[cfg(not(feature = "lane-back-by-blocks"))]
     reoffer_deferred_candidates();
