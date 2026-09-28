@@ -665,7 +665,6 @@ fn a_batch_that_proposes_a_set_beside_live_roots_publishes_its_live_list() {
 }
 
 /// One serve with the waiting part due for its check.
-#[cfg(feature = "death-check-back-off")]
 fn a_checking_serve() -> Served {
     testing::take_standing_after(Some(std::time::Duration::ZERO));
     let served = served_by_a_collector();
@@ -711,8 +710,8 @@ fn under_the_back_off_a_fresh_entry_waits_for_a_lap() {
     reset();
 }
 
-/// A lap that posted nothing raises the back-off, so the next lap waits two
-/// epochs; one that posted a death resets it.
+/// A lap that posted nothing raises the back-off at its end, so the next lap
+/// waits two epochs; one that posted a death resets it.
 #[test]
 #[cfg(feature = "death-check-back-off")]
 fn a_lap_that_found_nothing_raises_the_back_off_and_one_that_found_a_death_resets_it() {
@@ -728,19 +727,64 @@ fn a_lap_that_found_nothing_raises_the_back_off_and_one_that_found_a_death_reset
         record.note_batch();
     }
 
-    let _ = a_checking_serve();
-    assert_eq!(record.lap_state(), (record.turnovers(), 1), "nothing found");
     let _ = testing::take_chain_figures();
     let _ = a_checking_serve();
+    assert_eq!(testing::take_chain_figures().laps, 1);
+    let _ = a_checking_serve();
+    assert_eq!(
+        record.lap_state(),
+        (record.turnovers(), 1),
+        "the lap ended having found nothing"
+    );
     assert_eq!(testing::take_chain_figures().laps, 0, "not in this epoch");
 
     // A back-off of two epochs that have passed, and a death to find.
-    record.note_lap(record.turnovers() - 4, 2);
+    record.note_lap(record.turnovers().wrapping_sub(4), 2);
     unsafe { release_keeper(kept[0].1) };
     let _ = a_checking_serve();
-    assert_eq!(record.lap_state(), (record.turnovers(), 0), "a death found");
+    assert_eq!(testing::take_chain_figures().deaths_posted_in_a_lap, 1);
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    let _ = a_checking_serve();
+    assert_eq!(record.lap_state(), (record.turnovers(), 0), "a death found");
 
     unsafe { let_go(&kept[1..]) };
+    reset();
+}
+
+/// A lap longer than one grant's budget runs over the grants after it, and
+/// the rig counts every header it reads as the lap's.
+#[test]
+#[cfg(not(feature = "death-check-back-off"))]
+fn a_lap_past_one_grants_budget_is_counted_whole() {
+    const KEPT: usize = crate::cycle::chain::DEATH_CHECK_BUDGET + 200;
+    let _g = test_guard();
+    reset();
+    let node = node_class("ChainLongLapNode");
+    let mut arena = Arena::new();
+    let kept = unsafe { kept_roots(&mut arena, node, KEPT) };
+    while candidate_count() > 0 {
+        assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    }
+    assert_eq!(roots_of_this_threads().1.len(), KEPT);
+    // From the grant that starts a lap to the one that starts the next: a lap
+    // may already be open from the checks of the batches above.
+    let _ = testing::take_chain_figures();
+    let mut lap = None;
+    for _ in 0..16 {
+        let _ = a_checking_serve();
+        let taken = testing::take_chain_figures();
+        lap = match (lap, taken.laps) {
+            (None, 0) => None,
+            (None, _) => Some(taken.headers_checked_in_a_lap),
+            (Some(read), 0) => Some(read + taken.headers_checked_in_a_lap),
+            (Some(read), _) => {
+                assert_eq!(read, KEPT, "every header, over two grants");
+                break;
+            }
+        };
+    }
+    assert!(lap.is_some(), "a lap ran");
+
+    unsafe { let_go(&kept) };
     reset();
 }

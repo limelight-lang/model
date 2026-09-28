@@ -165,22 +165,60 @@ pub(crate) unsafe fn check_the_deaths(
                 Checked::Take
             })
     };
+    #[cfg(any(test, feature = "death-check-back-off"))]
+    follow_the_lap(record, &reading);
+    #[cfg(not(any(test, feature = "death-check-back-off")))]
+    let _ = reading;
+    posted
+}
+
+/// Carry `reading` into the lap `record` notes: a lap runs from the check
+/// that starts it over as many grants as the budget takes, to the check that
+/// finds every entry read to its tail. Under `death-check-back-off` the lap's
+/// start is noted for [`may_lap`], and at its end the back-off is set from
+/// the whole lap's yield; the rig counts the lap's reads and deaths apart from
+/// the reads of fresh entries.
+#[cfg(any(test, feature = "death-check-back-off"))]
+fn follow_the_lap(record: &MutatorRecord, reading: &crate::ring::CheckReading) {
+    let (open, mut lap_read, mut lap_taken) = record.lap();
+    let continued = open && !reading.found_read_to_the_tails;
+    let (read_in_a_lap, taken_in_a_lap) = if continued {
+        lap_read += reading.read;
+        lap_taken += reading.taken;
+        (reading.read, reading.taken)
+    } else {
+        (reading.read_in_the_lap, reading.taken_in_the_lap)
+    };
     #[cfg(feature = "death-check-back-off")]
-    if reading.lapped {
-        let (_, back_off) = record.lap_state();
-        let yielded = posted * LAP_YIELD_SHARE >= reading.in_a_lap.max(1);
+    if open && reading.found_read_to_the_tails {
+        let (lapped_at, back_off) = record.lap_state();
+        let yielded = lap_taken * LAP_YIELD_SHARE >= lap_read.max(1);
         let back_off = if yielded {
             0
         } else {
             (back_off + 1).min(LAP_BACK_OFF_MAX)
         };
-        record.note_lap(record.turnovers(), back_off);
+        record.note_lap(lapped_at, back_off);
+    }
+    if reading.lapped {
+        #[cfg(feature = "death-check-back-off")]
+        record.note_lap(record.turnovers(), record.lap_state().1);
+        record.set_lap(true, reading.read_in_the_lap, reading.taken_in_the_lap);
+    } else if continued {
+        record.set_lap(true, lap_read, lap_taken);
+    } else if open {
+        record.set_lap(false, 0, 0);
     }
     #[cfg(test)]
-    crate::cycle::worker::testing::note_chain_check(reading.read, posted);
-    #[cfg(not(any(test, feature = "death-check-back-off")))]
-    let _ = reading;
-    posted
+    crate::cycle::worker::testing::note_chain_check(
+        reading.read,
+        reading.taken,
+        read_in_a_lap,
+        taken_in_a_lap,
+        reading.lapped,
+    );
+    #[cfg(not(test))]
+    let _ = (read_in_a_lap, taken_in_a_lap);
 }
 
 /// A lap that posts at least one death in this many headers it read resets

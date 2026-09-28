@@ -1631,13 +1631,20 @@ impl CellReading {
                 self.chain.headers_checked_in_a_lap.to_string(),
             ),
             ("chain_laps", self.chain.laps.to_string()),
+            (
+                "chain_deaths_posted_in_a_lap",
+                self.chain.deaths_posted_in_a_lap.to_string(),
+            ),
             ("batches_r_cut", self.chain.batches_r_cut.to_string()),
             (
                 "listed_registered",
                 self.scheme.listed_registered.to_string(),
             ),
             ("listed_other", self.scheme.listed_other.to_string()),
-            ("edges_pruned", self.scheme.edges_pruned.to_string()),
+            (
+                "collector_edges_pruned",
+                self.scheme.collector_edges_pruned.to_string(),
+            ),
             ("roots_reoffered", self.scheme.roots_reoffered.to_string()),
             ("collectors_born", self.collectors_born.to_string()),
             ("collectors_pinned", self.collectors_pinned.to_string()),

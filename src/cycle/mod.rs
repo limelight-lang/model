@@ -110,6 +110,13 @@ pub(crate) mod maturation;
 pub(crate) mod chain;
 // The chain keeps every root read live out of P, so the generation a post
 // would carry has no entry to ride on.
+#[cfg(all(
+    feature = "unlisted-registered-members",
+    feature = "deferral-by-generation"
+))]
+compile_error!(
+    "`deferral-by-generation` reads the stamps `unlisted-registered-members` leaves unwritten"
+);
 #[cfg(all(feature = "collector-chain", feature = "deferral-by-generation"))]
 compile_error!("`deferral-by-generation` is built on form D and not beside `collector-chain`");
 // The live core a collector's batch read, listed for the mutator to stamp at

@@ -177,6 +177,14 @@ struct ChainLine {
     lapped_at: AtomicU64,
     #[cfg(feature = "death-check-back-off")]
     lap_back_off: AtomicU8,
+    /// Whether a lap of the death check is open, and the headers it read and
+    /// the deaths it took so far (`crate::cycle::chain`, `follow_the_lap`).
+    #[cfg(any(test, feature = "death-check-back-off"))]
+    lap_open: AtomicU8,
+    #[cfg(any(test, feature = "death-check-back-off"))]
+    lap_read: AtomicUsize,
+    #[cfg(any(test, feature = "death-check-back-off"))]
+    lap_taken: AtomicUsize,
 }
 
 /// The line the collector writes: where it reads R from, where it posts
@@ -551,6 +559,12 @@ impl MutatorRecord {
                 lapped_at: AtomicU64::new(0),
                 #[cfg(feature = "death-check-back-off")]
                 lap_back_off: AtomicU8::new(0),
+                #[cfg(any(test, feature = "death-check-back-off"))]
+                lap_open: AtomicU8::new(0),
+                #[cfg(any(test, feature = "death-check-back-off"))]
+                lap_read: AtomicUsize::new(0),
+                #[cfg(any(test, feature = "death-check-back-off"))]
+                lap_taken: AtomicUsize::new(0),
             },
         }
     }
@@ -596,6 +610,32 @@ impl MutatorRecord {
     pub(crate) fn note_lap(&self, turnovers: u64, back_off: u8) {
         self.chain.lapped_at.store(turnovers, Ordering::Relaxed);
         self.chain.lap_back_off.store(back_off, Ordering::Relaxed);
+    }
+
+    /// Whether a lap of the death check is open, and what it read and took.
+    #[cfg(all(
+        feature = "collector-chain",
+        any(test, feature = "death-check-back-off")
+    ))]
+    #[inline]
+    pub(crate) fn lap(&self) -> (bool, usize, usize) {
+        (
+            self.chain.lap_open.load(Ordering::Relaxed) != 0,
+            self.chain.lap_read.load(Ordering::Relaxed),
+            self.chain.lap_taken.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Note the death check's lap, by the token's holder.
+    #[cfg(all(
+        feature = "collector-chain",
+        any(test, feature = "death-check-back-off")
+    ))]
+    #[inline]
+    pub(crate) fn set_lap(&self, open: bool, read: usize, taken: usize) {
+        self.chain.lap_open.store(u8::from(open), Ordering::Relaxed);
+        self.chain.lap_read.store(read, Ordering::Relaxed);
+        self.chain.lap_taken.store(taken, Ordering::Relaxed);
     }
 
     /// Note a death check of the waiting part at `now`, by the token's
@@ -1292,6 +1332,8 @@ fn take_record() -> *mut MutatorRecord {
                     (*released).chain.lapped_at.store(0, Ordering::Relaxed);
                     (*released).chain.lap_back_off.store(0, Ordering::Relaxed);
                 }
+                #[cfg(any(test, feature = "death-check-back-off"))]
+                (*released).set_lap(false, 0, 0);
             }
             (*released).hold.new_life.store(1, Ordering::Relaxed);
             // Last, with release: the next reading's take is what sees the

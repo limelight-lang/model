@@ -1199,8 +1199,9 @@ pub(crate) fn note_disposal(took: std::time::Duration) {
 /// What the collector's chain did since a case last asked
 /// (`crate::cycle::chain`): roots pushed into its waiting and its ready
 /// part, pushes the pool refused a block for, the most blocks it held,
-/// headers its death checks read — those read after a check started a lap
-/// among them — the laps started and the deaths posted, and the roots batches
+/// headers its death checks read and deaths they posted — those of a lap
+/// among them, a lap running over grants from the check that starts it to the
+/// one that finds every entry read — the laps started, and the roots batches
 /// took from R and from the ready part.
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct ChainFigures {
@@ -1212,6 +1213,7 @@ pub(crate) struct ChainFigures {
     pub(crate) headers_checked_in_a_lap: usize,
     pub(crate) laps: usize,
     pub(crate) deaths_posted: usize,
+    pub(crate) deaths_posted_in_a_lap: usize,
     pub(crate) roots_from_r: usize,
     pub(crate) roots_from_the_chain: usize,
     /// Grants whose batch took no root of a standing R because the chain's
@@ -1231,6 +1233,7 @@ static CHAIN_BLOCKS_PEAK: std::sync::atomic::AtomicIsize = std::sync::atomic::At
 static CHAIN_HEADERS_CHECKED: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_HEADERS_CHECKED_IN_A_LAP: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_LAPS: AtomicUsize = AtomicUsize::new(0);
+static CHAIN_DEATHS_POSTED_IN_A_LAP: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_BATCHES_R_CUT: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_DEATHS_POSTED: AtomicUsize = AtomicUsize::new(0);
 static CHAIN_ROOTS_FROM_R: AtomicUsize = AtomicUsize::new(0);
@@ -1259,12 +1262,18 @@ pub(crate) fn note_chain_block(change: isize) {
 }
 
 #[cfg(feature = "collector-chain")]
-pub(crate) fn note_chain_check(read: usize, posted: usize) {
-    let (in_a_lap, laps) = crate::ring::take_lap_figures();
+pub(crate) fn note_chain_check(
+    read: usize,
+    posted: usize,
+    read_in_a_lap: usize,
+    posted_in_a_lap: usize,
+    lapped: bool,
+) {
     CHAIN_HEADERS_CHECKED.fetch_add(read, Ordering::Relaxed);
-    CHAIN_HEADERS_CHECKED_IN_A_LAP.fetch_add(in_a_lap, Ordering::Relaxed);
-    CHAIN_LAPS.fetch_add(laps, Ordering::Relaxed);
+    CHAIN_HEADERS_CHECKED_IN_A_LAP.fetch_add(read_in_a_lap, Ordering::Relaxed);
+    CHAIN_LAPS.fetch_add(usize::from(lapped), Ordering::Relaxed);
     CHAIN_DEATHS_POSTED.fetch_add(posted, Ordering::Relaxed);
+    CHAIN_DEATHS_POSTED_IN_A_LAP.fetch_add(posted_in_a_lap, Ordering::Relaxed);
 }
 
 #[cfg(feature = "collector-chain")]
@@ -1292,6 +1301,7 @@ pub(crate) fn take_chain_figures() -> ChainFigures {
         headers_checked_in_a_lap: CHAIN_HEADERS_CHECKED_IN_A_LAP.swap(0, Ordering::Relaxed),
         laps: CHAIN_LAPS.swap(0, Ordering::Relaxed),
         deaths_posted: CHAIN_DEATHS_POSTED.swap(0, Ordering::Relaxed),
+        deaths_posted_in_a_lap: CHAIN_DEATHS_POSTED_IN_A_LAP.swap(0, Ordering::Relaxed),
         roots_from_r: CHAIN_ROOTS_FROM_R.swap(0, Ordering::Relaxed),
         roots_from_the_chain: CHAIN_ROOTS_FROM_THE_CHAIN.swap(0, Ordering::Relaxed),
         grants_r_left_unread: CHAIN_GRANTS_R_LEFT_UNREAD.swap(0, Ordering::Relaxed),
@@ -1301,14 +1311,16 @@ pub(crate) fn take_chain_figures() -> ChainFigures {
 
 /// What the schemes spend on the live list and the lane, in every build,
 /// since a case last asked: entries the collector listed that name a
-/// registered member and that name any other, the edges the marks pruned, and
-/// the roots the deferred lane handed back into R at the turns
+/// registered member and that name any other, the edges the collector's marks
+/// pruned (the mutator's own collections not counted), and the roots the
+/// deferred lane handed back into R at the turns and, under
+/// `lane-back-by-blocks`, at the polls (pressure and the exit not counted)
 /// (`dev/plans/S65.md`, S65.36).
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct SchemeFigures {
     pub(crate) listed_registered: usize,
     pub(crate) listed_other: usize,
-    pub(crate) edges_pruned: usize,
+    pub(crate) collector_edges_pruned: usize,
     pub(crate) roots_reoffered: usize,
 }
 
@@ -1339,7 +1351,7 @@ pub(crate) fn take_scheme_figures() -> SchemeFigures {
     SchemeFigures {
         listed_registered: LISTED_REGISTERED.swap(0, Ordering::Relaxed),
         listed_other: LISTED_OTHER.swap(0, Ordering::Relaxed),
-        edges_pruned: EDGES_PRUNED.swap(0, Ordering::Relaxed),
+        collector_edges_pruned: EDGES_PRUNED.swap(0, Ordering::Relaxed),
         roots_reoffered: ROOTS_REOFFERED.swap(0, Ordering::Relaxed),
     }
 }
