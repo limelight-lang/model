@@ -579,6 +579,13 @@ Notes: dev/plans/S65.md
         block, and stays in the table
       tier: T2 · role: Critic, Sage
       Critic, Sage 2026-09-28: `dev/plans/S65.md`, S65.43
+      built 2026-09-28 (`0148ad3`) behind `release-on-heap-growth`, cases a–i
+        each red on its mutation, the gate green on every build.
+      run 2026-09-28 (`dev/BENCHMARKS.md`, "S65.43"): about two crossings a
+        turn on the churn loads and `live-churn`'s heap at the stop 41.6 →
+        44.0 MB at the spare core, 39.6 → 24.0 at the shared one, against D's
+        2.5–5.5; not adopted in either scheme by S65.28's rule; the cause not
+        established, the Critic's finding 1 the hypothesis. Put to Edmond.
 - [ ] S65.44 A silent death on an old candidate releases the lanes (the
         Critic of S65.43, 2026-09-28; put to Edmond, not built)
       done: Edmond rules whether a per-thread count of non-final decrements

@@ -8,6 +8,50 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-28 — S65.43: a crossing of the heap's growth releases the lanes about twice a turn and does not bring `live-churn`'s held garbage near D's; not adopted in either scheme
+
+**The run.** Six arms built at `0148ad3`, told apart by their binaries'
+hashes: D, HG, bestD, bestHG as in S65.42, and bestDR and bestHGR, the best
+builds with `release-on-heap-growth`. `dev/tools/arms.sh`, interleaved and
+rotated, three repeats, both placements, 10 s and a 12 s drain, the five
+loads of S65.42 paced as there, 21:54–23:00; load average 0.5 at the end, no
+cell failed. CSV:
+`/tmp/claude-1000/-home-edmond-limelight-model/d5b1eb76-15ab-44eb-8500-150f6e0bcafd/scratchpad/s65-43.csv`.
+Medians of three; "+drain" is the instructions over the loop and the drain
+together (`mutator_instructions_with_the_drain`), a column this run adds:
+
+| load, placement | heap MB D / bestD / bestDR / bestHG / bestHGR | instr/it bestD / bestDR | +drain/it D / bestD / bestDR | crossings / turns (bestDR) |
+| --- | --- | --- | --- | --- |
+| live-churn, spare | 2.5 / 41.6 / 44.0 / 40.3 / 33.7 | 173,553 / 172,379 | 211,476 / 207,199 / 207,848 | 48 / 26 |
+| live-churn, shared | 5.5 / 39.6 / 24.0 / 42.4 / 37.6 | 175,342 / 188,230 | 211,652 / 207,574 / 208,300 | 48 / 26 |
+| deferred-then-dead, spare | 0.05 / 12.67 / 12.60 / 12.60 / 12.60 | 14,269 / 14,310 | 23,660 / 23,870 / 23,889 | 6 / 6 |
+| deferred-live-large, spare | 0.48 / 0.05 / 0.02 / 0.08 / 0.06 | 14,704 / 14,752 | 24,196 / 15,844 / 15,927 | 14 / 10 |
+| registered-ring-interleaved, spare | 30.4 / 1.05 / 11.8 / 1.84 / 2.10 | 4,415,831 / 4,336,289 | 4,449,432 / 4,468,570 / 4,476,171 | 22 / 51 |
+
+S65.28's rule: bestDR against bestD and bestHGR against bestHG win no cell
+and lose none on instructions outside the spread (bestDR on `live-churn`
+shared +7.4 % against a spread of 4.4 %), and neither brings `live-churn`'s
+heap at the stop within the gate of D's and HG's (2.5–8.3 MB); S65.43 is not adopted,
+and the best builds stay as S65.42 left them.
+
+**What each figure says.** The signal fires: about two crossings a batch
+turn on the churn loads, a held-back crossing keeping the level so the next
+turn's poll crosses again. What it releases does not free the garbage that
+stands: the heap at the stop moves 41.6 → 44.0 MB at the spare core and
+39.6 → 24.0 MB at the shared one, a single sample of a sawtooth in either
+case. The cause is not established. A hypothesis the code's Critic named
+(`dev/plans/S65.md`, S65.43, finding 1): a crossing hands back the roots a
+lane took in its own turn with the older ones, and those are re-read in the
+epoch of their reading, pruned at their stamped cores and counted up to the
+wait of seven. `deferred-then-dead` does not move, as the ruling expected:
+the drain draws no block. Over the loop and the drain together D, bestD and
+bestDR read within 2 % of each other on the churn loads: the waits' 12–17 %
+in the loop is the teardown moved into the drain, as the Critic of the
+design predicted, and the best builds' real saving is on
+`deferred-live-large` alone (24,196 → 15,844 with the drain). This run's D
+holds 2.5–5.5 MB on `live-churn` where S65.42's held 10.0 MB, which says the
+heap at the stop is too noisy a single figure to gate one run on.
+
 ## 2026-09-28 — S65.42 on the repaired rig: the waits make the mutator cheaper everywhere, 12–17 % on the long-lived and churn loads, and cost only the garbage a silently dying ring leaves standing; D and HG stay by S65.28's heap and last-free gates
 
 **The run.** The same four arms rebuilt at `74937ef`, the rig without the
