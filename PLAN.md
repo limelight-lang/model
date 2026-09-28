@@ -66,7 +66,8 @@ criterion, and it leaves when it gets one or when it is ruled on.
   not keep both; Edmond is inclined to keep both. On the repaired rig
   (S65.42) the two best builds tie in every cell but one, the chain carrying
   little once a root waits by its readings, and the model recommends D, the
-  scheme with less machinery at the same price. Whether G1, G3, M1 and S1b
+  scheme with less machinery at the same price. Edmond, 2026-09-28: keep
+  both until S65.43 and S67's web loads are measured on them, then decide. Whether G1, G3, M1 and S1b
   stay or go is Edmond's (`dev/BENCHMARKS.md`, "S65.36: G1, G3, M1 and S1b").
 - **The long-iteration gate against the tail.** On `live-churn` HG has more
   iterations over 200 µs than D but p99 0.98–1.18 ms against 1.57–1.70 ms and
@@ -512,7 +513,7 @@ Notes: dev/plans/S65.md
         (`dev/BENCHMARKS.md`, "S65.36: G1, G3, M1 and S1b"; run at
         `1146323`); Critic's two rounds in `dev/plans/S65.md`. Whether to keep
         or delete the four features is Edmond's.
-- [ ] S65.42 The best EpochQueue(M) and the best EpochQueue(GC): a root read
+- [x] S65.42 The best EpochQueue(M) and the best EpochQueue(GC): a root read
         live waits longer the more readings it has survived (Edmond,
         2026-09-28: "возьми лучшие оптимизированные версии HG D такие, чтобы
         все оптимизации были применены корректно. особенно очередь
@@ -545,6 +546,9 @@ Notes: dev/plans/S65.md
         "S65.42 on the repaired rig"): the waits cut the mutator 12–17 % on
         the long-lived and churn loads and lose only on the heap and
         last-free gates; D and HG stay. Put to Edmond.
+      handoff: `wait-by-readings` (`cb0c4bb`), the rig's repair (`74937ef`),
+        `dev/BENCHMARKS.md` "S65.42 on the repaired rig"; Edmond 2026-09-28:
+        both schemes stay until S65.43 and S67 are measured, then one goes.
 - [x] S65.40 A third generation in EpochQueue(GC) (S65.33, G4; Edmond,
         2026-09-27: "попробуй")
       handoff: superseded by S65.42 (the Sage, 2026-09-28, Final): the ladder
