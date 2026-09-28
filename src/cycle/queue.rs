@@ -195,8 +195,9 @@ use crate::ring::{self, Chain, Quiescent, Writer};
 /// manager-owned control line.
 ///
 /// The capacity is the 65,280-byte payload less one 64-byte
-/// [`MutatorCycleState`]: 8,152 pointers. [`POLL_STRIDE`] is derived from
-/// this figure and statically checked.
+/// [`MutatorCycleState`]: 8,152 pointers, and 8,144 under
+/// `lane-back-by-blocks`, whose state takes two lines. [`POLL_STRIDE`] is
+/// derived from this figure and statically checked.
 pub(crate) const OVERFLOW_CAPACITY: usize =
     (BLOCK_PAYLOAD - size_of::<MutatorCycleState>()) / size_of::<*mut RcHeader>();
 
@@ -266,6 +267,16 @@ struct MutatorCycleState {
     /// poll takes the free path's road and runs no retirement of its own; a
     /// bounded sweep of R is not built until a workload asks").
     deferred: UnsafeCell<Chain>,
+    /// The full blocks of the deferred lane a turn made due and the polls
+    /// have not yet handed back into R, under `lane-back-by-blocks`
+    /// ([`reoffer_an_owed_block`]). The turn takes them off the lane whole,
+    /// so a close's sweep of the lane does not repack them and what the close
+    /// defers after the turn starts on an empty lane. The next turn, a
+    /// pressure collection and the exit hand back what is left of them
+    /// whole, which bounds their records' withheld slots as the lane's are
+    /// bounded, one turn later.
+    #[cfg(feature = "lane-back-by-blocks")]
+    due: UnsafeCell<Chain>,
     /// Entries in the base block no allocation path could fund a block
     /// for, written oldest first, which is the order every walk of the buffer
     /// reads them in. [`drain_overflow`] empties it from the other end, so
@@ -292,11 +303,6 @@ struct MutatorCycleState {
     /// inequality is asked of it, so eight bits tell every advance apart but
     /// the 256th.
     turnover_mirror: Cell<u8>,
-    /// Blocks of the deferred lane the turn made due and the polls have not
-    /// yet handed back into R, under `lane-back-by-blocks`
-    /// ([`reoffer_an_owed_block`]). In the padding before the next word.
-    #[cfg(feature = "lane-back-by-blocks")]
-    reoffer_owed: Cell<u16>,
     /// Completed deaths a compaction retired since the poll last asked: the
     /// figure the poll's note to the collector's timer reads beside what a
     /// collection freed ([`take_retired_by_the_close`]).
@@ -321,7 +327,11 @@ thread_local! {
     static MUTATOR_STATE: Cell<*mut MutatorCycleState> = const { Cell::new(std::ptr::null_mut()) };
 }
 
+#[cfg(not(feature = "lane-back-by-blocks"))]
 const _: () = assert!(size_of::<MutatorCycleState>() == 64);
+// The due blocks' chain takes the state past one line.
+#[cfg(feature = "lane-back-by-blocks")]
+const _: () = assert!(size_of::<MutatorCycleState>() == 128);
 const _: () = assert!(align_of::<MutatorCycleState>() == 64);
 const _: () = assert!(POLL_STRIDE * 2 <= OVERFLOW_CAPACITY);
 const _: () = assert!(ring::BLOCK_ENTRIES > OVERFLOW_CAPACITY / 2);
@@ -332,12 +342,12 @@ impl MutatorCycleState {
             workspace_base: Cell::new(std::ptr::null_mut()),
             spares: [const { Cell::new(std::ptr::null_mut()) }; SPARE_SEGMENTS],
             deferred: UnsafeCell::new(Chain::empty()),
+            #[cfg(feature = "lane-back-by-blocks")]
+            due: UnsafeCell::new(Chain::empty()),
             spare_count: Cell::new(0),
             overflow_len: Cell::new(0),
             signal_due: Cell::new(false),
             turnover_mirror: Cell::new(0),
-            #[cfg(feature = "lane-back-by-blocks")]
-            reoffer_owed: Cell::new(0),
             retired_by_the_close: Cell::new(0),
             candidate_deaths: Cell::new(0),
             retire_after: Cell::new(DEATHS_TO_RETIRE),
@@ -350,6 +360,33 @@ impl MutatorCycleState {
         // The mutator is the one thread that reaches this cell, and no caller
         // holds one borrow across a call that takes another.
         unsafe { &mut *self.deferred.get() }
+    }
+
+    /// The blocks a turn made due, on [`Self::deferred`]'s terms.
+    #[cfg(feature = "lane-back-by-blocks")]
+    #[allow(clippy::mut_from_ref)]
+    fn due(&self) -> &mut Chain {
+        // As `deferred`.
+        unsafe { &mut *self.due.get() }
+    }
+
+    /// Records in the deferred lane and, under `lane-back-by-blocks`, in the
+    /// blocks a turn made due.
+    fn deferred_len(&self) -> usize {
+        #[cfg(feature = "lane-back-by-blocks")]
+        let due = self.due().len();
+        #[cfg(not(feature = "lane-back-by-blocks"))]
+        let due = 0;
+        self.deferred().len() + due
+    }
+
+    /// Whether [`Self::deferred_len`] is zero.
+    fn deferred_is_empty(&self) -> bool {
+        #[cfg(feature = "lane-back-by-blocks")]
+        let due = self.due().is_empty();
+        #[cfg(not(feature = "lane-back-by-blocks"))]
+        let due = true;
+        self.deferred().is_empty() && due
     }
 }
 
@@ -790,7 +827,7 @@ pub(crate) fn release_queue_base() {
         "release follows the ring's release, or the ring was left to a collector's hold"
     );
     assert!(
-        mutator_state.deferred().is_empty(),
+        mutator_state.deferred_is_empty(),
         "release follows deferred-lane release"
     );
     assert_eq!(
@@ -1414,7 +1451,8 @@ pub(crate) unsafe fn retire_at_the_poll() {
 /// The caller owns the epoch comparison. The move is a splice of the lane's
 /// blocks into R after the tail block, with no copy and no block drawn
 /// (`crate::ring::Writer::splice_after_tail`); it leaves no record in the
-/// deferred lane. A reader that wants the records moved counted takes
+/// deferred lane, nor under `lane-back-by-blocks` in the blocks a turn made
+/// due. A reader that wants the records moved counted takes
 /// `deferred_count` before the call. The merge is not counted here: the
 /// pressure path and the exit trace what they merge at once, and a round
 /// that took those roots again would repeat their trace; the turnover's
@@ -1426,7 +1464,7 @@ pub(crate) fn reoffer_deferred_candidates() {
     }
     let mutator_state = unsafe { mutator_state_ref(state) };
     #[cfg(feature = "lane-back-by-blocks")]
-    mutator_state.reoffer_owed.set(0);
+    reoffer_the_due_blocks(mutator_state);
     let Some((first, last)) = mutator_state.deferred().take() else {
         return;
     };
@@ -1435,30 +1473,27 @@ pub(crate) fn reoffer_deferred_candidates() {
     unsafe { writer.splice_after_tail(first, last) };
 }
 
-/// Hand the deferred lane's first block back into R, counting the merge as
-/// the turn's is counted; false for an empty lane. Under
-/// `lane-back-by-blocks`, the turn's and the polls' unit.
+/// Splice the blocks `first` to `last` into R after its tail block.
 #[cfg(feature = "lane-back-by-blocks")]
-fn reoffer_the_lanes_first_block(mutator_state: &MutatorCycleState) -> bool {
-    let Some((block, in_block)) = mutator_state.deferred().take_first_block() else {
-        return false;
-    };
-
-    #[cfg(test)]
-    crate::cycle::worker::testing::note_reoffered(in_block);
-    #[cfg(not(test))]
-    let _ = in_block;
+fn reoffer_blocks(first: *mut BlockHeader, last: *mut BlockHeader) {
     let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
-    unsafe { writer.splice_after_tail(block, block) };
-    this_thread_record_ref().note_a_merge();
-    true
+    unsafe { writer.splice_after_tail(first, last) };
+}
+
+/// Hand every block a turn made due back into R.
+#[cfg(feature = "lane-back-by-blocks")]
+fn reoffer_the_due_blocks(mutator_state: &MutatorCycleState) {
+    if let Some((first, last)) = mutator_state.due().take() {
+        reoffer_blocks(first, last);
+    }
 }
 
 /// Hand one block the turn made due back into R where R holds fewer than
 /// the soft threshold's entries, so that the collector reads the lane as R
 /// drains rather than all of it ahead of what registers after the turn.
 /// Answers whether it moved one. The poll's, under `lane-back-by-blocks`;
-/// every block of the lane is due at the next turn in any case.
+/// a block no poll hands back goes at the next turn
+/// ([`reoffer_deferred_if_epoch_moved`]).
 #[cfg(feature = "lane-back-by-blocks")]
 pub(crate) fn reoffer_an_owed_block() -> bool {
     let state = mutator_state();
@@ -1466,8 +1501,7 @@ pub(crate) fn reoffer_an_owed_block() -> bool {
         return false;
     }
     let mutator_state = unsafe { mutator_state_ref(state) };
-    let owed = mutator_state.reoffer_owed.get();
-    if owed == 0 {
+    if mutator_state.due().is_empty() {
         return false;
     }
 
@@ -1476,11 +1510,12 @@ pub(crate) fn reoffer_an_owed_block() -> bool {
         return false;
     }
 
-    let moved = reoffer_the_lanes_first_block(mutator_state);
-    mutator_state
-        .reoffer_owed
-        .set(if moved { owed - 1 } else { 0 });
-    moved
+    let Some((block, _)) = mutator_state.due().take_first_block() else {
+        return false;
+    };
+    reoffer_blocks(block, block);
+    this_thread_record_ref().note_a_merge();
+    true
 }
 
 /// Re-offer the deferred lane exactly once after the collector advanced this
@@ -1509,7 +1544,7 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
         return false;
     }
     let mutator_state = unsafe { mutator_state_ref(state) };
-    if mutator_state.deferred().is_empty() {
+    if mutator_state.deferred_is_empty() {
         return false;
     }
 
@@ -1519,43 +1554,39 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
     }
 
     mutator_state.turnover_mirror.set(byte);
-    // Under `lane-back-by-blocks` the first block goes now, and the last where
-    // it is not full, so that what the lane takes after the turn starts a
-    // block of its own; the full blocks between go at the polls that find R
-    // low. Every block the lane holds is due.
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_reoffered(mutator_state.deferred().len());
+    // Under `lane-back-by-blocks` the blocks the last turn made due go first,
+    // whole. Of the lane, the first block goes now, and the last where it is
+    // not full, so that what the lane takes after the turn starts a block of
+    // its own; the full blocks between are made due, for the polls that find
+    // R low.
     #[cfg(feature = "lane-back-by-blocks")]
     {
-        if let Some((block, in_block)) = mutator_state.deferred().take_last_block_if_partial() {
-            #[cfg(test)]
-            crate::cycle::worker::testing::note_reoffered(in_block);
-            #[cfg(not(test))]
-            let _ = in_block;
-            let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
-            unsafe { writer.splice_after_tail(block, block) };
+        reoffer_the_due_blocks(mutator_state);
+        let lane = mutator_state.deferred();
+        if let Some((block, _)) = lane.take_last_block_if_partial() {
+            reoffer_blocks(block, block);
         }
-        let _ = reoffer_the_lanes_first_block(mutator_state);
-        let owed = mutator_state.deferred().block_count();
-        mutator_state
-            .reoffer_owed
-            .set(u16::try_from(owed).unwrap_or(u16::MAX));
+        if let Some((block, _)) = lane.take_first_block() {
+            reoffer_blocks(block, block);
+        }
+        *mutator_state.due() = std::mem::replace(lane, Chain::empty());
     }
     #[cfg(not(feature = "lane-back-by-blocks"))]
-    {
-        #[cfg(test)]
-        crate::cycle::worker::testing::note_reoffered(mutator_state.deferred().len());
-        reoffer_deferred_candidates();
-        this_thread_record_ref().note_a_merge();
-    }
+    reoffer_deferred_candidates();
+    this_thread_record_ref().note_a_merge();
     true
 }
 
-/// Whether this mutator's deferred lane holds a record: the poll's test
-/// before it reads the collector's turnover byte, so that an empty lane
-/// costs the poll no load of the record.
+/// Whether this mutator's deferred lane holds a record, or under
+/// `lane-back-by-blocks` a block a turn made due: the poll's test before it
+/// reads the collector's turnover byte, so that an empty lane costs the poll
+/// no load of the record.
 #[inline]
 pub(crate) fn deferred_lane_is_occupied() -> bool {
     let state = mutator_state();
-    !state.is_null() && !unsafe { mutator_state_ref(state) }.deferred().is_empty()
+    !state.is_null() && !unsafe { mutator_state_ref(state) }.deferred_is_empty()
 }
 
 /// Retire completed deaths at the mutator's exact reading, compacting the ring
@@ -1816,10 +1847,13 @@ pub(crate) fn release_queue_segments() {
         unsafe { give_back_candidate_ring(record) };
     }
 
-    mutator_state.deferred().dismantle(|block| {
+    let give_back = |block| {
         discharge_block();
         gc_metadata::release_to_critical(block);
-    });
+    };
+    mutator_state.deferred().dismantle(give_back);
+    #[cfg(feature = "lane-back-by-blocks")]
+    mutator_state.due().dismantle(give_back);
 
     mutator_state.candidate_deaths.set(0);
     mutator_state.retire_after.set(DEATHS_TO_RETIRE);
@@ -1848,7 +1882,8 @@ pub(crate) fn overflow_len() -> usize {
 }
 
 /// Registrations this thread holds by lane — the ring, the deferred lane
-/// with the collector's chain under `collector-chain`, the overflow buffer,
+/// with the collector's chain under `collector-chain` and the blocks a turn
+/// made due under `lane-back-by-blocks`, the overflow buffer,
 /// and the verdicts standing in P — by the indices and
 /// the counts; P's entries are read for the null of a disposed one and
 /// dereferenced no more than any other entry.
@@ -1872,7 +1907,7 @@ pub(crate) fn registered_by_lane() -> [usize; 4] {
     let chained = 0;
     [
         candidate_ring().map_or(0, |ring| ring.count()),
-        mutator_state.deferred().len() + chained,
+        mutator_state.deferred_len() + chained,
         usize::from(mutator_state.overflow_len.get()),
         standing_verdict_count(),
     ]
@@ -1939,8 +1974,9 @@ pub(crate) fn candidate_count() -> usize {
 }
 
 /// Every candidate token this thread's queue holds, appended to `out`: the
-/// ring from its front, then the deferred lane oldest first, then the
-/// overflow buffer oldest entry first, then the verdicts standing in P.
+/// ring from its front, then the deferred lane oldest first and the blocks a
+/// turn made due, then the overflow buffer oldest entry first, then the
+/// verdicts standing in P.
 ///
 /// [`candidate_count`] answers the ring alone, and a count of one lane
 /// can state neither half of the rule this exists for — a `CANDIDATE_BIT`
@@ -1973,6 +2009,10 @@ pub(crate) fn collect_lane_tokens(out: &mut Vec<*mut RcHeader>) {
     mutator_state
         .deferred()
         .walk(|entry| out.push(entry_entity(entry)));
+    #[cfg(feature = "lane-back-by-blocks")]
+    mutator_state
+        .due()
+        .walk(|entry| out.push(entry_entity(entry)));
 
     for index in 0..usize::from(mutator_state.overflow_len.get()) {
         out.push(unsafe { overflow_entries(state).add(index).read() });
@@ -1998,7 +2038,8 @@ pub(crate) fn segment_count() -> usize {
     candidate_ring().map_or(0, |ring| ring.block_count())
 }
 
-/// Blocks in this thread's deferred lane.
+/// Blocks in this thread's deferred lane, and under `lane-back-by-blocks`
+/// the blocks a turn made due.
 #[cfg(test)]
 pub(crate) fn deferred_segment_count() -> usize {
     let state = mutator_state();
@@ -2006,7 +2047,12 @@ pub(crate) fn deferred_segment_count() -> usize {
         return 0;
     }
 
-    unsafe { mutator_state_ref(state) }.deferred().block_count()
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    #[cfg(feature = "lane-back-by-blocks")]
+    let due = mutator_state.due().block_count();
+    #[cfg(not(feature = "lane-back-by-blocks"))]
+    let due = 0;
+    mutator_state.deferred().block_count() + due
 }
 
 /// Spares this thread holds.
@@ -2034,7 +2080,8 @@ pub(crate) fn deferred_turnover_mirror() -> u8 {
     unsafe { mutator_state_ref(state) }.turnover_mirror.get()
 }
 
-/// Records standing in this thread's deferred lane. Read by the census and
+/// Records standing in this thread's deferred lane, and under
+/// `lane-back-by-blocks` in the blocks a turn made due. Read by the census and
 /// by the `bench-loads` hook before a re-offer, which is what keeps the count
 /// out of the re-offer itself.
 #[cfg(any(test, feature = "bench-loads"))]
@@ -2044,7 +2091,7 @@ pub(crate) fn deferred_count() -> usize {
         return 0;
     }
 
-    unsafe { mutator_state_ref(state) }.deferred().len()
+    unsafe { mutator_state_ref(state) }.deferred_len()
 }
 
 /// This thread's base block, or null when it holds none. One block, out of

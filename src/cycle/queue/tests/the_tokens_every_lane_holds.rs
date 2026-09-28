@@ -586,3 +586,94 @@ fn the_turn_hands_back_one_block_and_the_polls_the_rest() {
 
     reset();
 }
+
+/// Under `lane-back-by-blocks` the blocks the turn made due are out of the
+/// close's reach: a sweep that frees a death among them does not repack them,
+/// so the poll hands back what the turn made due and none of what the lane
+/// took after it (`dev/plans/S65.md`, S65.36, the Critic's finding 1).
+#[test]
+#[cfg(feature = "lane-back-by-blocks")]
+fn a_sweep_after_the_turn_leaves_the_due_blocks_as_the_turn_made_them() {
+    let _g = test_guard();
+    reset();
+    let mut arena = Arena::new();
+    let class = candidate_class("DueBlockDeath");
+
+    // The lane of three blocks, the middle one opening on an entity that
+    // dies after the turn.
+    let mut first_filler = candidate(2);
+    let mut second_filler = candidate(2);
+    let mut second_grew = candidate(2);
+    let dies = unsafe { allocated_candidate(&mut arena, class, 2) };
+    let rounds = [
+        (&raw mut first_filler, dies),
+        (&raw mut second_filler, &raw mut second_grew),
+    ];
+    for (filler_entity, grew_entity) in rounds {
+        assert!(refill_spares());
+        unsafe { ring_of_two_blocks(filler_entity, grew_entity) };
+        assert!(refill_spares());
+        defer_candidates(read_batch(), 0);
+    }
+    assert_eq!(deferred_segment_count(), 3);
+
+    assert!(reoffer_after_an_advance());
+    assert_eq!(
+        (candidate_count(), deferred_count()),
+        (BLOCK_ENTRIES + 2, BLOCK_ENTRIES),
+        "the middle block due"
+    );
+    unsafe { dismantle_candidate(dies) };
+
+    // The close sweeps the lane and defers R's records after the turn.
+    assert!(refill_spares());
+    defer_candidates(read_batch(), 0);
+    assert_eq!(candidate_count(), 0);
+    assert!(reoffer_an_owed_block());
+    assert_eq!(
+        (candidate_count(), deferred_count()),
+        (BLOCK_ENTRIES, BLOCK_ENTRIES + 2),
+        "the due block back whole, every deferral after the turn waiting"
+    );
+
+    unsafe { retire_candidates() };
+    reset();
+}
+
+/// Under `lane-back-by-blocks` a turn that finds blocks the last turn made
+/// due and no poll handed back hands them back whole: they wait one turn at
+/// most, however long R stands above the soft threshold.
+#[test]
+#[cfg(feature = "lane-back-by-blocks")]
+fn the_next_turn_hands_back_every_block_still_due() {
+    let _g = test_guard();
+    reset();
+
+    // A lane of four blocks: three full and one of three entries.
+    let mut fillers = [candidate(2), candidate(2), candidate(2)];
+    let mut grew = [candidate(2), candidate(2), candidate(2)];
+    for round in 0..3 {
+        assert!(refill_spares());
+        unsafe { ring_of_two_blocks(&raw mut fillers[round], &raw mut grew[round]) };
+        assert!(refill_spares());
+        defer_candidates(read_batch(), 0);
+    }
+    assert_eq!(deferred_segment_count(), 4);
+
+    assert!(reoffer_after_an_advance());
+    assert_eq!(
+        (candidate_count(), deferred_count()),
+        (BLOCK_ENTRIES + 3, 2 * BLOCK_ENTRIES),
+        "the two full blocks between due"
+    );
+    assert!(!reoffer_an_owed_block(), "R holds past the soft threshold");
+
+    assert!(reoffer_after_an_advance());
+    assert_eq!(
+        (candidate_count(), deferred_count()),
+        (3 * BLOCK_ENTRIES + 3, 0),
+        "both due blocks back at the next turn"
+    );
+
+    reset();
+}

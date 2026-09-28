@@ -21,11 +21,17 @@ fn the_base_block_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     // and `dev/BENCHMARKS.md` all name. Written out rather than derived
     // through the expressions that define them: a test that recomputes a
     // constant agrees with whatever the constant becomes.
-    assert_eq!(size_of::<MutatorCycleState>(), 64);
+    // Under `lane-back-by-blocks` the chain of due blocks takes the state to
+    // two lines.
+    #[cfg(not(feature = "lane-back-by-blocks"))]
+    let (state_bytes, capacity, stride) = (64, 8_152, 4_076);
+    #[cfg(feature = "lane-back-by-blocks")]
+    let (state_bytes, capacity, stride) = (128, 8_144, 4_072);
+    assert_eq!(size_of::<MutatorCycleState>(), state_bytes);
     assert_eq!(align_of::<MutatorCycleState>(), 64);
     assert_eq!(BLOCK_ENTRIES, 8_135);
-    assert_eq!(OVERFLOW_CAPACITY, 8_152);
-    assert_eq!(POLL_STRIDE, 4_076);
+    assert_eq!(OVERFLOW_CAPACITY, capacity);
+    assert_eq!(POLL_STRIDE, stride);
 
     // The overflow buffer ends flush with the block: one control line and the
     // entries account for the payload exactly, with no tail to absorb an

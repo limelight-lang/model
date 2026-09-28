@@ -1313,9 +1313,9 @@ pub(crate) fn take_chain_figures() -> ChainFigures {
 /// since a case last asked: entries the collector listed that name a
 /// registered member and that name any other, the edges the collector's marks
 /// pruned (the mutator's own collections not counted), and the roots the
-/// deferred lane handed back into R at the turns and, under
-/// `lane-back-by-blocks`, at the polls (pressure and the exit not counted)
-/// (`dev/plans/S65.md`, S65.36).
+/// deferred lane held at the turns, which a turn hands back into R whole or,
+/// under `lane-back-by-blocks`, in part and the rest made due (pressure and
+/// the exit not counted) (`dev/plans/S65.md`, S65.36).
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct SchemeFigures {
     pub(crate) listed_registered: usize,
