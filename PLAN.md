@@ -480,7 +480,7 @@ Notes: dev/plans/S65.md
         S65.35 on D and HG"): S65.34 −5.3 % and −5.7 % of D's mutator on
         `deferred-live-large`, −2.5 % of HG's, ties elsewhere; S65.35 ties,
         its paths not run by the rig's loads; D against HG as in S65.32.
-- [ ] S65.36 The rig's counters S65.33 owes, and G1, G3, M1 and S1b measured
+- [x] S65.36 The rig's counters S65.33 owes, and G1, G3, M1 and S1b measured
       done: the rig emits list entries stamped (root / registered / other),
         `EDGES_PRUNED`, the check's reads and deaths split fresh / lap with
         laps started, R's share against the chain's per batch, roots
@@ -493,6 +493,10 @@ Notes: dev/plans/S65.md
         and measured against its scheme on a quiet box, on S67.6's run if it
         comes first; the verdicts put to Edmond
       tier: T2 · role: Critic
+      handoff: each arm loses or ties against its scheme by S65.28's rule
+        (`dev/BENCHMARKS.md`, "S65.36: G1, G3, M1 and S1b"; run at
+        `1146323`); Critic's two rounds in `dev/plans/S65.md`. Whether to keep
+        or delete the four features is Edmond's.
 - [ ] S65.37 EpochQueue(M) re-offers at the turn only the roots a decrement
         or a pruned reading touched (S65.33; Edmond, 2026-09-27)
       done: the Sage rules the dirty bit sound or names its counter-example

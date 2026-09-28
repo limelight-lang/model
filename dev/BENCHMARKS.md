@@ -8,6 +8,51 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-28 — S65.36: G1, G3, M1 and S1b each lose or tie against their scheme by S65.28's rule; G1 cuts the death check's reads by 78–93 %, M1 frees `deferred-live-large`'s garbage sooner at +9–12 % mutator instructions, S1b lists no registered row and moves no time
+
+**The run, on a quiet box.** Seven arms built at `1146323` and told apart by
+their binaries' hashes: D, DS1b (`unlisted-registered-members`), DM1
+(`lane-back-by-blocks`), HG (`hold-by-generation`), HGS1b, HGG1
+(`death-check-back-off`) and HGG3 (`r-first-under-a-small-chain`).
+`dev/tools/arms.sh`, interleaved and rotated, three repeats, both placements,
+paced 1 ms, 10 s and a 12 s drain, on `live-churn`,
+`live-churn-dies-by-count`, `deferred-live-large` and `deferred-then-dead`,
+13:57–14:59; the guard phase for the four S1b arms 14:59–15:06; D, DS1b, HG
+and HGS1b on `registered-ring-interleaved` paced 15 ms, 15:07–15:16. The
+other session paused; load average 0.93 at the start, 1.2–1.4 at the phases'
+ends. Verdicts by `dev/tools/two_arms_table.py` (S65.28's rule), each arm
+against the build without its feature. An earlier run of 2026-09-28 09:12 was
+stopped after 28 cells for the Critic's round 2 (`dev/plans/S65.md`, S65.36)
+and is not read.
+
+| arm | against | verdict spare / shared | what it was built for, medians |
+| --- | --- | --- | --- |
+| DM1 | D | D / D: losses on `deferred-live-large` +9.3 % and +11.6 % instructions, on `live-churn` by the heap and last-free gates | `deferred-live-large`: heap at the stop 0.58 → 0.10 and 0.76 → 0.06 MB, last free 412 → 39 and 398 → 71 ms; roots re-offered +2 % and +6 %, collector +6 % |
+| HGG1 | HG | HG / HG: ties but `dies-by-count` spare by the long-iteration gate (17 → 163) | headers the check read: 1.12–1.93 M → 81–322 k on the churn loads and `deferred-live-large`; deaths it posted on `dies-by-count` 257–264 k → 91–107 k, the rest found by the ready part's reading; there collector time 1.13 → 1.20 s spare, 1.41 → 0.98 s shared, withheld peak 576 → 1,344 spare, 1,152 → 576 shared |
+| HGG3 | HG | HG / HG: losses on `live-churn` by the heap and long-iteration gates (heap 10–11 → 15–17 MB) | batches that cut R's take: 564 → 434–460 on `live-churn`, 220–263 → 364–367 on `dies-by-count`; collector 1.31 → 1.86 s on `live-churn` spare |
+| DS1b | D | D / D: losses by the long-iteration gate on `deferred-live-large` shared and `dies-by-count` spare, by heap and last free on `live-churn` shared | no registered row is listed on these loads in either arm: `listed_registered` is 0 in every cell |
+| HGS1b | HG | HG / HG: ties everywhere | as DS1b |
+| DS1b on `registered-ring-interleaved` | D | tie shared, loss spare by the heap gate (guard load) | registered rows listed 1.11–1.15 M → 0; collector 0.47 → 0.48 and 0.50 → 0.50 s |
+| HGS1b on `registered-ring-interleaved` | HG | loss shared by the long-iteration gate, tie spare (guard load) | registered rows listed 2.73–2.81 M → 0; collector 0.99 → 0.95 and 1.01 → 0.96 s |
+
+**What each figure says.** M1 does what it was built to: the lane goes back
+into R a block at a time, the collector reads what registered after the turn
+sooner, and `deferred-live-large`'s garbage is gone at the stop; it pays with
+the mutator's instructions, which the rule weighs first, and the arm carries
+the confounds the Critic named (the overflow buffer 8 entries shorter, a load
+and a test more at every poll). G1 removes most of the check's reads and none
+of the mutator's work: on the churn loads the check read one header a
+chained root and a lap, and under G1 it reads a lap in the second half of
+some epochs only; the deaths it no longer finds wait for the ready part's
+reading, which the withheld peak shows at spare and not at shared. G3 takes
+more of R beside a small chain and the heap at the stop grows, the chain's
+dead rings found later. S1b's saving exists only where registered members
+sit inside live cores: on the four deciding loads the list holds none, and on
+`registered-ring-interleaved` a million to three million rows go unlisted per
+repeat with no change in the mutator's instructions and a 0–6 % change in the
+collector's time, inside the repeats' spread. The guard phase births no
+collector (`dev/tools/arms.sh`), so its loads read nothing of S1b.
+
 ## 2026-09-27 — S65.34 and S65.35 on D and HG: the root off the live list cuts D's mutator by 5–6 % on `deferred-live-large` and moves nothing else past the spread; the generation in the entry changes no figure on the rig; D against HG reads as in S65.32
 
 **The run, on a quiet box.** Five arms built fresh and told apart by their
