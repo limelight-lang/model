@@ -526,6 +526,16 @@ Notes: dev/plans/S65.md
         S65.28's rule with p99 / p999 and the re-reads per root beside it;
         put to Edmond
       tier: T2 · role: Critic, Sage
+      built 2026-09-28 (`cb0c4bb`): two rounds of the Critic and the Sage on
+        the design, a third Sage ruling at the build (the stamp's epoch
+        sixteen wide instead of a skip), the code's Critic answered; nine
+        cases red on their mutations; the gate green on every build.
+      run 2026-09-28 on `cb0c4bb` (`dev/BENCHMARKS.md`, "S65.42"): re-reads
+        cut 13 times on `deferred-live-large` (collector 1.34 → 0.17 s) and
+        the heap of `registered-ring-interleaved` 27–64 → 1–2 MB; silently
+        dying rings held up to 7 turns — `live-churn` heap 9 → 32 MB and
+        +17 % mutator instructions, `deferred-then-dead` last free 8.5 s; D
+        and HG stay by S65.28's rule. Put to Edmond.
 - [x] S65.40 A third generation in EpochQueue(GC) (S65.33, G4; Edmond,
         2026-09-27: "попробуй")
       handoff: superseded by S65.42 (the Sage, 2026-09-28, Final): the ladder

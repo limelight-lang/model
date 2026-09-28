@@ -8,6 +8,57 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-28 — S65.42: a root waiting 1, 3 or 7 turns by its live readings cuts the re-reads 7–13 times on the long-lived loads and holds silently dying rings up to 7 turns; both best builds lose to their scheme by S65.28's rule on the churn loads' heap
+
+**The run, on a quiet box.** Four arms built at `cb0c4bb` and told apart by
+their binaries' hashes: D, HG (`hold-by-generation`), bestD
+(`wait-by-readings`, `unlisted-registered-members`) and bestHG
+(`wait-by-readings`, `hold-by-generation`, `unlisted-registered-members`,
+`death-check-back-off`). `dev/tools/arms.sh`, interleaved and rotated, three
+repeats, both placements, 10 s and a 12 s drain, on `live-churn`,
+`live-churn-dies-by-count`, `deferred-live-large` and `deferred-then-dead`
+paced 1 ms and `registered-ring-interleaved` paced 15 ms, 17:26–18:10; the
+other session paused, load average 1.1 at the start and 0.15 at the end. The
+guard phase was not run: its loads birth no collector, so the lanes are not
+reached. Medians of three, spare core (shared reads the same within the
+spread):
+
+| load | arm | re-reads M | roots batched M | turns | collector s | p99 / p999 ms | heap at the stop MB | instr/it |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| deferred-live-large | D / bestD | 3.64 / 0.28 | 3.76 / 0.44 | 56 / 10 | 1.34 / 0.17 | 0.05, 0.85 / 0.10, 0.13 | 0.53 / 0.06 | 27,527 / 24,724 |
+| deferred-live-large | HG / bestHG | 1.89 / 0.28 | 2.05 / 0.44 | 56 / 10 | 0.80 / 0.18 | 0.03, 0.21 / 0.10, 0.13 | 0.01 / 0.07 | 25,809 / 24,636 |
+| registered-ring-interleaved | D / bestD | 0.84 / 0.34 | 3.58 / 3.07 | 54 / 46 | 0.44 / 0.32 | 0.43, 1.18 / 0.36, 0.46 | 27.0 / 1.05 | 6,193,147 / 6,153,319 |
+| registered-ring-interleaved | HG / bestHG | 2.01 / 0.33 | 4.74 / 3.06 | 82 / 48 | 0.94 / 0.33 | 0.49, 0.72 / 0.36, 0.39 | 64.2 / 1.84 | 5,721,397 / 6,028,506 |
+| live-churn | D / bestD | 0.62 / 0.61 | 0.94 / 0.93 | 24 / 24 | 1.11 / 1.22 | 1.57, 2.36 / 1.97, 2.62 | 9.4 / 31.8 | 368,991 / 432,435 |
+| live-churn | HG / bestHG | 0.61 / 0.61 | 0.93 / 0.93 | 24 / 24 | 1.08 / 1.18 | 0.98, 1.18 / 1.97, 2.36 | 11.5 / 32.3 | 368,939 / 431,282 |
+| live-churn-dies-by-count | D / bestD | 0.71 / 0.66 | 0.76 / 0.70 | 26 / 30 | 0.98 / 0.80 | 0.07, 0.49 / 0.08, 0.12 | 0 / 0 | 74,355 / 74,030 |
+| live-churn-dies-by-count | HG / bestHG | 0.48 / 0.63 | 0.80 / 0.69 | 28 / 28 | 0.93 / 0.81 | 0.06, 0.10 / 0.08, 0.11 | 0 / 0 | 70,287 / 73,335 |
+| deferred-then-dead | D / bestD | 0.03 / 0.03 | 0.07 / 0.07 | 6 / 6 | 0.06 / 0.05 | 0.08, 0.12 / 0.08, 0.11 | 0.08 / 12.7 | 32,796 / 19,481 |
+
+Re-reads are the lane's re-offers plus the roots read out of the chain.
+S65.28's rule: bestD against D wins `deferred-live-large` (−9.9 % and
+−10.2 %), loses `live-churn` (+17 %, heap), `deferred-then-dead` (heap and last
+free: 8.4–8.6 s against 4.2 s) and `dies-by-count` shared (a repeat short of
+completion); D stays at both placements. bestHG against HG loses 4 of 4 at both
+placements, `deferred-live-large` by the last-free gate (4.2 s against 5 ms).
+bestD against bestHG ties but one cell: with the waits the chain is hardly
+reached (a root enters it at its third reading and waits seven turns; ten turns
+make a cell of `deferred-live-large`).
+
+**What each figure says.** The waits do what they were built for on a
+long-lived set: a root is read at turns 0, 1, 4 and 11, the collector's
+epochs fall from 56 to 10 on `deferred-live-large` because it makes fewer
+batches, and its time falls eightfold. The price is a silently dying ring
+behind a root of the longer waits: `live-churn`'s rings outlive a few turns
+and then die with their root already a candidate, so they stand up to seven
+turns, three times the heap, and the mutator allocates into fresh memory —
+22,400 minor faults against 13,600 in a 10 s cell, which is where its +17 %
+instructions come from; a poll that skips the lanes' test when neither of the
+collector's bytes moved was built and measured on that cell (433,888 and
+431,078 instructions an iteration against 433,012 and 433,167 without it) and
+not kept. At the drain only the X arm turns, so a ring behind the longest
+wait goes at the first X, 8 s, which is `deferred-then-dead`'s last free.
+
 ## 2026-09-28 — S65.36: G1, G3, M1 and S1b each lose or tie against their scheme by S65.28's rule; G1 cuts the death check's reads by 78–93 %, M1 frees `deferred-live-large`'s garbage sooner at +9–12 % mutator instructions, S1b lists no registered row and moves no time
 
 **The run, on a quiet box.** Seven arms built at `1146323` and told apart by
