@@ -690,22 +690,37 @@ Notes: dev/plans/S65.md
 
 ## S67 — A web-server load on the rig  [in progress]
 
-Goal: the schemes D, H and HG are compared on the memory load a request
+Goal: the schemes D and HG are compared on the memory load a request
 server puts on the runtime, instead of on the rig's synthetic rings alone
 (Edmond, 2026-09-27: "я хочу кейс web-сервер - типичная нагрузка на память
 что наблюдается на сервере").
 Done when: `web-arena` and `web-heap` run on the rig with their parameters
 cited to sources or marked as assumptions, the rig's idle poll no longer
-hides the mutator's token wait, and D, H and HG are measured on them by a
-rule fixed before the run; the figures put to Edmond.
+hides the mutator's token wait, and D and HG are measured on them by a
+rule fixed before the run; the figures put to Edmond, who then drops one
+(Edmond, 2026-09-28: both stay until S65.43 and S67 are measured; H is not
+an arm).
 Notes: dev/plans/S67.md
 
-- [ ] S67.1 Decide the load's parameters and the protocol
+- [x] S67.1 Decide the load's parameters and the protocol
       done: `dev/plans/S67.md` holds the load's specification (the loads'
         Critic of 2026-09-27, its facts cited, its assumptions marked) and
         the decision rule — metric, gates, repeats, A/A cells — written
         before any run
       tier: T2 · role: Critic
+      Critic 2026-09-28: thirteen findings (`dev/plans/S67.md`), among them
+        no verdict function, a metric the request CPU dilutes, 60 % CPU
+        unreachable at one request in flight, and a bare reset that drops
+        escapes; answered there the same day, the loads and the rule
+        rewritten.
+      Critic 2026-09-28 round 2: nine findings on the rewrite, among them a
+        spin subtraction that took the polls' work with it, a cache that
+        never filled, a void rule the rig itself trips; each answered in
+        `dev/plans/S67.md`.
+      handoff: `dev/plans/S67.md`, "The loads" and "The protocol (S67.1,
+        before any run)": the verdict is best D against best HG on six
+        deciding cells, a tie dropping HG; the instruments S67.2–S67.5 owe
+        are listed there; the run follows S65.43's verdict.
 - [ ] S67.2 A mutator that blocks without polling
       done: a rig mutator can sleep in a blocking wait that makes no poll,
         as a worker in `accept` or on a database read does; a case shows a
@@ -726,9 +741,10 @@ Notes: dev/plans/S67.md
 - [ ] S67.5 The loads `web-heap` and `web-arena`
       done: both loads in the rig's table; `web-arena`'s request objects in
         the mutator's `Arena`, reset at the request's end with the release
-        log; a smoke cell of each completes under D, H and HG
+        log; a smoke cell of each completes under D and HG and their best
+        builds
       tier: T2 · role: Critic
-- [ ] S67.6 Measure D, H and HG on the web loads
+- [ ] S67.6 Measure D and HG on the web loads
       done: the run by S67.1's rule, the arms fresh and interleaved, the
         figures in `dev/BENCHMARKS.md`, the verdict put to Edmond
       tier: T2 · role: Critic
