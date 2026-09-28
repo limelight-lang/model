@@ -614,6 +614,13 @@ pub struct Heap {
     /// for GC entities. Two populations of the same allocator, never
     /// mixed (`docs/memory-manager.md`, "Heap: small objects").
     block_kind: u32,
+    /// Blocks on this heap's owned chains, every class together: raised by
+    /// [`Heap::own`] and lowered by [`Heap::disown`], so a block the class's
+    /// `empty_reserve` keeps stays counted and one that goes to the pool and
+    /// is drawn back moves the count down and up again. The poll reads the
+    /// entity heap's figure ([`entity_blocks_owned`]) as the thread's growth.
+    #[cfg(feature = "release-on-heap-growth")]
+    blocks_owned: u32,
 }
 
 impl Default for Heap {
@@ -643,6 +650,8 @@ impl Heap {
             #[cfg(test)]
             adopted_live: 0,
             block_kind,
+            #[cfg(feature = "release-on-heap-growth")]
+            blocks_owned: 0,
         }
     }
 
@@ -1003,10 +1012,18 @@ impl Heap {
         }
 
         self.owned[ci] = block;
+        #[cfg(feature = "release-on-heap-growth")]
+        {
+            self.blocks_owned += 1;
+        }
     }
 
     /// Remove `block` from this heap's owned chain.
     fn disown(&mut self, ci: usize, block: *mut HeapBlockHeader) {
+        #[cfg(feature = "release-on-heap-growth")]
+        {
+            self.blocks_owned -= 1;
+        }
         unsafe {
             let prev = (*block).links.owned_prev;
             let next = (*block).links.owned_next;
@@ -1077,6 +1094,10 @@ impl Heap {
 
         self.available = [std::ptr::null_mut(); NUM_CLASSES];
         self.empty_reserve = [std::ptr::null_mut(); NUM_CLASSES];
+        #[cfg(feature = "release-on-heap-growth")]
+        {
+            self.blocks_owned = 0;
+        }
     }
 
     /// [`collect_remote`](Self::collect_remote) without touching `self` — for
@@ -2501,6 +2522,22 @@ pub fn thread_entity_heap() -> *mut Heap {
     }
 
     unsafe { &raw mut (*p).entity }
+}
+
+/// The blocks this thread's entity heap owns ([`Heap::blocks_owned`]), or 0
+/// on a heapless thread. The raw heap's blocks are not counted, and neither
+/// are large entities' blocks and runs, which no `Heap` owns: a load whose
+/// garbage is large entities alone moves this figure not at all, a gap that
+/// is Edmond's to rule (`dev/plans/S65.md`, S65.43).
+#[cfg(feature = "release-on-heap-growth")]
+#[inline]
+pub(crate) fn entity_blocks_owned() -> u32 {
+    let heap = thread_entity_heap();
+    if heap.is_null() {
+        return 0;
+    }
+
+    unsafe { (*heap).blocks_owned }
 }
 
 /// Allocate a GC entity of `size` bytes from this thread's entity heap, on

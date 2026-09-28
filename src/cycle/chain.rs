@@ -131,6 +131,28 @@ pub(crate) fn is_due(record: &MutatorRecord, now: u64, term: u64) -> bool {
             || now.saturating_sub(record.chain_checked_at()) >= term)
 }
 
+/// Owe `record`'s chain its X release (`MutatorRecord::owe_the_x_release`), on
+/// the mutator's thread at a crossing of the heap's growth, where the waiting
+/// part's oldest block entered before the current turn: its stamp is the turn
+/// it entered plus [`CHAIN_WAIT`] − 1. The round then reads the chain due
+/// ([`is_due`]) and the next grant's [`expire`] makes the whole waiting part
+/// ready, as after an X turn. Answers false for a part held back because it
+/// entered in this turn, and true otherwise, an empty part included.
+#[cfg(feature = "release-on-heap-growth")]
+pub(crate) fn owe_the_release_on_heap_growth(record: &MutatorRecord) -> bool {
+    let waiting = record.chain_waiting();
+    if waiting.len() == 0 {
+        return true;
+    }
+
+    if waiting.oldest_stamp() >= stamp_at(record.turnovers()) {
+        return false;
+    }
+
+    record.owe_the_x_release();
+    true
+}
+
 /// Move the waiting part's blocks whose stamp the record's epoch has passed
 /// to the ready part's tail, whole and in order. `stop` is read before each
 /// block, the recall's reading, and a true answer leaves the rest for the

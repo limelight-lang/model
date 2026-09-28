@@ -1315,19 +1315,24 @@ pub(crate) fn take_chain_figures() -> ChainFigures {
 /// pruned (the mutator's own collections not counted), and the roots the
 /// deferred lane held at the turns, which a turn hands back into R whole or,
 /// under `lane-back-by-blocks`, in part and the rest made due (pressure and
-/// the exit not counted) (`dev/plans/S65.md`, S65.36).
+/// the exit not counted), a count that under `release-on-heap-growth` takes
+/// the lanes a crossing hands back as well (`dev/plans/S65.md`, S65.36); and
+/// the crossings of the heap's growth that re-armed the mark, zero but under
+/// `release-on-heap-growth` (S65.43).
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct SchemeFigures {
     pub(crate) listed_registered: usize,
     pub(crate) listed_other: usize,
     pub(crate) collector_edges_pruned: usize,
     pub(crate) roots_reoffered: usize,
+    pub(crate) heap_growth_crossings: usize,
 }
 
 static LISTED_REGISTERED: AtomicUsize = AtomicUsize::new(0);
 static LISTED_OTHER: AtomicUsize = AtomicUsize::new(0);
 static EDGES_PRUNED: AtomicUsize = AtomicUsize::new(0);
 static ROOTS_REOFFERED: AtomicUsize = AtomicUsize::new(0);
+static HEAP_GROWTH_CROSSINGS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn note_listed(registered: bool) {
     let counter = if registered {
@@ -1346,6 +1351,25 @@ pub(crate) fn note_reoffered(roots: usize) {
     ROOTS_REOFFERED.fetch_add(roots, Ordering::Relaxed);
 }
 
+#[cfg(feature = "release-on-heap-growth")]
+pub(crate) fn note_heap_growth_crossing() {
+    HEAP_GROWTH_CROSSINGS.fetch_add(1, Ordering::Relaxed);
+    THIS_THREADS_CROSSINGS.with(|crossings| crossings.set(crossings.get() + 1));
+}
+
+#[cfg(feature = "release-on-heap-growth")]
+thread_local! {
+    /// The crossings of the heap's growth this thread's polls made: a case's
+    /// own figure, which the process-wide one mixes with other threads'.
+    static THIS_THREADS_CROSSINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The crossings this thread's polls made since it started.
+#[cfg(feature = "release-on-heap-growth")]
+pub(crate) fn this_threads_heap_growth_crossings() -> usize {
+    THIS_THREADS_CROSSINGS.with(std::cell::Cell::get)
+}
+
 /// The scheme figures since the last call, and zero them.
 pub(crate) fn take_scheme_figures() -> SchemeFigures {
     SchemeFigures {
@@ -1353,6 +1377,7 @@ pub(crate) fn take_scheme_figures() -> SchemeFigures {
         listed_other: LISTED_OTHER.swap(0, Ordering::Relaxed),
         collector_edges_pruned: EDGES_PRUNED.swap(0, Ordering::Relaxed),
         roots_reoffered: ROOTS_REOFFERED.swap(0, Ordering::Relaxed),
+        heap_growth_crossings: HEAP_GROWTH_CROSSINGS.swap(0, Ordering::Relaxed),
     }
 }
 

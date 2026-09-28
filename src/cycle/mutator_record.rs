@@ -167,9 +167,12 @@ pub(crate) struct MutatorRecord {
 /// The collector's chain on the record: the waiting part, roots read live
 /// that wait for the record's epoch to pass their block's stamp, and the
 /// ready part, roots the next batch reads beside R, with the instant of the
-/// last death check. Written by the token's holder alone; the round reads
-/// the two counts, the oldest stamp and the instant under its reading hold,
-/// as atomic loads that touch no block (`crate::ring::RecordChain`). Two
+/// last death check. Written by the token's holder alone, but for
+/// `x_release_owed`, whose own rule is stated there; the round reads the two
+/// counts, the oldest stamp and the instant under its reading hold, and the
+/// owner the waiting part's count and oldest stamp at a crossing of its
+/// heap's growth, as atomic loads that touch no block
+/// (`crate::ring::RecordChain`). Two
 /// lines, the record growing from 256 to 384 bytes in this build.
 #[cfg(feature = "collector-chain")]
 #[repr(C, align(64))]
@@ -194,9 +197,14 @@ struct ChainLine {
     lap_read: AtomicUsize,
     #[cfg(any(test, feature = "death-check-back-off"))]
     lap_taken: AtomicUsize,
-    /// Set by the collector's X arm at its advance and taken by the next
-    /// expiry, which then makes the whole waiting part ready
-    /// (`wait-by-readings`): the chain's wait is counted in batch turns.
+    /// Set by the collector's X arm at its advance, and under
+    /// `release-on-heap-growth` by the mutator at a crossing of its heap's
+    /// growth; taken by the next expiry, which then makes the whole waiting
+    /// part ready (`wait-by-readings`): the chain's wait is counted in batch
+    /// turns. Any thread sets it and only the token's holder clears it, every
+    /// writer storing true, so a store after the holder's swap stands for the
+    /// next grant and one before it is covered by the release that swap
+    /// makes.
     #[cfg(feature = "wait-by-readings")]
     x_release_owed: std::sync::atomic::AtomicBool,
 }
@@ -950,8 +958,9 @@ impl MutatorRecord {
         self.chain.x_release_owed.swap(false, Ordering::Relaxed)
     }
 
-    /// Owe the chain's release again: an expiry a recall stopped with blocks
-    /// of the waiting part left.
+    /// Owe the chain's release: again, after an expiry a recall stopped with
+    /// blocks of the waiting part left; or at the owner's crossing of its
+    /// heap's growth (`crate::cycle::chain::owe_the_release_on_heap_growth`).
     #[cfg(all(feature = "wait-by-readings", feature = "collector-chain"))]
     #[inline]
     pub(crate) fn owe_the_x_release(&self) {

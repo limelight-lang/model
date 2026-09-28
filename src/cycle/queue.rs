@@ -289,6 +289,11 @@ struct MutatorCycleState {
     older_mirrors: [Cell<u8>; LANES - 1],
     #[cfg(feature = "wait-by-readings")]
     x_mirrors: [Cell<u8>; LANES],
+    /// The low-water level of the entity heap's blocks owned since the mark
+    /// was last re-armed ([`release_the_lanes_on_heap_growth`]); `u32::MAX`
+    /// until the first poll reads a count.
+    #[cfg(feature = "release-on-heap-growth")]
+    owned_low: Cell<u32>,
     /// Entries in the base block no allocation path could fund a block
     /// for, written oldest first, which is the order every walk of the buffer
     /// reads them in. [`drain_overflow`] empties it from the other end, so
@@ -394,6 +399,8 @@ impl MutatorCycleState {
             older_mirrors: [const { Cell::new(0) }; LANES - 1],
             #[cfg(feature = "wait-by-readings")]
             x_mirrors: [const { Cell::new(0) }; LANES],
+            #[cfg(feature = "release-on-heap-growth")]
+            owned_low: Cell::new(u32::MAX),
             spare_count: Cell::new(0),
             overflow_len: Cell::new(0),
             signal_due: Cell::new(false),
@@ -1718,14 +1725,7 @@ fn reoffer_the_lanes_due(mutator_state: &MutatorCycleState, byte: u8) -> bool {
             continue;
         }
 
-        #[cfg(test)]
-        crate::cycle::worker::testing::note_reoffered(lane.len());
-        let Some((first, last)) = lane.take() else {
-            continue;
-        };
-        let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
-        unsafe { writer.splice_after_tail(first, last) };
-        moved = true;
+        moved |= hand_the_lane_back(lane);
     }
 
     if moved {
@@ -1733,6 +1733,106 @@ fn reoffer_the_lanes_due(mutator_state: &MutatorCycleState, byte: u8) -> bool {
     }
     moved
 }
+
+/// Splice `lane` whole behind R's tail; answers whether it held a block.
+#[cfg(feature = "wait-by-readings")]
+fn hand_the_lane_back(lane: &mut Chain) -> bool {
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_reoffered(lane.len());
+    let Some((first, last)) = lane.take() else {
+        return false;
+    };
+    let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
+    unsafe { writer.splice_after_tail(first, last) };
+    true
+}
+
+/// The poll's reading of the entity heap's growth under
+/// `release-on-heap-growth`: `owned` is the count of blocks the thread's entity
+/// heap owns (`crate::memory::heap::entity_blocks_owned`). A count below the
+/// low-water level lowers it; a count a quarter over it, and at least one
+/// block, is a crossing. A crossing hands back into R every lane whose first
+/// fill is at least one turn behind the collector's byte, whatever its wait,
+/// and under `collector-chain` owes the chain's waiting part its release
+/// where its oldest block entered before this turn
+/// (`crate::cycle::chain::owe_the_release_on_heap_growth`). A lane or a part
+/// held back that way keeps the level, so the next turn's first poll crosses
+/// again; otherwise the level is re-armed at the count. Roots a released lane
+/// took in this turn go back with it (`dev/plans/S65.md`, S65.43, the code's
+/// Critic, finding 1). Answers whether a lane moved.
+#[cfg(feature = "release-on-heap-growth")]
+pub(crate) fn release_the_lanes_on_heap_growth(owned: u32) -> bool {
+    let state = mutator_state();
+    if state.is_null() {
+        return false;
+    }
+
+    let mutator_state = unsafe { mutator_state_ref(state) };
+    let low = mutator_state.owned_low.get();
+    if owned < low {
+        mutator_state.owned_low.set(owned);
+        return false;
+    }
+
+    if owned < low.saturating_add((low / GROWTH_FRACTION).max(1)) {
+        return false;
+    }
+
+    let record = this_thread_record_ref();
+    let byte = record.turnover_byte();
+    let mut moved = false;
+    let mut held_back = false;
+    for index in 0..LANES {
+        let lane = mutator_state.lane(index);
+        if lane.is_empty() {
+            continue;
+        }
+
+        if (byte.wrapping_sub(mutator_state.lane_mirror(index).get()) as i8) < 1 {
+            held_back = true;
+            continue;
+        }
+
+        moved |= hand_the_lane_back(lane);
+    }
+
+    #[cfg(feature = "collector-chain")]
+    {
+        held_back |= !crate::cycle::chain::owe_the_release_on_heap_growth(record);
+    }
+    if !held_back {
+        mutator_state.owned_low.set(owned);
+        #[cfg(test)]
+        crate::cycle::worker::testing::note_heap_growth_crossing();
+    }
+    if moved {
+        record.note_a_merge();
+    }
+    moved
+}
+
+/// Set this thread's low-water level of blocks owned, for a case that arms
+/// the mark at a count it chose ([`release_the_lanes_on_heap_growth`]).
+#[cfg(all(test, feature = "release-on-heap-growth"))]
+pub(crate) fn set_owned_low(owned: u32) {
+    let state = mutator_state();
+    assert!(!state.is_null(), "a started thread");
+    unsafe { mutator_state_ref(state) }.owned_low.set(owned);
+}
+
+/// This thread's low-water level of blocks owned.
+#[cfg(all(test, feature = "release-on-heap-growth"))]
+pub(crate) fn owned_low() -> u32 {
+    let state = mutator_state();
+    assert!(!state.is_null(), "a started thread");
+    unsafe { mutator_state_ref(state) }.owned_low.get()
+}
+
+/// The growth that releases the lanes, as a divisor of the low-water level:
+/// a quarter (the Sage, `dev/plans/S65.md`, S65.43; 1/8 and 1/2 are the
+/// measured alternatives, each run only on the loss the ruling names).
+#[cfg(feature = "release-on-heap-growth")]
+const GROWTH_FRACTION: u32 = 4;
 
 /// Whether this mutator's deferred lane holds a record, or under
 /// `lane-back-by-blocks` a block a turn made due: the poll's test before it

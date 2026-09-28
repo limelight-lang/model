@@ -1020,6 +1020,8 @@ mod the_live_list;
 mod the_merged_lane;
 mod the_reading_before_the_claim;
 mod the_recall;
+#[cfg(feature = "release-on-heap-growth")]
+mod the_release_on_heap_growth;
 mod the_rig;
 mod the_siblings;
 mod the_standing_list;

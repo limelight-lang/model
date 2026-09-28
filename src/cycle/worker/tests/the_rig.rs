@@ -1058,11 +1058,17 @@ struct MutatorReading {
     /// The thread's CPU over the loop alone.
     cpu_in_the_loop: Duration,
     /// The thread's user-mode cycles and instructions over the loop alone,
-    /// and the share of the loop the counters ran; zeros where the kernel
-    /// refused them ([`testing::ThreadCycles`]).
+    /// and the lower of the shares the counters ran over the loop and over
+    /// the loop with the drain; zeros where the kernel refused them
+    /// ([`testing::ThreadCycles`]).
     cycles_in_the_loop: u64,
     instructions_in_the_loop: u64,
     counter_share: f64,
+    /// The thread's user-mode instructions over the loop and the drain
+    /// together: a build that frees in the loop what another leaves to the
+    /// drain is charged for the same teardown in both
+    /// (`dev/plans/S65.md`, S65.43).
+    instructions_with_the_drain: u64,
     /// Garbage built and not yet freed at the loop's end.
     backlog_at_the_stop: usize,
     /// Iterations whose wall passed [`A_LONG_ITERATION`].
@@ -1256,6 +1262,11 @@ fn a_mutator(
         }
     }
     reading.last_free = last_free.unwrap_or(drain);
+    if let Some(counters) = &counters {
+        let share;
+        (_, reading.instructions_with_the_drain, share) = counters.read();
+        reading.counter_share = reading.counter_share.min(share);
+    }
     let cpu_at_the_end = testing::thread_cpu_time();
     reading.remnant_cleared = remnant_wait.is_some();
     reading.remnant_wait = remnant_wait.unwrap_or(drain);
@@ -1646,6 +1657,10 @@ impl CellReading {
                 self.scheme.collector_edges_pruned.to_string(),
             ),
             ("roots_reoffered", self.scheme.roots_reoffered.to_string()),
+            (
+                "heap_growth_crossings",
+                self.scheme.heap_growth_crossings.to_string(),
+            ),
             ("collectors_born", self.collectors_born.to_string()),
             ("collectors_pinned", self.collectors_pinned.to_string()),
             (
@@ -1733,6 +1748,14 @@ impl CellReading {
                 self.mutators
                     .iter()
                     .map(|reading| reading.instructions_in_the_loop)
+                    .sum::<u64>()
+                    .to_string(),
+            ),
+            (
+                "mutator_instructions_with_the_drain",
+                self.mutators
+                    .iter()
+                    .map(|reading| reading.instructions_with_the_drain)
                     .sum::<u64>()
                     .to_string(),
             ),

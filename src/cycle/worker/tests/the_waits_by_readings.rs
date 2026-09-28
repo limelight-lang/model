@@ -22,7 +22,7 @@ use crate::gc::ll_gc_maybe_collect;
 use crate::memory::arena::Arena;
 use crate::refcount::{RcHeader, survived_readings};
 
-fn root_of(ring: &KeptRing) -> *mut RcHeader {
+pub(super) fn root_of(ring: &KeptRing) -> *mut RcHeader {
     ring.root() as *mut RcHeader
 }
 
@@ -30,13 +30,13 @@ fn root_of(ring: &KeptRing) -> *mut RcHeader {
 /// time in this build's lanes: under the chain the third reading keeps it in
 /// the chain's waiting part instead.
 #[cfg(not(feature = "collector-chain"))]
-const WAITS: &[u32] = &[1, 3, 7, 7];
+pub(super) const WAITS: &[u32] = &[1, 3, 7, 7];
 #[cfg(feature = "collector-chain")]
-const WAITS: &[u32] = &[1, 3];
+pub(super) const WAITS: &[u32] = &[1, 3];
 
 /// One batch of the case's collector over this thread's record, and the poll
 /// that takes what it posted: a root read live young is deferred at the take.
-fn a_reading() {
+pub(super) fn a_reading() {
     assert!(matches!(
         served_by_a_collector(),
         Served::Batch { complete: true, .. }
@@ -46,7 +46,7 @@ fn a_reading() {
 
 /// [`a_reading`] that defers the root, and the turns its lane then waits
 /// before a poll hands it back.
-fn a_reading_and_its_wait() -> u32 {
+pub(super) fn a_reading_and_its_wait() -> u32 {
     a_reading();
     assert_eq!((candidate_count(), deferred_count()), (0, 1));
     let mut turns = 0;
