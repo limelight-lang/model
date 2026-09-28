@@ -536,6 +536,12 @@ Notes: dev/plans/S65.md
         dying rings held up to 7 turns — `live-churn` heap 9 → 32 MB and
         +17 % mutator instructions, `deferred-then-dead` last free 8.5 s; D
         and HG stay by S65.28's rule. Put to Edmond.
+      rig repaired 2026-09-28 (`74937ef`): a test-only walk of every pool
+        region per edge had counted as the mutator's work and grown with the
+        heap (`dev/POSTMORTEM.md`); re-run on it (`dev/BENCHMARKS.md`,
+        "S65.42 on the repaired rig"): the waits cut the mutator 12–17 % on
+        the long-lived and churn loads and lose only on the heap and
+        last-free gates; D and HG stay. Put to Edmond.
 - [x] S65.40 A third generation in EpochQueue(GC) (S65.33, G4; Edmond,
         2026-09-27: "попробуй")
       handoff: superseded by S65.42 (the Sage, 2026-09-28, Final): the ladder

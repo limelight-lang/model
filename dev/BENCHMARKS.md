@@ -8,6 +8,42 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-09-28 — S65.42 on the repaired rig: the waits make the mutator cheaper everywhere, 12–17 % on the long-lived and churn loads, and cost only the garbage a silently dying ring leaves standing; D and HG stay by S65.28's heap and last-free gates
+
+**The run.** The same four arms rebuilt at `74937ef`, the rig without the
+test-only region walk (`dev/POSTMORTEM.md`, 2026-09-28), the same protocol,
+19:08–19:52. The load average read 0.5 at the start and 0.56 at the end, but
+its 5- and 15-minute figures at the end (7.09, 5.79) say another job ran
+through the last phase, `registered-ring-interleaved`: its timed figures are
+not read, its instructions and counters are. Medians of three, spare core:
+
+| load | instr/it D / bestD / HG / bestHG | heap MB D / bestD | re-reads M D / bestD / HG / bestHG | collector s D / bestD | p99, p999 ms D / bestD |
+| --- | --- | --- | --- | --- | --- |
+| deferred-live-large | 17,774 / 14,672 / 15,365 / 14,618 | 0.50 / 0.04 | 3.77 / 0.28 / 1.89 / 0.28 | 1.37 / 0.18 | 0.15, 0.52 / 0.11, 0.23 |
+| live-churn | 201,625 / 177,510 / 204,295 / 178,664 | 10.0 / 36.9 | 0.62 / 0.62 / 0.61 / 0.62 | 1.25 / 1.07 | 1.57, 6.82 / 1.05, 3.67 |
+| live-churn-dies-by-count | 73,596 / 73,056 / 71,768 / 72,819 | 0 / 0 | 0.70 / 0.62 / 0.58 / 0.62 | 1.29 / 1.01 | 0.36, 0.98 / 0.36, 0.66 |
+| deferred-then-dead | 23,099 / 14,189 / 23,072 / 14,219 | 0.10 / 12.7 | 0.03 each | 0.08 / 0.08 | 0.10, 0.36 / 0.08, 0.23 |
+| registered-ring-interleaved | 4,141,535 / 4,390,212 / 3,679,150 / 4,474,603 | 24.6 / 4.7 | 0.73 / 0.34 / 1.98 / 0.33 | — | — |
+
+S65.28's rule: bestD against D wins `deferred-live-large` (−17.1 %, −17.5 %)
+and loses `live-churn` (−12 % and −13 % instructions, lost on the heap and
+long-iteration gates) and `deferred-then-dead` (−38 % instructions, lost on
+heap and last free, 8.6 s against 4.2 s); D stays. bestHG against HG loses on
+the same gates, and on `deferred-live-large` by last free alone (4.2 s
+against 8 ms). D against HG on this rig: HG wins `deferred-live-large`
+(−13 %), ties the churn loads, loses `registered-ring-interleaved` on the
+heap; D stays by one load at the spare core.
+
+**What each figure says.** With the walk gone the mutator's instructions
+follow the work: fewer re-reads, fewer dispositions, and the waits' build is
+cheaper on every load but `registered-ring-interleaved` (+4–6 % D, inside the
+spread). What the waits cost is memory: a ring that outlives a few turns and
+dies with its root already a candidate stands until its root's wait ends,
+four times the heap on `live-churn` and a 12.7 MB remnant on
+`deferred-then-dead` until the drain's first X turn. The best builds of the
+two schemes read alike: under the waits a root reaches the chain at its third
+reading and waits seven turns there, so HG's chain carries little.
+
 ## 2026-09-28 — S65.42: a root waiting 1, 3 or 7 turns by its live readings cuts the re-reads 7–13 times on the long-lived loads and holds silently dying rings up to 7 turns; both best builds lose to their scheme by S65.28's rule on the churn loads' heap
 
 **Void for instructions and timing across heaps** (`dev/POSTMORTEM.md`,
