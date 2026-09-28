@@ -509,15 +509,27 @@ Notes: dev/plans/S65.md
         (`dev/BENCHMARKS.md`, "S65.36: G1, G3, M1 and S1b"; run at
         `1146323`); Critic's two rounds in `dev/plans/S65.md`. Whether to keep
         or delete the four features is Edmond's.
-- [ ] S65.40 A third generation in EpochQueue(GC) (S65.33, G4; Edmond,
+- [ ] S65.42 The best EpochQueue(M) and the best EpochQueue(GC): a root read
+        live waits longer the more readings it has survived (Edmond,
+        2026-09-28: "возьми лучшие оптимизированные версии HG D такие, чтобы
+        все оптимизации были применены корректно. особенно очередь
+        отложенных корней чтобы не читалась каждый раз по 10000 раз!!!!! 2
+        круга критик и мудрец")
+      done: the Sage's round-2 spec (`dev/plans/S65.md`, S65.42) built behind
+        `wait-by-live-readings` in both schemes — the waits 1, 3 and 7 batch
+        turns by the count of live readings in byte 6, the X arm's release on
+        a byte of its own, an aliased root skipped untraced; red first on the
+        Sage's cases; the gate green on D, HG and both best builds; best D
+        (`unlisted-registered-members`) and best HG (`hold-by-generation`,
+        `unlisted-registered-members`, `death-check-back-off`) measured
+        against D and HG on the five loads of S65.36 at both placements,
+        S65.28's rule with p99 / p999 and the re-reads per root beside it;
+        put to Edmond
+      tier: T2 · role: Critic, Sage
+- [x] S65.40 A third generation in EpochQueue(GC) (S65.33, G4; Edmond,
         2026-09-27: "попробуй")
-      done: behind its own feature, a chain root read live without bit 0 of
-        its entry is not traced but kept with the bit, one with the bit is
-        traced and loses it, `take_compacted` clears bit 0; only while the
-        chain holds more than 512 × 64 roots; red first on "a ring let go
-        while its root is skipped is freed by the pass after it";
-        `deferred-then-dead`'s last free green; measured against HG
-      tier: T2 · role: Critic
+      handoff: superseded by S65.42 (the Sage, 2026-09-28, Final): the ladder
+        of waits carries it in both schemes; not built.
 - [ ] S65.41 The epoch turns no sooner than a floor of time, whatever the
         batches (the Sage, 2026-09-28: on `registered-ring-interleaved` HG
         re-reads its chained live roots 1.93 M times a cell, about 83 epochs
@@ -525,9 +537,10 @@ Notes: dev/plans/S65.md
         отложенными корнями идёт большими пачками а в HG — мелкими")
       done: behind its own feature, `note_batch`'s turn held until the floor
         has passed since the advance; red first on "64 batches inside the
-        floor turn no epoch"; the floor chosen by measurement; HG and D with
-        and without it on the five loads of S65.36, both placements, verdicts
-        and p99 / p999 put to Edmond
+        floor turn no epoch"; built on S65.42's best builds as an arm of its
+        own at F = 250 ms, 500 only if 250 wins (the Sage, 2026-09-28, Final),
+        on `live-churn` and `deferred-then-dead` beside the five loads of
+        S65.36, both placements; verdicts and p99 / p999 put to Edmond
       tier: T2 · role: Critic
 - [ ] S65.37 EpochQueue(M) re-offers at the turn only the roots a decrement
         or a pruned reading touched (S65.33; Edmond, 2026-09-27)
