@@ -47,9 +47,7 @@ pub(crate) struct ChainPeek {
 }
 
 /// What one death check did: the entries it read and took, those among them
-/// after it started a lap, whether it started one, and whether it found every
-/// entry read to its block's tail before it read one — the end of the lap
-/// before.
+/// a lap re-read, and whether it started a lap.
 #[derive(Clone, Copy, Debug, Default)]
 #[cfg_attr(
     not(any(test, feature = "death-check-back-off")),
@@ -60,11 +58,22 @@ pub(crate) struct ChainPeek {
 )]
 pub(crate) struct CheckReading {
     pub(crate) read: usize,
-    pub(crate) read_in_the_lap: usize,
+    pub(crate) read_in_a_lap: usize,
     pub(crate) taken: usize,
-    pub(crate) taken_in_the_lap: usize,
+    pub(crate) taken_in_a_lap: usize,
     pub(crate) lapped: bool,
-    pub(crate) found_read_to_the_tails: bool,
+}
+
+/// The death check's lap, carried from check to check: whether one is open,
+/// and the entries it read and took so far. A lap is the re-reading of the
+/// entries the chain held when every one of them stood read to its tail; it
+/// runs over as many checks as its budget takes and ends when the cursor
+/// passes the last of them, whatever was pushed meanwhile.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Lap {
+    pub(crate) open: bool,
+    pub(crate) read: usize,
+    pub(crate) taken: usize,
 }
 
 /// A death check's answer for one entry.
@@ -165,6 +174,7 @@ impl RecordChain {
         unsafe {
             *(*b).link.stamp.get() = stamp;
             *(*b).link.checked.get() = usize::from(cfg!(feature = "death-check-back-off"));
+            *(*b).link.lap_until.get() = 0;
             *(*b).slots[0].get() = entry;
             (*b).writer.tail.store(1, Ordering::Relaxed);
             *(*b).reader.local_tail.get() = 1;
@@ -338,36 +348,45 @@ impl RecordChain {
         self.entries.fetch_sub(peek.copied, Ordering::Relaxed);
     }
 
-    /// Read up to `budget` entries past the check's cursor, block by block
-    /// from the first, and answer each by `visit`: an entry taken is
-    /// tombstoned, and [`Checked::KeepAndStop`] ends the check with the
-    /// cursor on the entry it answered. A lap that finds every block read to
-    /// its tail starts the cursors again from each block's front. Answers the
-    /// entries read; `stop` is asked before each, and a true answer ends the
-    /// check where it stands, the cursor kept.
+    /// [`Self::check_bounded`] with no lap carried from a check before and a
+    /// lap always allowed; answers the entries read.
     ///
     /// # Safety
-    /// The caller holds the token.
+    /// As [`Self::check_bounded`].
+    #[cfg(test)]
     pub(crate) unsafe fn check(
         &self,
         budget: usize,
         stop: impl FnMut() -> bool,
         visit: impl FnMut(usize) -> Checked,
     ) -> usize {
-        unsafe { self.check_bounded(budget, true, stop, visit) }.read
+        let mut lap = Lap::default();
+        unsafe { self.check_bounded(budget, &mut lap, |_| {}, || true, stop, visit) }.read
     }
 
-    /// [`Self::check`], starting a lap only where `may_lap`. Answers what it
-    /// read and took, split at the lap it started, and whether the entries
-    /// stood read to their tails when it began: where they did, the lap before
-    /// has ended.
+    /// Read up to `budget` entries past the check's cursor, block by block
+    /// from the first, and answer each by `visit`: an entry taken is
+    /// tombstoned, and [`Checked::KeepAndStop`] ends the check with the
+    /// cursor on the entry it answered. A lap that finds every block read to
+    /// its tail starts the cursors again from each block's front. `stop` is
+    /// asked before each entry, and a true answer ends the check where it
+    /// stands, the cursor kept.
+    ///
+    /// `lap` is carried from the check before: `end_lap` is called once with
+    /// a lap's totals when the cursor passes the last entry it re-reads, or
+    /// when that entry has left the chain, and `may_lap` is asked, after any
+    /// such end, before a lap starts. No lap starts over a chain with no
+    /// entry. Answers what the check read and took, and what of it a lap
+    /// re-read.
     ///
     /// # Safety
-    /// As [`Self::check`].
+    /// The caller holds the token.
     pub(crate) unsafe fn check_bounded(
         &self,
         budget: usize,
-        may_lap: bool,
+        lap: &mut Lap,
+        mut end_lap: impl FnMut(&Lap),
+        mut may_lap: impl FnMut() -> bool,
         mut stop: impl FnMut() -> bool,
         mut visit: impl FnMut(usize) -> Checked,
     ) -> CheckReading {
@@ -379,48 +398,76 @@ impl RecordChain {
                 let b = ring(block);
                 let tail = unsafe { (*b).writer.tail.load(Ordering::Relaxed) };
                 let front = unsafe { (*b).reader.front.load(Ordering::Relaxed) };
+                let next = unsafe { (*b).link.next.load(Ordering::Relaxed) };
                 let checked = unsafe { &mut *(*b).link.checked.get() };
+                let lap_until = unsafe { *(*b).link.lap_until.get() };
+                // The lap's entries are a prefix of the chain, so the lap ends
+                // in the last block that holds any: the next one is fresh.
+                let lap_ends_here =
+                    next.is_null() || unsafe { *(*ring(next)).link.lap_until.get() } == 0;
                 *checked = (*checked).max(front);
-                while *checked < tail {
+                loop {
+                    if lap.open && lap_ends_here && *checked >= lap_until {
+                        lap.open = false;
+                        end_lap(lap);
+                    }
+                    if *checked >= tail {
+                        break;
+                    }
+
                     met_one = true;
                     if reading.read == budget || stop() {
                         return reading;
                     }
 
+                    let in_the_lap = lap.open && *checked < lap_until;
                     let slot = unsafe { &mut *(*b).slots[*checked].get() };
                     if *slot != 0 {
                         reading.read += 1;
-                        reading.read_in_the_lap += usize::from(reading.lapped);
+                        reading.read_in_a_lap += usize::from(in_the_lap);
+                        lap.read += usize::from(in_the_lap);
                         match visit(*slot) {
                             Checked::Keep => {}
                             Checked::Take => {
                                 *slot = 0;
                                 self.entries.fetch_sub(1, Ordering::Relaxed);
                                 reading.taken += 1;
-                                reading.taken_in_the_lap += usize::from(reading.lapped);
+                                reading.taken_in_a_lap += usize::from(in_the_lap);
+                                lap.taken += usize::from(in_the_lap);
                             }
                             Checked::KeepAndStop => return reading,
                         }
                     }
                     *checked += 1;
                 }
-                block = unsafe { (*b).link.next.load(Ordering::Relaxed) };
+                block = next;
             }
 
-            if !reading.lapped && !met_one {
-                reading.found_read_to_the_tails = true;
+            // A lap still open here lost its last entries to the ready part.
+            if lap.open {
+                lap.open = false;
+                end_lap(lap);
             }
-            if met_one || reading.lapped || !may_lap {
+            if met_one || reading.lapped || self.entries.load(Ordering::Relaxed) == 0 || !may_lap()
+            {
                 return reading;
             }
 
-            // Every block read to its tail: the lap ends here, and the next
-            // starts from each block's front.
+            // Every block read to its tail: the next lap re-reads what each
+            // holds now, from its front.
             reading.lapped = true;
+            *lap = Lap {
+                open: true,
+                read: 0,
+                taken: 0,
+            };
             let mut block = self.first.load(Ordering::Relaxed);
             while !block.is_null() {
                 let b = ring(block);
-                unsafe { *(*b).link.checked.get() = 0 };
+                unsafe {
+                    *(*b).link.checked.get() = 0;
+                    *(*b).link.lap_until.get() = (*b).writer.tail.load(Ordering::Relaxed);
+                }
                 block = unsafe { (*b).link.next.load(Ordering::Relaxed) };
             }
         }

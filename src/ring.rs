@@ -106,12 +106,16 @@ struct LinkLine {
     /// at its block change, and only for a block that is not the tail block.
     next: AtomicPtr<BlockHeader>,
     /// A block of a record's chain ([`RecordChain`]): the record's epoch when
-    /// the block took its first entry, and the index its death check has
-    /// read up to. Unused in a ring's circle.
+    /// the block took its first entry, the index its death check has read up
+    /// to, and the block's tail when the check's current lap started, zero
+    /// for a block linked in since: a reading below it is the lap's, one at
+    /// or past it a fresh entry's. Unused in a ring's circle.
     #[cfg(feature = "collector-chain")]
     stamp: UnsafeCell<u64>,
     #[cfg(feature = "collector-chain")]
     checked: UnsafeCell<usize>,
+    #[cfg(feature = "collector-chain")]
+    lap_until: UnsafeCell<usize>,
 }
 
 /// A block's payload in ring form.
@@ -1438,7 +1442,7 @@ impl Chain {
     }
 
     /// Blocks in the chain.
-    #[cfg(any(test, feature = "lane-back-by-blocks"))]
+    #[cfg(test)]
     pub(crate) fn block_count(&self) -> usize {
         let mut count = 0;
         let mut block = self.first;
@@ -1599,7 +1603,7 @@ pub(crate) unsafe fn next_block(block: *mut BlockHeader) -> *mut BlockHeader {
 #[cfg(feature = "collector-chain")]
 mod record_chain;
 #[cfg(feature = "collector-chain")]
-pub(crate) use record_chain::{ChainPeek, CheckReading, Checked, RecordChain};
+pub(crate) use record_chain::{ChainPeek, Checked, Lap, RecordChain};
 
 #[cfg(test)]
 pub(crate) mod testing;

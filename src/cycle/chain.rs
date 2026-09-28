@@ -148,10 +148,15 @@ pub(crate) unsafe fn check_the_deaths(
 ) -> usize {
     record.note_chain_checked(now);
     let mut posted = 0;
+    let mut lap = record.lap();
     let reading = unsafe {
-        record
-            .chain_waiting()
-            .check_bounded(DEATH_CHECK_BUDGET, may_lap(record), stop, |entry| {
+        record.chain_waiting().check_bounded(
+            DEATH_CHECK_BUDGET,
+            &mut lap,
+            |ended| end_the_lap(record, ended),
+            || may_lap(record),
+            stop,
+            |entry| {
                 let entity = crate::cycle::queue::entry_root(entry);
                 if !is_a_completed_death(entity) {
                     return Checked::Keep;
@@ -163,36 +168,36 @@ pub(crate) unsafe fn check_the_deaths(
 
                 posted += 1;
                 Checked::Take
-            })
+            },
+        )
     };
-    #[cfg(any(test, feature = "death-check-back-off"))]
-    follow_the_lap(record, &reading);
-    #[cfg(not(any(test, feature = "death-check-back-off")))]
+    #[cfg(feature = "death-check-back-off")]
+    if reading.lapped {
+        record.note_lap(record.turnovers(), record.lap_state().1);
+    }
+    record.set_lap(lap);
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_chain_check(
+        reading.read,
+        reading.taken,
+        reading.read_in_a_lap,
+        reading.taken_in_a_lap,
+        reading.lapped,
+    );
+    #[cfg(not(test))]
     let _ = reading;
     posted
 }
 
-/// Carry `reading` into the lap `record` notes: a lap runs from the check
-/// that starts it over as many grants as the budget takes, to the check that
-/// finds every entry read to its tail. Under `death-check-back-off` the lap's
-/// start is noted for [`may_lap`], and at its end the back-off is set from
-/// the whole lap's yield; the rig counts the lap's reads and deaths apart from
-/// the reads of fresh entries.
-#[cfg(any(test, feature = "death-check-back-off"))]
-fn follow_the_lap(record: &MutatorRecord, reading: &crate::ring::CheckReading) {
-    let (open, mut lap_read, mut lap_taken) = record.lap();
-    let continued = open && !reading.found_read_to_the_tails;
-    let (read_in_a_lap, taken_in_a_lap) = if continued {
-        lap_read += reading.read;
-        lap_taken += reading.taken;
-        (reading.read, reading.taken)
-    } else {
-        (reading.read_in_the_lap, reading.taken_in_the_lap)
-    };
+/// A lap of the death check over `record`'s waiting part has ended, having
+/// read and taken what `ended` counts. Under `death-check-back-off` it sets
+/// the back-off from the whole lap's yield, before the check asks whether the
+/// next may start; a lap that read nothing leaves it as it stands.
+fn end_the_lap(record: &MutatorRecord, ended: &crate::ring::Lap) {
     #[cfg(feature = "death-check-back-off")]
-    if open && reading.found_read_to_the_tails {
+    if ended.read > 0 {
         let (lapped_at, back_off) = record.lap_state();
-        let yielded = lap_taken * LAP_YIELD_SHARE >= lap_read.max(1);
+        let yielded = ended.taken * LAP_YIELD_SHARE >= ended.read;
         let back_off = if yielded {
             0
         } else {
@@ -200,25 +205,8 @@ fn follow_the_lap(record: &MutatorRecord, reading: &crate::ring::CheckReading) {
         };
         record.note_lap(lapped_at, back_off);
     }
-    if reading.lapped {
-        #[cfg(feature = "death-check-back-off")]
-        record.note_lap(record.turnovers(), record.lap_state().1);
-        record.set_lap(true, reading.read_in_the_lap, reading.taken_in_the_lap);
-    } else if continued {
-        record.set_lap(true, lap_read, lap_taken);
-    } else if open {
-        record.set_lap(false, 0, 0);
-    }
-    #[cfg(test)]
-    crate::cycle::worker::testing::note_chain_check(
-        reading.read,
-        reading.taken,
-        read_in_a_lap,
-        taken_in_a_lap,
-        reading.lapped,
-    );
-    #[cfg(not(test))]
-    let _ = (read_in_a_lap, taken_in_a_lap);
+    #[cfg(not(feature = "death-check-back-off"))]
+    let _ = (record, ended);
 }
 
 /// A lap that posts at least one death in this many headers it read resets

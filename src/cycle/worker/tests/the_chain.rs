@@ -832,3 +832,117 @@ fn a_lap_past_one_grants_budget_is_counted_whole() {
     unsafe { let_go(&kept) };
     reset();
 }
+
+/// What batches push while a lap is open is fresh: the lap counts only the
+/// entries the waiting part held when it started, and ends when the cursor
+/// passes the last of them, however many pushes came meanwhile.
+#[test]
+#[cfg(not(feature = "death-check-back-off"))]
+fn what_a_batch_pushes_during_a_lap_is_read_as_fresh() {
+    const KEPT: usize = crate::cycle::chain::DEATH_CHECK_BUDGET + 200;
+    const PUSHED: usize = 10;
+    let _g = test_guard();
+    reset();
+    let node = node_class("ChainFreshInALapNode");
+    let mut arena = Arena::new();
+    let mut kept = unsafe { kept_roots(&mut arena, node, KEPT) };
+    while candidate_count() > 0 {
+        assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    }
+
+    // Until a check starts a lap over the chain read to its tails, then five
+    // checks more, each after a batch pushed fresh roots.
+    let _ = testing::take_chain_figures();
+    let mut in_the_lap = None;
+    for _ in 0..8 {
+        let _ = a_checking_serve();
+        let figures = testing::take_chain_figures();
+        if figures.laps > 0 {
+            in_the_lap = Some(figures.headers_checked_in_a_lap);
+            break;
+        }
+    }
+    let mut in_the_lap = in_the_lap.expect("a lap started");
+    let mut read = 0;
+    for _ in 0..5 {
+        kept.extend(unsafe { kept_roots(&mut arena, node, PUSHED) });
+        let _ = a_checking_serve();
+        let figures = testing::take_chain_figures();
+        assert_eq!(figures.laps, 0, "a pass that met a fresh entry starts none");
+        in_the_lap += figures.headers_checked_in_a_lap;
+        read += figures.headers_checked;
+    }
+    assert_eq!(in_the_lap, KEPT, "the lap reads what the chain held");
+    assert!(
+        read > KEPT - crate::cycle::chain::DEATH_CHECK_BUDGET,
+        "and the fresh roots besides"
+    );
+
+    unsafe { let_go(&kept) };
+    reset();
+}
+
+/// A check over a waiting part with no entry starts no lap.
+#[test]
+#[cfg(not(feature = "death-check-back-off"))]
+fn a_check_over_an_empty_waiting_part_starts_no_lap() {
+    let _g = test_guard();
+    reset();
+    let node = node_class("ChainEmptyLapNode");
+    let mut arena = Arena::new();
+    let kept = unsafe { kept_roots(&mut arena, node, 2) };
+    let _ = testing::take_chain_figures();
+
+    assert!(matches!(a_checking_serve(), Served::Batch { roots: 2, .. }));
+    let figures = testing::take_chain_figures();
+    assert_eq!((figures.headers_checked, figures.laps), (0, 0));
+
+    unsafe { let_go(&kept) };
+    reset();
+}
+
+/// Under `death-check-back-off` a lap that found nothing sets the back-off
+/// when it ends, before the check asks whether the next may start: in the
+/// next epoch's second half no lap starts, 2^1 epochs not having passed.
+#[test]
+#[cfg(feature = "death-check-back-off")]
+fn a_barren_laps_back_off_holds_the_next_epochs_lap() {
+    let _g = test_guard();
+    reset();
+    crate::cycle::epoch::turn_this_threads_cell();
+    let node = node_class("ChainBarrenLapNode");
+    let mut arena = Arena::new();
+    let mut kept = unsafe { kept_roots(&mut arena, node, 2) };
+    assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    let record = unsafe { &*record() };
+    let into_the_second_half = || {
+        while record.batches_since_the_advance() < crate::cycle::epoch::BATCHES_PER_EPOCH / 2 {
+            record.note_batch();
+        }
+    };
+    into_the_second_half();
+    let _ = testing::take_chain_figures();
+    let _ = a_checking_serve();
+    assert_eq!(testing::take_chain_figures().laps, 1);
+    assert_eq!(
+        record.lap_state().1,
+        1,
+        "the lap read both roots and found no death"
+    );
+
+    // The next epoch: two more roots wait, read to their tail at the push.
+    crate::cycle::epoch::turn_this_threads_cell();
+    kept.extend(unsafe { kept_roots(&mut arena, node, 2) });
+    assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
+    into_the_second_half();
+    let _ = testing::take_chain_figures();
+    let _ = a_checking_serve();
+    assert_eq!(
+        testing::take_chain_figures().laps,
+        0,
+        "one epoch of two passed"
+    );
+
+    unsafe { let_go(&kept) };
+    reset();
+}
