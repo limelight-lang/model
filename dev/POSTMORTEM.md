@@ -7,6 +7,33 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-09-28 — the rig counted a test-only walk of every pool region per edge as the mutator's work
+
+**What happened.** `cycle::row::resolve_edge_target` asserted under
+`cfg(test)` that each edge target stands in a region of the pool, and the
+check walks every region. The rig runs the release test binary, so the walk
+ran on every edge the mutator's collections resolved and its cost grew with
+the heap: on `live-churn` D read 369,000 instructions an iteration with it
+and 207,000 without, and S65.42's best D, whose heap stood at 32 MB against
+9, read +17 % against D with it and −16 % without. Every verdict of the rig
+that compared arms of different heaps carried the bias: S65.28, S65.32,
+S65.34–S65.36 and S65.42's first run (`dev/BENCHMARKS.md`).
+
+**Why it was possible.** A fixture guard written for the debug suite was
+gated on `test` alone, and the rig is a test: nothing separates "a test
+checks this" from "a measurement pays for this". The walk is linear in the
+regions, so it read as the scheme's cost exactly where the schemes differed.
+
+**Why it was not caught.** The rig's calibration reads a load whose heap
+does not change between its arms, and the instruction counts of the arms
+compared before this one differed by a few per cent, inside what a scheme
+plausibly costs. Found when S65.42's best D read more mutator instructions
+with fewer re-reads; a user-mode profile put 1.28 of its 1.35 G extra
+instructions in `resolve_edge_target`, whose calls had fallen, not risen.
+The check now runs under `debug_assertions` as well, which the release
+binary lacks; a `live-churn` cell of D read 207,848 on the repaired build
+against 206,843–208,843 with the walk removed by hand.
+
 ## 2026-09-27 — a figure the rig integrates over an iteration left out the paced sleep
 
 **What happened.** The rig's `time_to_free_us` and

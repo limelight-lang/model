@@ -129,7 +129,10 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
     // keeps it in the one place that owns block addresses.
     let header = BlockHeader::of_ptr(child as *const u8);
     let block = header as usize;
-    #[cfg(test)]
+    // Debug builds only: the walk reads every region of the pool, so its
+    // cost grows with the heap, and the rig's release build would count it
+    // as the mutator's (`dev/BENCHMARKS.md`, "S65.42").
+    #[cfg(all(test, debug_assertions))]
     assert!(
         stands_where_a_block_can(child as usize, block),
         "a traced edge target at {:#x} lies in no block of this process, so the \
@@ -442,7 +445,7 @@ fn note_dispatch() {
 /// this one are reached through `extern "C"`, where a panic ends the
 /// process. The message is therefore at the head of the output and the
 /// cases after it did not run.
-#[cfg(test)]
+#[cfg(all(test, debug_assertions))]
 fn stands_where_a_block_can(child: usize, block: usize) -> bool {
     let mut in_region = false;
     crate::memory::block_pool::BlockPool::global().for_each_region(|base| {

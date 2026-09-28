@@ -10,6 +10,13 @@ what was tried, measured, and accepted or rejected.
 
 ## 2026-09-28 — S65.42: a root waiting 1, 3 or 7 turns by its live readings cuts the re-reads 7–13 times on the long-lived loads and holds silently dying rings up to 7 turns; both best builds lose to their scheme by S65.28's rule on the churn loads' heap
 
+**Void for instructions and timing across heaps** (`dev/POSTMORTEM.md`,
+2026-09-28): the arms carried a test-only walk of every pool region per edge
+the mutator resolved, whose cost grew with the heap. On `live-churn` without
+it D reads 207,000 instructions an iteration and best D 174,000, where this
+run reads +17 % against D; the heap, re-read and collector figures stand.
+Re-run on the repaired rig below it.
+
 **The run, on a quiet box.** Four arms built at `cb0c4bb` and told apart by
 their binaries' hashes: D, HG (`hold-by-generation`), bestD
 (`wait-by-readings`, `unlisted-registered-members`) and bestHG
