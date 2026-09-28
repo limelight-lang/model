@@ -14,7 +14,7 @@ crate. The destination's last mile, the compiler that links this crate, is
 outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
 `limelight`.
 
-Updated: 2026-09-27 · Active: S65, S67.
+Updated: 2026-09-28 · Active: S65, S67.
 
 Review 2026-09-26: three days late, before the push of S65.21–S65.28 to main.
 Pass 1, code `89bb0dc..49b544a` against the thresholds (a function over 50
@@ -57,7 +57,19 @@ criterion, and it leaves when it gets one or when it is ruled on.
   6's reserve, bits 20–23, could count how many times the collector read a
   root live, so that a root read live N times is re-read less often (Edmond,
   2026-09-27). The collector would write it under its grant, a second writer
-  of byte 6 the rfc does not admit; to be measured after S65.32's run.
+  of byte 6 the rfc does not admit; to be measured after S65.32's run. The
+  Sage of 2026-09-28 proposes the same inside D's lane — a root read live k
+  times waits 2^k turns, capped — as the one knob both D's and HG's wins ask
+  for.
+- **D and HG, one or both; the four features of S65.36.** The Sage of
+  2026-09-28 keeps D and would delete the loser after one bounded experiment,
+  not keep both; Edmond is inclined to keep both. Whether G1, G3, M1 and S1b
+  stay or go is Edmond's (`dev/BENCHMARKS.md`, "S65.36: G1, G3, M1 and S1b").
+- **The long-iteration gate against the tail.** On `live-churn` HG has more
+  iterations over 200 µs than D but p99 0.98–1.18 ms against 1.57–1.70 ms and
+  p999 1.31–1.70 ms against 2.62–3.41 ms: S65.28's gate reads a loss where
+  the tail reads a win. Whether the rule takes p99 and p999 instead is
+  Edmond's.
 
 - **Whether a survivor list should prefer a block this reset has already
   retained.** `Arena::alloc_preferring` tries the described block's tail, the
@@ -497,6 +509,26 @@ Notes: dev/plans/S65.md
         (`dev/BENCHMARKS.md`, "S65.36: G1, G3, M1 and S1b"; run at
         `1146323`); Critic's two rounds in `dev/plans/S65.md`. Whether to keep
         or delete the four features is Edmond's.
+- [ ] S65.40 A third generation in EpochQueue(GC) (S65.33, G4; Edmond,
+        2026-09-27: "попробуй")
+      done: behind its own feature, a chain root read live without bit 0 of
+        its entry is not traced but kept with the bit, one with the bit is
+        traced and loses it, `take_compacted` clears bit 0; only while the
+        chain holds more than 512 × 64 roots; red first on "a ring let go
+        while its root is skipped is freed by the pass after it";
+        `deferred-then-dead`'s last free green; measured against HG
+      tier: T2 · role: Critic
+- [ ] S65.41 The epoch turns no sooner than a floor of time, whatever the
+        batches (the Sage, 2026-09-28: on `registered-ring-interleaved` HG
+        re-reads its chained live roots 1.93 M times a cell, about 83 epochs
+        of 64 small batches each; Edmond, 2026-09-27: "у D работа с
+        отложенными корнями идёт большими пачками а в HG — мелкими")
+      done: behind its own feature, `note_batch`'s turn held until the floor
+        has passed since the advance; red first on "64 batches inside the
+        floor turn no epoch"; the floor chosen by measurement; HG and D with
+        and without it on the five loads of S65.36, both placements, verdicts
+        and p99 / p999 put to Edmond
+      tier: T2 · role: Critic
 - [ ] S65.37 EpochQueue(M) re-offers at the turn only the roots a decrement
         or a pruned reading touched (S65.33; Edmond, 2026-09-27)
       done: the Sage rules the dirty bit sound or names its counter-example
@@ -525,15 +557,6 @@ Notes: dev/plans/S65.md
         both schemes against the build without it, the epoch's length, the
         re-reads, the garbage held and the withheld peak read; put to
         Edmond, `BATCHES_PER_EPOCH` being his ruling
-      tier: T2 · role: Critic
-- [ ] S65.40 A third generation in EpochQueue(GC) (S65.33, G4; Edmond,
-        2026-09-27: "попробуй")
-      done: behind its own feature, a chain root read live without bit 0 of
-        its entry is not traced but kept with the bit, one with the bit is
-        traced and loses it, `take_compacted` clears bit 0; only while the
-        chain holds more than 512 × 64 roots; red first on "a ring let go
-        while its root is skipped is freed by the pass after it";
-        `deferred-then-dead`'s last free green; measured against HG
       tier: T2 · role: Critic
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
