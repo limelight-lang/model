@@ -14,22 +14,29 @@ crate. The destination's last mile, the compiler that links this crate, is
 outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
 `limelight`.
 
-Updated: 2026-09-28 · Active: S65, S67.
+Updated: 2026-09-29 · Active: S65, S67.
 
-Review 2026-09-26: three days late, before the push of S65.21–S65.28 to main.
-Pass 1, code `89bb0dc..49b544a` against the thresholds (a function over 50
-code lines, depth 3, a one-implementation abstraction, a one-caller forward):
-twelve production functions over 50 lines, `worker::batch` at 148 the worst,
-nine at depth 3 or more, four one-implementation abstractions and six
-one-caller forwards, most behind `collector-chain`; the cuts are the backlog
-line "The review's cuts of 2026-09-26". Pass 2: the period's algorithms are
-the Sage's rulings on the chain, awaiting S65.28's figures. Pass 3, the
-Critic over S65: eleven findings, each answered in the plan the same day —
-the Done-when's free and poll clauses restated, S65.28's decision rule fixed
-before its run's figures were read, form D in the default build put to
-Edmond, the remote frees S65.29, the stage's close S65.30, S65.17 and S65.18
-amended, the fog cleared of what became steps. Earlier reviews and the
-closed stages' summaries are in `git log -- PLAN.md`.
+Review 2026-09-29: one day late. Pass 1, code `49b544a..25620f6` against the
+thresholds (a function over 50 code lines, depth 3, a one-implementation
+abstraction, a one-caller forward): ten functions over 50 lines, five of them
+already over before the range, `worker::batch` at 160 the worst; four new
+depths of 3; three one-use abstractions; three one-caller forwards; six
+duplicates, the lanes' walk the widest; most of it in the refused arms'
+code. The cuts are S65.46, after Edmond's ruling on those arms. The
+independent pass over S67.2's commit found the `POSTED` key with two writers
+and the byte-state table's lock on every test build's handshake, both
+repaired in S67.2's follow-up. Pass 2: every arm of the range read equal to or
+worse than the build without it, and the default build carries none of them;
+whether the refused arms leave the tree is put to Edmond. Pass 3, the Critic
+over the plan: eleven findings. Cut from the fog: the count of live readings
+(built as S65.42's) and the long-iteration gate (S67.1's gates replace it).
+S67's Done-when restated to what S67.2 found, S67.3's done-line to the
+specification, S67.7 added for the protocol's instruments. Put to Edmond:
+what S67's verdict leaves as the default build; the refused arms; S65.37,
+S65.38, S65.39 and S65.41 against the rulings of 2026-09-29; S65.28 and
+S65.31, whose done-lines are met; the rfc's amendment for form D and the
+live list. Earlier reviews and the closed stages' summaries are in
+`git log -- PLAN.md`.
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each of
 them is in the journals: `dev/DECISIONS.md` for a decision and its reason,
@@ -53,14 +60,6 @@ slices, the citation checks — is `dev/WORKFLOW.md`.
 A line here is an unresolved question rather than a step: it carries no
 criterion, and it leaves when it gets one or when it is ruled on.
 
-- **A counter of live readings per root, more than two generations.** Byte
-  6's reserve, bits 20–23, could count how many times the collector read a
-  root live, so that a root read live N times is re-read less often (Edmond,
-  2026-09-27). The collector would write it under its grant, a second writer
-  of byte 6 the rfc does not admit; to be measured after S65.32's run. The
-  Sage of 2026-09-28 proposes the same inside D's lane — a root read live k
-  times waits 2^k turns, capped — as the one knob both D's and HG's wins ask
-  for.
 - **D and HG, one or both; the four features of S65.36.** The Sage of
   2026-09-28 keeps D and would delete the loser after one bounded experiment,
   not keep both; Edmond is inclined to keep both. On the repaired rig
@@ -69,11 +68,6 @@ criterion, and it leaves when it gets one or when it is ruled on.
   scheme with less machinery at the same price. Edmond, 2026-09-28: keep
   both until S65.43 and S67's web loads are measured on them, then decide. Whether G1, G3, M1 and S1b
   stay or go is Edmond's (`dev/BENCHMARKS.md`, "S65.36: G1, G3, M1 and S1b").
-- **The long-iteration gate against the tail.** On `live-churn` HG has more
-  iterations over 200 µs than D but p99 0.98–1.18 ms against 1.57–1.70 ms and
-  p999 1.31–1.70 ms against 2.62–3.41 ms: S65.28's gate reads a loss where
-  the tail reads a win. Whether the rule takes p99 and p999 instead is
-  Edmond's.
 
 - **Whether a survivor list should prefer a block this reset has already
   retained.** `Arena::alloc_preferring` tries the described block's tail, the
@@ -688,6 +682,12 @@ Notes: dev/plans/S65.md
         `dev/DECISIONS.md` exempts them from F3 with a figure of what a
         producer holds under the longest grant the rig reads
       tier: T2 · role: Critic
+- [ ] S65.46 The review's cuts of 2026-09-29 (the plan review, pass 1)
+      done: after Edmond's ruling on the refused arms, each cut of
+        `dev/plans/S65.md`, S65.46, that stands in the code left is made or
+        recorded as kept with its reason; the thresholds read again over the
+        cut functions
+      tier: T1
 - [ ] S65.30 The stage's close: Done-when read clause by clause
       done: each clause of Done-when read on the build the stage leaves, by
         the test or figure that shows it; the Miri list above run and
@@ -710,8 +710,10 @@ server puts on the runtime, instead of on the rig's synthetic rings alone
 что наблюдается на сервере").
 Done when: `web-arena` and `web-heap` run on the rig with their parameters
 cited to sources or marked as assumptions, the rig's idle poll no longer
-hides the mutator's token wait, and D and HG are measured on them by a
-rule fixed before the run; the figures put to Edmond, who then drops one
+hides what a sleeping mutator costs (S67.2: it pays no token wait; the
+requests' and `POSTED`'s standing times and the returns withheld through the
+sleep are read instead), and D and HG are measured on them by a rule fixed
+before the run; the figures put to Edmond, who then drops one
 (Edmond, 2026-09-28: both stay until S65.43 and S67 are measured; H is not
 an arm).
 Notes: dev/plans/S67.md
@@ -754,10 +756,12 @@ Notes: dev/plans/S67.md
         own 16 rings no collector is born at that pace, which S67.5's smoke
         cells read first.
 - [ ] S67.3 Request graphs: lifetimes, payload and sizes
-      done: the rig builds per-request graphs with lifetimes drawn from a
-        distribution, an acyclic payload tree under each cycle, at least two
-        object sizes, and counts garbage in bytes, mean and peak; each
-        figure checked once on an input whose answer is known
+      done: the rig builds the per-request graph of `dev/plans/S67.md`,
+        "`web-heap`, a request" — the context cycle, the ORM collections with
+        their back-edges, the closures, the three object sizes — and counts
+        garbage in bytes by size, mean and peak; each figure checked once on
+        an input whose answer is known (the plan review's Critic, 2026-09-29:
+        the earlier line predated the specification)
       tier: T2 · role: Critic
 - [ ] S67.4 Long-lived state: a shared core, a cache and sessions
       done: each mutator holds a strongly connected core the request graphs
@@ -769,6 +773,16 @@ Notes: dev/plans/S67.md
         the mutator's `Arena`, reset at the request's end with the release
         log; a smoke cell of each completes under D and HG and their best
         builds
+      tier: T2 · role: Critic
+- [ ] S67.7 The protocol's instruments
+      done: each instrument of `dev/plans/S67.md`, "Instruments owed", that
+        S67.2–S67.5 do not build is in the rig — among them the arrivals'
+        queue and the latency from arrival, the counted spin and its
+        calibration, the void reading, the collector threads' counters, the
+        warm-up's snapshot and the X turns against the batch turns — each
+        read once on an input whose answer is known; a smoke cell of each
+        web load reads a collector's birth before any deciding run (S67.2:
+        at a 10 ms pace a load registering little births none)
       tier: T2 · role: Critic
 - [ ] S67.6 Measure D and HG on the web loads
       done: the run by S67.1's rule, the arms fresh and interleaved, the
