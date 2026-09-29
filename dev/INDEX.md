@@ -420,7 +420,10 @@ collector through `worker::testing::pin_collectors_to`, which
 (`dev/plans/S67.md`, S67.3): the seeded draws by purpose, the plan of one
 request, its build along the drawn timeline (`Request::advance`), its end, and
 the garbage in bytes by size (`Garbage`), read off the entity heap's
-test-only count of held bytes (`memory::heap::entity_bytes_held`).
+test-only count of held bytes (`memory::heap::entity_bytes_held`). The
+mutator's long-lived state beside it (S67.4): `LongLived`, the core, the LRU
+cache of values kept by `KeyedLru` outside the heap, the sessions, and the
+setup to their steady state.
 
 `dev/tools/arms.sh` and `dev/tools/arms_table.py` — a comparison of arms on
 the rig: one test binary per arm, interleaved inside each repeat, the deciding

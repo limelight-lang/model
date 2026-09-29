@@ -20,7 +20,19 @@
 //! and every registration has its place on it, and [`Request::advance`] does
 //! what stands before a place. The context is born at zero and the rest in
 //! build order, uniformly; each registration falls at a uniform place, on an
-//! object drawn uniformly among those born before it.
+//! object drawn uniformly among those born before it. A request's
+//! [`LOOKUPS`] cache lookups fall at uniform places too.
+//!
+//! **The long-lived state** (`dev/plans/S67.md`, "Long-lived state per
+//! mutator", and its section S67.4) is [`LongLived`]: a core of one strongly
+//! connected component the requests' edges point into, an LRU cache of
+//! ten-object values and the sessions, the last two hung from the core by
+//! directory trees, so that a trace from a core root reaches all of it. The
+//! cache's recency and keys are kept by the rig outside the heap
+//! ([`KeyedLru`]); the heap sees a hit as a registration of the value and a
+//! miss as an eviction's non-final decrement and a new value. The setup runs
+//! the cache to its steady state outside the heap before it builds the
+//! values, and registers what a long-running server holds registered.
 
 use super::*;
 use crate::class::{Class, ClassBuilder};
@@ -57,6 +69,30 @@ pub(super) const MOST_OBJECTS: usize = 400_000;
 /// stride, so that a poll between two advances always finds R within it.
 pub(super) const REGISTRATIONS_AN_ADVANCE: usize = POLL_STRIDE / 2;
 
+/// The cache lookups of a request [A].
+pub(super) const LOOKUPS: usize = 20;
+
+/// The core's objects [A].
+pub(super) const CORE_OBJECTS: usize = 5_000;
+
+/// The sessions [A].
+pub(super) const SESSIONS: usize = 1_000;
+
+/// The objects of a cache value and of a session [A].
+pub(super) const VALUE_OBJECTS: usize = 10;
+pub(super) const SESSION_OBJECTS: usize = 20;
+
+/// The keys a lookup draws over, per value the cache holds.
+pub(super) const KEYS_A_VALUE: usize = 4;
+
+/// The requests a session stands untouched before the next touch replaces it
+/// [A]: with touches uniform over [`SESSIONS`], e^(−4.6) of them come after
+/// a longer gap, which puts the replacements at 1 % of requests.
+pub(super) const SESSION_IDLE_REQUESTS: u64 = 4_600;
+
+/// The entries of one directory object: every slot of the largest class.
+const DIRECTORY_FAN_OUT: usize = slots(LARGEST);
+
 /// The three object sizes, in bytes, and their shares in percent.
 pub(super) const SIZES: [usize; 3] = [64, 128, 512];
 const SHARES_PERCENT: [usize; 3] = [50, 35, 15];
@@ -72,8 +108,36 @@ const LARGEST: u8 = 2;
 pub(super) enum Purpose {
     Shape = 1,
     Registrations = 2,
+    #[expect(dead_code, reason = "S67.7's arrivals draw from it")]
     Arrivals = 3,
+    /// A request's lookups: their places and keys.
     Cache = 4,
+    /// The objects a miss or a session's replacement builds.
+    Values = 5,
+    /// A request's session.
+    Sessions = 6,
+    /// The long-lived state's setup: the core, the cache's run to its steady
+    /// state, the values and sessions it builds, the sessions' idle ages.
+    Core = 7,
+}
+
+/// The streams a mutator's plans are drawn from, one a purpose.
+pub(super) struct Streams {
+    pub(super) shape: Draws,
+    pub(super) registrations: Draws,
+    pub(super) cache: Draws,
+    pub(super) sessions: Draws,
+}
+
+impl Streams {
+    pub(super) fn new(mutator: u64, repeat: u64) -> Self {
+        Self {
+            shape: Draws::new(mutator, repeat, Purpose::Shape),
+            registrations: Draws::new(mutator, repeat, Purpose::Registrations),
+            cache: Draws::new(mutator, repeat, Purpose::Cache),
+            sessions: Draws::new(mutator, repeat, Purpose::Sessions),
+        }
+    }
 }
 
 /// SplitMix64 over a seed made of the mutator, the repeat and the purpose:
@@ -218,137 +282,74 @@ const _: () = assert!(size_of::<Placement>() == 32);
 
 /// A request as its draws shape it, before anything is built: the objects in
 /// build order, the context first; the registrations as (place, object), in
-/// the order of their places; the ORM collections' entity counts; the two
+/// the order of their places; the lookups as (place, key), in the same
+/// order; the session's slot; the ORM collections' entity counts; the two
 /// waits' places; and whether the end's release lands on the registered
 /// context root.
 pub(super) struct Plan {
     pub(super) objects: Vec<Placement>,
     pub(super) registrations: Vec<(f64, u32)>,
+    pub(super) lookups: Vec<(f64, u32)>,
+    pub(super) session: u32,
     pub(super) orm: Vec<usize>,
     #[expect(dead_code, reason = "S67.7's spin sleeps at them")]
     pub(super) waits_at: [f64; 2],
     pub(super) silent_end: bool,
 }
 
+/// What a plan draws its long-lived targets over: the core's objects and
+/// the cache's keys, each Zipf (s = 1), and the session slots, uniform.
+pub(super) struct Targets {
+    core: Zipf,
+    keys: Zipf,
+    session_slots: usize,
+}
+
+impl Targets {
+    pub(super) fn new(shape: &LongLivedShape) -> Self {
+        Self {
+            core: Zipf::new(shape.core),
+            keys: Zipf::new(shape.values * KEYS_A_VALUE),
+            session_slots: shape.sessions,
+        }
+    }
+}
+
 impl Plan {
-    /// A request of the specification's count ([`draw_the_count`]). `core`
-    /// is a Zipf over the core the request is built with.
-    pub(super) fn draw(shape: &mut Draws, registrations: &mut Draws, core: &Zipf) -> Self {
-        let (orm, count) = draw_the_count(shape);
-        Self::shaped(shape, registrations, core, orm, count)
+    /// A request of the specification's count ([`draw_the_count`]) over
+    /// `targets`, those of the long-lived state it is built with.
+    pub(super) fn draw(streams: &mut Streams, targets: &Targets) -> Self {
+        let (orm, count) = draw_the_count(&mut streams.shape);
+        Self::shaped(streams, targets, orm, count)
     }
 
     /// A request of `count` objects with drawn collections, for a case that
-    /// fixes the size; `core` as [`Plan::draw`] takes it.
-    pub(super) fn with_count(
-        shape: &mut Draws,
-        registrations: &mut Draws,
-        core: &Zipf,
-        count: usize,
-    ) -> Self {
-        let orm = draw_the_orm(shape);
+    /// fixes the size; `targets` as [`Plan::draw`] takes them.
+    pub(super) fn with_count(streams: &mut Streams, targets: &Targets, count: usize) -> Self {
+        let orm = draw_the_orm(&mut streams.shape);
         let count = count.max(CONTEXT + orm_objects(&orm));
-        Self::shaped(shape, registrations, core, orm, count)
+        Self::shaped(streams, targets, orm, count)
     }
 
-    fn shaped(
-        shape: &mut Draws,
-        registrations: &mut Draws,
-        core: &Zipf,
-        orm: Vec<usize>,
-        count: usize,
-    ) -> Self {
-        let mut objects = Vec::with_capacity(count);
-        for _ in 0..CONTEXT {
-            objects.push(Placement {
-                size_index: draw_a_size_index(shape),
-                parent: None,
-                extra: ExtraEdge::None,
-                born_at: 0.0,
-            });
-        }
-
-        // The free child slots, breadth first: (object, slot).
-        let mut free_slots = std::collections::VecDeque::new();
-        for (index, object) in objects.iter().enumerate() {
-            // Slot 0 links the ring.
-            for slot in 1..slots(object.size_index).min(FAN_OUT + 1) {
-                free_slots.push_back((index as u32, slot as u8));
-            }
-        }
-
-        let tree = count - CONTEXT - orm_objects(&orm);
-        // The tree's positions at which each collection's head is placed.
-        let mut heads_at: Vec<usize> = orm.iter().map(|_| shape.below(tree.max(1))).collect();
-        heads_at.sort_unstable();
-        let mut heads_at = heads_at.into_iter().zip(orm.iter().copied()).peekable();
-        for position in 0..tree {
-            while let Some(&(at, entities)) = heads_at.peek()
-                && at == position
-            {
-                place_a_collection(shape, &mut objects, &mut free_slots, entities);
-                heads_at.next();
-            }
-
-            let size_index = draw_a_size_index(shape);
-            let extra = if shape.percent(45.0) {
-                if shape.percent(50.0) {
-                    ExtraEdge::Core(core.draw(shape) as u32)
-                } else {
-                    ExtraEdge::Context(shape.below(CONTEXT) as u32)
-                }
-            } else if shape.percent(1.0) {
-                ExtraEdge::Core(core.draw(shape) as u32)
-            } else {
-                ExtraEdge::None
-            };
-            let parent = free_slots
-                .pop_front()
-                .expect("every tree object adds a free slot at least");
-            let index = objects.len() as u32;
-            objects.push(Placement {
-                size_index,
-                parent: Some(parent),
-                extra,
-                born_at: 0.0,
-            });
-            let first = usize::from(extra != ExtraEdge::None);
-            for slot in first..slots(size_index).min(first + FAN_OUT) {
-                free_slots.push_back((index, slot as u8));
-            }
-        }
-
-        for (_, entities) in heads_at {
-            place_a_collection(shape, &mut objects, &mut free_slots, entities);
-        }
-
-        // Births after the context, uniform over the life and in build
-        // order, so that a parent is always born before its child.
-        let mut births: Vec<f64> = (CONTEXT..objects.len()).map(|_| shape.unit()).collect();
-        births.sort_unstable_by(f64::total_cmp);
-        for (object, at) in objects[CONTEXT..].iter_mut().zip(births) {
-            object.born_at = at;
-        }
-
-        // As many registrations as 10 % of the objects after the context,
-        // each at a uniform place on an object born before it.
-        let planned = (CONTEXT..objects.len())
-            .filter(|_| registrations.percent(10.0))
-            .count();
-        let mut registered: Vec<(f64, u32)> = (0..planned)
+    fn shaped(streams: &mut Streams, targets: &Targets, orm: Vec<usize>, count: usize) -> Self {
+        let mut objects = place_the_objects(&mut streams.shape, &targets.core, &orm, count);
+        draw_the_births(&mut streams.shape, &mut objects);
+        let registrations = draw_the_registrations(&mut streams.registrations, &objects);
+        let mut waits_at = [streams.shape.unit(), streams.shape.unit()];
+        waits_at.sort_unstable_by(f64::total_cmp);
+        let silent_end = streams.shape.percent(50.0);
+        let mut lookups: Vec<(f64, u32)> = (0..LOOKUPS)
             .map(|_| {
-                let at = registrations.unit();
-                let born = objects.partition_point(|object| object.born_at < at);
-                (at, registrations.below(born) as u32)
+                let at = streams.cache.unit();
+                (at, targets.keys.draw(&mut streams.cache) as u32)
             })
             .collect();
-        registered.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-        let mut waits_at = [shape.unit(), shape.unit()];
-        waits_at.sort_unstable_by(f64::total_cmp);
-        let silent_end = shape.percent(50.0);
+        lookups.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         Self {
             objects,
-            registrations: registered,
+            registrations,
+            lookups,
+            session: streams.sessions.below(targets.session_slots) as u32,
             orm,
             waits_at,
             silent_end,
@@ -364,6 +365,115 @@ impl Plan {
 
         bytes
     }
+}
+
+/// The context and the payload tree of `count` objects with the collections
+/// `orm`, in build order, their places on the timeline still to draw.
+fn place_the_objects(
+    shape: &mut Draws,
+    core: &Zipf,
+    orm: &[usize],
+    count: usize,
+) -> Vec<Placement> {
+    let mut objects = Vec::with_capacity(count);
+    for _ in 0..CONTEXT {
+        objects.push(Placement {
+            size_index: draw_a_size_index(shape),
+            parent: None,
+            extra: ExtraEdge::None,
+            born_at: 0.0,
+        });
+    }
+
+    // The free child slots, breadth first: (object, slot).
+    let mut free_slots = std::collections::VecDeque::new();
+    for (index, object) in objects.iter().enumerate() {
+        // Slot 0 links the ring.
+        for slot in 1..slots(object.size_index).min(FAN_OUT + 1) {
+            free_slots.push_back((index as u32, slot as u8));
+        }
+    }
+
+    let tree = count - CONTEXT - orm_objects(orm);
+    // The tree's positions at which each collection's head is placed.
+    let mut heads_at: Vec<usize> = orm.iter().map(|_| shape.below(tree.max(1))).collect();
+    heads_at.sort_unstable();
+    let mut heads_at = heads_at.into_iter().zip(orm.iter().copied()).peekable();
+    for position in 0..tree {
+        while let Some(&(at, entities)) = heads_at.peek()
+            && at == position
+        {
+            place_a_collection(shape, &mut objects, &mut free_slots, entities);
+            heads_at.next();
+        }
+
+        let size_index = draw_a_size_index(shape);
+        let extra = draw_an_extra_edge(shape, core);
+        let parent = free_slots
+            .pop_front()
+            .expect("every tree object adds a free slot at least");
+        let index = objects.len() as u32;
+        objects.push(Placement {
+            size_index,
+            parent: Some(parent),
+            extra,
+            born_at: 0.0,
+        });
+        let first = usize::from(extra != ExtraEdge::None);
+        for slot in first..slots(size_index).min(first + FAN_OUT) {
+            free_slots.push_back((index, slot as u8));
+        }
+    }
+
+    for (_, entities) in heads_at {
+        place_a_collection(shape, &mut objects, &mut free_slots, entities);
+    }
+
+    objects
+}
+
+/// A tree object's extra edge: a closure's, 45 %, to a context object or,
+/// one time in two, to the core; 1 % of the others into the core.
+fn draw_an_extra_edge(shape: &mut Draws, core: &Zipf) -> ExtraEdge {
+    if shape.percent(45.0) {
+        if shape.percent(50.0) {
+            ExtraEdge::Core(core.draw(shape) as u32)
+        } else {
+            ExtraEdge::Context(shape.below(CONTEXT) as u32)
+        }
+    } else if shape.percent(1.0) {
+        ExtraEdge::Core(core.draw(shape) as u32)
+    } else {
+        ExtraEdge::None
+    }
+}
+
+/// The births after the context, uniform over the life and in build order,
+/// so that a parent is always born before its child.
+fn draw_the_births(shape: &mut Draws, objects: &mut [Placement]) {
+    let mut births: Vec<f64> = (CONTEXT..objects.len()).map(|_| shape.unit()).collect();
+    births.sort_unstable_by(f64::total_cmp);
+    for (object, at) in objects[CONTEXT..].iter_mut().zip(births) {
+        object.born_at = at;
+    }
+}
+
+/// As many registrations as 10 % of the objects after the context, each at
+/// a uniform place on an object born before it, in the order of their
+/// places.
+fn draw_the_registrations(registrations: &mut Draws, objects: &[Placement]) -> Vec<(f64, u32)> {
+    let planned = (CONTEXT..objects.len())
+        .filter(|_| registrations.percent(10.0))
+        .count();
+    let mut registered: Vec<(f64, u32)> = (0..planned)
+        .map(|_| {
+            let at = registrations.unit();
+            let born = objects.partition_point(|object| object.born_at < at);
+            (at, registrations.below(born) as u32)
+        })
+        .collect();
+    registered.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    registered
 }
 
 /// The collections and the object count of the specification: lognormal,
@@ -445,57 +555,96 @@ fn place_a_collection(
     }
 }
 
-/// What a request is built with: the thread's context and arena, the
-/// classes, and the core its edges point into.
+/// What a request is built with: the thread's context and arena, and the
+/// long-lived state its edges, lookups and session reach.
 pub(super) struct RequestBuild<'a> {
     pub(super) context: LLContext,
     pub(super) arena: *mut Arena,
-    pub(super) classes: &'a WebClasses,
-    pub(super) core: &'a [*mut Object],
+    pub(super) long_lived: &'a mut LongLived,
 }
 
-/// What one [`Request::advance`] did: the bytes born by size index, and the
-/// registrations made.
+/// What one step of a request did: the bytes born and the bytes that stopped
+/// being reachable, by size index, the registrations made and the lookups
+/// done.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(super) struct Advanced {
     pub(super) born: [usize; 3],
+    pub(super) ended: [usize; 3],
+    pub(super) registered: usize,
+    pub(super) looked_up: usize,
+}
+
+impl Advanced {
+    fn add(&mut self, other: Advanced) {
+        for size_index in 0..3 {
+            self.born[size_index] += other.born[size_index];
+            self.ended[size_index] += other.ended[size_index];
+        }
+
+        self.registered += other.registered;
+        self.looked_up += other.looked_up;
+    }
+}
+
+/// What a request's end did: whether the external reference landed on a
+/// registered object, read before the release — the silent death — the
+/// request's bytes by size index, garbage from here on, and the roots the
+/// two releases registered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Ended {
+    pub(super) silent: bool,
+    pub(super) bytes: [usize; 3],
     pub(super) registered: usize,
 }
 
-/// A request in flight: its plan, the objects born so far, and where on the
-/// timeline its births and registrations stand.
+/// A request in flight: its plan, the objects born so far, where on the
+/// timeline its births, registrations and lookups stand, and the session it
+/// holds.
 pub(super) struct Request {
     plan: Plan,
     objects: Vec<*mut Object>,
     registrations_done: usize,
+    lookups_done: usize,
     /// The context object the request's external reference is on.
     externally_held: *mut Object,
+    /// The head of the session, held by the request's own reference.
+    session: *mut Object,
+}
+
+/// The next thing a request does on its timeline.
+#[derive(Clone, Copy)]
+enum Event {
+    Birth,
+    /// A registration of the object born at this index.
+    Registration(u32),
+    /// A lookup of this key.
+    Lookup(u32),
 }
 
 impl Request {
-    /// Start `plan`: its context cycle built, the external reference taken
-    /// — on the context's first object where the end is silent, its second
-    /// otherwise — and the first object registered. Answers the request and
-    /// the context's bytes by size index.
+    /// Start `plan`: its session opened and held, its context cycle built,
+    /// the external reference taken — on the context's first object where
+    /// the end is silent, its second otherwise — and the first object
+    /// registered.
     ///
     /// # Safety
     /// `build` is the calling mutator's, at a point where it may allocate;
-    /// its core's objects are live GC-heap objects the caller keeps for the
-    /// request's life, and `plan` was drawn over a Zipf of that core's
-    /// length.
-    pub(super) unsafe fn start(build: &mut RequestBuild, plan: Plan) -> (Self, [usize; 3]) {
+    /// `plan` was drawn over the targets of `build`'s long-lived state.
+    pub(super) unsafe fn start(build: &mut RequestBuild, plan: Plan) -> (Self, Advanced) {
+        let (session, mut advanced) =
+            unsafe { build.long_lived.open_session(build.arena, plan.session) };
+        unsafe { ll_retain(session as *mut RcHeader) };
         let mut objects = Vec::with_capacity(plan.objects.len());
-        let mut born = [0; 3];
         for object in &plan.objects[..CONTEXT] {
             let size_index = object.size_index as usize;
             objects.push(unsafe {
                 new_constructed(
                     &mut build.context,
-                    build.classes.0[size_index],
+                    build.long_lived.classes.0[size_index],
                     MemoryCategory::GcHeap,
                 )
             });
-            born[size_index] += SIZES[size_index];
+            advanced.born[size_index] += SIZES[size_index];
         }
 
         for index in 0..CONTEXT {
@@ -514,79 +663,130 @@ impl Request {
             register(objects[0]);
         }
 
+        advanced.registered += 1;
         let request = Self {
             plan,
             objects,
             registrations_done: 0,
+            lookups_done: 0,
             externally_held,
+            session,
         };
-        (request, born)
+        (request, advanced)
     }
 
-    /// Do every birth placed before `to` on the timeline, and the
-    /// registrations placed before it, at most [`REGISTRATIONS_AN_ADVANCE`];
-    /// the rest wait for the next advance. A `to` of 1 or more is the life's
-    /// end, before which everything stands.
+    /// Do what is placed before `to` on the timeline, births, registrations
+    /// and lookups in the order of their places, until
+    /// [`REGISTRATIONS_AN_ADVANCE`] registrations and lookups together, each
+    /// able to register one root; the rest waits for the next advance. A
+    /// `to` of 1 or more is the life's end, before which everything stands.
     ///
     /// # Safety
     /// As [`Request::start`], on the same `build`.
     pub(super) unsafe fn advance(&mut self, build: &mut RequestBuild, to: f64) -> Advanced {
-        let before = |at: f64| at < to || to >= 1.0;
         let mut advanced = Advanced::default();
-        while let Some(object) = self.plan.objects.get(self.objects.len())
-            && before(object.born_at)
-        {
-            let size_index = object.size_index as usize;
-            let born = unsafe {
-                new_constructed(
-                    &mut build.context,
-                    build.classes.0[size_index],
-                    MemoryCategory::GcHeap,
-                )
-            };
-            let (parent, slot) = object.parent.expect("a born object has a parent");
-            unsafe {
-                move_prop(
-                    self.objects[parent as usize],
-                    prop_offset(u32::from(slot)),
-                    born,
-                )
-            };
-            let target = match object.extra {
-                ExtraEdge::None => std::ptr::null_mut(),
-                ExtraEdge::Context(index) | ExtraEdge::BackTo(index) => {
-                    self.objects[index as usize]
+        let mut events = 0;
+        while let Some(event) = self.next_event(to) {
+            if !matches!(event, Event::Birth) {
+                if events == REGISTRATIONS_AN_ADVANCE {
+                    break;
                 }
-                ExtraEdge::Core(index) => build.core[index as usize],
-            };
-            if !target.is_null() {
-                unsafe { store_prop(build.arena, born, prop_offset(0), target) };
+
+                events += 1;
             }
 
-            advanced.born[size_index] += SIZES[size_index];
-            self.objects.push(born);
-        }
-
-        while advanced.registered < REGISTRATIONS_AN_ADVANCE
-            && let Some(&(at, index)) = self.plan.registrations.get(self.registrations_done)
-            && before(at)
-        {
-            let object = *self
-                .objects
-                .get(index as usize)
-                .expect("a registration's object is born before its place");
-            unsafe { register(object) };
-            self.registrations_done += 1;
-            advanced.registered += 1;
+            match event {
+                Event::Birth => {
+                    let size_index = unsafe { self.give_birth(build) };
+                    advanced.born[size_index] += SIZES[size_index];
+                }
+                Event::Registration(index) => {
+                    let object = *self
+                        .objects
+                        .get(index as usize)
+                        .expect("a registration's object is born before its place");
+                    unsafe { register(object) };
+                    self.registrations_done += 1;
+                    advanced.registered += 1;
+                }
+                Event::Lookup(key) => {
+                    advanced.add(unsafe { build.long_lived.look_up(build.arena, key) });
+                    self.lookups_done += 1;
+                }
+            }
         }
 
         advanced
     }
 
-    /// Whether every birth and registration is done.
+    /// The next event placed before `to`, the earliest of the next birth,
+    /// registration and lookup; at one place a birth goes first, then a
+    /// registration.
+    fn next_event(&self, to: f64) -> Option<Event> {
+        let birth = self
+            .plan
+            .objects
+            .get(self.objects.len())
+            .map(|object| (object.born_at, Event::Birth));
+        let registration = self
+            .plan
+            .registrations
+            .get(self.registrations_done)
+            .map(|&(at, index)| (at, Event::Registration(index)));
+        let lookup = self
+            .plan
+            .lookups
+            .get(self.lookups_done)
+            .map(|&(at, key)| (at, Event::Lookup(key)));
+        [birth, registration, lookup]
+            .into_iter()
+            .flatten()
+            .filter(|&(at, _)| at < to || to >= 1.0)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, event)| event)
+    }
+
+    /// Build the next object of the plan in its parent's slot, with its
+    /// extra edge. Answers its size index.
+    ///
+    /// # Safety
+    /// As [`Request::advance`].
+    unsafe fn give_birth(&mut self, build: &mut RequestBuild) -> usize {
+        let object = self.plan.objects[self.objects.len()];
+        let size_index = object.size_index as usize;
+        let born = unsafe {
+            new_constructed(
+                &mut build.context,
+                build.long_lived.classes.0[size_index],
+                MemoryCategory::GcHeap,
+            )
+        };
+        let (parent, slot) = object.parent.expect("a born object has a parent");
+        unsafe {
+            move_prop(
+                self.objects[parent as usize],
+                prop_offset(u32::from(slot)),
+                born,
+            )
+        };
+        let target = match object.extra {
+            ExtraEdge::None => std::ptr::null_mut(),
+            ExtraEdge::Context(index) | ExtraEdge::BackTo(index) => self.objects[index as usize],
+            ExtraEdge::Core(index) => build.long_lived.core[index as usize],
+        };
+        if !target.is_null() {
+            unsafe { store_prop(build.arena, born, prop_offset(0), target) };
+        }
+
+        self.objects.push(born);
+        size_index
+    }
+
+    /// Whether every birth, registration and lookup is done.
     pub(super) fn is_complete(&self) -> bool {
         self.objects.len() == self.plan.objects.len()
             && self.registrations_done == self.plan.registrations.len()
+            && self.lookups_done == self.plan.lookups.len()
     }
 
     /// The object born `index`-th, for a case that reads the request back.
@@ -594,29 +794,666 @@ impl Request {
         self.objects[index]
     }
 
+    /// The plan the request was started with.
     pub(super) fn plan(&self) -> &Plan {
         &self.plan
     }
 
-    /// Release the external reference. Answers whether it landed on a
-    /// registered object, read before the release — the silent death — and
-    /// the request's bytes by size index, garbage from here on.
+    /// Release the session and the external reference.
     ///
     /// # Safety
     /// As [`Request::start`]; the request is complete.
-    pub(super) unsafe fn end(self) -> (bool, [usize; 3]) {
+    pub(super) unsafe fn end(self) -> Ended {
         assert!(self.is_complete(), "a request ends after its last event");
-        let silent =
-            unsafe { mutator_flags(self.externally_held as *const RcHeader) } & CANDIDATE_BIT != 0;
+        let silent = is_a_candidate(self.externally_held);
+        let session_registers = !is_a_candidate(self.session);
         unsafe {
+            assert!(
+                !ll_release(self.session as *mut RcHeader),
+                "the session's directory slot and its cycle hold its head"
+            );
             assert!(
                 !ll_release(self.externally_held as *mut RcHeader),
                 "the context ring holds the object the reference was on"
             );
         }
 
-        (silent, self.plan.bytes())
+        Ended {
+            silent,
+            bytes: self.plan.bytes(),
+            registered: usize::from(!silent) + usize::from(session_registers),
+        }
     }
+}
+
+/// The long-lived state's sizes: the core's objects, the values the cache
+/// holds (N), and the sessions.
+#[derive(Clone, Copy)]
+pub(super) struct LongLivedShape {
+    pub(super) core: usize,
+    pub(super) values: usize,
+    pub(super) sessions: usize,
+}
+
+impl LongLivedShape {
+    /// The specification's, at a cache of `values`.
+    pub(super) const fn specified(values: usize) -> Self {
+        Self {
+            core: CORE_OBJECTS,
+            values,
+            sessions: SESSIONS,
+        }
+    }
+}
+
+/// What the cache and the sessions did since the setup. The distinct values
+/// registered since the setup are `hits_registering` and
+/// `evictions_registering` together, each value registering once in its
+/// life, at a hit or at its eviction.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub(super) struct CacheCounts {
+    pub(super) hits: usize,
+    /// Hits that found the value no candidate, and registered it.
+    pub(super) hits_registering: usize,
+    pub(super) misses: usize,
+    /// Evictions of a value that was a candidate already, whose death
+    /// registers nothing.
+    pub(super) evictions_silent: usize,
+    pub(super) evictions_registering: usize,
+    pub(super) sessions_replaced: usize,
+}
+
+/// An LRU of a fixed number of entries over the keys `0..keys`, kept
+/// outside the heap: which entry holds each key, the recency order of the
+/// entries as a doubly linked list, and whether each entry was hit since
+/// its key was inserted. A miss fills the next unused entry until every
+/// entry is used, and evicts the least recently used one after.
+pub(super) struct KeyedLru {
+    entry_of_key: Vec<u32>,
+    key_of_entry: Vec<u32>,
+    /// Toward the most recently used entry, and toward the least.
+    newer: Vec<u32>,
+    older: Vec<u32>,
+    newest: u32,
+    oldest: u32,
+    used: usize,
+    hit_since_insertion: Vec<bool>,
+}
+
+/// In [`KeyedLru`]'s tables: no entry, or no key.
+const ABSENT: u32 = u32::MAX;
+
+/// What a [`KeyedLru`] lookup did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum LookupOutcome {
+    /// The key was held, by this entry.
+    Hit(u32),
+    /// The key went into an entry no key had used.
+    Inserted,
+    /// The key went into the least recently used entry, whose key left;
+    /// whether that entry had been hit since its insertion.
+    Evicted { entry: u32, was_hit: bool },
+}
+
+impl KeyedLru {
+    /// An empty LRU of `entries` over the keys `0..keys`, at least as many.
+    pub(super) fn new(entries: usize, keys: usize) -> Self {
+        assert!(entries > 0 && entries <= keys && keys < ABSENT as usize);
+        Self {
+            entry_of_key: vec![ABSENT; keys],
+            key_of_entry: vec![ABSENT; entries],
+            newer: vec![ABSENT; entries],
+            older: vec![ABSENT; entries],
+            newest: ABSENT,
+            oldest: ABSENT,
+            used: 0,
+            hit_since_insertion: vec![false; entries],
+        }
+    }
+
+    /// Look `key` up, and make its entry the most recently used.
+    pub(super) fn look_up(&mut self, key: u32) -> LookupOutcome {
+        let entry = self.entry_of_key[key as usize];
+        if entry != ABSENT {
+            self.unlink(entry);
+            self.push_newest(entry);
+            self.hit_since_insertion[entry as usize] = true;
+            return LookupOutcome::Hit(entry);
+        }
+
+        let (entry, outcome) = if self.used < self.key_of_entry.len() {
+            self.used += 1;
+            (self.used as u32 - 1, LookupOutcome::Inserted)
+        } else {
+            let entry = self.oldest;
+            self.unlink(entry);
+            self.entry_of_key[self.key_of_entry[entry as usize] as usize] = ABSENT;
+            let evicted = LookupOutcome::Evicted {
+                entry,
+                was_hit: self.hit_since_insertion[entry as usize],
+            };
+            (entry, evicted)
+        };
+        self.entry_of_key[key as usize] = entry;
+        self.key_of_entry[entry as usize] = key;
+        self.hit_since_insertion[entry as usize] = false;
+        self.push_newest(entry);
+        outcome
+    }
+
+    /// The keys from the most recently used entry to the least.
+    pub(super) fn keys_by_recency(&self) -> Vec<u32> {
+        let mut keys = Vec::with_capacity(self.used);
+        let mut entry = self.newest;
+        while entry != ABSENT {
+            keys.push(self.key_of_entry[entry as usize]);
+            entry = self.older[entry as usize];
+        }
+
+        keys
+    }
+
+    fn unlink(&mut self, entry: u32) {
+        let (newer, older) = (self.newer[entry as usize], self.older[entry as usize]);
+        if newer == ABSENT {
+            self.newest = older;
+        } else {
+            self.older[newer as usize] = older;
+        }
+
+        if older == ABSENT {
+            self.oldest = newer;
+        } else {
+            self.newer[older as usize] = newer;
+        }
+    }
+
+    fn push_newest(&mut self, entry: u32) {
+        self.newer[entry as usize] = ABSENT;
+        self.older[entry as usize] = self.newest;
+        if self.newest == ABSENT {
+            self.oldest = entry;
+        } else {
+            self.newer[self.newest as usize] = entry;
+        }
+
+        self.newest = entry;
+    }
+}
+
+/// A tree of largest-class objects whose leaves hold a fixed number of
+/// entries, [`DIRECTORY_FAN_OUT`] a leaf, each inner level built the same way
+/// up to one root, and the bytes of the cycle each entry holds. Entry `i` is
+/// slot `i % DIRECTORY_FAN_OUT` of leaf `i / DIRECTORY_FAN_OUT`.
+struct Directory {
+    leaves: Vec<*mut Object>,
+    bytes: Vec<[u32; 3]>,
+}
+
+impl Directory {
+    /// A directory of `entries`, empty. Answers it, its root with its
+    /// creation reference for the caller to move into a slot, and the objects
+    /// it took.
+    ///
+    /// # Safety
+    /// `context` is the calling mutator's, at a point where it may allocate.
+    unsafe fn new(
+        context: &mut LLContext,
+        classes: &WebClasses,
+        entries: usize,
+    ) -> (Self, *mut Object, usize) {
+        let class = classes.0[LARGEST as usize];
+        let mut objects = 0;
+        let mut level = |count: usize| {
+            objects += count;
+            (0..count)
+                .map(|_| unsafe { new_constructed(context, class, MemoryCategory::GcHeap) })
+                .collect::<Vec<*mut Object>>()
+        };
+        let leaves = level(entries.div_ceil(DIRECTORY_FAN_OUT).max(1));
+        let mut below = leaves.clone();
+        while below.len() > 1 {
+            let above = level(below.len().div_ceil(DIRECTORY_FAN_OUT));
+            for (index, &child) in below.iter().enumerate() {
+                unsafe {
+                    move_prop(
+                        above[index / DIRECTORY_FAN_OUT],
+                        prop_offset((index % DIRECTORY_FAN_OUT) as u32),
+                        child,
+                    )
+                };
+            }
+
+            below = above;
+        }
+
+        let directory = Self {
+            leaves,
+            bytes: vec![[0; 3]; entries],
+        };
+        (directory, below[0], objects)
+    }
+
+    /// The object and the slot entry `entry` stands in.
+    fn slot(&self, entry: u32) -> (*mut Object, u32) {
+        let entry = entry as usize;
+        (
+            self.leaves[entry / DIRECTORY_FAN_OUT],
+            (entry % DIRECTORY_FAN_OUT) as u32,
+        )
+    }
+
+    /// The head entry `entry` holds, null for none.
+    fn head(&self, entry: u32) -> *mut Object {
+        let (holder, slot) = self.slot(entry);
+        slot_of(holder, slot)
+    }
+}
+
+/// Which of the two directories an entry is in.
+#[derive(Clone, Copy)]
+enum DirectoryOf {
+    Values,
+    Sessions,
+}
+
+impl DirectoryOf {
+    /// The objects of the cycle an entry holds.
+    fn cycle_objects(self) -> usize {
+        match self {
+            Self::Values => VALUE_OBJECTS,
+            Self::Sessions => SESSION_OBJECTS,
+        }
+    }
+}
+
+/// A mutator's long-lived state (`dev/plans/S67.md`, "Long-lived state per
+/// mutator", and its section S67.4). Built by [`LongLived::new`] and
+/// registered to its steady state by [`LongLived::register_the_steady_state`];
+/// held by the creation reference on the core's first object until
+/// [`LongLived::let_go`].
+///
+/// **The core.** [`LongLivedShape::core`] objects, the first of the largest
+/// class and the rest of drawn sizes; slot 0 of each holds the next and the
+/// last's holds the first, which makes the core one strongly connected
+/// component; slot 1 of each holds another core object drawn uniformly, but
+/// the first's slots 1 and 2 hold the roots of the cache's and the sessions'
+/// directories.
+///
+/// **A value and a session.** A cycle of [`VALUE_OBJECTS`] or
+/// [`SESSION_OBJECTS`] of drawn sizes ([`build_a_cycle`]), its head in a
+/// directory slot, so that the head stands at two references.
+///
+/// **The draws.** The setup's from [`Purpose::Core`], the objects built
+/// after it from [`Purpose::Values`], both seeded by the mutator and the
+/// repeat; none depends on the collector, so every arm builds the same state
+/// and makes the same hits and misses.
+pub(super) struct LongLived {
+    classes: WebClasses,
+    targets: Targets,
+    core: Vec<*mut Object>,
+    values: Directory,
+    lru: KeyedLru,
+    sessions: Directory,
+    /// The request count at each session's last touch.
+    last_touch: Vec<u64>,
+    /// Requests opened, from [`FIRST_REQUEST`].
+    requests: u64,
+    built_after_the_setup: Draws,
+    /// The bytes the state holds reachable, by size index.
+    held: [usize; 3],
+    pub(super) counts: CacheCounts,
+}
+
+/// The request count the setup stands at, above any drawn idle age.
+const FIRST_REQUEST: u64 = 1 << 40;
+
+impl LongLived {
+    /// Build the state of `shape` for mutator `mutator` in repeat `repeat`,
+    /// with classes `classes`: the core; the cache's keys run through its LRU
+    /// outside the heap until it holds [`LongLivedShape::values`] keys and
+    /// then until it has evicted as many, which is its steady state; the
+    /// values its entries hold then; the sessions, each idle for an age drawn
+    /// geometric with a mean of as many requests as there are sessions, the
+    /// gap between two touches of one. Registers nothing.
+    ///
+    /// # Safety
+    /// `arena` is the calling mutator's, at a point where it may allocate.
+    pub(super) unsafe fn new(
+        classes: WebClasses,
+        shape: LongLivedShape,
+        mutator: u64,
+        repeat: u64,
+        arena: *mut Arena,
+    ) -> Self {
+        assert!(shape.core > 0 && shape.values > 0 && shape.sessions > 0);
+        let mut context = LLContext { arena };
+        let mut setup = Draws::new(mutator, repeat, Purpose::Core);
+        let targets = Targets::new(&shape);
+        let (core, held) = unsafe { build_the_core(arena, &classes, &mut setup, shape.core) };
+        let lru = run_to_the_steady_state(shape.values, &targets.keys, &mut setup);
+        let (values, values_root, value_directory_objects) =
+            unsafe { Directory::new(&mut context, &classes, shape.values) };
+        let (sessions, sessions_root, session_directory_objects) =
+            unsafe { Directory::new(&mut context, &classes, shape.sessions) };
+        unsafe {
+            move_prop(core[0], prop_offset(1), values_root);
+            move_prop(core[0], prop_offset(2), sessions_root);
+        }
+
+        let mut state = Self {
+            classes,
+            core,
+            values,
+            lru,
+            sessions,
+            last_touch: Vec::with_capacity(shape.sessions),
+            requests: FIRST_REQUEST,
+            built_after_the_setup: Draws::new(mutator, repeat, Purpose::Values),
+            held,
+            counts: CacheCounts::default(),
+            targets,
+        };
+        state.held[LARGEST as usize] +=
+            (value_directory_objects + session_directory_objects) * SIZES[LARGEST as usize];
+        for entry in 0..shape.values as u32 {
+            let _ = unsafe { state.fill(arena, DirectoryOf::Values, entry, Some(&mut setup)) };
+        }
+
+        // The logarithm of the chance that one request leaves a session
+        // untouched.
+        let ln_untouched = (1.0 - 1.0 / shape.sessions as f64).ln();
+        for slot in 0..shape.sessions as u32 {
+            let _ = unsafe { state.fill(arena, DirectoryOf::Sessions, slot, Some(&mut setup)) };
+            let idle = (setup.unit().ln() / ln_untouched) as u64;
+            state.last_touch.push(FIRST_REQUEST - idle);
+        }
+
+        state
+    }
+
+    /// Register what a long-running server holds registered: every core
+    /// object, which the requests' dead edges into it register within the
+    /// warm-up, every value hit since its insertion, and every session, which
+    /// its first request registers. `poll` runs after each
+    /// [`REGISTRATIONS_AN_ADVANCE`] registrations, within the poll's stride.
+    /// Answers the registrations made.
+    ///
+    /// # Safety
+    /// The state is this thread's, and no request is in flight.
+    pub(super) unsafe fn register_the_steady_state(&mut self, poll: &mut dyn FnMut()) -> usize {
+        let hit_values: Vec<*mut Object> = (0..self.values.bytes.len() as u32)
+            .filter(|&entry| self.lru.hit_since_insertion[entry as usize])
+            .map(|entry| self.values.head(entry))
+            .collect();
+        let sessions = (0..self.sessions.bytes.len() as u32).map(|slot| self.sessions.head(slot));
+        let mut registered = 0;
+        for object in self.core.iter().copied().chain(hit_values).chain(sessions) {
+            unsafe { register(object) };
+            registered += 1;
+            if registered % REGISTRATIONS_AN_ADVANCE == 0 {
+                poll();
+            }
+        }
+
+        registered
+    }
+
+    /// Look `key` up: a hit registers the value, a miss replaces the least
+    /// recently used value by the key's ([`LongLived::replace`]). Answers the
+    /// step as [`Advanced`], one lookup.
+    ///
+    /// # Safety
+    /// As [`LongLived::new`].
+    pub(super) unsafe fn look_up(&mut self, arena: *mut Arena, key: u32) -> Advanced {
+        let mut advanced = match self.lru.look_up(key) {
+            LookupOutcome::Hit(entry) => {
+                let head = self.values.head(entry);
+                let registers = !is_a_candidate(head);
+                unsafe { register(head) };
+                self.counts.hits += 1;
+                self.counts.hits_registering += usize::from(registers);
+                Advanced {
+                    registered: usize::from(registers),
+                    ..Advanced::default()
+                }
+            }
+            LookupOutcome::Evicted { entry, .. } => {
+                let replaced = unsafe { self.replace(arena, DirectoryOf::Values, entry) };
+                self.counts.misses += 1;
+                if replaced.registered == 0 {
+                    self.counts.evictions_silent += 1;
+                } else {
+                    self.counts.evictions_registering += 1;
+                }
+
+                replaced
+            }
+            LookupOutcome::Inserted => unreachable!("the setup filled every entry"),
+        };
+        advanced.looked_up = 1;
+        advanced
+    }
+
+    /// Open a request's session in `slot`: a session untouched for more than
+    /// [`SESSION_IDLE_REQUESTS`] is replaced first ([`LongLived::replace`]).
+    /// Answers the session's head, which the caller takes a reference on, and
+    /// the step.
+    ///
+    /// # Safety
+    /// As [`LongLived::new`].
+    unsafe fn open_session(&mut self, arena: *mut Arena, slot: u32) -> (*mut Object, Advanced) {
+        self.requests += 1;
+        let mut advanced = Advanced::default();
+        if self.requests - self.last_touch[slot as usize] > SESSION_IDLE_REQUESTS {
+            advanced = unsafe { self.replace(arena, DirectoryOf::Sessions, slot) };
+            self.counts.sessions_replaced += 1;
+        }
+
+        self.last_touch[slot as usize] = self.requests;
+        (self.sessions.head(slot), advanced)
+    }
+
+    /// Replace the cycle entry `entry` of `of` holds: its slot nulled, a
+    /// non-final decrement on the head its cycle still holds, which registers
+    /// the head where it was no candidate; then a new cycle built in the
+    /// slot. Answers the old cycle's bytes as ended, the new one's as born,
+    /// and the registration.
+    ///
+    /// # Safety
+    /// As [`LongLived::new`].
+    unsafe fn replace(&mut self, arena: *mut Arena, of: DirectoryOf, entry: u32) -> Advanced {
+        let directory = match of {
+            DirectoryOf::Values => &self.values,
+            DirectoryOf::Sessions => &self.sessions,
+        };
+        let (holder, slot) = directory.slot(entry);
+        let registers = !is_a_candidate(slot_of(holder, slot));
+        let ended = to_usize(directory.bytes[entry as usize]);
+        unsafe { store_prop(arena, holder, prop_offset(slot), std::ptr::null_mut()) };
+        for size_index in 0..3 {
+            self.held[size_index] -= ended[size_index];
+        }
+
+        let born = to_usize(unsafe { self.fill(arena, of, entry, None) });
+        Advanced {
+            born,
+            ended,
+            registered: usize::from(registers),
+            looked_up: 0,
+        }
+    }
+
+    /// Build a cycle into the empty slot of `entry` in `of`, its sizes and
+    /// its core edge drawn from `setup`, or from the stream of what is built
+    /// after the setup where it is none. Answers its bytes by size index.
+    ///
+    /// # Safety
+    /// As [`LongLived::new`].
+    unsafe fn fill(
+        &mut self,
+        arena: *mut Arena,
+        of: DirectoryOf,
+        entry: u32,
+        setup: Option<&mut Draws>,
+    ) -> [u32; 3] {
+        let draws = setup.unwrap_or(&mut self.built_after_the_setup);
+        let core = self.core[self.targets.core.draw(draws)];
+        let (head, bytes) =
+            unsafe { build_a_cycle(arena, &self.classes, draws, of.cycle_objects(), core) };
+        let directory = match of {
+            DirectoryOf::Values => &mut self.values,
+            DirectoryOf::Sessions => &mut self.sessions,
+        };
+        let (holder, slot) = directory.slot(entry);
+        unsafe { move_prop(holder, prop_offset(slot), head) };
+        directory.bytes[entry as usize] = bytes;
+        for size_index in 0..3 {
+            self.held[size_index] += bytes[size_index] as usize;
+        }
+
+        bytes
+    }
+
+    /// The targets a plan for this state draws over.
+    pub(super) fn targets(&self) -> &Targets {
+        &self.targets
+    }
+
+    /// The bytes the state holds reachable, by size index.
+    pub(super) fn held(&self) -> [usize; 3] {
+        self.held
+    }
+
+    /// Release the core's creation reference, after which the whole state is
+    /// garbage: a non-final decrement, the ring holding the first object.
+    /// Answers the bytes the state held, which stop being reachable.
+    ///
+    /// # Safety
+    /// As [`LongLived::new`]; no request is in flight.
+    pub(super) unsafe fn let_go(self) -> [usize; 3] {
+        unsafe {
+            assert!(
+                !ll_release(self.core[0] as *mut RcHeader),
+                "the core's ring holds its first object"
+            );
+        }
+
+        self.held
+    }
+}
+
+/// A core of `objects` ([`LongLived`]'s "The core" less the directories),
+/// its sizes and its other edges drawn from `setup`. Answers the objects,
+/// the first holding its creation reference, and their bytes by size index.
+///
+/// # Safety
+/// As [`LongLived::new`].
+unsafe fn build_the_core(
+    arena: *mut Arena,
+    classes: &WebClasses,
+    setup: &mut Draws,
+    objects: usize,
+) -> (Vec<*mut Object>, [usize; 3]) {
+    let mut context = LLContext { arena };
+    let mut held = [0; 3];
+    let core: Vec<*mut Object> = (0..objects)
+        .map(|index| {
+            let size_index = if index == 0 {
+                LARGEST
+            } else {
+                draw_a_size_index(setup)
+            } as usize;
+            held[size_index] += SIZES[size_index];
+            unsafe { new_constructed(&mut context, classes.0[size_index], MemoryCategory::GcHeap) }
+        })
+        .collect();
+    for index in 1..objects {
+        unsafe { move_prop(core[index - 1], prop_offset(0), core[index]) };
+    }
+
+    unsafe { store_prop(arena, core[objects - 1], prop_offset(0), core[0]) };
+    for index in 1..objects {
+        // Another object: one of the other `objects - 1`, counted on from
+        // this one.
+        let other = core[(index + 1 + setup.below(objects - 1)) % objects];
+        unsafe { store_prop(arena, core[index], prop_offset(1), other) };
+    }
+
+    (core, held)
+}
+
+/// An LRU of `values` entries run on keys drawn from `keys` until it holds
+/// `values` keys and then until it has evicted as many, its steady state by
+/// the simulation of `dev/plans/S67.md`, S67.4's Critic, finding 2.
+fn run_to_the_steady_state(values: usize, keys: &Zipf, setup: &mut Draws) -> KeyedLru {
+    let mut lru = KeyedLru::new(values, values * KEYS_A_VALUE);
+    let mut evictions = 0;
+    while evictions < values {
+        if matches!(
+            lru.look_up(keys.draw(setup) as u32),
+            LookupOutcome::Evicted { .. }
+        ) {
+            evictions += 1;
+        }
+    }
+
+    lru
+}
+
+/// Build a cycle of `objects` objects of drawn sizes: a chain through slot
+/// 0 from the head, the last object's slot 1 holding the head, and the
+/// head's slot 1 holding `core`. Answers the head, holding its creation
+/// reference, and the bytes by size index.
+///
+/// # Safety
+/// `arena` is the calling mutator's, at a point where it may allocate; `core`
+/// is a live object of its heap.
+unsafe fn build_a_cycle(
+    arena: *mut Arena,
+    classes: &WebClasses,
+    draws: &mut Draws,
+    objects: usize,
+    core: *mut Object,
+) -> (*mut Object, [u32; 3]) {
+    assert!(
+        objects >= 2,
+        "the back-edge and the core edge take two objects"
+    );
+    let mut context = LLContext { arena };
+    let mut bytes = [0; 3];
+    let chain: Vec<*mut Object> = (0..objects)
+        .map(|_| {
+            let size_index = draw_a_size_index(draws) as usize;
+            bytes[size_index] += SIZES[size_index] as u32;
+            unsafe { new_constructed(&mut context, classes.0[size_index], MemoryCategory::GcHeap) }
+        })
+        .collect();
+    for index in 1..objects {
+        unsafe { move_prop(chain[index - 1], prop_offset(0), chain[index]) };
+    }
+
+    unsafe {
+        store_prop(arena, chain[objects - 1], prop_offset(1), chain[0]);
+        store_prop(arena, chain[0], prop_offset(1), core);
+    }
+
+    (chain[0], bytes)
+}
+
+/// Whether `object` stands registered as a candidate.
+fn is_a_candidate(object: *mut Object) -> bool {
+    let flags = unsafe { mutator_flags(object as *const RcHeader) };
+    flags & CANDIDATE_BIT != 0
+}
+
+/// The value held in `object`'s slot `slot`, null for none.
+fn slot_of(object: *mut Object, slot: u32) -> *mut Object {
+    unsafe { entity_checked(&*Object::prop_at(object, prop_offset(slot))) as *mut Object }
+}
+
+fn to_usize(bytes: [u32; 3]) -> [usize; 3] {
+    bytes.map(|bytes| bytes as usize)
 }
 
 /// The bytes this thread's entity heap holds for it in the classes of
@@ -629,11 +1466,14 @@ pub(super) fn held_by_size() -> [usize; 3] {
 /// A mutator's garbage: the bytes its entity heap holds less what it keeps
 /// reachable, by size index, integrated over time at the events that change
 /// it. Garbage moves at this mutator's polls, where the collections and their
-/// teardowns free, and at a request's end, where its bytes stop being
-/// reachable; a birth moves the held and the reachable bytes together, but
-/// for a birth whose allocation collects — a refill that takes remote
-/// returns, which the web loads make none of, or a pressure collection. So
-/// [`Garbage::read`] after each of those events integrates it exactly.
+/// teardowns free; at a request's end, where its bytes stop being reachable;
+/// and at a step of a request that ends bytes of the long-lived state, an
+/// eviction or a session's replacement ([`Advanced::ended`]). A birth moves
+/// the held and the reachable bytes together, but for a birth whose
+/// allocation collects — a refill that takes remote returns, which the web
+/// loads make none of, or a pressure collection. So [`Garbage::read`] after
+/// each of those events integrates it exactly. The count begins before the
+/// long-lived state is built, whose bytes are then born into it.
 pub(super) struct Garbage {
     /// What the heap held when the count began, taken as reachable.
     baseline: [usize; 3],
@@ -671,7 +1511,8 @@ impl Garbage {
         }
     }
 
-    /// `bytes` stopped being reachable: a request ended.
+    /// `bytes` stopped being reachable: a request ended, or the long-lived
+    /// state let a value or a session go.
     pub(super) fn ended(&mut self, bytes: [usize; 3]) {
         for size_index in 0..3 {
             self.reachable[size_index] -= bytes[size_index];
@@ -730,53 +1571,46 @@ impl Garbage {
     }
 }
 
-/// A case's request-building state: the arena, the classes and a strongly
-/// connected core of 128-byte objects, each holding the next in its slot 0
-/// and one drawn other in its slot 1, kept by the case's creation reference
-/// on the first; the stand-in for S67.4's core.
+/// A case's request-building state: the arena and a small long-lived state
+/// of [`LongLivedShape`] `shape`, its sessions all touched at the setup, so
+/// that no request replaces one unless the case ages it.
 struct Fixture {
     arena: Box<Arena>,
-    classes: WebClasses,
-    core: Vec<*mut Object>,
-    zipf: Zipf,
+    long_lived: LongLived,
 }
 
 impl Fixture {
-    /// A fixture of `core_objects`, its classes named after `name`, on a
-    /// thread whose lanes it resets. The caller holds the pool's guard.
-    fn new(name: &str, core_objects: usize) -> Self {
+    /// A fixture of `shape`, its classes named after `name`, on a thread
+    /// whose lanes it resets. The caller holds the pool's guard.
+    fn new(name: &str, shape: LongLivedShape) -> Self {
         reset_lanes();
-        let classes = WebClasses::new(name);
         let mut arena = Box::new(Arena::new());
         let arena_ptr: *mut Arena = &mut *arena;
-        let mut context = LLContext { arena: arena_ptr };
-        let core: Vec<*mut Object> = (0..core_objects)
-            .map(|_| unsafe { new_constructed(&mut context, classes.0[1], MemoryCategory::GcHeap) })
-            .collect();
-        let mut draws = Draws::new(0, 0, Purpose::Cache);
-        for index in 1..core_objects {
-            unsafe { move_prop(core[index - 1], prop_offset(0), core[index]) };
-            let other = core[draws.below(core_objects)];
-            unsafe { store_prop(arena_ptr, core[index], prop_offset(1), other) };
-        }
-
-        unsafe { store_prop(arena_ptr, core[core_objects - 1], prop_offset(0), core[0]) };
-        Self {
-            arena,
-            classes,
-            zipf: Zipf::new(core.len()),
-            core,
-        }
+        let mut long_lived =
+            unsafe { LongLived::new(WebClasses::new(name), shape, 0, 0, arena_ptr) };
+        long_lived.last_touch.fill(long_lived.requests);
+        Self { arena, long_lived }
     }
 
-    /// A plan of `count` objects from the streams of `seed`.
-    fn plan(&self, seed: u64, count: usize) -> Plan {
-        Plan::with_count(
-            &mut Draws::new(seed, 1, Purpose::Shape),
-            &mut Draws::new(seed, 1, Purpose::Registrations),
-            &self.zipf,
-            count,
+    /// A fixture of a core of `core` objects, ten values and two sessions.
+    fn with_core(name: &str, core: usize) -> Self {
+        Self::new(
+            name,
+            LongLivedShape {
+                core,
+                values: 10,
+                sessions: 2,
+            },
         )
+    }
+
+    /// A plan of `count` objects from the streams of `seed`, with no
+    /// lookups, for a case that reads the request's own objects.
+    fn plan(&self, seed: u64, count: usize) -> Plan {
+        let mut plan =
+            Plan::with_count(&mut Streams::new(seed, 1), self.long_lived.targets(), count);
+        plan.lookups.clear();
+        plan
     }
 
     fn build(&mut self) -> RequestBuild<'_> {
@@ -784,31 +1618,34 @@ impl Fixture {
         RequestBuild {
             context: LLContext { arena },
             arena,
-            classes: &self.classes,
-            core: &self.core,
+            long_lived: &mut self.long_lived,
         }
+    }
+
+    /// Let the state go and collect this thread's cycles, which frees it:
+    /// after a turnover, since a collection that read the state live stamped
+    /// it and the prune stops at a stamp of the current epoch, and with the
+    /// roots read live re-offered from the deferred lane.
+    fn let_go(self) {
+        let _ = unsafe { self.long_lived.let_go() };
+        crate::cycle::epoch::turn_this_threads_cell();
+        crate::cycle::queue::reoffer_deferred_candidates();
+        unsafe { crate::gc::ll_gc_collect_cycles() };
     }
 }
 
-/// The value held in `object`'s slot `slot`, null for none.
-fn slot_of(object: *mut Object, slot: u32) -> *mut Object {
-    unsafe { entity_checked(&*Object::prop_at(object, prop_offset(slot))) as *mut Object }
-}
-
-/// Build `plan` whole on this thread, returning the request and its births.
+/// Build `plan` whole on this thread, returning the request and what its
+/// steps did together.
 ///
 /// # Safety
 /// As [`Request::start`].
-unsafe fn build_whole(build: &mut RequestBuild, plan: Plan) -> (Request, [usize; 3]) {
-    let (mut request, mut born) = unsafe { Request::start(build, plan) };
+unsafe fn build_whole(build: &mut RequestBuild, plan: Plan) -> (Request, Advanced) {
+    let (mut request, mut advanced) = unsafe { Request::start(build, plan) };
     while !request.is_complete() {
-        let advanced = unsafe { request.advance(build, 1.0) };
-        for size_index in 0..3 {
-            born[size_index] += advanced.born[size_index];
-        }
+        advanced.add(unsafe { request.advance(build, 1.0) });
     }
 
-    (request, born)
+    (request, advanced)
 }
 
 /// The draws hold the specification's distributions: over 10,000 counts the
@@ -817,10 +1654,10 @@ unsafe fn build_whole(build: &mut RequestBuild, plan: Plan) -> (Request, [usize;
 /// their places, and the collections'.
 #[test]
 fn the_draws_hold_their_distributions() {
-    let core = Zipf::new(5_000);
-    let mut shape = Draws::new(1, 1, Purpose::Shape);
+    let targets = Targets::new(&LongLivedShape::specified(40_000));
+    let mut streams = Streams::new(1, 1);
     let mut logs: Vec<f64> = (0..10_000)
-        .map(|_| (draw_the_count(&mut shape).1 as f64).ln())
+        .map(|_| (draw_the_count(&mut streams.shape).1 as f64).ln())
         .collect();
     logs.sort_unstable_by(f64::total_cmp);
     let median = logs[logs.len() / 2].exp();
@@ -829,12 +1666,11 @@ fn the_draws_hold_their_distributions() {
     let sigma = (logs.iter().map(|l| (l - mean).powi(2)).sum::<f64>() / logs.len() as f64).sqrt();
     assert!((sigma - 1.0).abs() < 0.05, "σ {sigma}");
 
-    let mut registrations = Draws::new(1, 1, Purpose::Registrations);
     let (mut sizes, mut tree, mut closures, mut core_edges) = ([0usize; 3], 0, 0, 0);
     let (mut registered, mut places, mut payload) = (0, 0.0, 0);
     let (mut collections, mut entities) = (0, 0);
     for _ in 0..50 {
-        let plan = Plan::with_count(&mut shape, &mut registrations, &core, 2_000);
+        let plan = Plan::with_count(&mut streams, &targets, 2_000);
         registered += plan.registrations.len();
         places += plan.registrations.iter().map(|&(at, _)| at).sum::<f64>();
         payload += plan.objects.len() - CONTEXT;
@@ -885,7 +1721,7 @@ fn the_draws_hold_their_distributions() {
     assert!((mean_place - 0.5).abs() < 0.02, "mean place {mean_place}");
 
     for _ in 0..10_000 {
-        let orm = draw_the_orm(&mut shape);
+        let orm = draw_the_orm(&mut streams.shape);
         collections += orm.len();
         entities += orm.iter().sum::<usize>();
     }
@@ -954,14 +1790,14 @@ fn the_heap_holds_each_class_at_its_size() {
 #[test]
 fn a_request_builds_what_its_plan_names() {
     let _g = test_guard();
-    let mut fixture = Fixture::new("PlanNamed", 50);
+    let mut fixture = Fixture::with_core("PlanNamed", 50);
     let plan = fixture.plan(7, 2_000);
     let bytes = plan.bytes();
     let before = held_by_size();
-    let core = fixture.core.clone();
+    let core = fixture.long_lived.core.clone();
     let mut build = fixture.build();
-    let (request, born) = unsafe { build_whole(&mut build, plan) };
-    assert_eq!(born, bytes);
+    let (request, advanced) = unsafe { build_whole(&mut build, plan) };
+    assert_eq!(advanced.born, bytes);
     let after = held_by_size();
     for size_index in 0..3 {
         assert_eq!(
@@ -1000,28 +1836,34 @@ fn a_request_builds_what_its_plan_names() {
         );
     }
 
-    let (_, ended) = unsafe { request.end() };
-    assert_eq!(ended, bytes);
+    assert_eq!(unsafe { request.end() }.bytes, bytes);
     unsafe { crate::gc::ll_gc_collect_cycles() };
+    fixture.let_go();
 }
 
 /// The end's release lands on the registered first object and registers
-/// nothing, or on the unregistered second and registers it.
+/// nothing, or on the unregistered second and registers it. The session
+/// stands registered, as the steady state leaves it, so that its release at
+/// the end registers nothing either.
 #[test]
 fn a_silent_end_registers_nothing_and_the_other_one_root() {
     let _g = test_guard();
-    let mut fixture = Fixture::new("SilentEnd", 10);
+    let mut fixture = Fixture::with_core("SilentEnd", 10);
+    unsafe { fixture.long_lived.register_the_steady_state(&mut || {}) };
     for silent in [true, false] {
         let mut plan = fixture.plan(3, 100);
         plan.silent_end = silent;
         let (request, _) = unsafe { build_whole(&mut fixture.build(), plan) };
         let before = crate::cycle::queue::candidate_count();
-        let (landed_on_a_candidate, _) = unsafe { request.end() };
+        let ended = unsafe { request.end() };
         let after = crate::cycle::queue::candidate_count();
-        assert_eq!(landed_on_a_candidate, silent);
+        assert_eq!(ended.silent, silent);
         assert_eq!(after - before, usize::from(!silent), "silent {silent}");
+        assert_eq!(ended.registered, after - before);
         unsafe { crate::gc::ll_gc_collect_cycles() };
     }
+
+    fixture.let_go();
 }
 
 /// One advance registers at most half the poll's stride, the rest at the
@@ -1029,7 +1871,7 @@ fn a_silent_end_registers_nothing_and_the_other_one_root() {
 #[test]
 fn an_advance_registers_at_most_half_the_stride() {
     let _g = test_guard();
-    let mut fixture = Fixture::new("HalfStride", 10);
+    let mut fixture = Fixture::with_core("HalfStride", 10);
     let plan = fixture.plan(5, 30_000);
     let planned = plan.registrations.len();
     assert!(
@@ -1045,6 +1887,7 @@ fn an_advance_registers_at_most_half_the_stride() {
     assert!(request.is_complete());
     let _ = unsafe { request.end() };
     unsafe { crate::gc::ll_gc_collect_cycles() };
+    fixture.let_go();
 }
 
 /// The garbage integrates at its events: a scripted sequence of readings by
@@ -1076,14 +1919,14 @@ fn garbage_integrates_at_its_events() {
     assert_eq!(garbage.peak(), ([0, 0, 0], 0));
 
     let _g = test_guard();
-    let mut fixture = Fixture::new("Integrated", 10);
+    let mut fixture = Fixture::with_core("Integrated", 10);
     let plan = fixture.plan(9, 500);
     let mut garbage = Garbage::new(t0, held_by_size());
-    let (request, born) = unsafe { build_whole(&mut fixture.build(), plan) };
-    garbage.born(born);
+    let (request, advanced) = unsafe { build_whole(&mut fixture.build(), plan) };
+    garbage.born(advanced.born);
     garbage.read(at(1), held_by_size());
     assert_eq!(garbage.current(), [0, 0, 0]);
-    let (_, bytes) = unsafe { request.end() };
+    let bytes = unsafe { request.end() }.bytes;
     garbage.ended(bytes);
     garbage.read(at(2), held_by_size());
     assert_eq!(garbage.current(), bytes);
@@ -1094,30 +1937,507 @@ fn garbage_integrates_at_its_events() {
         garbage.integral(),
         bytes.map(|bytes| bytes as u128 * 10_000_000)
     );
+    fixture.let_go();
 }
 
-/// The same seed draws the same plan and checksum whatever another purpose's
-/// stream draws, and another repeat draws another stream.
+/// The same seed draws the same plan whatever the other purposes' streams
+/// have drawn: a plan's shape and registrations stay when its cache and
+/// session streams have drawn more, and its lookups and session when its
+/// shape and registration streams have; another repeat draws another stream.
 #[test]
 fn a_seed_draws_one_plan_whatever_the_other_streams_draw() {
-    let core = Zipf::new(100);
-    let draw = |extra: usize| {
-        let mut other = Draws::new(2, 3, Purpose::Arrivals);
-        for _ in 0..extra {
-            let _ = other.unit();
+    let targets = Targets::new(&LongLivedShape {
+        core: 100,
+        values: 100,
+        sessions: 10,
+    });
+    // A plan from streams whose shape, registrations, cache and sessions
+    // have drawn `ahead` values first.
+    let draw = |ahead: [usize; 4]| {
+        let mut streams = Streams::new(2, 3);
+        let each = [
+            &mut streams.shape,
+            &mut streams.registrations,
+            &mut streams.cache,
+            &mut streams.sessions,
+        ];
+        for (stream, extra) in each.into_iter().zip(ahead) {
+            for _ in 0..extra {
+                let _ = stream.unit();
+            }
         }
 
-        let mut shape = Draws::new(2, 3, Purpose::Shape);
-        let mut registrations = Draws::new(2, 3, Purpose::Registrations);
-        let plan = Plan::draw(&mut shape, &mut registrations, &core);
-        (
-            plan.objects.len(),
-            plan.registrations.len(),
-            shape.checksum(),
-        )
+        let plan = Plan::draw(&mut streams, &targets);
+        (plan, streams.shape.checksum())
     };
-    assert_eq!(draw(0), draw(1_000));
-    let mut a = Draws::new(2, 3, Purpose::Shape);
-    let mut b = Draws::new(2, 4, Purpose::Shape);
-    assert_ne!(a.unit(), b.unit(), "another repeat draws another stream");
+    let shape_of = |plan: &Plan| {
+        let objects: Vec<_> = plan
+            .objects
+            .iter()
+            .map(|object| {
+                (
+                    object.size_index,
+                    object.parent,
+                    object.extra,
+                    object.born_at.to_bits(),
+                )
+            })
+            .collect();
+        (objects, plan.silent_end, plan.registrations.clone())
+    };
+    let (plain, plain_checksum) = draw([0; 4]);
+    let (others_ahead, others_ahead_checksum) = draw([0, 0, 1_000, 1_000]);
+    assert_eq!(shape_of(&others_ahead), shape_of(&plain));
+    assert_eq!(others_ahead_checksum, plain_checksum);
+    assert_ne!(others_ahead.lookups, plain.lookups);
+    let (shape_ahead, _) = draw([1_000, 1_000, 0, 0]);
+    assert_ne!(shape_of(&shape_ahead), shape_of(&plain));
+    assert_eq!(
+        (shape_ahead.lookups, shape_ahead.session),
+        (plain.lookups, plain.session)
+    );
+    let mut this_repeat = Draws::new(2, 3, Purpose::Shape);
+    let mut next_repeat = Draws::new(2, 4, Purpose::Shape);
+    assert_ne!(
+        this_repeat.unit(),
+        next_repeat.unit(),
+        "another repeat draws another stream"
+    );
+}
+
+/// The objects of a directory of `entries`, counted level by level as
+/// [`Directory::new`] builds them.
+fn directory_objects(entries: usize) -> usize {
+    let mut level = entries.div_ceil(DIRECTORY_FAN_OUT).max(1);
+    let mut objects = level;
+    while level > 1 {
+        level = level.div_ceil(DIRECTORY_FAN_OUT);
+        objects += level;
+    }
+
+    objects
+}
+
+/// The core is one ring through slot 0, the setup registers nothing, and the
+/// heap holds the bytes the state reports; one core root's trace meets every
+/// edge of the state, and a collection frees nothing while the core's
+/// reference is held and every byte once it is let go.
+#[test]
+fn one_core_root_reaches_the_whole_state() {
+    let _g = test_guard();
+    let before = held_by_size();
+    let shape = LongLivedShape {
+        core: 20,
+        values: 40,
+        sessions: 5,
+    };
+    let fixture = Fixture::new("WholeState", shape);
+    assert_eq!(crate::cycle::queue::candidate_count(), 0);
+    let held = fixture.long_lived.held();
+    let after = held_by_size();
+    for size_index in 0..3 {
+        assert_eq!(after[size_index] - before[size_index], held[size_index]);
+    }
+
+    let core = &fixture.long_lived.core;
+    let mut at = core[0];
+    for step in 1..=shape.core {
+        at = slot_of(at, 0);
+        assert_eq!(at, core[step % shape.core], "step {step}");
+    }
+
+    for &object in &core[1..] {
+        let other = slot_of(object, 1);
+        assert!(
+            other != object && core.contains(&other),
+            "another core object"
+        );
+    }
+
+    // The ring, the other edges and the two directories' roots; each
+    // directory's parent edges and its entries; each cycle's chain, its
+    // back-edge and its core edge.
+    let edges = shape.core + (shape.core - 1) + 2 + directory_objects(shape.values) - 1
+        + shape.values
+        + directory_objects(shape.sessions)
+        - 1
+        + shape.sessions
+        + shape.values * (VALUE_OBJECTS + 1)
+        + shape.sessions * (SESSION_OBJECTS + 1);
+    unsafe { register(core[shape.core / 2]) };
+    let _ = crate::cycle::row::take_edge_dispatches();
+    let _ = crate::cycle::row::take_dispatches_in_mark_phase();
+    unsafe { crate::gc::ll_gc_collect_cycles() };
+    assert_eq!(
+        crate::cycle::row::take_dispatches_in_mark_phase(),
+        1 + edges,
+        "the root's resolution and one per edge"
+    );
+    assert_eq!(held_by_size(), after, "a held state frees nothing");
+    fixture.let_go();
+    assert_eq!(held_by_size(), before, "a state let go is freed whole");
+}
+
+/// The cache on a scripted sequence: a miss evicts the least recently used
+/// value by a decrement that registers it, or registers nothing where a hit
+/// registered it already; a hit registers a value once; the garbage is the
+/// evicted value's bytes until a collection frees them.
+#[test]
+fn a_hit_registers_and_an_eviction_is_silent_only_after_one() {
+    let _g = test_guard();
+    let t0 = Instant::now();
+    let at = |millis: u64| t0 + Duration::from_millis(millis);
+    let start = held_by_size();
+    let mut garbage = Garbage::new(t0, start);
+    let mut fixture = Fixture::new(
+        "ScriptedCache",
+        LongLivedShape {
+            core: 5,
+            values: 3,
+            sessions: 1,
+        },
+    );
+    garbage.born(fixture.long_lived.held());
+    garbage.read(at(1), held_by_size());
+    assert_eq!(garbage.current(), [0, 0, 0]);
+    let arena: *mut Arena = &mut *fixture.arena;
+    let resident = fixture.long_lived.lru.keys_by_recency();
+    let absent: Vec<u32> = (0..(3 * KEYS_A_VALUE) as u32)
+        .filter(|key| !resident.contains(key))
+        .take(2)
+        .collect();
+    let look_up = |long_lived: &mut LongLived, key: u32| {
+        let before = crate::cycle::queue::candidate_count();
+        let advanced = unsafe { long_lived.look_up(arena, key) };
+        let registered = crate::cycle::queue::candidate_count() - before;
+        assert_eq!(advanced.registered, registered, "key {key}");
+        (advanced, registered)
+    };
+
+    // A miss evicts the oldest, which no hit registered.
+    let (miss, registered) = look_up(&mut fixture.long_lived, absent[0]);
+    assert_eq!(registered, 1);
+    assert_ne!(miss.ended, [0, 0, 0]);
+    assert_ne!(miss.born, [0, 0, 0]);
+    garbage.born(miss.born);
+    garbage.ended(miss.ended);
+    garbage.read(at(2), held_by_size());
+    assert_eq!(garbage.current(), miss.ended);
+    unsafe { crate::gc::ll_gc_collect_cycles() };
+    garbage.read(at(3), held_by_size());
+    assert_eq!(
+        garbage.current(),
+        [0, 0, 0],
+        "the collection freed the value"
+    );
+    let held = held_by_size();
+    assert_eq!(
+        std::array::from_fn(|size_index| held[size_index] - start[size_index]),
+        fixture.long_lived.held(),
+        "the state holds the new value and not the evicted one"
+    );
+    assert_eq!(
+        fixture.long_lived.lru.keys_by_recency(),
+        [absent[0], resident[0], resident[1]]
+    );
+
+    // Hits register each value once, and make `resident[1]` the oldest.
+    for key in [resident[1], absent[0], resident[0]] {
+        assert_eq!(look_up(&mut fixture.long_lived, key).1, 1, "key {key}");
+    }
+
+    assert_eq!(
+        look_up(&mut fixture.long_lived, resident[0]).1,
+        0,
+        "a candidate's hit registers nothing"
+    );
+    assert_eq!(
+        fixture.long_lived.lru.keys_by_recency(),
+        [resident[0], absent[0], resident[1]]
+    );
+    let (_, registered) = look_up(&mut fixture.long_lived, absent[1]);
+    assert_eq!(registered, 0, "the evicted value was a candidate already");
+    assert_eq!(
+        fixture.long_lived.counts,
+        CacheCounts {
+            hits: 4,
+            hits_registering: 3,
+            misses: 2,
+            evictions_silent: 1,
+            evictions_registering: 1,
+            sessions_replaced: 0,
+        }
+    );
+    fixture.let_go();
+}
+
+/// The setup leaves every entry holding a value of its size, a chain closed
+/// by its back-edge with its core edge on the head, and registers the core,
+/// the values hit since their insertion and the sessions, polling between
+/// each [`REGISTRATIONS_AN_ADVANCE`]; the sessions' idle ages have the mean
+/// of [`SESSIONS`] requests.
+#[test]
+fn the_setup_builds_and_registers_the_steady_state() {
+    let _g = test_guard();
+    let shape = LongLivedShape {
+        core: REGISTRATIONS_AN_ADVANCE + 1,
+        values: 200,
+        sessions: SESSIONS,
+    };
+    let mut fixture = Fixture::new("SteadyState", shape);
+    let long_lived = &mut fixture.long_lived;
+    assert_eq!(long_lived.lru.used, shape.values);
+    let mut keys = long_lived.lru.keys_by_recency();
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(keys.len(), shape.values);
+    for (directory, entries, objects) in [
+        (&long_lived.values, shape.values, VALUE_OBJECTS),
+        (&long_lived.sessions, shape.sessions, SESSION_OBJECTS),
+    ] {
+        for entry in 0..entries as u32 {
+            let head = directory.head(entry);
+            assert!(long_lived.core.contains(&slot_of(head, 1)), "entry {entry}");
+            let mut last = head;
+            for _ in 1..objects {
+                last = slot_of(last, 0);
+            }
+
+            assert_eq!(slot_of(last, 1), head, "entry {entry}");
+        }
+    }
+
+    // Built on the fixture's thread with all its sessions touched, so the
+    // ages are read off a fresh state of the same seed.
+    let mut arena = Arena::new();
+    let fresh =
+        unsafe { LongLived::new(WebClasses::new("SteadyStateAges"), shape, 0, 0, &mut arena) };
+    let mean_age = fresh
+        .last_touch
+        .iter()
+        .map(|&touch| (FIRST_REQUEST - touch) as f64)
+        .sum::<f64>()
+        / shape.sessions as f64;
+    assert!(
+        (mean_age / 1_000.0 - 1.0).abs() < 0.1,
+        "mean age {mean_age}"
+    );
+    let _ = unsafe { fresh.let_go() };
+
+    let hit = long_lived
+        .lru
+        .hit_since_insertion
+        .iter()
+        .filter(|&&hit| hit)
+        .count();
+    let before = crate::cycle::queue::candidate_count();
+    let mut polls = 0;
+    let registered = unsafe { long_lived.register_the_steady_state(&mut || polls += 1) };
+    assert_eq!(registered, shape.core + hit + shape.sessions);
+    assert_eq!(crate::cycle::queue::candidate_count() - before, registered);
+    assert_eq!(polls, registered / REGISTRATIONS_AN_ADVANCE);
+    for entry in 0..shape.values as u32 {
+        assert_eq!(
+            is_a_candidate(long_lived.values.head(entry)),
+            long_lived.lru.hit_since_insertion[entry as usize],
+            "entry {entry}"
+        );
+    }
+
+    // Misses from here evict silently exactly the values hit since their
+    // insertion.
+    let arena: *mut Arena = &mut *fixture.arena;
+    let long_lived = &mut fixture.long_lived;
+    let absent: Vec<u32> = (0..(shape.values * KEYS_A_VALUE) as u32)
+        .filter(|&key| long_lived.lru.entry_of_key[key as usize] == ABSENT)
+        .take(shape.values)
+        .collect();
+    let mut silent = 0;
+    for key in absent {
+        let was_hit = long_lived.lru.hit_since_insertion[long_lived.lru.oldest as usize];
+        let advanced = unsafe { long_lived.look_up(arena, key) };
+        assert_eq!(advanced.registered, usize::from(!was_hit), "key {key}");
+        silent += usize::from(was_hit);
+    }
+
+    assert!(silent > 0 && silent < shape.values, "{silent} silent");
+    assert_eq!(long_lived.counts.evictions_silent, silent);
+    fixture.let_go();
+}
+
+/// The cache's LRU reaches the steady state of an independent simulation of
+/// the same Zipf and LRU (`dev/plans/S67.md`, S67.4's Critic, finding 2): at
+/// N = 40k, a hit rate of 84.5 %, 31.6 % of evictions silent and 17,966
+/// resident values hit since their insertion, over 70,000 lookups after the
+/// setup's run.
+#[test]
+fn the_cache_reaches_the_simulated_steady_state() {
+    let values = 40_000;
+    let keys = Zipf::new(values * KEYS_A_VALUE);
+    let mut draws = Draws::new(1, 1, Purpose::Core);
+    let mut lru = run_to_the_steady_state(values, &keys, &mut draws);
+    let (mut hits, mut misses, mut silent) = (0, 0, 0);
+    for _ in 0..70_000 {
+        match lru.look_up(keys.draw(&mut draws) as u32) {
+            LookupOutcome::Hit(_) => hits += 1,
+            LookupOutcome::Evicted { was_hit, .. } => {
+                misses += 1;
+                silent += usize::from(was_hit);
+            }
+            LookupOutcome::Inserted => unreachable!("the cache is full"),
+        }
+    }
+
+    let hit_rate = hits as f64 / 70_000.0;
+    let silent_share = silent as f64 / misses as f64;
+    let resident_hit = lru.hit_since_insertion.iter().filter(|&&hit| hit).count();
+    assert!((hit_rate - 0.845).abs() < 0.01, "hit rate {hit_rate}");
+    assert!((silent_share - 0.316).abs() < 0.02, "silent {silent_share}");
+    assert!(
+        (resident_hit as f64 / 17_966.0 - 1.0).abs() < 0.03,
+        "resident hit {resident_hit}"
+    );
+}
+
+/// A session touched after more than [`SESSION_IDLE_REQUESTS`] of idleness
+/// is replaced, its eviction registering the old head, and one touched at
+/// that idleness is not; the heap then holds the new session, and a
+/// collection frees the old one.
+#[test]
+fn a_session_idle_past_its_lifetime_is_replaced() {
+    let _g = test_guard();
+    let before = held_by_size();
+    let mut fixture = Fixture::new(
+        "IdleSession",
+        LongLivedShape {
+            core: 5,
+            values: 3,
+            sessions: 3,
+        },
+    );
+    let arena: *mut Arena = &mut *fixture.arena;
+    let long_lived = &mut fixture.long_lived;
+    // The opening counts one request more, so these are idle for exactly
+    // the lifetime and one request past it.
+    long_lived.last_touch[2] = long_lived.requests + 1 - SESSION_IDLE_REQUESTS;
+    let kept = long_lived.sessions.head(2);
+    let (head, advanced) = unsafe { long_lived.open_session(arena, 2) };
+    assert_eq!((head, advanced), (kept, Advanced::default()));
+    long_lived.last_touch[1] = long_lived.requests - SESSION_IDLE_REQUESTS;
+    let old = long_lived.sessions.head(1);
+    let old_bytes = to_usize(long_lived.sessions.bytes[1]);
+    let candidates = crate::cycle::queue::candidate_count();
+    let (head, advanced) = unsafe { long_lived.open_session(arena, 1) };
+    assert_ne!(head, old);
+    assert_eq!(head, long_lived.sessions.head(1));
+    assert_eq!(advanced.ended, old_bytes);
+    assert_eq!(advanced.born, to_usize(long_lived.sessions.bytes[1]));
+    assert_eq!(advanced.registered, 1);
+    assert_eq!(crate::cycle::queue::candidate_count() - candidates, 1);
+    assert_eq!(long_lived.counts.sessions_replaced, 1);
+    assert_eq!(long_lived.last_touch[1], long_lived.requests);
+    unsafe { crate::gc::ll_gc_collect_cycles() };
+    let held = held_by_size();
+    assert_eq!(
+        std::array::from_fn(|size_index| held[size_index] - before[size_index]),
+        long_lived.held(),
+        "the old session freed, the new one held"
+    );
+    fixture.let_go();
+}
+
+/// A request holds its session by a reference of its own from its start to
+/// its end, and the end's release registers a session no request had
+/// registered yet: here one its start put in place of an idle one.
+#[test]
+fn a_request_holds_its_session_and_its_end_registers_a_new_one() {
+    let _g = test_guard();
+    let mut fixture = Fixture::with_core("HeldSession", 10);
+    unsafe { fixture.long_lived.register_the_steady_state(&mut || {}) };
+    let mut plan = fixture.plan(6, 100);
+    plan.silent_end = true;
+    let slot = plan.session;
+    fixture.long_lived.last_touch[slot as usize] =
+        fixture.long_lived.requests - SESSION_IDLE_REQUESTS;
+    let (request, advanced) = unsafe { build_whole(&mut fixture.build(), plan) };
+    assert_ne!(advanced.ended, [0, 0, 0], "the idle session was replaced");
+    let head = fixture.long_lived.sessions.head(slot);
+    let count = || unsafe { crate::refcount::header_refcount(head as *const RcHeader) };
+    assert_eq!(count(), 3, "its slot, its back-edge and the request");
+    let candidates = crate::cycle::queue::candidate_count();
+    let ended = unsafe { request.end() };
+    assert_eq!(count(), 2);
+    assert!(ended.silent);
+    assert_eq!(ended.registered, 1, "the new session");
+    assert_eq!(crate::cycle::queue::candidate_count() - candidates, 1);
+    unsafe { crate::gc::ll_gc_collect_cycles() };
+    fixture.let_go();
+}
+
+/// An advance runs the lookups placed before its bound and leaves the rest,
+/// and a whole request runs all of them.
+#[test]
+fn an_advance_runs_the_lookups_at_their_places() {
+    let _g = test_guard();
+    let mut fixture = Fixture::with_core("LookupPlaces", 10);
+    let plan = Plan::with_count(&mut Streams::new(4, 1), fixture.long_lived.targets(), 200);
+    let before_half = plan.lookups.iter().filter(|&&(at, _)| at < 0.5).count();
+    assert!(before_half > 0 && before_half < LOOKUPS, "{before_half}");
+    let mut build = fixture.build();
+    let (mut request, _) = unsafe { Request::start(&mut build, plan) };
+    assert_eq!(
+        unsafe { request.advance(&mut build, 0.5) }.looked_up,
+        before_half
+    );
+    assert_eq!(
+        unsafe { request.advance(&mut build, 1.0) }.looked_up,
+        LOOKUPS - before_half
+    );
+    assert!(request.is_complete());
+    let counts = build.long_lived.counts;
+    assert_eq!(counts.hits + counts.misses, LOOKUPS);
+    let _ = unsafe { request.end() };
+    unsafe { crate::gc::ll_gc_collect_cycles() };
+    fixture.let_go();
+}
+
+/// A lookup counts toward an advance's cap as a registration does, hit or
+/// miss, since either can register one root.
+#[test]
+fn a_lookup_counts_toward_an_advances_cap() {
+    let _g = test_guard();
+    let mut fixture = Fixture::with_core("LookupsCounted", 10);
+    let plan = Plan::with_count(
+        &mut Streams::new(5, 1),
+        fixture.long_lived.targets(),
+        30_000,
+    );
+    // The lookups among the first events of the two lists merged by place,
+    // a registration first at a tie.
+    let mut places: Vec<(f64, bool)> = plan
+        .registrations
+        .iter()
+        .map(|&(at, _)| (at, false))
+        .chain(plan.lookups.iter().map(|&(at, _)| (at, true)))
+        .collect();
+    places.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let lookups_first = places[..REGISTRATIONS_AN_ADVANCE]
+        .iter()
+        .filter(|&&(_, lookup)| lookup)
+        .count();
+    let mut build = fixture.build();
+    let (mut request, _) = unsafe { Request::start(&mut build, plan) };
+    let first = unsafe { request.advance(&mut build, 1.0) };
+    assert!(first.looked_up > 0, "lookups fall among the registrations");
+    assert_eq!(first.looked_up, lookups_first);
+    assert_eq!(
+        request.registrations_done + first.looked_up,
+        REGISTRATIONS_AN_ADVANCE
+    );
+    let second = unsafe { request.advance(&mut build, 1.0) };
+    assert!(request.is_complete());
+    assert_eq!(first.looked_up + second.looked_up, LOOKUPS);
+    let _ = unsafe { request.end() };
+    unsafe { crate::gc::ll_gc_collect_cycles() };
+    fixture.let_go();
 }

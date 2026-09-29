@@ -704,23 +704,9 @@ Notes: dev/plans/S67.md
       handoff: `LL_RIG_WAIT_WITHOUT_POLL=1`, `sleep_without_poll` and the
         standing columns (`dev/plans/S67.md`, S67.2).
 - [x] S67.3 Request graphs: lifetimes, payload and sizes
-      done: the rig builds the per-request graph of `dev/plans/S67.md`,
-        "`web-heap`, a request" — the context cycle, the ORM collections with
-        their back-edges, the closures, the three object sizes — and counts
-        garbage in bytes by size, mean and peak; each figure checked once on
-        an input whose answer is known (the plan review's Critic, 2026-09-29:
-        the earlier line predated the specification)
-      tier: T2 · role: Critic
-      Critic 2026-09-29: eight findings on the proposal, and fifteen from the
-        independent review of the code, each answered in `dev/plans/S67.md`,
-        S67.3.
-      handoff: `worker/tests/the_web_loads.rs` — `Plan`, `Request::advance`
-        along the timeline, `Request::end`, `Garbage` over
-        `memory::heap::entity_bytes_held` (O(1), test-only); nine mutations
-        red. S67.5 wires them into the rig's loop and owes the columns, the
-        no-remote-free assertion and the ceiling in bytes; S67.7 the CPU and
-        waits' durations and the warm-up's window.
-- [~] S67.4 Long-lived state: a shared core, a cache and sessions
+      handoff: `worker/tests/the_web_loads.rs`, `Plan`, `Request` and `Garbage`
+        (`dev/plans/S67.md`, S67.3, with what S67.5 and S67.7 owe).
+- [x] S67.4 Long-lived state: a shared core, a cache and sessions
       done: each mutator holds a strongly connected core the request graphs
         point into, an LRU cache whose hits register and whose evictions die
         by a non-final decrement, silently where the value is a candidate
@@ -732,11 +718,23 @@ Notes: dev/plans/S67.md
       Critic 2026-09-29: six findings on the proposal, among them a fill
         that left the registered set a transient spanning the cell and
         sessions with no traffic; each answered in `dev/plans/S67.md`, S67.4.
+      review 2026-09-29 (independent, of the code): eight groups, among them
+        the session's release at the end unreported and untested; each
+        repaired or answered there.
+      handoff: `LongLived` in `worker/tests/the_web_loads.rs`, built and
+        registered to the steady state the simulation of the Critic's finding
+        2 reads; fifteen cases, eighteen mutations red. S67.5 owes the list
+        at the end of `dev/plans/S67.md`, S67.4, among it an epoch turned in
+        the drain: a state let go is freed only after a turnover.
 - [ ] S67.5 The loads `web-heap` and `web-arena`
       done: both loads in the rig's table; `web-arena`'s request objects in
         the mutator's `Arena`, reset at the request's end with the release
         log; a smoke cell of each completes under D and HG and their best
-        builds
+        builds; what S67.3 and S67.4 left it, listed at the end of their
+        sections in `dev/plans/S67.md`, built or read — among it the
+        columns, the no-remote-free assertion, the ceiling in bytes, the
+        long-lived state in the mutator's setup and the parts at N = 150k
+        that meet `RETRY_BLOCK_BUDGET`
       tier: T2 · role: Critic
 - [ ] S67.7 The protocol's instruments
       done: each instrument of `dev/plans/S67.md`, "Instruments owed", that

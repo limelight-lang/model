@@ -474,6 +474,16 @@ the record another thread holds, a cap stored as zero, a recall standing
 before the batch and a refused workspace — and which one fired is not
 established.
 
+A third joined on 2026-09-29:
+`worker::tests::the_standing_list::a_retired_collector_leaves_every_record_unlinked`
+read a sleeper's byte `FREE` where it asserts `REQUESTED` by the elder, after
+every sleeper had read as standing, in one of the gate's three plain runs at
+eight threads of a tree whose changes since `4befecb` are confined to
+`worker::tests::the_web_loads`, which holds the pool's guard as the case does.
+It did not repeat in 200 runs of the case alone, 100 alone under the two-core
+load, 40 of its module and 18 more plain runs at eight threads; no cause is
+established.
+
 **Never mute, skip, weaken or delete an existing test to go green.** A
 failing old test is a signal: either the change broke behaviour, or the
 contract genuinely moved. Those cannot be told apart silently — ask.
