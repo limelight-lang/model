@@ -553,7 +553,7 @@ Notes: dev/plans/S65.md
         2026-09-27: "попробуй")
       handoff: superseded by S65.42 (the Sage, 2026-09-28, Final): the ladder
         of waits carries it in both schemes; not built.
-- [ ] S65.43 The memory manager's draw of a fresh block hands the older
+- [x] S65.43 The memory manager's draw of a fresh block hands the older
         lanes back early (Edmond, 2026-09-28: "запиши это как следующую
         оптимизацию, которая должна сократить объём памяти, что висит")
       done: on S65.42's build, behind its own feature: where the mutator's
@@ -586,7 +586,11 @@ Notes: dev/plans/S65.md
         44.0 MB at the spare core, 39.6 → 24.0 at the shared one, against D's
         2.5–5.5; not adopted in either scheme by S65.28's rule; the cause not
         established, the Critic's finding 1 the hypothesis. Put to Edmond.
-- [ ] S65.44 A silent death on an old candidate releases the lanes (the
+      closed 2026-09-29: not adopted, and no diagnostic run for the
+        hypothesis (Edmond, "ок согласен"); the feature stays in the tree and
+        on the gate as the other refused arms do (`dev/DECISIONS.md`,
+        2026-09-29).
+- [x] S65.44 A silent death on an old candidate releases the lanes (the
         Critic of S65.43, 2026-09-28; put to Edmond, not built)
       done: Edmond rules whether a per-thread count of non-final decrements
         on an entity already a candidate with two or more live readings,
@@ -594,6 +598,9 @@ Notes: dev/plans/S65.md
         the signal that fires on `deferred-then-dead`, where no block is
         drawn; if yes, built and measured as S65.43 is
       tier: T2 · role: Critic
+      closed 2026-09-29, not built: Edmond, "нет не строим - это ухудшит
+        release код" — the count stands on the release build's decrement
+        path (`dev/DECISIONS.md`, 2026-09-29).
 - [ ] S65.41 The epoch turns no sooner than a floor of time, whatever the
         batches (the Sage, 2026-09-28: on `registered-ring-interleaved` HG
         re-reads its chained live roots 1.93 M times a cell, about 83 epochs

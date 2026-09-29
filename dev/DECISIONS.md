@@ -9,6 +9,26 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-09-29 — the lanes wait out their turns: no reading of the heap's growth or of the decrements releases them early
+
+**Decided (Edmond, 2026-09-29, on S65.43 and S65.44):** the release of D's
+lanes and HG's waiting chain at a crossing of the entity heap's growth
+(`release-on-heap-growth`) is not adopted, and no diagnostic run is made for
+the Critic's hypothesis of its failure. The measurement (`dev/BENCHMARKS.md`,
+"S65.43") saw the signal fire about twice a turn without bringing
+`live-churn`'s held garbage near D's, and it saved no instructions over the loop
+and the drain. The feature stays in the tree and on the gate beside the other
+refused arms.
+
+The second signal the Critic proposed, a per-thread count of non-final
+decrements on a candidate read live two or more times, is refused unbuilt
+("нет не строим - это ухудшит release код"): the count would stand on the
+decrement path of every release build to serve one load,
+`deferred-then-dead`, whose remnant therefore stays until the lanes' own
+waits end.
+
+---
+
 ## 2026-09-26 — the collector's chain gets no second claim on the record, and work on it outside a grant waits for a figure
 
 **Decided (the Sage, Final, on S65.28):** a second per-record claim for the
