@@ -1518,14 +1518,52 @@ impl StandingTimes {
     }
 }
 
-/// A mutator's standing times: requests it consented to, requests it
-/// refused by a take of its own, and `POSTED` or `ASKED` until its take
-/// consumed it.
+/// A mutator's standing times: requests it consented to, requests its own
+/// take went over, and `POSTED` or `ASKED` until its take consumed it.
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct MutatorStandings {
     pub(crate) consented: StandingTimes,
-    pub(crate) refused: StandingTimes,
+    pub(crate) taken_over: StandingTimes,
     pub(crate) posted: StandingTimes,
+}
+
+impl MutatorStandings {
+    const EMPTY: Self = Self {
+        consented: StandingTimes::EMPTY,
+        taken_over: StandingTimes::EMPTY,
+        posted: StandingTimes::EMPTY,
+    };
+
+    /// The sum of two readings, figure by figure.
+    pub(crate) fn merged(self, other: Self) -> Self {
+        Self {
+            consented: self.consented.merged(other.consented),
+            taken_over: self.taken_over.merged(other.taken_over),
+            posted: self.posted.merged(other.posted),
+        }
+    }
+}
+
+/// A state a token's byte enters, with the writer that enters it.
+pub(crate) enum ByteState {
+    /// `REQUESTED|slot`, entered by collector `slot`'s request.
+    Requested(usize),
+    /// `POSTED` or `NOTHING_PROPOSED`, entered by the grant holder's release.
+    Posted,
+    /// `ASKED`, entered by the elder's ask under a cap of zero.
+    Asked,
+}
+
+impl ByteState {
+    /// The second half of the state's key: the slot, or a value no slot
+    /// takes.
+    fn key_part(&self) -> usize {
+        match *self {
+            Self::Requested(slot) => slot,
+            Self::Posted => usize::MAX,
+            Self::Asked => usize::MAX - 1,
+        }
+    }
 }
 
 /// How a request stopped standing.
@@ -1538,25 +1576,29 @@ pub(crate) enum RequestEnd {
     Withdrawn,
 }
 
-/// One entry of a standing table: the state's key, the serve clock's instant
-/// it was stamped at, and the stamp's own number.
-struct Stamp {
+/// One state entered and not yet ended: its key, the token's address and the
+/// state's [`ByteState::key_part`]; the instant; and the entry's own number.
+struct Entry {
     key: (usize, usize),
-    made: u64,
+    entered: Instant,
     number: u64,
 }
 
+/// Whether the entries below are recorded. Off until a case or the rig turns
+/// it on: the table's lock sits on the handshake of both sides, collector and
+/// mutator, which no production build has, so every other test and every rig
+/// cell that does not read the figures runs the handshake without it.
+static STANDINGS_RECORDED: AtomicBool = AtomicBool::new(false);
 /// The states standing on the tokens' bytes, oldest first. An entry is pushed
 /// before the swap or the store that enters its state, so that an end made at
 /// once finds it; it leaves by its own swap's failure, which removes that
-/// entry alone, or by the state's end, which takes the oldest entry under the
-/// key. One state stands under a key at a time, and every other entry under
-/// it is an attempt whose failure is still to be noted, so the oldest is the
-/// state that ended. Requests are keyed by the token's address and the
-/// requesting collector's slot, `POSTED` and `ASKED` by the address alone.
-static REQUESTS_STANDING: Mutex<Vec<Stamp>> = Mutex::new(Vec::new());
-static POSTED_STANDING: Mutex<Vec<Stamp>> = Mutex::new(Vec::new());
-static NEXT_STAMP: AtomicU64 = AtomicU64::new(0);
+/// entry alone, or by the state's end, which takes the oldest entry under its
+/// key. Each key has one writer at a time — a request's collector, the grant
+/// holder releasing to `POSTED`, the elder asking — so one state stands under
+/// a key and every younger entry is an attempt whose failure is still to be
+/// noted: the oldest is the state that ended.
+static STATES_STANDING: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+static NEXT_ENTRY: AtomicU64 = AtomicU64::new(0);
 /// The requests collectors withdrew, over every token, since the last
 /// [`take_withdrawn_standings`].
 static WITHDRAWN_STANDING: Mutex<StandingTimes> = Mutex::new(StandingTimes::EMPTY);
@@ -1565,54 +1607,57 @@ thread_local! {
     /// The standings this thread ended as a mutator since the last
     /// [`take_this_threads_standings`].
     static THIS_THREADS_STANDINGS: std::cell::RefCell<MutatorStandings> =
-        const {
-            std::cell::RefCell::new(MutatorStandings {
-                consented: StandingTimes::EMPTY,
-                refused: StandingTimes::EMPTY,
-                posted: StandingTimes::EMPTY,
-            })
-        };
+        const { std::cell::RefCell::new(MutatorStandings::EMPTY) };
 }
 
-fn stamp(table: &Mutex<Vec<Stamp>>, key: (usize, usize)) -> u64 {
-    let number = NEXT_STAMP.fetch_add(1, Ordering::Relaxed);
-    let made = super::serve_clock_now();
-    lock(table).push(Stamp { key, made, number });
-    number
+/// Record the standing times from now on, or stop; the entries standing at
+/// the switch keep their places.
+pub(crate) fn record_standings(on: bool) {
+    STANDINGS_RECORDED.store(on, Ordering::Relaxed);
 }
 
-fn remove_stamp(table: &Mutex<Vec<Stamp>>, number: u64) {
-    lock(table).retain(|stamp| stamp.number != number);
+/// `state` is about to be entered on the token at address `token`. The
+/// answer goes to [`note_not_entered`] if the swap fails; a state entered
+/// must be ended through [`note_request_ended`] or [`note_posted_taken`],
+/// or its entry answers the key's next end. `None` while nothing is recorded.
+pub(crate) fn note_entering(token: usize, state: ByteState) -> Option<u64> {
+    if !STANDINGS_RECORDED.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let number = NEXT_ENTRY.fetch_add(1, Ordering::Relaxed);
+    lock(&STATES_STANDING).push(Entry {
+        key: (token, state.key_part()),
+        entered: Instant::now(),
+        number,
+    });
+    Some(number)
 }
 
-/// How long the oldest state under `key` stood, its entry removed; `None`
-/// for a state no stamp entered (a case's own write of the byte).
-fn end_of(table: &Mutex<Vec<Stamp>>, key: (usize, usize)) -> Option<std::time::Duration> {
-    let made = {
-        let mut standing = lock(table);
-        let position = standing.iter().position(|stamp| stamp.key == key)?;
-        standing.remove(position).made
-    };
-    Some(std::time::Duration::from_nanos(
-        super::serve_clock_now().saturating_sub(made),
-    ))
+/// The swap [`note_entering`] answered `entry` for failed, and its entry
+/// goes.
+pub(crate) fn note_not_entered(entry: Option<u64>) {
+    if let Some(number) = entry {
+        lock(&STATES_STANDING).retain(|entry| entry.number != number);
+    }
 }
 
-/// Collector `slot` is about to request `token`; the number is handed to
-/// [`note_request_not_landed`] if the swap fails.
-pub(crate) fn note_request_made(token: usize, slot: usize) -> u64 {
-    stamp(&REQUESTS_STANDING, (token, slot))
+/// How long the oldest state under `state`'s key on the token at address
+/// `token` stood, its entry removed; `None` for a state no entry stands for
+/// (a case's own write of the byte, or one entered while nothing was
+/// recorded).
+fn end_of(token: usize, state: ByteState) -> Option<std::time::Duration> {
+    let key = (token, state.key_part());
+    let mut standing = lock(&STATES_STANDING);
+    let position = standing.iter().position(|entry| entry.key == key)?;
+    Some(standing.remove(position).entered.elapsed())
 }
 
-/// The swap stamped `number` failed, and its entry goes.
-pub(crate) fn note_request_not_landed(number: u64) {
-    remove_stamp(&REQUESTS_STANDING, number);
-}
-
-/// Collector `slot`'s request over `token` ended `how`; consents and takes
-/// are noted on the mutator's thread and count in its figures.
+/// Collector `slot`'s request over the token at address `token` ended `how`;
+/// a consent or a take is noted on the mutator's thread and counts in its
+/// figures.
 pub(crate) fn note_request_ended(token: usize, slot: usize, how: RequestEnd) {
-    let Some(stood) = end_of(&REQUESTS_STANDING, (token, slot)) else {
+    let Some(stood) = end_of(token, ByteState::Requested(slot)) else {
         return;
     };
     match how {
@@ -1620,30 +1665,32 @@ pub(crate) fn note_request_ended(token: usize, slot: usize, how: RequestEnd) {
             THIS_THREADS_STANDINGS.with(|s| s.borrow_mut().consented.note(stood))
         }
         RequestEnd::TakenByTheMutator => {
-            THIS_THREADS_STANDINGS.with(|s| s.borrow_mut().refused.note(stood))
+            THIS_THREADS_STANDINGS.with(|s| s.borrow_mut().taken_over.note(stood))
         }
         RequestEnd::Withdrawn => lock(&WITHDRAWN_STANDING).note(stood),
     }
 }
 
-/// A collector is about to release its claim over `token` to `POSTED`, or
-/// the elder to ask for a collection in line; the number is handed to
-/// [`note_posted_not_landed`] if the ask's swap fails.
-pub(crate) fn note_posted(token: usize) -> u64 {
-    stamp(&POSTED_STANDING, (token, 0))
-}
-
-/// The ask stamped `number` failed, and its entry goes.
-pub(crate) fn note_posted_not_landed(number: u64) {
-    remove_stamp(&POSTED_STANDING, number);
-}
-
-/// The mutator's take consumed `POSTED` or `ASKED` over `token`, on its own
-/// thread.
-pub(crate) fn note_posted_taken(token: usize) {
-    if let Some(stood) = end_of(&POSTED_STANDING, (token, 0)) {
+/// The mutator's take consumed `ASKED` (`asked`) or `POSTED` over the token
+/// at address `token`, on its own thread.
+pub(crate) fn note_posted_taken(token: usize, asked: bool) {
+    let state = if asked {
+        ByteState::Asked
+    } else {
+        ByteState::Posted
+    };
+    if let Some(stood) = end_of(token, state) {
         THIS_THREADS_STANDINGS.with(|s| s.borrow_mut().posted.note(stood));
     }
+}
+
+/// How many states stand on the token at address `token`, entries of failed
+/// attempts not yet noted included.
+pub(crate) fn states_standing_on(token: usize) -> usize {
+    lock(&STATES_STANDING)
+        .iter()
+        .filter(|entry| entry.key.0 == token)
+        .count()
 }
 
 /// This thread's standing times since it last asked, and zero them.

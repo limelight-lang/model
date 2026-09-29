@@ -313,7 +313,10 @@ impl TraceToken {
     pub(crate) fn request(&self, slot: usize) -> Result<(), u8> {
         // Stamped before the swap, so that a consent made at once finds it.
         #[cfg(test)]
-        let stamp = crate::cycle::worker::testing::note_request_made(self.address(), slot);
+        let entry = crate::cycle::worker::testing::note_entering(
+            self.address(),
+            crate::cycle::worker::testing::ByteState::Requested(slot),
+        );
         let requested = self.word.compare_exchange(
             FREE,
             word(REQUESTED, slot),
@@ -322,7 +325,7 @@ impl TraceToken {
         );
         #[cfg(test)]
         if requested.is_err() {
-            crate::cycle::worker::testing::note_request_not_landed(stamp);
+            crate::cycle::worker::testing::note_not_entered(entry);
         }
         requested.map(|_| ())
     }
@@ -339,13 +342,16 @@ impl TraceToken {
     pub(crate) fn ask_to_collect_in_line(&self) -> Result<(), u8> {
         // Stamped before the swap, so that a take made at once finds it.
         #[cfg(test)]
-        let stamp = crate::cycle::worker::testing::note_posted(self.address());
+        let entry = crate::cycle::worker::testing::note_entering(
+            self.address(),
+            crate::cycle::worker::testing::ByteState::Asked,
+        );
         let asked = self
             .word
             .compare_exchange(FREE, ASKED, Ordering::Relaxed, Ordering::Relaxed);
         #[cfg(test)]
         if asked.is_err() {
-            crate::cycle::worker::testing::note_posted_not_landed(stamp);
+            crate::cycle::worker::testing::note_not_entered(entry);
         }
         asked.map(|_| ())
     }
@@ -438,7 +444,10 @@ impl TraceToken {
         // Stamped before the store, so that a take made at once finds it.
         #[cfg(test)]
         if released != FREE {
-            let _ = crate::cycle::worker::testing::note_posted(self.address());
+            let _ = crate::cycle::worker::testing::note_entering(
+                self.address(),
+                crate::cycle::worker::testing::ByteState::Posted,
+            );
         }
         self.word.store(released, Ordering::Release);
         let _guard = self
@@ -581,25 +590,14 @@ impl TraceToken {
                 .word
                 .compare_exchange(seen, MUTATOR, Ordering::Acquire, Ordering::Acquire)
             {
-                // A take over a standing request is this mutator's refusal,
-                // and the collector is woken rather than left on its wait.
-                Ok(_) if state(seen) == REQUESTED => {
-                    #[cfg(test)]
-                    {
-                        self.refusals.fetch_add(1, Ordering::Relaxed);
-                        crate::cycle::worker::testing::note_request_ended(
-                            self.address(),
-                            slot(seen),
-                            crate::cycle::worker::testing::RequestEnd::TakenByTheMutator,
-                        );
-                    }
-                    crate::cycle::worker::wake_for_the_byte(slot(seen));
-                    return Some(took);
-                }
                 Ok(_) => {
                     #[cfg(test)]
-                    if took == TookFrom::Posted {
-                        crate::cycle::worker::testing::note_posted_taken(self.address());
+                    self.note_the_take(seen);
+                    // A take over a standing request is this mutator's
+                    // refusal, and the collector is woken rather than left on
+                    // its wait.
+                    if state(seen) == REQUESTED {
+                        crate::cycle::worker::wake_for_the_byte(slot(seen));
                     }
                     return Some(took);
                 }
@@ -621,8 +619,27 @@ impl TraceToken {
 
     /// This token's address, the key a test figure keeps its instants by.
     #[cfg(test)]
-    fn address(&self) -> usize {
+    pub(crate) fn address(&self) -> usize {
         self as *const Self as usize
+    }
+
+    /// The test figures of a take whose swap went over `seen`: a refusal
+    /// counted with its request's end, or a `POSTED` or `ASKED` consumed.
+    #[cfg(test)]
+    fn note_the_take(&self, seen: u8) {
+        use crate::cycle::worker::testing;
+        match state(seen) {
+            REQUESTED => {
+                self.refusals.fetch_add(1, Ordering::Relaxed);
+                testing::note_request_ended(
+                    self.address(),
+                    slot(seen),
+                    testing::RequestEnd::TakenByTheMutator,
+                );
+            }
+            POSTED => testing::note_posted_taken(self.address(), seen == ASKED),
+            _ => {}
+        }
     }
 
     /// How many times a taker has gone to wait on this token so far.
@@ -683,7 +700,7 @@ impl TraceToken {
                 .is_ok()
         });
         if taken {
-            crate::cycle::worker::testing::note_posted_taken(self.address());
+            crate::cycle::worker::testing::note_posted_taken(self.address(), false);
         }
         taken
     }

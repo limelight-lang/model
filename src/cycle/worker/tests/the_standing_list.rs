@@ -7,6 +7,10 @@
 //! pass drops it; and a retired collector leaves every record unlinked
 //! (`dev/design/the-standing-request-lives-on-the-record.md`).
 //!
+//! The last cases time the byte's states for a mutator that sleeps without
+//! polling (`dev/plans/S67.md`, S67.2): how long a request stood before its
+//! end, and a `POSTED` or an `ASKED` before the take that consumed it.
+//!
 //! The collector here is the case's own thread with a `Standing` of its own,
 //! on a slot no thread stands in, so that the slot's byte-event number moves
 //! only for this case's consents and refusals; the one case that needs the
@@ -860,16 +864,34 @@ fn a_round_can_carry_a_backlog_for_a_record_it_then_leaves_linked() {
     sleeper.end();
 }
 
+/// Turn the standing figures on and zero this thread's, for a case that
+/// reads them.
+fn begin_standings() {
+    testing::record_standings(true);
+    let _ = testing::take_this_threads_standings();
+}
+
+/// One standing ended, after at least `at_least`, and nothing left standing
+/// on `token`.
+fn assert_stood_once(
+    times: testing::StandingTimes,
+    at_least: Duration,
+    token: &crate::cycle::token::TraceToken,
+) {
+    assert_eq!(times.count, 1);
+    assert!(times.longest >= at_least, "stood {:?}", times.longest);
+    assert_eq!(testing::states_standing_on(token.address()), 0);
+}
+
 /// A request stands while its mutator sleeps without polling, and the first
 /// reading after the sleep consents to it; the standing time runs from the
-/// request to that consent (`dev/plans/S67.md`, S67.2). Red with the
-/// consent's note removed.
+/// request to that consent. Red with the consent's note removed.
 #[test]
 fn a_request_stands_through_a_sleep_without_a_poll() {
     let _g = test_guard();
     reset_lanes();
     let record = unsafe { &*record() };
-    let _ = testing::take_this_threads_standings();
+    begin_standings();
 
     record
         .token
@@ -890,11 +912,10 @@ fn a_request_stands_through_a_sleep_without_a_poll() {
     record.token.release_claim(SLOT, false);
     assert_eq!(record.token.read(), FREE);
     let standings = testing::take_this_threads_standings();
-    assert_eq!(standings.consented.count, 1);
-    assert!(
-        standings.consented.longest >= Duration::from_millis(50),
-        "stood {:?}",
-        standings.consented.longest
+    assert_stood_once(
+        standings.consented,
+        Duration::from_millis(50),
+        &record.token,
     );
 }
 
@@ -906,7 +927,7 @@ fn posted_stands_through_a_sleep_until_the_take() {
     let _g = test_guard();
     reset_lanes();
     let record = unsafe { &*record() };
-    let _ = testing::take_this_threads_standings();
+    begin_standings();
     assert!(record.token.claim_for_test(SLOT), "a stand-in's grant");
 
     record.token.release_claim(SLOT, true);
@@ -916,24 +937,19 @@ fn posted_stands_through_a_sleep_until_the_take() {
     record.token.release();
     assert_eq!(record.token.read(), FREE);
     let standings = testing::take_this_threads_standings();
-    assert_eq!(standings.posted.count, 1);
-    assert!(
-        standings.posted.longest >= Duration::from_millis(30),
-        "stood {:?}",
-        standings.posted.longest
-    );
+    assert_stood_once(standings.posted, Duration::from_millis(30), &record.token);
 }
 
 /// A collector's second request over its own standing one fails on the byte
 /// and leaves the first request's instant in place: the consent after the
-/// sleep reads the standing time from the first request. Red with the
-/// second request's stamp replacing the first.
+/// sleep reads the standing time from the first request. Red with an entry
+/// replacing the one under its key.
 #[test]
 fn a_repeated_request_keeps_the_standing_ones_instant() {
     let _g = test_guard();
     reset_lanes();
     let record = unsafe { &*record() };
-    let _ = testing::take_this_threads_standings();
+    begin_standings();
 
     record
         .token
@@ -952,24 +968,23 @@ fn a_repeated_request_keeps_the_standing_ones_instant() {
     record.token.release_claim(SLOT, false);
     assert_eq!(record.token.read(), FREE);
     let standings = testing::take_this_threads_standings();
-    assert_eq!(standings.consented.count, 1);
-    assert!(
-        standings.consented.longest >= Duration::from_millis(30),
-        "stood {:?}",
-        standings.consented.longest
+    assert_stood_once(
+        standings.consented,
+        Duration::from_millis(30),
+        &record.token,
     );
 }
 
 /// The elder's ask for a collection in line stands as `POSTED` does while its
 /// mutator sleeps, until the take that consumes it, and a second ask that
 /// fails on the first leaves the first's instant in place. Red with the
-/// ask's stamp removed.
+/// ask's entry removed.
 #[test]
 fn an_ask_stands_through_a_sleep_until_the_take() {
     let _g = test_guard();
     reset_lanes();
     let record = unsafe { &*record() };
-    let _ = testing::take_this_threads_standings();
+    begin_standings();
 
     record
         .token
@@ -985,10 +1000,29 @@ fn an_ask_stands_through_a_sleep_until_the_take() {
     record.token.release();
     assert_eq!(record.token.read(), FREE);
     let standings = testing::take_this_threads_standings();
-    assert_eq!(standings.posted.count, 1);
-    assert!(
-        standings.posted.longest >= Duration::from_millis(30),
-        "stood {:?}",
-        standings.posted.longest
-    );
+    assert_stood_once(standings.posted, Duration::from_millis(30), &record.token);
+}
+
+/// A holder's release to `POSTED` between the elder's entry for an ask and
+/// the ask's failed swap, the order a cap lowered to zero under a running
+/// trace allows: the take ends the release's state, the failure removes the
+/// ask's entry, and nothing stands after. Red with the ask and the release
+/// under one key, where the take ends the ask's entry and the release's
+/// stands for good.
+#[test]
+fn an_ask_that_fails_beside_a_release_leaves_nothing_standing() {
+    let _g = test_guard();
+    reset_lanes();
+    let record = unsafe { &*record() };
+    begin_standings();
+    assert!(record.token.claim_for_test(SLOT), "a sibling's grant");
+
+    let ask = testing::note_entering(record.token.address(), testing::ByteState::Asked);
+    record.token.release_claim(SLOT, true);
+    assert_eq!(record.token.take(), crate::cycle::token::TookFrom::Posted);
+    record.token.release();
+    testing::note_not_entered(ask);
+    assert_eq!(record.token.read(), FREE);
+    let standings = testing::take_this_threads_standings();
+    assert_stood_once(standings.posted, Duration::ZERO, &record.token);
 }
