@@ -713,7 +713,9 @@ cited to sources or marked as assumptions, the rig's idle poll no longer
 hides what a sleeping mutator costs (S67.2: it pays no token wait; the
 requests' and `POSTED`'s standing times and the returns withheld through the
 sleep are read instead), and D and HG are measured on them by a rule fixed
-before the run; the figures put to Edmond, who then drops one
+before the run, whose two verdicts name the default build — the scheme,
+and whether it takes its best build's features; the figures put to Edmond,
+who then drops one
 (Edmond, 2026-09-28: both stay until S65.43 and S67 are measured; H is not
 an arm).
 Notes: dev/plans/S67.md
