@@ -500,6 +500,20 @@ Notes: dev/plans/S67.md
         three loads under the four arms complete, and no arm frees either
         load's garbage inside the drain (`dev/plans/S67.md`, S67.5, the smoke
         cells), put to Edmond before S67.6.
+- [ ] S67.8 The collector's operations in the debug journal
+      done: under `debug-journal`, beside its births and deaths, a kind of
+        record each for a root's registration in R (first, or a candidate
+        already), a batch's start (its roots and form), a batch's end with its
+        reason (a recall, B met, a refused allocation, run to its end, and the
+        rest of `trace_in_parts`' exits), a root's verdict (proposed, read
+        live, count zero, unwalked), a root deferred, written back to R and
+        offered again at a turnover, a turnover, and a free by the mutator's
+        disposition; a count by kind beside the ring, which the rig's line
+        prints, since a cell's millions of events outrun a ring of records;
+        each kind read once on an input whose answer is known (Edmond,
+        2026-09-29: "логгер операций GC ... жить в условной компиляции с
+        опцией"; the kinds agreed the same day)
+      tier: T2 · role: Critic
 - [ ] S67.7 The protocol's instruments
       done: each instrument of `dev/plans/S67.md`, "Instruments owed", that
         S67.2–S67.5 do not build is in the rig — among them the arrivals'
