@@ -1016,6 +1016,7 @@ mod the_standing_list;
 mod the_take_after_an_interval;
 #[cfg(feature = "wait-by-readings")]
 mod the_waits_by_readings;
+mod the_web_loads;
 mod under_stress;
 mod what_a_grown_k_costs;
 mod what_a_take_costs;

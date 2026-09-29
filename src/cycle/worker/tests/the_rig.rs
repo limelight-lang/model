@@ -600,7 +600,7 @@ impl Built {
 ///
 /// # Safety
 /// `root` is a live object of this thread's heap that something else holds.
-unsafe fn register(root: *mut Object) {
+pub(super) unsafe fn register(root: *mut Object) {
     unsafe {
         ll_retain(root as *mut RcHeader);
         assert!(

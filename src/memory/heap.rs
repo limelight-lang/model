@@ -609,6 +609,18 @@ pub struct Heap {
     /// owner lost" from "a dead thread's live object we inherited".
     #[cfg(test)]
     adopted_live: u32,
+    /// `used × size` summed over the owned blocks, by size class, an adopted
+    /// block's slots included: every change of a block's `used` is mirrored
+    /// here at its class's size. Test-only, the web loads' garbage figure
+    /// (`cycle::worker::tests::the_web_loads`).
+    #[cfg(test)]
+    bytes_in_owned_blocks: [usize; NUM_CLASSES],
+    /// Of `bytes_in_owned_blocks`, what adopted blocks brought live: slots of
+    /// a thread that exited, which are no garbage of this thread's. Test-only,
+    /// as `adopted_live` is, and one-way as it is: an owner's free of an
+    /// inherited slot lowers the other figure alone.
+    #[cfg(test)]
+    bytes_adopted: [usize; NUM_CLASSES],
     /// The block kind this heap stamps at refill and adopts by:
     /// `BLOCK_KIND_HEAP` for raw C-ABI allocations, `BLOCK_KIND_ENTITY`
     /// for GC entities. Two populations of the same allocator, never
@@ -642,6 +654,10 @@ impl Heap {
             owned: [std::ptr::null_mut(); NUM_CLASSES],
             #[cfg(test)]
             adopted_live: 0,
+            #[cfg(test)]
+            bytes_in_owned_blocks: [0; NUM_CLASSES],
+            #[cfg(test)]
+            bytes_adopted: [0; NUM_CLASSES],
             block_kind,
         }
     }
@@ -711,6 +727,10 @@ impl Heap {
         }
 
         b.used += 1;
+        #[cfg(test)]
+        {
+            self.bytes_in_owned_blocks[ci] += SIZE_CLASSES[ci];
+        }
 
         // If that was the block's last slot, retire it from `available`
         // right now, while its header is still hot in registers. Leaving it
@@ -792,6 +812,11 @@ impl Heap {
                 let base = (block as *mut u8).wrapping_add(LINE_SIZE);
                 out[n] = base.wrapping_add(idx * class_size);
                 b.used += 1;
+                #[cfg(test)]
+                {
+                    self.bytes_in_owned_blocks[ci] += class_size;
+                }
+
                 n += 1;
             }
 
@@ -805,6 +830,11 @@ impl Heap {
                 b.free = unsafe { (*slot).next };
                 out[n] = slot as *mut u8;
                 b.used += 1;
+                #[cfg(test)]
+                {
+                    self.bytes_in_owned_blocks[ci] += class_size;
+                }
+
                 n += 1;
             }
 
@@ -957,6 +987,14 @@ impl Heap {
         }
 
         self.own(ci, block);
+        // The block's slots come with it; a collect lowers the figure by those
+        // freed while it was ownerless, the one below or, where a foreign
+        // trace withholds the returns, a later one.
+        #[cfg(test)]
+        {
+            self.bytes_in_owned_blocks[ci] +=
+                unsafe { (*block).private.used } as usize * SIZE_CLASSES[ci];
+        }
 
         // Slots freed while it was ownerless are withheld; take them now. The
         // borrow lasts exactly this call.
@@ -978,6 +1016,10 @@ impl Heap {
         #[cfg(test)]
         {
             self.adopted_live += used;
+            // A slot still on the remote stack is a free the collect was
+            // withheld from taking, and no live slot.
+            let pending = unsafe { remote_stack_len(block) };
+            self.bytes_adopted[ci] += (used as usize - pending) * SIZE_CLASSES[ci];
         }
 
         if used == 0 {
@@ -1077,6 +1119,11 @@ impl Heap {
 
         self.available = [std::ptr::null_mut(); NUM_CLASSES];
         self.empty_reserve = [std::ptr::null_mut(); NUM_CLASSES];
+        #[cfg(test)]
+        {
+            self.bytes_in_owned_blocks = [0; NUM_CLASSES];
+            self.bytes_adopted = [0; NUM_CLASSES];
+        }
     }
 
     /// [`collect_remote`](Self::collect_remote) without touching `self` — for
@@ -1175,6 +1222,11 @@ impl Heap {
         b.used -= 1;
 
         let ci = unsafe { (*block).size_class.load(Ordering::Relaxed) } as usize;
+        #[cfg(test)]
+        {
+            self.bytes_in_owned_blocks[ci] -= SIZE_CLASSES[ci];
+        }
+
         if b.used == 0 {
             return self.retire_empty(ci, block);
         }
@@ -1279,6 +1331,12 @@ impl Heap {
 
         b.free = head;
         b.used -= n;
+        #[cfg(test)]
+        {
+            let ci = unsafe { (*block).size_class.load(Ordering::Relaxed) } as usize;
+            self.bytes_in_owned_blocks[ci] -= n as usize * SIZE_CLASSES[ci];
+        }
+
         true
     }
 
@@ -1348,6 +1406,36 @@ impl Heap {
         }
 
         total.saturating_sub(self.adopted_live)
+    }
+
+    /// The bytes this heap's blocks hold for its own thread, by size class:
+    /// `bytes_in_owned_blocks` less what adoptions brought live. O(1).
+    #[cfg(test)]
+    pub(crate) fn bytes_held_for_this_thread(&self) -> [usize; NUM_CLASSES] {
+        std::array::from_fn(|ci| {
+            self.bytes_in_owned_blocks[ci]
+                .checked_sub(self.bytes_adopted[ci])
+                .expect("an adopted slot freed by its new owner")
+        })
+    }
+
+    /// [`Heap::bytes_held_for_this_thread`] as a walk of the owned blocks
+    /// reads it, the figure the count must equal: a remote return still on a
+    /// block's stack counts in both, since neither collects.
+    #[cfg(test)]
+    pub(crate) fn bytes_held_by_a_walk(&self) -> [usize; NUM_CLASSES] {
+        std::array::from_fn(|ci| {
+            let mut bytes = 0;
+            let mut block = self.owned[ci];
+            while !block.is_null() {
+                bytes += unsafe { (*block).private.used } as usize * SIZE_CLASSES[ci];
+                block = unsafe { (*block).links.owned_next };
+            }
+
+            bytes
+                .checked_sub(self.bytes_adopted[ci])
+                .expect("the adopted bytes stand in the owned blocks")
+        })
     }
 
     /// Take a fresh block from the pool, stamp its header, and link it as
@@ -2559,6 +2647,47 @@ unsafe fn entity_alloc_once(size: usize) -> *mut u8 {
         require_thread_started("entity_alloc");
         crate::memory::large_entity::alloc(size)
     }
+}
+
+/// The bytes this thread's entity heap holds for it, by size class; zeros on
+/// a heapless thread (`Heap::bytes_held_for_this_thread`). O(1).
+#[cfg(test)]
+pub(crate) fn entity_bytes_held() -> [usize; NUM_CLASSES] {
+    let heap = thread_entity_heap();
+    if heap.is_null() {
+        return [0; NUM_CLASSES];
+    }
+
+    unsafe { &*heap }.bytes_held_for_this_thread()
+}
+
+/// [`entity_bytes_held`] as a walk of the heap's blocks reads it, for a case
+/// to hold the count to (`Heap::bytes_held_by_a_walk`).
+#[cfg(test)]
+pub(crate) fn entity_bytes_held_by_a_walk() -> [usize; NUM_CLASSES] {
+    let heap = thread_entity_heap();
+    if heap.is_null() {
+        return [0; NUM_CLASSES];
+    }
+
+    unsafe { &*heap }.bytes_held_by_a_walk()
+}
+
+/// The slots on `block`'s remote stack, which its owner has not collected.
+///
+/// # Safety
+/// The caller owns `block`: other threads only push, so the walk from a
+/// loaded head reads nodes nobody pops.
+#[cfg(test)]
+unsafe fn remote_stack_len(block: *mut HeapBlockHeader) -> usize {
+    let mut slot = unsafe { (*block).remote.remote_free.load(Ordering::Acquire) };
+    let mut len = 0;
+    while !slot.is_null() {
+        len += 1;
+        slot = unsafe { (*slot).next };
+    }
+
+    len
 }
 
 /// Cold tail: the entity heap refused, so this thread collects its own cycles

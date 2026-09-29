@@ -734,7 +734,7 @@ Notes: dev/plans/S67.md
         the mean without polls against 0.8 ms with them; at `live-churn`'s
         own 16 rings no collector is born at that pace, which S67.5's smoke
         cells read first.
-- [ ] S67.3 Request graphs: lifetimes, payload and sizes
+- [x] S67.3 Request graphs: lifetimes, payload and sizes
       done: the rig builds the per-request graph of `dev/plans/S67.md`,
         "`web-heap`, a request" — the context cycle, the ORM collections with
         their back-edges, the closures, the three object sizes — and counts
@@ -742,6 +742,15 @@ Notes: dev/plans/S67.md
         an input whose answer is known (the plan review's Critic, 2026-09-29:
         the earlier line predated the specification)
       tier: T2 · role: Critic
+      Critic 2026-09-29: eight findings on the proposal, and fifteen from the
+        independent review of the code, each answered in `dev/plans/S67.md`,
+        S67.3.
+      handoff: `worker/tests/the_web_loads.rs` — `Plan`, `Request::advance`
+        along the timeline, `Request::end`, `Garbage` over
+        `memory::heap::entity_bytes_held` (O(1), test-only); nine mutations
+        red. S67.5 wires them into the rig's loop and owes the columns, the
+        no-remote-free assertion and the ceiling in bytes; S67.7 the CPU and
+        waits' durations and the warm-up's window.
 - [ ] S67.4 Long-lived state: a shared core, a cache and sessions
       done: each mutator holds a strongly connected core the request graphs
         point into, an LRU cache whose hits register and whose evictions die

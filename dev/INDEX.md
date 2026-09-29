@@ -416,6 +416,12 @@ collector through `worker::testing::pin_collectors_to`, which
 `begin_the_thread` reads. Build the test binary with
 `cargo test --release --lib --no-run` first.
 
+`cycle::worker::tests::the_web_loads` — the web loads' request
+(`dev/plans/S67.md`, S67.3): the seeded draws by purpose, the plan of one
+request, its build along the drawn timeline (`Request::advance`), its end, and
+the garbage in bytes by size (`Garbage`), read off the entity heap's
+test-only count of held bytes (`memory::heap::entity_bytes_held`).
+
 `dev/tools/arms.sh` and `dev/tools/arms_table.py` — a comparison of arms on
 the rig: one test binary per arm, interleaved inside each repeat, the deciding
 loads paced by the S65.24 protocol and the guards unpaced, then the table of
