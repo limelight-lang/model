@@ -698,42 +698,11 @@ an arm).
 Notes: dev/plans/S67.md
 
 - [x] S67.1 Decide the load's parameters and the protocol
-      done: `dev/plans/S67.md` holds the load's specification (the loads'
-        Critic of 2026-09-27, its facts cited, its assumptions marked) and
-        the decision rule — metric, gates, repeats, A/A cells — written
-        before any run
-      tier: T2 · role: Critic
-      Critic 2026-09-28: thirteen findings (`dev/plans/S67.md`), among them
-        no verdict function, a metric the request CPU dilutes, 60 % CPU
-        unreachable at one request in flight, and a bare reset that drops
-        escapes; answered there the same day, the loads and the rule
-        rewritten.
-      Critic 2026-09-28 round 2: nine findings on the rewrite, among them a
-        spin subtraction that took the polls' work with it, a cache that
-        never filled, a void rule the rig itself trips; each answered in
-        `dev/plans/S67.md`.
       handoff: `dev/plans/S67.md`, "The loads" and "The protocol (S67.1,
-        before any run)": the verdict is best D against best HG on six
-        deciding cells, a tie dropping HG; the instruments S67.2–S67.5 owe
-        are listed there; the run follows S65.43's verdict.
+        before any run)", both through two Critic rounds.
 - [x] S67.2 A mutator that blocks without polling
-      done: a rig mutator can sleep in a blocking wait that makes no poll,
-        as a worker in `accept` or on a database read does; a case shows a
-        grant request standing until the mutator's next poll, and the rig
-        reports what the sleep then costs — the requests' standing time, the
-        time `POSTED` stood, and the returns withheld through the sleep (the
-        Critic, 2026-09-28: a sleeping mutator pays no token wait, the poll
-        and the slot free never waiting on the byte)
-      tier: T2 · role: Critic
-      Critic 2026-09-28 (design) and 2026-09-29 (code): five findings each,
-        answered in `dev/plans/S67.md`, S67.2; the code round found a
-        repeated request erasing the standing one's stamp.
-      handoff: `LL_RIG_WAIT_WITHOUT_POLL=1` and `sleep_without_poll`; the
-        columns `request_standing_*`, `posted_standing*` and
-        `wait_without_poll`. At a 10 ms pace a request stands 8.5–9.5 ms on
-        the mean without polls against 0.8 ms with them; at `live-churn`'s
-        own 16 rings no collector is born at that pace, which S67.5's smoke
-        cells read first.
+      handoff: `LL_RIG_WAIT_WITHOUT_POLL=1`, `sleep_without_poll` and the
+        standing columns (`dev/plans/S67.md`, S67.2).
 - [x] S67.3 Request graphs: lifetimes, payload and sizes
       done: the rig builds the per-request graph of `dev/plans/S67.md`,
         "`web-heap`, a request" — the context cycle, the ORM collections with
@@ -751,11 +720,18 @@ Notes: dev/plans/S67.md
         red. S67.5 wires them into the rig's loop and owes the columns, the
         no-remote-free assertion and the ceiling in bytes; S67.7 the CPU and
         waits' durations and the warm-up's window.
-- [ ] S67.4 Long-lived state: a shared core, a cache and sessions
+- [~] S67.4 Long-lived state: a shared core, a cache and sessions
       done: each mutator holds a strongly connected core the request graphs
         point into, an LRU cache whose hits register and whose evictions die
-        silently, and sessions with an idle lifetime
+        by a non-final decrement, silently where the value is a candidate
+        already and registering a root otherwise, and sessions with an idle
+        lifetime; the setup leaves the cache and the registrations at their
+        steady state (S67.4's Critic, 2026-09-29: the earlier line read every
+        eviction as silent, against the specification)
       tier: T2 · role: Critic
+      Critic 2026-09-29: six findings on the proposal, among them a fill
+        that left the registered set a transient spanning the cell and
+        sessions with no traffic; each answered in `dev/plans/S67.md`, S67.4.
 - [ ] S67.5 The loads `web-heap` and `web-arena`
       done: both loads in the rig's table; `web-arena`'s request objects in
         the mutator's `Arena`, reset at the request's end with the release
