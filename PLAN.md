@@ -497,8 +497,15 @@ Notes: dev/plans/S67.md
         sections in `dev/plans/S67.md`, built or read — among it the
         columns, the no-remote-free assertion, the ceiling in bytes, the
         long-lived state in the mutator's setup and the parts at N = 150k
-        that meet `RETRY_BLOCK_BUDGET`
+        that meet `RETRY_BLOCK_BUDGET`; the let-go state freed after the
+        drain's readings by a turnover by hand, the drain itself left to the
+        scheme's own turnovers (S67.5's Critic, 2026-09-29)
       tier: T2 · role: Critic
+      Critic 2026-09-29: ten findings on the proposal, among them
+        `web-arena`'s setup registering `web-heap`'s steady state, a
+        retained-blocks gate the live session writes swamp (the protocol's
+        gate amended to the blocks less theirs) and `web-heap` moved to
+        N = 150k; each answered in `dev/plans/S67.md`, S67.5.
 - [ ] S67.7 The protocol's instruments
       done: each instrument of `dev/plans/S67.md`, "Instruments owed", that
         S67.2–S67.5 do not build is in the rig — among them the arrivals'
