@@ -859,3 +859,136 @@ fn a_round_can_carry_a_backlog_for_a_record_it_then_leaves_linked() {
     sleeper.poll();
     sleeper.end();
 }
+
+/// A request stands while its mutator sleeps without polling, and the first
+/// reading after the sleep consents to it; the standing time runs from the
+/// request to that consent (`dev/plans/S67.md`, S67.2). Red with the
+/// consent's note removed.
+#[test]
+fn a_request_stands_through_a_sleep_without_a_poll() {
+    let _g = test_guard();
+    reset_lanes();
+    let record = unsafe { &*record() };
+    let _ = testing::take_this_threads_standings();
+
+    record
+        .token
+        .request(SLOT)
+        .expect("a request lands on the free byte");
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(
+        record.token.read(),
+        word(REQUESTED, SLOT),
+        "the request stood through the sleep"
+    );
+    assert_eq!(
+        read_and_act_on_this_thread(),
+        crate::cycle::token::Reading::Collector
+    );
+    // The grant goes back before the figures are read: a red assertion with
+    // the grant held would leave the thread's exit waiting on it.
+    record.token.release_claim(SLOT, false);
+    assert_eq!(record.token.read(), FREE);
+    let standings = testing::take_this_threads_standings();
+    assert_eq!(standings.consented.count, 1);
+    assert!(
+        standings.consented.longest >= Duration::from_millis(50),
+        "stood {:?}",
+        standings.consented.longest
+    );
+}
+
+/// A batch's `POSTED` stands while its mutator sleeps, until the take that
+/// consumes it; the standing time runs from the collector's release. Red with
+/// the take's note removed.
+#[test]
+fn posted_stands_through_a_sleep_until_the_take() {
+    let _g = test_guard();
+    reset_lanes();
+    let record = unsafe { &*record() };
+    let _ = testing::take_this_threads_standings();
+    assert!(record.token.claim_for_test(SLOT), "a stand-in's grant");
+
+    record.token.release_claim(SLOT, true);
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(record.token.read(), POSTED, "it stood through the sleep");
+    assert_eq!(record.token.take(), crate::cycle::token::TookFrom::Posted);
+    record.token.release();
+    assert_eq!(record.token.read(), FREE);
+    let standings = testing::take_this_threads_standings();
+    assert_eq!(standings.posted.count, 1);
+    assert!(
+        standings.posted.longest >= Duration::from_millis(30),
+        "stood {:?}",
+        standings.posted.longest
+    );
+}
+
+/// A collector's second request over its own standing one fails on the byte
+/// and leaves the first request's instant in place: the consent after the
+/// sleep reads the standing time from the first request. Red with the
+/// second request's stamp replacing the first.
+#[test]
+fn a_repeated_request_keeps_the_standing_ones_instant() {
+    let _g = test_guard();
+    reset_lanes();
+    let record = unsafe { &*record() };
+    let _ = testing::take_this_threads_standings();
+
+    record
+        .token
+        .request(SLOT)
+        .expect("a request lands on the free byte");
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(
+        record.token.request(SLOT),
+        Err(word(REQUESTED, SLOT)),
+        "the second request reads the first back"
+    );
+    assert_eq!(
+        read_and_act_on_this_thread(),
+        crate::cycle::token::Reading::Collector
+    );
+    record.token.release_claim(SLOT, false);
+    assert_eq!(record.token.read(), FREE);
+    let standings = testing::take_this_threads_standings();
+    assert_eq!(standings.consented.count, 1);
+    assert!(
+        standings.consented.longest >= Duration::from_millis(30),
+        "stood {:?}",
+        standings.consented.longest
+    );
+}
+
+/// The elder's ask for a collection in line stands as `POSTED` does while its
+/// mutator sleeps, until the take that consumes it, and a second ask that
+/// fails on the first leaves the first's instant in place. Red with the
+/// ask's stamp removed.
+#[test]
+fn an_ask_stands_through_a_sleep_until_the_take() {
+    let _g = test_guard();
+    reset_lanes();
+    let record = unsafe { &*record() };
+    let _ = testing::take_this_threads_standings();
+
+    record
+        .token
+        .ask_to_collect_in_line()
+        .expect("an ask lands on the free byte");
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(
+        record.token.ask_to_collect_in_line(),
+        Err(crate::cycle::token::ASKED),
+        "the second ask reads the first back"
+    );
+    assert_eq!(record.token.take(), crate::cycle::token::TookFrom::Posted);
+    record.token.release();
+    assert_eq!(record.token.read(), FREE);
+    let standings = testing::take_this_threads_standings();
+    assert_eq!(standings.posted.count, 1);
+    assert!(
+        standings.posted.longest >= Duration::from_millis(30),
+        "stood {:?}",
+        standings.posted.longest
+    );
+}

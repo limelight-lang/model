@@ -1485,6 +1485,177 @@ pub(crate) fn take_parts_deferred() -> usize {
     PARTS_DEFERRED.swap(0, Ordering::Relaxed)
 }
 
+/// How long a byte state stood before its end: a count, the total and the
+/// longest (`dev/plans/S67.md`, S67.2).
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct StandingTimes {
+    pub(crate) count: usize,
+    pub(crate) total: std::time::Duration,
+    pub(crate) longest: std::time::Duration,
+}
+
+impl StandingTimes {
+    const EMPTY: Self = Self {
+        count: 0,
+        total: std::time::Duration::ZERO,
+        longest: std::time::Duration::ZERO,
+    };
+
+    fn note(&mut self, stood: std::time::Duration) {
+        self.count += 1;
+        self.total += stood;
+        self.longest = self.longest.max(stood);
+    }
+
+    /// The sum of two readings: counts and totals add, the longest is the
+    /// larger.
+    pub(crate) fn merged(self, other: Self) -> Self {
+        Self {
+            count: self.count + other.count,
+            total: self.total + other.total,
+            longest: self.longest.max(other.longest),
+        }
+    }
+}
+
+/// A mutator's standing times: requests it consented to, requests it
+/// refused by a take of its own, and `POSTED` or `ASKED` until its take
+/// consumed it.
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct MutatorStandings {
+    pub(crate) consented: StandingTimes,
+    pub(crate) refused: StandingTimes,
+    pub(crate) posted: StandingTimes,
+}
+
+/// How a request stopped standing.
+pub(crate) enum RequestEnd {
+    /// The mutator's reading consented, on its own thread.
+    Consented,
+    /// The mutator's take went over it, on its own thread.
+    TakenByTheMutator,
+    /// The collector withdrew it.
+    Withdrawn,
+}
+
+/// One entry of a standing table: the state's key, the serve clock's instant
+/// it was stamped at, and the stamp's own number.
+struct Stamp {
+    key: (usize, usize),
+    made: u64,
+    number: u64,
+}
+
+/// The states standing on the tokens' bytes, oldest first. An entry is pushed
+/// before the swap or the store that enters its state, so that an end made at
+/// once finds it; it leaves by its own swap's failure, which removes that
+/// entry alone, or by the state's end, which takes the oldest entry under the
+/// key. One state stands under a key at a time, and every other entry under
+/// it is an attempt whose failure is still to be noted, so the oldest is the
+/// state that ended. Requests are keyed by the token's address and the
+/// requesting collector's slot, `POSTED` and `ASKED` by the address alone.
+static REQUESTS_STANDING: Mutex<Vec<Stamp>> = Mutex::new(Vec::new());
+static POSTED_STANDING: Mutex<Vec<Stamp>> = Mutex::new(Vec::new());
+static NEXT_STAMP: AtomicU64 = AtomicU64::new(0);
+/// The requests collectors withdrew, over every token, since the last
+/// [`take_withdrawn_standings`].
+static WITHDRAWN_STANDING: Mutex<StandingTimes> = Mutex::new(StandingTimes::EMPTY);
+
+thread_local! {
+    /// The standings this thread ended as a mutator since the last
+    /// [`take_this_threads_standings`].
+    static THIS_THREADS_STANDINGS: std::cell::RefCell<MutatorStandings> =
+        const {
+            std::cell::RefCell::new(MutatorStandings {
+                consented: StandingTimes::EMPTY,
+                refused: StandingTimes::EMPTY,
+                posted: StandingTimes::EMPTY,
+            })
+        };
+}
+
+fn stamp(table: &Mutex<Vec<Stamp>>, key: (usize, usize)) -> u64 {
+    let number = NEXT_STAMP.fetch_add(1, Ordering::Relaxed);
+    let made = super::serve_clock_now();
+    lock(table).push(Stamp { key, made, number });
+    number
+}
+
+fn remove_stamp(table: &Mutex<Vec<Stamp>>, number: u64) {
+    lock(table).retain(|stamp| stamp.number != number);
+}
+
+/// How long the oldest state under `key` stood, its entry removed; `None`
+/// for a state no stamp entered (a case's own write of the byte).
+fn end_of(table: &Mutex<Vec<Stamp>>, key: (usize, usize)) -> Option<std::time::Duration> {
+    let made = {
+        let mut standing = lock(table);
+        let position = standing.iter().position(|stamp| stamp.key == key)?;
+        standing.remove(position).made
+    };
+    Some(std::time::Duration::from_nanos(
+        super::serve_clock_now().saturating_sub(made),
+    ))
+}
+
+/// Collector `slot` is about to request `token`; the number is handed to
+/// [`note_request_not_landed`] if the swap fails.
+pub(crate) fn note_request_made(token: usize, slot: usize) -> u64 {
+    stamp(&REQUESTS_STANDING, (token, slot))
+}
+
+/// The swap stamped `number` failed, and its entry goes.
+pub(crate) fn note_request_not_landed(number: u64) {
+    remove_stamp(&REQUESTS_STANDING, number);
+}
+
+/// Collector `slot`'s request over `token` ended `how`; consents and takes
+/// are noted on the mutator's thread and count in its figures.
+pub(crate) fn note_request_ended(token: usize, slot: usize, how: RequestEnd) {
+    let Some(stood) = end_of(&REQUESTS_STANDING, (token, slot)) else {
+        return;
+    };
+    match how {
+        RequestEnd::Consented => {
+            THIS_THREADS_STANDINGS.with(|s| s.borrow_mut().consented.note(stood))
+        }
+        RequestEnd::TakenByTheMutator => {
+            THIS_THREADS_STANDINGS.with(|s| s.borrow_mut().refused.note(stood))
+        }
+        RequestEnd::Withdrawn => lock(&WITHDRAWN_STANDING).note(stood),
+    }
+}
+
+/// A collector is about to release its claim over `token` to `POSTED`, or
+/// the elder to ask for a collection in line; the number is handed to
+/// [`note_posted_not_landed`] if the ask's swap fails.
+pub(crate) fn note_posted(token: usize) -> u64 {
+    stamp(&POSTED_STANDING, (token, 0))
+}
+
+/// The ask stamped `number` failed, and its entry goes.
+pub(crate) fn note_posted_not_landed(number: u64) {
+    remove_stamp(&POSTED_STANDING, number);
+}
+
+/// The mutator's take consumed `POSTED` or `ASKED` over `token`, on its own
+/// thread.
+pub(crate) fn note_posted_taken(token: usize) {
+    if let Some(stood) = end_of(&POSTED_STANDING, (token, 0)) {
+        THIS_THREADS_STANDINGS.with(|s| s.borrow_mut().posted.note(stood));
+    }
+}
+
+/// This thread's standing times since it last asked, and zero them.
+pub(crate) fn take_this_threads_standings() -> MutatorStandings {
+    THIS_THREADS_STANDINGS.with(|s| std::mem::take(&mut *s.borrow_mut()))
+}
+
+/// The withdrawn requests' standing times since the last call, and zero them.
+pub(crate) fn take_withdrawn_standings() -> StandingTimes {
+    std::mem::take(&mut *lock(&WITHDRAWN_STANDING))
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()

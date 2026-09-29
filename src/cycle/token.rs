@@ -311,14 +311,20 @@ impl TraceToken {
     /// through this failure as `COLLECTOR`, and the grant it reads must carry
     /// the stores the mutator's consent released.
     pub(crate) fn request(&self, slot: usize) -> Result<(), u8> {
-        self.word
-            .compare_exchange(
-                FREE,
-                word(REQUESTED, slot),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .map(|_| ())
+        // Stamped before the swap, so that a consent made at once finds it.
+        #[cfg(test)]
+        let stamp = crate::cycle::worker::testing::note_request_made(self.address(), slot);
+        let requested = self.word.compare_exchange(
+            FREE,
+            word(REQUESTED, slot),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        #[cfg(test)]
+        if requested.is_err() {
+            crate::cycle::worker::testing::note_request_not_landed(stamp);
+        }
+        requested.map(|_| ())
     }
 
     /// Ask the mutator, as the elder under a collector cap of zero, to collect
@@ -331,9 +337,17 @@ impl TraceToken {
     /// and reads nothing after the swap, and the mutator's take from the ask
     /// finds the live list's word null, no grant having written it.
     pub(crate) fn ask_to_collect_in_line(&self) -> Result<(), u8> {
-        self.word
-            .compare_exchange(FREE, ASKED, Ordering::Relaxed, Ordering::Relaxed)
-            .map(|_| ())
+        // Stamped before the swap, so that a take made at once finds it.
+        #[cfg(test)]
+        let stamp = crate::cycle::worker::testing::note_posted(self.address());
+        let asked = self
+            .word
+            .compare_exchange(FREE, ASKED, Ordering::Relaxed, Ordering::Relaxed);
+        #[cfg(test)]
+        if asked.is_err() {
+            crate::cycle::worker::testing::note_posted_not_landed(stamp);
+        }
+        asked.map(|_| ())
     }
 
     /// Take back collector `slot`'s request: one swap `REQUESTED|slot →
@@ -348,7 +362,15 @@ impl TraceToken {
             Ordering::Relaxed,
             Ordering::Acquire,
         ) {
-            Ok(_) => Withdrawn::Withdrawn,
+            Ok(_) => {
+                #[cfg(test)]
+                crate::cycle::worker::testing::note_request_ended(
+                    self.address(),
+                    slot,
+                    crate::cycle::worker::testing::RequestEnd::Withdrawn,
+                );
+                Withdrawn::Withdrawn
+            }
             Err(seen) if seen == word(COLLECTOR, slot) => Withdrawn::Granted,
             Err(seen) if state(seen) == MUTATOR => Withdrawn::TakenByTheMutator,
             Err(_) => Withdrawn::MovedOn,
@@ -379,7 +401,14 @@ impl TraceToken {
             .compare_exchange(seen, granted, Ordering::Release, Ordering::Acquire)
             .map(|_| {
                 #[cfg(test)]
-                self.consents.fetch_add(1, Ordering::Relaxed);
+                {
+                    self.consents.fetch_add(1, Ordering::Relaxed);
+                    crate::cycle::worker::testing::note_request_ended(
+                        self.address(),
+                        slot(seen),
+                        crate::cycle::worker::testing::RequestEnd::Consented,
+                    );
+                }
                 crate::cycle::worker::wake_for_the_byte(slot(seen));
             })
     }
@@ -406,6 +435,11 @@ impl TraceToken {
             matches!(released, FREE | POSTED | NOTHING_PROPOSED),
             "a release to {released:#x}"
         );
+        // Stamped before the store, so that a take made at once finds it.
+        #[cfg(test)]
+        if released != FREE {
+            let _ = crate::cycle::worker::testing::note_posted(self.address());
+        }
         self.word.store(released, Ordering::Release);
         let _guard = self
             .wait
@@ -551,11 +585,24 @@ impl TraceToken {
                 // and the collector is woken rather than left on its wait.
                 Ok(_) if state(seen) == REQUESTED => {
                     #[cfg(test)]
-                    self.refusals.fetch_add(1, Ordering::Relaxed);
+                    {
+                        self.refusals.fetch_add(1, Ordering::Relaxed);
+                        crate::cycle::worker::testing::note_request_ended(
+                            self.address(),
+                            slot(seen),
+                            crate::cycle::worker::testing::RequestEnd::TakenByTheMutator,
+                        );
+                    }
                     crate::cycle::worker::wake_for_the_byte(slot(seen));
                     return Some(took);
                 }
-                Ok(_) => return Some(took),
+                Ok(_) => {
+                    #[cfg(test)]
+                    if took == TookFrom::Posted {
+                        crate::cycle::worker::testing::note_posted_taken(self.address());
+                    }
+                    return Some(took);
+                }
                 Err(actual) => seen = actual,
             }
         }
@@ -570,6 +617,12 @@ impl TraceToken {
             "a release of a claim the mutator does not hold"
         );
         self.word.store(FREE, Ordering::Release);
+    }
+
+    /// This token's address, the key a test figure keeps its instants by.
+    #[cfg(test)]
+    fn address(&self) -> usize {
+        self as *const Self as usize
     }
 
     /// How many times a taker has gone to wait on this token so far.
@@ -624,11 +677,15 @@ impl TraceToken {
     /// byte is never cleared with its list still standing.
     #[cfg(test)]
     pub(crate) fn take_posted_for_test(&self) -> bool {
-        [POSTED, NOTHING_PROPOSED].into_iter().any(|posted| {
+        let taken = [POSTED, NOTHING_PROPOSED].into_iter().any(|posted| {
             self.word
                 .compare_exchange(posted, MUTATOR, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
-        })
+        });
+        if taken {
+            crate::cycle::worker::testing::note_posted_taken(self.address());
+        }
+        taken
     }
 
     /// Claim `COLLECTOR|slot` over `FREE` in one swap, without a request or

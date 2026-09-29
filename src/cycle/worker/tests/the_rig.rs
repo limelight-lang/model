@@ -43,9 +43,12 @@
 //! segment; the mutators' dispositions of P with no trace window; the
 //! collector's chain's figures ([`testing::ChainFigures`]), zero without the
 //! chain; the completed deaths withheld by a queue entry, at the peak, on the
-//! mean and at the loop's end; and, over the drain, what it freed and how
-//! long it took to bring those deaths to zero and to free every garbage
-//! member. With a drain, a mutator's CPU, context switches and minor faults
+//! mean and at the loop's end; how long the requests a mutator answered
+//! inside its loop stood, by consent and by its own take, how long the
+//! collectors' `POSTED` and `ASKED` stood until its take, and how long the
+//! requests withdrawn before the stop had stood; and, over the drain, what it
+//! freed and how long it took to bring those deaths to zero and to free every
+//! garbage member. With a drain, a mutator's CPU, context switches and minor faults
 //! are read over the loop and the drain together, the CPU time an operation
 //! included; the figures named `_in_the_loop` are the loop's alone.
 //!
@@ -64,6 +67,10 @@
 //! - `LL_RIG_PACE_MS` — the period, in milliseconds, at which an iteration
 //!   starts, the wait between two iterations polling every millisecond;
 //!   unpaced when unset;
+//! - `LL_RIG_WAIT_WITHOUT_POLL` — set to 1, the paced wait is one
+//!   [`sleep_without_poll`] to the next iteration's start, as a server worker
+//!   blocked in `accept` or on a database read makes none
+//!   (`dev/plans/S67.md`, S67.2); the drain polls every millisecond either way;
 //! - `LL_RIG_DRAIN_MS` — how long, in milliseconds, each mutator polls with
 //!   no registration after its loop, the drain; no drain when unset;
 //! - `LL_RIG_CHURN_GRAPHS`, `LL_RIG_CHURN_WINDOW` — a churn load's rings an
@@ -1078,6 +1085,11 @@ struct MutatorReading {
     /// to the drain of the withheld stacks that gave them back; a return
     /// still withheld at the loop's end is counted and not timed.
     withheld_by_segment: testing::WithheldBySegment,
+    /// How long the requests this thread answered and the `POSTED` releases
+    /// it consumed stood, for those answered and consumed inside the loop; a
+    /// request standing at the loop's end counts nowhere
+    /// (`dev/plans/S67.md`, S67.2).
+    standings: testing::MutatorStandings,
     /// How long after the loop's end the drain's polls took to free every
     /// garbage member built and bring the withheld deaths to zero, or the
     /// whole drain where they did not.
@@ -1123,11 +1135,13 @@ fn a_mutator(
     let counters = testing::ThreadCycles::open();
     let _ = crate::cycle::queue::take_queue_work();
     let _ = testing::take_withheld_by_segment();
+    let _ = testing::take_this_threads_standings();
     let record = unsafe { &*mutator_record::this_thread_record() };
     let turnovers_from = record.turnovers();
     let from = Instant::now();
     let mut last = from;
     let pace = millis_from_env("LL_RIG_PACE_MS");
+    let wait_without_poll = wait_without_poll_from_env();
     let mut keepers_let_go = false;
     let mut churn = Churn::default();
     while !stop.load(Ordering::Relaxed) {
@@ -1193,10 +1207,16 @@ fn a_mutator(
         // offered load is the same in both arms of a comparison.
         // The wait polls every millisecond, as a running program between
         // two bursts would, so that the collections a ring needs are not
-        // bounded by the pace.
+        // bounded by the pace; under `LL_RIG_WAIT_WITHOUT_POLL` it is one
+        // sleep with no poll, as a worker blocked on a read.
         if !pace.is_zero() {
             let due = from + pace * u32::try_from(reading.iterations).unwrap_or(u32::MAX);
             while let Some(ahead) = due.checked_duration_since(Instant::now()) {
+                if wait_without_poll {
+                    sleep_without_poll(ahead);
+                    continue;
+                }
+
                 reading.freed_by_polls += unsafe { crate::gc::ll_gc_maybe_collect() };
                 std::thread::sleep(ahead.min(Duration::from_millis(1)));
             }
@@ -1221,6 +1241,7 @@ fn a_mutator(
 
     reading.wall = from.elapsed();
     reading.withheld_by_segment = testing::take_withheld_by_segment();
+    reading.standings = testing::take_this_threads_standings();
     reading.withheld_by_an_entry_at_the_end = crate::cycle::queue::withheld_by_an_entry();
     reading.cpu_in_the_loop = testing::thread_cpu_time() - cpu_from;
     if let Some(counters) = &counters {
@@ -1331,6 +1352,25 @@ impl Cell {
     }
 }
 
+/// Block the calling mutator for `wait` and make no poll: its byte is not
+/// read, so a request stands and a `POSTED` release waits until the thread
+/// polls or frees again, and the returns it withholds under a foreign trace
+/// stay withheld through the sleep.
+fn sleep_without_poll(wait: Duration) {
+    std::thread::sleep(wait);
+}
+
+/// Whether `LL_RIG_WAIT_WITHOUT_POLL` sets the paced wait to
+/// [`sleep_without_poll`]: unset is off and `1` is on; any other value is
+/// refused, so that a misspelt switch does not run the polling arm.
+fn wait_without_poll_from_env() -> bool {
+    match std::env::var("LL_RIG_WAIT_WITHOUT_POLL") {
+        Err(_) => false,
+        Ok(value) if value == "1" => true,
+        Ok(value) => panic!("LL_RIG_WAIT_WITHOUT_POLL is unset or 1, not {value:?}"),
+    }
+}
+
 /// Milliseconds `variable` names, zero when it is unset.
 fn millis_from_env(variable: &str) -> Duration {
     std::env::var(variable).map_or(Duration::ZERO, |millis| {
@@ -1376,6 +1416,9 @@ struct CellReading {
     /// What the live list and the lane cost, in every build.
     scheme: testing::SchemeFigures,
     token_waits: testing::TokenWaits,
+    /// The requests collectors withdrew from the mutators' start to the
+    /// stop, and how long they had stood.
+    withdrawn: testing::StandingTimes,
     /// The collector's time in each segment of its batches.
     segment_times: testing::SegmentTimes,
     /// Grants recalled by a stack's mark, and by a take.
@@ -1447,6 +1490,16 @@ impl CellReading {
     fn fields(&self, cell: &Cell, load: Load) -> Vec<(&'static str, String)> {
         let listed = |cpus: Vec<String>| cpus.join(" ");
         let latencies = self.latencies();
+        let standings =
+            self.mutators
+                .iter()
+                .fold(testing::MutatorStandings::default(), |sum, reading| {
+                    testing::MutatorStandings {
+                        consented: sum.consented.merged(reading.standings.consented),
+                        refused: sum.refused.merged(reading.standings.refused),
+                        posted: sum.posted.merged(reading.standings.posted),
+                    }
+                });
         let switches = |pick: fn(&(u64, u64)) -> u64| {
             self.mutators
                 .iter()
@@ -1661,6 +1714,47 @@ impl CellReading {
                 "heap_growth_crossings",
                 self.scheme.heap_growth_crossings.to_string(),
             ),
+            (
+                "request_standing_consented",
+                standings.consented.count.to_string(),
+            ),
+            (
+                "request_standing_consented_us",
+                standings.consented.total.as_micros().to_string(),
+            ),
+            (
+                "request_standing_consented_longest_us",
+                standings.consented.longest.as_micros().to_string(),
+            ),
+            (
+                "request_standing_refused",
+                standings.refused.count.to_string(),
+            ),
+            (
+                "request_standing_refused_us",
+                standings.refused.total.as_micros().to_string(),
+            ),
+            (
+                "request_standing_refused_longest_us",
+                standings.refused.longest.as_micros().to_string(),
+            ),
+            (
+                "request_standing_withdrawn",
+                self.withdrawn.count.to_string(),
+            ),
+            (
+                "request_standing_withdrawn_us",
+                self.withdrawn.total.as_micros().to_string(),
+            ),
+            ("posted_standing", standings.posted.count.to_string()),
+            (
+                "posted_standing_us",
+                standings.posted.total.as_micros().to_string(),
+            ),
+            (
+                "posted_standing_longest_us",
+                standings.posted.longest.as_micros().to_string(),
+            ),
             ("collectors_born", self.collectors_born.to_string()),
             ("collectors_pinned", self.collectors_pinned.to_string()),
             (
@@ -1718,6 +1812,10 @@ impl CellReading {
             (
                 "pace_ms",
                 (millis_from_env("LL_RIG_PACE_MS").as_secs_f64() * 1000.0).to_string(),
+            ),
+            (
+                "wait_without_poll",
+                u8::from(wait_without_poll_from_env()).to_string(),
             ),
             (
                 "mutator_cpu_us",
@@ -1935,9 +2033,11 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         })
         .collect();
     start.wait();
+    let _ = testing::take_withdrawn_standings();
     std::thread::sleep(cell.run_for);
     stop.store(true, Ordering::Relaxed);
     let collector_cpu_at_the_stop = testing::collector_cpu_to_now();
+    let withdrawn = testing::take_withdrawn_standings();
     let mutators: Vec<MutatorReading> = threads
         .into_iter()
         .map(|thread| thread.join().expect("the mutator ran its loop"))
@@ -1967,6 +2067,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         chain: testing::take_chain_figures(),
         scheme: testing::take_scheme_figures(),
         token_waits: testing::take_token_waits(),
+        withdrawn,
         segment_times: testing::take_segment_times(),
         recalls: testing::take_recalls(),
         written_back: testing::take_written_back(),

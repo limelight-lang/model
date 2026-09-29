@@ -728,12 +728,24 @@ Notes: dev/plans/S67.md
         before any run)": the verdict is best D against best HG on six
         deciding cells, a tie dropping HG; the instruments S67.2–S67.5 owe
         are listed there; the run follows S65.43's verdict.
-- [ ] S67.2 A mutator that blocks without polling
+- [x] S67.2 A mutator that blocks without polling
       done: a rig mutator can sleep in a blocking wait that makes no poll,
         as a worker in `accept` or on a database read does; a case shows a
         grant request standing until the mutator's next poll, and the rig
-        reports the token wait it then pays
+        reports what the sleep then costs — the requests' standing time, the
+        time `POSTED` stood, and the returns withheld through the sleep (the
+        Critic, 2026-09-28: a sleeping mutator pays no token wait, the poll
+        and the slot free never waiting on the byte)
       tier: T2 · role: Critic
+      Critic 2026-09-28 (design) and 2026-09-29 (code): five findings each,
+        answered in `dev/plans/S67.md`, S67.2; the code round found a
+        repeated request erasing the standing one's stamp.
+      handoff: `LL_RIG_WAIT_WITHOUT_POLL=1` and `sleep_without_poll`; the
+        columns `request_standing_*`, `posted_standing*` and
+        `wait_without_poll`. At a 10 ms pace a request stands 8.5–9.5 ms on
+        the mean without polls against 0.8 ms with them; at `live-churn`'s
+        own 16 rings no collector is born at that pace, which S67.5's smoke
+        cells read first.
 - [ ] S67.3 Request graphs: lifetimes, payload and sizes
       done: the rig builds per-request graphs with lifetimes drawn from a
         distribution, an acyclic payload tree under each cycle, at least two
