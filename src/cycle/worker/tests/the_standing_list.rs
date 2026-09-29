@@ -445,16 +445,15 @@ fn a_retired_collector_leaves_every_record_unlinked() {
     testing::permit_births(true);
     let _ = testing::take_rounds();
     ensure_thread();
+    // The elder links a record into its list before its request lands on
+    // the byte (`worker::serve`), so a record reads standing a moment before
+    // its byte reads the request: the wait is for both.
+    let requested_by_the_elder =
+        |sleeper: &Sleeper| sleeper.is_standing() && sleeper.byte() == word(REQUESTED, ELDER);
     assert!(
-        wait_until(
-            || sleepers.iter().all(|sleeper| sleeper.is_standing()),
-            A_BIRTH
-        ),
+        wait_until(|| sleepers.iter().all(requested_by_the_elder), A_BIRTH),
         "the elder's round left every request standing"
     );
-    for sleeper in &sleepers {
-        assert_eq!(sleeper.byte(), word(REQUESTED, ELDER));
-    }
 
     testing::retire();
     for sleeper in &sleepers {

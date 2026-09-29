@@ -453,6 +453,7 @@ and two in the runs of the standing list's step, whose new cases start twenty mu
 S65.2's two gates, 112 against 113 again; on 2026-09-25 it was 1 in 11
 `debug-journal` runs over S65.20's gates, 750 against 751; on 2026-09-28 it
 was 2 in 13 over S65.36's three gates and their re-runs, 752 against 753 and
+754 against 755; on 2026-09-29 it was 1 in 10 `debug-journal` runs over S67.5's three gates and a re-run,
 754 against 755. What would close them is
 a reading of a named thread's figures that outlives the thread, a structure
 rather than a patch; Edmond deferred building it on 2026-09-18 ("fix it
@@ -472,16 +473,6 @@ on `c27a551` and 0 in 40 runs of `cycle::worker::tests` under the two-core
 load. `worker::serve` answers `Idle` on seven paths — among them a reading of
 the record another thread holds, a cap stored as zero, a recall standing
 before the batch and a refused workspace — and which one fired is not
-established.
-
-A third joined on 2026-09-29:
-`worker::tests::the_standing_list::a_retired_collector_leaves_every_record_unlinked`
-read a sleeper's byte `FREE` where it asserts `REQUESTED` by the elder, after
-every sleeper had read as standing, in one of the gate's three plain runs at
-eight threads of a tree whose changes since `4befecb` are confined to
-`worker::tests::the_web_loads`, which holds the pool's guard as the case does.
-It did not repeat in 200 runs of the case alone, 100 alone under the two-core
-load, 40 of its module and 18 more plain runs at eight threads; no cause is
 established.
 
 **Never mute, skip, weaken or delete an existing test to go green.** A
