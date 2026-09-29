@@ -40,10 +40,7 @@
 //! [`RETRY_BLOCK_BUDGET`], `B_max`, once per grant. A retry that meets it too,
 //! and a part that meets B with the retry spent, post every live root their
 //! rows met *read live*, which defers each to the turnover, and the batch goes
-//! on with the next root. Under `deferral-by-generation` a completed part's
-//! root read live is deferred only once it has outlived an epoch, and a
-//! younger one goes back into R with its core unstamped (`dev/plans/S65.md`,
-//! S65.31). A refused allocation or the mutator's recall of its
+//! on with the next root. A refused allocation or the mutator's recall of its
 //! token ends the batch: no color of such a part is a verdict, so its root
 //! and every root still without one are posted *unwalked*, which the
 //! mutator's collection over P writes back into R untraced for the next
@@ -305,27 +302,6 @@ const INITIAL_BATCH: usize = 64;
 /// a quarter of the workspace's bump, so that the rows of the trace do not
 /// start by growing; and an index of the copy fits the order's `u16`.
 const BATCH_BOUND: usize = 1024;
-
-/// Whether a batch beside `mutator`'s ready part gives R what it offers
-/// first: under `r-first-under-a-small-chain`, while the chain holds at most
-/// half the batch's bound for each batch of an epoch, where every chained root
-/// is read once an epoch whatever the ready part's share
-/// (`dev/plans/S65.md`, S65.36, the Sage's G3). The ready part otherwise takes
-/// up to half the bound, and above that mass the half is what keeps a large
-/// live set from being read twice as often.
-#[cfg(feature = "collector-chain")]
-fn r_goes_first(mutator: &MutatorRecord) -> bool {
-    #[cfg(feature = "r-first-under-a-small-chain")]
-    {
-        crate::cycle::chain::len(mutator)
-            <= BATCH_BOUND / 2 * usize::from(crate::cycle::epoch::BATCHES_PER_EPOCH)
-    }
-    #[cfg(not(feature = "r-first-under-a-small-chain"))]
-    {
-        let _ = mutator;
-        false
-    }
-}
 
 const _: () = assert!(BATCH_BOUND < BLOCK_ENTRIES);
 const _: () = assert!(
@@ -2317,19 +2293,6 @@ unsafe fn batch(
             let take = verdicts.room().min(BATCH_BOUND).min(wants_r + wants_chain);
             let r_share = if wants_r + wants_chain <= take {
                 wants_r
-            } else if r_goes_first(mutator) {
-                // R first, and the ready part its share of the epoch's
-                // batches left, so that it drains before the turn, up to half
-                // the batch, so that R still comes first in a small one.
-                let batches_left = usize::from(
-                    crate::cycle::epoch::BATCHES_PER_EPOCH
-                        .saturating_sub(mutator.batches_since_the_advance()),
-                );
-                let least_for_the_chain = ready
-                    .div_ceil(batches_left.max(1))
-                    .min(wants_chain)
-                    .min(take / 2);
-                wants_r.min(take - least_for_the_chain)
             } else {
                 wants_r.min(take.div_ceil(2).max(take.saturating_sub(wants_chain)))
             };
@@ -2619,31 +2582,12 @@ impl FinishThePosts<'_> {
         self.chain.posted.set(true);
         // Every `ReadLive` posted here is deferred: a root of the first
         // generation is posted by `post_first_generation` alone.
-        #[cfg(feature = "deferral-by-generation")]
-        let posted = if verdict == Verdict::ReadLive {
-            self.verdicts.post_marked(self.root(index), verdict)
-        } else {
-            self.verdicts.post(self.root(index), verdict)
-        };
-        #[cfg(not(feature = "deferral-by-generation"))]
         let posted = self.verdicts.post(self.root(index), verdict);
         posted.expect("the batch was clamped to P's room");
         self.roots[index] |= HAS_A_VERDICT;
         if verdict == Verdict::Proposed {
             self.proposed.set(true);
         }
-    }
-
-    /// Post `ReadLive` unmarked for the root at `index`, which has none yet: a
-    /// root of the first generation a completed part read live and listed
-    /// alone, which the disposition writes back into R.
-    #[cfg(feature = "deferral-by-generation")]
-    fn post_first_generation(&mut self, index: usize) {
-        debug_assert!(!self.has_a_verdict(index), "one verdict per root");
-        self.verdicts
-            .post(self.root(index), Verdict::ReadLive)
-            .expect("the batch was clamped to P's room");
-        self.roots[index] |= HAS_A_VERDICT;
     }
 
     /// Whether the root at `index` has not outlived an epoch: its entry lacks
@@ -2742,9 +2686,7 @@ fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, compl
 /// A part whose root it reads live appends the live rows it met, its own
 /// root left out, to `live` before the reset, which the mutator stamps from
 /// at its take (`crate::cycle::live_list`); a part that read its root
-/// unreachable lists nothing. Under `deferral-by-generation` the core is
-/// listed only when the part's root has outlived an epoch, and each root read
-/// live is listed alone and posted by its generation (`post_by_generation`).
+/// unreachable lists nothing.
 ///
 /// A part that meets its budget is retried at once under `B_max`
 /// ([`retry_under_the_ceiling`]), once per grant. A retry that meets `B_max`,
@@ -3095,7 +3037,6 @@ unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
 ///
 /// # Safety
 /// As [`for_each_met_root`].
-#[cfg(not(feature = "deferral-by-generation"))]
 unsafe fn post_the_part(
     arena: &mut TraceScratchArena,
     posts: &mut FinishThePosts<'_>,
@@ -3111,111 +3052,6 @@ unsafe fn post_the_part(
         })
     }?;
     std::ops::ControlFlow::Continue(verdict == Verdict::ReadLive)
-}
-
-/// [`post_the_part`] under `deferral-by-generation`: each root by its
-/// generation ([`post_by_generation`]), and the core listed only when the
-/// part's root, read live, has outlived an epoch.
-///
-/// # Safety
-/// As [`for_each_met_root`].
-#[cfg(feature = "deferral-by-generation")]
-unsafe fn post_the_part(
-    arena: &mut TraceScratchArena,
-    posts: &mut FinishThePosts<'_>,
-    by_address: &[u16],
-    index: usize,
-    live: &mut crate::cycle::live_list::Writer,
-) -> std::ops::ControlFlow<(), bool> {
-    let epoch = arena.epoch();
-    let root = posts.root(index);
-    let verdict = unsafe { verdict_for(root) };
-    let lists_the_core =
-        verdict == Verdict::ReadLive && unsafe { has_outlived_an_epoch(root, epoch) };
-    unsafe { post_by_generation(posts, index, verdict, epoch, lists_the_core, live) };
-    unsafe {
-        for_each_met_root(arena, posts, by_address, |posts, index| {
-            let verdict = verdict_for(posts.root(index));
-            post_by_generation(posts, index, verdict, epoch, lists_the_core, live);
-        })
-    }?;
-    std::ops::ControlFlow::Continue(lists_the_core)
-}
-
-/// Post `verdict`, which a completed part supports, for the root at `index`
-/// by its generation (`dev/plans/S65.md`, S65.31). A `ReadLive` on a root the
-/// part placed is listed alone, the list taking the root's stamp to this
-/// epoch; it is posted unmarked when the root is of the first generation, the
-/// list took it and the part lists no core, so that its core stays unstamped
-/// and the next reading in the epoch can see it die, and marked otherwise, the
-/// disposition deferring it as the build without the feature does. A young
-/// root met by a part whose own root has outlived an epoch is marked: the
-/// part lists its core, the young ring's rows among them, and a re-read in
-/// the epoch would prune at them. A young root posted by an earlier part of
-/// the batch and met again by a later such part keeps its unmarked post, and
-/// pays laps of R until the turn. Any other verdict is posted as
-/// [`FinishThePosts::post`] posts it.
-///
-/// # Safety
-/// As [`verdict_for`]: the part completed on this thread and its rows still
-/// stand; `epoch` is the batch's arena's, the one its mark pruned against;
-/// `lists_the_core` is whether the part lists its live core.
-#[cfg(feature = "deferral-by-generation")]
-unsafe fn post_by_generation(
-    posts: &mut FinishThePosts<'_>,
-    index: usize,
-    verdict: Verdict,
-    epoch: u32,
-    lists_the_core: bool,
-    live: &mut crate::cycle::live_list::Writer,
-) {
-    let root = posts.root(index);
-    if verdict != Verdict::ReadLive || !unsafe { has_a_met_row(root) } {
-        posts.post(index, verdict);
-        return;
-    }
-
-    let first = !unsafe { has_outlived_an_epoch(root, epoch) };
-    let listed = live.list_a_root(root);
-    #[cfg(test)]
-    testing::note_generation_posted(first, listed, lists_the_core);
-    if first && listed && !lists_the_core {
-        posts.post_first_generation(index);
-    } else {
-        posts.post(index, verdict);
-    }
-}
-
-/// Whether `root`, read live, has outlived an epoch: its maturation stamp
-/// carries an age under an epoch other than `epoch`, the one its batch read.
-/// A stamp with no age, or one of this epoch, is the first generation's; a
-/// stamp four turnovers old reads as this epoch's and costs one more lap of
-/// R (`crate::cycle::epoch`, "A reading that missed an advance is
-/// conservative").
-///
-/// # Safety
-/// `root` is a live entity of the mutator whose token the calling thread
-/// holds; byte 6's one writer, the owner, does not write under that hold.
-#[cfg(feature = "deferral-by-generation")]
-unsafe fn has_outlived_an_epoch(root: *mut RcHeader, epoch: u32) -> bool {
-    let stamp = unsafe { crate::refcount::read_maturation_stamp(root) };
-    stamp.age != 0 && stamp.epoch != epoch
-}
-
-/// Whether `root` has a row the part just traced met: a root [`verdict_for`]
-/// reads live for want of one was not placed, and is deferred as the build
-/// without the feature defers it.
-///
-/// # Safety
-/// As [`verdict_for`].
-#[cfg(feature = "deferral-by-generation")]
-unsafe fn has_a_met_row(root: *mut RcHeader) -> bool {
-    match unsafe { read_the_root(root) } {
-        RootReading::Tracked(key) => {
-            unsafe { crate::cycle::arena::find_initialized_row(key) }.is_some()
-        }
-        RootReading::Verdict(_) => false,
-    }
 }
 
 mod birth;

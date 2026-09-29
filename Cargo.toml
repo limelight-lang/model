@@ -31,20 +31,12 @@ probe-counters = []
 # default and on no gate but its own; the run builds it as its own binary.
 collector-chain = []
 
-# S65.31 on form D: a root the collector reads live is deferred only once it
-# has outlived an epoch, and a younger one goes back into R with its core
-# unstamped (`dev/plans/S65.md`, S65.31). Off by default and on no gate but
-# its own; measured against the default build. Not combined with
-# `collector-chain`.
-deferral-by-generation = []
-
 # S65.32 on H: a root the collector reads live goes into the chain only once
 # it has outlived an epoch — its entry carries the lane's mark, which the
 # deferred lane and the chain write; a younger one goes on into P as without
 # the chain, and so does a younger one the trace did not reach
 # (`dev/plans/S65.md`, S65.32 and S65.33). Off by default and
-# on no gate but its own; measured against H and D. Not combined with
-# `deferral-by-generation`.
+# on no gate but its own; measured against H and D.
 hold-by-generation = ["collector-chain"]
 
 # S65.36, the Sage's S1b: the collector lists no registered member of a live
@@ -53,27 +45,12 @@ hold-by-generation = ["collector-chain"]
 # without it, on D and on HG.
 unlisted-registered-members = []
 
-# S65.36, the Sage's G3, on `collector-chain`: while the chain holds at most
-# 512 x 64 roots, a batch gives R what it offers first and the ready part the
-# rest, at least its share of the batches left in the epoch
-# (`dev/plans/S65.md`, S65.33). Off by default; measured against HG.
-r-first-under-a-small-chain = ["collector-chain"]
-
 # S65.36, the Sage's G1, on `collector-chain`: the death check reads no entry
 # at the grant after its push, and starts a lap over the waiting part only in
 # the second half of an epoch and at most once in 2^k epochs, k growing after
 # a lap that found almost nothing (`dev/plans/S65.md`, S65.33). Off by
 # default; measured against HG.
 death-check-back-off = ["collector-chain"]
-
-# S65.36, Critic 2's M1: at the turn the deferred lane goes back into R one
-# block at a time, the first at the turn and each next one at a poll that
-# finds R below the soft threshold, what no poll took going whole at the next
-# turn, so that what registers after the turn does not wait behind the whole
-# lane (`dev/plans/S65.md`, S65.33). The blocks due wait off the lane, in a
-# chain that takes the mutator's cycle state to two lines. Off by default;
-# measured against D.
-lane-back-by-blocks = []
 
 # S65.42, the Sage's round-2 spec: a root read live waits longer the more
 # consecutive live readings it has survived — 1, 3 and 7 batch turns, the
@@ -84,14 +61,6 @@ lane-back-by-blocks = []
 # a reading four turns old (`dev/plans/S65.md`, S65.42). Off by default; the
 # best build of each scheme, measured against D and HG.
 wait-by-readings = []
-
-# S65.43 on `wait-by-readings`, the Sage's ruling: where the entity heap's
-# net count of blocks owned grows a quarter over its low-water level since
-# the last release, the poll hands back every lane a turn old, and under HG
-# owes the chain its release, so a ring dead behind a long wait is found
-# while the heap grows (`dev/plans/S65.md`, S65.43). Off by default; measured
-# against the best builds without it and against D and HG.
-release-on-heap-growth = ["wait-by-readings"]
 
 # The loads `PLAN.md` S40.3 reads and the one fixture hook its driver in
 # `benches/` needs, compiled into the ordinary library for that driver

@@ -39,12 +39,7 @@
 //! reference: rows only grow. A collection that read the cell before an
 //! advance prunes against an epoch that has ended, which costs recall until
 //! the next advance, and an advance between a collection's open and its
-//! stamps leaves those stamps dead at birth, which costs a descent. Under
-//! `deferral-by-generation` a collector's post reads it a second time, for
-//! the generation of a root read live (`crate::cycle::worker`,
-//! `has_outlived_an_epoch`): there a missed advance reads a root one epoch
-//! young, which costs one more lap of R, and a stamp dead at birth reads it
-//! one epoch old, which defers it as the build without the feature does.
+//! stamps leaves those stamps dead at birth, which costs a descent.
 //!
 //! # A record's next life
 //!

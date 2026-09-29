@@ -1428,8 +1428,8 @@ struct CellReading {
     recalls: (usize, usize),
     written_back: usize,
     parts_deferred: usize,
-    /// What `deferral-by-generation` did with the roots read live; zero
-    /// without the feature.
+    /// What `hold-by-generation` did with the roots read live; zero without
+    /// the feature.
     generations: testing::Generations,
     /// The GC ledger's high-water marks over the process so far: blocks
     /// reserved and bytes taken into use, both in bytes.
@@ -1625,10 +1625,6 @@ impl CellReading {
                 "posted_in_an_old_core",
                 self.generations.posted_in_an_old_core.to_string(),
             ),
-            (
-                "written_back_first_generation",
-                self.generations.written_back_first.to_string(),
-            ),
             ("recalls_by_the_mark", self.recalls.0.to_string()),
             ("recalls_by_a_take", self.recalls.1.to_string()),
             ("token_waits", self.token_waits.waits.to_string()),
@@ -1709,10 +1705,6 @@ impl CellReading {
                 self.scheme.collector_edges_pruned.to_string(),
             ),
             ("roots_reoffered", self.scheme.roots_reoffered.to_string()),
-            (
-                "heap_growth_crossings",
-                self.scheme.heap_growth_crossings.to_string(),
-            ),
             (
                 "request_standing_consented",
                 standings.consented.count.to_string(),

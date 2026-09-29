@@ -321,22 +321,6 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     if open && crate::cycle::queue::deferred_lane_is_occupied() {
         let _ = crate::cycle::queue::reoffer_deferred_if_epoch_moved();
     }
-    // Under `release-on-heap-growth` the entity heap's blocks owned, read at
-    // every open poll whatever the lanes hold, so that the low-water level
-    // follows the heap down and a crossing reaches the chain with both lanes
-    // empty (`dev/plans/S65.md`, S65.43).
-    #[cfg(feature = "release-on-heap-growth")]
-    if open {
-        let _ = crate::cycle::queue::release_the_lanes_on_heap_growth(
-            crate::memory::heap::entity_blocks_owned(),
-        );
-    }
-    // Under `lane-back-by-blocks` the blocks the turn made due go back one a
-    // poll, each once R runs below the soft threshold.
-    #[cfg(feature = "lane-back-by-blocks")]
-    if open {
-        let _ = crate::cycle::queue::reoffer_an_owed_block();
-    }
 
     // The returns a foreign trace left this thread withholding, made here so
     // that a thread which frees nothing after the holder let go still gives

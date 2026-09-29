@@ -1359,65 +1359,6 @@ impl Chain {
         }
     }
 
-    /// The chain's first block, taken off it, and the entries it holds: the
-    /// whole chain where it has one block.
-    #[cfg(feature = "lane-back-by-blocks")]
-    pub(crate) fn take_first_block(&mut self) -> Option<(*mut BlockHeader, usize)> {
-        if self.first.is_null() {
-            return None;
-        }
-
-        let block = self.first;
-        let b = ring(block);
-        let in_block = unsafe { (*b).writer.tail.load(Ordering::Relaxed) };
-        if block == self.last {
-            *self = Self::empty();
-        } else {
-            self.first = unsafe { (*b).link.next.load(Ordering::Relaxed) };
-            unsafe {
-                (*b).link
-                    .next
-                    .store(std::ptr::null_mut(), Ordering::Relaxed)
-            };
-            self.entries -= in_block;
-        }
-        Some((block, in_block))
-    }
-
-    /// The chain's last block, taken off it with the entries it holds, where
-    /// it is not full and not the only block: what is left is full blocks, so
-    /// that the next push starts a block of its own.
-    #[cfg(feature = "lane-back-by-blocks")]
-    pub(crate) fn take_last_block_if_partial(&mut self) -> Option<(*mut BlockHeader, usize)> {
-        if self.first == self.last {
-            return None;
-        }
-
-        let last = self.last;
-        let in_block = unsafe { (*ring(last)).writer.tail.load(Ordering::Relaxed) };
-        if in_block == BLOCK_ENTRIES {
-            return None;
-        }
-
-        let mut before = self.first;
-        loop {
-            let next = unsafe { (*ring(before)).link.next.load(Ordering::Relaxed) };
-            if next == last {
-                break;
-            }
-            before = next;
-        }
-        unsafe {
-            (*ring(before))
-                .link
-                .next
-                .store(std::ptr::null_mut(), Ordering::Relaxed)
-        };
-        self.last = before;
-        self.entries -= in_block;
-        Some((last, in_block))
-    }
-
     /// The chain's blocks, first and last, leaving this empty: what a splice
     /// takes.
     pub(crate) fn take(&mut self) -> Option<(*mut BlockHeader, *mut BlockHeader)> {

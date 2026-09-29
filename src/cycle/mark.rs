@@ -37,9 +37,7 @@
 //! the corpus of 2026-08-25 (`rfc/model/gc/cycle/questions.md`, Y9) — and what
 //! it costs is recall: a component that lost its last external reference while
 //! it was mature reads live at the trace that meets it, its root is deferred on
-//! that reading (`crate::cycle::deferred_slot_reuse`; under
-//! `deferral-by-generation` a collector's reading of a root of the first
-//! generation writes it back into R instead, its core unstamped), and the
+//! that reading (`crate::cycle::deferred_slot_reuse`), and the
 //! turnover is what offers it again (`crate::cycle::queue::reoffer_deferred_if_epoch_moved`).
 //!
 //! **A target a queue entry names is never pruned, whatever its stamp**

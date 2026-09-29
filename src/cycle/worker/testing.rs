@@ -1313,26 +1313,20 @@ pub(crate) fn take_chain_figures() -> ChainFigures {
 /// since a case last asked: entries the collector listed that name a
 /// registered member and that name any other, the edges the collector's marks
 /// pruned (the mutator's own collections not counted), and the roots the
-/// deferred lane held at the turns, which a turn hands back into R whole or,
-/// under `lane-back-by-blocks`, in part and the rest made due (pressure and
-/// the exit not counted), a count that under `release-on-heap-growth` takes
-/// the lanes a crossing hands back as well (`dev/plans/S65.md`, S65.36); and
-/// the crossings of the heap's growth that re-armed the mark, zero but under
-/// `release-on-heap-growth` (S65.43).
+/// deferred lane held at the turns, which a turn hands back into R whole
+/// (pressure and the exit not counted) (`dev/plans/S65.md`, S65.36).
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct SchemeFigures {
     pub(crate) listed_registered: usize,
     pub(crate) listed_other: usize,
     pub(crate) collector_edges_pruned: usize,
     pub(crate) roots_reoffered: usize,
-    pub(crate) heap_growth_crossings: usize,
 }
 
 static LISTED_REGISTERED: AtomicUsize = AtomicUsize::new(0);
 static LISTED_OTHER: AtomicUsize = AtomicUsize::new(0);
 static EDGES_PRUNED: AtomicUsize = AtomicUsize::new(0);
 static ROOTS_REOFFERED: AtomicUsize = AtomicUsize::new(0);
-static HEAP_GROWTH_CROSSINGS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn note_listed(registered: bool) {
     let counter = if registered {
@@ -1351,25 +1345,6 @@ pub(crate) fn note_reoffered(roots: usize) {
     ROOTS_REOFFERED.fetch_add(roots, Ordering::Relaxed);
 }
 
-#[cfg(feature = "release-on-heap-growth")]
-pub(crate) fn note_heap_growth_crossing() {
-    HEAP_GROWTH_CROSSINGS.fetch_add(1, Ordering::Relaxed);
-    THIS_THREADS_CROSSINGS.with(|crossings| crossings.set(crossings.get() + 1));
-}
-
-#[cfg(feature = "release-on-heap-growth")]
-thread_local! {
-    /// The crossings of the heap's growth this thread's polls made: a case's
-    /// own figure, which the process-wide one mixes with other threads'.
-    static THIS_THREADS_CROSSINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// The crossings this thread's polls made since it started.
-#[cfg(feature = "release-on-heap-growth")]
-pub(crate) fn this_threads_heap_growth_crossings() -> usize {
-    THIS_THREADS_CROSSINGS.with(std::cell::Cell::get)
-}
-
 /// The scheme figures since the last call, and zero them.
 pub(crate) fn take_scheme_figures() -> SchemeFigures {
     SchemeFigures {
@@ -1377,7 +1352,6 @@ pub(crate) fn take_scheme_figures() -> SchemeFigures {
         listed_other: LISTED_OTHER.swap(0, Ordering::Relaxed),
         collector_edges_pruned: EDGES_PRUNED.swap(0, Ordering::Relaxed),
         roots_reoffered: ROOTS_REOFFERED.swap(0, Ordering::Relaxed),
-        heap_growth_crossings: HEAP_GROWTH_CROSSINGS.swap(0, Ordering::Relaxed),
     }
 }
 
@@ -1421,8 +1395,8 @@ pub(crate) fn take_written_back() -> usize {
     WRITTEN_BACK.swap(0, Ordering::Relaxed)
 }
 
-/// What `deferral-by-generation` did with the roots the collector read live
-/// since a case last asked (`dev/plans/S65.md`, S65.31); zero without the
+/// What `hold-by-generation` did with the roots the collector read live
+/// since a case last asked (`dev/plans/S65.md`, S65.32); zero without the
 /// feature. One relaxed atomic a note, as [`note_written_back`] is, so that
 /// the arm the rig times pays no lock the other does not.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1437,17 +1411,14 @@ pub(crate) struct Generations {
     /// Posted marked, the root being of the first generation and met by a
     /// part that lists its core.
     pub(crate) posted_in_an_old_core: usize,
-    /// Unmarked `ReadLive` entries the disposition wrote back into R.
-    pub(crate) written_back_first: usize,
 }
 
 static POSTED_FIRST: AtomicUsize = AtomicUsize::new(0);
 static POSTED_SECOND: AtomicUsize = AtomicUsize::new(0);
 static POSTED_UNLISTED: AtomicUsize = AtomicUsize::new(0);
 static POSTED_IN_AN_OLD_CORE: AtomicUsize = AtomicUsize::new(0);
-static WRITTEN_BACK_FIRST: AtomicUsize = AtomicUsize::new(0);
 
-#[cfg(any(feature = "deferral-by-generation", feature = "hold-by-generation"))]
+#[cfg(feature = "hold-by-generation")]
 pub(crate) fn note_generation_posted(first: bool, listed: bool, in_an_old_core: bool) {
     let counter = match (first, listed, in_an_old_core) {
         (false, _, _) => &POSTED_SECOND,
@@ -1458,18 +1429,12 @@ pub(crate) fn note_generation_posted(first: bool, listed: bool, in_an_old_core: 
     counter.fetch_add(1, Ordering::Relaxed);
 }
 
-#[cfg(feature = "deferral-by-generation")]
-pub(crate) fn note_first_generation_written_back() {
-    WRITTEN_BACK_FIRST.fetch_add(1, Ordering::Relaxed);
-}
-
 pub(crate) fn take_generations() -> Generations {
     Generations {
         posted_first: POSTED_FIRST.swap(0, Ordering::Relaxed),
         posted_second: POSTED_SECOND.swap(0, Ordering::Relaxed),
         posted_unlisted: POSTED_UNLISTED.swap(0, Ordering::Relaxed),
         posted_in_an_old_core: POSTED_IN_AN_OLD_CORE.swap(0, Ordering::Relaxed),
-        written_back_first: WRITTEN_BACK_FIRST.swap(0, Ordering::Relaxed),
     }
 }
 

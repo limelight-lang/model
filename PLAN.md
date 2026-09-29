@@ -650,14 +650,17 @@ Notes: dev/plans/S65.md
         `dev/DECISIONS.md` exempts them from F3 with a figure of what a
         producer holds under the longest grant the rig reads
       tier: T2 · role: Critic
-- [ ] S65.47 The refused arms leave the tree (Edmond, 2026-09-29: "удаляй!")
+- [x] S65.47 The refused arms leave the tree (Edmond, 2026-09-29: "удаляй!")
       done: `deferral-by-generation`, `lane-back-by-blocks`,
         `r-first-under-a-small-chain` and `release-on-heap-growth` deleted
         with their cases, their gate builds and their `compile_error!` pairs;
         the commit to revert named in `dev/DECISIONS.md`; the gate green
       tier: T2
+      handoff: deleted 2026-09-29, `bc642d0` the last commit holding them
+        (`dev/DECISIONS.md`, "the refused arms leave the tree"); the gate
+        keeps ten arm builds and one refused pair.
 - [ ] S65.46 The review's cuts of 2026-09-29 (the plan review, pass 1)
-      done: after Edmond's ruling on the refused arms, each cut of
+      done: each cut of
         `dev/plans/S65.md`, S65.46, that stands in the code left is made or
         recorded as kept with its reason; the thresholds read again over the
         cut functions

@@ -21,11 +21,11 @@ fn the_base_block_is_gc_memory_and_its_control_cost_is_in_the_capacity() {
     // and `dev/BENCHMARKS.md` all name. Written out rather than derived
     // through the expressions that define them: a test that recomputes a
     // constant agrees with whatever the constant becomes.
-    // Under `lane-back-by-blocks` the chain of due blocks takes the state to
-    // two lines, and under `wait-by-readings` the two older lanes do.
-    #[cfg(not(any(feature = "lane-back-by-blocks", feature = "wait-by-readings")))]
+    // Under `wait-by-readings` the two older lanes take the state to two
+    // lines.
+    #[cfg(not(feature = "wait-by-readings"))]
     let (state_bytes, capacity, stride) = (64, 8_152, 4_076);
-    #[cfg(any(feature = "lane-back-by-blocks", feature = "wait-by-readings"))]
+    #[cfg(feature = "wait-by-readings")]
     let (state_bytes, capacity, stride) = (128, 8_144, 4_072);
     assert_eq!(size_of::<MutatorCycleState>(), state_bytes);
     assert_eq!(align_of::<MutatorCycleState>(), 64);

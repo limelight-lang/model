@@ -97,11 +97,6 @@ are in `docs/history/`, superseded by the collector thread that was built.
   | `drops` | the queue a teardown's displaced children wait in until the last member's free | `cycle::reclamation` |
   | `density`, `census`, `loads` | test builds only: the share of a touched block's slots a trace met, the census of one collection with its counters and its replay through both row forms (`dev/BENCHMARKS.md`, 2026-09-12), and the rings the census and `benches/census_driver.rs` build under the `bench-loads` feature | none |
 
-  The feature `deferral-by-generation` is S65.31's arm on form D
-  (`dev/plans/S65.md`, S65.31): `worker::post_by_generation` reads a root's
-  generation at the post, `verdicts::VERDICT_DEFER_MARK` carries the
-  collector's deferral, and the cases are `worker/tests/the_generations.rs`.
-
   The feature `hold-by-generation` is S65.32's arm on the collector's chain
   (`dev/plans/S65.md`, S65.32): `FinishThePosts::post` sends a root read live
   into the chain only once it has outlived an epoch
@@ -114,14 +109,6 @@ are in `docs/history/`, superseded by the collector thread that was built.
   by `queue::reoffer_the_lanes_due` after 1, 3 and 7 turns, HG's chain waits
   `chain::CHAIN_WAIT`, and an X turn (`MutatorRecord::note_an_x_turn`) releases
   them all; the cases are `worker/tests/the_waits_by_readings.rs`.
-
-  The feature `release-on-heap-growth` is S65.43's arm on `wait-by-readings`
-  (`dev/plans/S65.md`, S65.43): `Heap::blocks_owned` counts the entity heap's
-  blocks net, the poll hands it to `queue::release_the_lanes_on_heap_growth`,
-  whose crossing at a quarter over the low-water level hands back every lane a
-  turn old and under the chain calls `chain::owe_the_release_on_heap_growth`;
-  the cases are `worker/tests/the_release_on_heap_growth.rs` and
-  `memory/heap/tests/the_blocks_a_heap_owns.rs`.
 
   Two numbers about a row are pinned by tests: a count at the field's bound
   is a floor (`shadow::is_saturated`), and a block's first touch writes 121

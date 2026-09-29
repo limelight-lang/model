@@ -9,6 +9,21 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-09-29 — the refused arms leave the tree
+
+**Decided (Edmond, 2026-09-29, "удаляй!", on the plan review's pass 2):**
+`deferral-by-generation` (S65.31), `lane-back-by-blocks` (M1),
+`r-first-under-a-small-chain` (G3) and `release-on-heap-growth` (S65.43) are
+deleted with their cases, their gate builds and the `compile_error!` pairs
+that kept them apart. Each read equal to or worse than the build without it,
+none is in a best build, and most of what the review measured over its
+thresholds stood in their code. `bc642d0` is the last commit that holds them.
+The arms kept are those a best build or S67's run names: `collector-chain`,
+`hold-by-generation`, `wait-by-readings`, `unlisted-registered-members` and
+`death-check-back-off`.
+
+---
+
 ## 2026-09-29 — the lanes wait out their turns: no reading of the heap's growth or of the decrements releases them early
 
 **Decided (Edmond, 2026-09-29, on S65.43 and S65.44):** the release of D's
@@ -17,8 +32,8 @@ lanes and HG's waiting chain at a crossing of the entity heap's growth
 the Critic's hypothesis of its failure. The measurement (`dev/BENCHMARKS.md`,
 "S65.43") saw the signal fire about twice a turn without bringing
 `live-churn`'s held garbage near D's, and it saved no instructions over the loop
-and the drain. The feature stays in the tree and on the gate beside the other
-refused arms.
+and the drain. The feature left the tree with the other refused arms (the
+entry above).
 
 The second signal the Critic proposed, a per-thread count of non-final
 decrements on a candidate read live two or more times, is refused unbuilt
