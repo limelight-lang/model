@@ -77,7 +77,19 @@
 //!   no registration after its loop, the drain; no drain when unset;
 //! - `LL_RIG_CHURN_GRAPHS`, `LL_RIG_CHURN_WINDOW` — a churn load's rings an
 //!   iteration and the iterations each is held, 16 and 1,024 unless set: the
-//!   live set it keeps is their product.
+//!   live set it keeps is their product;
+//! - `LL_RIG_REPEAT` — the repeat a web load's draws are seeded with beside
+//!   the mutator's index, 1 when unset, so that paired arms draw alike;
+//! - `LL_RIG_WARM_UP_SECONDS` — the part of a web load's loop its own
+//!   figures leave out, zero when unset;
+//! - `LL_RIG_TRACED_BATCHES` — set to 1, a web cell records every batch
+//!   traced over its loop and counts those that walked through the whole
+//!   long-lived state.
+//!
+//! **The web loads** (`dev/plans/S67.md`, S67.5) run [`a_web_mutator`] in
+//! place of the ring loop: an iteration is one request of
+//! `the_web_loads`, its latency the request's wall, and the line's columns
+//! from `web_values` on are theirs (`WebCell`), zero for a ring load.
 //!
 //! Where the kernel grants them, each mutator's user-mode cycles and
 //! instructions over its loop are read beside its CPU
@@ -89,6 +101,10 @@
 //! `cargo test --release --lib -- --ignored --exact
 //! cycle::worker::tests::the_rig::a_cell_of_the_rig --test-threads=1 --nocapture`.
 
+use super::the_web_loads::{
+    Advanced, CORE_OBJECTS, CacheCounts, Garbage, LongLived, LongLivedShape, Plan, Request,
+    RequestBuild, Streams, VALUE_OBJECTS, Variant, WebClasses, held_by_size,
+};
 use super::what_a_take_costs::{MEMBER_CLASS_BYTES, member_class};
 use super::*;
 use crate::class::Class;
@@ -186,6 +202,36 @@ struct Load {
     /// root read live before it dies is a completed death whose slot the
     /// entry naming it withholds until a retirement.
     churn_dies_by_count: bool,
+    /// A web load of `dev/plans/S67.md`, "The loads", run by
+    /// [`a_web_mutator`] in place of the ring loop; every field above is
+    /// empty beside it.
+    web: Option<Web>,
+}
+
+/// A web load: where its requests' objects live, and the values its cache
+/// holds, N.
+#[derive(Clone, Copy)]
+struct Web {
+    variant: Variant,
+    values: usize,
+}
+
+/// The web load `name`: no ring, and `web`.
+const fn web(name: &'static str, variant: Variant, values: usize) -> Load {
+    Load {
+        name,
+        garbage_graphs: 0,
+        garbage: Graph::NONE,
+        held: Graph::NONE,
+        live_once: false,
+        live_dies_at_half: false,
+        churn_graphs: 0,
+        churn: Graph::NONE,
+        churn_dies_by_count: false,
+        web: Some(Web { variant, values }),
+        live_graphs: 0,
+        live: Graph::NONE,
+    }
 }
 
 impl Load {
@@ -227,6 +273,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: ROOTS - garbage_rings,
         live: SMALL_RING,
     }
@@ -234,9 +281,11 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
 
 /// The loads of the S64 analysis's list, then those of `dev/BENCHMARKS.md`,
 /// "S65.21 the front run against leaving the deaths in R" and "S65.24 A, B
-/// and C on the rig". Change a name or add a load, and change `LOADS` in
-/// `dev/tools/rig.sh` with it.
-const LOADS: [Load; 19] = [
+/// and C on the rig", then the web loads of `dev/plans/S67.md`, "The
+/// protocol (S67.1, before any run)", its deciding cells. Change a name or
+/// add a ring load, and change `LOADS` in `dev/tools/rig.sh` with it; the
+/// web loads are not in its sweep.
+const LOADS: [Load; 22] = [
     // Garbage at 0, 25, 50, 75 and 100 % of the roots, rounded to whole
     // rings of 63.
     mixed("garbage-0", 0),
@@ -256,6 +305,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: 1,
         live: Graph {
             rings: 1,
@@ -278,6 +328,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: ROOTS,
         live: Graph {
             rings: 1,
@@ -304,6 +355,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -325,6 +377,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -340,6 +393,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: 1,
         live: Graph {
             rings: 1,
@@ -363,6 +417,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -378,6 +433,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: ROOTS,
         live: SMALL_RING,
     },
@@ -392,6 +448,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -405,6 +462,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -422,6 +480,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: DEFERRED_LARGE,
         live: registered_ring(1),
     },
@@ -439,6 +498,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: 8192,
         live: SMALL_RING,
     },
@@ -456,6 +516,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 16,
         churn: SMALL_RING,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -472,6 +533,7 @@ const LOADS: [Load; 19] = [
         churn_graphs: 16,
         churn: SMALL_RING,
         churn_dies_by_count: true,
+        web: None,
         live_graphs: 0,
         live: Graph::NONE,
     },
@@ -487,9 +549,16 @@ const LOADS: [Load; 19] = [
         churn_graphs: 0,
         churn: Graph::NONE,
         churn_dies_by_count: false,
+        web: None,
         live_graphs: 0,
         live: Graph::NONE,
     },
+    // `web-heap` at the larger cache, whose scan the specification names
+    // (`dev/plans/S67.md`, S67.5's Critic, finding 5), and `web-arena` at
+    // both.
+    web("web-heap", Variant::Heap, 150_000),
+    web("web-arena-40k", Variant::Arena, 40_000),
+    web("web-arena-150k", Variant::Arena, 150_000),
 ];
 
 /// Iterations a ring of `live-churn` is held for: at a 1 ms pace about a
@@ -1129,18 +1198,8 @@ fn a_mutator(
     let mut held_keepers: Vec<*mut Object> = Vec::new();
     let mut reading = MutatorReading::default();
     start.wait();
-    let (cpu_from, switches_from) = (
-        testing::thread_cpu_time(),
-        testing::thread_context_switches(),
-    );
-    let faults_from = testing::thread_minor_faults();
-    let counters = testing::ThreadCycles::open();
-    let _ = crate::cycle::queue::take_queue_work();
-    let _ = testing::take_withheld_by_segment();
-    let _ = testing::take_this_threads_standings();
-    let record = unsafe { &*mutator_record::this_thread_record() };
-    let turnovers_from = record.turnovers();
-    let from = Instant::now();
+    let counters = ThreadCounters::begin();
+    let from = counters.from;
     let mut last = from;
     let pace = millis_from_env("LL_RIG_PACE_MS");
     let wait_without_poll = switch_from_env("LL_RIG_WAIT_WITHOUT_POLL");
@@ -1213,15 +1272,9 @@ fn a_mutator(
         // [`sleep_without_poll`].
         if !pace.is_zero() {
             let due = from + pace * u32::try_from(reading.iterations).unwrap_or(u32::MAX);
-            while let Some(ahead) = due.checked_duration_since(Instant::now()) {
-                if wait_without_poll {
-                    sleep_without_poll(ahead);
-                    continue;
-                }
-
+            wait_until(due, wait_without_poll, || {
                 reading.freed_by_polls += unsafe { crate::gc::ll_gc_maybe_collect() };
-                std::thread::sleep(ahead.min(Duration::from_millis(1)));
-            }
+            });
 
             // Garbage and withheld deaths stand through the wait, so it
             // counts in their integrals; only the iteration's latency leaves
@@ -1241,19 +1294,7 @@ fn a_mutator(
         }
     }
 
-    reading.wall = from.elapsed();
-    reading.withheld_by_segment = testing::take_withheld_by_segment();
-    reading.standings = testing::take_this_threads_standings();
-    reading.withheld_by_an_entry_at_the_end = crate::cycle::queue::withheld_by_an_entry();
-    reading.cpu_in_the_loop = testing::thread_cpu_time() - cpu_from;
-    if let Some(counters) = &counters {
-        (
-            reading.cycles_in_the_loop,
-            reading.instructions_in_the_loop,
-            reading.counter_share,
-        ) = counters.read();
-    }
-
+    counters.read_the_loop(&mut reading);
     reading.backlog_at_the_stop = reading
         .garbage_members
         .saturating_sub(reading.freed_by_polls);
@@ -1285,20 +1326,9 @@ fn a_mutator(
         }
     }
     reading.last_free = last_free.unwrap_or(drain);
-    if let Some(counters) = &counters {
-        let share;
-        (_, reading.instructions_with_the_drain, share) = counters.read();
-        reading.counter_share = reading.counter_share.min(share);
-    }
-    let cpu_at_the_end = testing::thread_cpu_time();
+    counters.read_the_loop_and_the_drain(&mut reading);
     reading.remnant_cleared = remnant_wait.is_some();
     reading.remnant_wait = remnant_wait.unwrap_or(drain);
-    reading.cpu = cpu_at_the_end - cpu_from;
-    let switches = testing::thread_context_switches();
-    reading.switches = (switches.0 - switches_from.0, switches.1 - switches_from.1);
-    reading.minor_faults = testing::thread_minor_faults() - faults_from;
-    reading.records_read = crate::cycle::queue::take_queue_work().records_read;
-    reading.turnovers = record.turnovers() - turnovers_from;
     unsafe { churn.let_all_go(arena_ptr, load) };
     // A registered-once set is let go by its keepers alone, garbage the
     // collection after the loop or the thread's exit finds: taken apart by
@@ -1320,6 +1350,461 @@ fn a_mutator(
     drop(arena);
     crate::cycle::queue::release_queue_segments();
     reading
+}
+
+/// The steps a web request's timeline is advanced in, a poll after each
+/// [A]: the rig spins no drawn CPU, whose poll every 50 µs the protocol
+/// names (`dev/plans/S67.md`, S67.7).
+const REQUEST_STEPS: usize = 128;
+
+/// The garbage a web mutator may hold before its loop ends early: 1.5 GiB
+/// [A], six mutators' with their long-lived state inside the box's memory
+/// (`dev/plans/S67.md`, S67.3's Critic, finding 7).
+const WEB_GARBAGE_CEILING: usize = 3 << 29;
+
+/// The requests whose draws the checksum folds, with the setup's: fewer
+/// than any arm completes in a cell, so that two paired arms print the same
+/// sum (`dev/plans/S67.md`, S67.5's Critic, finding 4).
+const CHECKSUM_REQUESTS: usize = 500;
+
+/// The most passes of the teardown, a turnover by hand and a collection
+/// each: one pass does not always free the whole state, and the smoke cells
+/// took one to three (`dev/plans/S67.md`, S67.5).
+const TEARDOWN_PASSES: usize = 20;
+
+/// What one web mutator read beside its [`MutatorReading`]. The figures
+/// over the window run from the warm-up's end (`LL_RIG_WARM_UP_SECONDS`) to
+/// the stop.
+#[derive(Clone, Default)]
+struct WebReading {
+    /// The setup's wall: the long-lived state built and registered.
+    setup: Duration,
+    /// The draws of the setup and of the first [`CHECKSUM_REQUESTS`]
+    /// requests folded, zero where fewer ran.
+    checksum: u64,
+    /// Requests over the window.
+    requests: usize,
+    /// The garbage's mean, in bytes by size index, and its peaks, by size
+    /// index and of the sum, over the window.
+    garbage_mean: [f64; 3],
+    garbage_peak: ([usize; 3], usize),
+    /// The garbage at the drain's end, in bytes.
+    garbage_at_the_drain_end: usize,
+    /// The cache and the sessions over the window.
+    counts: CacheCounts,
+    /// Requests whose end landed on a registered root, over the window.
+    silent_ends: usize,
+    /// The thread's registrations over the window, and those of the arena
+    /// resets among them.
+    registrations: usize,
+    reset_registrations: usize,
+    /// The value heads and the session heads standing candidate at the
+    /// warm-up's end and at the stop.
+    standing_at_the_warm_up: (usize, usize),
+    standing_at_the_stop: (usize, usize),
+    /// The blocks the live session writes hold at the stop.
+    blocks_the_writes_hold: usize,
+    /// Bytes the heap held past the setup's baseline once the state was let
+    /// go and collected after the drain: what the teardown left, after
+    /// `teardown_passes` passes.
+    held_after_the_teardown: usize,
+    teardown_passes: usize,
+}
+
+/// A web mutator's state from its setup to its teardown: the arena its
+/// requests use, its long-lived state, its streams, its garbage and what it
+/// reads over the window.
+struct WebLoop {
+    arena: *mut Arena,
+    long_lived: LongLived,
+    streams: Streams,
+    /// What the heap held for the thread before the setup, taken as the
+    /// thread's own.
+    baseline: [usize; 3],
+    garbage: Garbage,
+    reading: WebReading,
+    counts_from: CacheCounts,
+    admissions_from: usize,
+    /// Requests since the start barrier, the window's and before it.
+    requests: usize,
+    /// Members the loop's polls freed, as `ll_gc_maybe_collect` counts
+    /// them.
+    freed_by_polls: usize,
+}
+
+impl WebLoop {
+    /// Build and register `web`'s long-lived state for mutator `index` in
+    /// repeat `repeat`, polling within the poll's stride; the setup's wall
+    /// is read.
+    ///
+    /// # Safety
+    /// `arena` is the calling mutator's, empty, and outlives the loop.
+    unsafe fn set_up(
+        web: Web,
+        index: usize,
+        classes: WebClasses,
+        repeat: u64,
+        arena: *mut Arena,
+    ) -> Self {
+        let setup_from = Instant::now();
+        let baseline = held_by_size();
+        let mut garbage = Garbage::new(setup_from, baseline);
+        let shape = LongLivedShape::specified(web.values);
+        let mut long_lived =
+            unsafe { LongLived::new(classes, shape, web.variant, index as u64, repeat, arena) };
+        garbage.born(long_lived.held());
+        unsafe {
+            long_lived.register_the_steady_state(&mut || {
+                let _ = crate::gc::ll_gc_maybe_collect();
+            })
+        };
+        Self {
+            arena,
+            long_lived,
+            streams: Streams::new(index as u64, repeat),
+            baseline,
+            garbage,
+            reading: WebReading {
+                setup: setup_from.elapsed(),
+                ..WebReading::default()
+            },
+            counts_from: CacheCounts::default(),
+            admissions_from: 0,
+            requests: 0,
+            freed_by_polls: 0,
+        }
+    }
+
+    /// Start the window at `now`.
+    fn restart(&mut self, now: Instant) {
+        self.garbage.restart(now);
+        self.counts_from = self.long_lived.counts;
+        self.admissions_from = crate::refcount::admissions();
+        self.reading = WebReading {
+            setup: self.reading.setup,
+            checksum: self.reading.checksum,
+            standing_at_the_warm_up: self.long_lived.standing_candidate(),
+            ..WebReading::default()
+        };
+    }
+
+    /// Draw one request and run it: started, advanced at [`REQUEST_STEPS`]
+    /// even steps of its timeline with a poll after each and on to its end,
+    /// ended, and a poll.
+    fn run_a_request(&mut self) {
+        let plan = Plan::draw(&mut self.streams, self.long_lived.targets());
+        let variant = plan.variant;
+        let garbage = &mut self.garbage;
+        let mut build = RequestBuild {
+            context: LLContext { arena: self.arena },
+            arena: self.arena,
+            long_lived: &mut self.long_lived,
+        };
+        let (mut request, advanced) = unsafe { Request::start(&mut build, plan) };
+        account(garbage, advanced);
+        for step in 1..=REQUEST_STEPS {
+            let to = step as f64 / REQUEST_STEPS as f64;
+            account(garbage, unsafe { request.advance(&mut build, to) });
+            self.freed_by_polls += poll_and_read(garbage);
+        }
+
+        while !request.is_complete() {
+            account(garbage, unsafe { request.advance(&mut build, 1.0) });
+            self.freed_by_polls += poll_and_read(garbage);
+        }
+
+        let ended = unsafe { request.finish(&mut build) };
+        garbage.ended(ended.bytes);
+        self.freed_by_polls += poll_and_read(garbage);
+        self.reading.silent_ends += usize::from(ended.silent);
+        if variant == Variant::Arena {
+            self.reading.reset_registrations += ended.registered;
+        }
+
+        self.reading.requests += 1;
+        self.requests += 1;
+        if self.requests == CHECKSUM_REQUESTS {
+            self.reading.checksum =
+                self.streams.checksum().rotate_left(17) ^ self.long_lived.draws_checksum();
+        }
+    }
+
+    /// Run requests from `from`, the start barrier, until `stop` or
+    /// [`WEB_GARBAGE_CEILING`]: the window restarted at `from` and again at
+    /// the warm-up's end, each request's wall its latency, and with
+    /// `LL_RIG_PACE_MS` a request started at each period.
+    fn run_until(&mut self, stop: &AtomicBool, from: Instant, reading: &mut MutatorReading) {
+        self.restart(from);
+        let warm_up = seconds_from_env("LL_RIG_WARM_UP_SECONDS");
+        let mut warmed = warm_up.is_zero();
+        let pace = millis_from_env("LL_RIG_PACE_MS");
+        let wait_without_poll = switch_from_env("LL_RIG_WAIT_WITHOUT_POLL");
+        while !stop.load(Ordering::Relaxed) {
+            let began = Instant::now();
+            if !warmed && began - from >= warm_up {
+                self.restart(began);
+                warmed = true;
+            }
+
+            self.run_a_request();
+            reading.iterations += 1;
+            let wall = began.elapsed();
+            reading.latencies.record(wall);
+            reading.long_iterations += usize::from(wall > A_LONG_ITERATION);
+            if !pace.is_zero() {
+                let due = from + pace * u32::try_from(reading.iterations).unwrap_or(u32::MAX);
+                wait_until(due, wait_without_poll, || {
+                    self.freed_by_polls += poll_and_read(&mut self.garbage);
+                });
+            }
+
+            if self.garbage.current().iter().sum::<usize>() > WEB_GARBAGE_CEILING {
+                reading.at_the_ceiling = true;
+                break;
+            }
+        }
+    }
+
+    /// The window's figures at the loop's end.
+    fn read_at_the_stop(&mut self) {
+        self.garbage.read(Instant::now(), held_by_size());
+        self.reading.garbage_mean = self.garbage.mean();
+        self.reading.garbage_peak = self.garbage.peak();
+        self.reading.counts = counts_since(self.long_lived.counts, self.counts_from);
+        self.reading.registrations = crate::refcount::admissions() - self.admissions_from;
+        self.reading.standing_at_the_stop = self.long_lived.standing_candidate();
+        self.reading.blocks_the_writes_hold = self.long_lived.blocks_the_writes_hold();
+    }
+
+    /// The drain: polls every millisecond with no request, as the ring
+    /// loads' drain, for `LL_RIG_DRAIN_MS`. Reads what its polls freed, how
+    /// long the withheld deaths took to reach zero and the garbage with them,
+    /// each the whole drain where they did not, and the garbage at its end.
+    fn drain(&mut self, reading: &mut MutatorReading) {
+        reading.freed_by_polls = self.freed_by_polls;
+        let drain = millis_from_env("LL_RIG_DRAIN_MS");
+        let drained_from = Instant::now();
+        let (mut remnant_wait, mut last_free) = (None, None);
+        loop {
+            let at = drained_from.elapsed();
+            if crate::cycle::queue::withheld_by_an_entry() == 0 {
+                remnant_wait.get_or_insert(at);
+                if self.garbage.current().iter().sum::<usize>() == 0 {
+                    last_free.get_or_insert(at);
+                }
+            }
+
+            if at >= drain {
+                break;
+            }
+
+            reading.freed_in_the_drain += poll_and_read(&mut self.garbage);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        reading.remnant_cleared = remnant_wait.is_some();
+        reading.remnant_wait = remnant_wait.unwrap_or(drain);
+        reading.last_free = last_free.unwrap_or(drain);
+        self.reading.garbage_at_the_drain_end = self.garbage.current().iter().sum();
+    }
+
+    /// Let the state go and free it: a state the collections read live is
+    /// stamped and freed only after a turnover, and its roots read live
+    /// stand in the deferred lane, so each pass turns the thread's epoch by
+    /// hand, re-offers the lane and collects, until the heap holds the
+    /// setup's baseline again or [`TEARDOWN_PASSES`] ran (`dev/plans/S67.md`,
+    /// S67.5, item 10). Answers the reading with what the teardown left.
+    fn tear_down(self, reading: &mut MutatorReading) -> WebReading {
+        let mut web_reading = self.reading;
+        let _ = unsafe { self.long_lived.let_go() };
+        let baseline = self.baseline;
+        let held_past_the_baseline = || -> usize {
+            held_by_size()
+                .iter()
+                .zip(baseline)
+                .map(|(held, baseline)| held.saturating_sub(baseline))
+                .sum()
+        };
+        while web_reading.teardown_passes < TEARDOWN_PASSES {
+            crate::cycle::epoch::turn_this_threads_cell();
+            crate::cycle::queue::reoffer_deferred_candidates();
+            reading.freed_at_the_end += unsafe { crate::gc::ll_gc_collect_cycles() };
+            web_reading.teardown_passes += 1;
+            if held_past_the_baseline() == 0 {
+                break;
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        web_reading.held_after_the_teardown = held_past_the_baseline();
+        web_reading
+    }
+}
+
+/// A step's bytes into `garbage`'s count.
+fn account(garbage: &mut Garbage, advanced: Advanced) {
+    garbage.born(advanced.born);
+    garbage.ended(advanced.ended);
+}
+
+/// Poll, then read the garbage the poll left. Answers the members the poll
+/// freed.
+fn poll_and_read(garbage: &mut Garbage) -> usize {
+    let freed = unsafe { crate::gc::ll_gc_maybe_collect() };
+    garbage.read(Instant::now(), held_by_size());
+    freed
+}
+
+/// Wait until `due`: asleep with no poll, [`sleep_without_poll`], with
+/// `without_poll`, else calling `poll` every millisecond, as a running
+/// program between two bursts.
+fn wait_until(due: Instant, without_poll: bool, mut poll: impl FnMut()) {
+    while let Some(ahead) = due.checked_duration_since(Instant::now()) {
+        if without_poll {
+            sleep_without_poll(ahead);
+            continue;
+        }
+
+        poll();
+        std::thread::sleep(ahead.min(Duration::from_millis(1)));
+    }
+}
+
+/// One web mutator: pinned to `cpu` when one is named, its long-lived state
+/// built and registered to its steady state, then requests from `start`
+/// until `stop` or [`WEB_GARBAGE_CEILING`], the drain, and the teardown,
+/// waiting at `stages` for the driver's readings between them.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the cell's parts, each read once"
+)]
+fn a_web_mutator(
+    web: Web,
+    index: usize,
+    cpu: Option<usize>,
+    classes: WebClasses,
+    start: &Barrier,
+    stages: &Barrier,
+    stop: &AtomicBool,
+    repeat: u64,
+) -> (MutatorReading, WebReading) {
+    if let Some(cpu) = cpu {
+        testing::pin_this_thread_to(cpu)
+            .unwrap_or_else(|error| panic!("the kernel pinned the mutator to CPU {cpu}: {error}"));
+    }
+
+    assert!(
+        crate::memory::heap::ll_thread_init(),
+        "the pool served the mutator thread"
+    );
+    let mut arena = Arena::new();
+    let mut web_loop = unsafe { WebLoop::set_up(web, index, classes, repeat, &mut arena) };
+    let mut reading = MutatorReading::default();
+    start.wait();
+    let counters = ThreadCounters::begin();
+    web_loop.run_until(stop, counters.from, &mut reading);
+    counters.read_the_loop(&mut reading);
+    web_loop.read_at_the_stop();
+    // The three stages of `run`, each the driver's reading.
+    stages.wait();
+    web_loop.drain(&mut reading);
+    counters.read_the_loop_and_the_drain(&mut reading);
+    stages.wait();
+    stages.wait();
+    let web_reading = web_loop.tear_down(&mut reading);
+    drop(arena);
+    crate::cycle::queue::release_queue_segments();
+    (reading, web_reading)
+}
+
+/// The counts `now` holds over those of `from`.
+fn counts_since(now: CacheCounts, from: CacheCounts) -> CacheCounts {
+    CacheCounts {
+        hits: now.hits - from.hits,
+        hits_registering: now.hits_registering - from.hits_registering,
+        misses: now.misses - from.misses,
+        evictions_silent: now.evictions_silent - from.evictions_silent,
+        evictions_registering: now.evictions_registering - from.evictions_registering,
+        sessions_replaced: now.sessions_replaced - from.sessions_replaced,
+        session_writes: now.session_writes - from.session_writes,
+    }
+}
+
+/// The counters of a mutator's thread from the start barrier on: its CPU, its
+/// context switches, its minor faults, its user-mode cycles and instructions,
+/// its queue work and its epoch's turnovers, read at the loop's end and at the
+/// drain's into a [`MutatorReading`].
+struct ThreadCounters {
+    from: Instant,
+    cpu_from: Duration,
+    switches_from: (u64, u64),
+    faults_from: u64,
+    cycles: Option<testing::ThreadCycles>,
+    record: &'static mutator_record::MutatorRecord,
+    turnovers_from: u64,
+}
+
+impl ThreadCounters {
+    /// Begin counting on the calling mutator, whose record is registered;
+    /// the per-thread figures a cell reads are zeroed.
+    fn begin() -> Self {
+        let (cpu_from, switches_from) = (
+            testing::thread_cpu_time(),
+            testing::thread_context_switches(),
+        );
+        let faults_from = testing::thread_minor_faults();
+        let cycles = testing::ThreadCycles::open();
+        let _ = crate::cycle::queue::take_queue_work();
+        let _ = testing::take_withheld_by_segment();
+        let _ = testing::take_this_threads_standings();
+        let record = unsafe { &*mutator_record::this_thread_record() };
+        Self {
+            turnovers_from: record.turnovers(),
+            record,
+            cpu_from,
+            switches_from,
+            faults_from,
+            cycles,
+            from: Instant::now(),
+        }
+    }
+
+    /// The loop's figures: its wall, CPU, cycles and instructions, and what
+    /// the thread withheld and answered in it.
+    fn read_the_loop(&self, reading: &mut MutatorReading) {
+        reading.wall = self.from.elapsed();
+        reading.withheld_by_segment = testing::take_withheld_by_segment();
+        reading.standings = testing::take_this_threads_standings();
+        reading.withheld_by_an_entry_at_the_end = crate::cycle::queue::withheld_by_an_entry();
+        reading.cpu_in_the_loop = testing::thread_cpu_time() - self.cpu_from;
+        if let Some(cycles) = &self.cycles {
+            (
+                reading.cycles_in_the_loop,
+                reading.instructions_in_the_loop,
+                reading.counter_share,
+            ) = cycles.read();
+        }
+    }
+
+    /// The figures over the loop and the drain together.
+    fn read_the_loop_and_the_drain(&self, reading: &mut MutatorReading) {
+        if let Some(cycles) = &self.cycles {
+            let share;
+            (_, reading.instructions_with_the_drain, share) = cycles.read();
+            reading.counter_share = reading.counter_share.min(share);
+        }
+
+        reading.cpu = testing::thread_cpu_time() - self.cpu_from;
+        let switches = testing::thread_context_switches();
+        reading.switches = (
+            switches.0 - self.switches_from.0,
+            switches.1 - self.switches_from.1,
+        );
+        reading.minor_faults = testing::thread_minor_faults() - self.faults_from;
+        reading.records_read = crate::cycle::queue::take_queue_work().records_read;
+        reading.turnovers = self.record.turnovers() - self.turnovers_from;
+    }
 }
 
 /// One cell as the environment names it.
@@ -1374,6 +1859,13 @@ fn switch_from_env(variable: &str) -> bool {
     }
 }
 
+/// Seconds `variable` names, zero when it is unset.
+fn seconds_from_env(variable: &str) -> Duration {
+    std::env::var(variable).map_or(Duration::ZERO, |seconds| {
+        Duration::from_secs_f64(seconds.parse().expect("a count of seconds"))
+    })
+}
+
 /// Milliseconds `variable` names, zero when it is unset.
 fn millis_from_env(variable: &str) -> Duration {
     std::env::var(variable).map_or(Duration::ZERO, |millis| {
@@ -1404,7 +1896,10 @@ struct CellReading {
     collectors_born: usize,
     collectors_pinned: usize,
     collectors: testing::CollectorLives,
-    /// The collectors' CPU at the instant the mutators were stopped.
+    /// The collectors' CPU at the instant the mutators passed the start
+    /// barrier and at the instant they were stopped: its difference is the
+    /// loop's, apart from a web load's setup.
+    collector_cpu_at_the_start: Duration,
     collector_cpu_at_the_stop: Duration,
     /// What the rounds did while the cell ran: batches and the roots they
     /// carried, grants, and the rounds themselves.
@@ -1434,6 +1929,27 @@ struct CellReading {
     /// The GC ledger's high-water marks over the process so far: blocks
     /// reserved and bytes taken into use, both in bytes.
     ledger_peak: (usize, usize),
+    /// A web load's figures; empty for a ring load.
+    web: WebCell,
+}
+
+/// What a web load's cell read beside the ring loads' figures: each
+/// mutator's [`WebReading`]; the collections while the mutators set up,
+/// which the cell's figures of its rounds leave out, as they leave out the
+/// teardown's; the retained blocks at the loop's end and after the drains;
+/// the frees from another thread from the start to the drains' end, asserted
+/// zero; and with `LL_RIG_TRACED_BATCHES` the batches traced over the loop
+/// and those whose rows met reach the core's and the values' objects, a walk
+/// through the whole state.
+#[derive(Default)]
+struct WebCell {
+    mutators: Vec<WebReading>,
+    setup: RoundFigures,
+    retained_at_the_stop: usize,
+    retained_after_the_drains: usize,
+    frees_from_another_thread: usize,
+    batches_traced: usize,
+    batches_through_the_state: usize,
 }
 
 impl CellReading {
@@ -1757,6 +2273,12 @@ impl CellReading {
                 self.collector_cpu_at_the_stop.as_micros().to_string(),
             ),
             (
+                "collector_cpu_from_the_start_us",
+                (self.collector_cpu_at_the_stop - self.collector_cpu_at_the_start)
+                    .as_micros()
+                    .to_string(),
+            ),
+            (
                 "collector_wall_us",
                 self.collectors.wall.as_micros().to_string(),
             ),
@@ -1908,7 +2430,179 @@ impl CellReading {
         ]
         .into_iter()
         .chain(self.segment_fields())
+        .chain(self.web_fields(load))
         .collect()
+    }
+
+    /// A web load's figures (`WebCell`, `WebReading`), zero for a ring load:
+    /// each summed over the mutators unless its name says otherwise.
+    fn web_fields(&self, load: Load) -> Vec<(&'static str, String)> {
+        let web = &self.web;
+        let sum = |field: &dyn Fn(&WebReading) -> usize| -> String {
+            web.mutators.iter().map(field).sum::<usize>().to_string()
+        };
+        let mean = |size_index: Option<usize>| -> String {
+            let bytes: f64 = web
+                .mutators
+                .iter()
+                .map(|reading| match size_index {
+                    Some(size_index) => reading.garbage_mean[size_index],
+                    None => reading.garbage_mean.iter().sum(),
+                })
+                .sum();
+            format!("{bytes:.0}")
+        };
+        // Zero unless every mutator reached the requests the sum folds.
+        let checksum = if web.mutators.iter().any(|reading| reading.checksum == 0) {
+            0
+        } else {
+            web.mutators
+                .iter()
+                .fold(0u64, |sum, reading| sum.rotate_left(7) ^ reading.checksum)
+        };
+        let live_writes: usize = web
+            .mutators
+            .iter()
+            .map(|reading| reading.blocks_the_writes_hold)
+            .sum();
+        vec![
+            (
+                "web_values",
+                load.web.map_or(0, |web| web.values).to_string(),
+            ),
+            ("web_requests", sum(&|reading| reading.requests)),
+            (
+                "web_setup_ms_max",
+                web.mutators
+                    .iter()
+                    .map(|reading| reading.setup.as_millis())
+                    .max()
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            ("web_draws_checksum", format!("{checksum:016x}")),
+            ("web_garbage_mean_bytes", mean(None)),
+            ("web_garbage_mean_bytes_64", mean(Some(0))),
+            ("web_garbage_mean_bytes_128", mean(Some(1))),
+            ("web_garbage_mean_bytes_512", mean(Some(2))),
+            (
+                "web_garbage_peak_bytes",
+                sum(&|reading| reading.garbage_peak.1),
+            ),
+            (
+                "web_garbage_peak_bytes_64",
+                sum(&|reading| reading.garbage_peak.0[0]),
+            ),
+            (
+                "web_garbage_peak_bytes_128",
+                sum(&|reading| reading.garbage_peak.0[1]),
+            ),
+            (
+                "web_garbage_peak_bytes_512",
+                sum(&|reading| reading.garbage_peak.0[2]),
+            ),
+            (
+                "web_garbage_at_the_drain_end_bytes",
+                sum(&|reading| reading.garbage_at_the_drain_end),
+            ),
+            ("web_hits", sum(&|reading| reading.counts.hits)),
+            (
+                "web_hits_registering",
+                sum(&|reading| reading.counts.hits_registering),
+            ),
+            ("web_misses", sum(&|reading| reading.counts.misses)),
+            (
+                "web_evictions_silent",
+                sum(&|reading| reading.counts.evictions_silent),
+            ),
+            (
+                "web_evictions_registering",
+                sum(&|reading| reading.counts.evictions_registering),
+            ),
+            (
+                "web_sessions_replaced",
+                sum(&|reading| reading.counts.sessions_replaced),
+            ),
+            (
+                "web_session_writes",
+                sum(&|reading| reading.counts.session_writes),
+            ),
+            ("web_silent_ends", sum(&|reading| reading.silent_ends)),
+            ("web_registrations", sum(&|reading| reading.registrations)),
+            (
+                "web_reset_registrations",
+                sum(&|reading| reading.reset_registrations),
+            ),
+            (
+                "web_values_standing_at_the_warm_up",
+                sum(&|reading| reading.standing_at_the_warm_up.0),
+            ),
+            (
+                "web_sessions_standing_at_the_warm_up",
+                sum(&|reading| reading.standing_at_the_warm_up.1),
+            ),
+            (
+                "web_values_standing_at_the_stop",
+                sum(&|reading| reading.standing_at_the_stop.0),
+            ),
+            (
+                "web_sessions_standing_at_the_stop",
+                sum(&|reading| reading.standing_at_the_stop.1),
+            ),
+            (
+                "web_retained_blocks_at_the_stop",
+                web.retained_at_the_stop.to_string(),
+            ),
+            (
+                "web_retained_blocks_of_live_writes",
+                live_writes.to_string(),
+            ),
+            (
+                "web_retained_garbage_blocks",
+                web.retained_at_the_stop
+                    .saturating_sub(live_writes)
+                    .to_string(),
+            ),
+            (
+                "web_retained_blocks_after_the_drains",
+                web.retained_after_the_drains.to_string(),
+            ),
+            ("web_setup_rounds", web.setup.rounds.to_string()),
+            (
+                "web_setup_parts_deferred",
+                web.setup.parts_deferred.to_string(),
+            ),
+            (
+                "web_setup_token_waits",
+                web.setup.token_waits.waits.to_string(),
+            ),
+            (
+                "web_setup_token_wait_longest_us",
+                web.setup.token_waits.longest.as_micros().to_string(),
+            ),
+            ("web_batches_traced", web.batches_traced.to_string()),
+            (
+                "web_batches_through_the_state",
+                web.batches_through_the_state.to_string(),
+            ),
+            (
+                "web_frees_from_another_thread",
+                web.frees_from_another_thread.to_string(),
+            ),
+            (
+                "web_held_after_the_teardown_bytes",
+                sum(&|reading| reading.held_after_the_teardown),
+            ),
+            (
+                "web_teardown_passes_max",
+                web.mutators
+                    .iter()
+                    .map(|reading| reading.teardown_passes)
+                    .max()
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+        ]
     }
 
     /// Per grant segment, in [`testing::SEGMENT_AROUND`]'s order: the takes
@@ -1989,6 +2683,45 @@ impl CellReading {
     }
 }
 
+/// What the collections did since the last [`RoundFigures::take`]: the
+/// figures a cell reads of its rounds, and of the mutators' dispositions of
+/// what the rounds posted.
+#[derive(Default)]
+struct RoundFigures {
+    outcomes: testing::Outcomes,
+    rounds: usize,
+    verdict_collections: testing::VerdictCollections,
+    disposals: testing::VerdictCollections,
+    chain: testing::ChainFigures,
+    scheme: testing::SchemeFigures,
+    token_waits: testing::TokenWaits,
+    segment_times: testing::SegmentTimes,
+    recalls: (usize, usize),
+    written_back: usize,
+    parts_deferred: usize,
+    generations: testing::Generations,
+}
+
+impl RoundFigures {
+    /// The figures since the last take, each zeroed.
+    fn take() -> Self {
+        Self {
+            outcomes: testing::take_outcomes(),
+            rounds: testing::take_rounds(),
+            verdict_collections: testing::take_verdict_collections(),
+            disposals: testing::take_disposals(),
+            chain: testing::take_chain_figures(),
+            scheme: testing::take_scheme_figures(),
+            token_waits: testing::take_token_waits(),
+            segment_times: testing::take_segment_times(),
+            recalls: testing::take_recalls(),
+            written_back: testing::take_written_back(),
+            parts_deferred: testing::take_parts_deferred(),
+            generations: testing::take_generations(),
+        }
+    }
+}
+
 /// Run `load` in `cell`: the collectors' pins and cap set, the figures
 /// zeroed and births permitted, the mutators started together and stopped
 /// together after the cell's wall time, the collectors retired. A dial a
@@ -2017,32 +2750,97 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
 
     let stop = Arc::new(AtomicBool::new(false));
     let start = Arc::new(Barrier::new(cell.mutators.len() + 1));
+    let stages = Arc::new(Barrier::new(cell.mutators.len() + 1));
+    let classes = Sent(load.web.map(|_| WebClasses::new("Web")));
+    let repeat = std::env::var("LL_RIG_REPEAT").map_or(1, |repeat| {
+        repeat.parse().expect("LL_RIG_REPEAT is a count")
+    });
     let threads: Vec<_> = cell
         .mutators
         .iter()
-        .map(|&cpu| {
-            let (stop, start, class) = (Arc::clone(&stop), Arc::clone(&start), Sent(class));
+        .enumerate()
+        .map(|(index, &cpu)| {
+            let (stop, start, stages) =
+                (Arc::clone(&stop), Arc::clone(&start), Arc::clone(&stages));
+            let (class, classes) = (Sent(class), Sent(classes.0));
             let run_for = cell.run_for;
-            std::thread::spawn(move || {
-                a_mutator(load, cpu, class.into_inner(), &start, &stop, run_for)
+            std::thread::spawn(move || match load.web {
+                Some(web) => a_web_mutator(
+                    web,
+                    index,
+                    cpu,
+                    classes.into_inner().expect("a web load's classes"),
+                    &start,
+                    &stages,
+                    &stop,
+                    repeat,
+                ),
+                None => (
+                    a_mutator(load, cpu, class.into_inner(), &start, &stop, run_for),
+                    WebReading::default(),
+                ),
             })
         })
         .collect();
     start.wait();
     let _ = testing::take_withdrawn_standings();
+    let collector_cpu_at_the_start = testing::collector_cpu_to_now();
+    let mut web = WebCell::default();
+    if load.web.is_some() {
+        // The setups' collections, apart from the loop's
+        // (`dev/plans/S67.md`, S67.5's Critic, finding 3).
+        web.setup = RoundFigures::take();
+        let _ = crate::memory::heap::take_frees_from_another_thread();
+        testing::read_traced_batches(switch_from_env("LL_RIG_TRACED_BATCHES"));
+    }
+
     std::thread::sleep(cell.run_for);
     stop.store(true, Ordering::Relaxed);
     let collector_cpu_at_the_stop = testing::collector_cpu_to_now();
     let withdrawn = testing::take_withdrawn_standings();
-    let mutators: Vec<MutatorReading> = threads
+    // A web load's mutators stop at three stages, each after the driver's
+    // reading: their loop's end, where the retained blocks and the blocks the
+    // live writes hold are read at one instant; the drains' end, where the
+    // collections' figures are taken before any teardown collects; and the
+    // release to the teardown.
+    let mut round_figures = None;
+    if let Some(load_web) = load.web {
+        stages.wait();
+        web.retained_at_the_stop = crate::memory::retained::retained_block_count();
+        let batches = testing::take_traced_batches();
+        testing::read_traced_batches(false);
+        web.batches_traced = batches.len();
+        let state = CORE_OBJECTS + VALUE_OBJECTS * load_web.values;
+        web.batches_through_the_state = batches
+            .iter()
+            .filter(|batch| batch.rows_met >= state)
+            .count();
+        stages.wait();
+        web.retained_after_the_drains = crate::memory::retained::retained_block_count();
+        web.frees_from_another_thread = crate::memory::heap::take_frees_from_another_thread();
+        round_figures = Some(RoundFigures::take());
+        stages.wait();
+    }
+
+    let (mutators, web_mutators): (Vec<MutatorReading>, Vec<WebReading>) = threads
         .into_iter()
         .map(|thread| thread.join().expect("the mutator ran its loop"))
-        .collect();
-    // The rounds' figures before the retire, which zeroes them; the rest
-    // after it, so that every collector life has ended and a birth the last
-    // polls started has pinned itself.
+        .unzip();
+    web.mutators = web_mutators;
+    assert_eq!(
+        web.frees_from_another_thread, 0,
+        "a web load frees nothing across threads"
+    );
+    // A ring load's rounds' figures before the retire, which zeroes them; the
+    // rest after it, so that every collector life has ended and a birth the
+    // last polls started has pinned itself.
     let (outcomes, rounds) = (testing::take_outcomes(), testing::take_rounds());
     drop(end);
+    let figures = round_figures.unwrap_or_else(|| RoundFigures {
+        outcomes,
+        rounds,
+        ..RoundFigures::take()
+    });
     let born = testing::take_spawns();
     let (pinned, refused) = testing::take_collectors_pinned();
     assert_eq!(refused, 0, "the kernel pinned every collector born");
@@ -2055,20 +2853,22 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         collectors_born: born,
         collectors_pinned: pinned,
         collectors: testing::take_collector_lives(),
+        collector_cpu_at_the_start,
         collector_cpu_at_the_stop,
-        outcomes,
-        rounds,
-        verdict_collections: testing::take_verdict_collections(),
-        disposals: testing::take_disposals(),
-        chain: testing::take_chain_figures(),
-        scheme: testing::take_scheme_figures(),
-        token_waits: testing::take_token_waits(),
+        outcomes: figures.outcomes,
+        rounds: figures.rounds,
+        verdict_collections: figures.verdict_collections,
+        disposals: figures.disposals,
+        chain: figures.chain,
+        scheme: figures.scheme,
+        token_waits: figures.token_waits,
         withdrawn,
-        segment_times: testing::take_segment_times(),
-        recalls: testing::take_recalls(),
-        written_back: testing::take_written_back(),
-        parts_deferred: testing::take_parts_deferred(),
-        generations: testing::take_generations(),
+        segment_times: figures.segment_times,
+        recalls: figures.recalls,
+        written_back: figures.written_back,
+        parts_deferred: figures.parts_deferred,
+        generations: figures.generations,
+        web,
         ledger_peak: {
             let ledger = crate::memory::gc_metadata::stats();
             (ledger.peak_bytes(), ledger.peak_bytes_in_use())

@@ -33,6 +33,16 @@
 //! miss as an eviction's non-final decrement and a new value. The setup runs
 //! the cache to its steady state outside the heap before it builds the
 //! values, and registers what a long-running server holds registered.
+//!
+//! **The two variants** ([`Variant`]). In `web-heap` a request's objects are
+//! GC heap objects and it holds its session by a reference of its own. In
+//! `web-arena` they are objects of the mutator's arena, which no collection
+//! scans: they register nothing, and the request ends in
+//! `promote::arena_reset_full`. Its heap references — the session, the
+//! lookups' values and [`ARENA_CORE_EDGES`] edges into the core — are stores
+//! into arena slots that the store barrier logs, released at the reset, and
+//! 30 % of its requests write an object into the session, which escapes and
+//! is promoted into a block the reset retains (`dev/plans/S67.md`, S67.5).
 
 use super::*;
 use crate::class::{Class, ClassBuilder};
@@ -90,6 +100,38 @@ pub(super) const KEYS_A_VALUE: usize = 4;
 /// a longer gap, which puts the replacements at 1 % of requests.
 pub(super) const SESSION_IDLE_REQUESTS: u64 = 4_600;
 
+/// The heap references a `web-arena` request stores into arena slots [A],
+/// each logged for release at its reset: its session, its lookups' values and
+/// the rest edges into the core.
+pub(super) const LOGGED_REFERENCES: usize = 300;
+
+/// The edges into the core a `web-arena` request makes: its logged
+/// references less the session's and the lookups'.
+pub(super) const ARENA_CORE_EDGES: usize = LOGGED_REFERENCES - LOOKUPS - 1;
+
+/// The share of `web-arena`'s requests that write an object into their
+/// session, which escapes the arena [A].
+pub(super) const SESSION_WRITE_PERCENT: f64 = 30.0;
+
+/// The share of sessions holding a write at the steady state: a session
+/// lives a geometric count of touches, one in a hundred replacing it, and a
+/// touch writes at [`SESSION_WRITE_PERCENT`], so the share holding none is
+/// E[0.7^k] = 0.007 / 0.307 (`dev/plans/S67.md`, S67.5, item 5).
+pub(super) const SESSION_WRITE_STEADY_SHARE: f64 = 1.0 - 0.007 / 0.307;
+
+/// The slot of a session's head a write takes: slot 0 chains the cycle and
+/// slot 1 holds its core edge.
+const SESSION_WRITE_SLOT: u32 = 2;
+
+/// Where a request's objects live (`dev/plans/S67.md`, "The loads"): in the
+/// GC heap, `web-heap`, or in the mutator's arena, reset at the request's
+/// end, `web-arena`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Variant {
+    Heap,
+    Arena,
+}
+
 /// The entries of one directory object: every slot of the largest class.
 const DIRECTORY_FAN_OUT: usize = slots(LARGEST);
 
@@ -137,6 +179,18 @@ impl Streams {
             cache: Draws::new(mutator, repeat, Purpose::Cache),
             sessions: Draws::new(mutator, repeat, Purpose::Sessions),
         }
+    }
+
+    /// The four streams' checksums, folded.
+    pub(super) fn checksum(&self) -> u64 {
+        [
+            &self.shape,
+            &self.registrations,
+            &self.cache,
+            &self.sessions,
+        ]
+        .iter()
+        .fold(0, |sum, draws| sum.rotate_left(13) ^ draws.checksum())
     }
 }
 
@@ -230,7 +284,9 @@ impl Zipf {
 }
 
 /// The three classes of [`SIZES`]: a header and a class word of sixteen
-/// bytes, and sixteen a Box property, as `member_class` lays one.
+/// bytes, and sixteen a Box property, as `member_class` lays one. Copied
+/// freely: the classes live for the process.
+#[derive(Clone, Copy)]
 pub(super) struct WebClasses([*const Class; 3]);
 
 impl WebClasses {
@@ -285,8 +341,10 @@ const _: () = assert!(size_of::<Placement>() == 32);
 /// the order of their places; the lookups as (place, key), in the same
 /// order; the session's slot; the ORM collections' entity counts; the two
 /// waits' places; and whether the end's release lands on the registered
-/// context root.
+/// context root. A `web-arena` plan has no registrations and no silent end,
+/// its objects registering nothing, and draws its session write instead.
 pub(super) struct Plan {
+    pub(super) variant: Variant,
     pub(super) objects: Vec<Placement>,
     pub(super) registrations: Vec<(f64, u32)>,
     pub(super) lookups: Vec<(f64, u32)>,
@@ -295,19 +353,25 @@ pub(super) struct Plan {
     #[expect(dead_code, reason = "S67.7's spin sleeps at them")]
     pub(super) waits_at: [f64; 2],
     pub(super) silent_end: bool,
+    /// The size index of the object a `web-arena` request writes into its
+    /// session, none where it writes nothing.
+    pub(super) session_write: Option<u8>,
 }
 
 /// What a plan draws its long-lived targets over: the core's objects and
-/// the cache's keys, each Zipf (s = 1), and the session slots, uniform.
+/// the cache's keys, each Zipf (s = 1), and the session slots, uniform; and
+/// the variant its requests are built in.
 pub(super) struct Targets {
     core: Zipf,
     keys: Zipf,
     session_slots: usize,
+    variant: Variant,
 }
 
 impl Targets {
-    pub(super) fn new(shape: &LongLivedShape) -> Self {
+    pub(super) fn new(shape: &LongLivedShape, variant: Variant) -> Self {
         Self {
+            variant,
             core: Zipf::new(shape.core),
             keys: Zipf::new(shape.values * KEYS_A_VALUE),
             session_slots: shape.sessions,
@@ -332,12 +396,26 @@ impl Plan {
     }
 
     fn shaped(streams: &mut Streams, targets: &Targets, orm: Vec<usize>, count: usize) -> Self {
-        let mut objects = place_the_objects(&mut streams.shape, &targets.core, &orm, count);
+        let variant = targets.variant;
+        let mut objects =
+            place_the_objects(&mut streams.shape, &targets.core, &orm, count, variant);
         draw_the_births(&mut streams.shape, &mut objects);
-        let registrations = draw_the_registrations(&mut streams.registrations, &objects);
+        let registrations = match variant {
+            Variant::Heap => draw_the_registrations(&mut streams.registrations, &objects),
+            Variant::Arena => Vec::new(),
+        };
         let mut waits_at = [streams.shape.unit(), streams.shape.unit()];
         waits_at.sort_unstable_by(f64::total_cmp);
-        let silent_end = streams.shape.percent(50.0);
+        let (silent_end, session_write) = match variant {
+            Variant::Heap => (streams.shape.percent(50.0), None),
+            Variant::Arena => (
+                false,
+                streams
+                    .shape
+                    .percent(SESSION_WRITE_PERCENT)
+                    .then(|| draw_a_size_index(&mut streams.shape)),
+            ),
+        };
         let mut lookups: Vec<(f64, u32)> = (0..LOOKUPS)
             .map(|_| {
                 let at = streams.cache.unit();
@@ -346,6 +424,7 @@ impl Plan {
             .collect();
         lookups.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
         Self {
+            variant,
             objects,
             registrations,
             lookups,
@@ -353,6 +432,7 @@ impl Plan {
             orm,
             waits_at,
             silent_end,
+            session_write,
         }
     }
 
@@ -368,12 +448,16 @@ impl Plan {
 }
 
 /// The context and the payload tree of `count` objects with the collections
-/// `orm`, in build order, their places on the timeline still to draw.
+/// `orm`, in build order, their places on the timeline still to draw. In the
+/// arena variant [`ARENA_CORE_EDGES`] tree objects, or every one of a smaller
+/// tree, drawn without replacement before the placement, hold the core edges
+/// and draw no closure, and a closure's edge goes to the context.
 fn place_the_objects(
     shape: &mut Draws,
     core: &Zipf,
     orm: &[usize],
     count: usize,
+    variant: Variant,
 ) -> Vec<Placement> {
     let mut objects = Vec::with_capacity(count);
     for _ in 0..CONTEXT {
@@ -395,6 +479,10 @@ fn place_the_objects(
     }
 
     let tree = count - CONTEXT - orm_objects(orm);
+    let mut core_edges_left = match variant {
+        Variant::Heap => 0,
+        Variant::Arena => ARENA_CORE_EDGES.min(tree),
+    };
     // The tree's positions at which each collection's head is placed.
     let mut heads_at: Vec<usize> = orm.iter().map(|_| shape.below(tree.max(1))).collect();
     heads_at.sort_unstable();
@@ -408,7 +496,12 @@ fn place_the_objects(
         }
 
         let size_index = draw_a_size_index(shape);
-        let extra = draw_an_extra_edge(shape, core);
+        let extra = match variant {
+            Variant::Heap => draw_an_extra_edge(shape, core),
+            Variant::Arena => {
+                draw_an_arena_extra_edge(shape, core, tree - position, &mut core_edges_left)
+            }
+        };
         let parent = free_slots
             .pop_front()
             .expect("every tree object adds a free slot at least");
@@ -443,6 +536,26 @@ fn draw_an_extra_edge(shape: &mut Draws, core: &Zipf) -> ExtraEdge {
         }
     } else if shape.percent(1.0) {
         ExtraEdge::Core(core.draw(shape) as u32)
+    } else {
+        ExtraEdge::None
+    }
+}
+
+/// A tree object's extra edge in the arena variant, `positions_left` tree
+/// positions standing from this one: a core edge with the chance of the
+/// `core_edges_left` still to place over those positions (Knuth's selection
+/// sampling, algorithm S), else a closure's edge to the context at 45 %.
+fn draw_an_arena_extra_edge(
+    shape: &mut Draws,
+    core: &Zipf,
+    positions_left: usize,
+    core_edges_left: &mut usize,
+) -> ExtraEdge {
+    if shape.below(positions_left) < *core_edges_left {
+        *core_edges_left -= 1;
+        ExtraEdge::Core(core.draw(shape) as u32)
+    } else if shape.percent(45.0) {
+        ExtraEdge::Context(shape.below(CONTEXT) as u32)
     } else {
         ExtraEdge::None
     }
@@ -563,6 +676,40 @@ pub(super) struct RequestBuild<'a> {
     pub(super) long_lived: &'a mut LongLived,
 }
 
+impl RequestBuild<'_> {
+    /// A new object of size index `size_index`, in the heap or the arena by
+    /// `variant`.
+    ///
+    /// # Safety
+    /// As [`Request::start`].
+    unsafe fn new_object(&mut self, size_index: usize, variant: Variant) -> *mut Object {
+        let category = match variant {
+            Variant::Heap => MemoryCategory::GcHeap,
+            Variant::Arena => MemoryCategory::RequestArena,
+        };
+        unsafe {
+            new_constructed(
+                &mut self.context,
+                self.long_lived.classes.0[size_index],
+                category,
+            )
+        }
+    }
+
+    /// Put `child`, just built, into `holder`'s empty slot `slot`: in the
+    /// heap its creation reference moves into the slot, and in the arena a
+    /// store counts and logs nothing.
+    ///
+    /// # Safety
+    /// As [`Request::start`]; both are of `variant`.
+    unsafe fn link(&self, holder: *mut Object, slot: u32, child: *mut Object, variant: Variant) {
+        match variant {
+            Variant::Heap => unsafe { move_prop(holder, prop_offset(slot), child) },
+            Variant::Arena => unsafe { store_prop(self.arena, holder, prop_offset(slot), child) },
+        }
+    }
+}
+
 /// What one step of a request did: the bytes born and the bytes that stopped
 /// being reachable, by size index, the registrations made and the lookups
 /// done.
@@ -588,8 +735,10 @@ impl Advanced {
 
 /// What a request's end did: whether the external reference landed on a
 /// registered object, read before the release — the silent death — the
-/// request's bytes by size index, garbage from here on, and the roots the
-/// two releases registered.
+/// request's heap bytes by size index, garbage from here on, and the roots
+/// the end registered. A `web-arena` request's end is its reset: never
+/// silent, no heap bytes, and its registrations those of the reset's logged
+/// releases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Ended {
     pub(super) silent: bool,
@@ -605,10 +754,16 @@ pub(super) struct Request {
     objects: Vec<*mut Object>,
     registrations_done: usize,
     lookups_done: usize,
-    /// The context object the request's external reference is on.
+    /// The context object the request's external reference is on; null in
+    /// the arena variant, whose objects the reset frees.
     externally_held: *mut Object,
-    /// The head of the session, held by the request's own reference.
+    /// The head of the session: held by the request's own reference, or in
+    /// the arena variant by slot 0 of [`Request::locals`].
     session: *mut Object,
+    /// The arena variant's locals, an arena object of the largest class
+    /// whose slot 0 holds the session and whose slots from 1 the lookups'
+    /// values, each a logged heap reference; null in the heap variant.
+    locals: *mut Object,
 }
 
 /// The next thing a request does on its timeline.
@@ -625,7 +780,9 @@ impl Request {
     /// Start `plan`: its session opened and held, its context cycle built,
     /// the external reference taken — on the context's first object where
     /// the end is silent, its second otherwise — and the first object
-    /// registered.
+    /// registered. In the arena variant the context is the arena's, and the
+    /// session is held by slot 0 of the request's locals, with no external
+    /// reference and no registration.
     ///
     /// # Safety
     /// `build` is the calling mutator's, at a point where it may allocate;
@@ -633,37 +790,38 @@ impl Request {
     pub(super) unsafe fn start(build: &mut RequestBuild, plan: Plan) -> (Self, Advanced) {
         let (session, mut advanced) =
             unsafe { build.long_lived.open_session(build.arena, plan.session) };
-        unsafe { ll_retain(session as *mut RcHeader) };
+        let variant = plan.variant;
         let mut objects = Vec::with_capacity(plan.objects.len());
         for object in &plan.objects[..CONTEXT] {
             let size_index = object.size_index as usize;
-            objects.push(unsafe {
-                new_constructed(
-                    &mut build.context,
-                    build.long_lived.classes.0[size_index],
-                    MemoryCategory::GcHeap,
-                )
-            });
-            advanced.born[size_index] += SIZES[size_index];
+            objects.push(unsafe { build.new_object(size_index, variant) });
+            if variant == Variant::Heap {
+                advanced.born[size_index] += SIZES[size_index];
+            }
         }
 
         for index in 0..CONTEXT {
-            unsafe {
-                move_prop(
-                    objects[index],
-                    prop_offset(0),
-                    objects[(index + 1) % CONTEXT],
-                )
-            };
+            unsafe { build.link(objects[index], 0, objects[(index + 1) % CONTEXT], variant) };
         }
 
-        let externally_held = objects[usize::from(!plan.silent_end)];
-        unsafe {
-            ll_retain(externally_held as *mut RcHeader);
-            register(objects[0]);
-        }
+        let (externally_held, locals) = match variant {
+            Variant::Heap => {
+                let externally_held = objects[usize::from(!plan.silent_end)];
+                unsafe {
+                    ll_retain(session as *mut RcHeader);
+                    ll_retain(externally_held as *mut RcHeader);
+                    register(objects[0]);
+                }
 
-        advanced.registered += 1;
+                advanced.registered += 1;
+                (externally_held, std::ptr::null_mut())
+            }
+            Variant::Arena => {
+                let locals = unsafe { build.new_object(LARGEST as usize, variant) };
+                unsafe { store_prop(build.arena, locals, prop_offset(0), session) };
+                (std::ptr::null_mut(), locals)
+            }
+        };
         let request = Self {
             plan,
             objects,
@@ -671,6 +829,7 @@ impl Request {
             lookups_done: 0,
             externally_held,
             session,
+            locals,
         };
         (request, advanced)
     }
@@ -698,7 +857,9 @@ impl Request {
             match event {
                 Event::Birth => {
                     let size_index = unsafe { self.give_birth(build) };
-                    advanced.born[size_index] += SIZES[size_index];
+                    if self.plan.variant == Variant::Heap {
+                        advanced.born[size_index] += SIZES[size_index];
+                    }
                 }
                 Event::Registration(index) => {
                     let object = *self
@@ -710,7 +871,11 @@ impl Request {
                     advanced.registered += 1;
                 }
                 Event::Lookup(key) => {
-                    advanced.add(unsafe { build.long_lived.look_up(build.arena, key) });
+                    // The arena variant's value goes into the next slot of
+                    // its locals, from slot 1.
+                    let into = (!self.locals.is_null())
+                        .then_some((self.locals, 1 + self.lookups_done as u32));
+                    advanced.add(unsafe { build.long_lived.look_up(build.arena, key, into) });
                     self.lookups_done += 1;
                 }
             }
@@ -754,19 +919,14 @@ impl Request {
     unsafe fn give_birth(&mut self, build: &mut RequestBuild) -> usize {
         let object = self.plan.objects[self.objects.len()];
         let size_index = object.size_index as usize;
-        let born = unsafe {
-            new_constructed(
-                &mut build.context,
-                build.long_lived.classes.0[size_index],
-                MemoryCategory::GcHeap,
-            )
-        };
+        let born = unsafe { build.new_object(size_index, self.plan.variant) };
         let (parent, slot) = object.parent.expect("a born object has a parent");
         unsafe {
-            move_prop(
+            build.link(
                 self.objects[parent as usize],
-                prop_offset(u32::from(slot)),
+                u32::from(slot),
                 born,
+                self.plan.variant,
             )
         };
         let target = match object.extra {
@@ -799,12 +959,26 @@ impl Request {
         &self.plan
     }
 
+    /// End the request: in the heap variant [`Request::end`], in the arena
+    /// variant [`Request::reset`].
+    ///
+    /// # Safety
+    /// As [`Request::start`], on the same `build`; the request is complete.
+    pub(super) unsafe fn finish(self, build: &mut RequestBuild) -> Ended {
+        match self.plan.variant {
+            Variant::Heap => unsafe { self.end() },
+            Variant::Arena => unsafe { self.reset(build) },
+        }
+    }
+
     /// Release the session and the external reference.
     ///
     /// # Safety
-    /// As [`Request::start`]; the request is complete.
+    /// As [`Request::start`]; the request is complete and of the heap
+    /// variant.
     pub(super) unsafe fn end(self) -> Ended {
         assert!(self.is_complete(), "a request ends after its last event");
+        assert_eq!(self.plan.variant, Variant::Heap);
         let silent = is_a_candidate(self.externally_held);
         let session_registers = !is_a_candidate(self.session);
         unsafe {
@@ -822,6 +996,36 @@ impl Request {
             silent,
             bytes: self.plan.bytes(),
             registered: usize::from(!silent) + usize::from(session_registers),
+        }
+    }
+
+    /// Write into the session where the plan says so, and reset the arena
+    /// by `promote::arena_reset_full`: the write escapes and is promoted,
+    /// its block retained, and each logged heap reference is released,
+    /// registering its target where that was no candidate. The write the
+    /// session held before dies of the store's release. The registrations
+    /// are the thread's admissions across the reset.
+    ///
+    /// # Safety
+    /// As [`Request::start`], on the same `build`; the request is complete
+    /// and of the arena variant, and nothing else of the arena is live.
+    pub(super) unsafe fn reset(self, build: &mut RequestBuild) -> Ended {
+        assert!(self.is_complete(), "a request ends after its last event");
+        assert_eq!(self.plan.variant, Variant::Arena);
+        if let Some(size_index) = self.plan.session_write {
+            unsafe {
+                build
+                    .long_lived
+                    .write_into_session(build.arena, self.session, size_index)
+            };
+        }
+
+        let before = crate::refcount::admissions();
+        unsafe { reset_the_arena(build.arena) };
+        Ended {
+            silent: false,
+            bytes: [0; 3],
+            registered: crate::refcount::admissions() - before,
         }
     }
 }
@@ -861,6 +1065,8 @@ pub(super) struct CacheCounts {
     pub(super) evictions_silent: usize,
     pub(super) evictions_registering: usize,
     pub(super) sessions_replaced: usize,
+    /// Objects written into a session, the setup's steady state included.
+    pub(super) session_writes: usize,
 }
 
 /// An LRU of a fixed number of entries over the keys `0..keys`, kept
@@ -1100,6 +1306,8 @@ pub(super) struct LongLived {
     /// Requests opened, from [`FIRST_REQUEST`].
     requests: u64,
     built_after_the_setup: Draws,
+    /// The checksum of every draw the setup made.
+    setup_checksum: u64,
     /// The bytes the state holds reachable, by size index.
     held: [usize; 3],
     pub(super) counts: CacheCounts,
@@ -1115,13 +1323,19 @@ impl LongLived {
     /// then until it has evicted as many, which is its steady state; the
     /// values its entries hold then; the sessions, each idle for an age drawn
     /// geometric with a mean of as many requests as there are sessions, the
-    /// gap between two touches of one. Registers nothing.
+    /// gap between two touches of one. For [`Variant::Arena`], each session
+    /// then holds a write with the share [`SESSION_WRITE_STEADY_SHARE`],
+    /// each promoted by an arena reset of its own so that each retains a
+    /// block of its own, as a request's write does. Registers nothing.
     ///
     /// # Safety
-    /// `arena` is the calling mutator's, at a point where it may allocate.
+    /// `arena` is the calling mutator's, at a point where it may allocate;
+    /// here alone it also holds nothing live, the arena variant's setup
+    /// resetting it.
     pub(super) unsafe fn new(
         classes: WebClasses,
         shape: LongLivedShape,
+        variant: Variant,
         mutator: u64,
         repeat: u64,
         arena: *mut Arena,
@@ -1129,7 +1343,7 @@ impl LongLived {
         assert!(shape.core > 0 && shape.values > 0 && shape.sessions > 0);
         let mut context = LLContext { arena };
         let mut setup = Draws::new(mutator, repeat, Purpose::Core);
-        let targets = Targets::new(&shape);
+        let targets = Targets::new(&shape, variant);
         let (core, held) = unsafe { build_the_core(arena, &classes, &mut setup, shape.core) };
         let lru = run_to_the_steady_state(shape.values, &targets.keys, &mut setup);
         let (values, values_root, value_directory_objects) =
@@ -1150,6 +1364,7 @@ impl LongLived {
             last_touch: Vec::with_capacity(shape.sessions),
             requests: FIRST_REQUEST,
             built_after_the_setup: Draws::new(mutator, repeat, Purpose::Values),
+            setup_checksum: 0,
             held,
             counts: CacheCounts::default(),
             targets,
@@ -1169,13 +1384,109 @@ impl LongLived {
             state.last_touch.push(FIRST_REQUEST - idle);
         }
 
+        if variant == Variant::Arena {
+            unsafe { state.write_the_steady_sessions(arena, &mut setup) };
+        }
+
+        state.setup_checksum = setup.checksum();
         state
+    }
+
+    /// The setup's draws and those of what was built after it, folded: with
+    /// [`Streams::checksum`], what tells two arms' draws apart.
+    pub(super) fn draws_checksum(&self) -> u64 {
+        self.setup_checksum.rotate_left(29) ^ self.built_after_the_setup.checksum()
+    }
+
+    /// The value heads and the session heads standing candidate: the
+    /// registered stock of the state, read by a walk of their heads.
+    pub(super) fn standing_candidate(&self) -> (usize, usize) {
+        let count = |directory: &Directory| {
+            (0..directory.bytes.len() as u32)
+                .filter(|&entry| is_a_candidate(directory.head(entry)))
+                .count()
+        };
+        (count(&self.values), count(&self.sessions))
+    }
+
+    /// Give each session a write with the share [`SESSION_WRITE_STEADY_SHARE`],
+    /// its size drawn from `setup`, each promoted by an arena reset of its
+    /// own so that each retains a block of its own, as a request's write
+    /// does.
+    ///
+    /// # Safety
+    /// As [`LongLived::new`].
+    unsafe fn write_the_steady_sessions(&mut self, arena: *mut Arena, setup: &mut Draws) {
+        for slot in 0..self.sessions.bytes.len() as u32 {
+            if setup.unit() >= SESSION_WRITE_STEADY_SHARE {
+                continue;
+            }
+
+            let session = self.sessions.head(slot);
+            let size_index = draw_a_size_index(setup);
+            unsafe {
+                self.write_into_session(arena, session, size_index);
+                reset_the_arena(arena);
+            }
+        }
+    }
+
+    /// Write a new arena object of size index `size_index` into slot
+    /// [`SESSION_WRITE_SLOT`] of `session`'s head: an escape the next reset
+    /// of `arena` promotes. The write the slot held dies of the store's
+    /// release.
+    ///
+    /// # Safety
+    /// `arena` is the calling mutator's, at a point where it may allocate;
+    /// `session` is a session head of this state.
+    unsafe fn write_into_session(
+        &mut self,
+        arena: *mut Arena,
+        session: *mut Object,
+        size_index: u8,
+    ) {
+        let mut context = LLContext { arena };
+        let write = unsafe {
+            new_constructed(
+                &mut context,
+                self.classes.0[size_index as usize],
+                MemoryCategory::RequestArena,
+            )
+        };
+        unsafe { store_prop(arena, session, prop_offset(SESSION_WRITE_SLOT), write) };
+        self.counts.session_writes += 1;
+    }
+
+    /// The distinct blocks the sessions' writes hold: each write's own, and
+    /// the block its survivor list stands in where that is another. What
+    /// the live state keeps retained, apart from the garbage's share.
+    pub(super) fn blocks_the_writes_hold(&self) -> usize {
+        let mut blocks = std::collections::HashSet::new();
+        for slot in 0..self.sessions.bytes.len() as u32 {
+            let write = slot_of(self.sessions.head(slot), SESSION_WRITE_SLOT);
+            if write.is_null() {
+                continue;
+            }
+
+            let block = crate::memory::block_pool::BlockHeader::of_ptr(write as *const u8) as usize;
+            blocks.insert(block);
+            // SAFETY: a write stands in the session only once the reset
+            // after it promoted it, so its block is a retained block, held
+            // for the write while the write lives.
+            let list = unsafe { crate::memory::retained::survivor_list_holder(block) };
+            if list != 0 {
+                blocks.insert(list);
+            }
+        }
+
+        blocks.len()
     }
 
     /// Register what a long-running server holds registered: every core
     /// object, which the requests' dead edges into it register within the
-    /// warm-up, every value hit since its insertion, and every session, which
-    /// its first request registers. `poll` runs after each
+    /// warm-up; every value hit since its insertion, or in the arena variant
+    /// every value, which the reset of the request that stored it registers;
+    /// and every session, which its first request registers. `poll` runs after each
     /// [`REGISTRATIONS_AN_ADVANCE`] registrations, within the poll's stride.
     /// Answers the registrations made.
     ///
@@ -1183,7 +1494,10 @@ impl LongLived {
     /// The state is this thread's, and no request is in flight.
     pub(super) unsafe fn register_the_steady_state(&mut self, poll: &mut dyn FnMut()) -> usize {
         let hit_values: Vec<*mut Object> = (0..self.values.bytes.len() as u32)
-            .filter(|&entry| self.lru.hit_since_insertion[entry as usize])
+            .filter(|&entry| {
+                self.targets.variant == Variant::Arena
+                    || self.lru.hit_since_insertion[entry as usize]
+            })
             .map(|entry| self.values.head(entry))
             .collect();
         let sessions = (0..self.sessions.bytes.len() as u32).map(|slot| self.sessions.head(slot));
@@ -1200,23 +1514,35 @@ impl LongLived {
     }
 
     /// Look `key` up: a hit registers the value, a miss replaces the least
-    /// recently used value by the key's ([`LongLived::replace`]). Answers the
-    /// step as [`Advanced`], one lookup.
+    /// recently used value by the key's ([`LongLived::replace`]). With
+    /// `into`, an arena object and its empty slot, the value found or built
+    /// is stored there in place of a hit's registration: a heap reference the
+    /// arena's reset releases. Answers the step as [`Advanced`], one lookup.
     ///
     /// # Safety
-    /// As [`LongLived::new`].
-    pub(super) unsafe fn look_up(&mut self, arena: *mut Arena, key: u32) -> Advanced {
-        let mut advanced = match self.lru.look_up(key) {
+    /// `arena` is the calling mutator's, at a point where it may allocate.
+    pub(super) unsafe fn look_up(
+        &mut self,
+        arena: *mut Arena,
+        key: u32,
+        into: Option<(*mut Object, u32)>,
+    ) -> Advanced {
+        let (entry, mut advanced) = match self.lru.look_up(key) {
+            LookupOutcome::Hit(entry) if into.is_some() => {
+                self.counts.hits += 1;
+                (entry, Advanced::default())
+            }
             LookupOutcome::Hit(entry) => {
                 let head = self.values.head(entry);
                 let registers = !is_a_candidate(head);
                 unsafe { register(head) };
                 self.counts.hits += 1;
                 self.counts.hits_registering += usize::from(registers);
-                Advanced {
+                let advanced = Advanced {
                     registered: usize::from(registers),
                     ..Advanced::default()
-                }
+                };
+                (entry, advanced)
             }
             LookupOutcome::Evicted { entry, .. } => {
                 let replaced = unsafe { self.replace(arena, DirectoryOf::Values, entry) };
@@ -1227,10 +1553,15 @@ impl LongLived {
                     self.counts.evictions_registering += 1;
                 }
 
-                replaced
+                (entry, replaced)
             }
             LookupOutcome::Inserted => unreachable!("the setup filled every entry"),
         };
+        if let Some((holder, slot)) = into {
+            let head = self.values.head(entry);
+            unsafe { store_prop(arena, holder, prop_offset(slot), head) };
+        }
+
         advanced.looked_up = 1;
         advanced
     }
@@ -1241,7 +1572,7 @@ impl LongLived {
     /// the step.
     ///
     /// # Safety
-    /// As [`LongLived::new`].
+    /// `arena` is the calling mutator's, at a point where it may allocate.
     unsafe fn open_session(&mut self, arena: *mut Arena, slot: u32) -> (*mut Object, Advanced) {
         self.requests += 1;
         let mut advanced = Advanced::default();
@@ -1261,7 +1592,7 @@ impl LongLived {
     /// and the registration.
     ///
     /// # Safety
-    /// As [`LongLived::new`].
+    /// `arena` is the calling mutator's, at a point where it may allocate.
     unsafe fn replace(&mut self, arena: *mut Arena, of: DirectoryOf, entry: u32) -> Advanced {
         let directory = match of {
             DirectoryOf::Values => &self.values,
@@ -1289,7 +1620,7 @@ impl LongLived {
     /// after the setup where it is none. Answers its bytes by size index.
     ///
     /// # Safety
-    /// As [`LongLived::new`].
+    /// `arena` is the calling mutator's, at a point where it may allocate.
     unsafe fn fill(
         &mut self,
         arena: *mut Arena,
@@ -1348,7 +1679,7 @@ impl LongLived {
 /// the first holding its creation reference, and their bytes by size index.
 ///
 /// # Safety
-/// As [`LongLived::new`].
+/// `arena` is the calling mutator's, at a point where it may allocate.
 unsafe fn build_the_core(
     arena: *mut Arena,
     classes: &WebClasses,
@@ -1439,6 +1770,16 @@ unsafe fn build_a_cycle(
     }
 
     (chain[0], bytes)
+}
+
+/// Reset `arena` by `promote::arena_reset_full`, which severs no edge here:
+/// the pool refuses no survivor cell a web load asks for.
+///
+/// # Safety
+/// As `promote::arena_reset_full`.
+unsafe fn reset_the_arena(arena: *mut Arena) {
+    let severed = unsafe { crate::promote::arena_reset_full(arena) };
+    assert_eq!(severed, 0, "the reset severed no edge");
 }
 
 /// Whether `object` stands registered as a candidate.
@@ -1580,14 +1921,20 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// A fixture of `shape`, its classes named after `name`, on a thread
-    /// whose lanes it resets. The caller holds the pool's guard.
+    /// A fixture of `shape` in the heap variant, its classes named after
+    /// `name`, on a thread whose lanes it resets. The caller holds the pool's
+    /// guard.
     fn new(name: &str, shape: LongLivedShape) -> Self {
+        Self::in_variant(name, shape, Variant::Heap)
+    }
+
+    /// [`Fixture::new`] in `variant`.
+    fn in_variant(name: &str, shape: LongLivedShape, variant: Variant) -> Self {
         reset_lanes();
         let mut arena = Box::new(Arena::new());
         let arena_ptr: *mut Arena = &mut *arena;
         let mut long_lived =
-            unsafe { LongLived::new(WebClasses::new(name), shape, 0, 0, arena_ptr) };
+            unsafe { LongLived::new(WebClasses::new(name), shape, variant, 0, 0, arena_ptr) };
         long_lived.last_touch.fill(long_lived.requests);
         Self { arena, long_lived }
     }
@@ -1654,7 +2001,7 @@ unsafe fn build_whole(build: &mut RequestBuild, plan: Plan) -> (Request, Advance
 /// their places, and the collections'.
 #[test]
 fn the_draws_hold_their_distributions() {
-    let targets = Targets::new(&LongLivedShape::specified(40_000));
+    let targets = Targets::new(&LongLivedShape::specified(40_000), Variant::Heap);
     let mut streams = Streams::new(1, 1);
     let mut logs: Vec<f64> = (0..10_000)
         .map(|_| (draw_the_count(&mut streams.shape).1 as f64).ln())
@@ -1946,11 +2293,14 @@ fn garbage_integrates_at_its_events() {
 /// shape and registration streams have; another repeat draws another stream.
 #[test]
 fn a_seed_draws_one_plan_whatever_the_other_streams_draw() {
-    let targets = Targets::new(&LongLivedShape {
-        core: 100,
-        values: 100,
-        sessions: 10,
-    });
+    let targets = Targets::new(
+        &LongLivedShape {
+            core: 100,
+            values: 100,
+            sessions: 10,
+        },
+        Variant::Heap,
+    );
     // A plan from streams whose shape, registrations, cache and sessions
     // have drawn `ahead` values first.
     let draw = |ahead: [usize; 4]| {
@@ -2108,7 +2458,7 @@ fn a_hit_registers_and_an_eviction_is_silent_only_after_one() {
         .collect();
     let look_up = |long_lived: &mut LongLived, key: u32| {
         let before = crate::cycle::queue::candidate_count();
-        let advanced = unsafe { long_lived.look_up(arena, key) };
+        let advanced = unsafe { long_lived.look_up(arena, key, None) };
         let registered = crate::cycle::queue::candidate_count() - before;
         assert_eq!(advanced.registered, registered, "key {key}");
         (advanced, registered)
@@ -2166,6 +2516,7 @@ fn a_hit_registers_and_an_eviction_is_silent_only_after_one() {
             evictions_silent: 1,
             evictions_registering: 1,
             sessions_replaced: 0,
+            session_writes: 0,
         }
     );
     fixture.let_go();
@@ -2210,8 +2561,16 @@ fn the_setup_builds_and_registers_the_steady_state() {
     // Built on the fixture's thread with all its sessions touched, so the
     // ages are read off a fresh state of the same seed.
     let mut arena = Arena::new();
-    let fresh =
-        unsafe { LongLived::new(WebClasses::new("SteadyStateAges"), shape, 0, 0, &mut arena) };
+    let fresh = unsafe {
+        LongLived::new(
+            WebClasses::new("SteadyStateAges"),
+            shape,
+            Variant::Heap,
+            0,
+            0,
+            &mut arena,
+        )
+    };
     let mean_age = fresh
         .last_touch
         .iter()
@@ -2255,7 +2614,7 @@ fn the_setup_builds_and_registers_the_steady_state() {
     let mut silent = 0;
     for key in absent {
         let was_hit = long_lived.lru.hit_since_insertion[long_lived.lru.oldest as usize];
-        let advanced = unsafe { long_lived.look_up(arena, key) };
+        let advanced = unsafe { long_lived.look_up(arena, key, None) };
         assert_eq!(advanced.registered, usize::from(!was_hit), "key {key}");
         silent += usize::from(was_hit);
     }
@@ -2440,4 +2799,332 @@ fn a_lookup_counts_toward_an_advances_cap() {
     let _ = unsafe { request.end() };
     unsafe { crate::gc::ll_gc_collect_cycles() };
     fixture.let_go();
+}
+
+/// Every draw of a plan folded into one number, for a case that pins a plan.
+fn plan_digest(plan: &Plan) -> u64 {
+    let mut digest = 0u64;
+    let mut fold =
+        |value: u64| digest = digest.rotate_left(7) ^ value.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    for object in &plan.objects {
+        fold(u64::from(object.size_index));
+        fold(object.parent.map_or(u64::MAX, |(index, slot)| {
+            (u64::from(index) << 8) | u64::from(slot)
+        }));
+        fold(match object.extra {
+            ExtraEdge::None => 0,
+            ExtraEdge::Context(index) => (1 << 32) | u64::from(index),
+            ExtraEdge::Core(index) => (2 << 32) | u64::from(index),
+            ExtraEdge::BackTo(index) => (3 << 32) | u64::from(index),
+        });
+        fold(object.born_at.to_bits());
+    }
+
+    for &(at, index) in plan.registrations.iter().chain(&plan.lookups) {
+        fold(at.to_bits());
+        fold(u64::from(index));
+    }
+
+    fold(u64::from(plan.session));
+    plan.orm.iter().for_each(|&entities| fold(entities as u64));
+    fold(u64::from(plan.silent_end));
+    digest
+}
+
+/// `web-heap`'s plans at a fixed seed fold to the digests pinned here, those
+/// of the plans S67.4's code drew, so that the arena variant's draws, on the
+/// same streams, move none of `web-heap`'s.
+#[test]
+fn a_heap_plan_folds_to_its_pinned_digest() {
+    let targets = Targets::new(&LongLivedShape::specified(40_000), Variant::Heap);
+    let mut streams = Streams::new(3, 1);
+    let digests: Vec<u64> = (0..3)
+        .map(|_| plan_digest(&Plan::draw(&mut streams, &targets)))
+        .collect();
+    assert_eq!(
+        digests,
+        [
+            0x9d9b_a613_7c09_0a8b,
+            0x96e2_c347_0cc8_af29,
+            0x5cc9_cb3e_41fe_255e
+        ]
+    );
+}
+
+/// A `web-arena` plan holds [`ARENA_CORE_EDGES`] core edges, or one on every
+/// tree object of a smaller tree, no registrations, closures to the context
+/// alone, and a session write on 30 % of requests.
+#[test]
+fn an_arena_plan_holds_its_core_edges_and_no_registrations() {
+    let targets = Targets::new(&LongLivedShape::specified(40_000), Variant::Arena);
+    let mut streams = Streams::new(4, 1);
+    let (mut closures, mut untaken) = (0, 0);
+    for _ in 0..20 {
+        let plan = Plan::with_count(&mut streams, &targets, 2_000);
+        assert!(plan.registrations.is_empty());
+        let mut core_edges = 0;
+        for object in plan.objects.iter().filter(|object| object.parent.is_some()) {
+            match object.extra {
+                ExtraEdge::Core(_) => core_edges += 1,
+                ExtraEdge::Context(_) => closures += 1,
+                ExtraEdge::None => untaken += 1,
+                ExtraEdge::BackTo(_) => {}
+            }
+        }
+
+        assert_eq!(core_edges, ARENA_CORE_EDGES);
+    }
+
+    // A closure is drawn at 45 % among the tree objects the core edges left.
+    let closure_share = closures as f64 * 100.0 / (closures + untaken) as f64;
+    assert!(
+        (closure_share - 45.0).abs() < 1.0,
+        "closures {closure_share} %"
+    );
+
+    // A tree of 100 objects gives each one a core edge.
+    let mut small = Plan::with_count(&mut streams, &targets, 100);
+    while !small.orm.is_empty() {
+        small = Plan::with_count(&mut streams, &targets, 100);
+    }
+
+    let tree = small.objects.len() - CONTEXT;
+    let core_edges = small
+        .objects
+        .iter()
+        .filter(|object| matches!(object.extra, ExtraEdge::Core(_)))
+        .count();
+    assert_eq!((tree, core_edges), (92, 92));
+
+    let writes = (0..4_000)
+        .filter(|_| {
+            Plan::with_count(&mut streams, &targets, 20)
+                .session_write
+                .is_some()
+        })
+        .count();
+    let share = writes as f64 * 100.0 / 4_000.0;
+    assert!(
+        (share - SESSION_WRITE_PERCENT).abs() < 2.0,
+        "writes {share} %"
+    );
+}
+
+/// A `web-arena` request logs a heap reference into its arena for its
+/// session, each lookup and each core edge; its objects leave the heap's
+/// held bytes where its misses put them; and its reset registers exactly
+/// the distinct targets of those references that stood no candidate.
+#[test]
+fn an_arena_request_registers_at_its_reset_what_it_logged() {
+    let _g = test_guard();
+    let shape = LongLivedShape {
+        core: 50,
+        values: 10,
+        sessions: 2,
+    };
+    let mut fixture = Fixture::in_variant("ArenaReset", shape, Variant::Arena);
+    let core = fixture.long_lived.core.clone();
+    let mut plan = Plan::with_count(&mut Streams::new(5, 1), fixture.long_lived.targets(), 2_000);
+    plan.session_write = None;
+    let before = held_by_size();
+    let mut build = fixture.build();
+    let (request, advanced) = unsafe { build_whole(&mut build, plan) };
+    let mut expected = before;
+    for size_index in 0..3 {
+        expected[size_index] += advanced.born[size_index];
+    }
+
+    assert_eq!(
+        held_by_size(),
+        expected,
+        "only the misses' values are heap bytes"
+    );
+
+    assert_eq!(slot_of(request.locals, 0), request.session);
+    let mut targets: Vec<*mut Object> = (1..=LOOKUPS as u32)
+        .map(|slot| slot_of(request.locals, slot))
+        .collect();
+    assert!(
+        targets.iter().all(|value| !value.is_null()),
+        "every lookup stored its value"
+    );
+    targets.push(request.session);
+    for (index, object) in request.plan().objects.iter().enumerate() {
+        if let ExtraEdge::Core(target) = object.extra {
+            assert_eq!(slot_of(request.object(index), 0), core[target as usize]);
+            targets.push(core[target as usize]);
+        }
+    }
+
+    assert_eq!(targets.len(), LOGGED_REFERENCES);
+    targets.sort_unstable();
+    targets.dedup();
+    let predicted = targets
+        .iter()
+        .filter(|&&target| !is_a_candidate(target))
+        .count();
+    let ended = unsafe { request.finish(&mut build) };
+    assert_eq!(ended.registered, predicted);
+    assert!(predicted > 0, "the case registers something at the reset");
+    assert_eq!(
+        held_by_size(),
+        expected,
+        "the reset's releases are none of them final"
+    );
+    fixture.let_go();
+}
+
+/// A session write escapes its request's arena: the reset promotes it into
+/// the heap and retains its block, and the next write into the session
+/// frees it, its block going home.
+#[test]
+fn a_session_write_survives_its_reset_and_the_next_frees_it() {
+    let _g = test_guard();
+    let shape = LongLivedShape {
+        core: 10,
+        values: 10,
+        sessions: 2,
+    };
+    let mut fixture = Fixture::in_variant("SessionWrite", shape, Variant::Arena);
+    let session = fixture.long_lived.sessions.head(0);
+    let arena: *mut Arena = &mut *fixture.arena;
+    let retained = crate::memory::retained::retained_block_count;
+    // The setup's write, if the session holds one, is freed first.
+    unsafe {
+        store_prop(
+            arena,
+            session,
+            prop_offset(SESSION_WRITE_SLOT),
+            std::ptr::null_mut(),
+        )
+    };
+    let before = retained();
+    unsafe {
+        fixture.long_lived.write_into_session(arena, session, 1);
+        crate::promote::arena_reset_full(arena);
+    }
+
+    let first = slot_of(session, SESSION_WRITE_SLOT);
+    assert!(
+        !first.is_null(),
+        "the session holds the write after the reset"
+    );
+    assert_eq!(
+        unsafe { crate::refcount::entity_category(first) },
+        MemoryCategory::GcHeap,
+        "the reset promoted the write"
+    );
+    let first_block = crate::memory::block_pool::BlockHeader::of_ptr(first as *const u8);
+    assert_eq!(retained(), before + 1);
+
+    unsafe {
+        fixture.long_lived.write_into_session(arena, session, 0);
+        crate::promote::arena_reset_full(arena);
+    }
+
+    let second = slot_of(session, SESSION_WRITE_SLOT);
+    assert_ne!(first, second);
+    assert_ne!(
+        crate::memory::block_pool::BlockHeader::of_ptr(second as *const u8),
+        first_block
+    );
+    assert_eq!(retained(), before + 1, "the first write's block went home");
+    fixture.let_go();
+}
+
+/// Sessions touched uniformly, replaced past their idle lifetime and
+/// written at [`SESSION_WRITE_PERCENT`] of their touches hold a write in
+/// the share [`SESSION_WRITE_STEADY_SHARE`] names, and the setup gives its
+/// sessions writes in that share.
+#[test]
+fn the_session_writes_stand_at_their_steady_share() {
+    let mut draws = Draws::new(9, 1, Purpose::Sessions);
+    let mut last_touch = vec![0u64; SESSIONS];
+    let mut written = vec![false; SESSIONS];
+    let (mut sum, mut samples) = (0.0, 0);
+    for request in 1..=400_000u64 {
+        let slot = draws.below(SESSIONS);
+        if request - last_touch[slot] > SESSION_IDLE_REQUESTS {
+            written[slot] = false;
+        }
+
+        last_touch[slot] = request;
+        written[slot] |= draws.percent(SESSION_WRITE_PERCENT);
+        if request > 200_000 && request % 1_000 == 0 {
+            sum += written.iter().filter(|&&written| written).count() as f64 / SESSIONS as f64;
+            samples += 1;
+        }
+    }
+
+    let simulated = sum / samples as f64;
+    assert!(
+        (simulated - SESSION_WRITE_STEADY_SHARE).abs() < 0.01,
+        "simulated {simulated}"
+    );
+
+    let _g = test_guard();
+    let shape = LongLivedShape {
+        core: 10,
+        values: 10,
+        sessions: SESSIONS,
+    };
+    let fixture = Fixture::in_variant("SteadyWrites", shape, Variant::Arena);
+    let share = fixture.long_lived.counts.session_writes as f64 / SESSIONS as f64;
+    assert!(
+        (share - SESSION_WRITE_STEADY_SHARE).abs() < 0.015,
+        "setup {share}"
+    );
+    assert_eq!(
+        fixture.long_lived.blocks_the_writes_hold(),
+        fixture.long_lived.counts.session_writes,
+        "each write holds a block of its own"
+    );
+    fixture.let_go();
+}
+
+/// After the arena variant's setup has registered its steady state, every
+/// resident value stands candidate: no eviction registers, and a reset
+/// registers the values its misses built and the sessions it replaced and
+/// nothing else.
+#[test]
+fn the_arena_steady_state_leaves_no_resident_value_to_register() {
+    let _g = test_guard();
+    let shape = LongLivedShape {
+        core: 50,
+        values: 1_000,
+        sessions: 2,
+    };
+    let mut fixture = Fixture::in_variant("ArenaSteady", shape, Variant::Arena);
+    unsafe { fixture.long_lived.register_the_steady_state(&mut || {}) };
+    let mut streams = Streams::new(6, 1);
+    let (mut registered, mut built) = (0, 0);
+    for _ in 0..40 {
+        let plan = Plan::with_count(&mut streams, fixture.long_lived.targets(), 200);
+        let counts_before = fixture.long_lived.counts;
+        let mut build = fixture.build();
+        let (request, _) = unsafe { build_whole(&mut build, plan) };
+        registered += unsafe { request.finish(&mut build) }.registered;
+        let counts = fixture.long_lived.counts;
+        built += counts.misses - counts_before.misses + counts.sessions_replaced
+            - counts_before.sessions_replaced;
+    }
+
+    let counts = fixture.long_lived.counts;
+    assert!(counts.misses > 0, "the case evicts");
+    assert_eq!(counts.evictions_registering, 0);
+    assert_eq!(registered, built);
+    fixture.let_go();
+}
+
+/// A buffer this thread allocated and another thread frees is one free from
+/// another thread, the count the rig reads the web loads by.
+#[test]
+fn a_free_from_another_thread_is_counted_once() {
+    let _g = test_guard();
+    let buffer = crate::cycle::testing::Sent(unsafe { crate::memory::stdapi::ll_alloc(64, 8) });
+    let _ = crate::memory::heap::take_frees_from_another_thread();
+    std::thread::spawn(move || unsafe { crate::memory::stdapi::ll_free(buffer.into_inner()) })
+        .join()
+        .expect("the other thread freed the buffer");
+    assert_eq!(crate::memory::heap::take_frees_from_another_thread(), 1);
 }

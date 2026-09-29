@@ -32,7 +32,7 @@ cell() {
     [ "$placement" = shared-core ] && collector=$SHARED
     LL_RIG_PLACEMENT=$placement LL_RIG_LOAD=$load LL_RIG_MUTATOR_CPUS=$MUTATORS \
         LL_RIG_COLLECTOR_CPUS=$collector LL_RIG_CAP=1 LL_RIG_SECONDS=$seconds \
-        LL_RIG_PACE_MS=$pace LL_RIG_DRAIN_MS=$drain \
+        LL_RIG_PACE_MS=$pace LL_RIG_DRAIN_MS=$drain LL_RIG_REPEAT=$repeat \
         timeout 400 "$ARMS_DIR/$arm" --ignored --exact --test-threads=1 --nocapture "$CASE" \
         > "$LOG" 2>&1
     if ! grep -q '1 passed' "$LOG"; then

@@ -470,26 +470,12 @@ Notes: dev/plans/S67.md
       handoff: `worker/tests/the_web_loads.rs`, `Plan`, `Request` and `Garbage`
         (`dev/plans/S67.md`, S67.3, with what S67.5 and S67.7 owe).
 - [x] S67.4 Long-lived state: a shared core, a cache and sessions
-      done: each mutator holds a strongly connected core the request graphs
-        point into, an LRU cache whose hits register and whose evictions die
-        by a non-final decrement, silently where the value is a candidate
-        already and registering a root otherwise, and sessions with an idle
-        lifetime; the setup leaves the cache and the registrations at their
-        steady state (S67.4's Critic, 2026-09-29: the earlier line read every
-        eviction as silent, against the specification)
-      tier: T2 · role: Critic
-      Critic 2026-09-29: six findings on the proposal, among them a fill
-        that left the registered set a transient spanning the cell and
-        sessions with no traffic; each answered in `dev/plans/S67.md`, S67.4.
-      review 2026-09-29 (independent, of the code): eight groups, among them
-        the session's release at the end unreported and untested; each
-        repaired or answered there.
       handoff: `LongLived` in `worker/tests/the_web_loads.rs`, built and
         registered to the steady state the simulation of the Critic's finding
         2 reads; fifteen cases, eighteen mutations red. S67.5 owes the list
         at the end of `dev/plans/S67.md`, S67.4, among it an epoch turned in
         the drain: a state let go is freed only after a turnover.
-- [ ] S67.5 The loads `web-heap` and `web-arena`
+- [x] S67.5 The loads `web-heap` and `web-arena`
       done: both loads in the rig's table; `web-arena`'s request objects in
         the mutator's `Arena`, reset at the request's end with the release
         log; a smoke cell of each completes under D and HG and their best
@@ -506,6 +492,14 @@ Notes: dev/plans/S67.md
         retained-blocks gate the live session writes swamp (the protocol's
         gate amended to the blocks less theirs) and `web-heap` moved to
         N = 150k; each answered in `dev/plans/S67.md`, S67.5.
+      review 2026-09-29 (independent, of the code): the setup's and the
+        teardown's collections in the cell's figures, and six more; each
+        repaired or answered there.
+      handoff: `Variant::Arena` and `a_web_mutator` (`the_web_loads.rs`,
+        `the_rig.rs`), 22 cases, the web columns; the smoke cells of the
+        three loads under the four arms complete, and no arm frees either
+        load's garbage inside the drain (`dev/plans/S67.md`, S67.5, the smoke
+        cells), put to Edmond before S67.6.
 - [ ] S67.7 The protocol's instruments
       done: each instrument of `dev/plans/S67.md`, "Instruments owed", that
         S67.2–S67.5 do not build is in the rig — among them the arrivals'

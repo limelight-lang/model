@@ -423,7 +423,11 @@ the garbage in bytes by size (`Garbage`), read off the entity heap's
 test-only count of held bytes (`memory::heap::entity_bytes_held`). The
 mutator's long-lived state beside it (S67.4): `LongLived`, the core, the LRU
 cache of values kept by `KeyedLru` outside the heap, the sessions, and the
-setup to their steady state.
+setup to their steady state. The arena variant (S67.5), `Variant::Arena`: the
+request in the mutator's arena, its heap references logged and released at
+`promote::arena_reset_full`, and the session writes it promotes; the rig runs
+both as the loads `web-heap`, `web-arena-40k` and `web-arena-150k`
+(`the_rig::a_web_mutator`), outside `rig.sh`'s sweep.
 
 `dev/tools/arms.sh` and `dev/tools/arms_table.py` — a comparison of arms on
 the rig: one test binary per arm, interleaved inside each repeat, the deciding

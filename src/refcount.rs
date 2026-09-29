@@ -946,6 +946,14 @@ pub(crate) fn take_admissions() -> usize {
     ADMITTED.with(|c| c.replace(0))
 }
 
+/// Admissions on this thread since [`take_admissions`] last ran, the count
+/// left standing: what a reader that differences two instants takes, so
+/// that it and a case taking the count do not reset each other's.
+#[cfg(test)]
+pub(crate) fn admissions() -> usize {
+    ADMITTED.with(|c| c.get())
+}
+
 /// [`ll_release`] for a compiler-emitted run of releases (a scope
 /// exit): lowering emits one
 /// [`ll_gc_checkpoint_ack`](crate::gc::ll_gc_checkpoint_ack) before the

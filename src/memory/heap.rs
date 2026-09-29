@@ -1247,6 +1247,8 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn free_remote(block: *mut HeapBlockHeader, ptr: *mut u8) {
+        #[cfg(test)]
+        FREES_FROM_ANOTHER_THREAD.fetch_add(1, Ordering::Relaxed);
         // The thread with no heap of its own enters here through `free_foreign`
         // rather than through `Heap::free`, so this is the common boundary for
         // both entrances to the remote list.
@@ -2647,6 +2649,20 @@ unsafe fn entity_alloc_once(size: usize) -> *mut u8 {
         require_thread_started("entity_alloc");
         crate::memory::large_entity::alloc(size)
     }
+}
+
+/// Frees any thread pushed onto another thread's block since the last
+/// [`take_frees_from_another_thread`], process-wide, through `free_foreign`
+/// as well as `Heap::free`: what the web loads, which free nothing across
+/// threads, are read by. Not `probe::REMOTE_FREES`, the probes' count of
+/// `Heap::free`'s remote arm alone.
+#[cfg(test)]
+static FREES_FROM_ANOTHER_THREAD: AtomicUsize = AtomicUsize::new(0);
+
+/// The frees from another thread since the last call, and zero the count.
+#[cfg(test)]
+pub(crate) fn take_frees_from_another_thread() -> usize {
+    FREES_FROM_ANOTHER_THREAD.swap(0, Ordering::Relaxed)
 }
 
 /// The bytes this thread's entity heap holds for it, by size class; zeros on
