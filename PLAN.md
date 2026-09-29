@@ -31,11 +31,12 @@ whether the refused arms leave the tree is put to Edmond. Pass 3, the Critic
 over the plan: eleven findings. Cut from the fog: the count of live readings
 (built as S65.42's) and the long-iteration gate (S67.1's gates replace it).
 S67's Done-when restated to what S67.2 found, S67.3's done-line to the
-specification, S67.7 added for the protocol's instruments. Put to Edmond:
-what S67's verdict leaves as the default build; the refused arms; S65.37,
-S65.38, S65.39 and S65.41 against the rulings of 2026-09-29; S65.28 and
-S65.31, whose done-lines are met; the rfc's amendment for form D and the
-live list. Earlier reviews and the closed stages' summaries are in
+specification, S67.7 added for the protocol's instruments. Ruled by Edmond
+the same day: S67's run gives a second verdict, best against plain of the
+surviving scheme, so the two name the default build; the four refused arms
+leave the tree (S65.47); S65.37, S65.38 and S65.39 cut, S65.41 moved to the
+backlog line "If S67 keeps HG"; S65.28 and S65.31 closed; the rfc's lag a
+backlog debt. Earlier reviews and the closed stages' summaries are in
 `git log -- PLAN.md`.
 
 **Closed stages are deleted whole** (rule 23.1.3), and what outlived each of
@@ -284,7 +285,7 @@ Notes: dev/plans/S65.md
         2026-09-26: "найди")
       handoff: `VerdictWriter::room` re-reads the reader's front; the drain then freed
         91,488 of 91,488, and two cases are red with the re-read taken out.
-- [ ] S65.28 The collector's chain worked outside the token (Edmond,
+- [x] S65.28 The collector's chain worked outside the token (Edmond,
         2026-09-26: "the collector can enter it without taking the token"; after
         S65.27)
       done (the Sage, 2026-09-26, Final): D re-measured against H on the
@@ -388,7 +389,13 @@ Notes: dev/plans/S65.md
         clause 8, the handshake table) is amended in the commit that makes H
         the default, both repositories together.
       tier: T2 · role: Critic, Sage
-- [ ] S65.31 A root read live waits in the deferred lane only once it has
+      closed 2026-09-29 (Edmond, "да, закрывай"): D stays by the rule, and
+        the expiry's and the check's share under 10 % in every cell leaves
+        `CHAIN|s` unbuilt; "B + forget-exact" goes with H out of the arms;
+        the cases owed by H's adoption are the backlog line "If S67 keeps
+        HG", and form D's `rfc` amendment the backlog line "The `rfc` lags
+        the default build".
+- [x] S65.31 A root read live waits in the deferred lane only once it has
         outlived an epoch (Edmond, 2026-09-27: "корни которые быстро умирают
         не ложатся в отложенные")
       done: the rule of `dev/plans/S65.md`, S65.31, polished by the Critic
@@ -411,6 +418,8 @@ Notes: dev/plans/S65.md
         collector's re-reads and slow the garbage (`dev/BENCHMARKS.md`,
         "S65.31 deferral by generation against D"). Put to Edmond.
       tier: T2 · role: Critic, Sage
+      closed 2026-09-29 (Edmond): not adopted; the feature
+        `deferral-by-generation` leaves the tree with S65.47.
 - [x] S65.32 H by generation: the collector keeps in its chain only a root of
         the second generation (Edmond, 2026-09-27: "моя схема — это H, которая
         не ложит в EpochQueue(GC) первое поколение, а только второе"; S65.31
@@ -595,47 +604,6 @@ Notes: dev/plans/S65.md
       closed 2026-09-29, not built: Edmond, "нет не строим - это ухудшит
         release код" — the count stands on the release build's decrement
         path (`dev/DECISIONS.md`, 2026-09-29).
-- [ ] S65.41 The epoch turns no sooner than a floor of time, whatever the
-        batches (the Sage, 2026-09-28: on `registered-ring-interleaved` HG
-        re-reads its chained live roots 1.93 M times a cell, about 83 epochs
-        of 64 small batches each; Edmond, 2026-09-27: "у D работа с
-        отложенными корнями идёт большими пачками а в HG — мелкими")
-      done: behind its own feature, `note_batch`'s turn held until the floor
-        has passed since the advance; red first on "64 batches inside the
-        floor turn no epoch"; built on S65.42's best builds as an arm of its
-        own at F = 250 ms, 500 only if 250 wins (the Sage, 2026-09-28, Final),
-        on `live-churn` and `deferred-then-dead` beside the five loads of
-        S65.36, both placements; verdicts and p99 / p999 put to Edmond
-      tier: T2 · role: Critic
-- [ ] S65.37 EpochQueue(M) re-offers at the turn only the roots a decrement
-        or a pruned reading touched (S65.33; Edmond, 2026-09-27)
-      done: the Sage rules the dirty bit sound or names its counter-example
-        before the first edit (the bit in byte 6's reserve bits 20–23, set
-        by the mutator at registration and on a non-final decrement of a
-        candidate; a `ReadLive` whose reading pruned an edge deferred dirty;
-        the turn's pass re-offering the dirty entries and keeping the clean
-        ones in the lane); if sound, built behind its own feature, the
-        Sage's counter-example and Critic 2's four cases red first, and
-        measured against HG and D on a quiet box
-      tier: T2 · role: Critic, Sage
-- [ ] S65.38 A core is listed only when its size reaches a threshold
-        (S65.33, S2; Edmond, 2026-09-27: "давай попробуем - как подбор
-        замером")
-      done: the part's size (edges or rows) counted in its trace; behind its
-        own feature, a part below the threshold lists none of its rows; the
-        threshold chosen by measurement on `overlapping-live` and
-        `partly-overlapping` beside the rig's loads, in both schemes, with
-        `EDGES_PRUNED` read; red first on "a core above the threshold,
-        entered by a second root in the same epoch, prunes"; put to Edmond
-      tier: T2 · role: Critic
-- [ ] S65.39 A batch of re-offered roots alone does not advance the epoch
-        (S65.33, M3; Edmond, 2026-09-27: "попробуй")
-      done: behind its own feature, `note_batch` skipped at `worker.rs:2408`
-        when every root of the batch carries `REOFFERED_MARK`; measured in
-        both schemes against the build without it, the epoch's length, the
-        re-reads, the garbage held and the withheld peak read; put to
-        Edmond, `BATCHES_PER_EPOCH` being his ruling
-      tier: T2 · role: Critic
 - [ ] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,
@@ -682,6 +650,12 @@ Notes: dev/plans/S65.md
         `dev/DECISIONS.md` exempts them from F3 with a figure of what a
         producer holds under the longest grant the rig reads
       tier: T2 · role: Critic
+- [ ] S65.47 The refused arms leave the tree (Edmond, 2026-09-29: "удаляй!")
+      done: `deferral-by-generation`, `lane-back-by-blocks`,
+        `r-first-under-a-small-chain` and `release-on-heap-growth` deleted
+        with their cases, their gate builds and their `compile_error!` pairs;
+        the commit to revert named in `dev/DECISIONS.md`; the gate green
+      tier: T2
 - [ ] S65.46 The review's cuts of 2026-09-29 (the plan review, pass 1)
       done: after Edmond's ruling on the refused arms, each cut of
         `dev/plans/S65.md`, S65.46, that stands in the code left is made or
@@ -892,6 +866,37 @@ against the code on 2026-09-24.
   waits on one (`dev/DECISIONS.md`, 2026-08-13).
 
 ## Residual / carried-over items
+
+- [ ] **If S67 keeps HG.** Owed by the chain's adoption (S65.28, the plan
+      review's Critic, F4): the cases S65.26 and its Critic named and did not
+      build — concurrent registration across R and the chain, the exit under
+      a reading hold or a standing request, a deferred part past B into the
+      chain, `cap 0`'s ask over an expired block — and the record's growth to
+      384 bytes against the poll. If S67's second verdict keeps HG without
+      the waits, S65.41's floor of time on the epoch's turn comes back: plain
+      HG re-reads 1.98 M roots a cell on `registered-ring-interleaved`
+      against D's 0.73 M (`dev/BENCHMARKS.md`, S65.42), the gap the waits
+      close. S65.41 as it stood:
+      S65.41 The epoch turns no sooner than a floor of time, whatever the
+              batches (the Sage, 2026-09-28: on `registered-ring-interleaved` HG
+              re-reads its chained live roots 1.93 M times a cell, about 83 epochs
+              of 64 small batches each; Edmond, 2026-09-27: "у D работа с
+              отложенными корнями идёт большими пачками а в HG — мелкими")
+            done: behind its own feature, `note_batch`'s turn held until the floor
+              has passed since the advance; red first on "64 batches inside the
+              floor turn no epoch"; built on S65.42's best builds as an arm of its
+              own at F = 250 ms, 500 only if 250 wins (the Sage, 2026-09-28, Final),
+              on `live-churn` and `deferred-then-dead` beside the five loads of
+              S65.36, both placements; verdicts and p99 / p999 put to Edmond
+            tier: T2 · role: Critic
+- [ ] **The `rfc` lags the default build** (Edmond, 2026-09-29: "в долг
+      запиши"). `rfc/model/gc` has no `NOTHING_PROPOSED`: form D's batch that
+      proposed nothing releases to it (`cycle::collect`'s `dispose_of_p`),
+      where the `rfc` describes the release to `POSTED` alone; and
+      `rc-cycle.md`, "The live list of a batch", lists every row a part left
+      live, where the code leaves the part's own root out since S65.34. The
+      live list is amended in any build; form D's release once S67's verdict
+      keeps D.
 
 - [ ] **The review's cuts of 2026-09-26** (pass 1 over `89bb0dc..49b544a`,
   with the comment reviewers' findings before the push): production —
