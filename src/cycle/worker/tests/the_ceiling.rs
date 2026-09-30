@@ -31,13 +31,13 @@ const MEMBER_BYTES: usize = 128;
 
 /// A live ring of `members`, one per heap block, its first `roots` members
 /// registered and a keeper holding the first.
-struct SpreadCore {
-    members: Vec<*mut Object>,
+pub(super) struct SpreadCore {
+    pub(super) members: Vec<*mut Object>,
     fillers: Vec<*mut Object>,
     keeper: *mut Object,
 }
 
-fn member_class(name: &str) -> *const Class {
+pub(super) fn member_class(name: &str) -> *const Class {
     let mut builder = ClassBuilder::new(name);
     for property in 0..(MEMBER_BYTES - 16) / 16 {
         builder = builder.prop(&format!("p{property}"), true);
@@ -48,7 +48,12 @@ fn member_class(name: &str) -> *const Class {
 
 /// # Safety
 /// A quiescent heap under `test_guard`.
-unsafe fn spread_core(arena: &mut Arena, name: &str, members: usize, roots: usize) -> SpreadCore {
+pub(super) unsafe fn spread_core(
+    arena: &mut Arena,
+    name: &str,
+    members: usize,
+    roots: usize,
+) -> SpreadCore {
     let class = member_class(name);
     let arena_ptr: *mut Arena = arena;
     let mut context = LLContext { arena };
@@ -94,7 +99,7 @@ unsafe fn spread_core(arena: &mut Arena, name: &str, members: usize, roots: usiz
 ///
 /// # Safety
 /// `core` came from [`spread_core`] on this thread, and no collection runs.
-unsafe fn let_the_core_go(arena: &mut Arena, core: SpreadCore) {
+pub(super) unsafe fn let_the_core_go(arena: &mut Arena, core: SpreadCore) {
     let arena_ptr: *mut Arena = arena;
     unsafe {
         store_prop(arena_ptr, core.keeper, prop_offset(0), std::ptr::null_mut());
@@ -118,7 +123,7 @@ unsafe fn let_the_core_go(arena: &mut Arena, core: SpreadCore) {
 }
 
 /// One serve under a part budget of `b` blocks, reading the batch.
-fn a_serve_under(b: usize) -> (Served, testing::TracedBatch, Vec<Verdict>) {
+pub(super) fn a_serve_under(b: usize) -> (Served, testing::TracedBatch, Vec<Verdict>) {
     testing::budget_the_next_batch(b);
     testing::read_traced_batches(true);
     let served = served_by_a_collector();

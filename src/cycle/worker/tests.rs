@@ -1046,6 +1046,7 @@ mod the_generations_in_the_chain;
 mod the_journal_of_the_collector;
 mod the_live_list;
 mod the_merged_lane;
+mod the_progress;
 mod the_reading_before_the_claim;
 mod the_recall;
 mod the_rig;
