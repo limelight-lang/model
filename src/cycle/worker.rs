@@ -2449,6 +2449,7 @@ unsafe fn batch(
         widest_part: testing::take_widest_part(),
         positions: arena.positions_inspected() - positions_from,
         ending: outcome.ending,
+        turnovers: mutator.turnovers(),
     });
     #[cfg(not(test))]
     let _ = parts;

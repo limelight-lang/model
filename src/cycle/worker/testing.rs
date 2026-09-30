@@ -370,6 +370,9 @@ pub(crate) struct TracedBatch {
     pub(crate) positions: usize,
     /// Which exit ended the trace, one of the journal's `BATCH_END_*` codes.
     pub(crate) ending: u64,
+    /// The mutator's epoch clock at the batch's end
+    /// (`crate::cycle::mutator_record::MutatorRecord::turnovers`).
+    pub(crate) turnovers: u64,
 }
 
 /// What one completed part read (`dev/plans/S67.md`, S67.9, run R1): the

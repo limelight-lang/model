@@ -511,10 +511,26 @@ unsafe fn visit_child<R: CellReader>(
 #[inline]
 unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, prune: Prune) -> bool {
     let stamp = unsafe { read_maturation_stamp(child) };
+    #[cfg(test)]
+    if PRUNES_REGISTERED.load(std::sync::atomic::Ordering::Relaxed) {
+        return stamp.age >= prune.threshold && stamp.epoch == prune.epoch;
+    }
     stamp.age >= prune.threshold
         && stamp.epoch == prune.epoch
         && !is_registered_candidate(unsafe { mutator_flags(child) })
 }
+
+/// Prune a registered target like any other, or keep the module's exemption
+/// (tests only; revision 3's (1'), `dev/plans/S67.md`, S67.9, read on the
+/// rig before it is built). A batch root met from another root is pruned too,
+/// which only leaves its row above zero.
+#[cfg(test)]
+pub(crate) fn prune_registered(prunes: bool) {
+    PRUNES_REGISTERED.store(prunes, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+static PRUNES_REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Add one to `EDGES_PRUNED`, and nothing at all without `cfg(test)`.
 ///

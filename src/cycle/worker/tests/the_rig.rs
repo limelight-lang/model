@@ -103,6 +103,11 @@
 //!   edge into a registered candidate past its root and expands it no further
 //!   (`mark::stop_at_candidates`), each part the walk of its root's first
 //!   region (`dev/plans/S67.md`, S67.9, run R2).
+//! - `LL_RIG_PRUNE_REGISTERED` — set to 1, every mark prunes a registered
+//!   target at its stamp like any other (`mark::prune_registered`), revision
+//!   3's (1') read before it is built (`dev/plans/S67.md`, S67.9, run R4);
+//! - `LL_RIG_BATCH_DUMP` — a path: every batch of the loop is written there,
+//!   one CSV line each, with the mutator's epoch clock at its end.
 //!
 //! **The web loads** (`dev/plans/S67.md`, S67.5) run [`a_web_mutator`] in
 //! place of the ring loop: an iteration is one request of
@@ -2476,6 +2481,46 @@ fn the_timed_spin_is_fitted_by_its_calls_and_turns() {
 
 /// Whether the switch `variable` is on: unset is off and `1` is on; any other
 /// value is refused, so that a misspelt switch does not run the other arm.
+/// Write every batch of the loop, one line each, to the file
+/// `LL_RIG_BATCH_DUMP` names, and nothing when it is unset: the epoch's
+/// saw-tooth is read per batch, not from a cell's sums.
+fn dump_the_batches(batches: &[testing::TracedBatch], start: Instant) {
+    use std::fmt::Write as _;
+
+    let Ok(path) = std::env::var("LL_RIG_BATCH_DUMP") else {
+        return;
+    };
+    let mut mutators: Vec<usize> = Vec::new();
+    let mut text = String::from(
+        "mutator,ended_ms,turnovers,roots,parts,complete,ending,positions,edges_pruned,rows_met,deferred_parts,wall_us\n",
+    );
+    for batch in batches {
+        let mutator = mutators
+            .iter()
+            .position(|&seen| seen == batch.mutator)
+            .unwrap_or_else(|| {
+                mutators.push(batch.mutator);
+                mutators.len() - 1
+            });
+        let ended = batch.ended.saturating_duration_since(start).as_secs_f64() * 1e3;
+        let _ = writeln!(
+            text,
+            "{mutator},{ended:.3},{},{},{},{},{},{},{},{},{},{}",
+            batch.turnovers,
+            batch.roots,
+            batch.parts,
+            u8::from(batch.complete),
+            batch.ending,
+            batch.positions,
+            batch.edges_pruned,
+            batch.rows_met,
+            batch.deferred_parts,
+            batch.wall.as_micros(),
+        );
+    }
+    std::fs::write(path, text).expect("the batch dump is written");
+}
+
 fn switch_from_env(variable: &str) -> bool {
     match std::env::var(variable) {
         Err(_) => false,
@@ -4185,6 +4230,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     });
     let first_regions = switch_from_env("LL_RIG_FIRST_REGIONS");
     crate::cycle::mark::stop_at_candidates(first_regions);
+    crate::cycle::mark::prune_registered(switch_from_env("LL_RIG_PRUNE_REGISTERED"));
     let _budgets = batch_blocks.map(|blocks| {
         (
             testing::budget_every_batch(blocks),
@@ -4244,6 +4290,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         // The drain's batches are read on, for the widest part alone: a load
         // whose loop recalls every part completes one there.
         let batches = testing::take_traced_batches();
+        dump_the_batches(&batches, at_the_start.at);
         web.batches_traced = batches.len();
         let stopped = at_the_stop.map_or_else(Instant::now, |edge| edge.at);
         web.window = stopped - at_the_start.at;
