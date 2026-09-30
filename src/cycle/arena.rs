@@ -1528,8 +1528,9 @@ impl TraceScratchArena {
 
     /// Blocks drawn above the workspace since the last
     /// [`reset`](Self::reset) or
-    /// [`reset_to_the_watermark`](Self::reset_to_the_watermark). Tests only.
-    #[cfg(test)]
+    /// [`reset_to_the_watermark`](Self::reset_to_the_watermark). Tests and
+    /// the journal's record of a part past its budget only.
+    #[cfg(any(test, feature = "debug-journal"))]
     pub(crate) fn blocks_drawn(&self) -> usize {
         self.drawn
     }

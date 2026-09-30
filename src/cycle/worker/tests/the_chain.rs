@@ -133,6 +133,8 @@ fn a_refused_chain_block_sends_the_root_into_p_and_the_disposition_defers_it() {
 
 #[test]
 fn the_waiting_part_becomes_ready_when_the_epoch_passes_and_the_next_batch_reads_it() {
+    #[cfg(feature = "debug-journal")]
+    let _sites = journal_the_collector();
     let _g = test_guard();
     reset();
     let node = node_class("ChainExpiryNode");
@@ -143,6 +145,15 @@ fn the_waiting_part_becomes_ready_when_the_epoch_passes_and_the_next_batch_reads
         Served::Batch { roots: 3, .. }
     ));
     let _ = testing::take_chain_figures();
+    #[cfg(feature = "debug-journal")]
+    assert_eq!(
+        testing::take_the_serving_threads_counts().records(
+            journal::KIND_ROOT_DEFERRED,
+            journal::DEFERRED_INTO_THE_WAITING_PART
+        ),
+        3,
+        "each root read live went into the waiting part"
+    );
 
     // Within the epoch the chain owes nothing, R is empty, and the round
     // leaves.
@@ -174,6 +185,26 @@ fn the_waiting_part_becomes_ready_when_the_epoch_passes_and_the_next_batch_reads
         (3, 0, 3),
         "read from the ready part, live again, back to waiting"
     );
+    #[cfg(feature = "debug-journal")]
+    {
+        let collector = testing::take_the_serving_threads_counts();
+        assert_eq!(
+            collector.records(journal::KIND_REOFFERED, journal::REOFFERED_CHAIN_EXPIRED),
+            1
+        );
+        assert_eq!(
+            collector.sum_of_b(journal::KIND_REOFFERED, journal::REOFFERED_CHAIN_EXPIRED),
+            3,
+            "the expiry moved the waiting part's three roots"
+        );
+        assert_eq!(
+            collector.records(
+                journal::KIND_ROOT_DEFERRED,
+                journal::DEFERRED_INTO_THE_WAITING_PART
+            ),
+            3
+        );
+    }
     let (ready, waiting) = roots_of_this_threads();
     assert_eq!((ready.len(), waiting.len()), (0, 3));
     assert_eq!(state(byte()), FREE);

@@ -25,6 +25,7 @@
 //! the cleanup recovery contract").
 
 use super::*;
+use crate::journal::kinds::{self as journal, journal_event};
 
 /// Where a staged entry goes, and the order the three answers rank in.
 ///
@@ -108,7 +109,7 @@ pub(super) fn compact(
                 return true;
             }
 
-            free(entity);
+            free(entity, journal::SLOT_FROM_A_DEFERRED_LANE);
             false
         };
         let mut give_back = |block| {
@@ -138,7 +139,7 @@ pub(super) fn compact(
             match destination {
                 Destination::Free => {
                     pass.discard();
-                    free(entity);
+                    free(entity, journal::SLOT_FROM_R);
                 }
                 Destination::Deferred => {
                     // Out of the ring before it is in the lane, so that no
@@ -146,13 +147,15 @@ pub(super) fn compact(
                     pass.discard();
                     let deferred = defer_entry(mutator_state, entity, deferred_at);
                     note_queue_work(0, 0, 1);
-                    if deferred.is_err() {
+                    let Ok(lane) = deferred else {
                         // Both cells empty: the root stays in the ring and
                         // is offered to the next collection rather than to
                         // the turnover.
                         pass.write(entity_entry(entity) | (entry & REOFFERED_MARK));
                         continue;
-                    }
+                    };
+
+                    journal_deferred(entity, journal::DEFERRED_FROM_R, lane);
 
                     checkpoint(3);
                 }
@@ -212,7 +215,7 @@ fn free_the_front_run() {
         }
 
         reader.commit(peeked);
-        free(entity);
+        free(entity, journal::SLOT_FROM_R_FRONT_RUN);
         checkpoint(FRONT_RUN_CHECKPOINT);
     }
 }
@@ -255,7 +258,7 @@ fn dispose_verdicts(
             // Nulled before the free, as the ring's pass discards before
             // it frees.
             *slot = 0;
-            free(entity);
+            free(entity, journal::SLOT_FROM_P);
             return;
         }
 
@@ -273,8 +276,9 @@ fn dispose_verdicts(
         // Nulled before the move, so that no unwind between the two finds
         // the entity in P and in a lane.
         *slot = 0;
-        if deferrable && defer_entry(mutator_state, entity, deferred_at).is_ok() {
+        if deferrable && let Ok(lane) = defer_entry(mutator_state, entity, deferred_at) {
             note_queue_work(0, 0, 1);
+            journal_deferred(entity, journal::DEFERRED_FROM_P, lane);
             return;
         }
 
@@ -282,6 +286,12 @@ fn dispose_verdicts(
         // still set (`rfc/model/gc/rc-cycle.md`, "The mutator's
         // disposition").
         unsafe { append_entry(state, entity) };
+        journal_event!(
+            journal::KIND_ROOT_WRITTEN_BACK,
+            entity as u64,
+            verdicts::entry_verdict(entry) as u64,
+            0,
+        );
         note_queue_work(0, 0, 1);
         #[cfg(test)]
         crate::cycle::worker::testing::note_written_back();
@@ -294,6 +304,19 @@ fn dispose_verdicts(
     }
 }
 
+/// Record `entity` put in lane `lane` of the deferred lanes, `from` the
+/// journal's `DEFERRED_*` code for the pass that put it there.
+fn journal_deferred(entity: *mut RcHeader, from: u64, lane: usize) {
+    journal_event!(
+        journal::KIND_ROOT_DEFERRED,
+        entity as u64,
+        from,
+        lane as u64
+    );
+    #[cfg(not(feature = "debug-journal"))]
+    let _ = (entity, from, lane);
+}
+
 /// Whether `entity`'s death completed in place, which is the one state a
 /// retirement acts on: a zero count whose teardown has not ended is left
 /// registered (`crate::refcount::SlotStateReading`).
@@ -304,7 +327,8 @@ pub(super) fn completed_death(entity: *mut RcHeader) -> bool {
     )
 }
 
-/// Return the slot a retired entry was withholding.
+/// Return the slot a retired entry was withholding, `from` the journal's
+/// `SLOT_FROM_*` code for where the entry stood.
 ///
 /// The two slot bits come off first, and the pointer stays this frame's
 /// through the checkpoint between the two: an unwind there frees on the
@@ -312,7 +336,10 @@ pub(super) fn completed_death(entity: *mut RcHeader) -> bool {
 /// crosses to `ll_free` at the call, and a panic inside the allocator cannot
 /// be retried — it may already have returned the slot or unmapped the whole
 /// run.
-pub(super) fn free(entity: *mut RcHeader) {
+pub(super) fn free(entity: *mut RcHeader, from: u64) {
+    journal_event!(journal::KIND_WITHHELD_SLOT_RETURNED, entity as u64, from, 0);
+    #[cfg(not(feature = "debug-journal"))]
+    let _ = from;
     struct PendingFree(*mut RcHeader);
     impl Drop for PendingFree {
         fn drop(&mut self) {
@@ -373,7 +400,7 @@ impl OverflowPass {
             self.read += 1;
             note_queue_work(0, 1, 0);
             if completed_death(entity) {
-                free(entity);
+                free(entity, journal::SLOT_FROM_OVERFLOW);
                 continue;
             }
 

@@ -109,11 +109,174 @@ pub const KIND_ARENA_RESET_SEVERED_EDGE: u32 = 10;
 /// capture, inside the reset's own bracket.
 pub const KIND_ARENA_RESET_REFUSED_CAPTURE: u32 = 11;
 
+/// A non-final decrement's candidate gate: `subject` is the entity, `a`
+/// [`REGISTERED_NOW`] when this decrement wrote its entry into R, or
+/// [`REGISTERED_ALREADY`] when `CANDIDATE_BIT` already stood and the gate's
+/// other bits were clear, `b` unused. Written at `refcount::release_word`
+/// alone: the overflow drain moves an entry already counted here.
+pub const KIND_CANDIDATE_REGISTERED: u32 = 12;
+
+/// A collector's batch took its roots and starts its trace: `subject` is the
+/// mutator's record, `a` [`BATCH_AT_THE_THRESHOLD`] or
+/// [`BATCH_OF_A_STANDING_RING`], `b` the roots taken, R's and the chain's.
+/// A grant that takes no root writes [`KIND_GRANT_WITHOUT_BATCH`] instead.
+pub const KIND_BATCH_START: u32 = 13;
+
+/// A collector's batch ended its trace: `subject` is the mutator's record,
+/// `a` the exit (the `BATCH_END_*` codes), `b` the parts opened. A batch
+/// that unwinds writes none; its roots' verdicts are still written.
+pub const KIND_BATCH_END: u32 = 14;
+
+/// A verdict the collector posted for one root: `subject` is the root, `a`
+/// the verdict (the `VERDICT_*` codes), `b` unused. Written before the
+/// chain's keep, so a root the chain holds has its verdict here and its
+/// keep as a [`KIND_ROOT_DEFERRED`].
+pub const KIND_ROOT_VERDICT: u32 = 15;
+
+/// A root put where only a turnover gives it back: `subject` is the root,
+/// `a` where (the `DEFERRED_*` codes), `b` the lane's index under
+/// `wait-by-readings` and 0 otherwise. A refused push writes nothing here:
+/// the root is written back or kept, and that is what is recorded.
+pub const KIND_ROOT_DEFERRED: u32 = 16;
+
+/// A root of P's disposition written back into R as a registration is:
+/// `subject` is the root, `a` the verdict its entry carried (the `VERDICT_*`
+/// codes: a proposal refused or resurrected, a root read live the lane had
+/// no block for, an unwalked root, a resurrected zero count), `b` unused.
+pub const KIND_ROOT_WRITTEN_BACK: u32 = 17;
+
+/// Deferred roots moved back to be read: `subject` is 0, `a` which move (the
+/// `REOFFERED_*` codes), `b` the entries moved. One record per lane or
+/// splice, so the roots are `b`'s sum.
+pub const KIND_REOFFERED: u32 = 18;
+
+/// A mutator's epoch cell advanced: `subject` is the record, `a` why (the
+/// `TURNOVER_*` codes), `b` the turnovers after the advance. Written on the
+/// thread that advances it, the collector's except by hand.
+pub const KIND_TURNOVER: u32 = 19;
+
+/// A set a collection's commit confirmed and tore down, which the commit
+/// treats as one component (`crate::cycle::collect`, "The commit is one
+/// component"): `subject` is its first member, `a` 0, `b` its member count,
+/// so `b`'s sum is the members freed.
+/// The members' slots come back through the ordinary death path, and a
+/// registered member's through [`KIND_WITHHELD_SLOT_RETURNED`] later.
+pub const KIND_COMPONENT_RECLAIMED: u32 = 20;
+
+/// A completed death's withheld slot retired by a mutator's pass: `subject`
+/// is the entity, `a` where its entry stood (the `SLOT_FROM_*` codes), `b`
+/// unused.
+pub const KIND_WITHHELD_SLOT_RETURNED: u32 = 21;
+
+/// A grant a collector released with no batch: `subject` is the mutator's
+/// record, `a` why (the `GRANT_*` codes), `b` unused.
+pub const KIND_GRANT_WITHOUT_BATCH: u32 = 22;
+
+/// A part of a batch that met its block budget B: `subject` is the part's
+/// root, `a` what followed (the `PART_*` codes), `b` the blocks the arena
+/// held when the part stopped.
+pub const KIND_PART_MET_BUDGET: u32 = 23;
+
+/// [`KIND_CANDIDATE_REGISTERED`]: the decrement wrote the entry.
+pub const REGISTERED_NOW: u64 = 0;
+/// [`KIND_CANDIDATE_REGISTERED`]: the entity was a candidate already.
+pub const REGISTERED_ALREADY: u64 = 1;
+
+/// [`KIND_BATCH_START`]: a take of a ring standing below the threshold.
+pub const BATCH_OF_A_STANDING_RING: u64 = 0;
+/// [`KIND_BATCH_START`]: R read at the threshold.
+pub const BATCH_AT_THE_THRESHOLD: u64 = 1;
+
+/// [`KIND_BATCH_END`]: every part ran to its end.
+pub const BATCH_END_COMPLETE: u64 = 0;
+/// [`KIND_BATCH_END`]: the batch ran to its end, parts deferred past B.
+pub const BATCH_END_DEFERRED_PAST_B: u64 = 1;
+/// [`KIND_BATCH_END`]: recalled in the pass over the roots before the parts.
+pub const BATCH_END_RECALLED_IN_THE_PASS: u64 = 2;
+/// [`KIND_BATCH_END`]: recalled between two parts.
+pub const BATCH_END_RECALLED_BETWEEN_PARTS: u64 = 3;
+/// [`KIND_BATCH_END`]: recalled inside a part's trace or its retry.
+pub const BATCH_END_RECALLED_INSIDE_A_PART: u64 = 4;
+/// [`KIND_BATCH_END`]: recalled after a part's trace completed, in its posts
+/// or the live list's append.
+pub const BATCH_END_RECALLED_AFTER_A_PART: u64 = 5;
+/// [`KIND_BATCH_END`]: an allocation refused inside a part's trace or its
+/// retry.
+pub const BATCH_END_REFUSED_INSIDE_A_PART: u64 = 6;
+
+/// [`KIND_ROOT_VERDICT`] and [`KIND_ROOT_WRITTEN_BACK`]: the discriminants of
+/// `cycle::queue::verdicts::Verdict`, which asserts them.
+pub const VERDICT_PROPOSED: u64 = 0;
+/// See [`VERDICT_PROPOSED`].
+pub const VERDICT_READ_LIVE: u64 = 1;
+/// See [`VERDICT_PROPOSED`].
+pub const VERDICT_ZERO_COUNT: u64 = 2;
+/// See [`VERDICT_PROPOSED`].
+pub const VERDICT_UNWALKED: u64 = 3;
+
+/// [`KIND_ROOT_DEFERRED`]: into the deferred lane from R's pass, a
+/// collection over R having marked it.
+pub const DEFERRED_FROM_R: u64 = 0;
+/// [`KIND_ROOT_DEFERRED`]: into the deferred lane from P's disposition.
+pub const DEFERRED_FROM_P: u64 = 1;
+/// [`KIND_ROOT_DEFERRED`]: into the chain's waiting part, read live.
+pub const DEFERRED_INTO_THE_WAITING_PART: u64 = 2;
+/// [`KIND_ROOT_DEFERRED`]: to the chain's ready part, unwalked.
+pub const DEFERRED_INTO_THE_READY_PART: u64 = 3;
+
+/// [`KIND_REOFFERED`]: the one deferred lane at a turnover.
+pub const REOFFERED_AT_THE_TURN: u64 = 0;
+/// [`KIND_REOFFERED`]: a lane whose wait passed, under `wait-by-readings`.
+pub const REOFFERED_LANE_DUE: u64 = 1;
+/// [`KIND_REOFFERED`]: every lane merged at once, before the pressure path
+/// or the exit, or by a driver's hand.
+pub const REOFFERED_EVERY_LANE: u64 = 2;
+/// [`KIND_REOFFERED`]: the chain's expired blocks moved to its ready part.
+pub const REOFFERED_CHAIN_EXPIRED: u64 = 3;
+/// [`KIND_REOFFERED`]: the chain spliced into R.
+pub const REOFFERED_CHAIN_INTO_R: u64 = 4;
+
+/// [`KIND_TURNOVER`]: the collector's batches since the last advance.
+pub const TURNOVER_BY_BATCHES: u64 = 0;
+/// [`KIND_TURNOVER`]: X of the collector's clock since the last advance.
+pub const TURNOVER_BY_X: u64 = 1;
+/// [`KIND_TURNOVER`]: the record's new life.
+pub const TURNOVER_NEW_LIFE: u64 = 2;
+/// [`KIND_TURNOVER`]: a test's advance by hand.
+pub const TURNOVER_BY_HAND: u64 = 3;
+
+/// [`KIND_WITHHELD_SLOT_RETURNED`]: the entry stood in P.
+pub const SLOT_FROM_P: u64 = 1;
+/// [`KIND_WITHHELD_SLOT_RETURNED`]: R's pass.
+pub const SLOT_FROM_R: u64 = 2;
+/// [`KIND_WITHHELD_SLOT_RETURNED`]: the run at R's front.
+pub const SLOT_FROM_R_FRONT_RUN: u64 = 3;
+/// [`KIND_WITHHELD_SLOT_RETURNED`]: the overflow buffer.
+pub const SLOT_FROM_OVERFLOW: u64 = 4;
+/// [`KIND_WITHHELD_SLOT_RETURNED`]: a deferred lane's sweep.
+pub const SLOT_FROM_A_DEFERRED_LANE: u64 = 5;
+
+/// [`KIND_GRANT_WITHOUT_BATCH`]: the recall stood before the batch.
+pub const GRANT_RECALLED_BEFORE_THE_BATCH: u64 = 0;
+/// [`KIND_GRANT_WITHOUT_BATCH`]: the pool refused the workspace.
+pub const GRANT_WORKSPACE_REFUSED: u64 = 1;
+/// [`KIND_GRANT_WITHOUT_BATCH`]: R and the chain gave no root, or P had no
+/// room.
+pub const GRANT_NOTHING_TAKEN: u64 = 2;
+
+/// [`KIND_PART_MET_BUDGET`]: its retry under `B_max` finished.
+pub const PART_RETRY_FINISHED: u64 = 0;
+/// [`KIND_PART_MET_BUDGET`]: its met roots were deferred read live.
+pub const PART_DEFERRED: u64 = 1;
+/// [`KIND_PART_MET_BUDGET`]: the batch ended inside it or its retry, by a
+/// recall or a refusal.
+pub const PART_ENDED_THE_BATCH: u64 = 2;
+
 /// The highest kind that has a site. The mask is a `u64`, so a kind past
 /// 63 would shift out of it and enable the wrong one — a limit worth
 /// failing the build over rather than discovering as a silent
 /// misreading.
-const HIGHEST_KIND: u32 = KIND_ARENA_RESET_REFUSED_CAPTURE;
+const HIGHEST_KIND: u32 = KIND_PART_MET_BUDGET;
 
 const _: () = assert!(
     HIGHEST_KIND < 64,
@@ -129,9 +292,9 @@ const fn bit(kind: u32) -> u64 {
 /// default set of §9.5, which is what the census hunt of 2026-08-06 had
 /// to build by hand.
 ///
-/// Every kind that has a site is in it, because every kind that has a
-/// site is a default one so far. That coincidence ends at the first
-/// on-demand kind, and the constant is the place where it will show.
+/// The collector's kinds are outside it, in [`COLLECTOR_KINDS`]: a
+/// registration per non-final decrement evicts every default kind within
+/// one request of a web load.
 pub const DEFAULT_KINDS: u64 = bit(KIND_ENTITY_BIRTH)
     | bit(KIND_ENTITY_DEATH)
     | bit(KIND_ARENA_RESET_BEGIN)
@@ -143,6 +306,35 @@ pub const DEFAULT_KINDS: u64 = bit(KIND_ENTITY_BIRTH)
     | bit(KIND_EXIT_RESIDUE)
     | bit(KIND_ARENA_RESET_SEVERED_EDGE)
     | bit(KIND_ARENA_RESET_REFUSED_CAPTURE);
+
+/// The collector's operations, on demand (S67.8 in `dev/plans/S67.md`):
+/// registrations, batches, verdicts, deferrals, write-backs, re-offers,
+/// turnovers, reclaimed components and returned slots, grants without a
+/// batch and parts past B.
+pub const COLLECTOR_KINDS: u64 = bit(KIND_CANDIDATE_REGISTERED)
+    | bit(KIND_BATCH_START)
+    | bit(KIND_BATCH_END)
+    | bit(KIND_ROOT_VERDICT)
+    | bit(KIND_ROOT_DEFERRED)
+    | bit(KIND_ROOT_WRITTEN_BACK)
+    | bit(KIND_REOFFERED)
+    | bit(KIND_TURNOVER)
+    | bit(KIND_COMPONENT_RECLAIMED)
+    | bit(KIND_WITHHELD_SLOT_RETURNED)
+    | bit(KIND_GRANT_WITHOUT_BATCH)
+    | bit(KIND_PART_MET_BUDGET);
+
+/// The kinds whose `a` is a code below [`crate::journal::CODES`], which the
+/// count beside the ring keeps apart; every other kind is counted whole.
+/// Each collector kind is one.
+const CODED_KINDS: u64 = COLLECTOR_KINDS;
+
+/// Whether a record of `kind` is counted by its code `a`
+/// ([`crate::journal::Counts`]).
+#[inline]
+pub(crate) fn is_coded(kind: u32) -> bool {
+    kind < 64 && CODED_KINDS & bit(kind) != 0
+}
 
 /// Which kinds are written, process-wide.
 ///

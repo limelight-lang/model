@@ -14,7 +14,7 @@ crate. The destination's last mile, the compiler that links this crate, is
 outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
 `limelight`.
 
-Updated: 2026-09-29 · Active: S65, S67.
+Updated: 2026-09-30 · Active: S65, S67.
 
 Review 2026-09-29: one day late. Pass 1, code `49b544a..25620f6` against the
 thresholds (a function over 50 code lines, depth 3, a one-implementation
@@ -500,7 +500,7 @@ Notes: dev/plans/S67.md
         three loads under the four arms complete, and no arm frees either
         load's garbage inside the drain (`dev/plans/S67.md`, S67.5, the smoke
         cells), put to Edmond before S67.6.
-- [ ] S67.8 The collector's operations in the debug journal
+- [x] S67.8 The collector's operations in the debug journal
       done: under `debug-journal`, beside its births and deaths, a kind of
         record each for a root's registration in R (first, or a candidate
         already), a batch's start (its roots and form), a batch's end with its
@@ -514,6 +514,11 @@ Notes: dev/plans/S67.md
         2026-09-29: "логгер операций GC ... жить в условной компиляции с
         опцией"; the kinds agreed the same day)
       tier: T2 · role: Critic
+      handoff: kinds 12–23 (`COLLECTOR_KINDS`), `journal::counts`, the rig's
+        `j_loop_*`/`j_drain_*` columns; the diagnostic cells of 2026-09-30 in
+        `dev/plans/S67.md`, S67.8: `web-heap` batches 18k roots against 1.6M
+        registrations and proposes none, `web-arena`'s loop batches all end
+        recalled inside their first part.
 - [ ] S67.7 The protocol's instruments
       done: each instrument of `dev/plans/S67.md`, "Instruments owed", that
         S67.2–S67.5 do not build is in the rig — among them the arrivals'

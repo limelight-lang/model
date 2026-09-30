@@ -1503,17 +1503,37 @@ pub(crate) unsafe fn retire_at_the_poll() {
 /// that took those roots again would repeat their trace; the turnover's
 /// merge is counted by [`reoffer_deferred_if_epoch_moved`].
 pub(crate) fn reoffer_deferred_candidates() {
+    reoffer_every_lane(crate::journal::kinds::REOFFERED_EVERY_LANE);
+}
+
+/// [`reoffer_deferred_candidates`], each lane moved recorded under `why`, the
+/// journal's `REOFFERED_*` code of the caller's move.
+fn reoffer_every_lane(why: u64) {
     let state = mutator_state();
     if state.is_null() {
         return;
     }
     let mutator_state = unsafe { mutator_state_ref(state) };
     mutator_state.for_each_lane(|lane| {
+        let moved = lane.len();
         if let Some((first, last)) = lane.take() {
             let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
             unsafe { writer.splice_after_tail(first, last) };
+            journal_reoffered(why, moved);
         }
     });
+}
+
+/// Record a lane of `moved` records handed back into R under `why`.
+fn journal_reoffered(why: u64, moved: usize) {
+    crate::journal::kinds::journal_event!(
+        crate::journal::kinds::KIND_REOFFERED,
+        0,
+        why,
+        moved as u64,
+    );
+    #[cfg(not(feature = "debug-journal"))]
+    let _ = (why, moved);
 }
 
 /// Re-offer the deferred lane exactly once after the collector advanced this
@@ -1568,7 +1588,7 @@ fn reoffer_the_lane_at_the_turn(mutator_state: &MutatorCycleState, byte: u8) -> 
     mutator_state.turnover_mirror.set(byte);
     #[cfg(test)]
     crate::cycle::worker::testing::note_reoffered(mutator_state.deferred().len());
-    reoffer_deferred_candidates();
+    reoffer_every_lane(crate::journal::kinds::REOFFERED_AT_THE_TURN);
     this_thread_record_ref().note_a_merge();
     true
 }
@@ -1608,11 +1628,13 @@ fn reoffer_the_lanes_due(mutator_state: &MutatorCycleState, byte: u8) -> bool {
 fn hand_the_lane_back(lane: &mut Chain) -> bool {
     #[cfg(test)]
     crate::cycle::worker::testing::note_reoffered(lane.len());
+    let moved = lane.len();
     let Some((first, last)) = lane.take() else {
         return false;
     };
     let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
     unsafe { writer.splice_after_tail(first, last) };
+    journal_reoffered(crate::journal::kinds::REOFFERED_LANE_DUE, moved);
     true
 }
 
@@ -1671,8 +1693,9 @@ mod compaction;
 pub(crate) mod verdicts;
 
 /// Put `entity` in the deferred lane, taking a block from a spare cell when
-/// the lane's last block is full or there is none; [`ring::NoBlock`] with
-/// both cells empty, and the entity is nowhere.
+/// the lane's last block is full or there is none, and answer the lane's
+/// index, 0 without `wait-by-readings`; [`ring::NoBlock`] with both cells
+/// empty, and the entity is nowhere.
 ///
 /// The block comes from a spare cell and never from the reserve: a block the
 /// deferred lane keeps is one the reserve does not get back, and a draw at
@@ -1685,7 +1708,7 @@ fn defer_entry(
     mutator_state: &MutatorCycleState,
     entity: *mut RcHeader,
     at_turnovers: Option<u64>,
-) -> Result<(), ring::NoBlock> {
+) -> Result<usize, ring::NoBlock> {
     // The lane of this reading's count, which a refused push leaves unmoved.
     #[cfg(feature = "wait-by-readings")]
     let index = (unsafe { crate::refcount::survived_readings(entity) } as usize + 1)
@@ -1732,7 +1755,14 @@ fn defer_entry(
         mutator_state.signal_due.set(true);
     }
 
-    Ok(())
+    #[cfg(feature = "wait-by-readings")]
+    {
+        Ok(index)
+    }
+    #[cfg(not(feature = "wait-by-readings"))]
+    {
+        Ok(0)
+    }
 }
 
 /// Put a block the queue no longer holds where the next growth finds it: a

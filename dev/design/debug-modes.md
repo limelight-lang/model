@@ -647,6 +647,18 @@ records that count, and a window whose two counts differ reports the
 difference. Answering with the rings that happen to be left would be the
 same false *none* by another route.
 
+**A count beside the ring answers a window a ring cannot hold.** A rig cell
+writes millions of collector records, and a ring of 1,024 answers *unknown*
+for any window over it. So each ring also counts every record written into
+it, by kind and, for a coded kind (one whose `a` is a code below 16), by
+code, with the sum of the records' `b` beside each count. The owner writes
+the count as it writes the record, with plain relaxed stores; a reader sums
+it over every live and retired ring under the registry's lock, and the
+registry adds an evicted ring's count into a total of its own before the
+ring goes, so a count survives what a window cannot. Two readings bound a
+window by their difference (`journal::Counts::since`). A count says how many
+and never which: a record's order and subject are the ring's alone.
+
 ### 9.4 Where a ring lives, and what happens at thread exit
 
 A ring is allocated on the thread's first record through `ll_malloc`
@@ -741,6 +753,14 @@ own events are unnamed; the backlog line "The collection's journal kinds" in
 
 On demand:
 
+- the collector's operations, `COLLECTOR_KINDS` (kinds 12–23): a
+  registration at a non-final decrement or over a candidate, a batch's
+  start and its end with the exit that ended it, a root's verdict, a root
+  deferred, written back or offered again, a turnover and its cause, a set
+  a commit reclaimed, a withheld slot returned, a grant released with no
+  batch, a part that met B (`dev/plans/S67.md`, S67.8). A registration per
+  non-final decrement evicts the default kinds within one request of a
+  web load, which is why they are asked for;
 - retain and release — the highest-volume event in the runtime, and it
   evicts every other kind within a few thousand records;
 - store-barrier publishes;

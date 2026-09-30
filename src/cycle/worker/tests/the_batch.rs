@@ -357,6 +357,8 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
     ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
 )]
 fn a_part_past_b_with_the_retry_spent_defers_the_roots_it_met_and_the_batch_goes_on() {
+    #[cfg(feature = "debug-journal")]
+    let _sites = journal_the_collector();
     let _g = test_guard();
     reset_lanes();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
@@ -427,6 +429,32 @@ fn a_part_past_b_with_the_retry_spent_defers_the_roots_it_met_and_the_batch_goes
         "the first two parts' verdicts, the deferred roots, then the kept root's part"
     );
     assert_eq!(record_batch_size(), 16, "K stands");
+    #[cfg(feature = "debug-journal")]
+    let counts = CountsFromHere::from_here();
+    #[cfg(feature = "debug-journal")]
+    {
+        let collector = testing::take_the_serving_threads_counts();
+        assert_eq!(
+            collector.records(journal::KIND_PART_MET_BUDGET, journal::PART_RETRY_FINISHED),
+            1,
+            "the second part's retry under B_max finished"
+        );
+        assert_eq!(
+            collector.records(journal::KIND_PART_MET_BUDGET, journal::PART_DEFERRED),
+            1,
+            "the third part met B with the retry spent"
+        );
+        assert_eq!(collector.records_of_kind(journal::KIND_PART_MET_BUDGET), 2);
+        assert_eq!(
+            collector.records(journal::KIND_BATCH_END, journal::BATCH_END_DEFERRED_PAST_B),
+            1
+        );
+        assert_eq!(collector.sum_of_b_of_kind(journal::KIND_BATCH_END), 4);
+        assert_eq!(
+            collector.records(journal::KIND_ROOT_VERDICT, journal::VERDICT_READ_LIVE),
+            7
+        );
+    }
 
     // The mutator's collection over P frees the two proposed rings and
     // defers the rest; the deferred ring stands in R and in the deferred
@@ -436,6 +464,13 @@ fn a_part_past_b_with_the_retry_spent_defers_the_roots_it_met_and_the_batch_goes
         deferred_count(),
         7,
         "the deferred part's six roots and the kept root"
+    );
+    #[cfg(feature = "debug-journal")]
+    assert_eq!(
+        counts
+            .so_far()
+            .records(journal::KIND_ROOT_DEFERRED, journal::DEFERRED_FROM_P),
+        7
     );
     unsafe { release_keeper(keeper) };
     assert!(refill_spares());
@@ -972,8 +1007,12 @@ fn parts_and_verdicts_of_a_serve() -> (Vec<usize>, Vec<Verdict>) {
     ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
 )]
 fn a_recall_at_the_traces_start_opens_no_part() {
+    #[cfg(feature = "debug-journal")]
+    let _sites = journal_the_collector();
     let _g = test_guard();
     reset_lanes();
+    #[cfg(feature = "debug-journal")]
+    let counts = CountsFromHere::from_here();
     let node = node_class("RecallFirstPassNode");
     let mut arena = Arena::new();
     let _garbage = unsafe { ring(&mut arena, [node, node]) };
@@ -983,6 +1022,28 @@ fn a_recall_at_the_traces_start_opens_no_part() {
     let (parts, posted) = parts_and_verdicts_of_a_serve();
     assert_eq!(parts, vec![0], "the pass before the parts read the recall");
     assert_eq!(posted, vec![Verdict::Unwalked; 2]);
+    #[cfg(feature = "debug-journal")]
+    {
+        let collector = testing::take_the_serving_threads_counts();
+        assert_eq!(
+            collector.records(
+                journal::KIND_BATCH_END,
+                journal::BATCH_END_RECALLED_IN_THE_PASS
+            ),
+            1
+        );
+        assert_eq!(
+            collector.records(journal::KIND_ROOT_VERDICT, journal::VERDICT_UNWALKED),
+            2
+        );
+        assert_eq!(
+            counts
+                .so_far()
+                .records(journal::KIND_ROOT_WRITTEN_BACK, journal::VERDICT_UNWALKED),
+            2,
+            "the collection over P wrote both unwalked roots back into R"
+        );
+    }
     reset_lanes();
 }
 
@@ -994,6 +1055,8 @@ fn a_recall_at_the_traces_start_opens_no_part() {
     ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
 )]
 fn a_recall_during_a_part_is_read_before_the_next_part() {
+    #[cfg(feature = "debug-journal")]
+    let _sites = journal_the_collector();
     let _g = test_guard();
     reset_lanes();
     let node = node_class("RecallBetweenPartsNode");
@@ -1014,6 +1077,18 @@ fn a_recall_during_a_part_is_read_before_the_next_part() {
             Verdict::Unwalked,
         ]
     );
+    #[cfg(feature = "debug-journal")]
+    {
+        let collector = testing::take_the_serving_threads_counts();
+        assert_eq!(
+            collector.records(
+                journal::KIND_BATCH_END,
+                journal::BATCH_END_RECALLED_BETWEEN_PARTS
+            ),
+            1
+        );
+        assert_eq!(collector.sum_of_b_of_kind(journal::KIND_BATCH_END), 1);
+    }
     reset_lanes();
 }
 
@@ -1061,6 +1136,8 @@ fn a_recall_stops_the_lookup_of_met_roots() {
     // A lookup of BATCH_BOUND visits holds a reading of the stride wherever
     // the trace left its count.
     const _: () = assert!(BATCH_BOUND >= crate::cycle::arena::RECALL_STRIDE);
+    #[cfg(feature = "debug-journal")]
+    let _sites = journal_the_collector();
     let _g = test_guard();
     reset_lanes();
     let node = node_class("RecallLookupNode");
@@ -1095,6 +1172,17 @@ fn a_recall_stops_the_lookup_of_met_roots() {
         BATCH_BOUND,
         "every root has its one verdict"
     );
+    #[cfg(feature = "debug-journal")]
+    {
+        let collector = testing::take_the_serving_threads_counts();
+        assert_eq!(
+            collector.records(
+                journal::KIND_BATCH_END,
+                journal::BATCH_END_RECALLED_AFTER_A_PART
+            ),
+            1
+        );
+    }
     unsafe { ll_gc_maybe_collect() };
     reset_lanes();
 }

@@ -1931,7 +1931,216 @@ struct CellReading {
     ledger_peak: (usize, usize),
     /// A web load's figures; empty for a ring load.
     web: WebCell,
+    /// What the journal counted over the loop and over the drain, zero in a
+    /// build without `debug-journal` (`JOURNAL_COLUMNS`).
+    journal: (crate::journal::Counts, crate::journal::Counts),
 }
+
+/// One column of the journal's counts: `kind` under `code`, or under every
+/// code where `code` is `None`, read as its records or as the sum of their
+/// `b`; named once per window.
+struct JournalColumn {
+    names: [&'static str; 2],
+    kind: u32,
+    code: Option<u64>,
+    sum_of_b: bool,
+}
+
+macro_rules! journal_column {
+    ($name:literal, $kind:ident, every) => {
+        journal_column!(@ $name, $kind, None, false)
+    };
+    ($name:literal, $kind:ident, every, sum) => {
+        journal_column!(@ $name, $kind, None, true)
+    };
+    ($name:literal, $kind:ident, $code:ident) => {
+        journal_column!(@ $name, $kind, Some(crate::journal::kinds::$code), false)
+    };
+    ($name:literal, $kind:ident, $code:ident, sum) => {
+        journal_column!(@ $name, $kind, Some(crate::journal::kinds::$code), true)
+    };
+    (@ $name:literal, $kind:ident, $code:expr, $sum:expr) => {
+        JournalColumn {
+            names: [concat!("j_loop_", $name), concat!("j_drain_", $name)],
+            kind: crate::journal::kinds::$kind,
+            code: $code,
+            sum_of_b: $sum,
+        }
+    };
+}
+
+/// The journal's columns of the rig's line (S67.8 in `dev/plans/S67.md`), in
+/// the kinds' order: what the collector and the mutators' dispositions did,
+/// counted where a cell's records outrun a ring.
+const JOURNAL_COLUMNS: &[JournalColumn] = &[
+    journal_column!("births", KIND_ENTITY_BIRTH, every),
+    journal_column!("deaths", KIND_ENTITY_DEATH, every),
+    journal_column!("registered_now", KIND_CANDIDATE_REGISTERED, REGISTERED_NOW),
+    journal_column!(
+        "registered_already",
+        KIND_CANDIDATE_REGISTERED,
+        REGISTERED_ALREADY
+    ),
+    journal_column!(
+        "batches_at_the_threshold",
+        KIND_BATCH_START,
+        BATCH_AT_THE_THRESHOLD
+    ),
+    journal_column!(
+        "batches_of_a_standing_ring",
+        KIND_BATCH_START,
+        BATCH_OF_A_STANDING_RING
+    ),
+    journal_column!("batch_roots", KIND_BATCH_START, every, sum),
+    journal_column!("batch_end_complete", KIND_BATCH_END, BATCH_END_COMPLETE),
+    journal_column!(
+        "batch_end_deferred_past_b",
+        KIND_BATCH_END,
+        BATCH_END_DEFERRED_PAST_B
+    ),
+    journal_column!(
+        "batch_end_recalled_in_the_pass",
+        KIND_BATCH_END,
+        BATCH_END_RECALLED_IN_THE_PASS
+    ),
+    journal_column!(
+        "batch_end_recalled_between_parts",
+        KIND_BATCH_END,
+        BATCH_END_RECALLED_BETWEEN_PARTS
+    ),
+    journal_column!(
+        "batch_end_recalled_inside_a_part",
+        KIND_BATCH_END,
+        BATCH_END_RECALLED_INSIDE_A_PART
+    ),
+    journal_column!(
+        "batch_end_recalled_after_a_part",
+        KIND_BATCH_END,
+        BATCH_END_RECALLED_AFTER_A_PART
+    ),
+    journal_column!(
+        "batch_end_refused_inside_a_part",
+        KIND_BATCH_END,
+        BATCH_END_REFUSED_INSIDE_A_PART
+    ),
+    journal_column!("batch_parts", KIND_BATCH_END, every, sum),
+    journal_column!("verdict_proposed", KIND_ROOT_VERDICT, VERDICT_PROPOSED),
+    journal_column!("verdict_read_live", KIND_ROOT_VERDICT, VERDICT_READ_LIVE),
+    journal_column!("verdict_zero_count", KIND_ROOT_VERDICT, VERDICT_ZERO_COUNT),
+    journal_column!("verdict_unwalked", KIND_ROOT_VERDICT, VERDICT_UNWALKED),
+    journal_column!("deferred_from_r", KIND_ROOT_DEFERRED, DEFERRED_FROM_R),
+    journal_column!("deferred_from_p", KIND_ROOT_DEFERRED, DEFERRED_FROM_P),
+    journal_column!(
+        "deferred_into_the_waiting_part",
+        KIND_ROOT_DEFERRED,
+        DEFERRED_INTO_THE_WAITING_PART
+    ),
+    journal_column!(
+        "deferred_into_the_ready_part",
+        KIND_ROOT_DEFERRED,
+        DEFERRED_INTO_THE_READY_PART
+    ),
+    journal_column!(
+        "written_back_proposed",
+        KIND_ROOT_WRITTEN_BACK,
+        VERDICT_PROPOSED
+    ),
+    journal_column!(
+        "written_back_read_live",
+        KIND_ROOT_WRITTEN_BACK,
+        VERDICT_READ_LIVE
+    ),
+    journal_column!(
+        "written_back_zero_count",
+        KIND_ROOT_WRITTEN_BACK,
+        VERDICT_ZERO_COUNT
+    ),
+    journal_column!(
+        "written_back_unwalked",
+        KIND_ROOT_WRITTEN_BACK,
+        VERDICT_UNWALKED
+    ),
+    journal_column!(
+        "reoffered_at_the_turn",
+        KIND_REOFFERED,
+        REOFFERED_AT_THE_TURN,
+        sum
+    ),
+    journal_column!(
+        "reoffered_lane_due",
+        KIND_REOFFERED,
+        REOFFERED_LANE_DUE,
+        sum
+    ),
+    journal_column!(
+        "reoffered_every_lane",
+        KIND_REOFFERED,
+        REOFFERED_EVERY_LANE,
+        sum
+    ),
+    journal_column!(
+        "reoffered_chain_expired",
+        KIND_REOFFERED,
+        REOFFERED_CHAIN_EXPIRED,
+        sum
+    ),
+    journal_column!(
+        "reoffered_chain_into_r",
+        KIND_REOFFERED,
+        REOFFERED_CHAIN_INTO_R,
+        sum
+    ),
+    journal_column!("turnover_by_batches", KIND_TURNOVER, TURNOVER_BY_BATCHES),
+    journal_column!("turnover_by_x", KIND_TURNOVER, TURNOVER_BY_X),
+    journal_column!("turnover_new_life", KIND_TURNOVER, TURNOVER_NEW_LIFE),
+    journal_column!("turnover_by_hand", KIND_TURNOVER, TURNOVER_BY_HAND),
+    journal_column!("components_reclaimed", KIND_COMPONENT_RECLAIMED, every),
+    journal_column!("members_reclaimed", KIND_COMPONENT_RECLAIMED, every, sum),
+    journal_column!("slots_from_p", KIND_WITHHELD_SLOT_RETURNED, SLOT_FROM_P),
+    journal_column!("slots_from_r", KIND_WITHHELD_SLOT_RETURNED, SLOT_FROM_R),
+    journal_column!(
+        "slots_from_r_front_run",
+        KIND_WITHHELD_SLOT_RETURNED,
+        SLOT_FROM_R_FRONT_RUN
+    ),
+    journal_column!(
+        "slots_from_overflow",
+        KIND_WITHHELD_SLOT_RETURNED,
+        SLOT_FROM_OVERFLOW
+    ),
+    journal_column!(
+        "slots_from_a_deferred_lane",
+        KIND_WITHHELD_SLOT_RETURNED,
+        SLOT_FROM_A_DEFERRED_LANE
+    ),
+    journal_column!(
+        "grant_recalled_before_the_batch",
+        KIND_GRANT_WITHOUT_BATCH,
+        GRANT_RECALLED_BEFORE_THE_BATCH
+    ),
+    journal_column!(
+        "grant_workspace_refused",
+        KIND_GRANT_WITHOUT_BATCH,
+        GRANT_WORKSPACE_REFUSED
+    ),
+    journal_column!(
+        "grant_nothing_taken",
+        KIND_GRANT_WITHOUT_BATCH,
+        GRANT_NOTHING_TAKEN
+    ),
+    journal_column!(
+        "part_retry_finished",
+        KIND_PART_MET_BUDGET,
+        PART_RETRY_FINISHED
+    ),
+    journal_column!("part_deferred", KIND_PART_MET_BUDGET, PART_DEFERRED),
+    journal_column!(
+        "part_ended_the_batch",
+        KIND_PART_MET_BUDGET,
+        PART_ENDED_THE_BATCH
+    ),
+    journal_column!("part_blocks", KIND_PART_MET_BUDGET, every, sum),
+];
 
 /// What a web load's cell read beside the ring loads' figures: each
 /// mutator's [`WebReading`]; the collections while the mutators set up,
@@ -2431,7 +2640,33 @@ impl CellReading {
         .into_iter()
         .chain(self.segment_fields())
         .chain(self.web_fields(load))
+        .chain(self.journal_fields())
         .collect()
+    }
+
+    /// [`JOURNAL_COLUMNS`] over the loop, then over the drain, and each
+    /// window's records lost and threads never journaled.
+    fn journal_fields(&self) -> Vec<(&'static str, String)> {
+        let (over_the_loop, over_the_drain) = &self.journal;
+        let mut fields = Vec::new();
+        for (window, counts) in [over_the_loop, over_the_drain].into_iter().enumerate() {
+            for column in JOURNAL_COLUMNS {
+                let value = match (column.code, column.sum_of_b) {
+                    (Some(code), false) => counts.records(column.kind, code),
+                    (Some(code), true) => counts.sum_of_b(column.kind, code),
+                    (None, false) => counts.records_of_kind(column.kind),
+                    (None, true) => counts.sum_of_b_of_kind(column.kind),
+                };
+                fields.push((column.names[window], value.to_string()));
+            }
+
+            let lost = ["j_loop_lost", "j_drain_lost"][window];
+            fields.push((lost, counts.lost.to_string()));
+            let never = ["j_loop_never_journaled", "j_drain_never_journaled"][window];
+            fields.push((never, counts.never_journaled.to_string()));
+        }
+
+        fields
     }
 
     /// A web load's figures (`WebCell`, `WebReading`), zero for a ring load:
@@ -2728,6 +2963,19 @@ impl RoundFigures {
 /// caller set before the call stands through it and goes at the retire.
 fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let end = RetireOnDrop;
+    // The collector's kinds from the setup on, so that the loop's first
+    // records are counted; the readings below take the setup's out.
+    // `LL_RIG_JOURNAL_KINDS`, a mask in hexadecimal, replaces the set: a cell
+    // without the registrations reads what a record per decrement costs the
+    // race between the mutator's recall and a trace.
+    let kinds_before = crate::journal::kinds::enabled_kinds();
+    crate::journal::kinds::set_enabled_kinds(std::env::var("LL_RIG_JOURNAL_KINDS").map_or(
+        crate::journal::kinds::DEFAULT_KINDS | crate::journal::kinds::COLLECTOR_KINDS,
+        |mask| {
+            u64::from_str_radix(mask.trim_start_matches("0x"), 16)
+                .expect("LL_RIG_JOURNAL_KINDS is a mask in hexadecimal")
+        },
+    ));
     testing::pin_collectors_to(&cell.collector_cpus);
     set_collector_cap(cell.cap);
     let _ = testing::take_spawns();
@@ -2783,6 +3031,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         })
         .collect();
     start.wait();
+    let journal_at_the_start = crate::journal::counts();
     let _ = testing::take_withdrawn_standings();
     let collector_cpu_at_the_start = testing::collector_cpu_to_now();
     let mut web = WebCell::default();
@@ -2804,8 +3053,11 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     // collections' figures are taken before any teardown collects; and the
     // release to the teardown.
     let mut round_figures = None;
+    let mut journal_at_the_stop = None;
+    let mut journal_after_the_drains = None;
     if let Some(load_web) = load.web {
         stages.wait();
+        journal_at_the_stop = Some(crate::journal::counts());
         web.retained_at_the_stop = crate::memory::retained::retained_block_count();
         let batches = testing::take_traced_batches();
         testing::read_traced_batches(false);
@@ -2816,16 +3068,22 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
             .filter(|batch| batch.rows_met >= state)
             .count();
         stages.wait();
+        journal_after_the_drains = Some(crate::journal::counts());
         web.retained_after_the_drains = crate::memory::retained::retained_block_count();
         web.frees_from_another_thread = crate::memory::heap::take_frees_from_another_thread();
         round_figures = Some(RoundFigures::take());
         stages.wait();
     }
 
+    // A ring load's mutators drain before they return: its loop is read at
+    // the stop, and its drain at the join.
+    let journal_at_the_stop = journal_at_the_stop.unwrap_or_else(crate::journal::counts);
     let (mutators, web_mutators): (Vec<MutatorReading>, Vec<WebReading>) = threads
         .into_iter()
         .map(|thread| thread.join().expect("the mutator ran its loop"))
         .unzip();
+    let journal_after_the_drains = journal_after_the_drains.unwrap_or_else(crate::journal::counts);
+    crate::journal::kinds::set_enabled_kinds(kinds_before);
     web.mutators = web_mutators;
     assert_eq!(
         web.frees_from_another_thread, 0,
@@ -2869,6 +3127,10 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         parts_deferred: figures.parts_deferred,
         generations: figures.generations,
         web,
+        journal: (
+            journal_at_the_stop.since(&journal_at_the_start),
+            journal_after_the_drains.since(&journal_at_the_stop),
+        ),
         ledger_peak: {
             let ledger = crate::memory::gc_metadata::stats();
             (ledger.peak_bytes(), ledger.peak_bytes_in_use())

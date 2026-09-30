@@ -202,8 +202,12 @@ are in `docs/history/`, superseded by the collector thread that was built.
   retired by the last act of `ll_thread_exit`. `journal/kinds.rs` holds the
   vocabulary and `journal_event!`; the sites are compiled under
   `debug-journal` (`dev/design/debug-modes.md` §9; `dev/DECISIONS.md`,
-  2026-08-08). A collection's kinds are unnamed — `PLAN.md`, "The
-  collection's journal kinds".
+  2026-08-08). The collector's operations are `COLLECTOR_KINDS`, on demand,
+  and `journal::counts` reads each ring's count by kind and code, which the
+  rig's `j_loop_*` and `j_drain_*` columns print; the cases are
+  `worker/tests/the_journal_of_the_collector.rs` beside the batch's and the
+  ceiling's. A mutator collection's begin and end are unnamed — `PLAN.md`,
+  "The collection's journal kinds".
 - Category → allocator routing: `src/memory/routing.rs` — `entity_alloc_in`,
   `body_alloc` / `body_ensure` / `body_free`, `slot_limit`.
 - One entity per allocation: `src/memory/large_entity.rs` — a pooled block

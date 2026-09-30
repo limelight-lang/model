@@ -292,6 +292,8 @@ fn a_root_the_failed_retry_did_not_meet_opens_a_part_of_its_own() {
     ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
 )]
 fn a_recalled_retry_leaves_its_roots_unwalked_and_k_where_it_stands() {
+    #[cfg(feature = "debug-journal")]
+    let _sites = journal_the_collector();
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
@@ -316,6 +318,24 @@ fn a_recalled_retry_leaves_its_roots_unwalked_and_k_where_it_stands() {
         (1, 1, true),
         "the part met B and its retry was recalled"
     );
+    #[cfg(feature = "debug-journal")]
+    {
+        let collector = testing::take_the_serving_threads_counts();
+        assert_eq!(
+            collector.records(
+                journal::KIND_BATCH_END,
+                journal::BATCH_END_RECALLED_INSIDE_A_PART
+            ),
+            1
+        );
+        assert_eq!(collector.records_of_kind(journal::KIND_BATCH_END), 1);
+        assert_eq!(
+            collector.records(journal::KIND_PART_MET_BUDGET, journal::PART_ENDED_THE_BATCH),
+            1,
+            "the recall ended the batch inside the retry"
+        );
+        assert_eq!(collector.records_of_kind(journal::KIND_PART_MET_BUDGET), 1);
+    }
     assert_eq!(verdicts, vec![Verdict::Unwalked; 2]);
     assert_eq!(record_batch_size(), 2, "a recall leaves K");
     unsafe { ll_gc_maybe_collect() };
@@ -332,6 +352,8 @@ fn a_recalled_retry_leaves_its_roots_unwalked_and_k_where_it_stands() {
     ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
 )]
 fn a_recall_in_the_part_after_a_deferral_leaves_its_root_unwalked() {
+    #[cfg(feature = "debug-journal")]
+    let _sites = journal_the_collector();
     let _g = test_guard();
     reset_lanes();
     let _retry = testing::retry_parts_under(2);
@@ -365,6 +387,24 @@ fn a_recall_in_the_part_after_a_deferral_leaves_its_root_unwalked() {
         (2, 1),
         "the ring's part deferred, then the dense ring's part was recalled"
     );
+    #[cfg(feature = "debug-journal")]
+    {
+        let collector = testing::take_the_serving_threads_counts();
+        assert_eq!(
+            collector.records(
+                journal::KIND_BATCH_END,
+                journal::BATCH_END_RECALLED_INSIDE_A_PART
+            ),
+            1
+        );
+        assert_eq!(collector.records_of_kind(journal::KIND_BATCH_END), 1);
+        assert_eq!(
+            collector.records(journal::KIND_PART_MET_BUDGET, journal::PART_DEFERRED),
+            1,
+            "the core's part met B and B_max"
+        );
+        assert_eq!(collector.records_of_kind(journal::KIND_PART_MET_BUDGET), 1);
+    }
     assert_eq!(
         standing_verdicts(),
         vec![
@@ -385,6 +425,8 @@ fn a_recall_in_the_part_after_a_deferral_leaves_its_root_unwalked() {
 #[test]
 #[cfg_attr(miri, ignore = "600 blocks of objects are past what Miri affords")]
 fn a_retry_the_pool_refuses_leaves_its_roots_unwalked() {
+    #[cfg(feature = "debug-journal")]
+    let _sites = journal_the_collector();
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
@@ -415,6 +457,24 @@ fn a_retry_the_pool_refuses_leaves_its_roots_unwalked() {
         (1, 1, true, 0),
         "the part met B, and its retry was refused short of B_max"
     );
+    #[cfg(feature = "debug-journal")]
+    {
+        let collector = testing::take_the_serving_threads_counts();
+        assert_eq!(
+            collector.records(
+                journal::KIND_BATCH_END,
+                journal::BATCH_END_REFUSED_INSIDE_A_PART
+            ),
+            1
+        );
+        assert_eq!(collector.records_of_kind(journal::KIND_BATCH_END), 1);
+        assert_eq!(
+            collector.records(journal::KIND_PART_MET_BUDGET, journal::PART_ENDED_THE_BATCH),
+            1,
+            "the refusal ended the batch inside the retry"
+        );
+        assert_eq!(collector.records_of_kind(journal::KIND_PART_MET_BUDGET), 1);
+    }
     assert_eq!(verdicts, vec![Verdict::Unwalked; 2]);
     assert_eq!(record_batch_size(), 2, "a refusal leaves K");
     unsafe { ll_gc_maybe_collect() };

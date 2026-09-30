@@ -250,6 +250,7 @@ use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::scan::{ScanResult, scan};
 use crate::cycle::shadow::{self, Color};
 use crate::cycle::token::{COLLECTOR, MUTATOR, POSTED, REQUESTED, Withdrawn, state, word};
+use crate::journal::kinds::{self as journal, journal_event};
 use crate::refcount::RcHeader;
 use crate::ring::{BLOCK_ENTRIES, Reader};
 
@@ -639,7 +640,7 @@ pub(crate) fn serve_clock_now() -> u64 {
 /// collection's open (`crate::cycle::arena`).
 fn advance_the_epoch_if_due(record: &MutatorRecord, now: u64) {
     if record.take_new_life() {
-        record.advance_the_epoch(now);
+        record.advance_the_epoch(now, journal::TURNOVER_NEW_LIFE);
         return;
     }
 
@@ -651,7 +652,12 @@ fn advance_the_epoch_if_due(record: &MutatorRecord, now: u64) {
 
     let by_batches = record.batches_since_the_advance() >= crate::cycle::epoch::BATCHES_PER_EPOCH;
     if by_batches || now.saturating_sub(last) >= epoch_interval().as_nanos() as u64 {
-        record.advance_the_epoch(now);
+        let why = if by_batches {
+            journal::TURNOVER_BY_BATCHES
+        } else {
+            journal::TURNOVER_BY_X
+        };
+        record.advance_the_epoch(now, why);
         #[cfg(feature = "wait-by-readings")]
         if !by_batches {
             record.note_an_x_turn();
@@ -1776,6 +1782,12 @@ unsafe fn serve_the_grant(
     // A recall that stands before the batch is made goes back with no batch,
     // as a refused workspace does, rather than after the peek and a stride.
     if mutator.token.is_recalled() {
+        journal_event!(
+            journal::KIND_GRANT_WITHOUT_BATCH,
+            std::ptr::from_ref(mutator) as u64,
+            journal::GRANT_RECALLED_BEFORE_THE_BATCH,
+            0,
+        );
         return Served::Idle;
     }
 
@@ -1785,6 +1797,12 @@ unsafe fn serve_the_grant(
     // mutator's cell, not this thread's: the stamps this trace reads were
     // written against that mutator's clock (`crate::cycle::epoch`).
     let Some(mut arena) = (unsafe { TraceScratchArena::open_for_owner(mutator) }) else {
+        journal_event!(
+            journal::KIND_GRANT_WITHOUT_BATCH,
+            std::ptr::from_ref(mutator) as u64,
+            journal::GRANT_WORKSPACE_REFUSED,
+            0,
+        );
         return Served::Idle;
     };
     // The list outlives the arena, and nothing else touches it until the
@@ -2269,7 +2287,15 @@ unsafe fn batch(
             mutator,
             serve_clock_now(),
             || arena.read_the_recall_now().is_break(),
-            |entity| verdicts.room() > 0 && verdicts.post(entity, Verdict::ZeroCount).is_ok(),
+            |entity| {
+                let posted =
+                    verdicts.room() > 0 && verdicts.post(entity, Verdict::ZeroCount).is_ok();
+                if posted {
+                    journal_verdict(entity, Verdict::ZeroCount);
+                }
+
+                posted
+            },
         );
         if deaths > 0 {
             posted.set(true);
@@ -2306,7 +2332,7 @@ unsafe fn batch(
     #[cfg(not(feature = "collector-chain"))]
     let take = verdicts.room().min(clamp);
     if take == 0 {
-        return served_without_roots(posted);
+        return served_without_roots(mutator, posted);
     }
     let (copy, order) = the_copy_in_the_workspace(arena, threshold, take);
 
@@ -2329,9 +2355,19 @@ unsafe fn batch(
         peeked.len() == 0 && reader.has_at_least_by_count(1),
     );
     if taken == 0 {
-        return served_without_roots(posted);
+        return served_without_roots(mutator, posted);
     }
 
+    journal_event!(
+        journal::KIND_BATCH_START,
+        std::ptr::from_ref(mutator) as u64,
+        if at_the_threshold {
+            journal::BATCH_AT_THE_THRESHOLD
+        } else {
+            journal::BATCH_OF_A_STANDING_RING
+        },
+        taken as u64,
+    );
     let by_address = unsafe { std::slice::from_raw_parts_mut(order, taken) };
     for (position, index) in by_address.iter_mut().enumerate() {
         *index = position as u16;
@@ -2377,6 +2413,12 @@ unsafe fn batch(
     );
     let outcome = unsafe { trace_in_parts(arena, &mut posts, by_address, &mut live) };
     let (parts, complete) = (outcome.parts, outcome.complete);
+    journal_event!(
+        journal::KIND_BATCH_END,
+        std::ptr::from_ref(mutator) as u64,
+        outcome.ending,
+        parts as u64,
+    );
     #[cfg(test)]
     let edges_pruned = crate::cycle::mark::take_edges_pruned();
     #[cfg(test)]
@@ -2431,7 +2473,15 @@ unsafe fn batch(
 /// posted into P the grant made a batch of no roots, which the round reads as
 /// work and the mutator answers by its disposition, and which the epoch
 /// clock does not count; otherwise nothing was taken.
-fn served_without_roots(posted: &std::cell::Cell<bool>) -> Served {
+fn served_without_roots(mutator: &MutatorRecord, posted: &std::cell::Cell<bool>) -> Served {
+    journal_event!(
+        journal::KIND_GRANT_WITHOUT_BATCH,
+        std::ptr::from_ref(mutator) as u64,
+        journal::GRANT_NOTHING_TAKEN,
+        0,
+    );
+    #[cfg(not(feature = "debug-journal"))]
+    let _ = mutator;
     if posted.get() {
         Served::Batch {
             roots: 0,
@@ -2546,6 +2596,7 @@ impl FinishThePosts<'_> {
     /// Post `verdict` for the root at `index`, which has none yet.
     fn post(&mut self, index: usize, verdict: Verdict) {
         debug_assert!(!self.has_a_verdict(index), "one verdict per root");
+        journal_verdict(self.root(index), verdict);
         // A root read live, or one the trace did not reach, goes into the
         // chain rather than into P — but not on the unwind, where a drawn
         // block is an allocation inside a drop, and not where the pool
@@ -2646,6 +2697,13 @@ impl Drop for FinishThePosts<'_> {
     }
 }
 
+/// Record the verdict a collector posted for `root`, before the chain's keep.
+fn journal_verdict(root: *mut RcHeader, verdict: Verdict) {
+    journal_event!(journal::KIND_ROOT_VERDICT, root as u64, verdict as u64, 0);
+    #[cfg(not(feature = "debug-journal"))]
+    let _ = (root, verdict);
+}
+
 /// Size the mutator's next batch from what this one, clamped to `size` roots
 /// and taking `taken` of them, did: a batch whose every part finished over the
 /// whole clamp doubles it up to [`BATCH_BOUND`], and any other leaves it. A
@@ -2724,7 +2782,7 @@ unsafe fn trace_in_parts(
     let mut outcome = PartsOutcome::default();
     for index in 0..posts.roots.len() {
         if arena.read_the_recall_now().is_break() {
-            return outcome;
+            return outcome.ended(journal::BATCH_END_RECALLED_IN_THE_PASS);
         }
 
         if let RootReading::Verdict(verdict) = unsafe { read_the_root(posts.root(index)) } {
@@ -2741,7 +2799,7 @@ unsafe fn trace_in_parts(
         // Between two parts, and not after the last: a batch whose every
         // part completed is a completed batch, whatever the recall says.
         if outcome.parts > 0 && arena.read_the_recall_now().is_break() {
-            return outcome;
+            return outcome.ended(journal::BATCH_END_RECALLED_BETWEEN_PARTS);
         }
 
         let root = posts.root(index);
@@ -2752,7 +2810,7 @@ unsafe fn trace_in_parts(
         testing::before_the_trace_of_part(outcome.parts);
         if !unsafe { trace(arena, root) } {
             if !arena.met_its_budget() {
-                return outcome;
+                return outcome.stopped_inside_a_part(arena);
             }
 
             // A part that met B is retried at once under `B_max`, once per
@@ -2762,14 +2820,18 @@ unsafe fn trace_in_parts(
                 outcome.retried = true;
                 unsafe { retry_under_the_ceiling(arena, root, budget) }
             };
-            if !retried {
+            if retried {
+                journal_part_met_budget(arena, root, journal::PART_RETRY_FINISHED);
+            } else {
                 if !arena.met_its_budget() {
-                    return outcome;
+                    journal_part_met_budget(arena, root, journal::PART_ENDED_THE_BATCH);
+                    return outcome.stopped_inside_a_part(arena);
                 }
 
                 // Past B with the retry spent, or past `B_max`: every live
                 // root the rows met is deferred to the turnover, and the
                 // batch goes on.
+                journal_part_met_budget(arena, root, journal::PART_DEFERRED);
                 outcome.deferred_parts += 1;
                 #[cfg(test)]
                 testing::note_part_deferred();
@@ -2779,7 +2841,7 @@ unsafe fn trace_in_parts(
                     })
                 };
                 if posted.is_break() {
-                    return outcome;
+                    return outcome.ended(journal::BATCH_END_RECALLED_AFTER_A_PART);
                 }
 
                 arena.reset_to_the_watermark();
@@ -2795,20 +2857,37 @@ unsafe fn trace_in_parts(
         };
         let lists_the_core = unsafe { post_the_part(arena, posts, by_address, index, live) };
         if lists_the_core.is_break() {
-            return outcome;
+            return outcome.ended(journal::BATCH_END_RECALLED_AFTER_A_PART);
         }
 
         if lists_the_core == std::ops::ControlFlow::Continue(true)
             && unsafe { live.append_the_part(arena, root) }.is_break()
         {
-            return outcome;
+            return outcome.ended(journal::BATCH_END_RECALLED_AFTER_A_PART);
         }
 
         arena.reset_to_the_watermark();
     }
 
     outcome.complete = outcome.deferred_parts == 0;
-    outcome
+    outcome.ended(if outcome.complete {
+        journal::BATCH_END_COMPLETE
+    } else {
+        journal::BATCH_END_DEFERRED_PAST_B
+    })
+}
+
+/// Record a part of `root` that met B, `what_followed` one of the `PART_*`
+/// codes, with the blocks its arena drew.
+fn journal_part_met_budget(arena: &TraceScratchArena, root: *mut RcHeader, what_followed: u64) {
+    journal_event!(
+        journal::KIND_PART_MET_BUDGET,
+        root as u64,
+        what_followed,
+        arena.blocks_drawn() as u64,
+    );
+    #[cfg(not(feature = "debug-journal"))]
+    let _ = (arena, root, what_followed);
 }
 
 /// What [`trace_in_parts`] answers of a batch's parts.
@@ -2825,6 +2904,26 @@ struct PartsOutcome {
     /// Parts whose met roots were deferred read live: past B with the retry
     /// spent, or past `B_max`.
     deferred_parts: usize,
+    /// Which exit ended the trace, one of the journal's `BATCH_END_*` codes.
+    ending: u64,
+}
+
+impl PartsOutcome {
+    fn ended(mut self, ending: u64) -> Self {
+        self.ending = ending;
+        self
+    }
+
+    /// The end of a trace a part's own trace or retry stopped short of B:
+    /// the recall, where the arena read it, and a refused allocation
+    /// otherwise.
+    fn stopped_inside_a_part(self, arena: &TraceScratchArena) -> Self {
+        self.ended(if arena.was_recalled() {
+            journal::BATCH_END_RECALLED_INSIDE_A_PART
+        } else {
+            journal::BATCH_END_REFUSED_INSIDE_A_PART
+        })
+    }
 }
 
 /// Retry the part of `root`, which met B, under `B_max` on an arena reset to

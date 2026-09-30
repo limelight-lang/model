@@ -212,6 +212,10 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
     );
 
     let external_children = unsafe { members.external_children() };
+    #[cfg(feature = "debug-journal")]
+    let member_count = component.members();
+    #[cfg(feature = "debug-journal")]
+    let mut first_member: *mut RcHeader = std::ptr::null_mut();
 
     if !arena.reserve_drops(external_children) {
         unsafe { component.release(members) };
@@ -229,6 +233,10 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
     let mut queued = 0;
     unsafe {
         members.for_each(|member| {
+            #[cfg(feature = "debug-journal")]
+            if first_member.is_null() {
+                first_member = member;
+            }
             let kind = entity_kind(member);
             let displaced = |child: *mut RcHeader| {
                 if members.contains(child) {
@@ -278,6 +286,12 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
     // (`crate::cycle::deferred_slot_reuse`, through `memory::stdapi::ll_free`).
     unsafe { release_guards(members) };
     unsafe { component.guards_released() };
+    crate::journal::kinds::journal_event!(
+        crate::journal::kinds::KIND_COMPONENT_RECLAIMED,
+        first_member as u64,
+        0,
+        member_count as u64,
+    );
     Some(DeferredReclamation {
         arena,
         drained: false,

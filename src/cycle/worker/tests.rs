@@ -258,6 +258,42 @@ fn reset_lanes() {
     );
 }
 
+/// Write the collector's journal kinds beside the default ones until the
+/// guard drops, serialized against every case that sets the mask. Taken
+/// before the pool's guard: the mask's lock is the outer one.
+#[cfg(feature = "debug-journal")]
+fn journal_the_collector() -> crate::journal::kinds::SitesHeld {
+    crate::journal::kinds::set_sites_for_test(
+        crate::journal::kinds::DEFAULT_KINDS | crate::journal::kinds::COLLECTOR_KINDS,
+    )
+}
+
+/// What this thread's ring counts from the moment of [`Self::from_here`]:
+/// the mutator's side of a case, read apart from the suite's other threads,
+/// which journal under the same mask.
+#[cfg(feature = "debug-journal")]
+struct CountsFromHere {
+    identity: u64,
+    start: crate::journal::Counts,
+}
+
+#[cfg(feature = "debug-journal")]
+impl CountsFromHere {
+    /// Under the pool's guard, whose take opened this thread's ring.
+    fn from_here() -> Self {
+        let identity = crate::journal::this_thread_identity();
+        assert_ne!(identity, 0, "the pool's guard opened this thread's ring");
+        Self {
+            identity,
+            start: crate::journal::counts_of(&[identity]),
+        }
+    }
+
+    fn so_far(&self) -> crate::journal::Counts {
+        crate::journal::counts_of(&[self.identity]).since(&self.start)
+    }
+}
+
 /// A class of one counted Box property, which [`crate::cycle::testing::ring`]
 /// links members through.
 fn node_class(name: &str) -> *const crate::class::Class {
@@ -1006,6 +1042,8 @@ mod the_chain;
 mod the_epoch_clock;
 #[cfg(feature = "hold-by-generation")]
 mod the_generations_in_the_chain;
+#[cfg(feature = "debug-journal")]
+mod the_journal_of_the_collector;
 mod the_live_list;
 mod the_merged_lane;
 mod the_reading_before_the_claim;

@@ -126,6 +126,14 @@ const LOW_BITS: usize = VERDICT_BITS | VERDICT_DEFER_MARK;
 
 const _: () = assert!(Verdict::Unwalked as usize <= VERDICT_BITS);
 
+// The journal codes a verdict by its discriminant.
+const _: () = assert!(
+    Verdict::Proposed as u64 == crate::journal::kinds::VERDICT_PROPOSED
+        && Verdict::ReadLive as u64 == crate::journal::kinds::VERDICT_READ_LIVE
+        && Verdict::ZeroCount as u64 == crate::journal::kinds::VERDICT_ZERO_COUNT
+        && Verdict::Unwalked as u64 == crate::journal::kinds::VERDICT_UNWALKED
+);
+
 /// P's entry for `entity` under `verdict`.
 #[inline]
 fn verdict_entry(entity: *mut RcHeader, verdict: Verdict) -> usize {

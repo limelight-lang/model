@@ -32,6 +32,7 @@
 //! reading hold as atomic loads that read no block ([`is_due`]).
 
 use crate::cycle::mutator_record::MutatorRecord;
+use crate::journal::kinds::{self as journal, journal_event};
 use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
 use crate::memory::gc_metadata;
 use crate::refcount::RcHeader;
@@ -151,7 +152,16 @@ pub(crate) unsafe fn expire(record: &MutatorRecord, mut stop: impl FnMut() -> bo
             .chain_waiting()
             .detach_while(|stamp| stamp < epoch, &mut stop)
     } {
+        let ready_before = record.chain_ready().len();
         unsafe { record.chain_ready().append(due) };
+        journal_event!(
+            journal::KIND_REOFFERED,
+            0,
+            journal::REOFFERED_CHAIN_EXPIRED,
+            (record.chain_ready().len() - ready_before) as u64,
+        );
+        #[cfg(not(feature = "debug-journal"))]
+        let _ = ready_before;
     }
     // A recall that stopped the release partway owes the rest of it to the
     // next grant.
@@ -331,6 +341,14 @@ pub(crate) unsafe fn keep_read_live(record: &MutatorRecord, root: *mut RcHeader,
     if kept {
         crate::cycle::worker::testing::note_chain_push(false);
     }
+    if kept {
+        journal_event!(
+            journal::KIND_ROOT_DEFERRED,
+            root as u64,
+            journal::DEFERRED_INTO_THE_WAITING_PART,
+            0,
+        );
+    }
     kept
 }
 
@@ -352,6 +370,14 @@ pub(crate) unsafe fn keep_unwalked(record: &MutatorRecord, root: *mut RcHeader) 
     #[cfg(test)]
     if kept {
         crate::cycle::worker::testing::note_chain_push(true);
+    }
+    if kept {
+        journal_event!(
+            journal::KIND_ROOT_DEFERRED,
+            root as u64,
+            journal::DEFERRED_INTO_THE_READY_PART,
+            0,
+        );
     }
     kept
 }
@@ -419,9 +445,18 @@ pub(crate) unsafe fn splice_this_threads_chain_into_r(whole: bool) {
 /// # Safety
 /// As [`splice_the_whole_chain_into_r`].
 unsafe fn splice(record: &MutatorRecord, part: &RecordChain) {
+    let moved = part.len();
     let Some((first, last)) = (unsafe { part.take_compacted(give_back) }) else {
         return;
     };
+    journal_event!(
+        journal::KIND_REOFFERED,
+        0,
+        journal::REOFFERED_CHAIN_INTO_R,
+        moved as u64,
+    );
+    #[cfg(not(feature = "debug-journal"))]
+    let _ = moved;
 
     // The blocks change owner from the chain to R: R's blocks are charged
     // whole from their link to their unlink as the chain's are, so the

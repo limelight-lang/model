@@ -136,7 +136,10 @@ pub(crate) fn epoch_of(turnovers: u64) -> u32 {
 #[cfg(test)]
 pub(crate) unsafe fn turn_the_cell_of(record: *const MutatorRecord) {
     let record = unsafe { &*record };
-    record.advance_the_epoch(record.advanced_at());
+    record.advance_the_epoch(
+        record.advanced_at(),
+        crate::journal::kinds::TURNOVER_BY_HAND,
+    );
 }
 
 /// Advance this thread's cell by one turnover ([`turn_the_cell_of`]), tests

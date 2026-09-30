@@ -913,6 +913,19 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
         // "an enrolment cannot fail"). A bit set here therefore always names
         // an entry.
         unsafe { crate::cycle::queue::register_candidate(entity) };
+        journal_event!(
+            crate::journal::kinds::KIND_CANDIDATE_REGISTERED,
+            entity as u64,
+            crate::journal::kinds::REGISTERED_NOW,
+            0,
+        );
+    } else if refcount != 0 && flags & CANDIDATE_GATE_MASK == CANDIDATE_BIT {
+        journal_event!(
+            crate::journal::kinds::KIND_CANDIDATE_REGISTERED,
+            entity as u64,
+            crate::journal::kinds::REGISTERED_ALREADY,
+            0,
+        );
     }
 
     refcount == 0 && MemoryCategory::from_flags(flags) == MemoryCategory::GcHeap

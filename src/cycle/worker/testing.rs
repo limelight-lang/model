@@ -310,6 +310,19 @@ pub(crate) fn note_served(served: super::Served) {
 
 pub(crate) fn note_grant() {
     GRANTS.fetch_add(1, Ordering::Relaxed);
+    #[cfg(feature = "debug-journal")]
+    AT_THE_NEXT_GRANT.run();
+}
+
+/// At the next grant, on the collector's thread, before its reading of the
+/// recall: for the journal's case whose recall must stand after the consent
+/// that clears an earlier one.
+#[cfg(feature = "debug-journal")]
+static AT_THE_NEXT_GRANT: OneShot = OneShot::new();
+
+#[cfg(feature = "debug-journal")]
+pub(crate) fn at_the_next_grant(act: Box<dyn FnOnce() + Send>) {
+    AT_THE_NEXT_GRANT.install(act);
 }
 
 pub(crate) fn note_refusal() {
@@ -1982,7 +1995,7 @@ pub(crate) fn wait_for_the_elders_wake(timeout: std::time::Duration) {
 /// As [`super::serve`].
 pub(crate) unsafe fn serve_alone(record: *mut MutatorRecord) -> super::Served {
     let mut standing = super::Standing::new(super::ELDER);
-    unsafe {
+    let served = unsafe {
         super::serve(
             record,
             super::ELDER,
@@ -1990,7 +2003,35 @@ pub(crate) unsafe fn serve_alone(record: *mut MutatorRecord) -> super::Served {
             &mut standing,
             super::serve_clock_now(),
         )
-    }
+    };
+    #[cfg(feature = "debug-journal")]
+    keep_the_serving_threads_counts();
+    served
+}
+
+/// What the ring of the thread that last ran [`serve_alone`] counted, read
+/// on that thread before it ends: a case's collector thread retires its ring
+/// at its exit, and the suite's other threads can evict a retired ring
+/// before the case reads it. The cases holding the pool's guard.
+#[cfg(feature = "debug-journal")]
+static SERVING_THREADS_COUNTS: Mutex<Option<crate::journal::Counts>> = Mutex::new(None);
+
+#[cfg(feature = "debug-journal")]
+fn keep_the_serving_threads_counts() {
+    let counts = crate::journal::counts_of(&[crate::journal::this_thread_identity()]);
+    *SERVING_THREADS_COUNTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(counts);
+}
+
+/// The counts [`serve_alone`] kept for its thread's ring, taken.
+#[cfg(feature = "debug-journal")]
+pub(crate) fn take_the_serving_threads_counts() -> crate::journal::Counts {
+    SERVING_THREADS_COUNTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+        .expect("a serve kept its thread's counts")
 }
 
 /// Wait for `collector` as the mutator does: reading its byte — consenting

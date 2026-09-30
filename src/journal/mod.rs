@@ -15,6 +15,11 @@
 //! window that lost a whole ring: a [`Mark`] carries the registry's
 //! eviction count ([`Window::Evicted`]).
 //!
+//! **Beside the records, each ring counts them** by kind and, for a coded
+//! kind, by code ([`counts`], [`Counts`]): how many were written in a window
+//! of more records than a ring holds, where the window itself answers
+//! *unknown*. The count says how many and never which.
+//!
 //! Where a record site may sit is §9.7, "Rules the record path obeys";
 //! where a ring lives and when it is retired, §9.4, "Where a ring lives,
 //! and what happens at thread exit"; why a ring is named by identity,
@@ -55,6 +60,15 @@ pub const CAPACITY: usize = 1024;
 /// accumulate rings for the life of the process. A guess, like
 /// [`CAPACITY`].
 pub const RETIRED_KEPT: usize = 64;
+
+/// Codes a coded kind's count keeps apart ([`kinds::is_coded`]); an `a` at or
+/// past it is counted under the last.
+pub const CODES: usize = 16;
+
+/// Rows of the count, one per kind the mask can name. A kind past 63 is
+/// counted in the row its low six bits name: §9.7 records a nonsense
+/// argument as it is, and an index past the table would panic.
+const COUNTED_KINDS: usize = 64;
 
 /// A ring is one pooled block, and [`CAPACITY`] is what decides that.
 ///
@@ -135,6 +149,19 @@ pub struct Ring {
     /// reader that found the ring found the identity too.
     thread: u64,
     records: [Record; CAPACITY],
+    /// Every record this ring was written, counted by kind and, for a coded
+    /// kind, by code: the answer a window of millions of records needs and
+    /// the ring cannot keep. Written by the owner alone, as the records are.
+    counts: [[Tally; CODES]; COUNTED_KINDS],
+}
+
+/// One cell of a ring's count: the records written under one kind and code,
+/// and the sum of their `b`, which a coded kind uses for a quantity (the
+/// roots a batch took, the entries a re-offer moved).
+#[repr(C)]
+struct Tally {
+    records: AtomicU64,
+    sum_of_b: AtomicU64,
 }
 
 impl Ring {
@@ -168,6 +195,33 @@ impl Ring {
         slot.a.store(a, Ordering::Relaxed);
         slot.b.store(b, Ordering::Relaxed);
         self.cursor.store(at + 1, Ordering::Release);
+        self.count(kind, a, b);
+    }
+
+    /// Add one record of `kind` to the count, under its code `a` when the kind
+    /// is coded. Owner only, as [`Self::write`]: a plain load and store per
+    /// word, which a reader reads relaxed and may find one record behind.
+    fn count(&self, kind: Kind, a: u64, b: u64) {
+        let code = if kinds::is_coded(kind) {
+            (a as usize).min(CODES - 1)
+        } else {
+            0
+        };
+        let tally = &self.counts[kind as usize % COUNTED_KINDS][code];
+        let records = tally.records.load(Ordering::Relaxed);
+        tally.records.store(records + 1, Ordering::Relaxed);
+        let sum = tally.sum_of_b.load(Ordering::Relaxed);
+        tally.sum_of_b.store(sum.wrapping_add(b), Ordering::Relaxed);
+    }
+
+    /// Add this ring's count into `into`.
+    fn add_counts_to(&self, into: &mut CountTable) {
+        for (row, tallies) in into.iter_mut().zip(self.counts.iter()) {
+            for (cell, tally) in row.iter_mut().zip(tallies.iter()) {
+                cell.0 += tally.records.load(Ordering::Relaxed);
+                cell.1 = cell.1.wrapping_add(tally.sum_of_b.load(Ordering::Relaxed));
+            }
+        }
     }
 
     /// The record written at cursor position `at`, or `None` when the
@@ -227,6 +281,9 @@ struct Registry {
     /// it, and the difference between two marks is how many whole thread
     /// histories the window lost.
     evicted: u64,
+    /// The counts of every evicted ring, added at its eviction, so that
+    /// [`counts`] still reads what a freed ring was written.
+    evicted_counts: CountTable,
     /// Threads that will never have a ring — the allocator refused it, or the
     /// thread could not guarantee its retirement. They journal nothing for the
     /// rest of their lives and appear in no ring, so without a count of them a
@@ -266,6 +323,7 @@ fn registry() -> &'static Mutex<Registry> {
         retired: Vec::new(),
         next_thread: 0,
         evicted: 0,
+        evicted_counts: [[(0, 0); CODES]; COUNTED_KINDS],
         never_journaled: 0,
         marks: 0,
         pending_free: Vec::new(),
@@ -636,6 +694,9 @@ pub fn reopen_thread() {
 fn evict_retired(registry: &mut Registry, count: usize) {
     registry.evicted += count as u64;
     let evicted: Vec<*mut Ring> = registry.retired.drain(..count).collect();
+    for &ring in &evicted {
+        unsafe { (*ring).add_counts_to(&mut registry.evicted_counts) };
+    }
     registry.pending_free.extend(evicted);
 }
 
@@ -809,6 +870,114 @@ pub fn between(start: &Mark, end: &Mark) -> Vec<Window> {
     }
 
     windows
+}
+
+/// Records and the sum of their `b` per kind and code, `(records, sum)`.
+type CountTable = [[(u64, u64); CODES]; COUNTED_KINDS];
+
+/// What the rings were written, by kind and code, at one moment: the count a
+/// window of more records than a ring holds is read from, the difference of
+/// two readings ([`Counts::since`]).
+#[derive(Clone, Debug)]
+pub struct Counts {
+    table: Box<CountTable>,
+    /// [`LOST`] at the reading: records dropped by a thread whose journaling
+    /// had ended, which no count holds.
+    pub lost: u64,
+    /// [`Registry::never_journaled`] at the reading: threads whose records
+    /// no count holds for their whole life.
+    pub never_journaled: u64,
+}
+
+impl Counts {
+    fn empty() -> Self {
+        Self {
+            table: Box::new([[(0, 0); CODES]; COUNTED_KINDS]),
+            lost: LOST.load(Ordering::Relaxed),
+            never_journaled: 0,
+        }
+    }
+
+    /// Records of `kind` under `code`; for a kind that is not coded, `code` 0
+    /// is the whole kind.
+    pub fn records(&self, kind: Kind, code: u64) -> u64 {
+        self.cell(kind, code).0
+    }
+
+    /// The sum of `b` over the records of `kind` under `code`.
+    pub fn sum_of_b(&self, kind: Kind, code: u64) -> u64 {
+        self.cell(kind, code).1
+    }
+
+    /// Records of `kind` under every code.
+    pub fn records_of_kind(&self, kind: Kind) -> u64 {
+        self.table[kind as usize % COUNTED_KINDS]
+            .iter()
+            .map(|cell| cell.0)
+            .sum()
+    }
+
+    /// The sum of `b` over the records of `kind` under every code.
+    pub fn sum_of_b_of_kind(&self, kind: Kind) -> u64 {
+        self.table[kind as usize % COUNTED_KINDS]
+            .iter()
+            .fold(0u64, |sum, cell| sum.wrapping_add(cell.1))
+    }
+
+    fn cell(&self, kind: Kind, code: u64) -> (u64, u64) {
+        self.table[kind as usize % COUNTED_KINDS][(code as usize).min(CODES - 1)]
+    }
+
+    /// What was written between `earlier` and this reading. `never_journaled`
+    /// stays cumulative, as in [`Window::NeverJournaled`].
+    pub fn since(&self, earlier: &Counts) -> Counts {
+        let mut table = self.table.clone();
+        for (row, before) in table.iter_mut().zip(earlier.table.iter()) {
+            for (cell, before) in row.iter_mut().zip(before.iter()) {
+                cell.0 = cell.0.saturating_sub(before.0);
+                cell.1 = cell.1.wrapping_sub(before.1);
+            }
+        }
+
+        Counts {
+            table,
+            lost: self.lost.saturating_sub(earlier.lost),
+            never_journaled: self.never_journaled,
+        }
+    }
+}
+
+/// What every ring the process has had was written, the evicted ones
+/// included, by kind and code. Takes the registry's lock, as [`mark`] does:
+/// an investigator's read.
+pub fn counts() -> Counts {
+    let registry = locked();
+    let mut counts = Counts::empty();
+    counts.never_journaled = registry.never_journaled;
+    *counts.table = registry.evicted_counts;
+    for &ring in registry.live.iter().chain(registry.retired.iter()) {
+        unsafe { (*ring).add_counts_to(&mut counts.table) };
+    }
+
+    counts
+}
+
+/// [`counts`] over the rings of the threads `identities` names alone, live
+/// or retired; an evicted ring is not among them. Tests only: a case reads
+/// what its own threads wrote while the rest of the suite journals beside
+/// it under the same mask.
+#[cfg(test)]
+pub(crate) fn counts_of(identities: &[u64]) -> Counts {
+    let registry = locked();
+    let mut counts = Counts::empty();
+    counts.never_journaled = registry.never_journaled;
+    for &identity in identities {
+        if let Some(ring) = ring_of(&registry, identity) {
+            unsafe { (*ring).add_counts_to(&mut counts.table) };
+        }
+    }
+
+    counts
 }
 
 /// One rule decides an overflow, and it is the read-back:

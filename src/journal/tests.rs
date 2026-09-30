@@ -75,6 +75,7 @@ fn a_journaling_thread(subject: u64) -> u64 {
 mod a_ring_across_a_threads_life;
 mod a_thread_the_journal_could_not_serve;
 mod the_answer_a_window_may_not_invent;
+mod the_count_beside_the_ring;
 #[cfg(feature = "debug-journal")]
 mod the_hunt_the_journal_was_built_for;
 mod the_ring_and_the_window_over_it;

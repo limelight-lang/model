@@ -916,9 +916,9 @@ impl MutatorRecord {
     /// handover's, or a round over a record between two lives — each count
     /// and neither moves the cell back; the byte they store last may be the
     /// earlier of the two, which delays a re-offer by one advance and frees
-    /// nothing wrongly.
+    /// nothing wrongly. `why` is the journal's `TURNOVER_*` code.
     #[inline]
-    pub(crate) fn advance_the_epoch(&self, now: u64) {
+    pub(crate) fn advance_the_epoch(&self, now: u64, why: u64) {
         let turnovers = self
             .hold
             .turnovers
@@ -927,6 +927,14 @@ impl MutatorRecord {
         self.turnover.store(turnovers as u8, Ordering::Relaxed);
         self.hold.advanced_at.store(now, Ordering::Relaxed);
         self.hold.batches_since.store(0, Ordering::Relaxed);
+        crate::journal::kinds::journal_event!(
+            crate::journal::kinds::KIND_TURNOVER,
+            std::ptr::from_ref(self) as u64,
+            why,
+            turnovers,
+        );
+        #[cfg(not(feature = "debug-journal"))]
+        let _ = why;
     }
 
     /// Count one turn the X arm made, on the collector's thread, after

@@ -90,7 +90,7 @@ fn sixty_four_batches_advance_the_epoch_before_x() {
     let record = unsafe { &*record() };
     let _ = record.take_new_life();
     // An advance by hand, for a count of zero and an instant of now.
-    record.advance_the_epoch(serve_clock_now());
+    record.advance_the_epoch(serve_clock_now(), crate::journal::kinds::TURNOVER_BY_HAND);
     let turnovers = record.turnovers();
 
     for _ in 1..crate::cycle::epoch::BATCHES_PER_EPOCH {
