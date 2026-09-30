@@ -5,10 +5,17 @@
 # process a cell, the rig's line with the arm and the repeat in front. The deciding loads are paced as the S65.24
 # protocol paces them; the guards run unpaced and birth no collector.
 #
-# Usage: dev/tools/arms.sh <out.csv> <repeats> <deciding|guards>
+# Usage: dev/tools/arms.sh <out.csv> <repeats> <deciding|guards|web>
 # Env: ARMS_DIR (binaries named by arm, default target/arms), ARMS ("A B C"),
 #      MUTATORS (2,4), SPARE (6), SHARED (4): CPUs for the two placements;
 #      LOADS, the deciding phase's loads as load:pace, default all six.
+# The web phase is S67's protocol (`dev/plans/S67.md`, S67.7): six mutators on
+# CPUs 2-12, one a core; CAPS ("1 4"), cap 1's collector on 14 and cap 4's on
+# 14, 0, 15 and 1; WEB_LOADS as load:interarrival_ms, the interarrival each
+# load's pilot of best D found; 116 s with a 20 s warm-up and a 12 s drain;
+# each cell's requests beside OUT for dev/tools/paired_excess.py; a cell whose
+# line reads void is run again once after the last repeat, and a second void
+# is reported, not run again.
 # Build each arm with `cargo test --release --lib --no-run [--features …]` and
 # copy the binary into ARMS_DIR under the arm's name.
 set -u
@@ -35,16 +42,47 @@ cell() {
         LL_RIG_PACE_MS=$pace LL_RIG_DRAIN_MS=$drain LL_RIG_REPEAT=$repeat \
         timeout 400 "$ARMS_DIR/$arm" --ignored --exact --test-threads=1 --nocapture "$CASE" \
         > "$LOG" 2>&1
+    record "$arm" "$placement $load" "$repeat"
+}
+
+# Append the cell's line from LOG to OUT, the header first; answers 1 where
+# the line reads void (`other_cpu_cores` past half a core).
+record() {
+    local arm=$1 what=$2 repeat=$3
     if ! grep -q '1 passed' "$LOG"; then
-        echo "FAILED $arm $placement $load $repeat" >&2
+        echo "FAILED $arm $what $repeat" >&2
         tail -5 "$LOG" >&2
-        return
+        return 0
     fi
     if [ -z "$HEADED" ]; then
         echo "arm,repeat,$(grep -o 'rig-header,.*' "$LOG" | cut -d, -f2-)" > "$OUT"
         HEADED=1
     fi
     echo "$arm,$repeat,$(grep -o '\brig,.*' "$LOG" | cut -d, -f2-)" >> "$OUT"
+    python3 - "$LOG" <<'PY'
+import re, sys
+text = open(sys.argv[1]).read()
+header = re.search(r'rig-header,(.*)', text).group(1).split(',')
+line = re.search(r'\brig,(.*)', text).group(1).split(',')
+sys.exit(1 if dict(zip(header, line)).get('void') == '1' else 0)
+PY
+    [ $? -eq 1 ] && return 1
+    return 0
+}
+
+# One cell of the web phase: arm, cap, load, interarrival in ms, repeat.
+web_cell() {
+    local arm=$1 cap=$2 load=$3 interarrival=$4 repeat=$5
+    local collectors=14
+    [ "$cap" = 4 ] && collectors=14,0,15,1
+    LL_RIG_PLACEMENT=cap-$cap LL_RIG_LOAD=$load LL_RIG_MUTATOR_CPUS=$WEB_MUTATORS \
+        LL_RIG_COLLECTOR_CPUS=$collectors LL_RIG_CAP=$cap LL_RIG_SECONDS=116 \
+        LL_RIG_WARM_UP_SECONDS=20 LL_RIG_DRAIN_MS=12000 LL_RIG_ARRIVALS=1 \
+        LL_RIG_INTERARRIVAL_MS=$interarrival LL_RIG_REPEAT=$repeat \
+        LL_RIG_REQUESTS_TO="$REQUESTS_DIR/$arm-cap$cap-$load-$repeat.csv" \
+        timeout 600 "$ARMS_DIR/$arm" --ignored --exact --test-threads=1 --nocapture "$CASE" \
+        > "$LOG" 2>&1
+    record "$arm" "cap-$cap $load" "$repeat"
 }
 
 # The arms in the order repeat `$1` runs them: the list rotated left by
@@ -56,6 +94,33 @@ rotated() {
         echo "${arms[(index + shift) % count]}"
     done
 }
+
+if [ "$PHASE" = web ]; then
+    WEB_MUTATORS=${WEB_MUTATORS:-2,4,6,8,10,12}
+    CAPS=${CAPS:-"1 4"}
+    WEB_LOADS=${WEB_LOADS:?"WEB_LOADS as load:interarrival_ms, from each load's pilot"}
+    REQUESTS_DIR="${OUT%.csv}-requests"
+    mkdir -p "$REQUESTS_DIR"
+    VOID=()
+    for repeat in $(seq 1 "$REPEATS"); do
+        ORDER=$(rotated "$repeat")
+        for cap in $CAPS; do
+            for spec in $WEB_LOADS; do
+                for arm in $ORDER; do
+                    web_cell "$arm" "$cap" "${spec%%:*}" "${spec##*:}" "$repeat" \
+                        || VOID+=("$arm $cap $spec $repeat")
+                done
+            done
+        done
+    done
+    for void in "${VOID[@]}"; do
+        read -r arm cap spec repeat <<< "$void"
+        echo "void, run again: $void" >&2
+        web_cell "$arm" "$cap" "${spec%%:*}" "${spec##*:}" "$repeat" \
+            || echo "void twice, reported: $void" >&2
+    done
+    exit 0
+fi
 
 for repeat in $(seq 1 "$REPEATS"); do
     ORDER=$(rotated "$repeat")

@@ -519,7 +519,7 @@ Notes: dev/plans/S67.md
         `dev/plans/S67.md`, S67.8: `web-heap` batches 18k roots against 1.6M
         registrations and proposes none, `web-arena`'s loop batches all end
         recalled inside their first part.
-- [ ] S67.7 The protocol's instruments
+- [x] S67.7 The protocol's instruments
       done: each instrument of `dev/plans/S67.md`, "Instruments owed", that
         S67.2–S67.5 do not build is in the rig — among them the arrivals'
         queue and the latency from arrival, the counted spin and its
@@ -529,6 +529,12 @@ Notes: dev/plans/S67.md
         web load reads a collector's birth before any deciding run (S67.2:
         at a 10 ms pace a load registering little births none)
       tier: T2 · role: Critic
+      handoff: `LL_RIG_ARRIVALS`, `SpinCost`, `WindowEdge`, `arms.sh` phase
+        `web`, `paired_excess.py` (`dev/plans/S67.md`, S67.7); pilots set the
+        interarrivals 29.68, 29.46 and 108.6 ms; smoke cells: `web-heap` hits
+        the garbage ceiling, best D's `instructions_a_request` spreads 48M to
+        27M between two cells and its A/A p99.9 is 657 ms, every cell void on
+        a shared box — put to Edmond before S67.6.
 - [ ] S67.6 Measure D and HG on the web loads
       done: the run by S67.1's rule, the arms fresh and interleaved, the
         figures in `dev/BENCHMARKS.md`, the verdict put to Edmond

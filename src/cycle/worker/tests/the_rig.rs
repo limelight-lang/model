@@ -102,8 +102,9 @@
 //! cycle::worker::tests::the_rig::a_cell_of_the_rig --test-threads=1 --nocapture`.
 
 use super::the_web_loads::{
-    Advanced, CORE_OBJECTS, CacheCounts, Garbage, LongLived, LongLivedShape, Plan, Request,
-    RequestBuild, Streams, VALUE_OBJECTS, Variant, WebClasses, held_by_size,
+    Advanced, Arrivals, CORE_OBJECTS, CacheCounts, Garbage, LongLived, LongLivedShape, Plan,
+    Request, RequestBuild, Streams, VALUE_OBJECTS, Variant, WebClasses, held_by_size,
+    specified_interarrival,
 };
 use super::what_a_take_costs::{MEMBER_CLASS_BYTES, member_class};
 use super::*;
@@ -1352,10 +1353,14 @@ fn a_mutator(
     reading
 }
 
-/// The steps a web request's timeline is advanced in, a poll after each
-/// [A]: the rig spins no drawn CPU, whose poll every 50 µs the protocol
-/// names (`dev/plans/S67.md`, S67.7).
+/// The steps a paced web request's timeline is advanced in, a poll after
+/// each [A]; a cell with `LL_RIG_ARRIVALS` spins the drawn CPU instead, in
+/// slices of [`SLICE`] (`dev/plans/S67.md`, S67.7).
 const REQUEST_STEPS: usize = 128;
+
+/// The synthetic CPU between two polls of a request's phase
+/// (`dev/plans/S67.md`, "The loads").
+const SLICE: Duration = Duration::from_micros(50);
 
 /// The garbage a web mutator may hold before its loop ends early: 1.5 GiB
 /// [A], six mutators' with their long-lived state inside the box's memory
@@ -1398,6 +1403,8 @@ struct WebReading {
     /// resets among them.
     registrations: usize,
     reset_registrations: usize,
+    /// Of the resets' registrations, the cache values (`Ended`).
+    reset_values_registered: usize,
     /// The value heads and the session heads standing candidate at the
     /// warm-up's end and at the stop.
     standing_at_the_warm_up: (usize, usize),
@@ -1409,6 +1416,61 @@ struct WebReading {
     /// `teardown_passes` passes.
     held_after_the_teardown: usize,
     teardown_passes: usize,
+    /// What the arrivals' loop read (`LL_RIG_ARRIVALS`), empty for a paced
+    /// one.
+    arrivals: ArrivalFigures,
+}
+
+/// One served request of the window, for the pairing across arms
+/// (`LL_RIG_REQUESTS_TO`): its index among the mutator's arrivals, its
+/// arrival, its service's start and end as offsets from the start barrier,
+/// and its drawn CPU and waits.
+#[derive(Clone, Copy)]
+struct RequestRecord {
+    index: usize,
+    arrival: Duration,
+    start: Duration,
+    end: Duration,
+    cpu: Duration,
+    waits: Duration,
+}
+
+/// What a web mutator's arrivals' loop read over its window, the arrivals
+/// in `[warm-up, LL_RIG_SECONDS)` (`dev/plans/S67.md`, S67.7).
+#[derive(Clone, Default)]
+struct ArrivalFigures {
+    /// Each request's wall from its arrival and from its service's start.
+    from_arrival: Latencies,
+    from_service: Latencies,
+    /// The arrivals waiting, this one among them, at each service's start:
+    /// their sum and their most.
+    queued_sum: usize,
+    queued_peak: usize,
+    /// The services' walls, waits inside, summed: over the window's wall,
+    /// the busy share.
+    busy: Duration,
+    /// Requests whose build and polls outran their drawn CPU.
+    over_their_cpu: usize,
+    /// The timed spin's calls and turns, and the instructions the plans'
+    /// draws took.
+    spin_calls: u64,
+    spin_turns: u64,
+    plan_instructions: u64,
+    /// The plans' draws' wall: the rig's work between two services, which
+    /// holds the mutator as a service does.
+    plan_wall: Duration,
+    /// The thread's user-mode instructions from the first window request's
+    /// service to the last's end, all of the above inside, and its counter's
+    /// reading at that start, which the loop and the drain's reading is taken
+    /// from.
+    instructions: u64,
+    instructions_at_the_window_start: u64,
+    /// Bytes the window's requests and state made garbage, and the garbage
+    /// when the window started and at its end.
+    garbage_made: usize,
+    garbage_at_the_start: usize,
+    garbage_at_the_end: usize,
+    records: Vec<RequestRecord>,
 }
 
 /// A web mutator's state from its setup to its teardown: the arena its
@@ -1427,6 +1489,9 @@ struct WebLoop {
     admissions_from: usize,
     /// Requests since the start barrier, the window's and before it.
     requests: usize,
+    /// The mutator's index and the repeat, which seed its arrivals.
+    index: usize,
+    repeat: u64,
     /// Members the loop's polls freed, as `ll_gc_maybe_collect` counts
     /// them.
     freed_by_polls: usize,
@@ -1471,6 +1536,8 @@ impl WebLoop {
             counts_from: CacheCounts::default(),
             admissions_from: 0,
             requests: 0,
+            index,
+            repeat,
             freed_by_polls: 0,
         }
     }
@@ -1565,6 +1632,188 @@ impl WebLoop {
         }
     }
 
+    /// Serve the arrivals of [`Arrivals`] (`LL_RIG_ARRIVALS=1`) from `from`,
+    /// the start barrier: the oldest arrival first, the mutator sleeping
+    /// without a poll while none waits, until the arrivals pass `run_for`,
+    /// the window's arrivals all served, or [`WEB_GARBAGE_CEILING`]. The
+    /// window is the arrivals from the warm-up to `run_for`, the same set in
+    /// every arm; its figures and the thread's instructions run from the
+    /// first one's service to the last one's end, the backlog at `run_for`
+    /// served after it (`dev/plans/S67.md`, S67.7's Critic, finding 2).
+    fn run_the_arrivals(
+        &mut self,
+        from: Instant,
+        run_for: Duration,
+        counters: &ThreadCounters,
+        reading: &mut MutatorReading,
+    ) {
+        let warm_up = seconds_from_env("LL_RIG_WARM_UP_SECONDS");
+        let interarrival = std::env::var("LL_RIG_INTERARRIVAL_MS").map_or_else(
+            |_| specified_interarrival(),
+            |millis| {
+                Duration::from_secs_f64(
+                    millis
+                        .parse::<f64>()
+                        .expect("LL_RIG_INTERARRIVAL_MS is a number")
+                        / 1e3,
+                )
+            },
+        );
+        let arrivals = Arrivals::new(self.index as u64, self.repeat, interarrival);
+        let expected = ((run_for - warm_up).as_secs_f64() / interarrival.as_secs_f64()) as usize;
+        let mut figures = ArrivalFigures {
+            records: Vec::with_capacity(expected * 2),
+            ..ArrivalFigures::default()
+        };
+        let mut queue = ArrivalQueue::new(
+            std::iter::from_fn({
+                let mut arrivals = arrivals;
+                move || Some(arrivals.next())
+            }),
+            run_for,
+        );
+        let mut windowed = false;
+        let mut instructions_from = 0;
+        let mut plan = self.draw_a_plan(counters, &mut figures, false);
+        for index in 0.. {
+            let Some((arrival, queued)) = queue.take(from) else {
+                break;
+            };
+
+            let in_the_window = arrival >= warm_up;
+            if in_the_window && !windowed {
+                windowed = true;
+                self.restart(Instant::now());
+                instructions_from = counters.instructions();
+                figures.instructions_at_the_window_start = instructions_from;
+                figures.garbage_at_the_start = self.garbage.current().iter().sum();
+                (
+                    figures.spin_calls,
+                    figures.spin_turns,
+                    figures.plan_instructions,
+                ) = (0, 0, 0);
+            }
+
+            let start = Instant::now();
+            if in_the_window {
+                figures.queued_sum += queued;
+                figures.queued_peak = figures.queued_peak.max(queued);
+            }
+            let (cpu, waits) = (plan.cpu, plan.waits[0] + plan.waits[1]);
+            let overran = self.serve(plan, &mut figures);
+            let end = Instant::now();
+            reading.iterations += 1;
+            if in_the_window {
+                figures.from_arrival.record(end - (from + arrival));
+                figures.from_service.record(end - start);
+                figures.busy += end - start;
+                figures.over_their_cpu += usize::from(overran);
+                figures.records.push(RequestRecord {
+                    index,
+                    arrival,
+                    start: start - from,
+                    end: end - from,
+                    cpu,
+                    waits,
+                });
+                figures.instructions = counters.instructions() - instructions_from;
+            }
+
+            if self.garbage.current().iter().sum::<usize>() > WEB_GARBAGE_CEILING {
+                reading.at_the_ceiling = true;
+                break;
+            }
+
+            plan = self.draw_a_plan(counters, &mut figures, in_the_window);
+        }
+
+        figures.garbage_made = self.garbage.made();
+        figures.garbage_at_the_end = self.garbage.current().iter().sum();
+        self.reading.arrivals = figures;
+    }
+
+    /// The next request's plan, its draw's instructions counted where
+    /// `counted`: the rig's work and not the runtime's, subtracted from the
+    /// window's (`dev/plans/S67.md`, S67.7's Critic, finding 9).
+    fn draw_a_plan(
+        &mut self,
+        counters: &ThreadCounters,
+        figures: &mut ArrivalFigures,
+        counted: bool,
+    ) -> Plan {
+        let (before, drawn_from) = (counters.instructions(), Instant::now());
+        let plan = Plan::draw(&mut self.streams, self.long_lived.targets());
+        if counted {
+            figures.plan_instructions += counters.instructions() - before;
+            figures.plan_wall += drawn_from.elapsed();
+        }
+        plan
+    }
+
+    /// Serve one request of `plan`: its three phases of drawn CPU split at
+    /// its waits' places, each run in slices of [`SLICE`] of the drawn CPU —
+    /// the timeline advanced to the slice's end, a poll, and the timed spin
+    /// to the slice's deadline — and each wait slept without a poll. The
+    /// build's work is inside the drawn CPU; a poll's wall moves the
+    /// deadline, so that the runtime's pauses add to the request's wall
+    /// (`dev/plans/S67.md`, S67.7's Critic, finding 4). Answers whether the
+    /// build and the polls outran the drawn CPU.
+    fn serve(&mut self, plan: Plan, figures: &mut ArrivalFigures) -> bool {
+        let variant = plan.variant;
+        let (cpu, waits, bounds) = (
+            plan.cpu,
+            plan.waits,
+            [0.0, plan.waits_at[0], plan.waits_at[1], 1.0],
+        );
+        let garbage = &mut self.garbage;
+        let mut build = RequestBuild {
+            context: LLContext { arena: self.arena },
+            arena: self.arena,
+            long_lived: &mut self.long_lived,
+        };
+        let (mut request, advanced) = unsafe { Request::start(&mut build, plan) };
+        account(garbage, advanced);
+        let mut overran = false;
+        for phase in 0..3 {
+            let (low, high) = (bounds[phase], bounds[phase + 1]);
+            let spun = run_a_phase(cpu.mul_f64(high - low), |share| {
+                let to = low + (high - low) * share;
+                account(garbage, unsafe { request.advance(&mut build, to) });
+                let polled = Instant::now();
+                self.freed_by_polls += poll_and_read(garbage);
+                polled.elapsed()
+            });
+            overran |= phase == 2 && spun.overran;
+            figures.spin_turns += spun.turns;
+            figures.spin_calls += spun.calls;
+            if phase < 2 {
+                sleep_without_poll(waits[phase]);
+            }
+        }
+
+        while !request.is_complete() {
+            account(garbage, unsafe { request.advance(&mut build, 1.0) });
+            self.freed_by_polls += poll_and_read(garbage);
+        }
+
+        let ended = unsafe { request.finish(&mut build) };
+        garbage.ended(ended.bytes);
+        self.freed_by_polls += poll_and_read(garbage);
+        self.reading.silent_ends += usize::from(ended.silent);
+        if variant == Variant::Arena {
+            self.reading.reset_registrations += ended.registered;
+            self.reading.reset_values_registered += ended.values_registered;
+        }
+
+        self.reading.requests += 1;
+        self.requests += 1;
+        if self.requests == CHECKSUM_REQUESTS {
+            self.reading.checksum =
+                self.streams.checksum().rotate_left(17) ^ self.long_lived.draws_checksum();
+        }
+        overran
+    }
+
     /// The window's figures at the loop's end.
     fn read_at_the_stop(&mut self) {
         self.garbage.read(Instant::now(), held_by_size());
@@ -1642,6 +1891,85 @@ impl WebLoop {
     }
 }
 
+/// What one phase of a request spun: the timed spin's calls and turns, and
+/// whether its last slice's work outran the phase's drawn CPU.
+struct PhaseSpun {
+    calls: u64,
+    turns: u64,
+    overran: bool,
+}
+
+/// Run one phase of `cpu` drawn CPU in slices of [`SLICE`]: in each, `step`
+/// with the share of the phase done at the slice's end — the request's work
+/// to there and a poll, answering the poll's wall — and the timed spin to the
+/// slice's deadline. The deadlines run from the phase's start by the slices'
+/// CPU, and each poll's wall pushes them back, so the work is inside the
+/// drawn CPU and the polls add to it (`dev/plans/S67.md`, S67.7's Critic,
+/// finding 4).
+fn run_a_phase(cpu: Duration, mut step: impl FnMut(f64) -> Duration) -> PhaseSpun {
+    let slices = cpu.as_nanos().div_ceil(SLICE.as_nanos()).max(1) as u32;
+    let mut spun = PhaseSpun {
+        calls: 0,
+        turns: 0,
+        overran: false,
+    };
+    let mut deadline = Instant::now();
+    for slice in 1..=slices {
+        deadline += cpu / slices;
+        deadline += step(f64::from(slice) / f64::from(slices));
+        spun.overran = Instant::now() > deadline;
+        spun.turns += spin_until(deadline);
+        spun.calls += 1;
+    }
+
+    spun
+}
+
+/// A mutator's arrivals as its loop serves them: `offsets` from the start
+/// barrier, those before `run_for` taken, the oldest waiting first.
+struct ArrivalQueue<I: Iterator<Item = Duration>> {
+    offsets: I,
+    next: Option<Duration>,
+    waiting: std::collections::VecDeque<Duration>,
+    run_for: Duration,
+}
+
+impl<I: Iterator<Item = Duration>> ArrivalQueue<I> {
+    fn new(mut offsets: I, run_for: Duration) -> Self {
+        let next = offsets.next().filter(|&next| next < run_for);
+        Self {
+            offsets,
+            next,
+            waiting: std::collections::VecDeque::new(),
+            run_for,
+        }
+    }
+
+    /// The next arrival to serve, counted from `from`, and the arrivals
+    /// waiting at its service's start, itself among them: the oldest waiting,
+    /// or, with none, the next, slept for without a poll. `None` once every
+    /// arrival before `run_for` was taken.
+    fn take(&mut self, from: Instant) -> Option<(Duration, usize)> {
+        self.admit(from);
+        if self.waiting.is_empty() {
+            let next = self.next?;
+            sleep_without_poll((from + next).saturating_duration_since(Instant::now()));
+            self.admit(from);
+        }
+
+        let queued = self.waiting.len();
+        self.waiting.pop_front().map(|arrival| (arrival, queued))
+    }
+
+    /// Move every arrival due by now into the waiting ones.
+    fn admit(&mut self, from: Instant) {
+        while let Some(next) = self.next.filter(|&next| from + next <= Instant::now()) {
+            self.waiting.push_back(next);
+            self.next = self.offsets.next().filter(|&next| next < self.run_for);
+        }
+    }
+}
+
 /// A step's bytes into `garbage`'s count.
 fn account(garbage: &mut Garbage, advanced: Advanced) {
     garbage.born(advanced.born);
@@ -1688,6 +2016,7 @@ fn a_web_mutator(
     stages: &Barrier,
     stop: &AtomicBool,
     repeat: u64,
+    run_for: Duration,
 ) -> (MutatorReading, WebReading) {
     if let Some(cpu) = cpu {
         testing::pin_this_thread_to(cpu)
@@ -1703,7 +2032,15 @@ fn a_web_mutator(
     let mut reading = MutatorReading::default();
     start.wait();
     let counters = ThreadCounters::begin();
-    web_loop.run_until(stop, counters.from, &mut reading);
+    if switch_from_env("LL_RIG_ARRIVALS") {
+        assert!(
+            millis_from_env("LL_RIG_PACE_MS").is_zero(),
+            "LL_RIG_ARRIVALS replaces LL_RIG_PACE_MS"
+        );
+        web_loop.run_the_arrivals(counters.from, run_for, &counters, &mut reading);
+    } else {
+        web_loop.run_until(stop, counters.from, &mut reading);
+    }
     counters.read_the_loop(&mut reading);
     web_loop.read_at_the_stop();
     // The three stages of `run`, each the driver's reading.
@@ -1787,6 +2124,12 @@ impl ThreadCounters {
         }
     }
 
+    /// The thread's user-mode instructions since the begin, zero where the
+    /// kernel refused the counters.
+    fn instructions(&self) -> u64 {
+        self.cycles.as_ref().map_or(0, |cycles| cycles.read().1)
+    }
+
     /// The figures over the loop and the drain together.
     fn read_the_loop_and_the_drain(&self, reading: &mut MutatorReading) {
         if let Some(cycles) = &self.cycles {
@@ -1847,6 +2190,268 @@ impl Cell {
 /// caller.
 fn sleep_without_poll(wait: Duration) {
     std::thread::sleep(wait);
+}
+
+/// Turns the timed spin makes between two readings of its deadline.
+const SPIN_CHUNK: u64 = 1_000;
+
+/// Spin until `deadline`, in chunks of [`SPIN_CHUNK`] turns of a
+/// `black_box` addition with the clock read before each: the synthetic CPU
+/// of a web request's phase (`dev/plans/S67.md`, S67.7, item 3). Answers the
+/// turns spun, zero where the deadline had passed. Not inlined, so that each
+/// call costs what [`SpinCost`] fitted.
+#[inline(never)]
+fn spin_until(deadline: Instant) -> u64 {
+    let (mut turns, mut sum) = (0u64, 0u64);
+    while Instant::now() < deadline {
+        for turn in 0..SPIN_CHUNK {
+            sum = std::hint::black_box(sum.wrapping_add(turn));
+        }
+        turns += SPIN_CHUNK;
+    }
+
+    std::hint::black_box(sum);
+    turns
+}
+
+/// What [`spin_until`] costs in user-mode instructions: `per_call` for a call
+/// and `per_turn` for a turn, the clock's reading between chunks inside the
+/// latter. Fitted on the calling thread from two runs and checked on a third
+/// (`dev/plans/S67.md`, S67.7's Critic, finding 3).
+#[derive(Clone, Copy, Default)]
+struct SpinCost {
+    per_call: f64,
+    per_turn: f64,
+    /// The third run's error against the fit, as a share of its reading.
+    error: f64,
+}
+
+impl SpinCost {
+    /// The share of a reading the fit may miss by on its third run.
+    const TOLERANCE: f64 = 0.001;
+
+    /// Fit on the calling thread: a thousand calls whose deadline has passed
+    /// give the call, one call of 20 ms the turn, and two hundred calls of
+    /// 50 µs, a request's slices, are read against the two. `None` where the
+    /// kernel refused the counters.
+    fn fit() -> Option<Self> {
+        let counters = testing::ThreadCycles::open()?;
+        let instructions = || counters.read().1 as f64;
+        let calls = 1_000;
+        let before = instructions();
+        for _ in 0..calls {
+            spin_until(Instant::now() - Duration::from_millis(1));
+        }
+        let per_call = (instructions() - before) / calls as f64;
+
+        let before = instructions();
+        let turns = spin_until(Instant::now() + Duration::from_millis(20));
+        let per_turn = (instructions() - before - per_call) / turns as f64;
+
+        let (slices, mut turns) = (200, 0);
+        let before = instructions();
+        for _ in 0..slices {
+            turns += spin_until(Instant::now() + Duration::from_micros(50));
+        }
+        let read = instructions() - before;
+        let fitted = per_call * slices as f64 + per_turn * turns as f64;
+        let cost = Self {
+            per_call,
+            per_turn,
+            error: (read - fitted).abs() / read,
+        };
+        assert!(
+            cost.error < Self::TOLERANCE,
+            "the spin's fit missed its third run by {:.4} %: {read} read, {fitted} fitted",
+            cost.error * 100.0
+        );
+        Some(cost)
+    }
+
+    /// The instructions `calls` calls spinning `turns` turns cost.
+    fn of(&self, calls: u64, turns: u64) -> u64 {
+        (self.per_call * calls as f64 + self.per_turn * turns as f64) as u64
+    }
+}
+
+/// Arrivals at 0, 1 and 2 ms and one at 100 ms past a 50 ms run, each
+/// served for 5 ms: the first finds itself alone, the second finds the third
+/// waiting behind it, the third alone, and the fourth is never taken; the
+/// later two's walls from arrival exceed their services by the time they
+/// waited.
+#[test]
+fn an_arrival_waits_behind_the_services_before_it() {
+    let millis = Duration::from_millis;
+    let offsets = [millis(0), millis(1), millis(2), millis(100)];
+    let mut queue = ArrivalQueue::new(offsets.into_iter(), millis(50));
+    let from = Instant::now();
+    let mut served = Vec::new();
+    while let Some((arrival, queued)) = queue.take(from) {
+        let start = from.elapsed();
+        std::thread::sleep(millis(5));
+        served.push((arrival, queued, start - arrival));
+    }
+
+    assert_eq!(
+        served
+            .iter()
+            .map(|&(arrival, queued, _)| (arrival, queued))
+            .collect::<Vec<_>>(),
+        [(millis(0), 1), (millis(1), 2), (millis(2), 1)]
+    );
+    assert!(served[1].2 >= millis(4), "{:?} waited", served[1].2);
+    assert!(served[2].2 >= millis(8), "{:?} waited", served[2].2);
+}
+
+/// A phase spins its drawn CPU with the work inside it, and the polls' walls
+/// add to it: 2 ms of CPU with no work runs at least 2 ms and short of twice
+/// it, a bound a loaded box's preemption stays under; with 20 µs of work a
+/// slice, the same; with a poll
+/// of 100 µs a slice, at least the CPU and the polls' walls together; and
+/// work of twice a slice outruns its deadline.
+#[test]
+fn a_phase_spins_its_cpu_and_its_polls_add_to_it() {
+    let cpu = Duration::from_millis(2);
+    let busy = |length: Duration| {
+        let until = Instant::now() + length;
+        while Instant::now() < until {
+            std::hint::spin_loop();
+        }
+    };
+    let wall_of = |step: &mut dyn FnMut(f64) -> Duration| {
+        let started = Instant::now();
+        let spun = run_a_phase(cpu, step);
+        (started.elapsed(), spun)
+    };
+
+    let (idle, spun) = wall_of(&mut |_| Duration::ZERO);
+    assert!(idle >= cpu && idle < cpu * 2, "{idle:?}");
+    assert_eq!(spun.calls, 40);
+    assert!(!spun.overran);
+
+    let (working, _) = wall_of(&mut |_| {
+        busy(Duration::from_micros(20));
+        Duration::ZERO
+    });
+    assert!(
+        working >= cpu && working < cpu * 2,
+        "the work stays inside the CPU: {working:?}"
+    );
+
+    let mut polled = Duration::ZERO;
+    let (polling, _) = wall_of(&mut |_| {
+        let at = Instant::now();
+        std::thread::sleep(Duration::from_micros(100));
+        let wall = at.elapsed();
+        polled += wall;
+        wall
+    });
+    assert!(
+        polling >= cpu + polled,
+        "the polls add to the CPU: {polling:?} against {:?}",
+        cpu + polled
+    );
+
+    let (_, spun) = wall_of(&mut |_| {
+        busy(SLICE * 2);
+        Duration::ZERO
+    });
+    assert!(spun.overran, "work past the deadline outran it");
+}
+
+/// The collector threads' instructions are read live from another thread
+/// and folded in at a life's end: a life on slot 7, which no case's
+/// collector is born into, spins a known stretch, and the driver's live
+/// readings around it grow by what the life's own counter read, within 2 %,
+/// and its end adds no more than its last few instructions. Ignored with the
+/// rig: it reads the PMU.
+#[test]
+#[ignore = "reads the PMU, as the rig's cells do"]
+fn the_collectors_instructions_are_read_live_and_folded_at_the_end() {
+    const SLOT: usize = 7;
+    let (to_driver, from_life) = std::sync::mpsc::channel::<u64>();
+    let (to_life, from_driver) = std::sync::mpsc::channel::<()>();
+    let life = std::thread::spawn(move || {
+        testing::note_collector_born(SLOT);
+        let own = testing::ThreadCycles::open().expect("the kernel opened the counters");
+        to_driver.send(0).unwrap();
+        from_driver.recv().unwrap();
+        let before = own.read().1;
+        spin_until(Instant::now() + Duration::from_millis(20));
+        to_driver.send(own.read().1 - before).unwrap();
+        from_driver.recv().unwrap();
+        testing::note_collector_life_end(SLOT);
+    });
+
+    from_life.recv().unwrap();
+    let born = testing::collector_instructions_to_now();
+    to_life.send(()).unwrap();
+    let spun = from_life.recv().unwrap();
+    let live = testing::collector_instructions_to_now();
+    to_life.send(()).unwrap();
+    life.join().unwrap();
+    let ended = testing::collector_instructions_to_now();
+
+    let read = (live - born) as f64;
+    assert!(
+        (read / spun as f64 - 1.0).abs() < 0.02,
+        "the live reading grew by {read} over a spin of {spun}"
+    );
+    assert!(
+        ended >= live && ended - live < 100_000,
+        "the end folded {} more",
+        ended - live
+    );
+}
+
+/// Another process spinning a core for a second reads as about one core of
+/// other CPU more than the second before it: the reading's increment is
+/// known, and its level is whatever else the guest runs — under WSL2 the
+/// other distributions' processes too, which no `ps` here lists. Ignored with
+/// the rig: it reads the box.
+#[test]
+#[cfg(not(miri))]
+#[ignore = "reads the box's load, as the rig's cells do"]
+fn another_process_spinning_reads_as_one_core_of_other_cpu() {
+    let quiet = WindowEdge::now();
+    std::thread::sleep(Duration::from_secs(1));
+    let spinning_from = WindowEdge::now();
+    let mut child = std::process::Command::new("timeout")
+        .args(["1", "sh", "-c", "while :; do :; done"])
+        .spawn()
+        .expect("the shell started");
+    child.wait().expect("the shell ended");
+    let spinning_to = WindowEdge::now();
+    let (idle, busy) = (
+        spinning_from.other_cores_since(&quiet),
+        spinning_to.other_cores_since(&spinning_from),
+    );
+    println!("other CPU: {idle:.3} cores before, {busy:.3} while a process spun");
+    assert!(
+        (busy - idle - 1.0).abs() < 0.3,
+        "a process spinning a core added {} cores",
+        busy - idle
+    );
+}
+
+/// The timed spin's fit holds on a run it was not fitted on, within
+/// [`SpinCost::TOLERANCE`], at a cost a turn of a few instructions. Ignored
+/// with the rig: it reads the PMU.
+#[test]
+#[ignore = "reads the PMU, as the rig's cells do"]
+fn the_timed_spin_is_fitted_by_its_calls_and_turns() {
+    let cost = SpinCost::fit().expect("the kernel opened the counters");
+    println!(
+        "spin: {:.1} instructions a call, {:.4} a turn, the third run within {:.4} %",
+        cost.per_call,
+        cost.per_turn,
+        cost.error * 100.0
+    );
+    assert!(
+        (1.0..20.0).contains(&cost.per_turn),
+        "{} instructions a turn",
+        cost.per_turn
+    );
 }
 
 /// Whether the switch `variable` is on: unset is off and `1` is on; any other
@@ -1934,7 +2539,81 @@ struct CellReading {
     /// What the journal counted over the loop and over the drain, zero in a
     /// build without `debug-journal` (`JOURNAL_COLUMNS`).
     journal: (crate::journal::Counts, crate::journal::Counts),
+    /// The timed spin's cost, fitted on the driver's thread before the
+    /// mutators start; `None` where the kernel refused the counters.
+    spin_cost: Option<SpinCost>,
+    /// The driver's readings at the window's start, at its end and after the
+    /// drains (`WindowEdge`).
+    edges: [WindowEdge; 3],
 }
+
+/// What the driver reads at an edge of the window: the collector threads'
+/// instructions so far, the box's busy time and the process's own from
+/// `/proc`, the members commits reclaimed and the turnovers by cause
+/// (`dev/plans/S67.md`, S67.7, items 5, 7 and 8).
+#[derive(Clone, Copy)]
+struct WindowEdge {
+    at: Instant,
+    collector_instructions: u64,
+    /// Jiffies: the box's busy ones over every CPU, and the process's own.
+    box_busy: u64,
+    own: u64,
+    members_reclaimed: usize,
+    turnovers: [usize; 4],
+}
+
+impl WindowEdge {
+    fn now() -> Self {
+        let stat = std::fs::read_to_string("/proc/stat").unwrap_or_default();
+        // user, nice, system, idle, iowait, irq, softirq, steal: busy is all
+        // but idle and iowait.
+        let fields: Vec<u64> = stat
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .skip(1)
+            .filter_map(|field| field.parse().ok())
+            .collect();
+        let box_busy = [0, 1, 2, 5, 6, 7]
+            .iter()
+            .filter_map(|&index| fields.get(index))
+            .sum();
+        // `/proc/self/stat`'s fields 14 and 15, utime and stime, counted after
+        // the command's closing parenthesis, which may itself hold spaces.
+        let own_stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+        let own = own_stat.rsplit_once(')').map_or(0, |(_, rest)| {
+            rest.split_whitespace()
+                .skip(11)
+                .take(2)
+                .filter_map(|field| field.parse::<u64>().ok())
+                .sum()
+        });
+        Self {
+            at: Instant::now(),
+            collector_instructions: testing::collector_instructions_to_now(),
+            box_busy,
+            own,
+            members_reclaimed: testing::members_reclaimed(),
+            turnovers: testing::turnovers_by_cause(),
+        }
+    }
+
+    /// The other processes' CPU in the guest between `earlier` and this
+    /// edge, in cores: the box's busy jiffies less the process's own, at 100
+    /// a second, over the wall. Under WSL2 the host's load is charged to the
+    /// guest's tasks and not read here (`dev/plans/S67.md`, S67.7's Critic,
+    /// finding 5).
+    fn other_cores_since(&self, earlier: &WindowEdge) -> f64 {
+        const JIFFIES_A_SECOND: f64 = 100.0;
+        let other = (self.box_busy - earlier.box_busy) as f64 - (self.own - earlier.own) as f64;
+        other / JIFFIES_A_SECOND / (self.at - earlier.at).as_secs_f64()
+    }
+}
+
+/// A cell whose guest held more than this share of a core busy with other
+/// processes over the window is void (`dev/plans/S67.md`, the protocol).
+const VOID_CORES: f64 = 0.5;
 
 /// One column of the journal's counts: `kind` under `code`, or under every
 /// code where `code` is `None`, read as its records or as the sum of their
@@ -2154,6 +2833,9 @@ const JOURNAL_COLUMNS: &[JournalColumn] = &[
 struct WebCell {
     mutators: Vec<WebReading>,
     setup: RoundFigures,
+    /// The warm-up's collections, apart from the window's, where the
+    /// arrivals run.
+    warm_up: RoundFigures,
     retained_at_the_stop: usize,
     retained_after_the_drains: usize,
     frees_from_another_thread: usize,
@@ -2641,7 +3323,204 @@ impl CellReading {
         .chain(self.segment_fields())
         .chain(self.web_fields(load))
         .chain(self.journal_fields())
+        .chain(self.arrival_fields())
         .collect()
+    }
+
+    /// What the arrivals' window read (`LL_RIG_ARRIVALS`), zero for a paced
+    /// cell: the requests and their latencies from arrival and from service,
+    /// the queue, the busy share, the backlog at the stop, the spin's cost and
+    /// share, and the mutators' instructions with the spin and the plans'
+    /// draws taken out (`dev/plans/S67.md`, S67.7).
+    fn arrival_fields(&self) -> Vec<(&'static str, String)> {
+        let figures: Vec<&ArrivalFigures> =
+            self.web.mutators.iter().map(|web| &web.arrivals).collect();
+        let (mut from_arrival, mut from_service) = (Latencies::default(), Latencies::default());
+        for one in &figures {
+            from_arrival.add(&one.from_arrival);
+            from_service.add(&one.from_service);
+        }
+        let requests: usize = figures.iter().map(|one| one.records.len()).sum();
+        let queued: usize = figures.iter().map(|one| one.queued_sum).sum();
+        let run_for = seconds_from_env("LL_RIG_SECONDS");
+        let window = run_for.saturating_sub(seconds_from_env("LL_RIG_WARM_UP_SECONDS"));
+        let busy: Duration = figures.iter().map(|one| one.busy).sum();
+        let backlog = figures
+            .iter()
+            .flat_map(|one| &one.records)
+            .filter(|record| record.start >= run_for)
+            .count();
+        let cost = self.spin_cost.unwrap_or_default();
+        let spin: u64 = figures
+            .iter()
+            .map(|one| cost.of(one.spin_calls, one.spin_turns))
+            .sum();
+        let instructions: u64 = figures.iter().map(|one| one.instructions).sum();
+        let plans: u64 = figures.iter().map(|one| one.plan_instructions).sum();
+        let runtime = instructions.saturating_sub(spin + plans);
+        let [start, stop, drained] = &self.edges;
+        let collectors = stop.collector_instructions - start.collector_instructions;
+        let collectors_with_the_drain =
+            drained.collector_instructions - start.collector_instructions;
+        let with_the_drain: u64 = self
+            .mutators
+            .iter()
+            .zip(&figures)
+            .map(|(reading, one)| {
+                reading
+                    .instructions_with_the_drain
+                    .saturating_sub(one.instructions_at_the_window_start)
+            })
+            .sum();
+        let other_cores = stop.other_cores_since(start);
+        let share = |part: u64| {
+            if instructions == 0 {
+                0.0
+            } else {
+                part as f64 / instructions as f64
+            }
+        };
+        vec![
+            (
+                "arrival_interarrival_us",
+                std::env::var("LL_RIG_INTERARRIVAL_MS").map_or_else(
+                    |_| specified_interarrival().as_micros().to_string(),
+                    |millis| {
+                        ((millis.parse::<f64>().unwrap_or(0.0)) * 1e3)
+                            .round()
+                            .to_string()
+                    },
+                ),
+            ),
+            ("arrival_requests", requests.to_string()),
+            (
+                "arrival_latency_p50_ns",
+                from_arrival.quantile(0.5).to_string(),
+            ),
+            (
+                "arrival_latency_p99_ns",
+                from_arrival.quantile(0.99).to_string(),
+            ),
+            (
+                "arrival_latency_p999_ns",
+                from_arrival.quantile(0.999).to_string(),
+            ),
+            (
+                "service_latency_p50_ns",
+                from_service.quantile(0.5).to_string(),
+            ),
+            (
+                "service_latency_p99_ns",
+                from_service.quantile(0.99).to_string(),
+            ),
+            (
+                "service_latency_p999_ns",
+                from_service.quantile(0.999).to_string(),
+            ),
+            (
+                "arrival_queue_mean",
+                format!("{:.3}", queued as f64 / requests.max(1) as f64),
+            ),
+            (
+                "arrival_queue_peak",
+                figures
+                    .iter()
+                    .map(|one| one.queued_peak)
+                    .max()
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            (
+                "arrival_busy_share",
+                format!(
+                    "{:.4}",
+                    busy.as_secs_f64() / (window.as_secs_f64() * figures.len().max(1) as f64)
+                ),
+            ),
+            ("arrival_backlog_at_the_stop", backlog.to_string()),
+            (
+                "arrival_service_mean_us",
+                (busy.as_micros() / requests.max(1) as u128).to_string(),
+            ),
+            (
+                "arrival_draw_mean_us",
+                (figures
+                    .iter()
+                    .map(|one| one.plan_wall)
+                    .sum::<Duration>()
+                    .as_micros()
+                    / requests.max(1) as u128)
+                    .to_string(),
+            ),
+            (
+                "arrival_over_their_cpu",
+                figures
+                    .iter()
+                    .map(|one| one.over_their_cpu)
+                    .sum::<usize>()
+                    .to_string(),
+            ),
+            ("spin_instructions_a_call", format!("{:.1}", cost.per_call)),
+            ("spin_instructions_a_turn", format!("{:.4}", cost.per_turn)),
+            ("spin_fit_error_ppm", format!("{:.1}", cost.error * 1e6)),
+            ("spin_instructions", spin.to_string()),
+            ("spin_share", format!("{:.4}", share(spin))),
+            ("plan_instructions", plans.to_string()),
+            ("window_mutator_instructions", instructions.to_string()),
+            ("window_runtime_instructions", runtime.to_string()),
+            ("window_collector_instructions", collectors.to_string()),
+            (
+                "collector_instructions_with_the_drain",
+                collectors_with_the_drain.to_string(),
+            ),
+            (
+                "instructions_a_request",
+                ((runtime + collectors) / requests.max(1) as u64).to_string(),
+            ),
+            (
+                "instructions_a_request_with_the_drain",
+                ((with_the_drain.saturating_sub(spin + plans) + collectors_with_the_drain)
+                    / requests.max(1) as u64)
+                    .to_string(),
+            ),
+            ("other_cpu_cores", format!("{other_cores:.3}")),
+            ("void", u8::from(other_cores > VOID_CORES).to_string()),
+            (
+                "window_members_reclaimed",
+                (stop.members_reclaimed - start.members_reclaimed).to_string(),
+            ),
+            (
+                "window_turnovers_by_batches",
+                (stop.turnovers[0] - start.turnovers[0]).to_string(),
+            ),
+            (
+                "window_turnovers_by_x",
+                (stop.turnovers[1] - start.turnovers[1]).to_string(),
+            ),
+            (
+                "window_turnovers_new_life",
+                (stop.turnovers[2] - start.turnovers[2]).to_string(),
+            ),
+            (
+                "web_garbage_made_bytes",
+                figures
+                    .iter()
+                    .map(|one| one.garbage_made)
+                    .sum::<usize>()
+                    .to_string(),
+            ),
+            (
+                "web_garbage_freed_bytes",
+                figures
+                    .iter()
+                    .map(|one| {
+                        (one.garbage_at_the_start + one.garbage_made)
+                            .saturating_sub(one.garbage_at_the_end)
+                    })
+                    .sum::<usize>()
+                    .to_string(),
+            ),
+        ]
     }
 
     /// [`JOURNAL_COLUMNS`] over the loop, then over the drain, and each
@@ -2767,6 +3646,10 @@ impl CellReading {
             (
                 "web_reset_registrations",
                 sum(&|reading| reading.reset_registrations),
+            ),
+            (
+                "web_reset_values_registered",
+                sum(&|reading| reading.reset_values_registered),
             ),
             (
                 "web_values_standing_at_the_warm_up",
@@ -2963,6 +3846,8 @@ impl RoundFigures {
 /// caller set before the call stands through it and goes at the retire.
 fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let end = RetireOnDrop;
+    let arrivals = load.web.is_some() && switch_from_env("LL_RIG_ARRIVALS");
+    let spin_cost = if arrivals { SpinCost::fit() } else { None };
     // The collector's kinds from the setup on, so that the loop's first
     // records are counted; the readings below take the setup's out.
     // `LL_RIG_JOURNAL_KINDS`, a mask in hexadecimal, replaces the set: a cell
@@ -3022,6 +3907,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
                     &stages,
                     &stop,
                     repeat,
+                    run_for,
                 ),
                 None => (
                     a_mutator(load, cpu, class.into_inner(), &start, &stop, run_for),
@@ -3031,9 +3917,6 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         })
         .collect();
     start.wait();
-    let journal_at_the_start = crate::journal::counts();
-    let _ = testing::take_withdrawn_standings();
-    let collector_cpu_at_the_start = testing::collector_cpu_to_now();
     let mut web = WebCell::default();
     if load.web.is_some() {
         // The setups' collections, apart from the loop's
@@ -3043,7 +3926,23 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         testing::read_traced_batches(switch_from_env("LL_RIG_TRACED_BATCHES"));
     }
 
-    std::thread::sleep(cell.run_for);
+    // The arrivals' window starts after the warm-up, where the driver takes
+    // its counters' first readings (`dev/plans/S67.md`, S67.7, item 4); a
+    // paced cell reads from the start barrier.
+    let warm_up = if arrivals {
+        seconds_from_env("LL_RIG_WARM_UP_SECONDS")
+    } else {
+        Duration::ZERO
+    };
+    std::thread::sleep(warm_up);
+    if arrivals {
+        web.warm_up = RoundFigures::take();
+    }
+    let journal_at_the_start = crate::journal::counts();
+    let at_the_start = WindowEdge::now();
+    let _ = testing::take_withdrawn_standings();
+    let collector_cpu_at_the_start = testing::collector_cpu_to_now();
+    std::thread::sleep(cell.run_for - warm_up);
     stop.store(true, Ordering::Relaxed);
     let collector_cpu_at_the_stop = testing::collector_cpu_to_now();
     let withdrawn = testing::take_withdrawn_standings();
@@ -3054,10 +3953,18 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     // release to the teardown.
     let mut round_figures = None;
     let mut journal_at_the_stop = None;
+    let mut at_the_stop = None;
     let mut journal_after_the_drains = None;
+    let mut after_the_drains = None;
     if let Some(load_web) = load.web {
         stages.wait();
         journal_at_the_stop = Some(crate::journal::counts());
+        at_the_stop = Some(WindowEdge::now());
+        if arrivals {
+            // The window's collections, apart from the drain's
+            // (`dev/plans/S67.md`, S67.7's Critic, finding 10).
+            round_figures = Some(RoundFigures::take());
+        }
         web.retained_at_the_stop = crate::memory::retained::retained_block_count();
         let batches = testing::take_traced_batches();
         testing::read_traced_batches(false);
@@ -3069,22 +3976,29 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
             .count();
         stages.wait();
         journal_after_the_drains = Some(crate::journal::counts());
+        after_the_drains = Some(WindowEdge::now());
         web.retained_after_the_drains = crate::memory::retained::retained_block_count();
         web.frees_from_another_thread = crate::memory::heap::take_frees_from_another_thread();
-        round_figures = Some(RoundFigures::take());
+        let drain = RoundFigures::take();
+        round_figures.get_or_insert(drain);
         stages.wait();
     }
 
     // A ring load's mutators drain before they return: its loop is read at
     // the stop, and its drain at the join.
     let journal_at_the_stop = journal_at_the_stop.unwrap_or_else(crate::journal::counts);
+    let at_the_stop = at_the_stop.unwrap_or_else(WindowEdge::now);
     let (mutators, web_mutators): (Vec<MutatorReading>, Vec<WebReading>) = threads
         .into_iter()
         .map(|thread| thread.join().expect("the mutator ran its loop"))
         .unzip();
     let journal_after_the_drains = journal_after_the_drains.unwrap_or_else(crate::journal::counts);
+    let after_the_drains = after_the_drains.unwrap_or_else(WindowEdge::now);
     crate::journal::kinds::set_enabled_kinds(kinds_before);
     web.mutators = web_mutators;
+    if let Ok(path) = std::env::var("LL_RIG_REQUESTS_TO") {
+        write_the_requests(&path, &web.mutators);
+    }
     assert_eq!(
         web.frees_from_another_thread, 0,
         "a web load frees nothing across threads"
@@ -3131,11 +4045,39 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
             journal_at_the_stop.since(&journal_at_the_start),
             journal_after_the_drains.since(&journal_at_the_stop),
         ),
+        spin_cost,
+        edges: [at_the_start, at_the_stop, after_the_drains],
         ledger_peak: {
             let ledger = crate::memory::gc_metadata::stats();
             (ledger.peak_bytes(), ledger.peak_bytes_in_use())
         },
     }
+}
+
+/// Write the window's requests of every mutator to `path` as CSV, one line a
+/// request, for `dev/tools/paired_excess.py` to pair across arms: the
+/// mutator, the request's index among its arrivals, and its arrival, its
+/// service's start and end, its drawn CPU and its drawn waits, each in
+/// nanoseconds, the instants from the start barrier.
+fn write_the_requests(path: &str, mutators: &[WebReading]) {
+    use std::fmt::Write as _;
+    let mut text = String::from("mutator,index,arrival_ns,start_ns,end_ns,cpu_ns,waits_ns\n");
+    for (mutator, web) in mutators.iter().enumerate() {
+        for record in &web.arrivals.records {
+            let _ = writeln!(
+                text,
+                "{mutator},{},{},{},{},{},{}",
+                record.index,
+                record.arrival.as_nanos(),
+                record.start.as_nanos(),
+                record.end.as_nanos(),
+                record.cpu.as_nanos(),
+                record.waits.as_nanos()
+            );
+        }
+    }
+    std::fs::write(path, text)
+        .unwrap_or_else(|error| panic!("the requests were written to {path}: {error}"));
 }
 
 /// One cell's line, prefixed `rig,` for the driver, after the header's

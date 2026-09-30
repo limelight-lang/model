@@ -912,9 +912,64 @@ static COLLECTOR_LIVES: Mutex<CollectorLives> = Mutex::new(CollectorLives {
 static COLLECTOR_BORN_AT: Mutex<[Option<Instant>; super::MAX_COLLECTORS]> =
     Mutex::new([None; super::MAX_COLLECTORS]);
 
-/// Stamp the birth of slot `index`'s life, on the thread being born.
+/// Stamp the birth of slot `index`'s life, on the thread being born, and
+/// open its instruction counter.
 pub(crate) fn note_collector_born(index: usize) {
     lock(&COLLECTOR_BORN_AT)[index] = Some(Instant::now());
+    lock(&COLLECTOR_INSTRUCTIONS).standing[index] = ThreadCycles::open();
+}
+
+/// The collector threads' user-mode instructions: each standing life's
+/// counter, which the driver reads live from its own thread, the kernel
+/// bringing an active counter up to date at the read, and the lives that
+/// ended, each folded in under the same lock as its counter closes
+/// (`dev/plans/S67.md`, S67.7's Critic, finding 7).
+struct CollectorInstructions {
+    standing: [Option<ThreadCycles>; super::MAX_COLLECTORS],
+    ended: u64,
+}
+
+static COLLECTOR_INSTRUCTIONS: Mutex<CollectorInstructions> = Mutex::new(CollectorInstructions {
+    standing: [const { None }; super::MAX_COLLECTORS],
+    ended: 0,
+});
+
+/// The collector threads' user-mode instructions so far, the lives that
+/// ended and the standing ones to this instant; zero where the kernel
+/// refused the counters.
+pub(crate) fn collector_instructions_to_now() -> u64 {
+    let counters = lock(&COLLECTOR_INSTRUCTIONS);
+    counters.ended
+        + counters
+            .standing
+            .iter()
+            .flatten()
+            .map(|cycles| cycles.read().1)
+            .sum::<u64>()
+}
+
+/// Members the commits of every thread reclaimed since the process
+/// started (`crate::cycle::reclamation::reclaim_before_drops`).
+static MEMBERS_RECLAIMED: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn note_members_reclaimed(members: usize) {
+    MEMBERS_RECLAIMED.fetch_add(members, Ordering::Relaxed);
+}
+
+pub(crate) fn members_reclaimed() -> usize {
+    MEMBERS_RECLAIMED.load(Ordering::Relaxed)
+}
+
+/// The epoch advances of every record since the process started, by the
+/// journal's `TURNOVER_*` code (`MutatorRecord::advance_the_epoch`).
+static TURNOVERS_BY_CAUSE: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
+
+pub(crate) fn note_turnover(why: u64) {
+    TURNOVERS_BY_CAUSE[(why as usize).min(3)].fetch_add(1, Ordering::Relaxed);
+}
+
+pub(crate) fn turnovers_by_cause() -> [usize; 4] {
+    std::array::from_fn(|why| TURNOVERS_BY_CAUSE[why].load(Ordering::Relaxed))
 }
 
 /// Add slot `index`'s life to [`take_collector_lives`], on its own thread at
@@ -927,6 +982,12 @@ pub(crate) fn note_collector_life_end(index: usize) {
 
     let wall = born.elapsed();
     let cpu = thread_cpu_time();
+    {
+        let mut counters = lock(&COLLECTOR_INSTRUCTIONS);
+        if let Some(cycles) = counters.standing[index].take() {
+            counters.ended += cycles.read().1;
+        }
+    }
     CPU_AT_THE_LAST_ROUND[index].store(0, Ordering::Relaxed);
     let (voluntary, involuntary) = thread_context_switches();
     let mut lives = lock(&COLLECTOR_LIVES);

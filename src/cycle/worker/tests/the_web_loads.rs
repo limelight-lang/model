@@ -123,6 +123,66 @@ pub(super) const SESSION_WRITE_STEADY_SHARE: f64 = 1.0 - 0.007 / 0.307;
 /// slot 1 holds its core edge.
 const SESSION_WRITE_SLOT: u32 = 2;
 
+/// A request's drawn CPU: lognormal, median 4 ms, σ 1 [A]
+/// (`dev/plans/S67.md`, "The loads").
+pub(super) const REQUEST_CPU_MEDIAN: Duration = Duration::from_millis(4);
+
+/// Each of a request's two blocking waits: lognormal, median 3 ms, σ 1 [A].
+pub(super) const WAIT_MEDIAN: Duration = Duration::from_millis(3);
+
+/// The σ of both timing draws.
+const TIMING_SIGMA: f64 = 1.0;
+
+/// The longest a timing draw may be [A]: one draw in about ten million
+/// passes it, and one that did would hold its mutator for the cell's
+/// arrivals.
+const LONGEST_TIMING: Duration = Duration::from_secs(1);
+
+/// The share of the wall a worker is busy or waiting at the specification's
+/// arrival rate [A].
+pub(super) const BUSY_SHARE: f64 = 0.6;
+
+/// A timing draw of `median` and [`TIMING_SIGMA`], clamped at
+/// [`LONGEST_TIMING`].
+fn draw_a_duration(draws: &mut Draws, median: Duration) -> Duration {
+    Duration::from_secs_f64(draws.lognormal(median.as_secs_f64(), TIMING_SIGMA)).min(LONGEST_TIMING)
+}
+
+/// The specification's mean interarrival, E[CPU] + E[waits] over
+/// [`BUSY_SHARE`], a lognormal's mean being its median times e^(σ²/2):
+/// 27.48 ms. The protocol replaces it by a pilot's where a request's build
+/// is not free (`dev/plans/S67.md`, S67.7, ruled 2026-09-30).
+pub(super) fn specified_interarrival() -> Duration {
+    let mean_of =
+        |median: Duration| median.as_secs_f64() * (TIMING_SIGMA * TIMING_SIGMA / 2.0).exp();
+    Duration::from_secs_f64((mean_of(REQUEST_CPU_MEDIAN) + 2.0 * mean_of(WAIT_MEDIAN)) / BUSY_SHARE)
+}
+
+/// A mutator's open-loop Poisson arrivals: exponential interarrivals of mean
+/// `mean`, from [`Purpose::Arrivals`], as offsets from the start barrier. The
+/// same instants in every arm, the draws being seeded as the plans' are.
+pub(super) struct Arrivals {
+    draws: Draws,
+    mean: Duration,
+    last: Duration,
+}
+
+impl Arrivals {
+    pub(super) fn new(mutator: u64, repeat: u64, mean: Duration) -> Self {
+        Self {
+            draws: Draws::new(mutator, repeat, Purpose::Arrivals),
+            mean,
+            last: Duration::ZERO,
+        }
+    }
+
+    /// The next arrival's offset from the start barrier.
+    pub(super) fn next(&mut self) -> Duration {
+        self.last += Duration::from_secs_f64(-self.draws.unit().ln() * self.mean.as_secs_f64());
+        self.last
+    }
+}
+
 /// Where a request's objects live (`dev/plans/S67.md`, "The loads"): in the
 /// GC heap, `web-heap`, or in the mutator's arena, reset at the request's
 /// end, `web-arena`.
@@ -150,7 +210,7 @@ const LARGEST: u8 = 2;
 pub(super) enum Purpose {
     Shape = 1,
     Registrations = 2,
-    #[expect(dead_code, reason = "S67.7's arrivals draw from it")]
+    /// The instants requests arrive at (`Arrivals`).
     Arrivals = 3,
     /// A request's lookups: their places and keys.
     Cache = 4,
@@ -161,6 +221,8 @@ pub(super) enum Purpose {
     /// The long-lived state's setup: the core, the cache's run to its steady
     /// state, the values and sessions it builds, the sessions' idle ages.
     Core = 7,
+    /// A request's drawn CPU and its two waits' durations.
+    Timing = 8,
 }
 
 /// The streams a mutator's plans are drawn from, one a purpose.
@@ -169,6 +231,7 @@ pub(super) struct Streams {
     pub(super) registrations: Draws,
     pub(super) cache: Draws,
     pub(super) sessions: Draws,
+    pub(super) timing: Draws,
 }
 
 impl Streams {
@@ -178,6 +241,7 @@ impl Streams {
             registrations: Draws::new(mutator, repeat, Purpose::Registrations),
             cache: Draws::new(mutator, repeat, Purpose::Cache),
             sessions: Draws::new(mutator, repeat, Purpose::Sessions),
+            timing: Draws::new(mutator, repeat, Purpose::Timing),
         }
     }
 
@@ -350,8 +414,12 @@ pub(super) struct Plan {
     pub(super) lookups: Vec<(f64, u32)>,
     pub(super) session: u32,
     pub(super) orm: Vec<usize>,
-    #[expect(dead_code, reason = "S67.7's spin sleeps at them")]
     pub(super) waits_at: [f64; 2],
+    /// The request's drawn CPU, the synthetic work its three phases spin
+    /// with its build and its polls inside, and its two waits' durations,
+    /// slept without a poll at `waits_at`.
+    pub(super) cpu: Duration,
+    pub(super) waits: [Duration; 2],
     pub(super) silent_end: bool,
     /// The size index of the object a `web-arena` request writes into its
     /// session, none where it writes nothing.
@@ -431,6 +499,11 @@ impl Plan {
             session: streams.sessions.below(targets.session_slots) as u32,
             orm,
             waits_at,
+            cpu: draw_a_duration(&mut streams.timing, REQUEST_CPU_MEDIAN),
+            waits: [
+                draw_a_duration(&mut streams.timing, WAIT_MEDIAN),
+                draw_a_duration(&mut streams.timing, WAIT_MEDIAN),
+            ],
             silent_end,
             session_write,
         }
@@ -744,6 +817,12 @@ pub(super) struct Ended {
     pub(super) silent: bool,
     pub(super) bytes: [usize; 3],
     pub(super) registered: usize,
+    /// Of a `web-arena` reset's registrations, the cache values: the
+    /// distinct value heads its lookups stored standing no candidate before
+    /// it; zero for `web-heap`, whose values register at their hits
+    /// (`dev/plans/S67.md`, the protocol's "distinct cache values
+    /// registered").
+    pub(super) values_registered: usize,
 }
 
 /// A request in flight: its plan, the objects born so far, where on the
@@ -996,6 +1075,7 @@ impl Request {
             silent,
             bytes: self.plan.bytes(),
             registered: usize::from(!silent) + usize::from(session_registers),
+            values_registered: 0,
         }
     }
 
@@ -1020,12 +1100,19 @@ impl Request {
             };
         }
 
+        let mut values: Vec<*mut Object> = (1..=self.lookups_done as u32)
+            .map(|slot| slot_of(self.locals, slot))
+            .filter(|&value| !value.is_null() && !is_a_candidate(value))
+            .collect();
+        values.sort_unstable();
+        values.dedup();
         let before = crate::refcount::admissions();
         unsafe { reset_the_arena(build.arena) };
         Ended {
             silent: false,
             bytes: [0; 3],
             registered: crate::refcount::admissions() - before,
+            values_registered: values.len(),
         }
     }
 }
@@ -1828,6 +1915,9 @@ pub(super) struct Garbage {
     /// The window's highest reading by size index, and of the sum over them.
     peak: [usize; 3],
     peak_sum: usize,
+    /// Bytes that stopped being reachable over the window: the garbage made,
+    /// the flow the frees answer.
+    made: usize,
 }
 
 impl Garbage {
@@ -1842,6 +1932,7 @@ impl Garbage {
             integral: [0; 3],
             peak: [0; 3],
             peak_sum: 0,
+            made: 0,
         }
     }
 
@@ -1858,6 +1949,7 @@ impl Garbage {
         for size_index in 0..3 {
             self.reachable[size_index] -= bytes[size_index];
         }
+        self.made += bytes.iter().sum::<usize>();
     }
 
     /// The heap holds `held` at `now`: the garbage since the last reading is
@@ -1880,10 +1972,16 @@ impl Garbage {
     /// zero and the peaks from the current reading.
     pub(super) fn restart(&mut self, now: Instant) {
         self.integral = [0; 3];
+        self.made = 0;
         self.peak = self.current;
         self.peak_sum = self.current.iter().sum();
         self.from = now;
         self.since = now;
+    }
+
+    /// Bytes made garbage over the window.
+    pub(super) fn made(&self) -> usize {
+        self.made
     }
 
     /// The garbage now, by size index.
@@ -2829,6 +2927,53 @@ fn plan_digest(plan: &Plan) -> u64 {
     plan.orm.iter().for_each(|&entities| fold(entities as u64));
     fold(u64::from(plan.silent_end));
     digest
+}
+
+/// The timing draws and the arrivals hold the specification's
+/// distributions: over 10,000 plans the CPU's and the waits' medians and the
+/// logs' σ, each within 3 % and 0.05; over 100,000 arrivals the mean
+/// interarrival within 1 % of 27.48 ms and the coefficient of variation within
+/// 2 % of an exponential's 1.
+#[test]
+fn the_timing_and_the_arrivals_hold_their_distributions() {
+    let expected = specified_interarrival().as_secs_f64();
+    assert!((expected - 0.027_48).abs() < 0.000_01, "{expected}");
+    let mut timing = Draws::new(1, 1, Purpose::Timing);
+    for (median, what) in [(REQUEST_CPU_MEDIAN, "CPU"), (WAIT_MEDIAN, "wait")] {
+        let mut logs: Vec<f64> = (0..10_000)
+            .map(|_| draw_a_duration(&mut timing, median).as_secs_f64().ln())
+            .collect();
+        logs.sort_unstable_by(f64::total_cmp);
+        let drawn = logs[logs.len() / 2].exp();
+        assert!(
+            (drawn / median.as_secs_f64() - 1.0).abs() < 0.03,
+            "{what}'s median {drawn}"
+        );
+        let mean = logs.iter().sum::<f64>() / logs.len() as f64;
+        let sigma =
+            (logs.iter().map(|l| (l - mean).powi(2)).sum::<f64>() / logs.len() as f64).sqrt();
+        assert!((sigma - TIMING_SIGMA).abs() < 0.05, "{what}'s σ {sigma}");
+    }
+
+    let mut arrivals = Arrivals::new(1, 1, specified_interarrival());
+    let mut last = Duration::ZERO;
+    let gaps: Vec<f64> = (0..100_000)
+        .map(|_| {
+            let at = arrivals.next();
+            let gap = (at - last).as_secs_f64();
+            last = at;
+            gap
+        })
+        .collect();
+    let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
+    let deviation =
+        (gaps.iter().map(|gap| (gap - mean).powi(2)).sum::<f64>() / gaps.len() as f64).sqrt();
+    assert!((mean / expected - 1.0).abs() < 0.01, "mean {mean}");
+    assert!(
+        (deviation / mean - 1.0).abs() < 0.02,
+        "CV {}",
+        deviation / mean
+    );
 }
 
 /// `web-heap`'s plans at a fixed seed fold to the digests pinned here, those

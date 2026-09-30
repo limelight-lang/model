@@ -431,7 +431,14 @@ setup to their steady state. The arena variant (S67.5), `Variant::Arena`: the
 request in the mutator's arena, its heap references logged and released at
 `promote::arena_reset_full`, and the session writes it promotes; the rig runs
 both as the loads `web-heap`, `web-arena-40k` and `web-arena-150k`
-(`the_rig::a_web_mutator`), outside `rig.sh`'s sweep.
+(`the_rig::a_web_mutator`), outside `rig.sh`'s sweep. With `LL_RIG_ARRIVALS`
+(S67.7) a web mutator serves open-loop Poisson arrivals at
+`LL_RIG_INTERARRIVAL_MS`, its requests spinning their drawn CPU
+(`the_rig::spin_until`, fitted by `SpinCost`) in 50 µs slices around their
+polls and sleeping their drawn waits; the window is the arrivals after the
+warm-up, and the line carries the latency from arrival and from service,
+`instructions_a_request` with the collectors' counters and the spin and the
+plans' draws taken out, and the void reading.
 
 `dev/tools/arms.sh` and `dev/tools/arms_table.py` — a comparison of arms on
 the rig: one test binary per arm, interleaved inside each repeat, the deciding
@@ -439,6 +446,12 @@ loads paced by the S65.24 protocol and the guards unpaced, then the table of
 each arm's median cycles and instructions an iteration with the protocol's
 tolerance and gates (`dev/BENCHMARKS.md`, "S65.24 A, B and C on a box with a
 PMU"). The mutators' counters need a kernel that grants `perf_event_open`.
+Its phase `web` runs S67's protocol cells, six mutators at caps 1 and 4 on
+the arrivals, and re-runs a void cell once.
+
+`dev/tools/paired_excess.py` — the p99.9 of one arm's latency excess less
+another's over requests paired by (mutator, index) from the rig's
+`LL_RIG_REQUESTS_TO` files; `--self-test` reads a scripted pair.
 
 `dev/tools/two_arms_table.py` — two arms of `arms.sh`'s CSV by the S65.24
 protocol as S65.28 fixed it: instructions an iteration as the gate, heap

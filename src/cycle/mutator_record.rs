@@ -933,7 +933,9 @@ impl MutatorRecord {
             why,
             turnovers,
         );
-        #[cfg(not(feature = "debug-journal"))]
+        #[cfg(test)]
+        crate::cycle::worker::testing::note_turnover(why);
+        #[cfg(not(any(test, feature = "debug-journal")))]
         let _ = why;
     }
 

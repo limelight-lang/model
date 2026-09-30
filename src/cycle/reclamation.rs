@@ -212,7 +212,7 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
     );
 
     let external_children = unsafe { members.external_children() };
-    #[cfg(feature = "debug-journal")]
+    #[cfg(any(test, feature = "debug-journal"))]
     let member_count = component.members();
     #[cfg(feature = "debug-journal")]
     let mut first_member: *mut RcHeader = std::ptr::null_mut();
@@ -286,6 +286,8 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
     // (`crate::cycle::deferred_slot_reuse`, through `memory::stdapi::ll_free`).
     unsafe { release_guards(members) };
     unsafe { component.guards_released() };
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_members_reclaimed(member_count);
     crate::journal::kinds::journal_event!(
         crate::journal::kinds::KIND_COMPONENT_RECLAIMED,
         first_member as u64,
