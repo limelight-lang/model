@@ -9,6 +9,146 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-09-30 — the collector's trace has no rows ceiling, and the runtime sets no memory limit of its own
+
+**Decision (Edmond).** The batch trace draws its rows and worklist without a
+numeric cap: B, `B_max` and the rows ceiling that revision 3 of S67.9 kept
+(Sage A, G2, "one fixed cap in blocks, set by R1") all go. What bounds a walk
+is the traced mutator's heap, rows costing 4 bytes a slot of every touched
+block (heap/16 at 64-byte slots, heap/4 at 16-byte ones) and the worklist 16
+bytes an entity pushed. The runtime keeps no process memory limit of its own
+either, so on Linux under overcommit a real shortage ends the process by the
+kernel's OOM killer, as any other allocation's would.
+
+**Why.** A cap below the complete walk of the live state is the S67.9 defect
+itself: a trace that meets the state never completes, and garbage behind it is
+never freed. Every fixed number is below some application's walk; the model's
+proposal of 210 blocks, R1's 167 on `web-heap-150k` and a 25 % margin, was
+refused as a limit fitted to one load. A cap proportional to the traced heap
+either never binds or re-creates the defect (the Critic of 2026-09-30,
+finding 9). A limit the deployment sets, PHP's `memory_limit`, is what would
+make the pool's refusal reachable on Linux; Edmond declined it for now: a
+limit, if one comes, is the memory manager's to define, and the collector
+keeps none of its own ("в будущем менеджер памяти может его определить, но
+для GC - я не вижу в этом смысла").
+
+**Consequences.** The claim that a refusal stops the trace and never the
+process holds only where `mmap` can fail (overcommit 2, `RLIMIT_AS`, the
+Windows commit limit); `dev/plans/S67.md`, S67.9, states the real bound. The
+peak the walk draws stays in the process's RSS until the collector's memory
+is given back to the system, which is the design work that replaces the cap;
+the worklist stops pushing entities without counted cells, and the mark leaves
+the critical reserve to the scan.
+
+**Rejected:** a fixed rows ceiling (fitted to a load); a ceiling proportional
+to the traced mutator's heap (no per-mutator count, and no ratio both binds
+and walks the state); a runtime memory limit set at deployment.
+
+## 2026-09-30 — the collector's walk defers the batch's registered targets and expands first those whose row reads zero
+
+**Decided (Sage A of S67.9's round 2 and the Sage over items (14′) and (15′),
+Final; `dev/plans/S67.md`, S67.9):** a batch's roots are all met before any
+expansion; phase 1 drains the stack depth first and holds each first-met
+target carrying the candidate bit on a second stack; phase 2 runs passes over
+the held entries, expanding first each one whose row reads zero — every
+referrer of it already met — and holding the rest, then expands what remains
+depth first. A dead request's registered interior (one in-edge each, its
+parent) promotes pass by pass and is expanded before the shared state, so its
+root reads zero at any stop past its levels; the state, entered through
+registered core objects whose rows its own references keep above zero, is
+walked last on the ordinary stack with its locality. A completed batch lists
+only the rows of arrays first touched in that final drain, so a live request
+cut by a batch boundary is not stamped whole. The rows ceiling is one constant
+sized to hold the heaviest load's complete walk. The owner's collection over P
+is bounded by positions, a count of the mutator's own work. The prune stays in
+the explicit collection and at cap 0 and goes from the pressure and exit
+collections. The age stays one bit at k = 1; no carry across epochs.
+
+**Refused:** a breadth-first second phase (it queues every value head at once
+and reads the state twice from a cold cache), a depth bound on the walk (under
+a stack it bounds the path at first meeting and cannot tell a garbage ring
+from the core), walking an entity twice (a second pass may subtract nothing),
+a header count of live readings or an age as the order key, a carried age
+(never read at k = 1), and any continuation across grants.
+
+---
+
+## 2026-09-30 — a grant is bounded by the mutator's situation, not by a count of work
+
+**Decided (Edmond, 2026-09-30: "время обхода коллектора может контролироваться
+мутатором ... не ограничивать работу коллектора числом, а ограничивать
+ситуацией"; "бюджет можно вообще убирать и делать адаптивную схему"; the Sage
+of S67.9's item (10′), Final):** the part budgets B and `B_max` and the retry
+under the ceiling go as bounds on work, since every stop now proposes what it
+proved. A grant ends on the mutator's signal: `waiting`, written by the mutator
+alone, carries a wind-down raised at a withheld mark's crossing — the compare
+that recalls today — on which the collector scans its batch trace and posts,
+and a stop, the take, on which it posts the snapshot of its zero-row roots.
+What remains a number is named: the rows ceiling on `block_budget`, re-sized
+for the collector's memory because the block pool has no headroom to read, the
+scan's reserve under it, the batch size K with `BATCH_BOUND`, and
+`RECALL_STRIDE`. The scheme needs one trace a batch; with a part per root it
+would read one root a busy grant.
+
+Open with the owner: where the hard stop stands once the wind-down sits at the
+mark — the withholding at the release is then about twice the mark for a
+steady freer, which lifts the premise "предел не удваивается" (the 2026-09-23
+entry below).
+
+---
+
+## 2026-09-30 — the collector's walk is ordered by the candidate bit, one trace a batch, and a stale stamp neither prunes nor orders
+
+**Decided (the Sage of S67.9's round 1, Final, over four Critics and a
+research sweep; `dev/plans/S67.md`, S67.9):** a collector's mark keeps two
+worklists: an edge into a target that carries the candidate bit and is not a
+root of the batch is crossed and subtracted as before and held for a second
+phase (its order and the rest of the walk: the entry above); every other
+target stays on the stack. A batch is one trace, every root marked before one
+scan, as the owner's `trace_batch` runs, so the shared live state is walked
+once a batch rather than once a root; what a hard stop proposes is the batch
+roots whose rows read zero when the mark stopped. The owner's collection over P
+walks the same way under a budget of its own and stops as a collector part
+does.
+
+**Refused, with the reason:** the stamp as the order key, which three Critics
+and the research proposed — a request listed live in one epoch and dead in the
+next would be ordered behind the state with its own closures, read live every
+batch, and pruned without proof four epochs on, a permanent leak of die-young
+garbage; validating a collector's listed membership without a trace — a listed
+interior member is pinned by nothing once the grant's withheld returns go back,
+so its slot can be reissued before the owner reads it; a depth limit, which
+covers the state before it covers a request on these loads; a budget by roots,
+which pays for re-walks and bounds neither the grant nor the withheld returns.
+The prune by stamp stays as an optimisation and guarantees nothing after an
+epoch's turn.
+
+---
+
+## 2026-09-30 — a part stopped short posts the roots it suspects; all or nothing is refused
+
+**Decided (Edmond, 2026-09-30, "принцип всё или ничего - грубая ошибка. в
+реальности он должен был подать те корни что подозревает"):** a collector's
+part that stops before its closure ends, at B, at `B_max` or at a recall,
+proposes the roots its rows read at zero among what it met, and treats what it
+did not reach as live. Until now such a part kept nothing and posted every root
+it met read live, so garbage it had already proven waited behind the live state
+it could not finish, and on `web-heap` nothing was freed at all
+(`dev/plans/S67.md`, S67.9, "web-heap's bytes"). The prune is an optimisation
+and progress may not depend on it. The part's verdict stays a proposal: the
+owner's exact validation (`cycle::validation`) judges every component before a
+free, as before.
+
+Put to the Critic with the stage's revision, not yet ruled: whether B as a
+count of blocks traced still has a role once a stop no longer loses the work.
+The mutator's wait is bounded by the recall, not by B ("the collector finds and
+the mutator judges, and a recall of the token bounds the mutator's wait instead
+of the budget"); the grant's withheld returns are bounded by the three marks
+of `cycle::deferred_slot_reuse`, not by B, so what B still bounds is the rows a
+part holds at one instant.
+
+---
+
 ## 2026-09-29 — the refused arms leave the tree
 
 **Decided (Edmond, 2026-09-29, "удаляй!", on the plan review's pass 2):**

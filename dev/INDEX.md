@@ -370,6 +370,12 @@ header split by access rule, cold concurrent structures take a lock) and
 2026-07-21 (the barrier owns the whole slot; a destructor is owed by the
 constructor; the store barrier is funded by a per-thread reserve).
 
+## The last session's handoff
+
+`dev/HANDOFF.md` — where the last session stopped: the open step, what it
+ran, the owner's open questions and what is uncommitted. Replaced whole by the
+next handoff; what outlives it is in `PLAN.md` and the journals.
+
 ## Outside code
 
 `dev/RESEARCH.md` — what was read in other projects, at which revision,

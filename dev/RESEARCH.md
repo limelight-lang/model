@@ -536,3 +536,107 @@ component that became garbage while its root was parked, on a thread that
 registers nothing — and its cost per X is one un-pruned trace of the lane's
 closure, so the memory side, not the CPU side, is what a longer X spends. The
 figure is Edmond's; the entry records the range and the sources.
+
+## 2026-09-30 — pruning by generation in cycle collectors, and how an interruptible trace completes
+
+Two web sweeps for S67.9 (`dev/plans/S67.md`, S67.9), each claim with its
+source as the sweep gave it. Only Nim YRC was read here at source
+(`lib/system/yrc.nim`, `devel`, fetched 2026-09-30): its stamp rule, epoch
+length, promotion age and `genSuspects` buffer are verified by `grep` over the
+file; the rest is the sweeps' reading and is re-verified before it steers a
+design.
+
+**Pruning by generation is the standard answer where generations exist.**
+CPython up to 3.13 subtracts only references internal to the generation it
+collects, so older generations stand as external roots and are never entered;
+a full collection waits for `long_lived_pending` to pass a quarter of
+`long_lived_total` (`Modules/gcmodule.c`, 3.12; `Python/gc.c`, 3.13).
+Age-oriented RC (Blackburn et al.) and Azatchi–Petrank reclaim old cycles by an
+infrequent full trace. Nim YRC stamps the cells a commit proved live with the
+epoch and a survival age, and a capture does not descend into a stamped
+descendant of the current epoch at age `>= YrcPromoteAge` (3) whatever its
+root-buffer flag — the test in `claimCell` reads the stamp word alone; a root
+bypasses the stamp only at its own scan. The epoch advances every
+`YrcEpochLen` = 64 collections; an old cycle whose last external references
+were young is kept in `genSuspects` and promoted to the roots at the advance,
+"the major-collection half". The source records that epochs shorter than about
+4 resonate with the adaptive threshold, and that a work-based clock lost on its
+web benchmark.
+
+**Trial-deletion collectors without generations re-trace.** Bacon–Rajan 2001
+admits the same live structure may be traversed many times; PHP's `zend_gc.c`
+and Nim ORC skip only acyclic types and raise the threshold when a run frees
+little; Ulterior RC caps the trial deletion's time and reports that "if the
+time cap is too low, some programs may be unable to reclaim cyclic garbage".
+Gecko's cycle collector drops known-live objects from the purple buffer
+(`CanSkip`, `CanSkipInCC`), treats every purple object as live during an
+incremental collection, and lifts the slice budget after 2 s. Paz et al.
+(Technion TR CS-2003-10) treat candidates of newer buffers as live on purpose.
+
+**No interruptible trace in the sources completes without a write barrier,
+mutator work or a stop-the-world fallback, and none restarts from nothing by
+design.** Go's mark assists, V8's allocation-driven steps and atomic finish,
+SpiderMonkey's growing slice budget and non-incremental finish, G1's full GC,
+Shenandoah's degenerated cycle, Lua's allocation-debt steps: each keeps its
+partial mark behind a barrier. CPython 3.14.0's incremental collector ran
+without a barrier by taking each increment's whole unscanned closure, and was
+reverted in the 3.14 series for memory growth (up to 5× peak RSS, by the
+reverting thread; not checked against a tag). LXR (PLDI 2022) derives
+snapshot-at-the-beginning from the decrements its coalescing RC barrier
+already logs. Measured barrier costs: card marking 0.9 % of execution time
+(Blackburn and Hosking, ISMM 2012); G1's unconditional SATB barrier 5.5 % and
+all its barriers 12.4 % of mutator time (VEE 2020).
+
+What applies here: this crate borrowed YRC's stamp, epoch and age but added an
+exemption YRC does not have — a registered target is never pruned — and has no
+old-generation pass; that pair is S67.9's cause. The trace's completion under
+the recall keeps its owner question (S67.9's proposal, item 5).
+
+## 2026-09-30 — one graph for all roots, breadth first, and liveness flooded from the roots: Firefox, CPython, Lins
+
+A third sweep for S67.9, on Edmond's question whether flow and shortest-path
+algorithms hold a hint (`dev/plans/S67.md`, S67.9, the review's round 1). The
+sweep read Firefox at source (`xpcom/base/nsCycleCollector.cpp` at `e68e3aea`,
+2026-09-01; `dom/base/CCGCScheduler.cpp`, `nsCCUncollectableMarker.cpp`,
+`FragmentOrElement.cpp`, `js/xpconnect/src/XPCJSRuntime.cpp` on main, fetched
+2026-09-30) and CPython at tags v3.14.0, v3.14.4 and v3.14.5 (`Python/gc.c`,
+`Python/gc_free_threading.c`); the papers are cited as the sweep gave them.
+The line numbers are the sweep's and are re-read before a design rests on one.
+
+**Lins traced one root at a time, which is quadratic; Bacon–Rajan run each
+phase over all roots, which is linear** (US6879991B2; Frampton et al.,
+"Efficient Concurrent Mark-Sweep Cycle Collection", §2). This crate's parts,
+each resetting its rows (`TraceScratchArena::reset_to_the_watermark`), repeat
+Lins' pattern over the shared live state. Firefox proposed the same one-root
+"soft incremental" scheme and closed it WONTFIX: almost everything is
+reachable from a root, and the graph is very connected (bug 701878). What it
+ships is one graph over all purple roots, deduplicated per object, built in
+slices that resume where they stopped (`BuildGraph`), with a slice budget of
+3 ms that grows with elapsed time and turns unlimited after 2 s
+(`CCGCScheduler.cpp`, `kMaxICCDuration`); an object retained during building
+is treated as live afterwards.
+
+**Both production collectors build breadth first**: Firefox walks its node
+pool in insertion order, CPython's `move_unreachable` scans a list the
+traversal appends to. This crate's mark is depth first (`pop_work` over a
+stack).
+
+**Liveness is flooded from the true roots so the cyclic pass skips it**:
+CPython's free-threaded build marks what the sysdict and the thread stacks
+reach as alive before the cyclic pass (`gc_mark_alive_from_roots`), and a miss
+falls through to the ordinary computation; Firefox marks documents reachable
+from live windows at each collection's start and skips their nodes
+(`CanSkipInCC`), and black JS objects never enter its graph.
+
+**A distance estimate orders, it does not cut** (Maheshwari–Liskov, as the
+Terriberry survey cites them): live objects settle at their distance from the
+roots, garbage cycles' estimates grow. **A futile local search is ended by an
+exhaustive pass**, as push–relabel's global relabeling and Firefox's unlimited
+budget after 2 s do; Ulterior RC warns that a time cap set too low leaves some
+programs' cyclic garbage unreclaimed (Blackburn–McKinley, OOPSLA 2003, §3.2.3).
+CPython's incremental collection scaled its work by new objects, took each
+object's full closure, and is present at v3.14.4 and absent at v3.14.5.
+
+**Not found:** a production collector that posts partial results from a
+truncated trial deletion; the soundness of S67.9's (6′) rests on this crate's
+own reading. Not read: Pony ORCA, Paz–Petrank, Oilpan, PHP, Perl.
