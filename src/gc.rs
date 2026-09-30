@@ -375,10 +375,17 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
             #[cfg(test)]
             VERDICT_COLLECTIONS.with(|count| count.set(count.get() + 1));
             #[cfg(test)]
-            let from = std::time::Instant::now();
+            let (from, _) = (
+                std::time::Instant::now(),
+                crate::cycle::mark::take_owner_positions(),
+            );
             let freed = unsafe { crate::cycle::collect::collect_over_the_verdicts() };
             #[cfg(test)]
-            crate::cycle::worker::testing::note_verdict_collection(from.elapsed(), freed);
+            crate::cycle::worker::testing::note_verdict_collection(
+                from.elapsed(),
+                freed,
+                crate::cycle::mark::take_owner_positions(),
+            );
             freed
         }
         Arming::AllRoots => unsafe { ll_gc_collect_cycles() },

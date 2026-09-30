@@ -383,7 +383,12 @@ fn stamp_at_a_return(record: &MutatorRecord) {
 
     #[cfg(test)]
     testing::note_a_stamp_at_a_return();
-    unsafe { stamp_from(record) };
+    #[cfg(test)]
+    testing::at_a_return(|| unsafe { stamp_from(record) });
+    #[cfg(not(test))]
+    unsafe {
+        stamp_from(record)
+    };
 }
 
 /// Give back, on the thread of the collector `record` is named to, the list
@@ -439,6 +444,8 @@ unsafe fn consume(record: &MutatorRecord, stamp: bool) -> bool {
 
     let turnovers = unsafe { (*head).turnovers };
     if stamp && turnovers == record.turnovers() {
+        #[cfg(test)]
+        let (stamped_from, mut stamped) = (std::time::Instant::now(), 0);
         let epoch = crate::cycle::epoch::epoch_of(turnovers);
         let mut block = head;
         while !block.is_null() {
@@ -449,9 +456,14 @@ unsafe fn consume(record: &MutatorRecord, stamp: bool) -> bool {
             }
 
             #[cfg(test)]
-            testing::note_stamps(entries.len());
+            {
+                testing::note_stamps(entries.len());
+                stamped += entries.len();
+            }
             block = unsafe { (*block).header.next }.cast();
         }
+        #[cfg(test)]
+        testing::note_stamping(stamped, stamped_from.elapsed());
     }
 
     unsafe { release_chain(head) };

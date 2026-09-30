@@ -358,6 +358,90 @@ pub(crate) struct TracedBatch {
     /// Parts whose met roots were deferred read live, past B with the retry
     /// spent or past `B_max`.
     pub(crate) deferred_parts: usize,
+    /// The mutator's record, as an address, which tells one mutator's
+    /// batches from another's.
+    pub(crate) mutator: usize,
+    /// When the trace ended.
+    pub(crate) ended: Instant,
+    /// The batch's completed part that met the most rows.
+    pub(crate) widest_part: PartReading,
+    /// The positions the batch's trace inspected, its parts and their
+    /// retries all counted.
+    pub(crate) positions: usize,
+    /// Which exit ended the trace, one of the journal's `BATCH_END_*` codes.
+    pub(crate) ending: u64,
+}
+
+/// What one completed part read (`dev/plans/S67.md`, S67.9, run R1): the
+/// rows it met, the trace arena's blocks at its end, its positions in the
+/// mark and in the scan, the heap blocks whose rows it touched, and its wall.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) struct PartReading {
+    pub(crate) rows: usize,
+    pub(crate) blocks: usize,
+    pub(crate) mark_positions: usize,
+    pub(crate) scan_positions: usize,
+    pub(crate) touched: usize,
+    pub(crate) wall: std::time::Duration,
+}
+
+thread_local! {
+    /// The widest part this thread completed since the last take.
+    static WIDEST_PART: std::cell::Cell<PartReading> = const {
+        std::cell::Cell::new(PartReading {
+            rows: 0,
+            blocks: 0,
+            mark_positions: 0,
+            scan_positions: 0,
+            touched: 0,
+            wall: std::time::Duration::ZERO,
+        })
+    };
+    /// The arena's positions where this thread's last mark completed.
+    static MARK_ENDED_AT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Note where a completed mark left the arena's positions, which splits the
+/// part's positions between its mark and its scan.
+pub(crate) fn note_the_mark_end(positions: usize) {
+    MARK_ENDED_AT.with(|at| at.set(positions));
+}
+
+/// Read the part that just completed on `arena`, `rows` of them met, from
+/// `from`, the arena's positions and the instant before its mark, and keep
+/// it where it met more rows than the widest so far.
+///
+/// # Safety
+/// The part's rows still stand.
+pub(crate) unsafe fn note_the_part(
+    arena: &crate::cycle::arena::TraceScratchArena,
+    rows: usize,
+    from: (usize, Instant),
+) {
+    if rows <= WIDEST_PART.with(|widest| widest.get().rows) {
+        return;
+    }
+
+    let mark_end = MARK_ENDED_AT.with(|at| at.get());
+    let mut touched = 0;
+    let mut array = arena.touched_head();
+    while !array.is_null() {
+        touched += 1;
+        array = unsafe { (*array).next };
+    }
+    let reading = PartReading {
+        rows,
+        blocks: arena.blocks_held(),
+        mark_positions: mark_end - from.0,
+        scan_positions: arena.positions_inspected() - mark_end,
+        touched,
+        wall: from.1.elapsed(),
+    };
+    WIDEST_PART.with(|widest| widest.set(reading));
+}
+
+pub(crate) fn take_widest_part() -> PartReading {
+    WIDEST_PART.with(|widest| widest.replace(PartReading::default()))
 }
 
 /// Whether a case is reading the batches: off by the module's own, so that
@@ -462,13 +546,92 @@ impl Drop for RetryBudget {
     }
 }
 
+/// The wall a stubbed trace spins in place of a batch's parts, in
+/// nanoseconds, zero for the real trace; process-wide, for the rig's cell
+/// alone (`dev/plans/S67.md`, S67.9, run R0).
+static STUB_TRACE_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Replace every batch's parts with a spin of `wall` until the guard drops:
+/// the roots the reading pass leaves without a verdict are posted read live,
+/// as a trace that met the state whole posts them, so that R is read at the
+/// cadence of the rounds alone.
+pub(crate) fn stub_the_trace(wall: std::time::Duration) -> StubbedTrace {
+    STUB_TRACE_NANOS.store(wall.as_nanos() as u64, Ordering::Relaxed);
+    StubbedTrace
+}
+
+pub(crate) fn stubbed_trace() -> Option<std::time::Duration> {
+    match STUB_TRACE_NANOS.load(Ordering::Relaxed) {
+        0 => None,
+        nanos => Some(std::time::Duration::from_nanos(nanos)),
+    }
+}
+
+/// The stub [`stub_the_trace`] set, lifted at the drop.
+pub(crate) struct StubbedTrace;
+
+impl Drop for StubbedTrace {
+    fn drop(&mut self) {
+        STUB_TRACE_NANOS.store(0, Ordering::Relaxed);
+    }
+}
+
+/// K for every batch at the threshold, zero for the size each mutator's
+/// batches grow; process-wide, for the rig's cell alone.
+static FIXED_BATCH_SIZE: AtomicUsize = AtomicUsize::new(0);
+
+/// Clamp every batch at the threshold to `roots` until the guard drops.
+pub(crate) fn fix_the_batch_size(roots: usize) -> FixedBatchSize {
+    FIXED_BATCH_SIZE.store(roots, Ordering::Relaxed);
+    FixedBatchSize
+}
+
+pub(crate) fn fixed_batch_size() -> Option<usize> {
+    match FIXED_BATCH_SIZE.load(Ordering::Relaxed) {
+        0 => None,
+        roots => Some(roots),
+    }
+}
+
+/// The size [`fix_the_batch_size`] set, lifted at the drop.
+pub(crate) struct FixedBatchSize;
+
+impl Drop for FixedBatchSize {
+    fn drop(&mut self) {
+        FIXED_BATCH_SIZE.store(0, Ordering::Relaxed);
+    }
+}
+
+/// The budget every batch traces under, `usize::MAX` for the module's own;
+/// process-wide, for the rig's cell alone.
+static EVERY_BATCH_BUDGET: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// Trace every batch under `blocks` rather than B until the guard drops, a
+/// batch [`budget_the_next_batch`] budgeted excepted.
+pub(crate) fn budget_every_batch(blocks: usize) -> EveryBatchBudget {
+    EVERY_BATCH_BUDGET.store(blocks, Ordering::Relaxed);
+    EveryBatchBudget
+}
+
+/// The budget [`budget_every_batch`] set, lifted at the drop.
+pub(crate) struct EveryBatchBudget;
+
+impl Drop for EveryBatchBudget {
+    fn drop(&mut self) {
+        EVERY_BATCH_BUDGET.store(usize::MAX, Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn budget_the_next_batch(blocks: usize) {
     NEXT_BATCH_BUDGET.store(blocks, Ordering::Relaxed);
 }
 
 pub(crate) fn budget_for_this_batch() -> Option<usize> {
     match NEXT_BATCH_BUDGET.swap(usize::MAX, Ordering::Relaxed) {
-        usize::MAX => None,
+        usize::MAX => match EVERY_BATCH_BUDGET.load(Ordering::Relaxed) {
+            usize::MAX => None,
+            blocks => Some(blocks),
+        },
         blocks => Some(blocks),
     }
 }
@@ -634,7 +797,7 @@ thread_local! {
 ///
 /// # Safety
 /// The part's rows still stand.
-pub(crate) unsafe fn note_rows_met(arena: &crate::cycle::arena::TraceScratchArena) {
+pub(crate) unsafe fn note_rows_met(arena: &crate::cycle::arena::TraceScratchArena) -> usize {
     use crate::cycle::row::Population;
     use crate::cycle::shadow::{self, Color};
 
@@ -657,6 +820,7 @@ pub(crate) unsafe fn note_rows_met(arena: &crate::cycle::arena::TraceScratchAren
         array = unsafe { (*array).next };
     }
     ROWS_MET.with(|rows| rows.set(rows.get() + met));
+    met
 }
 
 pub(crate) fn take_rows_met() -> usize {
@@ -1231,6 +1395,10 @@ pub(crate) struct VerdictCollections {
     pub(crate) total: std::time::Duration,
     pub(crate) longest: std::time::Duration,
     pub(crate) freed: usize,
+    /// The positions the collections' own traces inspected, in all and at
+    /// the most one collection did (`crate::cycle::mark::take_owner_positions`).
+    pub(crate) positions: usize,
+    pub(crate) positions_longest: usize,
 }
 
 static VERDICT_COLLECTIONS: Mutex<VerdictCollections> = Mutex::new(VerdictCollections {
@@ -1238,14 +1406,18 @@ static VERDICT_COLLECTIONS: Mutex<VerdictCollections> = Mutex::new(VerdictCollec
     total: std::time::Duration::ZERO,
     longest: std::time::Duration::ZERO,
     freed: 0,
+    positions: 0,
+    positions_longest: 0,
 });
 
-pub(crate) fn note_verdict_collection(took: std::time::Duration, freed: usize) {
+pub(crate) fn note_verdict_collection(took: std::time::Duration, freed: usize, positions: usize) {
     let mut collections = lock(&VERDICT_COLLECTIONS);
     collections.collections += 1;
     collections.total += took;
     collections.longest = collections.longest.max(took);
     collections.freed += freed;
+    collections.positions += positions;
+    collections.positions_longest = collections.positions_longest.max(positions);
 }
 
 /// The collections over P since the last call, and zero them.
@@ -1261,7 +1433,56 @@ static DISPOSALS: Mutex<VerdictCollections> = Mutex::new(VerdictCollections {
     total: std::time::Duration::ZERO,
     longest: std::time::Duration::ZERO,
     freed: 0,
+    positions: 0,
+    positions_longest: 0,
 });
+
+/// The returns a mutator withheld under a foreign holder, by stack — deaths,
+/// chunks, blocks, in the unit each stack's mark counts — read at each
+/// crossing of the mark and at each release's drain, where the count is the
+/// grant's peak (`dev/plans/S67.md`, S67.9, run R2).
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct WithheldReadings {
+    pub(crate) crossings: [usize; 3],
+    pub(crate) held_at_the_crossings: [usize; 3],
+    pub(crate) most_at_a_crossing: [usize; 3],
+    pub(crate) releases: [usize; 3],
+    pub(crate) held_at_the_releases: [usize; 3],
+    pub(crate) most_at_a_release: [usize; 3],
+}
+
+static WITHHELD_READINGS: Mutex<WithheldReadings> = Mutex::new(WithheldReadings {
+    crossings: [0; 3],
+    held_at_the_crossings: [0; 3],
+    most_at_a_crossing: [0; 3],
+    releases: [0; 3],
+    held_at_the_releases: [0; 3],
+    most_at_a_release: [0; 3],
+});
+
+/// Note stack `stack`'s count `held` just past its mark.
+pub(crate) fn note_withheld_at_the_crossing(stack: usize, held: usize) {
+    let mut readings = lock(&WITHHELD_READINGS);
+    readings.crossings[stack] += 1;
+    readings.held_at_the_crossings[stack] += held;
+    readings.most_at_a_crossing[stack] = readings.most_at_a_crossing[stack].max(held);
+}
+
+/// Note the three stacks' counts as a release's drain begins, each one that
+/// holds anything.
+pub(crate) fn note_withheld_at_the_release(held: [usize; 3]) {
+    let mut readings = lock(&WITHHELD_READINGS);
+    for (stack, &held) in held.iter().enumerate().filter(|(_, held)| **held > 0) {
+        readings.releases[stack] += 1;
+        readings.held_at_the_releases[stack] += held;
+        readings.most_at_a_release[stack] = readings.most_at_a_release[stack].max(held);
+    }
+}
+
+/// The readings since the last call, and zero them.
+pub(crate) fn take_withheld_readings() -> WithheldReadings {
+    std::mem::take(&mut *lock(&WITHHELD_READINGS))
+}
 
 pub(crate) fn note_disposal(took: std::time::Duration) {
     let mut disposals = lock(&DISPOSALS);

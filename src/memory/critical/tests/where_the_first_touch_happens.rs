@@ -121,10 +121,12 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("HELD_AT_LAST_ROW_READ", false), // test-only const Cell, no drop glue
         ("LATE_CELL", false),
         ("LOOKUP_VISITS", false), // test-only const Cell, no drop glue
+        ("MARK_ENDED_AT", false), // test-only const Cell, no drop glue
         ("MEMBER_LIST", false),
         ("MEMBER_LIST_HELD", false),
         ("MUTATOR_RECORD", false), // const Cell of a pointer into a record the process keeps, no drop glue
         ("MUTATOR_STATE", false),
+        ("OWNER_POSITIONS", false), // test-only const Cell, no drop glue
         ("PANIC_IN_CLOSE", false),
         ("PANIC_IN_HARVEST", false),
         ("PANIC_IN_RESET", false),
@@ -155,6 +157,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("SLOTS_POPPED", false),   // test-only const Cell, no drop glue
         ("STALE_LISTS_GIVEN_BACK", false), // test-only const Cell, no drop glue
         ("STAMPED_AT_A_RETURN", false), // test-only const Cell, no drop glue
+        ("STAMPING_AT_A_RETURN", false), // test-only const Cell<bool>, no drop glue
         ("STAMPS", false),         // test-only const Cell, no drop glue
         ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
         ("SURVIVORS_ADMITTED_BEFORE_REFUSAL", false), // test-only const Cell, no drop glue
@@ -169,6 +172,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("TURN_AFTER_THE_HARVEST", false), // test-only const Cell<bool>, no drop glue
         ("VERDICT_COLLECTIONS", false), // test-only const Cell, no drop glue
         ("WEAK_TABLE", false),
+        ("WIDEST_PART", false), // test-only const Cell of a Copy struct, no drop glue
         ("WINDOW", false),
         ("WITHHELD_BY_AN_ENTRY", false), // test-only const Cell<u64>, no drop glue
         ("WITHHELD_BY_SEGMENT", false),  // test-only const RefCell of Copy arrays, no drop glue

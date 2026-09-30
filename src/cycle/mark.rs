@@ -365,6 +365,8 @@ where
         if R::CONCURRENT {
             self.arena.inspect_position()
         } else {
+            #[cfg(test)]
+            OWNER_POSITIONS.with(|positions| positions.set(positions.get() + 1));
             ControlFlow::Continue(())
         }
     }
@@ -477,6 +479,11 @@ unsafe fn visit_child<R: CellReader>(
         RowLookup::Untracked => true,
         RowLookup::Ready { row, first_visit } => {
             unsafe { shadow::subtract(row, 1, !R::CONCURRENT) };
+            #[cfg(test)]
+            if first_visit && R::CONCURRENT && unsafe { stops_at_a_candidate(child) } {
+                return true;
+            }
+
             if first_visit {
                 arena.push_work(WorklistEntry { entity: child, row })
             } else {
@@ -522,6 +529,32 @@ fn note_edge_pruned() {
     EDGES_PRUNED.with(|count| count.set(count.get() + 1));
 }
 
+/// Whether the collector's marks subtract an edge into a registered candidate
+/// and expand no further, a first region's walk (`dev/plans/S67.md`, S67.9,
+/// run R2), the owner's own marks descending as ever; process-wide, for the
+/// rig's cell alone.
+#[cfg(test)]
+static STOPS_AT_CANDIDATES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Stop every mark at the registered candidates it meets past its root, or
+/// descend as the module does.
+#[cfg(test)]
+pub(crate) fn stop_at_candidates(stops: bool) {
+    STOPS_AT_CANDIDATES.store(stops, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the mark leaves `child`, just met, unexpanded under
+/// [`stop_at_candidates`].
+///
+/// # Safety
+/// As [`visit_child`].
+#[cfg(test)]
+unsafe fn stops_at_a_candidate(child: *mut RcHeader) -> bool {
+    STOPS_AT_CANDIDATES.load(std::sync::atomic::Ordering::Relaxed)
+        && is_registered_candidate(unsafe { mutator_flags(child) })
+}
+
 // Edges the marks of this thread have pruned (tests only). Per thread,
 // because a collection is.
 #[cfg(test)]
@@ -538,6 +571,20 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn take_edges_pruned() -> usize {
     EDGES_PRUNED.with(|count| count.replace(0))
+}
+
+// Positions the owner's own traces on this thread inspected, which count
+// none toward a recall (tests only; `dev/plans/S67.md`, S67.9, run R2).
+#[cfg(test)]
+thread_local! {
+    static OWNER_POSITIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Positions the owner's traces on this thread inspected since this last
+/// answered, which it leaves at zero.
+#[cfg(test)]
+pub(crate) fn take_owner_positions() -> usize {
+    OWNER_POSITIONS.with(|count| count.replace(0))
 }
 
 #[cfg(test)]

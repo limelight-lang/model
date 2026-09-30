@@ -2404,13 +2404,20 @@ unsafe fn batch(
     #[cfg(test)]
     testing::at_the_start_of_the_trace();
     #[cfg(test)]
-    let traced_from = std::time::Instant::now();
+    let (traced_from, positions_from) = (std::time::Instant::now(), arena.positions_inspected());
     #[cfg(test)]
     let _ = (
         testing::take_lookup_visits(),
         crate::cycle::mark::take_edges_pruned(),
         testing::take_rows_met(),
+        testing::take_widest_part(),
     );
+    #[cfg(test)]
+    let outcome = match testing::stubbed_trace() {
+        Some(wall) => unsafe { stub_the_parts(arena, &mut posts, traced_from + wall) },
+        None => unsafe { trace_in_parts(arena, &mut posts, by_address, &mut live) },
+    };
+    #[cfg(not(test))]
     let outcome = unsafe { trace_in_parts(arena, &mut posts, by_address, &mut live) };
     let (parts, complete) = (outcome.parts, outcome.complete);
     journal_event!(
@@ -2437,6 +2444,11 @@ unsafe fn batch(
         parts_met_budget: outcome.parts_met_budget,
         retried: outcome.retried,
         deferred_parts: outcome.deferred_parts,
+        mutator: std::ptr::from_ref(mutator) as usize,
+        ended: std::time::Instant::now(),
+        widest_part: testing::take_widest_part(),
+        positions: arena.positions_inspected() - positions_from,
+        ending: outcome.ending,
     });
     #[cfg(not(test))]
     let _ = parts;
@@ -2504,6 +2516,11 @@ fn the_form_and_the_clamp(
     threshold: usize,
 ) -> (bool, usize) {
     if reader.has_at_least(threshold) {
+        #[cfg(test)]
+        if let Some(k) = testing::fixed_batch_size() {
+            return (true, k);
+        }
+
         let k = match mutator.batch_size() {
             0 => INITIAL_BATCH,
             size => size,
@@ -2808,6 +2825,8 @@ unsafe fn trace_in_parts(
         arena.forget_the_budget_met();
         #[cfg(test)]
         testing::before_the_trace_of_part(outcome.parts);
+        #[cfg(test)]
+        let part_from = (arena.positions_inspected(), std::time::Instant::now());
         if !unsafe { trace(arena, root) } {
             if !arena.met_its_budget() {
                 return outcome.stopped_inside_a_part(arena);
@@ -2853,8 +2872,9 @@ unsafe fn trace_in_parts(
         testing::after_the_trace_of_part(outcome.parts);
         #[cfg(test)]
         unsafe {
-            testing::note_rows_met(arena)
-        };
+            let rows = testing::note_rows_met(arena);
+            testing::note_the_part(arena, rows, part_from);
+        }
         let lists_the_core = unsafe { post_the_part(arena, posts, by_address, index, live) };
         if lists_the_core.is_break() {
             return outcome.ended(journal::BATCH_END_RECALLED_AFTER_A_PART);
@@ -2875,6 +2895,53 @@ unsafe fn trace_in_parts(
     } else {
         journal::BATCH_END_DEFERRED_PAST_B
     })
+}
+
+/// The stubbed trace of a batch ([`testing::stub_the_trace`]): the reading
+/// pass of [`trace_in_parts`], a spin until `until` that reads the recall as
+/// the gaps between parts do, and every root still without a verdict posted
+/// read live, one completed part — what a trace that met the state whole
+/// posts, at a wall the case fixes.
+///
+/// # Safety
+/// As [`trace_in_parts`].
+#[cfg(test)]
+unsafe fn stub_the_parts(
+    arena: &mut TraceScratchArena,
+    posts: &mut FinishThePosts<'_>,
+    until: std::time::Instant,
+) -> PartsOutcome {
+    let outcome = PartsOutcome::default();
+    for index in 0..posts.roots.len() {
+        if arena.read_the_recall_now().is_break() {
+            return outcome.ended(journal::BATCH_END_RECALLED_IN_THE_PASS);
+        }
+
+        if let RootReading::Verdict(verdict) = unsafe { read_the_root(posts.root(index)) } {
+            posts.post(index, verdict);
+        }
+    }
+
+    while std::time::Instant::now() < until {
+        if arena.read_the_recall_now().is_break() {
+            return outcome.ended(journal::BATCH_END_RECALLED_BETWEEN_PARTS);
+        }
+
+        std::hint::spin_loop();
+    }
+
+    for index in 0..posts.roots.len() {
+        if !posts.has_a_verdict(index) {
+            posts.post(index, Verdict::ReadLive);
+        }
+    }
+
+    PartsOutcome {
+        parts: 1,
+        complete: true,
+        ..outcome
+    }
+    .ended(journal::BATCH_END_COMPLETE)
 }
 
 /// Record a part of `root` that met B, `what_followed` one of the `PART_*`
@@ -3066,6 +3133,8 @@ unsafe fn trace(arena: &mut TraceScratchArena, root: *mut RcHeader) -> bool {
         return false;
     }
 
+    #[cfg(test)]
+    testing::note_the_mark_end(arena.positions_inspected());
     #[cfg(test)]
     let hooked_at = testing::between_the_phases().then(|| arena.positions_inspected());
     let scanned = (unsafe { scan::<AtomicCells>(arena, root) }) == ScanResult::Complete;

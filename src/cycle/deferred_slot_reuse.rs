@@ -1078,6 +1078,14 @@ unsafe fn count_a_large_death(ptr: *mut u8, kind: u32) {
 pub(crate) unsafe fn make_returns_withheld_under_a_foreign_trace() {
     #[cfg(test)]
     run_the_hook_before_the_returns();
+    #[cfg(test)]
+    if !crate::cycle::token::collector_is_tracing_this_thread() {
+        crate::cycle::worker::testing::note_withheld_at_the_release([
+            WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.held.get()),
+            CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.held.get()),
+            BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.held.get()),
+        ]);
+    }
 
     // The slots go first because a slot's return can empty its block and
     // reach the pool, which is where a block would be withheld again under a
@@ -1452,6 +1460,14 @@ impl ForeignStack {
         let held = before + weight;
         self.held.set(held);
         if before < mark && held >= mark {
+            #[cfg(test)]
+            crate::cycle::worker::testing::note_withheld_at_the_crossing(
+                [DEATHS_MARK, CHUNKS_MARK, BLOCKS_MARK]
+                    .iter()
+                    .position(|&each| each == mark)
+                    .expect("one of the three marks"),
+                held,
+            );
             crate::cycle::token::recall_this_threads_token();
         }
     }

@@ -84,7 +84,25 @@
 //!   figures leave out, zero when unset;
 //! - `LL_RIG_TRACED_BATCHES` — set to 1, a web cell records every batch
 //!   traced over its loop and counts those that walked through the whole
-//!   long-lived state.
+//!   long-lived state;
+//! - `LL_RIG_STUB_TRACE_MS` — every batch after the setup spins this many
+//!   milliseconds in place of its parts and posts its roots read live
+//!   (`worker::testing::stub_the_trace`), so that with
+//!   `LL_RIG_TRACED_BATCHES` the batches a second a mutator read the rounds'
+//!   cadence alone (`dev/plans/S67.md`, S67.9, run R0); the real trace when
+//!   unset;
+//! - `LL_RIG_BATCH_BLOCKS` — every batch after the setup traces its parts
+//!   under this many blocks, and retries a part that meets them under the
+//!   same, in place of B and `B_max`, so that a count past the state's
+//!   footprint walks it whole in one part (`dev/plans/S67.md`, S67.9, run
+//!   R1); the module's own when unset;
+//! - `LL_RIG_BATCH_ROOTS` — every batch at the threshold after the setup
+//!   takes this many roots, K fixed rather than grown (`dev/plans/S67.md`,
+//!   S67.9, run R2); the mutators' own K when unset;
+//! - `LL_RIG_FIRST_REGIONS` — set to 1, every collector's mark subtracts an
+//!   edge into a registered candidate past its root and expands it no further
+//!   (`mark::stop_at_candidates`), each part the walk of its root's first
+//!   region (`dev/plans/S67.md`, S67.9, run R2).
 //!
 //! **The web loads** (`dev/plans/S67.md`, S67.5) run [`a_web_mutator`] in
 //! place of the ring loop: an iteration is one request of
@@ -286,7 +304,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
 /// protocol (S67.1, before any run)", its deciding cells. Change a name or
 /// add a ring load, and change `LOADS` in `dev/tools/rig.sh` with it; the
 /// web loads are not in its sweep.
-const LOADS: [Load; 22] = [
+const LOADS: [Load; 23] = [
     // Garbage at 0, 25, 50, 75 and 100 % of the roots, rounded to whole
     // rings of 63.
     mixed("garbage-0", 0),
@@ -556,8 +574,10 @@ const LOADS: [Load; 22] = [
     },
     // `web-heap` at the larger cache, whose scan the specification names
     // (`dev/plans/S67.md`, S67.5's Critic, finding 5), and `web-arena` at
-    // both.
+    // both; `web-heap` at the smaller one for the footprint of a complete
+    // walk (S67.9, run R1).
     web("web-heap", Variant::Heap, 150_000),
+    web("web-heap-40k", Variant::Heap, 40_000),
     web("web-arena-40k", Variant::Arena, 40_000),
     web("web-arena-150k", Variant::Arena, 150_000),
 ];
@@ -2615,6 +2635,54 @@ impl WindowEdge {
 /// processes over the window is void (`dev/plans/S67.md`, the protocol).
 const VOID_CORES: f64 = 0.5;
 
+/// The stamping's columns at a take and at a return, in the order
+/// `live_list::testing::Stamping` reads each.
+const STAMPING_COLUMNS: [[&str; 5]; 2] = [
+    [
+        "web_stamping_at_a_take_lists",
+        "web_stamping_at_a_take_entries_mean",
+        "web_stamping_at_a_take_entries_most",
+        "web_stamping_at_a_take_us_mean",
+        "web_stamping_at_a_take_longest_us",
+    ],
+    [
+        "web_stamping_at_a_return_lists",
+        "web_stamping_at_a_return_entries_mean",
+        "web_stamping_at_a_return_entries_most",
+        "web_stamping_at_a_return_us_mean",
+        "web_stamping_at_a_return_longest_us",
+    ],
+];
+
+/// The withheld returns' columns by stack, deaths, chunks and blocks, in the
+/// order `testing::WithheldReadings` reads each.
+const WITHHELD_COLUMNS: [[&str; 6]; 3] = [
+    [
+        "web_withheld_crossings_deaths",
+        "web_withheld_at_a_crossing_mean_deaths",
+        "web_withheld_at_a_crossing_most_deaths",
+        "web_withheld_releases_deaths",
+        "web_withheld_at_a_release_mean_deaths",
+        "web_withheld_at_a_release_most_deaths",
+    ],
+    [
+        "web_withheld_crossings_chunks",
+        "web_withheld_at_a_crossing_mean_chunks",
+        "web_withheld_at_a_crossing_most_chunks",
+        "web_withheld_releases_chunks",
+        "web_withheld_at_a_release_mean_chunks",
+        "web_withheld_at_a_release_most_chunks",
+    ],
+    [
+        "web_withheld_crossings_blocks",
+        "web_withheld_at_a_crossing_mean_blocks",
+        "web_withheld_at_a_crossing_most_blocks",
+        "web_withheld_releases_blocks",
+        "web_withheld_at_a_release_mean_blocks",
+        "web_withheld_at_a_release_most_blocks",
+    ],
+];
+
 /// One column of the journal's counts: `kind` under `code`, or under every
 /// code where `code` is `None`, read as its records or as the sum of their
 /// `b`; named once per window.
@@ -2841,6 +2909,74 @@ struct WebCell {
     frees_from_another_thread: usize,
     batches_traced: usize,
     batches_through_the_state: usize,
+    /// The stubbed trace's wall (`LL_RIG_STUB_TRACE_MS`), zero for the real
+    /// trace.
+    stub_trace: Duration,
+    /// Each mutator's batches that ended inside the window, over the
+    /// window's wall, a mutator with none reading zero.
+    batches_a_second: Vec<f64>,
+    /// The roots those batches took, over the window's wall.
+    roots_a_second: f64,
+    /// The window's wall, from its start to the loops' end.
+    window: Duration,
+    /// The widest completed part of the batches traced over the loop and the
+    /// drain.
+    widest_part: testing::PartReading,
+    /// The window's batches recalled, and their positions in all and at the
+    /// most; the same of its completed batches.
+    recalled: (usize, usize, usize),
+    completed: (usize, usize, usize),
+    /// The returns the mutators withheld over the window, at the crossings
+    /// and at the releases.
+    withheld: testing::WithheldReadings,
+    /// The lists the mutators stamped from over the window, at a take and at
+    /// a return.
+    stamping: [crate::cycle::live_list::testing::Stamping; 2],
+}
+
+impl WebCell {
+    /// Read each of `mutators` mutators' batches a second, and the roots a
+    /// second of them all, from the `batches` that ended inside `window`.
+    fn read_the_cadence(
+        &mut self,
+        batches: &[testing::TracedBatch],
+        window: std::ops::Range<Instant>,
+        mutators: usize,
+    ) {
+        let seconds = (window.end - window.start)
+            .as_secs_f64()
+            .max(f64::MIN_POSITIVE);
+        let inside: Vec<_> = batches
+            .iter()
+            .filter(|batch| window.contains(&batch.ended))
+            .collect();
+        let tally = |ended: &dyn Fn(u64) -> bool| {
+            inside.iter().filter(|batch| ended(batch.ending)).fold(
+                (0, 0, 0),
+                |(count, all, most), batch| {
+                    (count + 1, all + batch.positions, most.max(batch.positions))
+                },
+            )
+        };
+        self.recalled = tally(&|ending| {
+            (crate::journal::kinds::BATCH_END_RECALLED_IN_THE_PASS
+                ..=crate::journal::kinds::BATCH_END_RECALLED_AFTER_A_PART)
+                .contains(&ending)
+        });
+        self.completed = tally(&|ending| ending == crate::journal::kinds::BATCH_END_COMPLETE);
+        let mut by_mutator = std::collections::BTreeMap::<usize, usize>::new();
+        for batch in &inside {
+            *by_mutator.entry(batch.mutator).or_default() += 1;
+        }
+        self.batches_a_second = by_mutator
+            .values()
+            .map(|&count| count as f64 / seconds)
+            .collect();
+        self.batches_a_second
+            .resize(mutators.max(by_mutator.len()), 0.0);
+        self.roots_a_second =
+            inside.iter().map(|batch| batch.roots).sum::<usize>() as f64 / seconds;
+    }
 }
 
 impl CellReading {
@@ -2890,9 +3026,14 @@ impl CellReading {
     }
 
     /// The garbage the loops left standing at their end, in bytes: built and
-    /// not freed by a poll.
+    /// not freed by a poll. Zero on a web load, which counts no garbage
+    /// members and reads its garbage in bytes instead.
     fn standing_bytes(&self) -> usize {
-        self.sum(|reading| reading.garbage_members - reading.freed_by_polls) * MEMBER_CLASS_BYTES
+        self.sum(|reading| {
+            reading
+                .garbage_members
+                .saturating_sub(reading.freed_by_polls)
+        }) * MEMBER_CLASS_BYTES
     }
 
     /// The line's fields by name, in the line's order: the header is their
@@ -3064,6 +3205,14 @@ impl CellReading {
             (
                 "freed_by_verdict_collections",
                 self.verdict_collections.freed.to_string(),
+            ),
+            (
+                "verdict_collection_positions",
+                self.verdict_collections.positions.to_string(),
+            ),
+            (
+                "verdict_collection_positions_longest",
+                self.verdict_collections.positions_longest.to_string(),
             ),
             ("disposals", self.disposals.collections.to_string()),
             ("disposal_us", self.disposals.total.as_micros().to_string()),
@@ -3579,7 +3728,7 @@ impl CellReading {
             .iter()
             .map(|reading| reading.blocks_the_writes_hold)
             .sum();
-        vec![
+        let mut fields = vec![
             (
                 "web_values",
                 load.web.map_or(0, |web| web.values).to_string(),
@@ -3699,6 +3848,107 @@ impl CellReading {
                 web.setup.token_waits.longest.as_micros().to_string(),
             ),
             ("web_batches_traced", web.batches_traced.to_string()),
+            ("web_stub_trace_us", web.stub_trace.as_micros().to_string()),
+            (
+                "web_batches_a_second_min",
+                format!(
+                    "{:.1}",
+                    web.batches_a_second
+                        .iter()
+                        .copied()
+                        .fold(f64::INFINITY, f64::min)
+                ),
+            ),
+            (
+                "web_batches_a_second_mean",
+                format!(
+                    "{:.1}",
+                    web.batches_a_second.iter().sum::<f64>()
+                        / web.batches_a_second.len().max(1) as f64
+                ),
+            ),
+            ("web_roots_a_second", format!("{:.0}", web.roots_a_second)),
+            ("web_batches_recalled", web.recalled.0.to_string()),
+            (
+                "web_positions_a_recalled_batch_mean",
+                (web.recalled.1 / web.recalled.0.max(1)).to_string(),
+            ),
+            (
+                "web_positions_a_recalled_batch_most",
+                web.recalled.2.to_string(),
+            ),
+            ("web_batches_completed", web.completed.0.to_string()),
+            (
+                "web_positions_a_completed_batch_mean",
+                (web.completed.1 / web.completed.0.max(1)).to_string(),
+            ),
+            (
+                "web_positions_a_completed_batch_most",
+                web.completed.2.to_string(),
+            ),
+            ("web_widest_part_rows", web.widest_part.rows.to_string()),
+            ("web_widest_part_blocks", web.widest_part.blocks.to_string()),
+            (
+                "web_widest_part_mark_positions",
+                web.widest_part.mark_positions.to_string(),
+            ),
+            (
+                "web_widest_part_scan_positions",
+                web.widest_part.scan_positions.to_string(),
+            ),
+            (
+                "web_widest_part_touched_blocks",
+                web.widest_part.touched.to_string(),
+            ),
+            (
+                "web_widest_part_wall_us",
+                web.widest_part.wall.as_micros().to_string(),
+            ),
+        ];
+        let withheld = &web.withheld;
+        for stack in 0..WITHHELD_COLUMNS.len() {
+            let mean = |all: usize, count: usize| (all / count.max(1)).to_string();
+            let values = [
+                withheld.crossings[stack].to_string(),
+                mean(
+                    withheld.held_at_the_crossings[stack],
+                    withheld.crossings[stack],
+                ),
+                withheld.most_at_a_crossing[stack].to_string(),
+                withheld.releases[stack].to_string(),
+                mean(
+                    withheld.held_at_the_releases[stack],
+                    withheld.releases[stack],
+                ),
+                withheld.most_at_a_release[stack].to_string(),
+            ];
+            fields.extend(WITHHELD_COLUMNS[stack].into_iter().zip(values));
+        }
+
+        for (site, names) in STAMPING_COLUMNS.into_iter().enumerate() {
+            let stamping = web.stamping[site];
+            let lists = stamping.lists.max(1);
+            let values = [
+                stamping.lists.to_string(),
+                (stamping.entries / lists).to_string(),
+                stamping.entries_most.to_string(),
+                (stamping.wall.as_micros() / lists as u128).to_string(),
+                stamping.longest.as_micros().to_string(),
+            ];
+            fields.extend(names.into_iter().zip(values));
+        }
+        fields.extend([
+            (
+                "web_registrations_a_second",
+                format!(
+                    "{:.0}",
+                    web.mutators
+                        .iter()
+                        .map(|reading| reading.registrations)
+                        .sum::<usize>() as f64
+                        / web.window.as_secs_f64().max(f64::MIN_POSITIVE)
+                ),
+            ),
             (
                 "web_batches_through_the_state",
                 web.batches_through_the_state.to_string(),
@@ -3720,7 +3970,8 @@ impl CellReading {
                     .unwrap_or(0)
                     .to_string(),
             ),
-        ]
+        ]);
+        fields
     }
 
     /// Per grant segment, in [`testing::SEGMENT_AROUND`]'s order: the takes
@@ -3918,6 +4169,28 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         .collect();
     start.wait();
     let mut web = WebCell::default();
+    web.stub_trace = millis_from_env("LL_RIG_STUB_TRACE_MS");
+    let _stubbed = (!web.stub_trace.is_zero()).then(|| testing::stub_the_trace(web.stub_trace));
+    let batch_blocks = std::env::var("LL_RIG_BATCH_BLOCKS").ok().map(|blocks| {
+        blocks
+            .parse()
+            .expect("LL_RIG_BATCH_BLOCKS is a count of blocks")
+    });
+    let _batch_roots = std::env::var("LL_RIG_BATCH_ROOTS").ok().map(|roots| {
+        testing::fix_the_batch_size(
+            roots
+                .parse()
+                .expect("LL_RIG_BATCH_ROOTS is a count of roots"),
+        )
+    });
+    let first_regions = switch_from_env("LL_RIG_FIRST_REGIONS");
+    crate::cycle::mark::stop_at_candidates(first_regions);
+    let _budgets = batch_blocks.map(|blocks| {
+        (
+            testing::budget_every_batch(blocks),
+            testing::retry_parts_under(blocks),
+        )
+    });
     if load.web.is_some() {
         // The setups' collections, apart from the loop's
         // (`dev/plans/S67.md`, S67.5's Critic, finding 3).
@@ -3940,6 +4213,8 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     }
     let journal_at_the_start = crate::journal::counts();
     let at_the_start = WindowEdge::now();
+    let _ = testing::take_withheld_readings();
+    let _ = crate::cycle::live_list::testing::take_stamping();
     let _ = testing::take_withdrawn_standings();
     let collector_cpu_at_the_start = testing::collector_cpu_to_now();
     std::thread::sleep(cell.run_for - warm_up);
@@ -3966,15 +4241,28 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
             round_figures = Some(RoundFigures::take());
         }
         web.retained_at_the_stop = crate::memory::retained::retained_block_count();
+        // The drain's batches are read on, for the widest part alone: a load
+        // whose loop recalls every part completes one there.
         let batches = testing::take_traced_batches();
-        testing::read_traced_batches(false);
         web.batches_traced = batches.len();
+        let stopped = at_the_stop.map_or_else(Instant::now, |edge| edge.at);
+        web.window = stopped - at_the_start.at;
+        web.read_the_cadence(&batches, at_the_start.at..stopped, cell.mutators.len());
+        web.withheld = testing::take_withheld_readings();
+        web.stamping = crate::cycle::live_list::testing::take_stamping();
         let state = CORE_OBJECTS + VALUE_OBJECTS * load_web.values;
         web.batches_through_the_state = batches
             .iter()
             .filter(|batch| batch.rows_met >= state)
             .count();
         stages.wait();
+        web.widest_part = batches
+            .iter()
+            .chain(testing::take_traced_batches().iter())
+            .map(|batch| batch.widest_part)
+            .max_by_key(|part| part.rows)
+            .unwrap_or_default();
+        testing::read_traced_batches(false);
         journal_after_the_drains = Some(crate::journal::counts());
         after_the_drains = Some(WindowEdge::now());
         web.retained_after_the_drains = crate::memory::retained::retained_block_count();

@@ -3,6 +3,7 @@
 //! [`super::MAX_BLOCKS`].
 
 use std::cell::Cell;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 thread_local! {
@@ -37,6 +38,66 @@ pub(super) fn note_stamps(entries: usize) {
 
 pub(super) fn note_a_stamp_at_a_return() {
     STAMPED_AT_A_RETURN.with(|lists| lists.set(lists.get() + 1));
+}
+
+thread_local! {
+    /// Whether the list this thread is stamping from was taken at a return.
+    static STAMPING_AT_A_RETURN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The stamping a list costs its mutator, at a take of the token and at a
+/// return of a block or a run (`dev/plans/S67.md`, S67.9, run R3): the lists
+/// stamped, their entries in all and at the most, and the wall in all and at
+/// the longest.
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct Stamping {
+    pub(crate) lists: usize,
+    pub(crate) entries: usize,
+    pub(crate) entries_most: usize,
+    pub(crate) wall: std::time::Duration,
+    pub(crate) longest: std::time::Duration,
+}
+
+/// At a take, and at a return.
+static STAMPING: Mutex<[Stamping; 2]> = Mutex::new(
+    [Stamping {
+        lists: 0,
+        entries: 0,
+        entries_most: 0,
+        wall: std::time::Duration::ZERO,
+        longest: std::time::Duration::ZERO,
+    }; 2],
+);
+
+/// Run `stamp` as a stamping at a return.
+pub(super) fn at_a_return(stamp: impl FnOnce()) {
+    STAMPING_AT_A_RETURN.with(|flag| flag.set(true));
+    stamp();
+    STAMPING_AT_A_RETURN.with(|flag| flag.set(false));
+}
+
+/// Note one list's stamping, `entries` of them in `wall`.
+pub(super) fn note_stamping(entries: usize, wall: std::time::Duration) {
+    let site = usize::from(STAMPING_AT_A_RETURN.with(Cell::get));
+    let mut stamping = STAMPING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let site = &mut stamping[site];
+    site.lists += 1;
+    site.entries += entries;
+    site.entries_most = site.entries_most.max(entries);
+    site.wall += wall;
+    site.longest = site.longest.max(wall);
+}
+
+/// The stampings at a take and at a return since the last call, which
+/// leaves both zero.
+pub(crate) fn take_stamping() -> [Stamping; 2] {
+    std::mem::take(
+        &mut *STAMPING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
 }
 
 /// Entries this thread stamped from lists since the last call, which leaves
