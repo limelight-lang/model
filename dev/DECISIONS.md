@@ -9,6 +9,20 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-09-30 — the collector writes the maturation stamps itself, and the live list goes
+
+**Decision (Edmond, on S67.9's open question 1: "выяснилось, что коллектор сам
+может писать эпоху").** A batch whose trace completed stamps, in its scan,
+the live rows of the arrays first touched in its final drain, under the grant
+and before the release; byte 6 is written only by the holder of the mutator's
+token. The live list, its chain and the owner's stamping at a take or a
+return go.
+
+**Why.** The list existed only because byte 6 had one writer, the owner
+(`live_list.rs`); its stamps landed after the batch, so a batch's parts could
+not prune each other (R4's 40-s batch, `dev/plans/S67.md`). The two Critics of
+2026-09-30 found no data race; their conditions are in the plan notes.
+
 ## 2026-09-30 — the collector's trace has no rows ceiling, and the runtime sets no memory limit of its own
 
 **Decision (Edmond).** The batch trace draws its rows and worklist without a
@@ -58,8 +72,7 @@ root reads zero at any stop past its levels; the state, entered through
 registered core objects whose rows its own references keep above zero, is
 walked last on the ordinary stack with its locality. A completed batch lists
 only the rows of arrays first touched in that final drain, so a live request
-cut by a batch boundary is not stamped whole. The rows ceiling is one constant
-sized to hold the heaviest load's complete walk. The owner's collection over P
+cut by a batch boundary is not stamped whole. The owner's collection over P
 is bounded by positions, a count of the mutator's own work. The prune stays in
 the explicit collection and at cap 0 and goes from the pressure and exit
 collections. The age stays one bit at k = 1; no carry across epochs.
