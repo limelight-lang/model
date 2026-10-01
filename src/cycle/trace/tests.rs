@@ -3,6 +3,7 @@ use super::*;
 use crate::cells::PlainCells;
 use crate::class::ClassBuilder;
 use crate::cycle::deferred_slot_reuse::ActiveTrace;
+use crate::cycle::mark::mark;
 use crate::cycle::queue::candidate_count;
 use crate::cycle::shadow::Color;
 use crate::cycle::testing::{open_arena, row_color};

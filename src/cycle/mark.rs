@@ -27,6 +27,32 @@
 //! The descent carries an explicit worklist rather than the machine
 //! stack, and why is `crate::cycle::stack`.
 //!
+//! # The held stack
+//!
+//! A batch's roots are all met before anything is expanded ([`schedule_root_if_unvisited`],
+//! then [`drain`]), so an edge into a batch root is never a first visit; the
+//! owner's batch does so (`crate::cycle::trace::trace_batch`), and a
+//! collector's part, one root to a mark, meets only its own until the
+//! collector traces a batch at once. The descent then holds every other registered target it meets for the first
+//! time: the edge is subtracted, and the target goes on a held chain of the
+//! arena instead of the worklist. Once the worklist is empty, passes over the
+//! held entries expand each one whose row reads zero — every referrer of it
+//! already met and subtracted — reading in the same pass what that expansion
+//! holds, and leave the rest for the next pass, for as long as a pass expands
+//! anything; the entries left are then expanded depth first with nothing held.
+//! A dead request's registered interior, one in-edge each, is expanded before
+//! the state its registered core objects lead into, so a stop inside the
+//! state's walk would find the request's rows at zero — what a trace that keeps
+//! its rows at a stop reads (`dev/plans/S67.md`, S67.9, the Sage of
+//! 2026-09-30, J1). A complete mark leaves every row as a plain depth-first
+//! descent would, since every met entity is expanded once either way and a
+//! subtraction does not depend on when it is made; what the order changes is
+//! what a stop leaves, and the order in which blocks are first touched.
+//!
+//! Residual: two registered members of a garbage ring naming each other, no
+//! batch root among them, keep each other's row above zero and wait for the
+//! final drain.
+//!
 //! # The mature live core is not descended into
 //!
 //! An edge target carrying this collection's epoch at an age that has reached
@@ -39,6 +65,12 @@
 //! it was mature reads live at the trace that meets it, its root is deferred on
 //! that reading (`crate::cycle::deferred_slot_reuse`), and the
 //! turnover is what offers it again (`crate::cycle::queue::reoffer_deferred_if_epoch_moved`).
+//!
+//! **A target this trace has met is never pruned**, whatever its stamp: its row
+//! already holds its count, and the edge is one of the subtractions that row is
+//! owed. Today no prunable target can have been met, since every batch root
+//! carries the candidate bit that exempts it; the rule is read only where
+//! registered targets are prunable (`was_met`).
 //!
 //! **A target a queue entry names is never pruned, whatever its stamp**
 //! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial
@@ -115,7 +147,7 @@
 use std::ops::ControlFlow;
 
 use crate::cells::{self, Cell, CellReader, CellVisitor};
-use crate::cycle::arena::{RowLookup, TraceScratchArena};
+use crate::cycle::arena::{RowLookup, TraceScratchArena, find_initialized_row};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
 use crate::cycle::stack::WorklistEntry;
@@ -247,7 +279,34 @@ pub(crate) enum MarkResult {
 }
 
 /// Trial-delete the component reachable from `root`, leaving the verdict
-/// to the scan.
+/// to the scan: [`schedule_root_if_unvisited`] and then [`drain`], for a trace of one root.
+///
+/// `arena` belongs to the collection rather than to the root: a second root
+/// inside the first one's closure meets rows that already say met, expands
+/// nothing twice, and reuses the segments the first root's depth drew. A
+/// batch of several roots meets them all first and drains once
+/// (`crate::cycle::trace::trace_batch`), which is what keeps every batch root
+/// off the held chains (module doc, "The held stack").
+///
+/// **A root at count zero was torn down, and is expanded by nothing** (module
+/// doc), which is not a refusal: the answer is [`MarkResult::Complete`] and
+/// the collection carries on with its other roots.
+///
+/// # Safety
+/// As [`drain`], and `root` as [`schedule_root_if_unvisited`] names it.
+pub(crate) unsafe fn mark<R: CellReader>(
+    arena: &mut TraceScratchArena,
+    root: *mut RcHeader,
+) -> MarkResult {
+    if !unsafe { schedule_root_if_unvisited(arena, root) } {
+        return MarkResult::AllocationFailed;
+    }
+
+    unsafe { drain::<R>(arena) }
+}
+
+/// Expand everything the met roots reach, in the held stack's order (module
+/// doc), leaving the verdict to the scan.
 ///
 /// Every entity the descent reaches is met once, its row initialised from
 /// its refcount; every edge the trace follows between two met entities is
@@ -260,65 +319,215 @@ pub(crate) enum MarkResult {
 /// this trace leaves rather than lowering them, so what either costs is
 /// recall.
 ///
-/// `arena` belongs to the collection rather than to the root, and carries the
-/// worklist with it: a second root inside the first one's closure meets rows
-/// that already say met, expands nothing twice, and reuses the segments the
-/// first root's depth drew.
-///
 /// **Nothing is written into any entity**, so [`MarkResult::AllocationFailed`]
 /// and [`MarkResult::Recalled`] leave the heap byte-identical and the caller's
-/// whole duty is `TraceScratchArena::reset`.
-///
-/// **A root at count zero was torn down, and is expanded by nothing** (module
-/// doc), which is not a refusal: the answer is [`MarkResult::Complete`] and
-/// the collection carries on with its other roots.
+/// whole duty is `TraceScratchArena::reset`, which rewinds the held chains
+/// with the worklist.
 ///
 /// `R` is how the cells are read (`cells::CellReader`): plainly on the
 /// owning thread, atomically from a collector thread that holds the mutator's
 /// token while the mutator runs.
 ///
 /// # Safety
-/// `root` is an entity header of the owning thread's heap whose slot is still
-/// its own — a candidate the queue names, live or dead — and the trace runs
-/// where `cells::trace_cells` may read an entity's cells through `R`: on the
-/// owning thread with no mutator running beside it for `PlainCells`, under
-/// the mutator's trace token for `AtomicCells`.
-pub(crate) unsafe fn mark<R: CellReader>(
-    arena: &mut TraceScratchArena,
-    root: *mut RcHeader,
-) -> MarkResult {
+/// Every root met since the arena's last drain is an entity header of the
+/// owning thread's heap whose slot is still its own — a candidate the queue
+/// names, live or dead — and the trace runs where `cells::trace_cells` may
+/// read an entity's cells through `R`: on the owning thread with no mutator
+/// running beside it for `PlainCells`, under the mutator's trace token for
+/// `AtomicCells`.
+pub(crate) unsafe fn drain<R: CellReader>(arena: &mut TraceScratchArena) -> MarkResult {
     // Read off the arena rather than taken as an argument: the prune is this
     // module's rule, so a second caller of `mark` inherits it with nothing to
     // forget, and the arena is what knows whose graph this trace walks
     // (module doc).
     let prune = Prune::of_this_trace(arena);
-    if !unsafe { schedule_root_if_unvisited(arena, root) } {
-        return MarkResult::AllocationFailed;
+    let holding = Holding::of_this_trace();
+    arena.end_the_passes();
+    if let Some(stopped) = unsafe { expand_the_worklist::<R>(arena, prune, holding) } {
+        return stopped;
     }
 
+    // A pass reads every entry held for it, and what its own expansions hold
+    // in the same pass, so a chain of registered entities one in-edge each is
+    // expanded in one pass whatever its length; an entry above zero waits for
+    // the next. The passes end when one expands nothing.
+    while arena.start_a_pass() {
+        #[cfg(test)]
+        PASSES.with(|passes| passes.set(passes.get() + 1));
+        let mut expanded = false;
+        while let Some(entry) = arena.pop_held() {
+            // Each entry is a position toward the recall, as a cell is: a
+            // pass over thousands of entries above zero strides no cell.
+            if R::CONCURRENT && arena.inspect_position().is_break() {
+                return MarkResult::Recalled;
+            }
+
+            if shadow::count(unsafe { entry.row.read() }) != 0 {
+                if !arena.hold_for_the_next_pass(entry) {
+                    return MarkResult::AllocationFailed;
+                }
+
+                continue;
+            }
+
+            expanded = true;
+            if !arena.push_work(entry) {
+                return MarkResult::AllocationFailed;
+            }
+
+            if let Some(stopped) = unsafe { expand_the_worklist::<R>(arena, prune, holding) } {
+                return stopped;
+            }
+        }
+
+        if !expanded {
+            break;
+        }
+    }
+
+    // The final drain: what no pass reached zero on, depth first, holding
+    // nothing more.
+    if arena.start_a_pass() {
+        while let Some(entry) = arena.pop_held() {
+            if !arena.push_work(entry) {
+                return MarkResult::AllocationFailed;
+            }
+
+            if let Some(stopped) =
+                unsafe { expand_the_worklist::<R>(arena, prune, Holding::Nothing) }
+            {
+                return stopped;
+            }
+        }
+    }
+
+    arena.end_the_passes();
+    MarkResult::Complete
+}
+
+/// Whether a descent holds the registered targets it meets for the first
+/// time, or expands them as it meets them (module doc, "The held stack").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Holding {
+    Registered,
+    Nothing,
+}
+
+impl Holding {
+    /// The module's order, or the plain depth-first descent a case asked for
+    /// as its control (`hold_nothing`, tests only).
+    fn of_this_trace() -> Self {
+        #[cfg(test)]
+        if HOLDS_NOTHING.load(std::sync::atomic::Ordering::Relaxed) {
+            return Self::Nothing;
+        }
+
+        Self::Registered
+    }
+}
+
+/// Expand every target as it is met, holding nothing: the depth-first
+/// descent the held stack reorders, as a control (tests only;
+/// `dev/plans/S67.md`, S67.9, the Sage of 2026-09-30, J3).
+#[cfg(test)]
+pub(crate) fn hold_nothing(holds_nothing: bool) {
+    HOLDS_NOTHING.store(holds_nothing, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+static HOLDS_NOTHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+// The entities this thread's marks expanded, in order, while a case reads them:
+// a boxed list the case owns, null when nobody reads (tests only). A pointer
+// rather than the list, so that the slot has no drop glue and registers no
+// destructor on the threads that only pass through it.
+#[cfg(test)]
+thread_local! {
+    static EXPANSIONS: std::cell::Cell<*mut Vec<*mut RcHeader>> =
+        const { std::cell::Cell::new(std::ptr::null_mut()) };
+}
+
+/// Record the order this thread's marks expand entities in from here on, until
+/// [`take_expansions`].
+#[cfg(test)]
+pub(crate) fn record_expansions() {
+    drop(take_expansions());
+    EXPANSIONS.with(|order| order.set(Box::into_raw(Box::default())));
+}
+
+// Passes this thread's marks made over held entries (tests only).
+#[cfg(test)]
+thread_local! {
+    static PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Passes the marks of this thread made since this last answered, which it
+/// leaves at zero.
+#[cfg(test)]
+pub(crate) fn take_passes() -> usize {
+    PASSES.with(|passes| passes.replace(0))
+}
+
+/// The entities expanded since [`record_expansions`], in order; recording
+/// stops.
+#[cfg(test)]
+pub(crate) fn take_expansions() -> Vec<*mut RcHeader> {
+    let order = EXPANSIONS.with(|order| order.replace(std::ptr::null_mut()));
+    if order.is_null() {
+        Vec::new()
+    } else {
+        *unsafe { Box::from_raw(order) }
+    }
+}
+
+/// Add `entity` to the order a case is reading, if one is.
+#[cfg(test)]
+fn note_expansion(entity: *mut RcHeader) {
+    // `try_with`: the exit's collection runs the mark from the thread's own
+    // destructors.
+    let _ = EXPANSIONS.try_with(|order| {
+        let order = order.get();
+        if !order.is_null() {
+            unsafe { (*order).push(entity) };
+        }
+    });
+}
+
+/// Expand the worklist until it is empty, depth first; `None` once it is, or
+/// the answer of the stop that ended the expansion.
+///
+/// # Safety
+/// As [`drain`].
+unsafe fn expand_the_worklist<R: CellReader>(
+    arena: &mut TraceScratchArena,
+    prune: Prune,
+    holding: Holding,
+) -> Option<MarkResult> {
     while let Some(entry) = arena.pop_work() {
         // The row the entry carries is the scan's to read; the mark's
         // expansion needs the entity alone, and the two phases keep one
         // entry shape (`crate::cycle::stack::WorklistEntry`).
         let entity = entry.entity;
+        #[cfg(test)]
+        note_expansion(entity);
         // The kind is loaded here and passed down rather than read
         // inside the tracer, which is the contract `trace_cells` states:
         // a collector holds the kind from its own reading of the header
         // and does not go back to a word the mutator may be writing.
         let kind = unsafe { cells::entity_kind(entity) };
         let expansion = Expansion::<R, _>::new(arena, |arena, child| unsafe {
-            visit_child::<R>(arena, child, prune)
+            visit_child::<R>(arena, child, prune, holding)
         });
         if unsafe { cells::trace_cells_until::<R>(entity, kind, expansion) }.is_break() {
-            return if arena.was_recalled() {
+            return Some(if arena.was_recalled() {
                 MarkResult::Recalled
             } else {
                 MarkResult::AllocationFailed
-            };
+            });
         }
     }
 
-    MarkResult::Complete
+    None
 }
 
 /// The visitor both phases hand `cells::trace_cells_until` for one entity:
@@ -372,8 +581,8 @@ where
     }
 }
 
-/// Meet the root's own row and queue it for expansion. False when both
-/// allocation paths refused.
+/// Meet the root's own row and queue it for the next [`drain`]. False when
+/// both allocation paths refused.
 ///
 /// **The root takes no subtraction.** The row starts at the entity's
 /// refcount and the trace subtracts the edges it finds; the queue entry
@@ -382,7 +591,10 @@ where
 ///
 /// # Safety
 /// As [`mark`].
-unsafe fn schedule_root_if_unvisited(arena: &mut TraceScratchArena, root: *mut RcHeader) -> bool {
+pub(crate) unsafe fn schedule_root_if_unvisited(
+    arena: &mut TraceScratchArena,
+    root: *mut RcHeader,
+) -> bool {
     let refcount = unsafe { header_refcount(root) };
     if refcount == 0 {
         // An entity the queue is still holding after its teardown. The entry
@@ -434,7 +646,9 @@ unsafe fn schedule_root_if_unvisited(arena: &mut TraceScratchArena, root: *mut R
 /// the block dispatch: `prune` is the collection's reading of the epoch and
 /// the threshold, and a child that reads mature against it is left to the
 /// entity's own count without a dispatch of any kind (module doc, "The mature
-/// live core is not descended into").
+/// live core is not descended into") — unless this trace has met it already
+/// ([`was_met`]), which costs a row lookup on the edges the stamp would prune
+/// and nowhere else.
 ///
 /// **A child at count zero under a concurrent reader is a torn-down entity**: the
 /// mutator tore it down between the cell's read and the header's, its own
@@ -451,8 +665,11 @@ unsafe fn visit_child<R: CellReader>(
     arena: &mut TraceScratchArena,
     child: *mut RcHeader,
     prune: Prune,
+    holding: Holding,
 ) -> bool {
-    if unsafe { stands_as_an_opaque_live_external(child, prune) } {
+    if unsafe { stands_as_an_opaque_live_external(child, prune) }
+        && !(prunes_registered_targets() && unsafe { was_met(child) })
+    {
         note_edge_pruned();
         return true;
     }
@@ -484,10 +701,17 @@ unsafe fn visit_child<R: CellReader>(
                 return true;
             }
 
-            if first_visit {
-                arena.push_work(WorklistEntry { entity: child, row })
+            if !first_visit {
+                return true;
+            }
+
+            let entry = WorklistEntry { entity: child, row };
+            if holding == Holding::Registered
+                && is_registered_candidate(unsafe { mutator_flags(child) })
+            {
+                arena.hold(entry)
             } else {
-                true
+                arena.push_work(entry)
             }
         }
     }
@@ -511,13 +735,45 @@ unsafe fn visit_child<R: CellReader>(
 #[inline]
 unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, prune: Prune) -> bool {
     let stamp = unsafe { read_maturation_stamp(child) };
-    #[cfg(test)]
-    if PRUNES_REGISTERED.load(std::sync::atomic::Ordering::Relaxed) {
+    if prunes_registered_targets() {
         return stamp.age >= prune.threshold && stamp.epoch == prune.epoch;
     }
     stamp.age >= prune.threshold
         && stamp.epoch == prune.epoch
         && !is_registered_candidate(unsafe { mutator_flags(child) })
+}
+
+/// Whether this trace has met `child` already, which keeps a stamped target
+/// from being pruned: its row holds its count, and the edge is one of the
+/// subtractions that row is owed (`dev/plans/S67.md`, S67.9, the protocol
+/// Critic's F5). Asked only where registered targets are prunable
+/// ([`prunes_registered_targets`]): a target the module prunes carries no
+/// candidate bit, every batch root does, and a stamp does not move under the
+/// trace, so no prunable target has been met. The row is looked up without
+/// being met.
+///
+/// # Safety
+/// As [`visit_child`].
+unsafe fn was_met(child: *mut RcHeader) -> bool {
+    let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(child) }) else {
+        return false;
+    };
+
+    unsafe { find_initialized_row(row) }
+        .is_some_and(|word| shadow::color(unsafe { word.read() }) != shadow::Color::Untouched)
+}
+
+/// Whether a registered target may be pruned: never in this build, the
+/// candidate bit exempting it (module doc); under the case's switch, revision
+/// 3's (1') read before it is built (`prune_registered`, tests only).
+#[inline]
+fn prunes_registered_targets() -> bool {
+    #[cfg(test)]
+    if PRUNES_REGISTERED.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+
+    false
 }
 
 /// Prune a registered target like any other, or keep the module's exemption

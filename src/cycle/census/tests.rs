@@ -66,6 +66,7 @@ fn the_bump_balances(report: &CollectionReport) {
         + BLOCK_PAYLOAD * (counters.drawn_from_pool + counters.drawn_from_reserve);
     let granted = counters.granted.rows
         + counters.granted.worklist
+        + counters.granted.held
         + counters.granted.components
         + counters.granted.drops;
     assert_eq!(

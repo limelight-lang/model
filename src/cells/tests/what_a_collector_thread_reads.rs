@@ -308,3 +308,57 @@ fn a_store_beside_the_trace_is_read_whole() {
         dismantle_ring(&mut arena, [a, b, c]);
     }
 }
+
+/// Positions and cells one stride of [`trace_cells_until`] handed its visitor.
+#[derive(Default)]
+struct Strided {
+    positions: usize,
+    cells: usize,
+}
+
+impl CellVisitor for &mut Strided {
+    fn cell(&mut self, _cell: Cell) -> std::ops::ControlFlow<()> {
+        self.cells += 1;
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn position(&mut self) -> std::ops::ControlFlow<()> {
+        self.positions += 1;
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
+/// The collector's reader strides nothing of a reference box that died in
+/// place, as it strides nothing of such an object: no position counts toward
+/// the recall and no cell is read. The owner's reader is not asked, since it
+/// never meets a dead slot through an edge.
+#[test]
+fn a_reference_box_dead_in_place_is_strided_by_nothing() {
+    use crate::refcount::{EntityKind, SlotState, slot_state};
+
+    let _g = test_guard();
+    crate::cycle::queue::release_queue_segments();
+    let boxed = crate::reference::ll_reference_new() as *mut RcHeader;
+    unsafe {
+        ll_retain(boxed);
+        assert!(
+            !ll_release(boxed),
+            "a decrement that is not the last registers the box"
+        );
+        assert!(ll_release(boxed));
+        ll_entity_die(boxed);
+        assert_eq!(
+            slot_state(boxed),
+            SlotState::DeadInPlace,
+            "the queue entry keeps the slot"
+        );
+    }
+
+    let mut strided = Strided::default();
+    let _ = unsafe {
+        trace_cells_until::<AtomicCells>(boxed, EntityKind::Reference as u32, &mut strided)
+    };
+
+    assert_eq!((strided.positions, strided.cells), (0, 0));
+    crate::cycle::queue::release_queue_segments();
+}

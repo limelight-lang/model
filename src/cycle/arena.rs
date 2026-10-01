@@ -432,6 +432,18 @@ pub(crate) struct TraceScratchArena {
     /// The trace's worklist, whose segments are this bump's
     /// ([`crate::cycle::stack`]).
     worklist: TraceStack,
+    /// The mark's held entries, the registered targets its descent met and
+    /// left unexpanded: the chain a pass pops ([`pop_held`](Self::pop_held)),
+    /// and the chain the next pass will, swapped at every pass
+    /// ([`start_a_pass`](Self::start_a_pass); `crate::cycle::mark`, "The held
+    /// stack"). Segments of this bump, like the worklist's, and both empty
+    /// outside a mark.
+    held: TraceStack,
+    held_next: TraceStack,
+    /// Whether a pass is under way, so that what its expansions hold goes on
+    /// the chain it pops and is read in the same pass; false between marks
+    /// and in a mark's first descent.
+    in_a_pass: bool,
     /// The maturation descent's component stack: every live vertex it has
     /// visited and not yet assigned to a component
     /// ([`crate::cycle::maturation`]). Segments of this bump, like the
@@ -550,6 +562,9 @@ impl TraceScratchArena {
             open_capacity: WORKSPACE_BUMP_BYTES,
             touched: std::ptr::null_mut(),
             worklist: TraceStack::new(),
+            held: TraceStack::new(),
+            held_next: TraceStack::new(),
+            in_a_pass: false,
             components: TraceStack::new(),
             drops: DeferredDrops::new(),
             published: 0,
@@ -815,6 +830,10 @@ impl TraceScratchArena {
         // with entities still queued, and every one of them carries a row
         // pointer into an array this call is about to unstamp.
         self.worklist.rewind();
+        // The held entries carry row pointers the same way.
+        self.held.rewind();
+        self.held_next.rewind();
+        self.in_a_pass = false;
         // The descent that fills it ends inside the commit, so a stack still
         // holding a vertex here belongs to one that unwound
         // ([`crate::cycle::maturation`]).
@@ -1000,6 +1019,10 @@ impl TraceScratchArena {
             self.worklist.is_empty(),
             "the worklist is drained before the rows it points into are unstamped"
         );
+        debug_assert!(
+            self.held.is_empty() && self.held_next.is_empty(),
+            "the held entries are expanded before the rows they point into are unstamped"
+        );
         // The descent's own stack carries the same pointer in the same field,
         // so it owes the same emptiness ([`crate::cycle::maturation`]).
         debug_assert!(
@@ -1148,6 +1171,44 @@ impl TraceScratchArena {
         self.worklist.pop()
     }
 
+    /// Hold `entry` for a pass of the mark — the one under way, if any, else
+    /// the first — or answer **false** when both allocation paths refused a
+    /// segment, as [`push_work`](Self::push_work) does.
+    pub(crate) fn hold(&mut self, entry: WorklistEntry) -> bool {
+        self.push_onto(Consumer::Held, entry)
+    }
+
+    /// Hold `entry` for the pass after the one under way: an entry the pass
+    /// read above zero. False as [`hold`](Self::hold).
+    pub(crate) fn hold_for_the_next_pass(&mut self, entry: WorklistEntry) -> bool {
+        self.push_onto(Consumer::HeldForTheNextPass, entry)
+    }
+
+    /// The next entry of the pass under way, or `None` when the pass has
+    /// popped every entry, those its own expansions held included.
+    pub(crate) fn pop_held(&mut self) -> Option<WorklistEntry> {
+        self.held.pop()
+    }
+
+    /// Start a pass over everything held for it: the entries become the ones
+    /// [`pop_held`](Self::pop_held) answers. False when nothing was held,
+    /// which ends the passes.
+    pub(crate) fn start_a_pass(&mut self) -> bool {
+        debug_assert!(
+            self.held.is_empty(),
+            "a pass starts after the last one popped every entry"
+        );
+        std::mem::swap(&mut self.held, &mut self.held_next);
+        self.in_a_pass = true;
+        !self.held.is_empty()
+    }
+
+    /// End the passes, or begin a mark's first descent: what is held from here
+    /// on waits for the first pass.
+    pub(crate) fn end_the_passes(&mut self) {
+        self.in_a_pass = false;
+    }
+
     /// Put a visited live vertex on the maturation descent's component stack,
     /// or answer **false** when both allocation paths refused a segment.
     ///
@@ -1164,7 +1225,7 @@ impl TraceScratchArena {
         self.components.pop()
     }
 
-    /// Push onto whichever of the two stacks `consumer` names, taking a
+    /// Push onto whichever stack `consumer` names, taking a
     /// segment of this bump at a boundary the kept segments cannot serve. The
     /// stack is selected at each touch rather than borrowed once, because the
     /// draw in between needs the whole arena.
@@ -1189,6 +1250,8 @@ impl TraceScratchArena {
     fn stack_for(&mut self, consumer: Consumer) -> &mut TraceStack {
         match consumer {
             Consumer::Worklist => &mut self.worklist,
+            Consumer::Held if self.in_a_pass => &mut self.held,
+            Consumer::Held | Consumer::HeldForTheNextPass => &mut self.held_next,
             Consumer::Components => &mut self.components,
             Consumer::Rows | Consumer::Drops => unreachable!("no stack stands under this consumer"),
         }
@@ -1654,6 +1717,12 @@ pub(crate) enum Consumer {
     Rows,
     /// A segment of the trace's worklist.
     Worklist,
+    /// A segment of the mark's held entries, for the pass under way or, in
+    /// the first descent, for the first.
+    Held,
+    /// A segment of the mark's held entries, for the pass after the one under
+    /// way.
+    HeldForTheNextPass,
     /// A segment of the maturation descent's component stack.
     Components,
     /// A segment of the teardown's deferred-drop queue.

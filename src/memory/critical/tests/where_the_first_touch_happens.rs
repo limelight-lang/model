@@ -114,6 +114,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("EXIT_PHASE", false),
         ("EXIT_RESIDUE", false),   // test-only const Cell, no drop glue
         ("EXIT_SEQUENCES", false), // test-only const Cell, no drop glue
+        ("EXPANSIONS", false),     // test-only const Cell of a raw pointer, no drop glue
         ("FAIL_AT", false),        // test-only const Cell, no destructor registration
         ("FILLER", false),         // test-only const Cell of a raw pointer, no drop glue
         ("FREED", false),
@@ -130,6 +131,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PANIC_IN_CLOSE", false),
         ("PANIC_IN_HARVEST", false),
         ("PANIC_IN_RESET", false),
+        ("PASSES", false), // test-only const Cell, no drop glue
         ("PINNED", false),
         ("PINNED_THRESHOLD", false), // test-only const Cell, no drop glue
         ("POOL_REQUESTS", false),

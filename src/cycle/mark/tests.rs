@@ -99,6 +99,7 @@ unsafe fn a_held_object(arena: &mut Arena, class: *const Class) -> *mut Object {
 }
 
 mod an_aborted_mark_writes_nothing;
+mod the_held_stack;
 mod what_a_dead_root_is_worth;
 mod what_the_trace_subtracts;
 mod where_the_descent_stops;

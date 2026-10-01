@@ -313,3 +313,66 @@ fn a_collectors_trace_prunes_against_the_owners_epoch() {
     drop(arena);
     release_queue_segments();
 }
+
+/// Puts the module's exemption for registered targets back however the case
+/// ends.
+struct ExemptionRestored;
+
+impl Drop for ExemptionRestored {
+    fn drop(&mut self) {
+        prune_registered(false);
+    }
+}
+
+/// A target this trace has met is never pruned, whatever its stamp: a garbage
+/// ring of two whose members are both stamped mature and both roots of the
+/// batch reads zero on each row when registered targets are prunable (revision
+/// 3's (1'), the case's switch), because each member's row was met before the
+/// edge into it was followed. A prune of a met target would leave each row at
+/// the edge it was owed and read the ring live.
+#[test]
+fn a_target_the_trace_has_met_is_subtracted_whatever_its_stamp() {
+    use crate::cells::PlainCells;
+    use crate::refcount::stamp_as_read_live;
+
+    let _g = test_guard();
+    release_queue_segments();
+    let _epoch = epoch::pin(0);
+    let class = node_class("MetBeforeStamp");
+    let mut arena = Arena::new();
+    let members = unsafe { ring(&mut arena, [class, class]) };
+    for &member in &members {
+        unsafe { stamp_as_read_live(member as *mut RcHeader, 0) };
+        assert_eq!(
+            unsafe { stamp_of(member) },
+            (0, 1),
+            "the member reads mature"
+        );
+    }
+
+    let _restored = ExemptionRestored;
+    prune_registered(true);
+    take_edges_pruned();
+    let mut trace = crate::cycle::testing::open_arena();
+    for &member in &members {
+        assert!(unsafe { schedule_root_if_unvisited(&mut trace, member as *mut RcHeader) });
+    }
+    assert_eq!(
+        unsafe { drain::<PlainCells>(&mut trace) },
+        MarkResult::Complete
+    );
+    let counts = members.map(|member| unsafe { working_count(member) });
+    trace.reset();
+    drop(trace);
+    prune_registered(false);
+
+    assert_eq!(counts, [0, 0], "each member's one in-edge came off its row");
+    assert_eq!(
+        take_edges_pruned(),
+        0,
+        "no edge into a met member was pruned"
+    );
+
+    unsafe { dismantle_ring(&mut arena, members) };
+    release_queue_segments();
+}

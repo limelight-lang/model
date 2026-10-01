@@ -34,7 +34,7 @@
 
 use crate::cells::CellReader;
 use crate::cycle::arena::TraceScratchArena;
-use crate::cycle::mark::{MarkResult, mark};
+use crate::cycle::mark::{MarkResult, drain, schedule_root_if_unvisited};
 use crate::cycle::queue::Batch;
 use crate::cycle::scan::{ScanResult, scan};
 
@@ -88,7 +88,7 @@ pub(crate) const ALL_ROOTS: usize = usize::MAX;
 /// (`cells::CellReader`).
 ///
 /// # Safety
-/// As [`mark`]: every root is an entity header of the owning thread's heap
+/// As [`drain`]: every root is an entity header of the owning thread's heap
 /// whose slot is still its own, and the trace runs where `cells::trace_cells`
 /// may read an entity's cells through `R`.
 pub(crate) unsafe fn trace_batch<R: CellReader>(
@@ -104,11 +104,13 @@ pub(crate) unsafe fn trace_batch<R: CellReader>(
         }
 
         traced += 1;
-        refused = unsafe { mark::<R>(arena, root) } != MarkResult::Complete;
+        refused = !unsafe { schedule_root_if_unvisited(arena, root) };
         !refused
     });
 
-    if refused {
+    // Every root met before any is expanded, so no edge into a batch root is
+    // a first visit and none is held (`crate::cycle::mark`, "The held stack").
+    if refused || unsafe { drain::<R>(arena) } != MarkResult::Complete {
         return (TraceOutcome::AllocationFailed, traced);
     }
 

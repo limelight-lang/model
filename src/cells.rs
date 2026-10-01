@@ -642,6 +642,18 @@ pub(crate) unsafe fn trace_cells_until<R: CellReader>(
             unsafe { crate::object::for_each_counted_cell::<R>(entity as *mut u8, class, visit) }
         }
         REFERENCE => {
+            // A slot that is not live is strided over by nothing, as an
+            // object's is: no position toward the recall and no cell. A box's
+            // teardown nulls its value first, so a box that dies after this
+            // load yields nothing either, or a child the owner's exact
+            // validation reads again.
+            if R::CONCURRENT
+                && unsafe { crate::refcount::slot_state(entity) }
+                    != crate::refcount::SlotState::Live
+            {
+                return ControlFlow::Continue(());
+            }
+
             visit.position()?;
             let at = unsafe { (entity as *const u8).add(REFERENCE_VALUE_OFFSET) };
             match unsafe { counted_box_cell::<R>(at) } {
