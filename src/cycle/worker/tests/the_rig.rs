@@ -107,7 +107,8 @@
 //!   target at its stamp like any other (`mark::prune_registered`), revision
 //!   3's (1') read before it is built (`dev/plans/S67.md`, S67.9, run R4);
 //! - `LL_RIG_BATCH_DUMP` — a path: every batch of the loop is written there,
-//!   one CSV line each, with the mutator's epoch clock at its end.
+//!   one CSV line each, with the mutator's epoch clock at its end, and every
+//!   batch of the drain to the same path with `.drain` appended.
 //!
 //! **The web loads** (`dev/plans/S67.md`, S67.5) run [`a_web_mutator`] in
 //! place of the ring loop: an iteration is one request of
@@ -2479,17 +2480,23 @@ fn the_timed_spin_is_fitted_by_its_calls_and_turns() {
     );
 }
 
-/// Whether the switch `variable` is on: unset is off and `1` is on; any other
-/// value is refused, so that a misspelt switch does not run the other arm.
 /// Write every batch of the loop, one line each, to the file
 /// `LL_RIG_BATCH_DUMP` names, and nothing when it is unset: the epoch's
 /// saw-tooth is read per batch, not from a cell's sums.
 fn dump_the_batches(batches: &[testing::TracedBatch], start: Instant) {
+    dump_the_batches_to(batches, start, "");
+}
+
+/// As [`dump_the_batches`], to the named path with `suffix` appended: the
+/// drain's batches go beside the loop's, so that a batch the loop left
+/// running is read when it ends.
+fn dump_the_batches_to(batches: &[testing::TracedBatch], start: Instant, suffix: &str) {
     use std::fmt::Write as _;
 
     let Ok(path) = std::env::var("LL_RIG_BATCH_DUMP") else {
         return;
     };
+    let path = format!("{path}{suffix}");
     let mut mutators: Vec<usize> = Vec::new();
     let mut text = String::from(
         "mutator,ended_ms,turnovers,roots,parts,complete,ending,positions,edges_pruned,rows_met,deferred_parts,wall_us\n",
@@ -2521,6 +2528,8 @@ fn dump_the_batches(batches: &[testing::TracedBatch], start: Instant) {
     std::fs::write(path, text).expect("the batch dump is written");
 }
 
+/// Whether the switch `variable` is on: unset is off and `1` is on; any other
+/// value is refused, so that a misspelt switch does not run the other arm.
 fn switch_from_env(variable: &str) -> bool {
     match std::env::var(variable) {
         Err(_) => false,
@@ -4303,9 +4312,11 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
             .filter(|batch| batch.rows_met >= state)
             .count();
         stages.wait();
+        let drained = testing::take_traced_batches();
+        dump_the_batches_to(&drained, at_the_start.at, ".drain");
         web.widest_part = batches
             .iter()
-            .chain(testing::take_traced_batches().iter())
+            .chain(drained.iter())
             .map(|batch| batch.widest_part)
             .max_by_key(|part| part.rows)
             .unwrap_or_default();
