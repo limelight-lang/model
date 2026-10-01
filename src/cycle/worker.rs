@@ -2409,6 +2409,7 @@ unsafe fn batch(
     let _ = (
         testing::take_lookup_visits(),
         crate::cycle::mark::take_edges_pruned(),
+        crate::cycle::mark::take_held_figures(),
         testing::take_rows_met(),
         testing::take_widest_part(),
     );
@@ -2430,6 +2431,8 @@ unsafe fn batch(
     let edges_pruned = crate::cycle::mark::take_edges_pruned();
     #[cfg(test)]
     testing::note_edges_pruned(edges_pruned);
+    #[cfg(test)]
+    testing::note_held_figures(crate::cycle::mark::take_held_figures());
     #[cfg(test)]
     testing::note_traced_batch(|| testing::TracedBatch {
         roots: taken,

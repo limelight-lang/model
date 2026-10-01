@@ -918,3 +918,73 @@ fn released_behind_another_batch(ask_at: fn(Box<dyn FnOnce() + Send>)) -> usize 
     );
     released_at
 }
+
+/// Registered elements the array of the case below holds: fewer than a
+/// stride, so that the first descent reads no recall, and more than the
+/// stride's remainder after it, so that the first pass does.
+const HELD_ELEMENTS: usize = 600;
+
+const _: () = assert!(HELD_ELEMENTS < RECALL_STRIDE && 2 * HELD_ELEMENTS > RECALL_STRIDE);
+
+/// A pass over held entries counts each toward the recall, as a cell is
+/// counted: an array of registered elements held from outside is met in the
+/// first descent (one position an element), every element is held, and the
+/// pass that reads them above zero reaches the stride's reading and answers
+/// `Recalled`. The elements have no cells, so a pass that counted nothing
+/// would leave the final drain nothing to count either and the mark would
+/// read `Complete` under a standing recall.
+#[test]
+fn a_pass_over_held_entries_reads_the_recall() {
+    use crate::array::testing::push;
+    use crate::cells::AtomicCells;
+    use crate::cycle::arena::TraceScratchArena;
+    use crate::cycle::mark::{MarkResult, mark};
+
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let empty = ClassBuilder::new("RecallHeldElement").build();
+    let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let elements: Vec<*mut Object> = (0..HELD_ELEMENTS)
+        .map(|_| unsafe {
+            let element = new_constructed(&mut context, empty, MemoryCategory::GcHeap);
+            // `push` counts nothing, so the array's reference is retained
+            // here; a retain and a non-final release register the element.
+            ll_retain(element as *mut RcHeader);
+            assert!(push(
+                array,
+                Value::entity(Tag::Object, element as *mut RcHeader)
+            ));
+            ll_retain(element as *mut RcHeader);
+            assert!(!ll_release(element as *mut RcHeader));
+            element
+        })
+        .collect();
+    let root = unsafe { a_root_over(&mut context, array as *mut RcHeader, Tag::Array) };
+    let token = unsafe { &(*record()).token };
+    let _clear = ClearTheRecall(token);
+
+    token.recall_for_test(true);
+    let mut recalled =
+        unsafe { TraceScratchArena::open_for_owner(record()) }.expect("the workspace was drawn");
+    let answer = unsafe { mark::<AtomicCells>(&mut recalled, root as *mut RcHeader) };
+    let read = recalled.positions_inspected();
+    recalled.reset();
+    drop(recalled);
+    token.recall_for_test(false);
+
+    assert_eq!((answer, read), (MarkResult::Recalled, RECALL_STRIDE));
+
+    unsafe {
+        let_go(root);
+        for element in elements {
+            assert!(
+                ll_release(element as *mut RcHeader),
+                "the case's reference was the last"
+            );
+            ll_object_die(element);
+        }
+    }
+    reset_lanes();
+}

@@ -106,6 +106,11 @@
 //! - `LL_RIG_PRUNE_REGISTERED` — set to 1, every mark prunes a registered
 //!   target at its stamp like any other (`mark::prune_registered`), revision
 //!   3's (1') read before it is built (`dev/plans/S67.md`, S67.9, run R4);
+//! - `LL_RIG_HOLD_NOTHING` — set to 1, every mark expands its registered
+//!   targets as it meets them, the plain depth-first descent the held stack
+//!   reorders, as the control of `collector_passes`, `collector_held` and
+//!   `collector_widest_pass` (`mark::hold_nothing`; `dev/plans/S67.md`, S67.9,
+//!   J3);
 //! - `LL_RIG_BATCH_DUMP` — a path: every batch of the loop is written there,
 //!   one CSV line each, with the mutator's epoch clock at its end, and every
 //!   batch of the drain to the same path with `.drain` appended.
@@ -3315,6 +3320,12 @@ impl CellReading {
                 self.scheme.collector_edges_pruned.to_string(),
             ),
             ("roots_reoffered", self.scheme.roots_reoffered.to_string()),
+            ("collector_passes", self.scheme.collector_passes.to_string()),
+            ("collector_held", self.scheme.collector_held.to_string()),
+            (
+                "collector_widest_pass",
+                self.scheme.collector_widest_pass.to_string(),
+            ),
             (
                 "request_standing_consented",
                 standings.consented.count.to_string(),
@@ -4186,6 +4197,12 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     testing::record_standings(switch_from_env("LL_RIG_STANDINGS"));
     testing::permit_births(true);
 
+    // The marks' switches before any mutator starts, so that every mark of the
+    // cell reads them, the setup's included.
+    let first_regions = switch_from_env("LL_RIG_FIRST_REGIONS");
+    crate::cycle::mark::stop_at_candidates(first_regions);
+    crate::cycle::mark::prune_registered(switch_from_env("LL_RIG_PRUNE_REGISTERED"));
+    crate::cycle::mark::hold_nothing(switch_from_env("LL_RIG_HOLD_NOTHING"));
     let stop = Arc::new(AtomicBool::new(false));
     let start = Arc::new(Barrier::new(cell.mutators.len() + 1));
     let stages = Arc::new(Barrier::new(cell.mutators.len() + 1));
@@ -4237,9 +4254,6 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
                 .expect("LL_RIG_BATCH_ROOTS is a count of roots"),
         )
     });
-    let first_regions = switch_from_env("LL_RIG_FIRST_REGIONS");
-    crate::cycle::mark::stop_at_candidates(first_regions);
-    crate::cycle::mark::prune_registered(switch_from_env("LL_RIG_PRUNE_REGISTERED"));
     let _budgets = batch_blocks.map(|blocks| {
         (
             testing::budget_every_batch(blocks),

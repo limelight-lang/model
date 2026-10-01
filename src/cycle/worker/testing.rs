@@ -1619,12 +1619,21 @@ pub(crate) struct SchemeFigures {
     pub(crate) listed_other: usize,
     pub(crate) collector_edges_pruned: usize,
     pub(crate) roots_reoffered: usize,
+    /// The collector's marks' held stack: passes over held entries, entries
+    /// held, and the most entries one pass read (`crate::cycle::mark`, "The
+    /// held stack").
+    pub(crate) collector_passes: usize,
+    pub(crate) collector_held: usize,
+    pub(crate) collector_widest_pass: usize,
 }
 
 static LISTED_REGISTERED: AtomicUsize = AtomicUsize::new(0);
 static LISTED_OTHER: AtomicUsize = AtomicUsize::new(0);
 static EDGES_PRUNED: AtomicUsize = AtomicUsize::new(0);
 static ROOTS_REOFFERED: AtomicUsize = AtomicUsize::new(0);
+static HELD_PASSES: AtomicUsize = AtomicUsize::new(0);
+static HELD: AtomicUsize = AtomicUsize::new(0);
+static WIDEST_PASS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) fn note_listed(registered: bool) {
     let counter = if registered {
@@ -1639,6 +1648,12 @@ pub(crate) fn note_edges_pruned(edges: usize) {
     EDGES_PRUNED.fetch_add(edges, Ordering::Relaxed);
 }
 
+pub(crate) fn note_held_figures(figures: crate::cycle::mark::HeldFigures) {
+    HELD_PASSES.fetch_add(figures.passes, Ordering::Relaxed);
+    HELD.fetch_add(figures.held, Ordering::Relaxed);
+    WIDEST_PASS.fetch_max(figures.widest_pass, Ordering::Relaxed);
+}
+
 pub(crate) fn note_reoffered(roots: usize) {
     ROOTS_REOFFERED.fetch_add(roots, Ordering::Relaxed);
 }
@@ -1650,6 +1665,9 @@ pub(crate) fn take_scheme_figures() -> SchemeFigures {
         listed_other: LISTED_OTHER.swap(0, Ordering::Relaxed),
         collector_edges_pruned: EDGES_PRUNED.swap(0, Ordering::Relaxed),
         roots_reoffered: ROOTS_REOFFERED.swap(0, Ordering::Relaxed),
+        collector_passes: HELD_PASSES.swap(0, Ordering::Relaxed),
+        collector_held: HELD.swap(0, Ordering::Relaxed),
+        collector_widest_pass: WIDEST_PASS.swap(0, Ordering::Relaxed),
     }
 }
 

@@ -353,9 +353,14 @@ pub(crate) unsafe fn drain<R: CellReader>(arena: &mut TraceScratchArena) -> Mark
     // the next. The passes end when one expands nothing.
     while arena.start_a_pass() {
         #[cfg(test)]
-        PASSES.with(|passes| passes.set(passes.get() + 1));
+        let mut read_in_the_pass = 0;
         let mut expanded = false;
         while let Some(entry) = arena.pop_held() {
+            #[cfg(test)]
+            {
+                read_in_the_pass += 1;
+            }
+
             // Each entry is a position toward the recall, as a cell is: a
             // pass over thousands of entries above zero strides no cell.
             if R::CONCURRENT && arena.inspect_position().is_break() {
@@ -380,6 +385,11 @@ pub(crate) unsafe fn drain<R: CellReader>(arena: &mut TraceScratchArena) -> Mark
             }
         }
 
+        #[cfg(test)]
+        note_held(|figures| {
+            figures.passes += 1;
+            figures.widest_pass = figures.widest_pass.max(read_in_the_pass);
+        });
         if !expanded {
             break;
         }
@@ -455,17 +465,44 @@ pub(crate) fn record_expansions() {
     EXPANSIONS.with(|order| order.set(Box::into_raw(Box::default())));
 }
 
-// Passes this thread's marks made over held entries (tests only).
+/// What the held stack did on one thread's marks: the passes over held
+/// entries, the entries a descent held, and the most entries one pass read
+/// (tests only; the rig's columns, `dev/plans/S67.md`, S67.9, J3).
 #[cfg(test)]
-thread_local! {
-    static PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub(crate) struct HeldFigures {
+    pub(crate) passes: usize,
+    pub(crate) held: usize,
+    pub(crate) widest_pass: usize,
 }
 
-/// Passes the marks of this thread made since this last answered, which it
+#[cfg(test)]
+thread_local! {
+    static HELD_FIGURES: std::cell::Cell<HeldFigures> =
+        const { std::cell::Cell::new(HeldFigures { passes: 0, held: 0, widest_pass: 0 }) };
+}
+
+#[cfg(test)]
+fn note_held(change: impl FnOnce(&mut HeldFigures)) {
+    let _ = HELD_FIGURES.try_with(|figures| {
+        let mut now = figures.get();
+        change(&mut now);
+        figures.set(now);
+    });
+}
+
+/// The held stack's figures on this thread since this last answered, which it
 /// leaves at zero.
 #[cfg(test)]
+pub(crate) fn take_held_figures() -> HeldFigures {
+    HELD_FIGURES.with(|figures| figures.replace(HeldFigures::default()))
+}
+
+/// Passes the marks of this thread made since the figures were last taken,
+/// which it leaves at zero with the rest of them.
+#[cfg(test)]
 pub(crate) fn take_passes() -> usize {
-    PASSES.with(|passes| passes.replace(0))
+    take_held_figures().passes
 }
 
 /// The entities expanded since [`record_expansions`], in order; recording
@@ -709,6 +746,8 @@ unsafe fn visit_child<R: CellReader>(
             if holding == Holding::Registered
                 && is_registered_candidate(unsafe { mutator_flags(child) })
             {
+                #[cfg(test)]
+                note_held(|figures| figures.held += 1);
                 arena.hold(entry)
             } else {
                 arena.push_work(entry)

@@ -120,6 +120,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("FREED", false),
         ("HEAP", false),
         ("HELD_AT_LAST_ROW_READ", false), // test-only const Cell, no drop glue
+        ("HELD_FIGURES", false),          // test-only const Cell of a Copy struct, no drop glue
         ("LATE_CELL", false),
         ("LOOKUP_VISITS", false), // test-only const Cell, no drop glue
         ("MARK_ENDED_AT", false), // test-only const Cell, no drop glue
@@ -131,7 +132,6 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PANIC_IN_CLOSE", false),
         ("PANIC_IN_HARVEST", false),
         ("PANIC_IN_RESET", false),
-        ("PASSES", false), // test-only const Cell, no drop glue
         ("PINNED", false),
         ("PINNED_THRESHOLD", false), // test-only const Cell, no drop glue
         ("POOL_REQUESTS", false),
