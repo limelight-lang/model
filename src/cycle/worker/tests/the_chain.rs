@@ -652,8 +652,8 @@ fn a_batch_that_proposes_a_set_beside_live_roots_publishes_its_live_list() {
     reset();
     let node = node_class("ChainMixedNode");
     let mut arena = Arena::new();
-    // Two live rings of two, each with its root of the second generation: a
-    // part's own root is not listed, so a core of the root alone lists nothing.
+    // Two live rings of two, each with its root of the second generation: the
+    // batch's root is listed with its core.
     let kept: Vec<KeptRing> = (0..2)
         .map(|index| unsafe {
             let ring = a_kept_ring_of(&mut arena, &format!("ChainMixedRing{index}"), 2);
@@ -684,7 +684,7 @@ fn a_batch_that_proposes_a_set_beside_live_roots_publishes_its_live_list() {
     assert!(unsafe { &*record() }.live_list().is_null());
     for ring in &kept {
         assert_eq!(unsafe { stamp_of(ring.members[1]) }.1, 1, "the core");
-        assert_eq!(unsafe { stamp_of(ring.root()) }.1, 0, "the part's root");
+        assert_eq!(unsafe { stamp_of(ring.root()) }.1, 1, "the batch's root");
     }
 
     for ring in kept {

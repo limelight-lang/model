@@ -7,8 +7,8 @@
 //!
 //! # Why a list, and why flat
 //!
-//! A part of a collector's batch that reads its root live has read a live
-//! core, and a maturation stamp on each member is what the next trace's prune
+//! A collector's batch that reads a root live has read a live core, and a
+//! maturation stamp on each member is what the next trace's prune
 //! stops at (`crate::cycle::mark`). Byte 6 has one writer, the owner
 //! (`rfc/model/classes.md`, "Flags layout"), so the collector lists the
 //! members and the owner writes the stamps. The stamp is `{e, 1}` on every
@@ -22,11 +22,11 @@
 //! One chain per grant of at most [`MAX_BLOCKS`] GC blocks threaded through
 //! `BlockHeader::next`, each holding [`ENTRIES_PER_BLOCK`] entity pointers in
 //! its payload and its count and the epoch cell's reading in its header line
-//! ([`ListBlock`]). The collector appends after each part whose root it read
-//! live, walking that part's live rows before the arena's reset
-//! ([`Writer::append_the_part`]) and publishes the head on the record's hold
-//! line before the release that stores `POSTED`. The walk leaves out the
-//! part's own root, whose stamp no prune reads. A block the pool refuses and
+//! ([`ListBlock`]). The collector appends once a batch's trace completed,
+//! walking its live rows, the batch's roots among them, before the arena's
+//! reset ([`Writer::append_the_batch`]), and publishes the head on the
+//! record's hold line before the release that stores `POSTED`; a stopped trace
+//! lists nothing. A block the pool refuses and
 //! a chain at its bound keep what is written and take no more: any subset of
 //! the live core is safe to stamp. The walk reads the recall every
 //! `crate::cycle::arena::RECALL_STRIDE` rows and stops at a recall, keeping
@@ -138,20 +138,18 @@ impl Writer {
         }
     }
 
-    /// Append the address of every entity a completed part's rows left live
-    /// but `root`, the part's own, reading the recall every stride of rows:
-    /// `Break` where it stood, with the entries written before the reading
-    /// kept. They are live rows of a part that completed, as safe to stamp as
-    /// a chain closed at its bound, and keeping them puts nothing between the
-    /// reading and the release.
+    /// Append the address of every entity a completed trace's rows left live,
+    /// reading the recall every stride of rows: `Break` where it stood, with
+    /// the entries written before the reading kept. They are live rows of a
+    /// trace that completed, as safe to stamp as a chain closed at its bound,
+    /// and keeping them puts nothing between the reading and the release.
     ///
     /// # Safety
-    /// The part completed on this thread and its rows still stand: after the
-    /// scan and before the arena's reset to the watermark.
-    pub(crate) unsafe fn append_the_part(
+    /// The trace completed on this thread and its rows still stand: after the
+    /// scan and before the arena's reset.
+    pub(crate) unsafe fn append_the_batch(
         &mut self,
         arena: &mut TraceScratchArena,
-        root: *mut RcHeader,
     ) -> ControlFlow<()> {
         let mut recalled = false;
         #[cfg(test)]
@@ -171,16 +169,11 @@ impl Writer {
                     let Some(entity) = row::entity_at(block, population, index) else {
                         return ControlFlow::Continue(());
                     };
-                    // The root stays registered until its free, and the prune
-                    // never stops at a registered candidate
-                    // (`crate::cycle::mark`): its stamp would prune nothing.
-                    if entity == root {
-                        return ControlFlow::Continue(());
-                    }
-
                     // Under `unlisted-registered-members` no registered
-                    // member is listed, for the same reason, at one read of
-                    // its flags here (`dev/plans/S65.md`, S65.36).
+                    // member is listed: the prune never stops at a registered
+                    // candidate (`crate::cycle::mark`), so its stamp would
+                    // prune nothing; one read of its flags here
+                    // (`dev/plans/S65.md`, S65.36).
                     #[cfg(feature = "unlisted-registered-members")]
                     if crate::refcount::is_registered_candidate(crate::refcount::mutator_flags(
                         entity,

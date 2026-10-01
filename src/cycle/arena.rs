@@ -71,21 +71,6 @@
 //! which is inside mark and scan, so an aborting collection has not reached
 //! its close.
 //!
-//! # A reset to the watermark
-//!
-//! A collector's batch traces its roots in parts, one root's closure at a
-//! time, the rows of one part being nothing to the next
-//! (`crate::cycle::worker`, "The batch"). Between two parts the arena is
-//! reset to a watermark fixed above the batch's copy of its roots
-//! ([`TraceScratchArena::set_watermark`]): the rows swept, the three record
-//! chains forgotten, the drawn blocks given back and counted from zero, and
-//! the bump rewound to the watermark, so that the copy below it stands until
-//! the arena's own [`TraceScratchArena::reset`]. Each part therefore draws
-//! under the whole block budget, and whether a part met it stands across the
-//! reset. What bounds a mutator's wait over the parts is the recall below
-//! and not the budget (`dev/DECISIONS.md`, "the trace in parts waits for the
-//! recall and the stack marks").
-//!
 //! # The recall
 //!
 //! A collector's trace counts the positions of storage it reads on its arena
@@ -265,8 +250,7 @@ pub(crate) fn refuse_drop_reservation() -> ArmedInjection {
     ArmedInjection::arm(&REFUSE_DROP_RESERVATION)
 }
 
-/// Arm the injection for **one** reset of this thread, to the workspace or to
-/// the watermark ([`ArmedInjection`]).
+/// Arm the injection for **one** reset of this thread ([`ArmedInjection`]).
 ///
 /// The reset it interrupts is left half-done, which is the state a poisoned
 /// hand-back leaves: the rows are swept and the blocks are still the arena's.
@@ -376,21 +360,6 @@ pub(crate) struct TraceScratchArena {
     /// arena does not record *which*: a block is a block, and the count
     /// is what restores the reserve's size.
     from_reserve: usize,
-    /// Blocks the bump has drawn above the workspace since the last reset of
-    /// either kind, and the most it may draw: a growth that would pass the
-    /// budget is refused as a refused allocation is, which is how each part
-    /// of the collector's batch is bounded by blocks rather than by the
-    /// closure of its root ([`TraceScratchArena::budget_blocks`]).
-    drawn: usize,
-    block_budget: usize,
-    /// The bump position [`TraceScratchArena::reset_to_the_watermark`]
-    /// rewinds to, in the workspace, or null while none is set; and the bytes
-    /// below it charged to the ledger, which that reset leaves charged.
-    watermark: *mut u8,
-    published_below_the_watermark: usize,
-    /// Whether a growth was refused by the budget rather than by the pool:
-    /// what tells a batch that met its budget from one the pool refused.
-    budget_met: bool,
     /// The token of the mutator a collector thread traces for, whose recall
     /// the trace reads every [`RECALL_STRIDE`] positions; null for an
     /// in-line collection, which nobody recalls
@@ -444,6 +413,10 @@ pub(crate) struct TraceScratchArena {
     /// the chain it pops and is read in the same pass; false between marks
     /// and in a mark's first descent.
     in_a_pass: bool,
+    /// Whether a mark's first descent has emptied the worklist since the
+    /// last sweep: every met root's first region expanded
+    /// ([`regions_ended`](Self::regions_ended)).
+    regions_ended: bool,
     /// The maturation descent's component stack: every live vertex it has
     /// visited and not yet assigned to a component
     /// ([`crate::cycle::maturation`]). Segments of this bump, like the
@@ -544,11 +517,6 @@ impl TraceScratchArena {
             base: LentWorkspace { block: base },
             blocks: std::ptr::null_mut(),
             from_reserve: 0,
-            drawn: 0,
-            block_budget: usize::MAX,
-            watermark: std::ptr::null_mut(),
-            published_below_the_watermark: 0,
-            budget_met: false,
             traced_token: std::ptr::null(),
             positions_to_the_reading: RECALL_STRIDE,
             recalled: false,
@@ -565,6 +533,7 @@ impl TraceScratchArena {
             held: TraceStack::new(),
             held_next: TraceStack::new(),
             in_a_pass: false,
+            regions_ended: false,
             components: TraceStack::new(),
             drops: DeferredDrops::new(),
             published: 0,
@@ -834,6 +803,7 @@ impl TraceScratchArena {
         self.held.rewind();
         self.held_next.rewind();
         self.in_a_pass = false;
+        self.regions_ended = false;
         // The descent that fills it ends inside the commit, so a stack still
         // holding a vertex here belongs to one that unwound
         // ([`crate::cycle::maturation`]).
@@ -920,57 +890,9 @@ impl TraceScratchArena {
         self.left = WORKSPACE_BUMP_BYTES;
         self.open_capacity = WORKSPACE_BUMP_BYTES;
 
-        self.watermark = std::ptr::null_mut();
-        self.published_below_the_watermark = 0;
-
         fire_injected_reset_failure();
 
         self.give_the_blocks_back();
-        self.drawn = 0;
-        self.budget_met = false;
-    }
-
-    /// Fix the watermark at the bump: the bytes granted so far — a collector
-    /// batch's copy of its roots — stand through every
-    /// [`reset_to_the_watermark`](Self::reset_to_the_watermark) and go with
-    /// [`reset`](Self::reset). They are charged to the ledger here, since no
-    /// later growth charges them. Once per collection, before the bump has
-    /// left the workspace.
-    pub(crate) fn set_watermark(&mut self) {
-        assert!(
-            self.blocks.is_null() && self.watermark.is_null(),
-            "one watermark per collection, in the workspace"
-        );
-        self.publish(self.residue());
-        self.published_below_the_watermark = self.published;
-        self.watermark = self.cursor;
-        self.open_capacity = self.left;
-    }
-
-    /// End one part of a batch's trace: the rows swept and the record chains
-    /// forgotten as [`sweep_rows`](Self::sweep_rows) does, every block drawn
-    /// since the watermark given back as [`reset`](Self::reset) gives it, and
-    /// the bump rewound to the watermark, whose copy below it stands. The
-    /// next part draws under the whole budget again; whether a part met it is
-    /// left standing (module doc, "A reset to the watermark").
-    pub(crate) fn reset_to_the_watermark(&mut self) {
-        assert!(!self.watermark.is_null(), "the batch set a watermark");
-        self.sweep_rows();
-        gc_metadata::mark_peak(self.residue());
-        gc_metadata::discharge(self.published - self.published_below_the_watermark);
-        self.published = self.published_below_the_watermark;
-
-        // Ahead of the hand-over, as in [`reset`](Self::reset).
-        let workspace_end =
-            unsafe { BlockHeader::payload_start(self.base.block()).add(BLOCK_PAYLOAD) };
-        self.cursor = self.watermark;
-        self.left = workspace_end as usize - self.watermark as usize;
-        self.open_capacity = self.left;
-
-        fire_injected_reset_failure();
-
-        self.give_the_blocks_back();
-        self.drawn = 0;
     }
 
     /// Give every block the bump drew back: what the reserve lent to the
@@ -1209,6 +1131,19 @@ impl TraceScratchArena {
         self.in_a_pass = false;
     }
 
+    /// Note that a mark's first descent emptied the worklist: every root met
+    /// so far has had its first region expanded, and what remains is held.
+    pub(crate) fn note_the_regions_ended(&mut self) {
+        self.regions_ended = true;
+    }
+
+    /// Whether a mark's first descent has emptied the worklist since the last
+    /// sweep: a stop after it found every met root's first region expanded
+    /// (`crate::cycle::worker`, "The batch").
+    pub(crate) fn regions_ended(&self) -> bool {
+        self.regions_ended
+    }
+
     /// Put a visited live vertex on the maturation descent's component stack,
     /// or answer **false** when both allocation paths refused a segment.
     ///
@@ -1343,16 +1278,9 @@ impl TraceScratchArena {
     /// arena's whole life is one collection.
     fn grow(&mut self) -> bool {
         // A growth reads the recall as the stride does: a trace whose every
-        // position opens a block would otherwise draw the budget whole
+        // position opens a block would otherwise draw block after block
         // inside one stride.
         if self.read_the_recall_now().is_break() {
-            return false;
-        }
-
-        // At or past: the collector's retry puts B back while the blocks it
-        // drew under `B_max` are still out.
-        if self.drawn >= self.block_budget {
-            self.budget_met = true;
             return false;
         }
 
@@ -1380,46 +1308,10 @@ impl TraceScratchArena {
 
         unsafe { (&raw mut (*block).next).write(self.blocks) };
         self.blocks = block;
-        self.drawn += 1;
         self.cursor = BlockHeader::payload_start(block);
         self.left = BLOCK_PAYLOAD;
         self.open_capacity = BLOCK_PAYLOAD;
         true
-    }
-
-    /// Bound the blocks this arena may draw above the workspace at `blocks`:
-    /// the growth that would pass it answers as a refused allocation does,
-    /// so a trace under the budget ends with `AllocationFailed` where an
-    /// unbounded one would have drawn. Each part of the collector's batch runs
-    /// under one, so that the memory its thread holds at any instant of a
-    /// grant, and the reset that returns it, are bounded by blocks rather than
-    /// by the closure of a root
-    /// (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff", the block
-    /// budget B); what a mutator waits for is the recall's ([`RECALL_STRIDE`]).
-    /// Blocks already drawn count, until a
-    /// [`reset_to_the_watermark`](Self::reset_to_the_watermark) gives them back.
-    pub(crate) fn budget_blocks(&mut self, blocks: usize) {
-        self.block_budget = blocks;
-    }
-
-    /// The blocks this arena may draw above the workspace
-    /// ([`budget_blocks`](Self::budget_blocks)).
-    pub(crate) fn block_budget(&self) -> usize {
-        self.block_budget
-    }
-
-    /// Clear whether the budget refused a growth, so that the next trace's
-    /// answer is its own: the collector's retry of a part the budget refused,
-    /// under a larger one.
-    pub(crate) fn forget_the_budget_met(&mut self) {
-        self.budget_met = false;
-    }
-
-    /// Whether a growth since the last [`reset`](Self::reset) was refused by
-    /// the budget; a [`reset_to_the_watermark`](Self::reset_to_the_watermark)
-    /// leaves the answer standing.
-    pub(crate) fn met_its_budget(&self) -> bool {
-        self.budget_met
     }
 
     /// Count one position of storage a collector's trace is about to read,
@@ -1445,6 +1337,11 @@ impl TraceScratchArena {
         #[cfg(test)]
         {
             self.recall_readings += 1;
+            if !self.traced_token.is_null()
+                && crate::cycle::worker::testing::recalls_at_the_reading(self.recall_readings)
+            {
+                unsafe { (*self.traced_token).recall_for_test(true) };
+            }
         }
 
         self.read_the_recall_now()
@@ -1452,7 +1349,7 @@ impl TraceScratchArena {
 
     /// Read the traced mutator's recall outside the stride, where a step of
     /// the trace costs more than a position: at a growth, whose one position
-    /// may open a block, and between the parts of a batch and at each root the
+    /// may open a block, and at each root the
     /// pass before them reads (`crate::cycle::worker`, "The batch"). Answers
     /// `Break` once the recall stands, releasing the grants behind the trace
     /// otherwise, as a reading at the stride does.
@@ -1587,15 +1484,6 @@ impl TraceScratchArena {
     #[cfg(test)]
     pub(crate) fn blocks_from_reserve(&self) -> usize {
         self.from_reserve
-    }
-
-    /// Blocks drawn above the workspace since the last
-    /// [`reset`](Self::reset) or
-    /// [`reset_to_the_watermark`](Self::reset_to_the_watermark). Tests and
-    /// the journal's record of a part past its budget only.
-    #[cfg(any(test, feature = "debug-journal"))]
-    pub(crate) fn blocks_drawn(&self) -> usize {
-        self.drawn
     }
 
     /// Blocks this arena holds. Tests only: the number is what a leak

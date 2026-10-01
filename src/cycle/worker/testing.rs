@@ -335,38 +335,30 @@ pub(crate) fn note_refusal() {
 /// whether it ran to its end, the blocks its arena drew above the workspace,
 /// and the wall of the two phases; where a case's hook ran between the
 /// phases ([`between_the_next_phases`]), the positions of storage the scan
-/// read after it; and the visits of the lookup of met roots.
+/// read after it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct TracedBatch {
     pub(crate) roots: usize,
-    pub(crate) parts: usize,
+    /// Whether the batch's roots were met and its trace opened, which a
+    /// recall in the pass over the roots forestalls.
+    pub(crate) traced: bool,
     pub(crate) complete: bool,
     pub(crate) blocks: usize,
     pub(crate) wall: std::time::Duration,
     pub(crate) positions_after_the_hook: Option<usize>,
-    /// Roots and rows the lookup of each part's met roots visited.
-    pub(crate) lookup_visits: usize,
     /// Edges the batch's marks pruned at a mature target
     /// (`crate::cycle::mark::take_edges_pruned`).
     pub(crate) edges_pruned: usize,
-    /// Rows the batch's parts met, summed over the parts.
+    /// Rows the batch's trace met.
     pub(crate) rows_met: usize,
-    /// Parts that met B, the retry of one under `B_max` not counted.
-    pub(crate) parts_met_budget: usize,
-    /// Whether a part was retried under `B_max`.
-    pub(crate) retried: bool,
-    /// Parts whose met roots were deferred read live, past B with the retry
-    /// spent or past `B_max`.
-    pub(crate) deferred_parts: usize,
     /// The mutator's record, as an address, which tells one mutator's
     /// batches from another's.
     pub(crate) mutator: usize,
     /// When the trace ended.
     pub(crate) ended: Instant,
-    /// The batch's completed part that met the most rows.
+    /// The batch's trace, where it completed.
     pub(crate) widest_part: PartReading,
-    /// The positions the batch's trace inspected, its parts and their
-    /// retries all counted.
+    /// The positions the batch's trace inspected.
     pub(crate) positions: usize,
     /// Which exit ended the trace, one of the journal's `BATCH_END_*` codes.
     pub(crate) ending: u64,
@@ -519,36 +511,6 @@ pub(crate) fn take_outcomes() -> Outcomes {
     }
 }
 
-/// The block budget the next batch traces under, for the case that reads
-/// what a batch that meets it posts; `usize::MAX` for the module's own.
-static NEXT_BATCH_BUDGET: AtomicUsize = AtomicUsize::new(usize::MAX);
-
-/// The budget a part that met B is retried under, `usize::MAX` for the
-/// module's own `B_max`; process-wide, the cases holding the pool's guard.
-static RETRY_BUDGET: AtomicUsize = AtomicUsize::new(usize::MAX);
-
-/// Retry parts under `blocks` rather than `B_max` until the guard drops.
-pub(crate) fn retry_parts_under(blocks: usize) -> RetryBudget {
-    RETRY_BUDGET.store(blocks, Ordering::Relaxed);
-    RetryBudget
-}
-
-pub(crate) fn retry_budget() -> Option<usize> {
-    match RETRY_BUDGET.load(Ordering::Relaxed) {
-        usize::MAX => None,
-        blocks => Some(blocks),
-    }
-}
-
-/// The budget [`retry_parts_under`] set, lifted at the drop.
-pub(crate) struct RetryBudget;
-
-impl Drop for RetryBudget {
-    fn drop(&mut self) {
-        RETRY_BUDGET.store(usize::MAX, Ordering::Relaxed);
-    }
-}
-
 /// The wall a stubbed trace spins in place of a batch's parts, in
 /// nanoseconds, zero for the real trace; process-wide, for the rig's cell
 /// alone (`dev/plans/S67.md`, S67.9, run R0).
@@ -602,40 +564,6 @@ pub(crate) struct FixedBatchSize;
 impl Drop for FixedBatchSize {
     fn drop(&mut self) {
         FIXED_BATCH_SIZE.store(0, Ordering::Relaxed);
-    }
-}
-
-/// The budget every batch traces under, `usize::MAX` for the module's own;
-/// process-wide, for the rig's cell alone.
-static EVERY_BATCH_BUDGET: AtomicUsize = AtomicUsize::new(usize::MAX);
-
-/// Trace every batch under `blocks` rather than B until the guard drops, a
-/// batch [`budget_the_next_batch`] budgeted excepted.
-pub(crate) fn budget_every_batch(blocks: usize) -> EveryBatchBudget {
-    EVERY_BATCH_BUDGET.store(blocks, Ordering::Relaxed);
-    EveryBatchBudget
-}
-
-/// The budget [`budget_every_batch`] set, lifted at the drop.
-pub(crate) struct EveryBatchBudget;
-
-impl Drop for EveryBatchBudget {
-    fn drop(&mut self) {
-        EVERY_BATCH_BUDGET.store(usize::MAX, Ordering::Relaxed);
-    }
-}
-
-pub(crate) fn budget_the_next_batch(blocks: usize) {
-    NEXT_BATCH_BUDGET.store(blocks, Ordering::Relaxed);
-}
-
-pub(crate) fn budget_for_this_batch() -> Option<usize> {
-    match NEXT_BATCH_BUDGET.swap(usize::MAX, Ordering::Relaxed) {
-        usize::MAX => match EVERY_BATCH_BUDGET.load(Ordering::Relaxed) {
-            usize::MAX => None,
-            blocks => Some(blocks),
-        },
-        blocks => Some(blocks),
     }
 }
 
@@ -717,78 +645,6 @@ pub(crate) fn at_the_start_of_the_trace() {
     AT_THE_NEXT_TRACE.run();
 }
 
-/// At the start of the next retry under `B_max`, on the collector's thread,
-/// for the case whose mutator recalls its token while the retry runs.
-static AT_THE_NEXT_RETRY: OneShot = OneShot::new();
-
-pub(crate) fn at_the_start_of_the_next_retry(act: Box<dyn FnOnce() + Send>) {
-    AT_THE_NEXT_RETRY.install(act);
-}
-
-pub(crate) fn at_the_start_of_the_retry() {
-    AT_THE_NEXT_RETRY.run();
-}
-
-/// Before the trace of one part of the next batches, numbered from one, on
-/// the collector's thread: for the case that recalls inside a part after a
-/// deferral.
-static BEFORE_A_PART: Mutex<Option<(usize, Box<dyn FnOnce() + Send>)>> = Mutex::new(None);
-
-pub(crate) fn before_the_trace_of(part: usize, act: Box<dyn FnOnce() + Send>) {
-    *BEFORE_A_PART
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((part, act));
-}
-
-/// Run the hook installed before `part`, once.
-pub(crate) fn before_the_trace_of_part(part: usize) {
-    let mut installed = BEFORE_A_PART
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if installed.as_ref().is_some_and(|&(at, _)| at == part) {
-        let (_, act) = installed.take().expect("read above");
-        drop(installed);
-        act();
-    }
-}
-
-/// After the trace of one part of the next batches, numbered from one, on the
-/// collector's thread, the part's rows standing and none of its verdicts
-/// posted: for the cases that unwind or recall inside a later part.
-static AFTER_A_PART: Mutex<Option<(usize, Box<dyn FnOnce() + Send>)>> = Mutex::new(None);
-
-pub(crate) fn after_the_trace_of(part: usize, act: Box<dyn FnOnce() + Send>) {
-    *AFTER_A_PART
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((part, act));
-}
-
-/// Run the hook installed for `part`, once.
-pub(crate) fn after_the_trace_of_part(part: usize) {
-    let mut installed = AFTER_A_PART
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if installed.as_ref().is_some_and(|&(at, _)| at == part) {
-        let (_, act) = installed.take().expect("read above");
-        drop(installed);
-        act();
-    }
-}
-
-thread_local! {
-    /// Roots and rows the lookup of met roots visited on this thread since the
-    /// last take: the instrument of its bound.
-    static LOOKUP_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-pub(crate) fn note_a_lookup_visit() {
-    LOOKUP_VISITS.with(|visits| visits.set(visits.get() + 1));
-}
-
-pub(crate) fn take_lookup_visits() -> usize {
-    LOOKUP_VISITS.with(|visits| visits.replace(0))
-}
-
 thread_local! {
     /// Rows the parts on this thread met since the last take.
     static ROWS_MET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -828,6 +684,26 @@ pub(crate) unsafe fn note_rows_met(arena: &crate::cycle::arena::TraceScratchAren
 
 pub(crate) fn take_rows_met() -> usize {
     ROWS_MET.with(|rows| rows.replace(0))
+}
+
+/// The stride reading of the next collector's trace at which the traced
+/// mutator's recall is raised, as its take or a withheld stack's mark would
+/// raise it, and zero for none: the case that stops a trace at a position it
+/// chooses, inside the mark's first regions or past them. One-shot; the case
+/// clears the recall afterwards.
+static RECALL_AT_THE_READING: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn recall_at_the_reading(reading: usize) {
+    assert_ne!(reading, 0, "the first reading is the first");
+    RECALL_AT_THE_READING.store(reading, Ordering::Relaxed);
+}
+
+/// Whether `reading`, a collector trace's count of its stride readings, is
+/// the one a case named, taking the hook if so.
+pub(crate) fn recalls_at_the_reading(reading: usize) -> bool {
+    RECALL_AT_THE_READING
+        .compare_exchange(reading, 0, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
 }
 
 /// Between the next batch's mark and its scan, on the collector's thread,
@@ -1752,18 +1628,6 @@ pub(crate) fn take_generations() -> Generations {
         posted_unlisted: POSTED_UNLISTED.swap(0, Ordering::Relaxed),
         posted_in_an_old_core: POSTED_IN_AN_OLD_CORE.swap(0, Ordering::Relaxed),
     }
-}
-
-/// Parts whose met roots a batch deferred read live since a case last asked:
-/// past B with the grant's retry spent, or past `B_max`.
-static PARTS_DEFERRED: AtomicUsize = AtomicUsize::new(0);
-
-pub(crate) fn note_part_deferred() {
-    PARTS_DEFERRED.fetch_add(1, Ordering::Relaxed);
-}
-
-pub(crate) fn take_parts_deferred() -> usize {
-    PARTS_DEFERRED.swap(0, Ordering::Relaxed)
 }
 
 /// How long a byte state stood before its end: a count, the total and the

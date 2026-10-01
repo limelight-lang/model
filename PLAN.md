@@ -178,14 +178,13 @@ or equal to it in one session, as S65.12 read it.
 Miri owed at the stage's close, targeted (`dev/WORKFLOW.md`, "Miri"):
 `epoch::turn_the_cell_of` and the record's accessors; `Reader::unread_up_to`,
 the reading's reordered loads and `the_merged_lane`; the retirement pass under
-the token and the reordered state line; the arena's watermark cases and
-`the_batch`'s cases; `the_recall`'s stride and growth cases, its two-mutator
-case's raw list pointer and its two grant-behind cases;
+the token and the reordered state line; `the_batch`'s cases; `the_recall`'s
+stride and growth cases, its stops inside the trace, its two-mutator case's
+raw list pointer and its two grant-behind cases; `the_held_stack`'s cases;
 `when_a_withheld_stack_recalls_the_token`; `the_live_list`'s cases but the
 bound's (the chain's writes and reads, `refcount::stamp_as_read_live`,
 `shadow::for_each_live_met_row`, the block drawn back and filled);
-`the_ceiling`'s failed retry, whose met-roots walk counts a position per
-block; `the_cap_at_zero`'s cases, the ask's reading of a record under its
+`the_cap_at_zero`'s cases, the ask's reading of a record under its
 hold; `the_cap_set_under_work`'s, the list's withdrawal;
 `what_the_poll_owes_the_queue::a_front_block_moved_under_a_reading_stays_in_the_circle`,
 the hold's read-modify-write against a take (S65.22);
@@ -223,12 +222,14 @@ Notes: dev/plans/S65.md
 - [x] S65.13 The batch runs in parts (package commit 3, second half)
       handoff: `worker::trace_in_parts`; `dev/DECISIONS.md`, "the batch runs in
         parts"; `dev/BENCHMARKS.md`, "S65.13 the batch in parts at a grown K".
+        The parts went 2026-10-01 with S67.9 step (c).
 - [x] S65.8 The live core stamped from a list (package commit 6)
       handoff: `cycle::live_list`; the `dev/DECISIONS.md` entry it cites is quoted in
         `dev/plans/S65.md`, S65.8; no check is named.
 - [x] S65.9 The retry at the ceiling (package commit 7)
       handoff: `RETRY_BLOCK_BUDGET` in `worker::trace_in_parts`; the `dev/DECISIONS.md`
-        entry it cites is quoted in `dev/plans/S65.md`, S65.9.
+        entry it cites is quoted in `dev/plans/S65.md`, S65.9. The retry went
+        2026-10-01 with S67.9 step (c).
 - [x] S65.10 `Unwalked` is no root of the collection over P (package commit 8)
       handoff: `abd07f1`, rfc `ed68c6d`; `queue::BatchForm`, `Verdict::is_root_in`;
         `collect::tests::who_traces_an_unwalked_root`.
@@ -389,8 +390,11 @@ Notes: dev/plans/S65.md
         turnover period `N` is unruled"; the grant of 1,024 parts G is
         compared against is re-measured on that build, S65.27 having changed
         the batch's sizing.
-- [ ] S65.18 The price of a batch that goes on past a part at B (Edmond,
+- [x] S65.18 The price of a batch that goes on past a part at B (Edmond,
         2026-09-24, on S65.9's second Critic round, finding 1)
+      dropped 2026-10-01: the parts, B and `B_max` went with S67.9 step (c)
+        on Edmond's ruling that the budget goes, so no batch goes on past a
+        part at B
       done: with a live closure past `B_max` and a garbage ring between B
         and `B_max` both in R, measured and recorded: the garbage's bytes and
         the epochs they are held before a collection frees them, against the

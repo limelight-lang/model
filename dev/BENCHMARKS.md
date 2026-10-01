@@ -907,8 +907,8 @@ window is withheld up to the mark. The dense shape's grant, 3.9–4.0 ms
 against the base's one trace of 2.8 ms, is not the lookup of met roots: a run
 after the table's, reading `TracedBatch::lookup_visits`, counted 2,056 visits
 over a batch's 1,024 parts on `dense-live` and 1,024 on the disjoint shapes,
-the walk over the parts' own rows (`dev/DECISIONS.md`, "A part's met roots
-are found by a walk its own rows bound"); what else the parts add over one
+the walk over the parts' own rows (the `dev/DECISIONS.md` entry of 2026-09-24
+on the parts, collapsed 2026-10-01, its text in git at `e16ee44`); what else the parts add over one
 trace is not separated here.
 
 A first reading of the step, before the recall was read at each root of the

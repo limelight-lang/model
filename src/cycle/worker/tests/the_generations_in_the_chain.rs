@@ -41,8 +41,8 @@ fn a_complete_serve() -> testing::Generations {
 }
 
 /// A young root read live goes on into P, not into the chain, and the
-/// mutator's disposition defers it with its core stamped, the root itself
-/// not listed. Red with the generation not asked: the root goes into the
+/// mutator's disposition defers it with its core stamped, the root listed
+/// with it. Red with the generation not asked: the root goes into the
 /// chain's waiting part.
 #[test]
 fn a_young_root_read_live_goes_on_into_p_and_is_deferred() {
@@ -67,7 +67,11 @@ fn a_young_root_read_live_goes_on_into_p_and_is_deferred() {
             .all(|&member| unsafe { stamp_of(member) } == (epoch, 1)),
         "the list stamped the core at the take"
     );
-    assert_eq!(unsafe { stamp_of(ring.root()) }.1, 0, "the part's root");
+    assert_eq!(
+        unsafe { stamp_of(ring.root()) },
+        (epoch, 1),
+        "the batch's root is listed with its core"
+    );
 
     unsafe { free_the_ring(&mut arena, ring) };
     reset();
@@ -126,7 +130,7 @@ fn a_young_root_read_again_after_the_turn_goes_into_the_waiting_part() {
 }
 
 /// Raise a recall from the collector's thread at the start of its next trace,
-/// so that the pass before the parts reads it and every root is `Unwalked`.
+/// so that the pass before the trace reads it and every root is `Unwalked`.
 fn recall_at_the_next_trace() {
     let token = unsafe { &raw const (*record()).token } as usize;
     testing::at_the_start_of_the_next_trace(Box::new(move || {

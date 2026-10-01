@@ -43,6 +43,16 @@ struct Core {
     keeper: *mut Object,
 }
 
+/// Of `registered` members a walk meets, those it leaves out: every one under
+/// `unlisted-registered-members`, none without it.
+const fn unlisted(registered: usize) -> usize {
+    if cfg!(feature = "unlisted-registered-members") {
+        registered
+    } else {
+        0
+    }
+}
+
 /// # Safety
 /// A quiescent heap under `test_guard`, and every class of `classes` has a
 /// counted Box as its first property.
@@ -219,12 +229,12 @@ fn a_take_from_posted_stamps_the_live_core_the_batch_read() {
         unsafe { &*record() }.live_list().is_null(),
         "the take consumed it"
     );
-    // The part's root, the first registered, is not listed, and under
-    // `unlisted-registered-members` no registered member is.
+    // The batch lists its roots with the rest of the core, and under
+    // `unlisted-registered-members` no registered member is listed.
     let unlisted = if cfg!(feature = "unlisted-registered-members") {
         ROOTS
     } else {
-        1
+        0
     };
     assert_eq!(
         take_stamps(),
@@ -255,15 +265,16 @@ fn a_take_from_posted_stamps_the_live_core_the_batch_read() {
     unsafe { let_the_core_go(&mut arena, core) };
 }
 
-/// The part's own root is not listed: it stays registered until its free, and
-/// the prune never stops at a registered candidate, so its stamp would prune
-/// nothing (`dev/plans/S65.md`, S65.33, the Sage's S1).
+/// A batch's root is listed with the core its trace read live: the batch is
+/// one trace, and its roots are rows of it like any other. The stamp prunes
+/// nothing while the root stays registered, the prune never stopping at a
+/// registered candidate (`crate::cycle::mark`).
 #[test]
 #[cfg_attr(
     feature = "collector-chain",
     ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
 )]
-fn a_parts_root_is_not_listed() {
+fn a_batch_root_is_listed_with_its_core() {
     const RING: usize = 6;
     const ROOT: usize = 3;
     let _g = test_guard();
@@ -296,23 +307,30 @@ fn a_parts_root_is_not_listed() {
         }
     );
     unsafe { ll_gc_maybe_collect() };
-    assert_eq!(take_stamps(), RING - 1, "every member but the root listed");
+    assert_eq!(
+        take_stamps(),
+        RING - unlisted(1),
+        "every member listed, the root included"
+    );
     let mut expected = vec![(epoch, 1); RING];
-    expected[ROOT] = unsafe { stamp_of(core.members[ROOT]) };
-    assert_eq!(expected[ROOT].1, 0, "the root");
+    if unlisted(1) == 1 {
+        expected[ROOT] = unsafe { stamp_of(core.members[ROOT]) };
+        assert_eq!(expected[ROOT].1, 0, "the registered root left out");
+    }
     assert_eq!(stamps(&core.members), expected);
 
     unsafe { let_the_core_go(&mut arena, core) };
 }
 
-/// A part whose core is its root alone lists nothing, and the batch draws no
-/// block for a list: a single-object root costs the list nothing.
+/// A batch whose core is its root alone lists the root, one block drawn for
+/// the list and given back at the take: the list is the batch's live rows,
+/// its roots' included.
 #[test]
 #[cfg_attr(
     feature = "collector-chain",
     ignore = "a batch whose roots all read live posts nothing into P under the chain and publishes no live list (`crate::cycle::chain`)"
 )]
-fn a_core_of_the_root_alone_lists_nothing() {
+fn a_core_of_the_root_alone_lists_the_root() {
     let _g = test_guard();
     reset_lanes();
     let _ = a_nonzero_epoch();
@@ -335,13 +353,18 @@ fn a_core_of_the_root_alone_lists_nothing() {
             backlog: false,
         }
     );
-    assert!(
-        unsafe { &*record() }.live_list().is_null(),
-        "the grant left no list"
+    assert_eq!(
+        !unsafe { &*record() }.live_list().is_null(),
+        unlisted(1) == 0,
+        "the grant left its list where it held the root"
     );
     unsafe { ll_gc_maybe_collect() };
-    assert_eq!(take_stamps(), 0);
-    assert_eq!(take_blocks_across_a_list(), None, "no list crossed");
+    assert_eq!(take_stamps(), 1 - unlisted(1), "the root alone");
+    assert_eq!(
+        take_blocks_across_a_list().is_some(),
+        unlisted(1) == 0,
+        "the list crossed where it held the root"
+    );
 
     unsafe { release_keeper(keeper) };
     reset_lanes();
@@ -478,8 +501,8 @@ fn a_block_emptied_under_posted_is_stamped_from_before_it_goes_back() {
     assert_eq!(take_stamps_at_a_return(), 1);
     assert_eq!(
         take_stamps(),
-        5,
-        "every member but the root listed, the dead one included"
+        6 - unlisted(1),
+        "every member listed, the root and the dead one included"
     );
 
     // The pool's thread cache hands the block back first.
@@ -497,8 +520,12 @@ fn a_block_emptied_under_posted_is_stamped_from_before_it_goes_back() {
     // The dead member's memory is the block's next life's, and the teardown
     // reads no slot of it.
     core.members.remove(3);
-    assert_eq!(unsafe { stamp_of(core.members[0]) }.1, 0, "the root");
     assert_eq!(stamps(&core.members[1..]), vec![(epoch, 1); 4]);
+    assert_eq!(
+        stamps(&core.members[..1])[0].1,
+        1 - unlisted(1) as u32,
+        "the root"
+    );
     unsafe { let_the_core_go(&mut arena, core) };
 }
 
@@ -531,11 +558,19 @@ fn a_run_freed_under_posted_is_stamped_from_before_it_is_unmapped() {
 
     assert!(standing.is_null(), "the run's unmapping consumed the list");
     assert_eq!(take_stamps_at_a_return(), 1);
-    assert_eq!(take_stamps(), 3, "every member but the root listed");
+    assert_eq!(
+        take_stamps(),
+        4 - unlisted(1),
+        "every member listed, the root included"
+    );
     // The dead member's run is unmapped, and the teardown reads no slot of it.
     core.members.remove(2);
-    assert_eq!(unsafe { stamp_of(core.members[0]) }.1, 0, "the root");
     assert_eq!(stamps(&core.members[1..]), vec![(epoch, 1); 2]);
+    assert_eq!(
+        stamps(&core.members[..1])[0].1,
+        1 - unlisted(1) as u32,
+        "the root"
+    );
 
     unsafe { ll_gc_maybe_collect() };
     unsafe { let_the_core_go(&mut arena, core) };

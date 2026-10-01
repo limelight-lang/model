@@ -3,8 +3,8 @@
 //! registration and a decrement over a candidate, a batch of garbage rings
 //! from its start to the slots its members' deaths return, a grant recalled
 //! before its batch, each cause of a turnover, and the lane a turnover hands
-//! back. The exits of a trace and the parts past B are read in the cases that
-//! build them, `the_batch.rs` and `the_ceiling.rs`.
+//! back. The exits of a trace are read in the cases that build them, in
+//! `the_batch.rs`.
 //!
 //! A case counts its own thread's ring from its start and the ring of the
 //! collector thread its serve ran on, never the process's: the suite's other
@@ -52,8 +52,8 @@ fn a_decrement_registers_once_and_then_finds_a_candidate() {
 }
 
 /// Three garbage rings of two roots each, in one batch: one start at the
-/// threshold carrying the six roots, one part per ring and an end with every
-/// part complete, six proposals; the mutator's collection over P reclaims
+/// threshold carrying the six roots, one trace and an end past the first
+/// regions, six proposals; the mutator's collection over P reclaims
 /// the six members as the one set its commit confirms (`crate::cycle::collect`,
 /// "The commit is one component") and retires their slots from P.
 #[test]
@@ -92,8 +92,8 @@ fn a_batch_of_garbage_rings_is_journaled_from_its_start_to_the_slots_returned() 
     assert_eq!(collector.records_of_kind(KIND_BATCH_END), 1);
     assert_eq!(
         collector.sum_of_b_of_kind(KIND_BATCH_END),
-        RINGS as u64,
-        "a ring's second root is posted with its first's part"
+        1,
+        "the mark's first descent ended before the scan"
     );
     assert_eq!(
         collector.records(KIND_ROOT_VERDICT, VERDICT_PROPOSED),

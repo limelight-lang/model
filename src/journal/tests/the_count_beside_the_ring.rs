@@ -22,14 +22,14 @@ fn a_coded_kind_is_counted_by_its_code_and_the_rest_whole() {
         kinds::KIND_BATCH_END,
         0,
         0,
-        kinds::BATCH_END_DEFERRED_PAST_B,
+        kinds::BATCH_END_RECALLED_IN_THE_TRACE,
         5,
     );
     record(
         kinds::KIND_BATCH_END,
         0,
         0,
-        kinds::BATCH_END_DEFERRED_PAST_B,
+        kinds::BATCH_END_RECALLED_IN_THE_TRACE,
         7,
     );
     record(kinds::KIND_BATCH_END, 0, 0, 40, 1);
@@ -38,11 +38,17 @@ fn a_coded_kind_is_counted_by_its_code_and_the_rest_whole() {
 
     let read = counts_of(&[identity]).since(&before);
     assert_eq!(
-        read.records(kinds::KIND_BATCH_END, kinds::BATCH_END_DEFERRED_PAST_B),
+        read.records(
+            kinds::KIND_BATCH_END,
+            kinds::BATCH_END_RECALLED_IN_THE_TRACE
+        ),
         2
     );
     assert_eq!(
-        read.sum_of_b(kinds::KIND_BATCH_END, kinds::BATCH_END_DEFERRED_PAST_B),
+        read.sum_of_b(
+            kinds::KIND_BATCH_END,
+            kinds::BATCH_END_RECALLED_IN_THE_TRACE
+        ),
         12
     );
     assert_eq!(

@@ -27,16 +27,14 @@
 //! built), and the bytes left standing at the loop's end; the most deaths a
 //! mutator withheld under a foreign holder; the GC ledger's high-water
 //! marks; the turnovers, the roots written back from P into R untraced (one
-//! round P → R → P each), the parts deferred past B with the retry spent or
-//! past `B_max`, and the grants recalled by the mark and by a take; the
+//! round P → R → P each), and the grants recalled by the mark and by a take; the
 //! takes' waits for the token; per grant segment (`testing::SEGMENT_AROUND`
 //! and its neighbours), the takes' waits by the segment they met and the
 //! returns withheld in it with their time withheld; and the collectors'
 //! lives, CPU, wall from birth to end and context switches. Each is read once
 //! on an input whose answer is known in
 //! [`the_rigs_figures_read_their_known_answers`], the split by segment in
-//! [`the_split_by_segment_reads_a_hold_the_case_sets`], and the count of
-//! deferred parts against the batch's own in `the_ceiling`.
+//! [`the_split_by_segment_reads_a_hold_the_case_sets`].
 //!
 //! Beside those, with no case of known answer, a cell reads: the iterations
 //! longer than [`A_LONG_ITERATION`]; the collector's time in each grant
@@ -91,11 +89,6 @@
 //!   `LL_RIG_TRACED_BATCHES` the batches a second a mutator read the rounds'
 //!   cadence alone (`dev/plans/S67.md`, S67.9, run R0); the real trace when
 //!   unset;
-//! - `LL_RIG_BATCH_BLOCKS` — every batch after the setup traces its parts
-//!   under this many blocks, and retries a part that meets them under the
-//!   same, in place of B and `B_max`, so that a count past the state's
-//!   footprint walks it whole in one part (`dev/plans/S67.md`, S67.9, run
-//!   R1); the module's own when unset;
 //! - `LL_RIG_BATCH_ROOTS` — every batch at the threshold after the setup
 //!   takes this many roots, K fixed rather than grown (`dev/plans/S67.md`,
 //!   S67.9, run R2); the mutators' own K when unset;
@@ -2504,7 +2497,7 @@ fn dump_the_batches_to(batches: &[testing::TracedBatch], start: Instant, suffix:
     let path = format!("{path}{suffix}");
     let mut mutators: Vec<usize> = Vec::new();
     let mut text = String::from(
-        "mutator,ended_ms,turnovers,roots,parts,complete,ending,positions,edges_pruned,rows_met,deferred_parts,wall_us\n",
+        "mutator,ended_ms,turnovers,roots,traced,complete,ending,positions,edges_pruned,rows_met,wall_us\n",
     );
     for batch in batches {
         let mutator = mutators
@@ -2517,16 +2510,15 @@ fn dump_the_batches_to(batches: &[testing::TracedBatch], start: Instant, suffix:
         let ended = batch.ended.saturating_duration_since(start).as_secs_f64() * 1e3;
         let _ = writeln!(
             text,
-            "{mutator},{ended:.3},{},{},{},{},{},{},{},{},{},{}",
+            "{mutator},{ended:.3},{},{},{},{},{},{},{},{},{}",
             batch.turnovers,
             batch.roots,
-            batch.parts,
+            u8::from(batch.traced),
             u8::from(batch.complete),
             batch.ending,
             batch.positions,
             batch.edges_pruned,
             batch.rows_met,
-            batch.deferred_parts,
             batch.wall.as_micros(),
         );
     }
@@ -2606,7 +2598,6 @@ struct CellReading {
     /// Grants recalled by a stack's mark, and by a take.
     recalls: (usize, usize),
     written_back: usize,
-    parts_deferred: usize,
     /// What `hold-by-generation` did with the roots read live; zero without
     /// the feature.
     generations: testing::Generations,
@@ -2800,36 +2791,26 @@ const JOURNAL_COLUMNS: &[JournalColumn] = &[
     journal_column!("batch_roots", KIND_BATCH_START, every, sum),
     journal_column!("batch_end_complete", KIND_BATCH_END, BATCH_END_COMPLETE),
     journal_column!(
-        "batch_end_deferred_past_b",
-        KIND_BATCH_END,
-        BATCH_END_DEFERRED_PAST_B
-    ),
-    journal_column!(
         "batch_end_recalled_in_the_pass",
         KIND_BATCH_END,
         BATCH_END_RECALLED_IN_THE_PASS
     ),
     journal_column!(
-        "batch_end_recalled_between_parts",
+        "batch_end_recalled_in_the_trace",
         KIND_BATCH_END,
-        BATCH_END_RECALLED_BETWEEN_PARTS
+        BATCH_END_RECALLED_IN_THE_TRACE
     ),
     journal_column!(
-        "batch_end_recalled_inside_a_part",
+        "batch_end_recalled_after_the_trace",
         KIND_BATCH_END,
-        BATCH_END_RECALLED_INSIDE_A_PART
+        BATCH_END_RECALLED_AFTER_THE_TRACE
     ),
     journal_column!(
-        "batch_end_recalled_after_a_part",
+        "batch_end_refused_in_the_trace",
         KIND_BATCH_END,
-        BATCH_END_RECALLED_AFTER_A_PART
+        BATCH_END_REFUSED_IN_THE_TRACE
     ),
-    journal_column!(
-        "batch_end_refused_inside_a_part",
-        KIND_BATCH_END,
-        BATCH_END_REFUSED_INSIDE_A_PART
-    ),
-    journal_column!("batch_parts", KIND_BATCH_END, every, sum),
+    journal_column!("batch_regions_ended", KIND_BATCH_END, every, sum),
     journal_column!("verdict_proposed", KIND_ROOT_VERDICT, VERDICT_PROPOSED),
     journal_column!("verdict_read_live", KIND_ROOT_VERDICT, VERDICT_READ_LIVE),
     journal_column!("verdict_zero_count", KIND_ROOT_VERDICT, VERDICT_ZERO_COUNT),
@@ -2934,18 +2915,6 @@ const JOURNAL_COLUMNS: &[JournalColumn] = &[
         KIND_GRANT_WITHOUT_BATCH,
         GRANT_NOTHING_TAKEN
     ),
-    journal_column!(
-        "part_retry_finished",
-        KIND_PART_MET_BUDGET,
-        PART_RETRY_FINISHED
-    ),
-    journal_column!("part_deferred", KIND_PART_MET_BUDGET, PART_DEFERRED),
-    journal_column!(
-        "part_ended_the_batch",
-        KIND_PART_MET_BUDGET,
-        PART_ENDED_THE_BATCH
-    ),
-    journal_column!("part_blocks", KIND_PART_MET_BUDGET, every, sum),
 ];
 
 /// What a web load's cell read beside the ring loads' figures: each
@@ -3019,7 +2988,7 @@ impl WebCell {
         };
         self.recalled = tally(&|ending| {
             (crate::journal::kinds::BATCH_END_RECALLED_IN_THE_PASS
-                ..=crate::journal::kinds::BATCH_END_RECALLED_AFTER_A_PART)
+                ..=crate::journal::kinds::BATCH_END_RECALLED_AFTER_THE_TRACE)
                 .contains(&ending)
         });
         self.completed = tally(&|ending| ending == crate::journal::kinds::BATCH_END_COMPLETE);
@@ -3215,7 +3184,6 @@ impl CellReading {
                     .to_string(),
             ),
             ("written_back", self.written_back.to_string()),
-            ("parts_deferred", self.parts_deferred.to_string()),
             (
                 "posted_first_generation",
                 self.generations.posted_first.to_string(),
@@ -3901,10 +3869,6 @@ impl CellReading {
             ),
             ("web_setup_rounds", web.setup.rounds.to_string()),
             (
-                "web_setup_parts_deferred",
-                web.setup.parts_deferred.to_string(),
-            ),
-            (
                 "web_setup_token_waits",
                 web.setup.token_waits.waits.to_string(),
             ),
@@ -4132,7 +4096,6 @@ struct RoundFigures {
     segment_times: testing::SegmentTimes,
     recalls: (usize, usize),
     written_back: usize,
-    parts_deferred: usize,
     generations: testing::Generations,
 }
 
@@ -4150,7 +4113,6 @@ impl RoundFigures {
             segment_times: testing::take_segment_times(),
             recalls: testing::take_recalls(),
             written_back: testing::take_written_back(),
-            parts_deferred: testing::take_parts_deferred(),
             generations: testing::take_generations(),
         }
     }
@@ -4186,7 +4148,6 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let _ = testing::take_segment_times();
     let _ = testing::take_recalls();
     let _ = testing::take_written_back();
-    let _ = testing::take_parts_deferred();
     let _ = testing::take_generations();
     let _ = testing::take_outcomes();
     let _ = testing::take_rounds();
@@ -4242,22 +4203,11 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let mut web = WebCell::default();
     web.stub_trace = millis_from_env("LL_RIG_STUB_TRACE_MS");
     let _stubbed = (!web.stub_trace.is_zero()).then(|| testing::stub_the_trace(web.stub_trace));
-    let batch_blocks = std::env::var("LL_RIG_BATCH_BLOCKS").ok().map(|blocks| {
-        blocks
-            .parse()
-            .expect("LL_RIG_BATCH_BLOCKS is a count of blocks")
-    });
     let _batch_roots = std::env::var("LL_RIG_BATCH_ROOTS").ok().map(|roots| {
         testing::fix_the_batch_size(
             roots
                 .parse()
                 .expect("LL_RIG_BATCH_ROOTS is a count of roots"),
-        )
-    });
-    let _budgets = batch_blocks.map(|blocks| {
-        (
-            testing::budget_every_batch(blocks),
-            testing::retry_parts_under(blocks),
         )
     });
     if load.web.is_some() {
@@ -4398,7 +4348,6 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         segment_times: figures.segment_times,
         recalls: figures.recalls,
         written_back: figures.written_back,
-        parts_deferred: figures.parts_deferred,
         generations: figures.generations,
         web,
         journal: (
@@ -4689,8 +4638,7 @@ fn the_rigs_figures_read_their_known_answers() {
 
     // A load whose registrations fill no block of R signals no collector,
     // and under a cap above zero no poll traces R whole: what was built
-    // stands at the loop's end. (The count of deferred parts is read against
-    // the batch's own in `the_ceiling`.)
+    // stands at the loop's end.
     let read = run(&cell, load_named("one-large-root"), class);
     let built = read.sum(|reading| reading.garbage_members);
     assert_eq!(

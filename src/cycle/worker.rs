@@ -1,9 +1,9 @@
 //! The collector thread, and what it does for one mutator: request the
 //! mutator's token and wait for its consent, take a batch of the mutator's
 //! candidates from behind its writer, trace them on a copy through
-//! `cells::AtomicCells` in parts, one root's closure each under a block
-//! budget, post one verdict per root into the mutator's verdict ring P in the
-//! parts' order, advance R past them, and release — to `POSTED`, which tells
+//! `cells::AtomicCells` in one trace, post one verdict per root into the
+//! mutator's verdict ring P in R's order, advance R past them, and release —
+//! to `POSTED`, which tells
 //! the mutator to collect over P, or to `NOTHING_PROPOSED` when no verdict
 //! proposed a set, which tells it to dispose of P alone
 //! (`rfc/dev/design/trace-token-handshake.md`;
@@ -29,22 +29,23 @@
 //! clamped to P's room and to what R holds, and copies them into its
 //! workspace. It posts first the roots no trace can place, a count read zero
 //! *zero-count* and a root with no row *read live*, and traces the rest in
-//! parts ([`trace_in_parts`]): in R's order, each root still without a
-//! verdict opens one, the mark and the scan of its closure alone through
-//! `cells::AtomicCells`, on the arena above a watermark over the copy and
-//! under a budget of [`TRACE_BLOCK_BUDGET`] blocks of its own. A completed
-//! part posts its root's verdict and the verdict of every other root its
-//! rows met, *proposed* or *read live* ([`verdict_for`]), and the arena is
-//! reset to the watermark for the next; a root an earlier part met opens
-//! none. A part that meets its budget is retried at once under
-//! [`RETRY_BLOCK_BUDGET`], `B_max`, once per grant. A retry that meets it too,
-//! and a part that meets B with the retry spent, post every live root their
-//! rows met *read live*, which defers each to the turnover, and the batch goes
-//! on with the next root. A refused allocation or the mutator's recall of its
-//! token ends the batch: no color of such a part is a verdict, so its root
-//! and every root still without one are posted *unwalked*, which the
-//! mutator's collection over P writes back into R untraced for the next
-//! batch, while the verdicts of the parts before it stand (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"). R's
+//! one trace ([`trace_the_batch`]; `dev/plans/S67.md`, S67.9, revision 3):
+//! every root is met before any is expanded, one mark
+//! ([`crate::cycle::mark::drain`]) expands what they reach in the held
+//! stack's order, one scan from each root colours the closure, and each root
+//! is posted *proposed* or *read live* off its colour ([`verdict_for`]). No
+//! budget bounds the trace: what bounds it is the traced mutator's heap
+//! (`dev/DECISIONS.md`, 2026-09-30, "the collector's trace has no rows
+//! ceiling"). A refused allocation or the mutator's recall of its token stops
+//! the trace where it stands, and the stop posts the snapshot
+//! ([`post_at_a_stop`]): a root the scan coloured live is *read live*; one
+//! whose met row reads zero otherwise is *proposed*, a candidate for the
+//! owner's exact validation rather than a scan's verdict, which can cost the
+//! owner a walk from a root a live referrer holds; one above zero is *read
+//! live* where the mark's first regions had ended or where the batch is its
+//! one root, and every other root is posted *unwalked*, which the mutator's
+//! collection over P writes back into R untraced for the next batch
+//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"). R's
 //! front advances past the batch only after every verdict is posted, by
 //! one guard that runs from the unwind as well and posts *unwalked* for
 //! every root the unwind left without a verdict ([`FinishThePosts`]), so
@@ -54,10 +55,10 @@
 //! (`rfc/dev/design/trace-token-handshake.md`, E2); a workspace the pool
 //! refuses is a grant released with no batch.
 //!
-//! K starts at [`INITIAL_BATCH`] and doubles after a batch whose every part
-//! completed over its whole clamp, up to [`BATCH_BOUND`]; nothing halves it,
-//! since a part past the budget defers the roots it met rather than losing
-//! the batch's rest to *unwalked*. The bound is under a
+//! K starts at [`INITIAL_BATCH`] and doubles after a batch over its whole
+//! clamp that completed or stopped past the mark's first regions, up to
+//! [`BATCH_BOUND`], and halves after a stop inside them, down to one
+//! root ([`size_the_next_batch`]). The bound is under a
 //! block's capacity, so a batch spans at most two blocks of R, and small
 //! enough that the copy leaves the workspace to the rows. A take of a standing ring reads K
 //! neither way ([`batch`]): it clamps one entry short of the threshold,
@@ -74,18 +75,18 @@
 //! of storage it reads, whether or not a position holds a counted reference, in
 //! the mark and in the scan alike
 //! (`crate::cycle::arena::TraceScratchArena::inspect_position`), and at every
-//! block the arena draws, before every part but the first and at every root
-//! of the pass before the parts
+//! block the arena draws and at every root of the pass before the trace
 //! (`crate::cycle::arena::TraceScratchArena::read_the_recall_now`). A trace
 //! that finds the mark stops where it stands, and the release after it is the
-//! release of any abandoned batch: [`FinishThePosts`] — at most K posts of
-//! `Unwalked` and one advance of R — and one reset of the arena; a grant whose
+//! release of any stopped batch: the snapshot's posts and [`FinishThePosts`] —
+//! at most K posts and one advance of R — and one reset of the arena; a grant whose
 //! mark stands before the batch is made is released with no batch. What the
 //! mutator whose batch is traced waits through is therefore one stride of
-//! positions, those posts and that reset, whatever the closure of its roots or
-//! the width of an entity; the block budget bounds the arena and not the wait
-//! (`rfc/model/gc/rc-cycle.md`, "The recall of the token"). A recalled batch
-//! leaves K where it stands, the recall saying nothing of the batch's size.
+//! positions, those posts and that reset, whatever the width of an entity
+//! (`rfc/model/gc/rc-cycle.md`, "The recall of the token"). The reset is
+//! bounded by what the trace touched — every heap block it met a row in and
+//! every block the arena drew — which with no budget is up to the traced
+//! mutator's state, about a sixteenth of its heap in rows. A recalled batch sizes K by where the stop fell, as any stop does.
 //! A mutator freeing under the grant recalls it the same way without waiting,
 //! once one of its withheld stacks holds its mark
 //! (`crate::cycle::deferred_slot_reuse`, "The marks by stack length").
@@ -243,7 +244,7 @@ use std::time::{Duration, Instant};
 
 use crate::cells::AtomicCells;
 use crate::cycle::arena::{GrantsBehind, TraceScratchArena};
-use crate::cycle::mark::{MarkResult, mark};
+use crate::cycle::mark::{MarkResult, drain, schedule_root_if_unvisited};
 use crate::cycle::mutator_record::{self, MutatorRecord};
 use crate::cycle::queue::verdicts::{Verdict, VerdictWriter};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
@@ -299,44 +300,13 @@ pub(crate) enum Served {
 const INITIAL_BATCH: usize = 64;
 
 /// The most roots a batch takes: under a block's capacity, so that the peek
-/// spans at most two blocks of R; a copy and its order by address of at most
-/// a quarter of the workspace's bump, so that the rows of the trace do not
-/// start by growing; and an index of the copy fits the order's `u16`.
+/// spans at most two blocks of R; and a copy of at most a quarter of the
+/// workspace's bump, so that the rows of the trace do not start by growing.
 const BATCH_BOUND: usize = 1024;
 
 const _: () = assert!(BATCH_BOUND < BLOCK_ENTRIES);
-const _: () = assert!(
-    BATCH_BOUND * (size_of::<usize>() + size_of::<u16>()) * 4
-        <= crate::cycle::arena::WORKSPACE_BUMP_BYTES
-);
-const _: () = assert!(BATCH_BOUND <= u16::MAX as usize + 1);
-
-/// Blocks one part of a batch's trace may draw above the collector's
-/// workspace before the part is retried under [`RETRY_BLOCK_BUDGET`], or, with
-/// the grant's retry spent, defers the roots it met to the turnover
-/// ([`trace_in_parts`]). Not a measured figure: it
-/// bounds a part's share of the collector's arena and the reset between two
-/// parts, and `B_max` bounds the arena at any instant of a grant; the
-/// mutator's wait for its token is the recall's
-/// ([`RECALL_STRIDE`](crate::cycle::arena::RECALL_STRIDE)).
-/// **What this bound decides is whether a part is worth anything to the
-/// mutator at all.** Measured on takes traced as one part, before a part past
-/// it was retried (`dev/BENCHMARKS.md`, "the live-roots arm"): 63 live roots
-/// whose closure fit here left the mutator's collection over P nothing to
-/// walk, 15,365 instructions against the 658,832 of collecting the same rings
-/// in line; a closure past it was abandoned after 75 to 157 µs of the
-/// collector's time, and the mutator met the same rows itself for 0.68 % more
-/// than it would have spent without the take, whatever share of the ring was
-/// live (`dev/BENCHMARKS.md`, "the mix"). Inside the bound that share is what the
-/// mutator saves: it walks the roots the parts proposed and no others.
-const TRACE_BLOCK_BUDGET: usize = 8;
-
-/// `B_max`: the blocks a part that met [`TRACE_BLOCK_BUDGET`] is retried under,
-/// at once and once per grant, before the roots its rows met are posted read
-/// live (`dev/CYCLE-SPLIT-PACKAGE-3.md`, section 7). A borrowed number the stage's
-/// rig reads (`PLAN.md`, S65.17); 128 blocks are 8 MiB drawn and given back
-/// inside one grant.
-const RETRY_BLOCK_BUDGET: usize = 128;
+const _: () =
+    assert!(BATCH_BOUND * size_of::<usize>() * 4 <= crate::cycle::arena::WORKSPACE_BUMP_BYTES);
 
 /// Entries a mutator's R holds at or above which a round takes a batch from
 /// it. Not a measured figure: the rfc names the threshold as the runtime's
@@ -1040,17 +1010,6 @@ fn threshold_for_rounds() -> usize {
     }
 
     SOFT_THRESHOLD
-}
-
-/// The block budget the next batch traces under: the module's own, or a
-/// case's.
-fn budget_for_this_batch() -> usize {
-    #[cfg(test)]
-    if let Some(budget) = testing::budget_for_this_batch() {
-        return budget;
-    }
-
-    TRACE_BLOCK_BUDGET
 }
 
 /// Clear the last refusal, so that a case's birth is not held by the
@@ -2223,15 +2182,9 @@ impl Drop for Standing {
 /// where P has the room for it, and what P's room leaves behind stands a
 /// further interval.
 ///
-/// Each part's budget bounds the part whatever the clamp is, and it is spent
-/// by the closure of the part's root rather than by the number of roots: a
-/// root inside that closure is posted with the part and opens none
-/// ([`trace_in_parts`]). A part that meets it is retried under `B_max` once
-/// per grant, and past that defers the roots it met to the turnover while the
-/// batch goes on; sixty-three roots over closures that do not
-/// overlap, each inside the workspace, are sixty-three parts and a verdict
-/// per root (`dev/BENCHMARKS.md`, "S65.5 what a mutator waits for under a
-/// take in parts").
+/// The batch is one trace whatever the clamp is ([`trace_the_batch`]): the
+/// roots are met at once and the closure they reach is walked once, so a
+/// state every root reaches costs one walk a batch and not one a root.
 ///
 /// The reading holds for the batch under the grant: nothing leaves R while
 /// `COLLECTOR|slot` stands, the mutator withholding its frees and its
@@ -2334,7 +2287,7 @@ unsafe fn batch(
     if take == 0 {
         return served_without_roots(mutator, posted);
     }
-    let (copy, order) = the_copy_in_the_workspace(arena, threshold, take);
+    let copy = the_copy_in_the_workspace(arena, threshold, take);
 
     // The entries copied out of the ready part and out of R, which stay in
     // both until the advance.
@@ -2368,16 +2321,7 @@ unsafe fn batch(
         },
         taken as u64,
     );
-    let by_address = unsafe { std::slice::from_raw_parts_mut(order, taken) };
-    for (position, index) in by_address.iter_mut().enumerate() {
-        *index = position as u16;
-    }
-    by_address.sort_unstable_by_key(|&index| {
-        crate::cycle::queue::entry_root(out[usize::from(index)]) as usize
-    });
-    arena.set_watermark();
-
-    // The live list the parts write, published below for the mutator's take;
+    // The live list the trace writes, published below for the mutator's take;
     // dropped on the unwind, which gives its blocks back here.
     let mut live = crate::cycle::live_list::Writer::new(arena.turnovers());
     // From the guard on, every root is owed a verdict and R its advance, on
@@ -2407,7 +2351,6 @@ unsafe fn batch(
     let (traced_from, positions_from) = (std::time::Instant::now(), arena.positions_inspected());
     #[cfg(test)]
     let _ = (
-        testing::take_lookup_visits(),
         crate::cycle::mark::take_edges_pruned(),
         crate::cycle::mark::take_held_figures(),
         testing::take_rows_met(),
@@ -2415,17 +2358,17 @@ unsafe fn batch(
     );
     #[cfg(test)]
     let outcome = match testing::stubbed_trace() {
-        Some(wall) => unsafe { stub_the_parts(arena, &mut posts, traced_from + wall) },
-        None => unsafe { trace_in_parts(arena, &mut posts, by_address, &mut live) },
+        Some(wall) => unsafe { stub_the_trace(arena, &mut posts, traced_from + wall) },
+        None => unsafe { trace_the_batch(arena, &mut posts, &mut live) },
     };
     #[cfg(not(test))]
-    let outcome = unsafe { trace_in_parts(arena, &mut posts, by_address, &mut live) };
-    let (parts, complete) = (outcome.parts, outcome.complete);
+    let outcome = unsafe { trace_the_batch(arena, &mut posts, &mut live) };
+    let complete = outcome.complete;
     journal_event!(
         journal::KIND_BATCH_END,
         std::ptr::from_ref(mutator) as u64,
         outcome.ending,
-        parts as u64,
+        u64::from(outcome.regions_ended),
     );
     #[cfg(test)]
     let edges_pruned = crate::cycle::mark::take_edges_pruned();
@@ -2436,17 +2379,13 @@ unsafe fn batch(
     #[cfg(test)]
     testing::note_traced_batch(|| testing::TracedBatch {
         roots: taken,
-        parts,
+        traced: outcome.traced,
         complete,
         blocks: arena.blocks_held(),
         wall: traced_from.elapsed(),
         positions_after_the_hook: testing::take_positions_after_the_hook(),
-        lookup_visits: testing::take_lookup_visits(),
         edges_pruned,
         rows_met: testing::take_rows_met(),
-        parts_met_budget: outcome.parts_met_budget,
-        retried: outcome.retried,
-        deferred_parts: outcome.deferred_parts,
         mutator: std::ptr::from_ref(mutator) as usize,
         ended: std::time::Instant::now(),
         widest_part: testing::take_widest_part(),
@@ -2454,8 +2393,6 @@ unsafe fn batch(
         ending: outcome.ending,
         turnovers: mutator.turnovers(),
     });
-    #[cfg(not(test))]
-    let _ = parts;
 
     posts.post_the_rest_unwalked();
     #[cfg(test)]
@@ -2473,9 +2410,9 @@ unsafe fn batch(
     }
     mutator.note_batch();
     if at_the_threshold {
-        // K against what R gave: the chain's roots size no K, and R's part
+        // K against what R gave: the chain's roots size no K, and R's share
         // must fill K itself, as without the chain.
-        size_the_next_batch(mutator, clamp, taken - from_the_chain, complete);
+        size_the_next_batch(mutator, clamp, taken - from_the_chain, &outcome);
     }
 
     Served::Batch {
@@ -2538,29 +2475,25 @@ fn the_form_and_the_clamp(
     (false, threshold.saturating_sub(1))
 }
 
-/// Room for `take` entries in the batch's workspace, `arena`, and for their
-/// indices in the order of their roots' addresses, with the budget of each
-/// part set on it first; `threshold` is the batch's, which bounds the copy of
-/// a take as K bounds a threshold batch's, and a take beside the collector's
-/// chain is bounded by [`BATCH_BOUND`] itself. Neither is null, by the bounds
-/// ([`BATCH_BOUND`]).
+/// Room for `take` entries in the batch's workspace, `arena`; `threshold` is
+/// the batch's, which bounds the copy of a take as K bounds a threshold
+/// batch's, and a take beside the collector's chain is bounded by
+/// [`BATCH_BOUND`] itself. Never null, by the bounds ([`BATCH_BOUND`]).
 fn the_copy_in_the_workspace(
     arena: &mut TraceScratchArena,
     threshold: usize,
     take: usize,
-) -> (*mut usize, *mut u16) {
+) -> *mut usize {
     debug_assert!(
         threshold <= BATCH_BOUND,
         "the copy is bounded by the threshold as well as by K"
     );
-    arena.budget_blocks(budget_for_this_batch());
     let copy = arena.alloc(take * size_of::<usize>()) as *mut usize;
-    let order = arena.alloc(take * size_of::<u16>()) as *mut u16;
     assert!(
-        !copy.is_null() && !order.is_null(),
+        !copy.is_null(),
         "the copy fits the workspace by the bound on K and on the threshold"
     );
-    (copy, order)
+    copy
 }
 
 /// Bit 1 of an entry of the batch's copy, set once its root's verdict is
@@ -2726,81 +2659,57 @@ fn journal_verdict(root: *mut RcHeader, verdict: Verdict) {
 }
 
 /// Size the mutator's next batch from what this one, clamped to `size` roots
-/// and taking `taken` of them, did: a batch whose every part finished over the
-/// whole clamp doubles it up to [`BATCH_BOUND`], and any other leaves it. A
-/// batch that deferred the roots of a part past its budget finished no such
-/// part, and lost no root to *unwalked* either, which is what halving would
-/// have answered. A trace that finished short of its clamp leaves the
-/// size where it stands, the ring or P's room having held no more, which
-/// says nothing of what the mutator offers per batch: a merged lane of three
-/// roots read at the threshold off its blocks would double K at every
-/// turnover of a thread that produces nothing
-/// (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F3). So does a trace
-/// abandoned for a refused allocation or the mutator's recall, neither saying
-/// how much of the heap the batch would have reached.
-fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, complete: bool) {
-    if complete && taken == size {
-        mutator.set_batch_size((size * 2).min(BATCH_BOUND));
+/// and taking `taken` of them, did (`dev/plans/S67.md`, S67.9, revision 3,
+/// G5). A trace that completed over the whole clamp doubles K up to
+/// [`BATCH_BOUND`], and so does a stop over the whole clamp that found every
+/// root's first region expanded: the batch reached its held entries, and a
+/// larger one reaches them as soon. A stop inside the first regions halves K,
+/// down to one root: a batch whose first descent the mutator's situation cuts
+/// is a batch too wide for it. A batch short of its clamp, completed or
+/// stopped past the first regions, leaves K where it stands, the ring or P's
+/// room having held no more, which says nothing of what the mutator offers
+/// per batch: a merged lane of three roots read at the threshold off its
+/// blocks would double K at every turnover of a thread that produces nothing
+/// (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F3).
+fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, outcome: &BatchOutcome) {
+    if outcome.complete || outcome.regions_ended {
+        if taken == size {
+            mutator.set_batch_size((size * 2).min(BATCH_BOUND));
+        }
+    } else if outcome.stopped {
+        mutator.set_batch_size((size / 2).max(1));
     }
 }
 
-/// Trace the batch's roots in parts, posting each verdict as its part
-/// completes, and answer how many parts were opened and whether every one
-/// ran to its end.
+/// Trace the batch's roots at once and post a verdict for each: the pass over
+/// the roots, every root met before any is expanded, one mark
+/// ([`crate::cycle::mark::drain`]), one scan from each root, the posts read off
+/// the colours, and the live list written once
+/// (`dev/plans/S67.md`, S67.9, revision 3, (12')).
 ///
-/// A root no part can place is posted first, before any part: a count read
-/// zero, and a root with no row ([`read_the_root`]). Then each root still
-/// without a verdict, in R's order, opens a part — the mark and the scan of
-/// its closure alone, on the arena above the watermark — and when the part
-/// completes, the root and every other root the part met are posted from
-/// its rows ([`for_each_met_root`]) and the arena is reset to the
-/// watermark for the next part, with a block budget of its own. A root met
-/// by an earlier part opens none: its closure is inside that part's, and a
-/// root read within a larger closure can read unreachable where its own part
-/// would read it live and never the reverse, the proposals over a subset of
-/// roots being a subset of the proposals over all of them; either verdict is
-/// the owner's exact validation to decide (`rfc/model/gc/rc-cycle.md`,
-/// "Worker-to-owner handoff").
+/// A root no trace can place is posted first: a count read zero, and a root
+/// with no row ([`read_the_root`]). The recall is read at each root of that
+/// pass, whose every root costs a header read the stride does not count, and
+/// at the stride inside the mark, its passes and the scan.
 ///
-/// A part whose root it reads live appends the live rows it met, its own
-/// root left out, to `live` before the reset, which the mutator stamps from
-/// at its take (`crate::cycle::live_list`); a part that read its root
-/// unreachable lists nothing.
-///
-/// A part that meets its budget is retried at once under `B_max`
-/// ([`retry_under_the_ceiling`]), once per grant. A retry that meets `B_max`,
-/// and a part that meets its budget with the retry spent, post every live
-/// root their rows met read live, and the batch goes on with the next root
-/// on an arena reset to the watermark: the deferred lane hands such a root
-/// back at the turnover, and a root of the same closure the rows did not meet
-/// opens a part of its own. A retry the pool refuses or the mutator recalls
-/// ends the batch as a part would; the budget is read before the pool at
-/// every growth, so a part past B meets the budget on the collector's reserve
-/// before it sees a refusal. A refused allocation or the mutator's recall
-/// ends the batch where it stands, and every root without a verdict is left
-/// to [`FinishThePosts`]; the verdicts the earlier parts posted stand, each
-/// resting on the owner's exact validation as every verdict does. Besides its
-/// stride, the recall is read at each root of the first pass, whose every
-/// root costs a header read the stride does not count, a miss where the
-/// roots stand in blocks of their own, and before every part but the first,
-/// so that neither the pass nor the resets between parts add a walk the
-/// recall cannot stop; the lookup of met roots counts a position per root or
-/// row it visits, and the list's walk one per live row. No reading follows
-/// the last part: a batch whose every part completed, none deferred, is
-/// complete, and sizes K as one.
+/// **A stop posts the snapshot** ([`post_at_a_stop`]): the mutator's recall
+/// or a refused allocation, inside the mark or the scan, ends the trace where
+/// it stands. A root the scan coloured live is read live; each other batch
+/// root whose met row reads zero is proposed, a candidate the owner's exact
+/// validation decides (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner
+/// handoff"). A root above zero is read live when the stop fell after the
+/// first regions, its own region expanded, or when it is the batch's one
+/// root, and is left unwalked otherwise.
 ///
 /// # Safety
-/// As [`mark`] through `AtomicCells`: the calling thread holds the mutator's
-/// token, every root of `posts` is an entry of the mutator's R, and
-/// `by_address` holds each index of `posts`' roots once, in the order of
-/// their roots' addresses.
-unsafe fn trace_in_parts(
+/// As [`drain`] through `AtomicCells`: the calling thread holds the mutator's
+/// token, and every root of `posts` is an entry of the mutator's R.
+unsafe fn trace_the_batch(
     arena: &mut TraceScratchArena,
     posts: &mut FinishThePosts<'_>,
-    by_address: &[u16],
     live: &mut crate::cycle::live_list::Writer,
-) -> PartsOutcome {
-    let mut outcome = PartsOutcome::default();
+) -> BatchOutcome {
+    let outcome = BatchOutcome::default();
     for index in 0..posts.roots.len() {
         if arena.read_the_recall_now().is_break() {
             return outcome.ended(journal::BATCH_END_RECALLED_IN_THE_PASS);
@@ -2811,111 +2720,146 @@ unsafe fn trace_in_parts(
         }
     }
 
-    let budget = arena.block_budget();
+    let outcome = BatchOutcome {
+        traced: true,
+        ..outcome
+    };
+    #[cfg(test)]
+    let traced_from = (arena.positions_inspected(), std::time::Instant::now());
+    for index in 0..posts.roots.len() {
+        if !posts.has_a_verdict(index)
+            && !unsafe { schedule_root_if_unvisited(arena, posts.root(index)) }
+        {
+            return unsafe { post_at_a_stop(arena, posts, outcome) };
+        }
+    }
+
+    if unsafe { drain::<AtomicCells>(arena) } != MarkResult::Complete {
+        return unsafe { post_at_a_stop(arena, posts, outcome) };
+    }
+
+    #[cfg(test)]
+    testing::note_the_mark_end(arena.positions_inspected());
+    #[cfg(test)]
+    let hooked_at = testing::between_the_phases().then(|| arena.positions_inspected());
+    let mut scanned = true;
+    for index in 0..posts.roots.len() {
+        if !posts.has_a_verdict(index)
+            && unsafe { scan::<AtomicCells>(arena, posts.root(index)) } != ScanResult::Complete
+        {
+            scanned = false;
+            break;
+        }
+    }
+
+    #[cfg(test)]
+    if let Some(from) = hooked_at {
+        testing::note_positions_after_the_hook(arena.positions_inspected() - from);
+    }
+    if !scanned {
+        return unsafe { post_at_a_stop(arena, posts, outcome) };
+    }
+    #[cfg(test)]
+    unsafe {
+        let rows = testing::note_rows_met(arena);
+        testing::note_the_part(arena, rows, traced_from);
+    }
+    for index in 0..posts.roots.len() {
+        if !posts.has_a_verdict(index) {
+            let verdict = unsafe { verdict_for(posts.root(index)) };
+            posts.post(index, verdict);
+        }
+    }
+
+    // A recall inside the list's walk is a stop, though every verdict stands.
+    if unsafe { live.append_the_batch(arena) }.is_break() {
+        return BatchOutcome {
+            stopped: true,
+            regions_ended: true,
+            ..outcome
+        }
+        .ended(journal::BATCH_END_RECALLED_AFTER_THE_TRACE);
+    }
+
+    BatchOutcome {
+        complete: true,
+        regions_ended: true,
+        ..outcome
+    }
+    .ended(journal::BATCH_END_COMPLETE)
+}
+
+/// Post what a trace stopped by the recall or a refused allocation supports,
+/// the snapshot of revision 3 (G3). Each batch root without a verdict whose
+/// met row the scan coloured live is [`Verdict::ReadLive`], a colour no later
+/// step of the trace would change. One whose met row reads zero otherwise is
+/// [`Verdict::Proposed`]: a candidate for the owner's exact validation, not a
+/// scan's verdict, since a live referrer whose edge the mark crossed leaves a
+/// zero the scan would have raised, and the owner's trace from such a root
+/// walks what that referrer reaches. One above zero is read live where the
+/// first regions had ended, and so is the one root of a batch cut inside its
+/// own region: K has reached one root and halves no further, so a root posted
+/// *unwalked* would come back cut again at every grant ("*unwalked* once").
+/// Every other root, like every root the trace did not meet, is left to
+/// [`FinishThePosts`] as *unwalked*. The rows stand until the reset: the scan
+/// recolours a row and keeps its count.
+///
+/// # Safety
+/// As [`trace_the_batch`], and the stopped trace's rows still stand.
+unsafe fn post_at_a_stop(
+    arena: &TraceScratchArena,
+    posts: &mut FinishThePosts<'_>,
+    outcome: BatchOutcome,
+) -> BatchOutcome {
+    let regions_ended = arena.regions_ended();
+    let above_zero_reads_live = regions_ended || posts.roots.len() == 1;
     for index in 0..posts.roots.len() {
         if posts.has_a_verdict(index) {
             continue;
         }
 
-        // Between two parts, and not after the last: a batch whose every
-        // part completed is a completed batch, whatever the recall says.
-        if outcome.parts > 0 && arena.read_the_recall_now().is_break() {
-            return outcome.ended(journal::BATCH_END_RECALLED_BETWEEN_PARTS);
+        let RootReading::Tracked(key) = (unsafe { read_the_root(posts.root(index)) }) else {
+            continue;
+        };
+        let Some(row) = (unsafe { crate::cycle::arena::find_initialized_row(key) }) else {
+            continue;
+        };
+        let word = unsafe { row.read() };
+        match shadow::color(word) {
+            Color::Untouched => {}
+            Color::Live => posts.post(index, Verdict::ReadLive),
+            _ if shadow::count(word) == 0 => posts.post(index, Verdict::Proposed),
+            _ if above_zero_reads_live => posts.post(index, Verdict::ReadLive),
+            _ => {}
         }
-
-        let root = posts.root(index);
-        outcome.parts += 1;
-        // The flag a deferred part left is not this part's answer.
-        arena.forget_the_budget_met();
-        #[cfg(test)]
-        testing::before_the_trace_of_part(outcome.parts);
-        #[cfg(test)]
-        let part_from = (arena.positions_inspected(), std::time::Instant::now());
-        if !unsafe { trace(arena, root) } {
-            if !arena.met_its_budget() {
-                return outcome.stopped_inside_a_part(arena);
-            }
-
-            // A part that met B is retried at once under `B_max`, once per
-            // grant; a second part that meets B finds the attempt spent.
-            outcome.parts_met_budget += 1;
-            let retried = !outcome.retried && {
-                outcome.retried = true;
-                unsafe { retry_under_the_ceiling(arena, root, budget) }
-            };
-            if retried {
-                journal_part_met_budget(arena, root, journal::PART_RETRY_FINISHED);
-            } else {
-                if !arena.met_its_budget() {
-                    journal_part_met_budget(arena, root, journal::PART_ENDED_THE_BATCH);
-                    return outcome.stopped_inside_a_part(arena);
-                }
-
-                // Past B with the retry spent, or past `B_max`: every live
-                // root the rows met is deferred to the turnover, and the
-                // batch goes on.
-                journal_part_met_budget(arena, root, journal::PART_DEFERRED);
-                outcome.deferred_parts += 1;
-                #[cfg(test)]
-                testing::note_part_deferred();
-                let posted = unsafe {
-                    for_each_met_root(arena, posts, by_address, |posts, index| {
-                        posts.post(index, Verdict::ReadLive);
-                    })
-                };
-                if posted.is_break() {
-                    return outcome.ended(journal::BATCH_END_RECALLED_AFTER_A_PART);
-                }
-
-                arena.reset_to_the_watermark();
-                continue;
-            }
-        }
-
-        #[cfg(test)]
-        testing::after_the_trace_of_part(outcome.parts);
-        #[cfg(test)]
-        unsafe {
-            let rows = testing::note_rows_met(arena);
-            testing::note_the_part(arena, rows, part_from);
-        }
-        let lists_the_core = unsafe { post_the_part(arena, posts, by_address, index, live) };
-        if lists_the_core.is_break() {
-            return outcome.ended(journal::BATCH_END_RECALLED_AFTER_A_PART);
-        }
-
-        if lists_the_core == std::ops::ControlFlow::Continue(true)
-            && unsafe { live.append_the_part(arena, root) }.is_break()
-        {
-            return outcome.ended(journal::BATCH_END_RECALLED_AFTER_A_PART);
-        }
-
-        arena.reset_to_the_watermark();
     }
 
-    outcome.complete = outcome.deferred_parts == 0;
-    outcome.ended(if outcome.complete {
-        journal::BATCH_END_COMPLETE
+    BatchOutcome {
+        stopped: true,
+        regions_ended,
+        ..outcome
+    }
+    .ended(if arena.was_recalled() {
+        journal::BATCH_END_RECALLED_IN_THE_TRACE
     } else {
-        journal::BATCH_END_DEFERRED_PAST_B
+        journal::BATCH_END_REFUSED_IN_THE_TRACE
     })
 }
 
 /// The stubbed trace of a batch ([`testing::stub_the_trace`]): the reading
-/// pass of [`trace_in_parts`], a spin until `until` that reads the recall as
-/// the gaps between parts do, and every root still without a verdict posted
-/// read live, one completed part — what a trace that met the state whole
-/// posts, at a wall the case fixes.
+/// pass of [`trace_the_batch`], a spin until `until` that reads the recall,
+/// and every root still without a verdict posted read live — what a trace
+/// that met the state whole posts, at a wall the case fixes.
 ///
 /// # Safety
-/// As [`trace_in_parts`].
+/// As [`trace_the_batch`].
 #[cfg(test)]
-unsafe fn stub_the_parts(
+unsafe fn stub_the_trace(
     arena: &mut TraceScratchArena,
     posts: &mut FinishThePosts<'_>,
     until: std::time::Instant,
-) -> PartsOutcome {
-    let outcome = PartsOutcome::default();
+) -> BatchOutcome {
+    let outcome = BatchOutcome::default();
     for index in 0..posts.roots.len() {
         if arena.read_the_recall_now().is_break() {
             return outcome.ended(journal::BATCH_END_RECALLED_IN_THE_PASS);
@@ -2926,9 +2870,17 @@ unsafe fn stub_the_parts(
         }
     }
 
+    let outcome = BatchOutcome {
+        traced: true,
+        ..outcome
+    };
     while std::time::Instant::now() < until {
         if arena.read_the_recall_now().is_break() {
-            return outcome.ended(journal::BATCH_END_RECALLED_BETWEEN_PARTS);
+            return BatchOutcome {
+                stopped: true,
+                ..outcome
+            }
+            .ended(journal::BATCH_END_RECALLED_IN_THE_TRACE);
         }
 
         std::hint::spin_loop();
@@ -2940,214 +2892,40 @@ unsafe fn stub_the_parts(
         }
     }
 
-    PartsOutcome {
-        parts: 1,
+    BatchOutcome {
         complete: true,
+        regions_ended: true,
         ..outcome
     }
     .ended(journal::BATCH_END_COMPLETE)
 }
 
-/// Record a part of `root` that met B, `what_followed` one of the `PART_*`
-/// codes, with the blocks its arena drew.
-fn journal_part_met_budget(arena: &TraceScratchArena, root: *mut RcHeader, what_followed: u64) {
-    journal_event!(
-        journal::KIND_PART_MET_BUDGET,
-        root as u64,
-        what_followed,
-        arena.blocks_drawn() as u64,
-    );
-    #[cfg(not(feature = "debug-journal"))]
-    let _ = (arena, root, what_followed);
-}
-
-/// What [`trace_in_parts`] answers of a batch's parts.
+/// What [`trace_the_batch`] answers of a batch's trace.
 #[derive(Clone, Copy, Default)]
-struct PartsOutcome {
-    /// Parts opened, a retry under `B_max` not counted as one.
-    parts: usize,
-    /// Whether every root without a verdict of its own had its part finish.
+struct BatchOutcome {
+    /// Whether the batch's roots were met and the trace opened, which a recall
+    /// in the pass before it forestalls. Read by the cases' record of a batch.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the cases' record of a batch reads it")
+    )]
+    traced: bool,
+    /// Whether the mark and every scan ran to their end.
     complete: bool,
-    /// Parts that met B.
-    parts_met_budget: usize,
-    /// Whether a part was retried under `B_max`.
-    retried: bool,
-    /// Parts whose met roots were deferred read live: past B with the retry
-    /// spent, or past `B_max`.
-    deferred_parts: usize,
+    /// Whether the recall or a refused allocation ended the trace.
+    stopped: bool,
+    /// Whether the mark's first descent had emptied the worklist: every met
+    /// root's first region expanded.
+    regions_ended: bool,
     /// Which exit ended the trace, one of the journal's `BATCH_END_*` codes.
     ending: u64,
 }
 
-impl PartsOutcome {
+impl BatchOutcome {
     fn ended(mut self, ending: u64) -> Self {
         self.ending = ending;
         self
     }
-
-    /// The end of a trace a part's own trace or retry stopped short of B:
-    /// the recall, where the arena read it, and a refused allocation
-    /// otherwise.
-    fn stopped_inside_a_part(self, arena: &TraceScratchArena) -> Self {
-        self.ended(if arena.was_recalled() {
-            journal::BATCH_END_RECALLED_INSIDE_A_PART
-        } else {
-            journal::BATCH_END_REFUSED_INSIDE_A_PART
-        })
-    }
-}
-
-/// Retry the part of `root`, which met B, under `B_max` on an arena reset to
-/// its watermark, and put B back after it: true when the retry finished,
-/// false when it met `B_max` too, a refused allocation or the recall — the
-/// rows of the attempt standing either way.
-///
-/// # Safety
-/// As [`trace`].
-unsafe fn retry_under_the_ceiling(
-    arena: &mut TraceScratchArena,
-    root: *mut RcHeader,
-    budget: usize,
-) -> bool {
-    arena.reset_to_the_watermark();
-    arena.forget_the_budget_met();
-    arena.budget_blocks(retry_budget());
-    #[cfg(test)]
-    testing::at_the_start_of_the_retry();
-    let finished = unsafe { trace(arena, root) };
-    arena.budget_blocks(budget);
-    finished
-}
-
-/// `B_max`, or the budget a case set.
-fn retry_budget() -> usize {
-    #[cfg(test)]
-    if let Some(blocks) = testing::retry_budget() {
-        return blocks;
-    }
-
-    RETRY_BLOCK_BUDGET
-}
-
-/// Act on every root without a verdict whose row the part just traced met,
-/// `act` posting one for it. For each block on the part's touched list, the roots whose
-/// addresses fall in that block are found in `by_address` by a binary search,
-/// and one of two walks is taken: the block's roots, each read for a met row,
-/// where they are no more than eight times the groups the part met there, or
-/// else the rows the part met in the block, each looked up among those roots.
-/// Either walk is bounded by eight times the part's met groups, plus the one
-/// root of a large entity's block, so a block holding many roots, each a part
-/// of its own, costs each part the rows it met rather than every root of the
-/// block (`dev/DECISIONS.md`, "A part's met roots are found by a walk its own
-/// rows bound"). Every
-/// root or row visited counts a position; answers `Break` where the mutator's
-/// recall stood at a reading.
-///
-/// # Safety
-/// As [`verdict_for`] for every root it posts: the part completed on this
-/// thread and its rows still stand; `by_address` as [`trace_in_parts`] has it.
-unsafe fn for_each_met_root(
-    arena: &mut TraceScratchArena,
-    posts: &mut FinishThePosts<'_>,
-    by_address: &[u16],
-    mut act: impl FnMut(&mut FinishThePosts<'_>, usize),
-) -> std::ops::ControlFlow<()> {
-    let mut array = arena.touched_head();
-    while !array.is_null() {
-        // A position per block as well as per root or row: a block that holds
-        // no root costs two searches and a count, and a retry under `B_max`
-        // leaves thousands of such blocks before the part's root's own.
-        arena.inspect_position()?;
-        let (block, population) = unsafe { ((*array).block, (*array).population) };
-        let address =
-            |posts: &FinishThePosts<'_>, index: u16| posts.root(usize::from(index)) as usize;
-        let first = by_address.partition_point(|&index| address(posts, index) < block as usize);
-        let in_the_block = &by_address[first..];
-        let in_the_block = &in_the_block[..in_the_block.partition_point(|&index| {
-            address(posts, index) < block as usize + crate::memory::block_pool::BLOCK_SIZE
-        })];
-        let rows_at_most = unsafe { shadow::groups_met(array) } * shadow::GROUP;
-        if population == crate::cycle::row::Population::SingleEntity
-            || in_the_block.len() <= rows_at_most as usize
-        {
-            for &index in in_the_block {
-                arena.inspect_position()?;
-                #[cfg(test)]
-                testing::note_a_lookup_visit();
-                unsafe { act_if_met(posts, usize::from(index), &mut act) };
-            }
-        } else {
-            unsafe {
-                shadow::for_each_met_row(array, |row| {
-                    arena.inspect_position()?;
-                    #[cfg(test)]
-                    testing::note_a_lookup_visit();
-                    let Some(entity) = crate::cycle::row::entity_at(block, population, row) else {
-                        return std::ops::ControlFlow::Continue(());
-                    };
-                    if let Ok(at) = in_the_block
-                        .binary_search_by_key(&(entity as usize), |&index| address(posts, index))
-                    {
-                        act_if_met(posts, usize::from(in_the_block[at]), &mut act);
-                    }
-
-                    std::ops::ControlFlow::Continue(())
-                })?;
-            }
-        }
-
-        array = unsafe { (*array).next };
-    }
-
-    std::ops::ControlFlow::Continue(())
-}
-
-/// Act on the root at `index` if it has no verdict and is live with a row the
-/// part met; a root read at count zero here opens a part of its own, which its
-/// count lets finish at once.
-///
-/// # Safety
-/// As [`for_each_met_root`].
-unsafe fn act_if_met(
-    posts: &mut FinishThePosts<'_>,
-    index: usize,
-    act: &mut impl FnMut(&mut FinishThePosts<'_>, usize),
-) {
-    if posts.has_a_verdict(index) {
-        return;
-    }
-
-    let root = posts.root(index);
-    if let RootReading::Tracked(key) = unsafe { read_the_root(root) }
-        && unsafe { crate::cycle::arena::find_initialized_row(key) }.is_some()
-    {
-        act(posts, index);
-    }
-}
-
-/// Mark the closure of `root`, then scan it: true when both phases
-/// completed, false when either met the budget, a refused allocation or the
-/// mutator's recall — at which point no color of the part is a verdict.
-///
-/// # Safety
-/// As [`mark`] through `AtomicCells`: the calling thread holds the mutator's
-/// token, and `root` is an entry of the mutator's R.
-unsafe fn trace(arena: &mut TraceScratchArena, root: *mut RcHeader) -> bool {
-    if unsafe { mark::<AtomicCells>(arena, root) } != MarkResult::Complete {
-        return false;
-    }
-
-    #[cfg(test)]
-    testing::note_the_mark_end(arena.positions_inspected());
-    #[cfg(test)]
-    let hooked_at = testing::between_the_phases().then(|| arena.positions_inspected());
-    let scanned = (unsafe { scan::<AtomicCells>(arena, root) }) == ScanResult::Complete;
-    #[cfg(test)]
-    if let Some(from) = hooked_at {
-        testing::note_positions_after_the_hook(arena.positions_inspected() - from);
-    }
-
-    scanned
 }
 
 /// What a root's header says before any row is read: the verdict of a root
@@ -3178,15 +2956,15 @@ unsafe fn read_the_root(root: *mut RcHeader) -> RootReading {
     }
 }
 
-/// The verdict a completed part supports for `root`: the verdict of
+/// The verdict a completed trace supports for `root`: the verdict of
 /// [`read_the_root`] where it gives one, and otherwise the color of its row,
 /// potentially unreachable being [`Verdict::Proposed`] and live being
-/// [`Verdict::ReadLive`]. A root with no met row is read live too: the part
+/// [`Verdict::ReadLive`]. A root with no met row is read live too: the trace
 /// could not place it, which the trace's own rule reads as an external live
 /// reference.
 ///
 /// # Safety
-/// The part over `root`'s closure completed on this thread and its rows still
+/// The trace over `root`'s closure completed on this thread and its rows still
 /// stand.
 unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
     let key = match unsafe { read_the_root(root) } {
@@ -3201,29 +2979,6 @@ unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
         },
         None => Verdict::ReadLive,
     }
-}
-
-/// Post the verdicts a completed part supports: its root's, at `index`, and
-/// every met root's, as [`for_each_met_root`] finds them. Answers whether the
-/// part's live core is listed, or `Break` where the lookup read the recall.
-///
-/// # Safety
-/// As [`for_each_met_root`].
-unsafe fn post_the_part(
-    arena: &mut TraceScratchArena,
-    posts: &mut FinishThePosts<'_>,
-    by_address: &[u16],
-    index: usize,
-    _live: &mut crate::cycle::live_list::Writer,
-) -> std::ops::ControlFlow<(), bool> {
-    let verdict = unsafe { verdict_for(posts.root(index)) };
-    posts.post(index, verdict);
-    unsafe {
-        for_each_met_root(arena, posts, by_address, |posts, index| {
-            posts.post(index, verdict_for(posts.root(index)));
-        })
-    }?;
-    std::ops::ControlFlow::Continue(verdict == Verdict::ReadLive)
 }
 
 mod birth;

@@ -322,7 +322,7 @@ fn a_batch_asked_between_its_phases(on_the_ask: impl FnOnce()) -> (testing::Trac
 
 /// The recall's bound over one container: a pressure collection asked for
 /// between the phases, and the scan that reads at most one stride after the
-/// ask and leaves the batch unwalked.
+/// ask and stops, the batch posting its snapshot.
 fn a_pressure_collection_recalls_the_grant_over(container: Container) {
     let _g = test_guard();
     let _end = RetireOnDrop;
@@ -347,7 +347,7 @@ fn a_pressure_collection_recalls_the_grant_over(container: Container) {
     );
     assert!(
         !batch.complete,
-        "{container:?}: a recalled trace is abandoned, its roots unwalked"
+        "{container:?}: a recalled trace stops where it stands"
     );
 
     unsafe { let_go(root) };
@@ -379,14 +379,17 @@ fn over_an_outside_storage_of_empty_cells() {
     a_pressure_collection_recalls_the_grant_over(Container::EmptyOutsideStorage);
 }
 
-/// A recall of a batch of several roots posts each of them once, unwalked,
-/// and advances R past all of them: `FinishThePosts` on the recall's path.
+/// A recall of a batch of several roots posts each of them once and advances
+/// R past all of them: raised between the phases, after the mark's first
+/// regions ended, it finds each root's row above zero — the case holds every
+/// root — and posts it read live, the snapshot's rule for a root whose own
+/// region was expanded (`dev/plans/S67.md`, S67.9, revision 3, G3).
 #[test]
 #[cfg_attr(
     all(feature = "collector-chain", not(feature = "hold-by-generation")),
     ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
 )]
-fn a_recalled_batch_posts_every_root_once_unwalked_and_advances_r() {
+fn a_recalled_batch_posts_every_root_once_read_live_and_advances_r() {
     const ROOTS: usize = 5;
     let _g = test_guard();
     let _end = RetireOnDrop;
@@ -415,9 +418,9 @@ fn a_recalled_batch_posts_every_root_once_unwalked_and_advances_r() {
             .collect::<Vec<_>>(),
         roots
             .iter()
-            .map(|&root| (root, Verdict::Unwalked))
+            .map(|&root| (root, Verdict::ReadLive))
             .collect::<Vec<_>>(),
-        "every root posted once, unwalked, in R's order"
+        "every root posted once, read live, in R's order"
     );
     assert_eq!(candidate_count(), 0, "R advanced past the batch");
 
@@ -433,14 +436,15 @@ fn a_recalled_batch_posts_every_root_once_unwalked_and_advances_r() {
     reset_lanes();
 }
 
-/// Under the collector's chain the recalled batch's roots go to the chain's
-/// ready part, each once, behind the retries already waiting; nothing goes
-/// into P, and R advances past them as without the chain. The roots are of
-/// the second generation: under `hold-by-generation` a younger one the trace
-/// did not reach goes into P (`the_generations_in_the_chain`).
+/// Under the collector's chain the recalled batch's roots, read live by the
+/// snapshot once the first regions had ended, go to the chain's waiting part,
+/// each once, as a completed trace's roots read live do; nothing goes into P,
+/// and R advances past them as without the chain. The roots are of the second
+/// generation: under `hold-by-generation` a younger one goes into P
+/// (`the_generations_in_the_chain`).
 #[test]
 #[cfg(feature = "collector-chain")]
-fn under_the_chain_a_recalled_batch_puts_every_root_once_in_the_ready_part() {
+fn under_the_chain_a_recalled_batch_puts_every_root_once_in_the_waiting_part() {
     const ROOTS: usize = 5;
     let _g = test_guard();
     let _end = RetireOnDrop;
@@ -466,14 +470,14 @@ fn under_the_chain_a_recalled_batch_puts_every_root_once_in_the_ready_part() {
     let (ready, waiting) = crate::cycle::chain::testing::roots_of_this_threads();
     assert_eq!(
         (
-            ready
+            ready.len(),
+            waiting
                 .iter()
                 .map(|&root| root as *mut Object)
                 .collect::<Vec<_>>(),
-            waiting.len()
         ),
-        (roots.clone(), 0),
-        "every root once, in R's order, in the ready part"
+        (0, roots.clone()),
+        "every root once, in R's order, in the waiting part"
     );
     assert_eq!(candidate_count(), 0, "R advanced past the batch");
 
@@ -783,7 +787,7 @@ fn record_token() -> *const crate::cycle::token::TraceToken {
 /// A mutator whose consent the collector holds while it traces another
 /// mutator's batch, and which then asks for its token at the start of that
 /// batch's trace, is released at the trace's first reading of the recall, the
-/// first root of the pass before the parts, and the batch goes on to its end:
+/// first root of the pass before the trace, and the batch goes on to its end:
 /// the grant held behind it has no batch of its own to abandon.
 #[test]
 fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
@@ -795,9 +799,9 @@ fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
 }
 
 /// The same grant, its mutator asking between the mark and the scan of the
-/// other batch's one part, is released at the next reading of the stride.
+/// other batch's trace, is released at the next reading of the stride.
 #[test]
-fn a_grant_behind_a_part_is_released_at_the_strides_next_reading() {
+fn a_grant_behind_another_trace_is_released_at_the_strides_next_reading() {
     let released_at = released_behind_another_batch(testing::between_the_next_phases);
     assert!(
         released_at > 0 && released_at % RECALL_STRIDE == 0,
@@ -985,6 +989,296 @@ fn a_pass_over_held_entries_reads_the_recall() {
             );
             ll_object_die(element);
         }
+    }
+    reset_lanes();
+}
+
+/// Unregistered elements under a root whose first region a stop cuts: three
+/// strides of the array's slots, so that the first reading falls inside it.
+const CUT_ELEMENTS: usize = 3 * RECALL_STRIDE;
+
+/// A registered root the case holds, over an array of `elements`
+/// unregistered elements, each held by the array alone: the root's first
+/// region is the array's slots.
+///
+/// # Safety
+/// As [`build`].
+unsafe fn a_root_over_a_wide_region(
+    context: &mut LLContext,
+    element: *const Class,
+    elements: usize,
+) -> *mut Object {
+    use crate::array::testing::push;
+
+    let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    for _ in 0..elements {
+        // `push` counts nothing: the element's creation reference is the
+        // array's, and no decrement registers it.
+        let element = unsafe { new_constructed(context, element, MemoryCategory::GcHeap) };
+        assert!(unsafe { push(array, Value::entity(Tag::Object, element as *mut RcHeader),) });
+    }
+    unsafe { a_root_over(context, array as *mut RcHeader, Tag::Array) }
+}
+
+/// One serve of this thread's record whose trace the recall stops at its
+/// first stride reading: the batch it traced and the verdicts it posted, the
+/// recall cleared and P left standing.
+fn a_serve_recalled_at_the_first_reading() -> (testing::TracedBatch, Vec<(*mut Object, Verdict)>) {
+    testing::read_traced_batches(true);
+    testing::recall_at_the_reading(1);
+    let served = super::the_batch::served_by_a_collector();
+    unsafe { &(*record()).token }.recall_for_test(false);
+    let batches = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert!(
+        matches!(
+            served,
+            Served::Batch {
+                complete: false,
+                ..
+            }
+        ),
+        "{served:?}"
+    );
+    let posted = standing_verdicts()
+        .iter()
+        .map(|&(root, verdict)| (root as *mut Object, verdict))
+        .collect();
+    (*batches.first().expect("the batch was traced"), posted)
+}
+
+/// A stop inside the mark's first regions leaves every root above zero
+/// *unwalked* and halves K; at one root K halves no further, and the root
+/// cut inside its own region is read live, out of R, so that it does not come
+/// back cut at every grant (`dev/plans/S67.md`, S67.9, revision 3, G3,
+/// "*unwalked* once"). Each root is held by the case and heads three strides
+/// of unregistered elements, so the first reading falls inside the first
+/// root's region.
+#[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
+fn a_stop_inside_the_first_regions_posts_unwalked_and_halves_k_down_to_one_read_live_root() {
+    use crate::journal::kinds::BATCH_END_RECALLED_IN_THE_TRACE;
+
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let element = ClassBuilder::new("CutRegionElement").build();
+    let roots: Vec<*mut Object> = (0..2)
+        .map(|_| unsafe { a_root_over_a_wide_region(&mut context, element, CUT_ELEMENTS) })
+        .collect();
+    assert_eq!(candidate_count(), 2, "R holds the roots alone");
+    let _clear = ClearTheRecall(unsafe { &(*record()).token });
+    unsafe { &*record() }.set_batch_size(2);
+
+    let (batch, posted) = a_serve_recalled_at_the_first_reading();
+    assert_eq!(batch.ending, BATCH_END_RECALLED_IN_THE_TRACE);
+    assert_eq!(
+        posted,
+        roots
+            .iter()
+            .map(|&root| (root, Verdict::Unwalked))
+            .collect::<Vec<_>>(),
+        "both roots above zero, the stop inside the first regions"
+    );
+    assert_eq!(
+        super::the_batch::record_batch_size(),
+        1,
+        "a stop inside the first regions halves K"
+    );
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    assert_eq!(candidate_count(), 2, "both written back into R untraced");
+
+    let (batch, posted) = a_serve_recalled_at_the_first_reading();
+    assert_eq!(batch.ending, BATCH_END_RECALLED_IN_THE_TRACE);
+    assert_eq!(batch.roots, 1);
+    assert_eq!(
+        posted
+            .iter()
+            .map(|&(_, verdict)| verdict)
+            .collect::<Vec<_>>(),
+        vec![Verdict::ReadLive],
+        "the one root cut inside its own region is read live"
+    );
+    assert_eq!(
+        super::the_batch::record_batch_size(),
+        1,
+        "never below one root"
+    );
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    assert_eq!(candidate_count(), 1, "the other root waits in R");
+
+    for root in roots {
+        unsafe { let_go(root) };
+    }
+    reset_lanes();
+}
+
+/// A stop inside the scan reads the colours the scan already gave: a root
+/// whose met row reads zero but which a live root's scan reached is read
+/// live, not proposed, so the owner walks nothing from it. R holds the inner
+/// root first, then the root that holds it, then a root over three strides
+/// whose scan the recall, raised between the phases, stops; the inner root's
+/// only reference is the outer root's.
+#[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
+fn a_stop_inside_the_scan_reads_a_root_the_scan_coloured_live_as_live() {
+    use crate::journal::kinds::BATCH_END_RECALLED_IN_THE_TRACE;
+
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let element = ClassBuilder::new("ScanStopElement").build();
+    let inner = unsafe { new_constructed(&mut context, element, MemoryCategory::GcHeap) };
+    unsafe {
+        ll_retain(inner as *mut RcHeader);
+        assert!(
+            !ll_release(inner as *mut RcHeader),
+            "registered, held by the case"
+        );
+    }
+    let outer = unsafe { a_root_over(&mut context, inner as *mut RcHeader, Tag::Object) };
+    let wide = unsafe { a_root_over_a_wide_region(&mut context, element, CUT_ELEMENTS) };
+    assert_eq!(candidate_count(), 3, "R holds the three roots alone");
+    let _clear = ClearTheRecall(unsafe { &(*record()).token });
+    unsafe { &*record() }.set_batch_size(3);
+
+    let token = unsafe { &raw const (*record()).token } as usize;
+    testing::between_the_next_phases(Box::new(move || {
+        unsafe { &*(token as *const crate::cycle::token::TraceToken) }.recall_for_test(true)
+    }));
+    testing::read_traced_batches(true);
+    let served = super::the_batch::served_by_a_collector();
+    unsafe { &(*record()).token }.recall_for_test(false);
+    let batches = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert!(
+        matches!(
+            served,
+            Served::Batch {
+                complete: false,
+                ..
+            }
+        ),
+        "{served:?}"
+    );
+    assert_eq!(batches[0].ending, BATCH_END_RECALLED_IN_THE_TRACE);
+    assert_eq!(
+        standing_verdicts()
+            .iter()
+            .map(|&(root, verdict)| (root as *mut Object, verdict))
+            .collect::<Vec<_>>(),
+        vec![
+            (inner, Verdict::ReadLive),
+            (outer, Verdict::ReadLive),
+            (wide, Verdict::ReadLive),
+        ],
+        "the inner root's row reads zero and its color live"
+    );
+
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    unsafe {
+        let_go(outer);
+        let_go(wide);
+    }
+    reset_lanes();
+}
+
+/// Unregistered elements under a root whose trace the pool refuses: enough
+/// rows and worklist segments to outgrow the workspace's first block.
+const REFUSED_ELEMENTS: usize = if cfg!(miri) {
+    4 * RECALL_STRIDE
+} else {
+    64 * RECALL_STRIDE
+};
+
+/// The reserve's blocks a hook on the collector's thread took, as addresses,
+/// for the case to give back.
+static RESERVE_TAKEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// A pool that refuses the collector inside the mark stops the trace as a
+/// recall does and posts the snapshot: both roots above zero, the stop inside
+/// the first regions, are *unwalked*, the end is the refusal's own, and K
+/// halves. The hook at the trace's start, on the collector's thread, budgets
+/// that thread's pool to nothing and takes its reserve, so the first growth
+/// of the arena past its workspace is refused.
+#[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
+fn a_pool_refusal_inside_the_mark_posts_the_snapshot() {
+    use crate::journal::kinds::BATCH_END_REFUSED_IN_THE_TRACE;
+
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let element = ClassBuilder::new("RefusedRegionElement").build();
+    let roots: Vec<*mut Object> = (0..2)
+        .map(|_| unsafe { a_root_over_a_wide_region(&mut context, element, REFUSED_ELEMENTS) })
+        .collect();
+    unsafe { &*record() }.set_batch_size(2);
+
+    testing::at_the_start_of_the_next_trace(Box::new(|| {
+        // The collector thread ends with the serve, and its budget with it.
+        std::mem::forget(crate::memory::block_pool::budget_blocks(0));
+        let mut taken = RESERVE_TAKEN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            let block = crate::memory::critical::draw();
+            if block.is_null() {
+                break;
+            }
+            taken.push(block as usize);
+        }
+    }));
+    testing::read_traced_batches(true);
+    let served = super::the_batch::served_by_a_collector();
+    let batches = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    for block in std::mem::take(
+        &mut *RESERVE_TAKEN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    ) {
+        crate::memory::critical::give_back(block as *mut crate::memory::block_pool::BlockHeader);
+    }
+
+    assert!(
+        matches!(
+            served,
+            Served::Batch {
+                complete: false,
+                ..
+            }
+        ),
+        "{served:?}"
+    );
+    assert_eq!(batches[0].ending, BATCH_END_REFUSED_IN_THE_TRACE);
+    assert_eq!(
+        standing_verdicts()
+            .iter()
+            .map(|&(root, verdict)| (root as *mut Object, verdict))
+            .collect::<Vec<_>>(),
+        roots
+            .iter()
+            .map(|&root| (root, Verdict::Unwalked))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(super::the_batch::record_batch_size(), 1, "a stop halves K");
+
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    for root in roots {
+        unsafe { let_go(root) };
     }
     reset_lanes();
 }

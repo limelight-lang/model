@@ -140,6 +140,10 @@ epoch's turn.
 
 ## 2026-09-30 — a part stopped short posts the roots it suspects; all or nothing is refused
 
+**Superseded in part 2026-10-01** (S67.9 step (c)): there are no parts; a
+stopped batch posts the snapshot, which keeps this ruling's principle
+(`rfc/model/gc/rc-cycle.md`, "A stopped trace posts its snapshot").
+
 **Decided (Edmond, 2026-09-30, "принцип всё или ничего - грубая ошибка. в
 реальности он должен был подать те корни что подозревает"):** a collector's
 part that stops before its closure ends, at B, at `B_max` or at a recall,
@@ -306,60 +310,8 @@ mutator's performance comes first, Edmond having handed the choice back.
 
 ## 2026-09-24 — a part that meets B is retried under `B_max` once per grant, a part past the ceiling defers the roots it met, and the batch goes on
 
-**Decided (model, S65.9, the package's commit 7):** a part that meets B is
-retried at once for the same root under `worker::RETRY_BLOCK_BUDGET`, 128
-blocks, once per grant. A finished retry is an ordinary part. A retry that
-meets `B_max`, and a part that meets B with the retry spent, post every live
-root their rows met read live, reset the arena to the watermark and go on
-with the next root, which opens a part of its own. A retry the pool refuses
-or the mutator recalls ends the batch as a part would, its roots unwalked.
-K doubles after a batch whose every part finished over its clamp and nothing
-halves it (`rfc/model/gc/rc-cycle.md`, "The retry at the ceiling").
-
-**No ceiling mark (Edmond, 2026-09-24, on the step's Critic, round 1,
-finding 1).** The package marked a root past `B_max` in bits 20–22 of byte 6,
-written by the owner from a second section of the live list, and a take
-skipped a root whose mark named the current epoch. The Critic showed the skip
-unreachable in the ordinary flow: a root read live goes to the deferred lane,
-which hands it back to R only at a turnover, where the mark is already stale.
-So the mark, its skip, the marks section and its clearings went, and bits
-20–22 are the collector's reserve again. The Critic's finding 3, the
-collector's give-back dropping the clearings, went with them.
-
-**Read live, not unwalked (Edmond, 2026-09-24, round 1, finding 2).** *Read
-live* after a part past the ceiling is a deferral rather than a trace's
-verdict. Unwalked would make the owner's in-line collection trace the closure
-on its thread, against the stage's rule that the mutator's performance comes
-first, and once `Unwalked` goes back into R untraced (S65.10) the collector
-would repeat the failed attempt at every take.
-
-**The batch goes on (Edmond, 2026-09-24, round 2, finding 1).** Ending the
-batch after a failed retry left the roots it had not met unwalked, and one of
-the same closure — a retry opened at a later root of a ring passes `B_max`
-before it meets an earlier one — was traced whole on the owner's thread,
-the cost the ruling above refused. Going on defers what each part past the
-ceiling met and opens a part for the rest, so a closure past B costs the
-owner nothing now that S65.10 dropped the turnover's arm: the re-offer arms
-nothing while a collector lives. Halving K went with it (round 2, finding 2): it
-answered the
-roots a batch lost to unwalked, which it loses no more, and it made each
-failed retry defer fewer roots for the same 128 blocks. The price: garbage
-past `B_max` waits for a shortage of memory or the thread's exit, as the ruling
-on finding 2 accepted; garbage whose closure lies
-between B and `B_max`, met in a grant whose retry is spent, waits a turnover
-instead of the owner's next collection, and behind a live closure past
-`B_max` that spends the retry first in every grant it waits for the same two
-collections. The collector pays per root rather than per closure: a part at
-B for every root of a closure past B that no earlier attempt of the grant
-met, so m roots spread along such a closure cost one retry and m − 1 parts
-at B in each grant (at K = 1024 and the 75–157 µs a take abandoned at B was
-measured to cost, `dev/BENCHMARKS.md`, "the live-roots arm", about 80–160 ms,
-an estimate). It is unmeasured; S65.12's
-rig carries the measurement.
-
-**Where the code differs from section 7:** the retry is the part's root's
-alone, and the roots a failed retry defers are the ones its rows met, so
-their count depends on the order R hands them back.
+**Superseded 2026-10-01** (S67.9 step (c), `dev/plans/S67.md`): the batch is one
+trace with no budget, and a stopped trace posts its snapshot; git keeps the entry.
 
 ---
 
@@ -457,60 +409,8 @@ standing from anything else is cleared by the consent.
 
 ## 2026-09-24 — the batch runs in parts: the recall is read at every root before the parts and between two parts, and a part's met roots are found by a walk its own rows bound
 
-**Decided (model, over the Critic of S65.13, the same day):** the collector's
-batch traces its roots in parts, each under a block budget of its own, now
-that the recall of the token and the marks by stack length bound what a
-mutator waits and withholds under a grant (the entry of 2026-09-23 below, "the
-trace in parts waits for the recall and the stack marks"). Measured at the K
-the parts grow to, 1,024, against the tree before: a mutator asking mid-grant
-waits 46–54 µs against 40–66 µs on `disjoint-live` and 75–76 µs against
-51–72 µs on `disjoint-wide-live`, and a freeing mutator withholds 9.1–9.2
-thousand deaths against 9.7–11.8 thousand; a grant nobody recalls lasts
-4.1–4.3 ms and 32–37 ms against 0.13–0.41 ms (`dev/BENCHMARKS.md`, "S65.13 the
-batch in parts at a grown K").
-
-**The recall is read at every root of the pass before the parts and between
-two parts**, beside the stride and the growth. The pass reads each root's
-header, which on the disjoint shapes is a block of its own, and a stride of
-1,024 such reads let a mutator asking at the trace's start wait 317 µs; the
-resets between parts count no position. The reading between two parts is not
-made after the last, so a batch whose every part completed is complete and
-sizes K as one.
-
-**A part's met roots are found by a walk its own rows bound.** For each block
-the part touched, the roots whose addresses fall in the block are found in
-the copy sorted by address; the part reads each of them for a met row where
-they are no more than eight times the groups its bitmap marks, and otherwise
-walks the rows it met and looks each up among those roots. Either walk is
-bounded by eight times the part's met groups, plus the one root of a large
-entity's block, which has no groups. Reading the block's roots alone,
-as the step first did, cost a part every root of its block: 1,024 roots
-side by side, each a part of its own, made about K²/2 reads under the grant
-(the Critic, its first finding), the scan the entry below meant to retire.
-
-**A met root's verdict is its own part's or a larger one's.** A root inside
-an earlier part's closure opens no part, and within that larger closure it
-can read unreachable where its own part would read it live, never the
-reverse: over one snapshot the proposals over a subset of the roots are a
-subset of those over all of them. Either verdict is the owner's exact
-validation to decide (the Critic, its fourth finding, against a sentence that
-claimed the two colors equal).
-
-**Refused, from the Critic's third finding.** A part that meets its budget
-posting its own root alone and the batch going on, with K sized by a batch's
-positions against a target: the package accepted by Edmond on 2026-09-23 ends
-the grant at a part that fails at B, which S65.9 retries at `B_max` first
-(`dev/CYCLE-SPLIT-PACKAGE-3.md`, section 7). The grant's length is the
-collector's time and every other mutator named to the same collector waits
-it; the package names a bound on it in touched blocks, G, as a knob of the
-rig, and S65.12 reads it.
-
-**An old case's instrument moved** (Edmond, 2026-09-24: the test is out of
-date): `the_recall::a_grant_held_behind_another_mutators_batch_is_released_within_a_stride`
-asked for the grant's release at the stride's first reading, and the first
-reading is now the pass's, at position 0; it asserts 0, and
-`a_grant_behind_a_part_is_released_at_the_strides_next_reading` keeps a case
-the stride's own release can redden.
+**Superseded 2026-10-01** (S67.9 step (c), `dev/plans/S67.md`): the batch is one
+trace with no budget, and a stopped trace posts its snapshot; git keeps the entry.
 
 ---
 
@@ -582,24 +482,8 @@ them.
 
 ## 2026-09-23 — the trace in parts waits for the recall and the stack marks
 
-**Decided (model, over the Critic of S65.5, the same day):** the collector's
-batch keeps its one trace over every root until the recall of the token
-(S65.6) and the marks by stack length (S65.7) bound what a mutator waits and
-withholds under a grant; S65.13 switches the parts on after them. S65.5
-lands the machinery the parts need — the posts' guard
-(`worker::FinishThePosts`), the verdict bit of the collector's copy and the
-arena's reset to a watermark above the copy — with the batch still traced
-once.
-
-**Refused.** A byte bound over the grant, the watermark rising over the
-workspace each part spent: it held the wait, and failed
-`the_batch::a_batch_is_clamped_to_ps_room_and_to_k`, whose 64 roots share
-blocks and fit one trace, because each part draws its row array and its
-worklist segment again. No count of memory bounds the parts' wait by today's
-per workload, since parts re-trace a shared acyclic subgraph once per root
-over the same bytes (the Critic's case). Merging S65.5 with S65.6 alone:
-S65.6's recall fires only when the mutator asks for its token, and one that
-keeps freeing through the grant is bounded by S65.7's marks alone.
+**Superseded 2026-10-01** (S67.9 step (c), `dev/plans/S67.md`): the batch is one
+trace with no budget, and a stopped trace posts its snapshot; git keeps the entry.
 
 ---
 
@@ -791,6 +675,10 @@ same sleepers births a sibling.
 ---
 
 ## 2026-09-22 — a take's trace is budgeted as one batch's, and an unwalked take shifts the mutator's trace rather than adding one
+
+**Superseded in part 2026-10-01** (S67.9 step (c)): the batch has no block budget,
+so a take's trace is one batch's with no budget; what stands is that an unwalked
+take shifts the mutator's trace rather than adding one.
 
 **The Sage's ruling, `Final`**, on the finding the Critic of `PLAN.md`
 S64.3 raised and the model could not close: a take is clamped at one entry
@@ -1791,6 +1679,9 @@ finds nothing.
 ---
 
 ## 2026-09-16 — the collector's batch is bounded by three unmeasured figures, and a live root it cannot place reads live
+
+**Superseded in part 2026-10-01** (S67.9 step (c)): B is gone with the parts; K
+and its bound stand, and a live root the batch cannot place reads live.
 
 **Context.** `PLAN.md` S49.5 built the collector's batch in `cycle::worker`
 on the ruling's form (`rfc/dev/DECISIONS.md`, "the candidate queue is read

@@ -440,7 +440,6 @@ fn what_a_grown_k_costs() {
             let mut roots: Vec<usize> = samples.iter().map(|s| s.traced.roots).collect();
             roots.sort_unstable();
             roots.dedup();
-            let mut parts: Vec<usize> = samples.iter().map(|s| s.traced.parts).collect();
             let mut walls: Vec<Duration> = samples.iter().map(|s| s.traced.wall).collect();
             let complete = samples.iter().filter(|s| s.traced.complete).count();
             let (wall, least_wall) = median_and_least(&mut walls);
@@ -448,7 +447,6 @@ fn what_a_grown_k_costs() {
                 half_a_grant = wall / 2;
             }
 
-            let (median_parts, _) = median_and_least(&mut parts);
             let measured = match during {
                 During::Nothing => String::new(),
                 During::Asks | During::AsksAfter(_) => {
@@ -469,7 +467,7 @@ fn what_a_grown_k_costs() {
                 }
             };
             println!(
-                "{} {}: roots per batch {roots:?}, parts {median_parts} median, {complete} of {} \
+                "{} {}: roots per batch {roots:?}, {complete} of {} \
                  complete, the trace {wall:?} median, {least_wall:?} least{measured}",
                 shape.name,
                 match during {

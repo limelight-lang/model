@@ -31,9 +31,9 @@
 //!
 //! A batch's roots are all met before anything is expanded ([`schedule_root_if_unvisited`],
 //! then [`drain`]), so an edge into a batch root is never a first visit; the
-//! owner's batch does so (`crate::cycle::trace::trace_batch`), and a
-//! collector's part, one root to a mark, meets only its own until the
-//! collector traces a batch at once. The descent then holds every other registered target it meets for the first
+//! owner's batch and the collector's alike do so
+//! (`crate::cycle::trace::trace_batch`, `crate::cycle::worker`, "The batch").
+//! The descent then holds every other registered target it meets for the first
 //! time: the edge is subtracted, and the target goes on a held chain of the
 //! arena instead of the worklist. Once the worklist is empty, passes over the
 //! held entries expand each one whose row reads zero — every referrer of it
@@ -142,7 +142,7 @@
 //! entity the root queue names (`crate::memory::stdapi::ll_free`, the
 //! candidate arm): a count above zero cannot fall to a torn-down entity under
 //! the call that read it. The rule lives here rather than in the caller that
-//! drains the queue, so that a second caller of [`mark`] inherits it.
+//! drains the queue, so that a second caller of [`drain`] inherits it.
 
 use std::ops::ControlFlow;
 
@@ -187,7 +187,7 @@ const _: () = assert!(
 /// at which a target of that epoch is an opaque live external.
 ///
 /// The epoch is the arena's, fixed at its open (module doc, "The epoch is the
-/// arena's"); the threshold is read once per [`mark`] call and is
+/// arena's"); the threshold is read once per [`drain`] call and is
 /// [`TRAVERSAL_AGE_THRESHOLD`] or the value a test pinned through
 /// `pin_threshold`.
 #[derive(Clone, Copy)]
@@ -294,6 +294,7 @@ pub(crate) enum MarkResult {
 ///
 /// # Safety
 /// As [`drain`], and `root` as [`schedule_root_if_unvisited`] names it.
+#[cfg(test)]
 pub(crate) unsafe fn mark<R: CellReader>(
     arena: &mut TraceScratchArena,
     root: *mut RcHeader,
@@ -346,6 +347,8 @@ pub(crate) unsafe fn drain<R: CellReader>(arena: &mut TraceScratchArena) -> Mark
     if let Some(stopped) = unsafe { expand_the_worklist::<R>(arena, prune, holding) } {
         return stopped;
     }
+
+    arena.note_the_regions_ended();
 
     // A pass reads every entry held for it, and what its own expansions hold
     // in the same pass, so a chain of registered entities one in-edge each is
@@ -627,7 +630,7 @@ where
 /// read a component held by a single external reference as unreachable.
 ///
 /// # Safety
-/// As [`mark`].
+/// As [`drain`].
 pub(crate) unsafe fn schedule_root_if_unvisited(
     arena: &mut TraceScratchArena,
     root: *mut RcHeader,
@@ -695,7 +698,7 @@ pub(crate) unsafe fn schedule_root_if_unvisited(
 /// not subtracted from a dead entity changes no live row.
 ///
 /// # Safety
-/// As [`mark`], and `child` is a counted child `cells::trace_cells`
+/// As [`drain`], and `child` is a counted child `cells::trace_cells`
 /// yielded, hence an entity header: live under the mutator's reader, live or
 /// torn down under a concurrent one.
 unsafe fn visit_child<R: CellReader>(

@@ -546,6 +546,7 @@ pub(crate) unsafe fn for_each_of_color(
 /// # Safety
 /// `array` is an initialised array of this collection, and its rows still
 /// stand.
+#[cfg(test)]
 pub(crate) unsafe fn for_each_met_row(
     array: *mut RowArray,
     visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
@@ -554,12 +555,12 @@ pub(crate) unsafe fn for_each_met_row(
 }
 
 /// Visit the index of every row of `array` the trace met and the scan left
-/// [`Color::Live`], in index order, by the walk [`for_each_met_row`] takes,
+/// [`Color::Live`], in index order, by the walk `for_each_met_row` takes,
 /// stopping at the first `Break` `visit` answers, which it then answers. Its
 /// reader is the collector's live list (`crate::cycle::live_list`).
 ///
 /// # Safety
-/// As [`for_each_met_row`], and the collection has been scanned.
+/// As `for_each_met_row`, and the collection has been scanned.
 pub(crate) unsafe fn for_each_live_met_row(
     array: *mut RowArray,
     visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
@@ -571,7 +572,7 @@ pub(crate) unsafe fn for_each_live_met_row(
 /// colour `wanted` accepts.
 ///
 /// # Safety
-/// As [`for_each_met_row`].
+/// As `for_each_met_row`.
 unsafe fn for_each_met_row_where(
     array: *mut RowArray,
     wanted: impl Fn(Color) -> bool,
@@ -605,6 +606,7 @@ unsafe fn for_each_met_row_where(
 ///
 /// # Safety
 /// `array` is an initialised array.
+#[cfg(test)]
 pub(crate) unsafe fn groups_met(array: *mut RowArray) -> u32 {
     let row_count = unsafe { (*array).row_count };
     let bitmap = unsafe { groups(array) };

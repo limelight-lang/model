@@ -123,7 +123,8 @@ pub const KIND_CANDIDATE_REGISTERED: u32 = 12;
 pub const KIND_BATCH_START: u32 = 13;
 
 /// A collector's batch ended its trace: `subject` is the mutator's record,
-/// `a` the exit (the `BATCH_END_*` codes), `b` the parts opened. A batch
+/// `a` the exit (the `BATCH_END_*` codes), `b` 1 when the mark's first
+/// descent had ended, every root's first region expanded. A batch
 /// that unwinds writes none; its roots' verdicts are still written.
 pub const KIND_BATCH_END: u32 = 14;
 
@@ -172,11 +173,6 @@ pub const KIND_WITHHELD_SLOT_RETURNED: u32 = 21;
 /// record, `a` why (the `GRANT_*` codes), `b` unused.
 pub const KIND_GRANT_WITHOUT_BATCH: u32 = 22;
 
-/// A part of a batch that met its block budget B: `subject` is the part's
-/// root, `a` what followed (the `PART_*` codes), `b` the blocks the arena
-/// held when the part stopped.
-pub const KIND_PART_MET_BUDGET: u32 = 23;
-
 /// [`KIND_CANDIDATE_REGISTERED`]: the decrement wrote the entry.
 pub const REGISTERED_NOW: u64 = 0;
 /// [`KIND_CANDIDATE_REGISTERED`]: the entity was a candidate already.
@@ -187,22 +183,19 @@ pub const BATCH_OF_A_STANDING_RING: u64 = 0;
 /// [`KIND_BATCH_START`]: R read at the threshold.
 pub const BATCH_AT_THE_THRESHOLD: u64 = 1;
 
-/// [`KIND_BATCH_END`]: every part ran to its end.
+/// [`KIND_BATCH_END`]: the mark and every scan ran to their end.
 pub const BATCH_END_COMPLETE: u64 = 0;
-/// [`KIND_BATCH_END`]: the batch ran to its end, parts deferred past B.
-pub const BATCH_END_DEFERRED_PAST_B: u64 = 1;
-/// [`KIND_BATCH_END`]: recalled in the pass over the roots before the parts.
+/// [`KIND_BATCH_END`]: recalled in the pass over the roots before the trace.
 pub const BATCH_END_RECALLED_IN_THE_PASS: u64 = 2;
-/// [`KIND_BATCH_END`]: recalled between two parts.
-pub const BATCH_END_RECALLED_BETWEEN_PARTS: u64 = 3;
-/// [`KIND_BATCH_END`]: recalled inside a part's trace or its retry.
-pub const BATCH_END_RECALLED_INSIDE_A_PART: u64 = 4;
-/// [`KIND_BATCH_END`]: recalled after a part's trace completed, in its posts
-/// or the live list's append.
-pub const BATCH_END_RECALLED_AFTER_A_PART: u64 = 5;
-/// [`KIND_BATCH_END`]: an allocation refused inside a part's trace or its
-/// retry.
-pub const BATCH_END_REFUSED_INSIDE_A_PART: u64 = 6;
+/// [`KIND_BATCH_END`]: recalled inside the mark or the scan; the snapshot of
+/// the zero rows was posted.
+pub const BATCH_END_RECALLED_IN_THE_TRACE: u64 = 4;
+/// [`KIND_BATCH_END`]: recalled after the trace completed, in the live list's
+/// append.
+pub const BATCH_END_RECALLED_AFTER_THE_TRACE: u64 = 5;
+/// [`KIND_BATCH_END`]: an allocation refused inside the mark or the scan; the
+/// snapshot of the zero rows was posted.
+pub const BATCH_END_REFUSED_IN_THE_TRACE: u64 = 6;
 
 /// [`KIND_ROOT_VERDICT`] and [`KIND_ROOT_WRITTEN_BACK`]: the discriminants of
 /// `cycle::queue::verdicts::Verdict`, which asserts them.
@@ -264,19 +257,11 @@ pub const GRANT_WORKSPACE_REFUSED: u64 = 1;
 /// room.
 pub const GRANT_NOTHING_TAKEN: u64 = 2;
 
-/// [`KIND_PART_MET_BUDGET`]: its retry under `B_max` finished.
-pub const PART_RETRY_FINISHED: u64 = 0;
-/// [`KIND_PART_MET_BUDGET`]: its met roots were deferred read live.
-pub const PART_DEFERRED: u64 = 1;
-/// [`KIND_PART_MET_BUDGET`]: the batch ended inside it or its retry, by a
-/// recall or a refusal.
-pub const PART_ENDED_THE_BATCH: u64 = 2;
-
 /// The highest kind that has a site. The mask is a `u64`, so a kind past
 /// 63 would shift out of it and enable the wrong one — a limit worth
 /// failing the build over rather than discovering as a silent
 /// misreading.
-const HIGHEST_KIND: u32 = KIND_PART_MET_BUDGET;
+const HIGHEST_KIND: u32 = KIND_GRANT_WITHOUT_BATCH;
 
 const _: () = assert!(
     HIGHEST_KIND < 64,
@@ -309,8 +294,8 @@ pub const DEFAULT_KINDS: u64 = bit(KIND_ENTITY_BIRTH)
 
 /// The collector's operations, on demand (S67.8 in `dev/plans/S67.md`):
 /// registrations, batches, verdicts, deferrals, write-backs, re-offers,
-/// turnovers, reclaimed components and returned slots, grants without a
-/// batch and parts past B.
+/// turnovers, reclaimed components and returned slots, and grants without a
+/// batch.
 pub const COLLECTOR_KINDS: u64 = bit(KIND_CANDIDATE_REGISTERED)
     | bit(KIND_BATCH_START)
     | bit(KIND_BATCH_END)
@@ -321,8 +306,7 @@ pub const COLLECTOR_KINDS: u64 = bit(KIND_CANDIDATE_REGISTERED)
     | bit(KIND_TURNOVER)
     | bit(KIND_COMPONENT_RECLAIMED)
     | bit(KIND_WITHHELD_SLOT_RETURNED)
-    | bit(KIND_GRANT_WITHOUT_BATCH)
-    | bit(KIND_PART_MET_BUDGET);
+    | bit(KIND_GRANT_WITHOUT_BATCH);
 
 /// The kinds whose `a` is a code below [`crate::journal::CODES`], which the
 /// count beside the ring keeps apart; every other kind is counted whole.

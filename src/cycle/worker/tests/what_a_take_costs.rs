@@ -2,11 +2,13 @@
 //! (`dev/BENCHMARKS.md`, "S64.5 what a take costs by the shape of its
 //! roots"; the design's "Cost", `dev/design/a-standing-r-is-taken-after-n-rounds.md`).
 //!
-//! The budget ruling says a take's trace is one batch's — bounded by
-//! [`TRACE_BLOCK_BUDGET`] blocks of the collector's arena, which bound each
-//! part of a batch traced in parts (`crate::cycle::worker`, "The batch")
-//! (`dev/DECISIONS.md`, "a take's trace is budgeted as one batch's, and an
-//! unwalked take shifts the mutator's trace rather than adding one"); a root
+//! The budget ruling said a take's trace is one batch's — bounded then by
+//! `TRACE_BLOCK_BUDGET` blocks of the collector's arena, which bounded each
+//! part of a batch traced in parts (`dev/DECISIONS.md`, "a take's trace is
+//! budgeted as one batch's, and an unwalked take shifts the mutator's trace
+//! rather than adding one"); the batch is one trace now, with no budget
+//! (`crate::cycle::worker`, "The batch"), and the shapes below were sized
+//! against the budget it had. A root
 //! a take leaves unwalked is written back into R by the mutator's collection
 //! over P, untraced, for a later batch (`crate::cycle::queue::verdicts`). Two
 //! shapes of the same sixty-three roots put the budget's two sides side by
@@ -14,15 +16,16 @@
 //!
 //! - **overlapping** — every root inside one component of 381 members, the
 //!   corpus's median closure: the union of the closures is one closure, the
-//!   trace completes inside the budget, and the mutator's collection over P
-//!   reads the verdicts it posted;
+//!   trace completes, and the mutator's collection over P reads the verdicts
+//!   it posted;
 //! - **disjoint** — every root the root of a ring of its own, one member per
-//!   block, so that the row arrays the blocks reserve pass the budget
-//!   together and each ring's fit the workspace: the take runs a part per
-//!   ring, and every root comes back with a verdict of its part's. The same
-//!   take traced as one part came back `Unwalked`, and the mutator traced its
-//!   roots itself at its next poll (`dev/BENCHMARKS.md`, "S64.5 what a take
-//!   costs by the shape of its roots").
+//!   block, so that the row arrays the blocks reserve passed the old budget
+//!   together and each ring's fit the workspace. The take traces every ring
+//!   in its one trace, and every root comes back with a verdict of it; under
+//!   the budget the same take traced as one part came back `Unwalked`, and
+//!   the mutator traced its roots itself at its next poll
+//!   (`dev/BENCHMARKS.md`, "S64.5 what a take costs by the shape of its
+//!   roots").
 //!
 //! Each shape is read against a baseline: the same rings collected in line
 //! over R whole with no take. The figure is the difference between the
@@ -64,7 +67,7 @@ const COMPONENT: usize = 381;
 
 /// Members of each ring of the disjoint shape, one per block: five, so that
 /// the 63 rings touch 315 blocks whose row arrays ask about 630 KiB, half
-/// again what [`TRACE_BLOCK_BUDGET`] blocks of 64 KiB hold.
+/// again what the retired `TRACE_BLOCK_BUDGET` blocks of 64 KiB held.
 const RING_MEMBERS: usize = 5;
 
 /// The members' size class: 128 bytes, so that a block holds 512 of them and
@@ -174,7 +177,7 @@ const DISJOINT_LIVE: Shape = Shape {
 /// Members of each ring of the wide disjoint shape, one per block: twenty,
 /// so that one ring's rows, about 41 KiB of row arrays, fit the workspace
 /// above the copy, while the 63 rings touch 1 260 blocks, over four times
-/// what one trace under [`TRACE_BLOCK_BUDGET`] can hold.
+/// what one trace under the retired `TRACE_BLOCK_BUDGET` could hold.
 const WIDE_RING_MEMBERS: usize = 20;
 
 /// The live disjoint shape with rings each a part fills the workspace with:
@@ -789,11 +792,10 @@ pub(super) fn member_class(name: &str) -> *const Class {
     builder.build()
 }
 
-/// A take over `disjoint-live` runs a part per ring, each inside the workspace
-/// under the block budget that the rings together pass, so every root comes
-/// back read live and the mutator's collection over P traces no root and
-/// meets no row (`dev/BENCHMARKS.md`, "S65.5 what a mutator waits for under a
-/// take in parts").
+/// A take over `disjoint-live` traces every ring in the batch's one trace, so
+/// every root comes back read live and the mutator's collection over P traces
+/// no root and meets no row (`dev/BENCHMARKS.md`, "S65.5 what a mutator waits
+/// for under a take in parts", measured before the batch was one trace).
 #[test]
 fn a_take_over_disjoint_live_rings_leaves_the_mutator_no_root_to_trace() {
     let _g = test_guard();
@@ -822,10 +824,10 @@ fn a_take_over_disjoint_live_rings_leaves_the_mutator_no_root_to_trace() {
     assert_eq!(
         batches
             .iter()
-            .map(|batch| (batch.roots, batch.parts, batch.complete))
+            .map(|batch| (batch.roots, batch.traced, batch.complete))
             .collect::<Vec<_>>(),
-        vec![(ROOTS, ROOTS, true)],
-        "one part per ring, every one complete"
+        vec![(ROOTS, true, true)],
+        "one trace for the rings, complete"
     );
     // Every root read live, so the batch proposed nothing and its release
     // owed P's disposition alone: the poll disposed of P and no collection
