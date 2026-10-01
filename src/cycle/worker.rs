@@ -84,7 +84,9 @@
 //! at most K posts and one advance of R — and one reset of the arena; a grant whose
 //! mark stands before the batch is made is released with no batch. What the
 //! mutator whose batch is traced waits through is therefore one stride of
-//! positions, those posts and that reset, whatever the width of an entity
+//! positions, those posts, at most one more stride of the zero closure a
+//! stopped batch posts as its set (`crate::cycle::scan::colour_the_zero_closure`)
+//! and that reset, whatever the width of an entity
 //! (`rfc/model/gc/rc-cycle.md`, "The recall of the token"). The reset is
 //! bounded by what the trace touched — every heap block it met a row in and
 //! every block the arena drew — which with no budget is up to the traced
@@ -250,7 +252,7 @@ use crate::cycle::mark::{MarkResult, drain, schedule_root_if_unvisited};
 use crate::cycle::mutator_record::{self, MutatorRecord};
 use crate::cycle::queue::verdicts::{Verdict, VerdictWriter};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
-use crate::cycle::scan::{ScanResult, colour_the_zero_closure, scan};
+use crate::cycle::scan::{ScanResult, colour_the_zero_closure, scan, undo_the_unreachable};
 use crate::cycle::shadow::{self, Color};
 use crate::cycle::token::{COLLECTOR, MUTATOR, POSTED, REQUESTED, Withdrawn, state, word};
 use crate::journal::kinds::{self as journal, journal_event};
@@ -2850,6 +2852,7 @@ unsafe fn post_at_a_stop(
     // which the mark had crossed (`crate::cycle::scan::colour_the_zero_closure`).
     if posts.proposed.get() {
         arena.drop_the_work();
+        unsafe { undo_the_unreachable(arena) };
         for index in 0..posts.roots.len() {
             let root = posts.root(index);
             if unsafe { colour_the_zero_closure::<AtomicCells>(arena, root) }

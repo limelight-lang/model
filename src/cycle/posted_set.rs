@@ -31,8 +31,10 @@
 //! it to the next draw of any class or kind, and a run can be unmapped. The
 //! owner must never read a listed address in such memory. A block a listed
 //! member stands in is empty only if that member died — a member proposed
-//! wrongly — so the set records the blocks its members stand in, and a return
-//! of one of them under `POSTED` drops the set whole
+//! wrongly; one the mutator tore down during the grant is not listed — so the
+//! set records the blocks its members stand in, listing a member's block
+//! before the member, and a return of one of them under `POSTED` drops the
+//! set whole
 //! ([`drop_before_a_return`]); every other return passes it by. The hooks
 //! stand where the live list's do: at the pool's `put` and at the unmapping
 //! of a run.
@@ -218,9 +220,15 @@ impl Writer {
                         return ControlFlow::Continue(());
                     };
 
-                    if !self.members.push(entity as usize)
-                        || (!listed_here && !self.blocks.push(block as usize))
-                    {
+                    // A member the mutator tore down during the grant is no
+                    // garbage the owner needs, and its withheld return could
+                    // empty the block after the release and drop the set; the
+                    // slot is withheld, so its state reads the death.
+                    if crate::refcount::slot_state(entity) != crate::refcount::SlotState::Live {
+                        return ControlFlow::Continue(());
+                    }
+
+                    if !self.list(entity, block, !listed_here) {
                         self.closed = true;
                         return ControlFlow::Break(());
                     }
@@ -231,6 +239,26 @@ impl Writer {
             };
             array = unsafe { (*array).next };
         }
+    }
+
+    /// List `entity`, and first `block` where `first_in_block` says the block
+    /// is not listed yet; false where the pool refused a block. The block goes
+    /// first: a member listed without its block would let the block's return
+    /// pass the hook, and the owner read the member's address in whatever the
+    /// pool handed the block to.
+    fn list(&mut self, entity: *mut RcHeader, block: *mut u8, first_in_block: bool) -> bool {
+        if first_in_block {
+            #[cfg(test)]
+            if testing::refuses_the_next_block() {
+                return false;
+            }
+
+            if !self.blocks.push(block as usize) {
+                return false;
+            }
+        }
+
+        self.members.push(entity as usize)
     }
 
     /// Leave the set on `mutator`'s record for its collection over P, and
@@ -248,6 +276,12 @@ impl Writer {
         }
         let head = this.members.head;
         unsafe { (*head).blocks = this.blocks.head };
+        #[cfg(test)]
+        testing::note_members_posted(
+            blocks_from(head)
+                .map(|block| unsafe { (*block).entries })
+                .sum(),
+        );
         let blocks = this.members.blocks + this.blocks.blocks;
         gc_metadata::hand_over(blocks, blocks * BLOCK_PAYLOAD);
         mutator.publish_posted_set(head.cast());
@@ -395,6 +429,47 @@ pub(crate) mod testing {
     }
 
     static DROPPED_AT_A_RETURN: AtomicUsize = AtomicUsize::new(0);
+    static REFUSE_THE_NEXT_BLOCK: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    static MEMBERS_POSTED: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+    /// Have the next listing of a member's block fail as a pool's refusal of
+    /// the blocks' chain would.
+    pub(crate) fn refuse_the_next_block() {
+        REFUSE_THE_NEXT_BLOCK.store(true, Ordering::Relaxed);
+    }
+
+    pub(super) fn refuses_the_next_block() -> bool {
+        REFUSE_THE_NEXT_BLOCK.swap(false, Ordering::Relaxed)
+    }
+
+    pub(super) fn note_members_posted(members: usize) {
+        MEMBERS_POSTED.store(members, Ordering::Relaxed);
+    }
+
+    /// The members the last published set held, or `None` since the last
+    /// call.
+    pub(crate) fn take_members_posted() -> Option<usize> {
+        match MEMBERS_POSTED.swap(usize::MAX, Ordering::Relaxed) {
+            usize::MAX => None,
+            members => Some(members),
+        }
+    }
+
+    /// List `entity` in `set` as `Writer::append` does, its block first where
+    /// `first_in_block` says so: the case of a refused block.
+    pub(crate) fn list(set: &mut Writer, entity: *mut RcHeader, first_in_block: bool) -> bool {
+        set.list(
+            entity,
+            BlockHeader::of_ptr(entity.cast()).cast(),
+            first_in_block,
+        )
+    }
+
+    /// Whether `set` lists any member, and how many blocks.
+    pub(crate) fn listed(set: &Writer) -> (bool, usize) {
+        (!set.members.head.is_null(), set.blocks.blocks)
+    }
 
     pub(super) fn note_a_set_dropped_at_a_return() {
         DROPPED_AT_A_RETURN.fetch_add(1, Ordering::Relaxed);

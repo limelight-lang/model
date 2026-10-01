@@ -19,8 +19,8 @@ out of the set, scans, frees what the scan leaves, and stamps nothing. Sound for
 any set of live entities, so D1's reissued slot costs a refusal. A return of a
 block a member stands in drops the set. B_owner is not built: the zero-only rule
 cannot prove a cycle no proposed root closes (the Critic's r, a, b), and a count
-would bring back the walk. Measured on web-arena-40k (cloud box): owner time
-1.07 s to 0.15–0.18 s, its longest collection 150 ms to 3–6 ms, freed the same.
+would bring back the walk. Measured on web-arena-40k (cloud box): the owner's
+longest collection 150 ms to 3–6 ms, 46.6k freed against 39k, no garbage left.
 
 ---
 

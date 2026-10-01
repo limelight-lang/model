@@ -165,13 +165,12 @@ fn the_exit_leaves_no_unwalked_root_behind() {
     assert_eq!(DESTRUCTOR_RUNS.load(Ordering::Relaxed), 2);
 }
 
-/// An unwalked root inside a proposal's closure is traced by the collection
-/// over P all the same, as a member of that closure, and may read live there;
-/// it is still no root of that collection, so the close writes it back into R
-/// rather than deferring it on that reading, while the proposal it read live
-/// is deferred.
+/// An unwalked root a proposal reaches is no root of the collection over P,
+/// and its close writes it back into R; so is the proposal the collection
+/// read live, its reading of the posted set alone proving no liveness
+/// (`crate::cycle::posted_set`): the collector's next batch reads both again.
 #[test]
-fn an_unwalked_root_a_proposal_reaches_is_written_back_rather_than_deferred() {
+fn an_unwalked_root_and_a_proposal_read_live_are_written_back_rather_than_deferred() {
     let _g = test_guard();
     reset();
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
@@ -213,11 +212,11 @@ fn an_unwalked_root_a_proposal_reaches_is_written_back_rather_than_deferred() {
     assert_eq!(posted, Posted::Batch(2));
 
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 0, "the case holds both");
-    assert_eq!(deferred_count(), 1, "the proposal, read live, was deferred");
+    assert_eq!(deferred_count(), 0, "nothing was deferred");
     assert_eq!(
         candidate_count(),
-        1,
-        "the unwalked root was written back into R"
+        2,
+        "the unwalked root and the proposal read live were written back into R"
     );
 
     unsafe {

@@ -200,10 +200,15 @@ unsafe fn classify_and_schedule_entity(
 /// closure from the proposed roots leaves it out, stopping at the first row
 /// above zero — the state's entry, held from outside.
 ///
-/// It reads no recall, the trace having stopped at one: what the mutator
-/// waits through is the closure's cells, which are the proposed garbage's own.
-/// `CellReader` is the trace's own; the worklist is the arena's, emptied of
-/// the stopped mark's work first ([`TraceScratchArena::drop_the_work`]).
+/// It counts positions toward the recall as the trace does and stops where a
+/// reading finds it, so the mutator a recall stopped waits through at most
+/// one more stride: a proposed root inside a live structure whose interior
+/// rows read zero would otherwise have the closure walk that structure. What
+/// it coloured by then is a sound set, any subset being one
+/// (`crate::cycle::posted_set`). The worklist is the arena's, emptied of the
+/// stopped mark's work first ([`TraceScratchArena::drop_the_work`]), and the
+/// rows a scan cut short coloured potentially unreachable read unclassified
+/// again first ([`undo_the_unreachable`]).
 ///
 /// # Safety
 /// As [`scan`], the trace's rows still standing.
@@ -219,20 +224,51 @@ pub(crate) unsafe fn colour_the_zero_closure<R: CellReader>(
         let kind = unsafe { cells::entity_kind(entry.entity) };
         let closure = ZeroClosure { arena: &mut *arena };
         if unsafe { cells::trace_cells_until::<R>(entry.entity, kind, closure) }.is_break() {
-            return ScanResult::AllocationFailed;
+            return if arena.was_recalled() {
+                ScanResult::Recalled
+            } else {
+                ScanResult::AllocationFailed
+            };
         }
     }
 
     ScanResult::Complete
 }
 
+/// Colour unclassified again every row a scan cut short left potentially
+/// unreachable, keeping its count: the cut scan's queue is gone, so a row it
+/// coloured and had not expanded would close the zero closure early and leave
+/// the rest of its component out of the set ([`colour_the_zero_closure`]).
+/// The walk reads the met groups, as the reset does.
+///
+/// # Safety
+/// As [`colour_the_zero_closure`].
+pub(crate) unsafe fn undo_the_unreachable(arena: &TraceScratchArena) {
+    let mut array = arena.touched_head();
+    while !array.is_null() {
+        let (block, population) = unsafe { ((*array).block, (*array).population) };
+        let _ = unsafe {
+            crate::cycle::row::for_each_proposable_met(array, block, population, |index| {
+                let row = crate::cycle::row::row_at(array, block, population, index);
+                shadow::recolor(row, Color::Unclassified);
+                std::ops::ControlFlow::Continue(())
+            })
+        };
+        array = unsafe { (*array).next };
+    }
+}
+
 /// The visitor of [`colour_the_zero_closure`]: each counted child is offered
-/// to [`colour_if_zero`], and positions count toward nothing.
+/// to [`colour_if_zero`], and each position counts toward the recall.
 struct ZeroClosure<'a> {
     arena: &'a mut TraceScratchArena,
 }
 
 impl cells::CellVisitor for ZeroClosure<'_> {
+    fn position(&mut self) -> std::ops::ControlFlow<()> {
+        self.arena.inspect_position()
+    }
+
     fn cell(&mut self, cell: cells::Cell) -> std::ops::ControlFlow<()> {
         if unsafe { colour_if_zero(self.arena, cell.child) } {
             std::ops::ControlFlow::Continue(())

@@ -532,7 +532,13 @@ unsafe fn collection(form: BatchForm) -> Collection {
     // through it would be read as an entity address one byte along.
     window.dispose_batch_on_close(outcome.at_turnovers);
     _collecting.retirement_runs_at_the_close();
-    window.mark_roots_for_deferral(outcome.initial == ValidationResult::ExternallyReferenced);
+    // A collection over P read the posted set alone, so a root it read live
+    // is no proof of liveness: it goes back into R for the collector's next
+    // batch, which posts a set of its own, rather than to the deferred lane
+    // for an epoch.
+    if form == BatchForm::AllRoots {
+        window.mark_roots_for_deferral(outcome.initial == ValidationResult::ExternallyReferenced);
+    }
     let ending = match outcome.initial {
         _ if !proposed => Ending::NothingProposed,
         ValidationResult::ExternallyReferenced => Ending::Live,
