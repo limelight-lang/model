@@ -1131,6 +1131,17 @@ impl TraceScratchArena {
         self.in_a_pass = false;
     }
 
+    /// Forget what a stopped trace left to expand — the worklist and both held
+    /// chains — keeping every row: the stopped batch's walk of its zero
+    /// closure reuses the worklist (`crate::cycle::scan::colour_the_zero_closure`).
+    /// The segments forgotten stay in the bump until the reset.
+    pub(crate) fn drop_the_work(&mut self) {
+        self.worklist.rewind();
+        self.held.rewind();
+        self.held_next.rewind();
+        self.in_a_pass = false;
+    }
+
     /// Note that a mark's first descent emptied the worklist: every root met
     /// so far has had its first region expanded, and what remains is held.
     pub(crate) fn note_the_regions_ended(&mut self) {

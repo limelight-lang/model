@@ -34,7 +34,8 @@
 
 use crate::cells::CellReader;
 use crate::cycle::arena::TraceScratchArena;
-use crate::cycle::mark::{MarkResult, drain, schedule_root_if_unvisited};
+use crate::cycle::mark::{MarkResult, drain, drain_within_the_met, schedule_root_if_unvisited};
+use crate::cycle::posted_set::PostedSet;
 use crate::cycle::queue::Batch;
 use crate::cycle::scan::{ScanResult, scan};
 
@@ -143,3 +144,53 @@ pub(crate) unsafe fn trace_batch<R: CellReader>(
 
 #[cfg(test)]
 mod tests;
+
+/// Trace the set a collection over P validates: every member of `set` and
+/// every root of `batch` met first, a slot whose count reads zero met by
+/// nobody, then [`drain_within_the_met`], then a scan from each — trial
+/// deletion restricted to the set, whose potentially unreachable rows are
+/// closed under referrers whatever the set holds
+/// (`crate::cycle::posted_set`, "Why the set and not its roots"). Without a
+/// set the roots are the set. Answers the roots of `batch` traced, as
+/// [`trace_batch`] does.
+///
+/// # Safety
+/// As [`trace_batch`], on the owning thread through `PlainCells`: every
+/// member of `set` is an address the collector listed in this thread's heap,
+/// no block of which went back to the pool since (`posted_set`'s hooks).
+pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
+    arena: &mut TraceScratchArena,
+    batch: &Batch,
+    set: Option<&PostedSet>,
+) -> (TraceOutcome, usize) {
+    let members = || set.into_iter().flat_map(PostedSet::members);
+    let mut refused = members().any(|member| !unsafe { schedule_root_if_unvisited(arena, member) });
+    let mut traced = 0;
+    if !refused {
+        batch.walk_roots(|root| {
+            traced += 1;
+            refused = !unsafe { schedule_root_if_unvisited(arena, root) };
+            !refused
+        });
+    }
+
+    if refused || unsafe { drain_within_the_met::<R>(arena) } != MarkResult::Complete {
+        return (TraceOutcome::AllocationFailed, traced);
+    }
+
+    crate::cycle::row::note_phase_boundary();
+    if members().any(|member| unsafe { scan::<R>(arena, member) } != ScanResult::Complete) {
+        return (TraceOutcome::AllocationFailed, traced);
+    }
+
+    batch.walk_roots(|root| {
+        refused = unsafe { scan::<R>(arena, root) } != ScanResult::Complete;
+        !refused
+    });
+    if refused {
+        return (TraceOutcome::AllocationFailed, traced);
+    }
+
+    crate::cycle::token::note_last_row_read();
+    (TraceOutcome::Complete, traced)
+}

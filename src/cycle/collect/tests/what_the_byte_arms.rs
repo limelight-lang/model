@@ -545,9 +545,9 @@ fn the_fire_the_byte_arms_reads_one_entry_of_r() {
 
 /// The members a collection over P tears down behind its batch come back at
 /// its own close: a ring whose every member is registered, proposed through
-/// one root, returns every slot, and R is empty behind it (`dev/DECISIONS.md`,
-/// "the close of a collection over P frees the run of completed deaths at
-/// R's front").
+/// one root with the ring posted as its set, returns every slot, and R is
+/// empty behind it (`dev/DECISIONS.md`, "the close of a collection over P
+/// frees the run of completed deaths at R's front").
 #[test]
 fn the_fire_over_p_returns_the_members_its_teardown_killed_in_r() {
     let _g = test_guard();
@@ -560,6 +560,12 @@ fn the_fire_over_p_returns_the_members_its_teardown_killed_in_r() {
     assert_eq!(candidate_count(), members);
     assert_eq!(stand_in_posts(1, Verdict::Proposed), Posted::Batch(1));
     assert_eq!(candidate_count(), members - 1);
+    crate::cycle::posted_set::testing::post_for_test(
+        &ring
+            .iter()
+            .map(|&member| member as *mut crate::refcount::RcHeader)
+            .collect::<Vec<_>>(),
+    );
 
     assert_eq!(unsafe { ll_gc_maybe_collect() }, members);
     assert_eq!(state(byte()), FREE);

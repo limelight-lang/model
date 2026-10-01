@@ -297,6 +297,33 @@ pub(crate) unsafe fn for_each_live_met(
     unsafe { crate::cycle::shadow::for_each_live_met_row(array, visit) }
 }
 
+/// Visit the index of every row of `block` the trace met and left potentially
+/// unreachable ([`crate::cycle::shadow::is_proposable`]), stopping
+/// at the first `Break` `visit` answers, which it then answers: the met groups
+/// alone, as [`for_each_live_met`] walks them. Its reader is the collector's
+/// posted set (`crate::cycle::posted_set`).
+///
+/// # Safety
+/// As [`for_each_unreachable`], the collection scanned or stopped short.
+pub(crate) unsafe fn for_each_proposable_met(
+    array: *mut crate::cycle::shadow::RowArray,
+    block: *mut u8,
+    population: Population,
+    mut visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    if population == Population::SingleEntity {
+        crate::cycle::shadow::note_row_read();
+        let row = unsafe { *crate::memory::large_entity::shadow_row(block) };
+        if !crate::cycle::shadow::is_proposable(row) {
+            return std::ops::ControlFlow::Continue(());
+        }
+
+        return visit(SINGLE_ENTITY_INDEX);
+    }
+
+    unsafe { crate::cycle::shadow::for_each_proposable_met_row(array, visit) }
+}
+
 /// The walk both colours take: a large entity's one row is read out of its
 /// block header, every other population's out of the array.
 ///

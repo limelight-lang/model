@@ -551,7 +551,7 @@ pub(crate) unsafe fn for_each_met_row(
     array: *mut RowArray,
     visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
 ) -> std::ops::ControlFlow<()> {
-    unsafe { for_each_met_row_where(array, |color| color != Color::Untouched, visit) }
+    unsafe { for_each_met_row_where(array, |row| color(row) != Color::Untouched, visit) }
 }
 
 /// Visit the index of every row of `array` the trace met and the scan left
@@ -565,17 +565,39 @@ pub(crate) unsafe fn for_each_live_met_row(
     array: *mut RowArray,
     visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
 ) -> std::ops::ControlFlow<()> {
-    unsafe { for_each_met_row_where(array, |color| color == Color::Live, visit) }
+    unsafe { for_each_met_row_where(array, |row| color(row) == Color::Live, visit) }
 }
 
-/// The walk of the met groups both of the above take, visiting the rows whose
-/// colour `wanted` accepts.
+/// Visit the index of every row of `array` the trace met and left
+/// [`Color::PotentiallyUnreachable`]: after a completed scan, the rows it
+/// proved unreachable; after a trace stopped short, the zero closure of its
+/// proposed roots (`crate::cycle::scan::colour_the_zero_closure`). In index
+/// order, by the walk `for_each_met_row` takes, stopping at the first `Break`
+/// `visit` answers. Its reader is the collector's posted set
+/// (`crate::cycle::posted_set`).
+///
+/// # Safety
+/// As `for_each_met_row`.
+pub(crate) unsafe fn for_each_proposable_met_row(
+    array: *mut RowArray,
+    visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
+) -> std::ops::ControlFlow<()> {
+    unsafe { for_each_met_row_where(array, is_proposable, visit) }
+}
+
+/// Whether a met row is one [`for_each_proposable_met_row`] visits.
+pub(crate) fn is_proposable(row: u32) -> bool {
+    color(row) == Color::PotentiallyUnreachable
+}
+
+/// The walk of the met groups the three above take, visiting the rows whose
+/// word `wanted` accepts.
 ///
 /// # Safety
 /// As `for_each_met_row`.
 unsafe fn for_each_met_row_where(
     array: *mut RowArray,
-    wanted: impl Fn(Color) -> bool,
+    wanted: impl Fn(u32) -> bool,
     mut visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,
 ) -> std::ops::ControlFlow<()> {
     let row_count = unsafe { (*array).row_count };
@@ -587,7 +609,7 @@ unsafe fn for_each_met_row_where(
             bits &= bits - 1;
             let first = group * GROUP;
             for index in first..(first + GROUP).min(row_count) {
-                if wanted(color(unsafe { *row(array, index) })) {
+                if wanted(unsafe { *row(array, index) }) {
                     visit(index)?;
                 }
             }

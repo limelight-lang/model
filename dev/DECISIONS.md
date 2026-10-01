@@ -9,6 +9,21 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-01 — the collector posts the set it proved unreachable, and the owner validates that set alone
+
+**Decision (Edmond, on B_owner: "владелец должен делать минимум работы"; then
+"Коллектор отдаёт владельцу весь доказанный мёртвый набор"):** a batch that
+proposes posts its potentially unreachable rows' entities, a stop its proposed
+roots' zero closure; the owner's collection over P meets them, follows no edge
+out of the set, scans, frees what the scan leaves, and stamps nothing. Sound for
+any set of live entities, so D1's reissued slot costs a refusal. A return of a
+block a member stands in drops the set. B_owner is not built: the zero-only rule
+cannot prove a cycle no proposed root closes (the Critic's r, a, b), and a count
+would bring back the walk. Measured on web-arena-40k (cloud box): owner time
+1.07 s to 0.15–0.18 s, its longest collection 150 ms to 3–6 ms, freed the same.
+
+---
+
 ## 2026-09-30 — the collector writes the maturation stamps itself, and the live list goes
 
 **Decision (Edmond, on S67.9's open question 1: "выяснилось, что коллектор сам
@@ -59,6 +74,10 @@ to the traced mutator's heap (no per-mutator count, and no ratio both binds
 and walks the state); a runtime memory limit set at deployment.
 
 ## 2026-09-30 — the collector's walk defers the batch's registered targets and expands first those whose row reads zero
+
+**Superseded in part 2026-10-01** ("the collector posts the set it proved
+unreachable…"): the owner's collection over P is bounded by no count; it reads
+the posted set alone.
 
 **Decided (Sage A of S67.9's round 2 and the Sage over items (14′) and (15′),
 Final; `dev/plans/S67.md`, S67.9):** a batch's roots are all met before any
@@ -111,6 +130,10 @@ entry below).
 ---
 
 ## 2026-09-30 — the collector's walk is ordered by the candidate bit, one trace a batch, and a stale stamp neither prunes nor orders
+
+**Superseded in part 2026-10-01** ("the collector posts the set it proved
+unreachable…"): the owner validates the collector's listed set without its own
+walk; a reissued slot costs a refusal, not a wrong free.
 
 **Decided (the Sage of S67.9's round 1, Final, over four Critics and a
 research sweep; `dev/plans/S67.md`, S67.9):** a collector's mark keeps two

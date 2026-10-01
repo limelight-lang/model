@@ -806,6 +806,7 @@ mod how_a_close_disposes_of_its_roots;
 mod what_a_batch_without_a_proposal_owes;
 mod what_a_collection_asks_the_allocator;
 mod what_a_live_reading_leaves_registered;
+mod what_a_posted_set_proves;
 mod what_an_exit_collects;
 mod what_the_byte_arms;
 mod what_the_poll_costs;

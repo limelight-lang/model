@@ -778,6 +778,10 @@ impl BlockPool {
         // the mutator stamps from at its take: under `POSTED` it stamps now,
         // before the block can serve anybody else (`cycle::live_list`).
         crate::cycle::live_list::stamp_before_a_return();
+        // A set the collector proved unreachable may name a slot of this
+        // block, which the pool would hand to the next draw of any class: the
+        // set goes first (`cycle::posted_set`).
+        crate::cycle::posted_set::drop_before_a_return(block as *mut u8);
 
         // A retained block carries promoted survivors, and it comes back
         // only through `retained::release_emptied`, which restamps it once

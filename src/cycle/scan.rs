@@ -191,6 +191,77 @@ unsafe fn classify_and_schedule_entity(
     arena.push_work(WorklistEntry { entity, row: word })
 }
 
+/// Colour potentially unreachable the zero closure of `root` in a trace that
+/// stopped short: the root, where its met row reads zero and stands
+/// unclassified, and every entity reached from a row so coloured whose own met
+/// row reads the same. What a stopped batch posts as its set
+/// (`crate::cycle::posted_set`): the rows read zero by the stop include a live
+/// state's interior, every referrer of which the mark had crossed, and the
+/// closure from the proposed roots leaves it out, stopping at the first row
+/// above zero — the state's entry, held from outside.
+///
+/// It reads no recall, the trace having stopped at one: what the mutator
+/// waits through is the closure's cells, which are the proposed garbage's own.
+/// `CellReader` is the trace's own; the worklist is the arena's, emptied of
+/// the stopped mark's work first ([`TraceScratchArena::drop_the_work`]).
+///
+/// # Safety
+/// As [`scan`], the trace's rows still standing.
+pub(crate) unsafe fn colour_the_zero_closure<R: CellReader>(
+    arena: &mut TraceScratchArena,
+    root: *mut RcHeader,
+) -> ScanResult {
+    if !unsafe { colour_if_zero(arena, root) } {
+        return ScanResult::AllocationFailed;
+    }
+
+    while let Some(entry) = arena.pop_work() {
+        let kind = unsafe { cells::entity_kind(entry.entity) };
+        let closure = ZeroClosure { arena: &mut *arena };
+        if unsafe { cells::trace_cells_until::<R>(entry.entity, kind, closure) }.is_break() {
+            return ScanResult::AllocationFailed;
+        }
+    }
+
+    ScanResult::Complete
+}
+
+/// The visitor of [`colour_the_zero_closure`]: each counted child is offered
+/// to [`colour_if_zero`], and positions count toward nothing.
+struct ZeroClosure<'a> {
+    arena: &'a mut TraceScratchArena,
+}
+
+impl cells::CellVisitor for ZeroClosure<'_> {
+    fn cell(&mut self, cell: cells::Cell) -> std::ops::ControlFlow<()> {
+        if unsafe { colour_if_zero(self.arena, cell.child) } {
+            std::ops::ControlFlow::Continue(())
+        } else {
+            std::ops::ControlFlow::Break(())
+        }
+    }
+}
+
+/// Colour `entity` potentially unreachable and queue it where its met row
+/// reads zero and stands unclassified; false when both allocation paths
+/// refused the worklist.
+///
+/// # Safety
+/// As [`colour_the_zero_closure`].
+unsafe fn colour_if_zero(arena: &mut TraceScratchArena, entity: *mut RcHeader) -> bool {
+    let Some(word) = (unsafe { find_initialized_row_for_entity(entity) }) else {
+        return true;
+    };
+
+    let row = unsafe { *word };
+    if shadow::color(row) != Color::Unclassified || shadow::count(row) != 0 {
+        return true;
+    }
+
+    unsafe { shadow::recolor(word, Color::PotentiallyUnreachable) };
+    arena.push_work(WorklistEntry { entity, row: word })
+}
+
 /// The row this collection met for `entity`, or `None` when it has none:
 /// an entity outside the GC heap, an address the retained population
 /// cannot place, a mature target the mark stopped at, or a slot the mark

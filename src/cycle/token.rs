@@ -877,9 +877,10 @@ pub(crate) struct HeldToken {
 /// What a take does at `POSTED` ([`HeldToken`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AtPosted {
-    /// Take the byte and stamp from the live list.
+    /// Take the byte and stamp from the live list, leaving the posted set for
+    /// the collection over P (`crate::cycle::posted_set`).
     Stamp,
-    /// Take the byte and give the live list back unread.
+    /// Take the byte and give the live list and the posted set back unread.
     GiveBack,
     /// Leave the byte, and the list with it, as they stand.
     Hold,
@@ -893,8 +894,8 @@ impl HeldToken {
     }
 
     /// Take this thread's token as [`take`](Self::take) does, and give back
-    /// unread the live list a take from `POSTED` finds: the pressure path's
-    /// take and the exit's.
+    /// unread the live list and the posted set a take from `POSTED` finds: the
+    /// pressure path's take and the exit's.
     pub(crate) fn take_giving_back_the_live_list() -> Self {
         Self::take_unless(AtPosted::GiveBack)
     }
@@ -926,10 +927,13 @@ impl HeldToken {
                     TookFrom::Posted if at_posted == AtPosted::Stamp => unsafe {
                         crate::cycle::live_list::stamp_from(record_ref)
                     },
-                    TookFrom::Posted => unsafe { crate::cycle::live_list::drop_from(record_ref) },
+                    TookFrom::Posted => {
+                        unsafe { crate::cycle::live_list::drop_from(record_ref) };
+                        crate::cycle::posted_set::drop_this_threads();
+                    }
                     TookFrom::Free => debug_assert!(
-                        record_ref.live_list().is_null(),
-                        "FREE promises a null list word"
+                        record_ref.live_list().is_null() && record_ref.posted_set().is_null(),
+                        "FREE promises a null list word and a null set word"
                     ),
                 }
                 Self {
@@ -1028,6 +1032,10 @@ impl Drop for HeldToken {
             unsafe { (*self.releases).live_list() }.is_null(),
             "FREE promises a null list word"
         );
+        // A take from `POSTED` leaves the posted set for the collection over
+        // P, which takes it under this claim; a claim that ran none gives it
+        // back here, so that `FREE` keeps its promise of a null set word.
+        crate::cycle::posted_set::drop_this_threads();
         unsafe { (*self.releases).token.release() };
     }
 }

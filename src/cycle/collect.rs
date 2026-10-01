@@ -59,7 +59,7 @@ use crate::cycle::membership::Membership;
 use crate::cycle::queue::BatchForm;
 use crate::cycle::reclamation::{DeferredReclamation, reclaim_before_drops};
 use crate::cycle::token::HeldToken;
-use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch};
+use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch, trace_within_the_set};
 use crate::cycle::validation::ValidationResult;
 use crate::journal::kinds::journal_event;
 
@@ -365,8 +365,10 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
 }
 
 /// The collection over P alone, which `POSTED` arms
-/// (`crate::gc::Arming::Verdicts`): the collector's proposed roots,
-/// validated exactly and finalized as any batch is, with nothing of R traced
+/// (`crate::gc::Arming::Verdicts`): the collector's proposed roots and the
+/// set its batch proved unreachable, traced within that set alone
+/// (`crate::cycle::posted_set`), validated exactly and finalized as any batch
+/// is, stamping nothing, with nothing of R traced
 /// and nothing of it read but the close's run of completed deaths at its
 /// front, and P disposed of whole at the close, an unwalked root written back
 /// into R untraced ([`BatchForm::Verdicts`]). Returns entities
@@ -395,7 +397,11 @@ pub(crate) unsafe fn collect_over_the_verdicts() -> usize {
 /// # Safety
 /// As [`collect_off_the_poll`].
 pub(crate) unsafe fn dispose_of_p() {
-    let _ = CollectingThread::take(BatchForm::Verdicts);
+    let collecting = CollectingThread::take(BatchForm::Verdicts);
+    // A batch that proposed nothing posts no set; one a case left standing
+    // goes back under the claim, before the release to `FREE`.
+    crate::cycle::posted_set::drop_this_threads();
+    drop(collecting);
 }
 
 /// Where a collection off the poll ended. Every arm but the last is a zero
@@ -481,7 +487,17 @@ unsafe fn collection(form: BatchForm) -> Collection {
         unsafe { crate::cycle::chain::splice_this_threads_chain_into_r(false) };
     }
 
-    let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS, form) } {
+    // The set the collector's batch proved unreachable is the collection
+    // over P's to validate, and no other collection reads it
+    // (`crate::cycle::posted_set`).
+    let set = match form {
+        BatchForm::Verdicts => crate::cycle::posted_set::take_this_threads(),
+        BatchForm::AllRoots => {
+            crate::cycle::posted_set::drop_this_threads();
+            None
+        }
+    };
+    let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS, form, set.as_ref()) } {
         Ok(traced) => traced,
         Err(TraceRefusal::NoWorkspace) => return zero(Ending::NoWorkspace),
         Err(TraceRefusal::EmptyLane) => return zero(Ending::EmptyLane),
@@ -501,7 +517,9 @@ unsafe fn collection(form: BatchForm) -> Collection {
     };
 
     let proposed = members.len() > 0;
-    let outcome = unsafe { commit(&members, window.arena()) };
+    // A collection over P read the set alone, so a row it leaves live is no
+    // proof of liveness, and it stamps nothing.
+    let outcome = unsafe { commit(&members, window.arena(), form == BatchForm::AllRoots) };
     // Per root and not per batch: one trace answers about as many components
     // as its lane holds roots, and the three answers go three ways
     // (`dev/DECISIONS.md`, "a queue root is the candidate bit, and the epoch is
@@ -544,6 +562,7 @@ unsafe fn collection(form: BatchForm) -> Collection {
 unsafe fn open_and_trace(
     roots: usize,
     form: BatchForm,
+    set: Option<&crate::cycle::posted_set::PostedSet>,
 ) -> Result<(ActiveTrace, usize), TraceRefusal> {
     let Some(mut window) = ActiveTrace::open() else {
         return Err(TraceRefusal::NoWorkspace);
@@ -558,7 +577,10 @@ unsafe fn open_and_trace(
         return Err(TraceRefusal::EmptyLane);
     }
 
-    let (outcome, traced) = unsafe { trace_batch::<PlainCells>(arena, batch, roots) };
+    let (outcome, traced) = match form {
+        BatchForm::AllRoots => unsafe { trace_batch::<PlainCells>(arena, batch, roots) },
+        BatchForm::Verdicts => unsafe { trace_within_the_set::<PlainCells>(arena, batch, set) },
+    };
     if outcome != TraceOutcome::Complete {
         return Err(TraceRefusal::AllocationFailed);
     }
@@ -1028,13 +1050,14 @@ unsafe fn make_withheld_returns_before_the_retry() {
 /// # Safety
 /// As [`collect_under_pressure`].
 unsafe fn trace_and_harvest(roots: usize) -> Traced {
-    let (mut window, roots_traced) = match unsafe { open_and_trace(roots, BatchForm::AllRoots) } {
-        Ok(traced) => traced,
-        Err(TraceRefusal::EmptyLane) => return Traced::Nothing,
-        Err(TraceRefusal::NoWorkspace | TraceRefusal::AllocationFailed) => {
-            return Traced::AllocationFailed;
-        }
-    };
+    let (mut window, roots_traced) =
+        match unsafe { open_and_trace(roots, BatchForm::AllRoots, None) } {
+            Ok(traced) => traced,
+            Err(TraceRefusal::EmptyLane) => return Traced::Nothing,
+            Err(TraceRefusal::NoWorkspace | TraceRefusal::AllocationFailed) => {
+                return Traced::AllocationFailed;
+            }
+        };
 
     // Armed after the trace answered and never before: a trace that gave up
     // leaves no colour that is a verdict, and a harvest of its rows would name
@@ -1251,11 +1274,15 @@ struct CommitOutcome {
 /// Every member of `members` is an entity of this thread's GC heap whose slot
 /// is still its own, the membership is valid for the whole call, and the call
 /// runs on the owning thread with no mutator beside it.
-unsafe fn commit(members: &Membership<'_>, arena: &mut TraceScratchArena) -> CommitOutcome {
+unsafe fn commit(
+    members: &Membership<'_>,
+    arena: &mut TraceScratchArena,
+    stamps: bool,
+) -> CommitOutcome {
     let mut initial = ValidationResult::ZeroCountMember;
     let at_turnovers = arena.turnovers();
     let freed = match unsafe {
-        commit_before_drops(members, arena, |result| {
+        commit_before_drops(members, arena, stamps, |result| {
             initial = result;
         })
     } {
@@ -1313,7 +1340,7 @@ unsafe fn commit_under_pressure(
     let outcome = {
         let listed = Membership::listed(members.entities_mut());
         unsafe {
-            commit_before_drops(&listed, arena, |initial| {
+            commit_before_drops(&listed, arena, true, |initial| {
                 reading = Some((initial, at_turnovers));
             })
         }
@@ -1371,6 +1398,7 @@ unsafe fn commit_under_pressure(
 unsafe fn commit_before_drops<'a>(
     members: &Membership<'_>,
     arena: &'a mut TraceScratchArena,
+    stamps: bool,
     initial_disposition: impl FnOnce(ValidationResult),
 ) -> Option<(usize, DeferredReclamation<'a>)> {
     fire_injected_verdict_race();
@@ -1380,7 +1408,9 @@ unsafe fn commit_before_drops<'a>(
     // to tear down takes: a live heap with no garbage in it is exactly the
     // collection whose components the descent is here to mature
     // (`crate::cycle::maturation`).
-    unsafe { stamp_live_components(members, arena, finalization.epoch()) };
+    if stamps {
+        unsafe { stamp_live_components(members, arena, finalization.epoch()) };
+    }
     let initial = if members.len() == 0 {
         ValidationResult::ZeroCountMember
     } else {

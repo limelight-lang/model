@@ -418,6 +418,44 @@ pub(crate) unsafe fn drain<R: CellReader>(arena: &mut TraceScratchArena) -> Mark
     MarkResult::Complete
 }
 
+/// Expand every root met since the arena's last drain, and nothing else: an
+/// edge into a met row is subtracted from it, and an edge into anything else
+/// is followed no further and met by nobody. The mark of a collection over P
+/// that was handed the set the collector proved unreachable
+/// (`crate::cycle::posted_set`): the set's members are the roots, so the rows
+/// this leaves are trial deletion restricted to the set, and the scan after
+/// it colours live whatever a member above zero reaches inside it. No prune:
+/// every edge between two members is subtracted whatever the target's stamp.
+///
+/// # Safety
+/// As [`drain`].
+pub(crate) unsafe fn drain_within_the_met<R: CellReader>(
+    arena: &mut TraceScratchArena,
+) -> MarkResult {
+    while let Some(entry) = arena.pop_work() {
+        #[cfg(test)]
+        note_expansion(entry.entity);
+        let kind = unsafe { cells::entity_kind(entry.entity) };
+        let expansion = Expansion::<R, _>::new(arena, |_, child| {
+            if let EdgeTarget::Tracked(key) = unsafe { resolve_edge_target(child) }
+                && let Some(row) = unsafe { find_initialized_row(key) }
+            {
+                unsafe { shadow::subtract(row, 1, !R::CONCURRENT) };
+            }
+            true
+        });
+        if unsafe { cells::trace_cells_until::<R>(entry.entity, kind, expansion) }.is_break() {
+            return if arena.was_recalled() {
+                MarkResult::Recalled
+            } else {
+                MarkResult::AllocationFailed
+            };
+        }
+    }
+
+    MarkResult::Complete
+}
+
 /// Whether a descent holds the registered targets it meets for the first
 /// time, or expands them as it meets them (module doc, "The held stack").
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

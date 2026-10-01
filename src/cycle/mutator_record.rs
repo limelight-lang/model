@@ -297,6 +297,16 @@ struct WriterLine {
     /// after it. On this line because the round loads [`WriterLine::r_tail_block`]
     /// beside it.
     merges: AtomicU32,
+    /// The first block of the set the last grant's batch proved unreachable,
+    /// for the mutator's collection over P to validate and free, and null for
+    /// none (`crate::cycle::posted_set`). Written by the collector once a
+    /// grant, under it and before the release that stores `POSTED`, with a
+    /// release of its own; read by the mutator's returns of blocks and taken
+    /// back to null by one swap on the mutator's thread, after its acquire
+    /// reading of `POSTED`. On the mutator's line because the mutator reads it
+    /// at returns and the collector writes it once a grant. `FREE` promises a
+    /// null word, as it promises an empty P.
+    posted_set: AtomicPtr<BlockHeader>,
 }
 
 /// The line the collector, the exit and the registry share.
@@ -481,6 +491,7 @@ impl WriterLine {
             collecting: AtomicBool::new(false),
             freeing_dispositions: AtomicU32::new(0),
             merges: AtomicU32::new(0),
+            posted_set: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -792,8 +803,37 @@ impl MutatorRecord {
     pub(crate) fn clear_posted_for_test(&self) {
         if self.token.take_posted_for_test() {
             unsafe { crate::cycle::live_list::drop_from(self) };
+            crate::cycle::posted_set::drop_this_threads();
             self.token.release();
         }
+    }
+
+    /// Publish `head`, the first block of the set this grant's batch proved
+    /// unreachable ([`MutatorRecord::posted_set`]), on the collector's thread
+    /// under its grant and before the release, whose store of `POSTED` is what
+    /// the mutator reads it behind.
+    #[inline]
+    pub(crate) fn publish_posted_set(&self, head: *mut BlockHeader) {
+        debug_assert!(
+            self.writer.posted_set.load(Ordering::Relaxed).is_null(),
+            "a grant opened over a set nobody consumed"
+        );
+        self.writer.posted_set.store(head, Ordering::Release);
+    }
+
+    /// The set standing on this record, or null: the mutator's filter before
+    /// it reads the byte, which decides whether the set is its own yet.
+    #[inline]
+    pub(crate) fn posted_set(&self) -> *mut BlockHeader {
+        self.writer.posted_set.load(Ordering::Acquire)
+    }
+
+    /// Take the set off this record, leaving null.
+    #[inline]
+    pub(crate) fn take_posted_set(&self) -> *mut BlockHeader {
+        self.writer
+            .posted_set
+            .swap(std::ptr::null_mut(), Ordering::Acquire)
     }
 
     /// Take the live list off this record, leaving null: the one swap that
@@ -1401,6 +1441,14 @@ fn take_record() -> *mut MutatorRecord {
             debug_assert!(
                 (*released).hold.live_list.load(Ordering::Relaxed).is_null(),
                 "the exit's take consumes the live list a life left"
+            );
+            debug_assert!(
+                (*released)
+                    .writer
+                    .posted_set
+                    .load(Ordering::Relaxed)
+                    .is_null(),
+                "the exit's take consumes the posted set a life left"
             );
             #[cfg(feature = "collector-chain")]
             {

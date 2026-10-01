@@ -187,6 +187,7 @@ pub(crate) unsafe fn free(block: *mut u8, kind: u32) {
             // (`cycle::live_list`). The pooled form meets the same step in
             // the pool's `put`.
             crate::cycle::live_list::stamp_before_a_return();
+            crate::cycle::posted_set::drop_before_a_return(block);
             crate::memory::os::unmap(block, run_bytes);
         }
         _ => debug_assert!(false, "not a large-entity block: kind {kind}"),

@@ -33,8 +33,10 @@
 //! every root is met before any is expanded, one mark
 //! ([`crate::cycle::mark::drain`]) expands what they reach in the held
 //! stack's order, one scan from each root colours the closure, and each root
-//! is posted *proposed* or *read live* off its colour ([`verdict_for`]). No
-//! budget bounds the trace: what bounds it is the traced mutator's heap
+//! is posted *proposed* or *read live* off its colour ([`verdict_for`]); a
+//! batch that proposes posts beside its verdicts the set it proved
+//! unreachable, which the owner's collection over P validates alone
+//! (`crate::cycle::posted_set`). No budget bounds the trace: what bounds it is the traced mutator's heap
 //! (`dev/DECISIONS.md`, 2026-09-30, "the collector's trace has no rows
 //! ceiling"). A refused allocation or the mutator's recall of its token stops
 //! the trace where it stands, and the stop posts the snapshot
@@ -248,7 +250,7 @@ use crate::cycle::mark::{MarkResult, drain, schedule_root_if_unvisited};
 use crate::cycle::mutator_record::{self, MutatorRecord};
 use crate::cycle::queue::verdicts::{Verdict, VerdictWriter};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
-use crate::cycle::scan::{ScanResult, scan};
+use crate::cycle::scan::{ScanResult, colour_the_zero_closure, scan};
 use crate::cycle::shadow::{self, Color};
 use crate::cycle::token::{COLLECTOR, MUTATOR, POSTED, REQUESTED, Withdrawn, state, word};
 use crate::journal::kinds::{self as journal, journal_event};
@@ -2324,6 +2326,8 @@ unsafe fn batch(
     // The live list the trace writes, published below for the mutator's take;
     // dropped on the unwind, which gives its blocks back here.
     let mut live = crate::cycle::live_list::Writer::new(arena.turnovers());
+    // The set the trace proves unreachable, published beside it.
+    let mut set = crate::cycle::posted_set::Writer::new();
     // From the guard on, every root is owed a verdict and R its advance, on
     // the unwind too, and the release that follows is to `POSTED` or, with no
     // set proposed, to `NOTHING_PROPOSED`. With the chain a root read live
@@ -2359,10 +2363,10 @@ unsafe fn batch(
     #[cfg(test)]
     let outcome = match testing::stubbed_trace() {
         Some(wall) => unsafe { stub_the_trace(arena, &mut posts, traced_from + wall) },
-        None => unsafe { trace_the_batch(arena, &mut posts, &mut live) },
+        None => unsafe { trace_the_batch(arena, &mut posts, &mut live, &mut set) },
     };
     #[cfg(not(test))]
-    let outcome = unsafe { trace_the_batch(arena, &mut posts, &mut live) };
+    let outcome = unsafe { trace_the_batch(arena, &mut posts, &mut live, &mut set) };
     let complete = outcome.complete;
     journal_event!(
         journal::KIND_BATCH_END,
@@ -2405,8 +2409,9 @@ unsafe fn batch(
     // goes back here, the mutator taking no list from `FREE`.
     if posted.get() {
         live.publish(mutator, serve_clock_now());
+        set.publish(mutator);
     } else {
-        drop(live);
+        drop((live, set));
     }
     mutator.note_batch();
     if at_the_threshold {
@@ -2708,6 +2713,7 @@ unsafe fn trace_the_batch(
     arena: &mut TraceScratchArena,
     posts: &mut FinishThePosts<'_>,
     live: &mut crate::cycle::live_list::Writer,
+    set: &mut crate::cycle::posted_set::Writer,
 ) -> BatchOutcome {
     let outcome = BatchOutcome::default();
     for index in 0..posts.roots.len() {
@@ -2730,12 +2736,12 @@ unsafe fn trace_the_batch(
         if !posts.has_a_verdict(index)
             && !unsafe { schedule_root_if_unvisited(arena, posts.root(index)) }
         {
-            return unsafe { post_at_a_stop(arena, posts, outcome) };
+            return unsafe { post_at_a_stop(arena, posts, set, outcome) };
         }
     }
 
     if unsafe { drain::<AtomicCells>(arena) } != MarkResult::Complete {
-        return unsafe { post_at_a_stop(arena, posts, outcome) };
+        return unsafe { post_at_a_stop(arena, posts, set, outcome) };
     }
 
     #[cfg(test)]
@@ -2757,7 +2763,7 @@ unsafe fn trace_the_batch(
         testing::note_positions_after_the_hook(arena.positions_inspected() - from);
     }
     if !scanned {
-        return unsafe { post_at_a_stop(arena, posts, outcome) };
+        return unsafe { post_at_a_stop(arena, posts, set, outcome) };
     }
     #[cfg(test)]
     unsafe {
@@ -2769,6 +2775,10 @@ unsafe fn trace_the_batch(
             let verdict = unsafe { verdict_for(posts.root(index)) };
             posts.post(index, verdict);
         }
+    }
+
+    if posts.proposed.get() {
+        unsafe { set.append(arena) };
     }
 
     // A recall inside the list's walk is a stop, though every verdict stands.
@@ -2807,8 +2817,9 @@ unsafe fn trace_the_batch(
 /// # Safety
 /// As [`trace_the_batch`], and the stopped trace's rows still stand.
 unsafe fn post_at_a_stop(
-    arena: &TraceScratchArena,
+    arena: &mut TraceScratchArena,
     posts: &mut FinishThePosts<'_>,
+    set: &mut crate::cycle::posted_set::Writer,
     outcome: BatchOutcome,
 ) -> BatchOutcome {
     let regions_ended = arena.regions_ended();
@@ -2832,6 +2843,22 @@ unsafe fn post_at_a_stop(
             _ if above_zero_reads_live => posts.post(index, Verdict::ReadLive),
             _ => {}
         }
+    }
+
+    // The set is the zero closure of the roots just proposed, not every row
+    // read zero: those include a live state's interior, every referrer of
+    // which the mark had crossed (`crate::cycle::scan::colour_the_zero_closure`).
+    if posts.proposed.get() {
+        arena.drop_the_work();
+        for index in 0..posts.roots.len() {
+            let root = posts.root(index);
+            if unsafe { colour_the_zero_closure::<AtomicCells>(arena, root) }
+                != ScanResult::Complete
+            {
+                break;
+            }
+        }
+        unsafe { set.append(arena) };
     }
 
     BatchOutcome {

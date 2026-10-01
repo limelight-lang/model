@@ -119,6 +119,9 @@ compile_error!("`wait-by-readings` under `collector-chain` is built on `hold-by-
 // The live core a collector's batch read, listed for the mutator to stamp at
 // its take from `POSTED` without a descent, or to drop under pressure.
 pub(crate) mod live_list;
+// The set a collector's batch proved unreachable, posted for the mutator's
+// collection over P to validate and free as it stands.
+pub(crate) mod posted_set;
 // The list a pressure collection takes out of its rows before the blocks go
 // back, and the region of the workspace it stands in.
 pub(crate) mod members;
