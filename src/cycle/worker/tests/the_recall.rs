@@ -1444,3 +1444,231 @@ fn a_wind_down_after_the_mark_lets_the_scan_end() {
     }
     reset_lanes();
 }
+
+/// R for the wind-down cases past the first regions: a garbage ring of two,
+/// then a root the case holds over three strides of registered elements, each
+/// held by the array alone. The worklist expands the held root's array first
+/// — three strides, its elements held — then the ring; the pass over the held
+/// elements reads one position each, so the fourth reading falls inside it.
+unsafe fn a_ring_then_a_held_root_over_registered_elements(
+    context: &mut LLContext,
+) -> (Vec<*mut Object>, *mut Object) {
+    use crate::array::testing::push;
+
+    let node = ClassBuilder::new("WindDownRingNode")
+        .prop("next", true)
+        .build();
+    let ring = unsafe { crate::cycle::testing::long_ring(&mut *context.arena, node, 2) };
+    let element = ClassBuilder::new("WindDownHeldElement").build();
+    let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let items: Vec<*mut Object> = (0..CUT_ELEMENTS)
+        .map(|_| unsafe {
+            let item = new_constructed(context, element, MemoryCategory::GcHeap);
+            ll_retain(item as *mut RcHeader);
+            assert!(push(
+                array,
+                Value::entity(Tag::Object, item as *mut RcHeader)
+            ));
+            item
+        })
+        .collect();
+    let held = unsafe { a_root_over(context, array as *mut RcHeader, Tag::Array) };
+    // Registered behind the held root, so that a batch of three takes the
+    // ring and the held root: the case's creation reference goes.
+    for item in items {
+        assert!(
+            !unsafe { ll_release(item as *mut RcHeader) },
+            "the array holds it"
+        );
+    }
+    (ring, held)
+}
+
+/// A wind-down past the first regions scans and posts off the colours: the
+/// garbage ring proposed with its set and freed by the owner, the held root,
+/// whose own row reads above zero, read live. Red without the scan: every row
+/// stays unclassified and nothing is posted.
+#[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
+fn a_wind_down_past_the_first_regions_proposes_the_ring_and_reads_the_held_root_live() {
+    use crate::cycle::token::RECALL_WIND_DOWN;
+    use crate::journal::kinds::BATCH_END_WOUND_DOWN;
+
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let (ring, held) = unsafe { a_ring_then_a_held_root_over_registered_elements(&mut context) };
+    let _clear = ClearTheRecall(unsafe { &(*record()).token });
+    unsafe { &*record() }.set_batch_size(3);
+
+    testing::read_traced_batches(true);
+    testing::recall_at_the_reading_at_level(4, RECALL_WIND_DOWN);
+    let served = super::the_batch::served_by_a_collector();
+    unsafe { &(*record()).token }.recall_for_test(false);
+    let batches = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert!(
+        matches!(
+            served,
+            Served::Batch {
+                complete: false,
+                ..
+            }
+        ),
+        "{served:?}"
+    );
+    assert_eq!(batches[0].ending, BATCH_END_WOUND_DOWN);
+    assert_eq!(
+        standing_verdicts()
+            .iter()
+            .map(|&(root, verdict)| (root as *mut Object, verdict))
+            .collect::<Vec<_>>(),
+        vec![
+            (ring[0], Verdict::Proposed),
+            (ring[1], Verdict::Proposed),
+            (held, Verdict::ReadLive),
+        ]
+    );
+
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_maybe_collect() },
+        2,
+        "the ring is freed"
+    );
+    unsafe { let_go(held) };
+    reset_lanes();
+}
+
+/// A stop raised inside the scan a wind-down runs cuts it, as a take does,
+/// and the batch posts the snapshot under its own ending. Red with a scan
+/// after a wind-down that stops at nothing: the take would wait for the whole
+/// scan.
+#[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
+fn a_stop_inside_a_wind_downs_scan_cuts_it() {
+    use crate::cycle::token::RECALL_WIND_DOWN;
+    use crate::journal::kinds::BATCH_END_WOUND_DOWN_THEN_CUT;
+
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let (_ring, held) = unsafe { a_ring_then_a_held_root_over_registered_elements(&mut context) };
+    let _clear = ClearTheRecall(unsafe { &(*record()).token });
+    unsafe { &*record() }.set_batch_size(3);
+
+    testing::read_traced_batches(true);
+    testing::recall_at_the_reading_at_level(1, RECALL_WIND_DOWN);
+    testing::then_stop_at_the_reading(2);
+    let served = super::the_batch::served_by_a_collector();
+    unsafe { &(*record()).token }.recall_for_test(false);
+    let batches = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert!(
+        matches!(
+            served,
+            Served::Batch {
+                complete: false,
+                ..
+            }
+        ),
+        "{served:?}"
+    );
+    assert_eq!(batches[0].ending, BATCH_END_WOUND_DOWN_THEN_CUT);
+
+    crate::cycle::queue::verdicts::discard_standing_verdicts();
+    unsafe { let_go(held) };
+    reset_lanes();
+}
+
+/// Past the first regions a wind-down reads live a root whose own row reads
+/// above zero, and sends back *unwalked* one whose row reads zero and which
+/// the scan coloured live only through another root: after a cut mark that
+/// colour may stand on a referrer the mark never expanded, and a root read
+/// live waits an epoch in the deferred lane. R holds the inner root, then the
+/// outer root that alone holds it, then the held root over registered
+/// elements, whose pass the fourth reading falls inside.
+#[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
+fn a_wind_down_sends_back_a_root_read_live_only_through_another() {
+    use crate::array::testing::push;
+    use crate::cycle::token::RECALL_WIND_DOWN;
+
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let element = ClassBuilder::new("WindDownInnerElement").build();
+    let inner = unsafe { new_constructed(&mut context, element, MemoryCategory::GcHeap) };
+    unsafe {
+        ll_retain(inner as *mut RcHeader);
+        assert!(
+            !ll_release(inner as *mut RcHeader),
+            "registered, held by the case"
+        );
+    }
+    let outer = unsafe { a_root_over(&mut context, inner as *mut RcHeader, Tag::Object) };
+    let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    let items: Vec<*mut Object> = (0..CUT_ELEMENTS)
+        .map(|_| unsafe {
+            let item = new_constructed(&mut context, element, MemoryCategory::GcHeap);
+            ll_retain(item as *mut RcHeader);
+            assert!(push(
+                array,
+                Value::entity(Tag::Object, item as *mut RcHeader)
+            ));
+            item
+        })
+        .collect();
+    let held = unsafe { a_root_over(&mut context, array as *mut RcHeader, Tag::Array) };
+    for item in items {
+        assert!(
+            !unsafe { ll_release(item as *mut RcHeader) },
+            "the array holds it"
+        );
+    }
+    let _clear = ClearTheRecall(unsafe { &(*record()).token });
+    unsafe { &*record() }.set_batch_size(3);
+
+    testing::recall_at_the_reading_at_level(4, RECALL_WIND_DOWN);
+    let served = super::the_batch::served_by_a_collector();
+    unsafe { &(*record()).token }.recall_for_test(false);
+    assert!(
+        matches!(
+            served,
+            Served::Batch {
+                complete: false,
+                ..
+            }
+        ),
+        "{served:?}"
+    );
+    assert_eq!(
+        standing_verdicts()
+            .iter()
+            .map(|&(root, verdict)| (root as *mut Object, verdict))
+            .collect::<Vec<_>>(),
+        vec![
+            (outer, Verdict::ReadLive),
+            (held, Verdict::ReadLive),
+            (inner, Verdict::Unwalked),
+        ]
+    );
+
+    crate::cycle::queue::verdicts::discard_standing_verdicts();
+    unsafe {
+        let_go(outer);
+        let_go(held);
+    }
+    reset_lanes();
+}

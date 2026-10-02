@@ -1292,7 +1292,8 @@ impl TraceScratchArena {
     }
 
     /// Take one more block, or answer false when both allocation paths refuse
-    /// or the traced mutator has recalled its token.
+    /// or the traced mutator recalls its token at the level this phase stops
+    /// at.
     ///
     /// What is left of the previous block is abandoned. A bump that
     /// searched its older blocks for a fit would be a free list, and the
@@ -1336,11 +1337,12 @@ impl TraceScratchArena {
     }
 
     /// Count one position of storage a collector's trace is about to read,
-    /// and answer `Break` once the traced mutator has recalled its token: the
-    /// recall is read at every [`RECALL_STRIDE`]th position, relaxed, so a
-    /// mutator that recalled its token before a reading — from its take's
-    /// wait, or at a withheld stack's mark — sees the trace stop within one
-    /// stride of positions. The trace's
+    /// and answer `Break` once the traced mutator recalls its token at the
+    /// level this phase stops at ([`Self::stop_only_at`]): the recall is read
+    /// at every [`RECALL_STRIDE`]th position, relaxed, so a mutator that
+    /// recalled its token before a reading — from its take's wait, or at a
+    /// withheld stack's mark — sees the trace stop within one stride of
+    /// positions. The trace's
     /// phases call it under [`crate::cells::AtomicCells`] alone.
     #[inline]
     pub(crate) fn inspect_position(&mut self) -> ControlFlow<()> {
@@ -1361,10 +1363,18 @@ impl TraceScratchArena {
             if !self.traced_token.is_null()
                 && crate::cycle::worker::testing::recalls_at_the_reading(self.recall_readings)
             {
+                // A raise and never a lower: a take's stop standing already
+                // is the mutator's, the one writer.
+                let level = crate::cycle::worker::testing::level_at_the_reading();
+                if unsafe { (*self.traced_token).recall_level() } < level {
+                    unsafe { (*self.traced_token).recall_at_level_for_test(level) };
+                }
+            }
+            if !self.traced_token.is_null()
+                && crate::cycle::worker::testing::stops_at_the_reading(self.recall_readings)
+            {
                 unsafe {
-                    (*self.traced_token).recall_at_level_for_test(
-                        crate::cycle::worker::testing::level_at_the_reading(),
-                    )
+                    (*self.traced_token).recall_at_level_for_test(crate::cycle::token::RECALL_STOP)
                 };
             }
         }
@@ -1376,8 +1386,9 @@ impl TraceScratchArena {
     /// the trace costs more than a position: at a growth, whose one position
     /// may open a block, and at each root the
     /// pass before them reads (`crate::cycle::worker`, "The batch"). Answers
-    /// `Break` once the recall stands, releasing the grants behind the trace
-    /// otherwise, as a reading at the stride does.
+    /// `Break` once the recall stands at the level this phase stops at,
+    /// releasing the grants behind the trace otherwise, as a reading at the
+    /// stride does.
     pub(crate) fn read_the_recall_now(&mut self) -> ControlFlow<()> {
         // The traced mutator's own recall first: the batch ends, and a grant
         // held behind it is read at the pass its consent admitted, so the

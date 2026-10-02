@@ -200,6 +200,10 @@ pub const BATCH_END_REFUSED_IN_THE_TRACE: u64 = 6;
 /// the mark; the mark ended there, the scan ran to its end and the roots were
 /// posted off its colours.
 pub const BATCH_END_WOUND_DOWN: u64 = 7;
+/// [`KIND_BATCH_END`]: wound down as [`BATCH_END_WOUND_DOWN`], and the scan
+/// after it stopped by the mutator's recall at the stop level or by a refused
+/// allocation; the snapshot was posted.
+pub const BATCH_END_WOUND_DOWN_THEN_CUT: u64 = 8;
 
 /// [`KIND_ROOT_VERDICT`] and [`KIND_ROOT_WRITTEN_BACK`]: the discriminants of
 /// `cycle::queue::verdicts::Verdict`, which asserts them.

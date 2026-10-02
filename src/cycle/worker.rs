@@ -38,9 +38,11 @@
 //! unreachable, which the owner's collection over P validates alone
 //! (`crate::cycle::posted_set`). No budget bounds the trace: what bounds it is the traced mutator's heap
 //! (`dev/DECISIONS.md`, 2026-09-30, "the collector's trace has no rows
-//! ceiling"). A refused allocation or the mutator's recall of its token stops
-//! the trace where it stands, and the stop posts the snapshot
-//! ([`post_at_a_stop`]): a root the scan coloured live is *read live*; one
+//! ceiling"). A refused allocation or the mutator's recall of its token at the
+//! stop level stops the trace where it stands — a recall at the wind-down
+//! level ends the mark on a scan instead ("The recall of the token") — and the
+//! stop posts the snapshot ([`post_at_a_stop`]): a root the scan of a
+//! completed mark coloured live is *read live*; one
 //! whose met row reads zero otherwise is *proposed*, a candidate for the
 //! owner's exact validation rather than a scan's verdict, which can cost the
 //! owner a walk from a root a live referrer holds; one above zero is *read
@@ -85,8 +87,10 @@
 //! mark stands before the batch is made is released with no batch. What the
 //! mutator whose batch is traced waits through is therefore one stride of
 //! positions, those posts, at most one more stride of the zero closure a
-//! stopped batch posts as its set (`crate::cycle::scan::colour_the_zero_closure`)
-//! and that reset, whatever the width of an entity
+//! stopped batch posts as its set (`crate::cycle::scan::colour_the_zero_closure`),
+//! the walks of the touched rows that undo a cut scan's colours and list the
+//! set, each about the reset's size, and that reset, whatever the width of an
+//! entity
 //! (`rfc/model/gc/rc-cycle.md`, "The recall of the token"). The reset is
 //! bounded by what the trace touched — every heap block it met a row in and
 //! every block the arena drew — which with no budget is up to the traced
@@ -2709,9 +2713,11 @@ fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, outco
 /// pass, whose every root costs a header read the stride does not count, and
 /// at the stride inside the mark, its passes and the scan.
 ///
-/// **A stop posts the snapshot** ([`post_at_a_stop`]): the mutator's recall
-/// or a refused allocation, inside the mark or the scan, ends the trace where
-/// it stands. A root the scan coloured live is read live; each other batch
+/// **A stop posts the snapshot** ([`post_at_a_stop`]): the mutator's recall at
+/// the stop level or a refused allocation, inside the mark or the scan, ends
+/// the trace where it stands; a recall at the wind-down level inside the mark
+/// ends the mark on a scan ([`wind_down`]). A root the scan of a completed mark
+/// coloured live is read live; each other batch
 /// root whose met row reads zero is proposed, a candidate the owner's exact
 /// validation decides (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner
 /// handoff"). A root above zero is read live when the stop fell after the
@@ -2748,16 +2754,12 @@ unsafe fn trace_the_batch(
         if !posts.has_a_verdict(index)
             && !unsafe { schedule_root_if_unvisited(arena, posts.root(index)) }
         {
-            return unsafe { post_at_a_stop(arena, posts, set, outcome) };
+            return unsafe { end_the_mark_cut(arena, posts, set, outcome) };
         }
     }
 
     if unsafe { drain::<AtomicCells>(arena) } != MarkResult::Complete {
-        return if arena.wound_down() {
-            unsafe { wind_down(arena, posts, set, outcome) }
-        } else {
-            unsafe { post_at_a_stop(arena, posts, set, outcome) }
-        };
+        return unsafe { end_the_mark_cut(arena, posts, set, outcome) };
     }
 
     #[cfg(test)]
@@ -2782,7 +2784,7 @@ unsafe fn trace_the_batch(
         testing::note_positions_after_the_hook(arena.positions_inspected() - from);
     }
     if !scanned {
-        return unsafe { post_at_a_stop(arena, posts, set, outcome) };
+        return unsafe { post_at_a_stop(arena, posts, set, Cut::InTheScan, outcome) };
     }
     #[cfg(test)]
     unsafe {
@@ -2819,15 +2821,50 @@ unsafe fn trace_the_batch(
     .ended(journal::BATCH_END_COMPLETE)
 }
 
+/// Where a stopped trace stood, which decides what its live colours prove.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cut {
+    /// Inside the mark, or the meeting of the roots before it: no scan ran.
+    InTheMark,
+    /// Inside the scan of a completed mark: a live colour is final.
+    InTheScan,
+    /// Inside the scan a wind-down ran over a cut mark: a live colour may
+    /// stand on a referrer the mark never expanded.
+    InTheWindDown,
+}
+
+/// End a batch whose mark — or the meeting of its roots — a recall or a
+/// refused allocation stopped: a wind-down scans and posts off the colours
+/// ([`wind_down`]), and anything else posts the snapshot
+/// ([`post_at_a_stop`]).
+///
+/// # Safety
+/// As [`trace_the_batch`], the stopped mark's rows still standing.
+unsafe fn end_the_mark_cut(
+    arena: &mut TraceScratchArena,
+    posts: &mut FinishThePosts<'_>,
+    set: &mut crate::cycle::posted_set::Writer,
+    outcome: BatchOutcome,
+) -> BatchOutcome {
+    if arena.wound_down() {
+        unsafe { wind_down(arena, posts, set, outcome) }
+    } else {
+        unsafe { post_at_a_stop(arena, posts, set, Cut::InTheMark, outcome) }
+    }
+}
+
 /// End a batch whose mark the mutator's wind-down cut: the mark's remaining
 /// work is dropped, the scan runs from every root to its end unless the
 /// mutator recalls at the stop level, and the roots are posted off its
-/// colours — potentially unreachable [`Verdict::Proposed`], live
-/// [`Verdict::ReadLive`] where the first regions had ended or the batch is
-/// its one root, as at a stop — with the set the scan proved
-/// (`crate::cycle::posted_set`). A mark cut short leaves rows above what a
-/// complete one would, an unexpanded entity's edges never subtracted, so the
-/// colours err toward live alone. A stop inside that scan posts the snapshot
+/// colours with the set the scan proved (`crate::cycle::posted_set`). A mark
+/// cut short leaves rows above what a complete one would, an unexpanded
+/// entity's edges never subtracted, so the colours err toward live alone, and
+/// a live colour is no verdict: a potentially unreachable root is
+/// [`Verdict::Proposed`]; a live one whose own row reads above zero is
+/// [`Verdict::ReadLive`] where the first regions had ended or the batch is its
+/// one root, as at a stop; a live one whose row reads zero, raised by a
+/// referrer the mark never expanded, goes back *unwalked*, as does every
+/// other. A stop or a refusal inside that scan posts the snapshot
 /// ([`post_at_a_stop`]). Nothing is listed live.
 ///
 /// # Safety
@@ -2845,7 +2882,7 @@ unsafe fn wind_down(
         if !posts.has_a_verdict(index)
             && unsafe { scan::<AtomicCells>(arena, posts.root(index)) } != ScanResult::Complete
         {
-            return unsafe { post_at_a_stop(arena, posts, set, outcome) };
+            return unsafe { post_at_a_stop(arena, posts, set, Cut::InTheWindDown, outcome) };
         }
     }
 
@@ -2861,9 +2898,12 @@ unsafe fn wind_down(
         let Some(row) = (unsafe { crate::cycle::arena::find_initialized_row(key) }) else {
             continue;
         };
-        match shadow::color(unsafe { row.read() }) {
+        let word = unsafe { row.read() };
+        match shadow::color(word) {
             Color::PotentiallyUnreachable => posts.post(index, Verdict::Proposed),
-            Color::Live if live_reads_live => posts.post(index, Verdict::ReadLive),
+            Color::Live if live_reads_live && shadow::count(word) > 0 => {
+                posts.post(index, Verdict::ReadLive)
+            }
             _ => {}
         }
     }
@@ -2882,8 +2922,11 @@ unsafe fn wind_down(
 
 /// Post what a trace stopped by the recall or a refused allocation supports,
 /// the snapshot of revision 3 (G3). Each batch root without a verdict whose
-/// met row the scan coloured live is [`Verdict::ReadLive`], a colour no later
-/// step of the trace would change. One whose met row reads zero otherwise is
+/// met row the scan of a completed mark coloured live is [`Verdict::ReadLive`],
+/// a colour no later step of the trace would change; after a cut mark a live
+/// colour may stand on a referrer the mark never expanded, so it counts as
+/// the row's count says, read live only above zero under the rule below. One
+/// whose met row reads zero otherwise is
 /// [`Verdict::Proposed`]: a candidate for the owner's exact validation, not a
 /// scan's verdict, since a live referrer whose edge the mark crossed leaves a
 /// zero the scan would have raised, and the owner's trace from such a root
@@ -2901,6 +2944,7 @@ unsafe fn post_at_a_stop(
     arena: &mut TraceScratchArena,
     posts: &mut FinishThePosts<'_>,
     set: &mut crate::cycle::posted_set::Writer,
+    cut: Cut,
     outcome: BatchOutcome,
 ) -> BatchOutcome {
     let regions_ended = arena.regions_ended();
@@ -2919,7 +2963,10 @@ unsafe fn post_at_a_stop(
         let word = unsafe { row.read() };
         match shadow::color(word) {
             Color::Untouched => {}
-            Color::Live => posts.post(index, Verdict::ReadLive),
+            Color::Live if cut == Cut::InTheScan => posts.post(index, Verdict::ReadLive),
+            Color::Live if shadow::count(word) == 0 => {}
+            Color::Live if above_zero_reads_live => posts.post(index, Verdict::ReadLive),
+            Color::Live => {}
             _ if shadow::count(word) == 0 => posts.post(index, Verdict::Proposed),
             _ if above_zero_reads_live => posts.post(index, Verdict::ReadLive),
             _ => {}
@@ -2948,10 +2995,10 @@ unsafe fn post_at_a_stop(
         regions_ended,
         ..outcome
     }
-    .ended(if arena.was_recalled() {
-        journal::BATCH_END_RECALLED_IN_THE_TRACE
-    } else {
-        journal::BATCH_END_REFUSED_IN_THE_TRACE
+    .ended(match cut {
+        Cut::InTheWindDown => journal::BATCH_END_WOUND_DOWN_THEN_CUT,
+        _ if arena.was_recalled() => journal::BATCH_END_RECALLED_IN_THE_TRACE,
+        _ => journal::BATCH_END_REFUSED_IN_THE_TRACE,
     })
 }
 

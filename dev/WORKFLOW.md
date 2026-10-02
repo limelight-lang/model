@@ -481,8 +481,9 @@ established. The case went on 2026-10-01 with the parts it pinned (S67.9 step
 A timing case joined the watch on 2026-10-01:
 `worker::tests::the_rig::a_phase_spins_its_cpu_and_its_polls_add_to_it`
 asserts that 2 ms of spun CPU runs short of 4 ms of wall, and read past it
-once in three runs at eight threads over S67.9 step (e)'s tree; it calls no
-collector code, and a run alone passed. `the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_disposition`
+once in three runs at eight threads over S67.9 step (e)'s tree, and once in a
+plain run over step (d)'s gate on 2026-10-02; it calls no collector code, and
+a run alone passed. `the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_disposition`
 read red once the same day in a run where a collector thread panicked beside
 it, and green in every run after.
 

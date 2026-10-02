@@ -724,6 +724,23 @@ pub(crate) fn recalls_at_the_reading(reading: usize) -> bool {
         .is_ok()
 }
 
+/// A second reading of the same trace at which the stop is raised, as a take
+/// would raise it over a wind-down; zero for none. One-shot.
+static STOP_AT_THE_READING: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn then_stop_at_the_reading(reading: usize) {
+    assert_ne!(reading, 0, "the first reading is the first");
+    STOP_AT_THE_READING.store(reading, Ordering::Relaxed);
+}
+
+/// Whether `reading` is the one [`then_stop_at_the_reading`] named, taking
+/// the hook if so.
+pub(crate) fn stops_at_the_reading(reading: usize) -> bool {
+    STOP_AT_THE_READING
+        .compare_exchange(reading, 0, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+}
+
 /// Between the next batch's mark and its scan, on the collector's thread,
 /// for the case whose mutator asks for its token after the mark: what the
 /// scan reads from there on is what the mutator waits through.
@@ -1582,6 +1599,19 @@ pub(crate) fn note_recall(by_the_mark: bool) {
         false => &RECALLS_BY_A_TAKE,
     }
     .fetch_add(1, Ordering::Relaxed);
+}
+
+/// Raises of the recall to the stop level by a withheld stack's second mark,
+/// at a crossing or at a consent, since the last call.
+static RECALLS_AT_THE_SECOND_MARK: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn note_second_mark_recall() {
+    RECALLS_AT_THE_SECOND_MARK.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Recalls at a stack's second mark since the last call, and zero the count.
+pub(crate) fn take_second_mark_recalls() -> usize {
+    RECALLS_AT_THE_SECOND_MARK.swap(0, Ordering::Relaxed)
 }
 
 /// Recalls by the mark and by a take since the last call, and zero both.

@@ -2597,6 +2597,8 @@ struct CellReading {
     segment_times: testing::SegmentTimes,
     /// Grants recalled by a stack's mark, and by a take.
     recalls: (usize, usize),
+    /// Recalls raised to the stop level by a stack's second mark.
+    second_mark_recalls: usize,
     written_back: usize,
     /// What `hold-by-generation` did with the roots read live; zero without
     /// the feature.
@@ -2811,6 +2813,11 @@ const JOURNAL_COLUMNS: &[JournalColumn] = &[
         BATCH_END_REFUSED_IN_THE_TRACE
     ),
     journal_column!("batch_end_wound_down", KIND_BATCH_END, BATCH_END_WOUND_DOWN),
+    journal_column!(
+        "batch_end_wound_down_then_cut",
+        KIND_BATCH_END,
+        BATCH_END_WOUND_DOWN_THEN_CUT
+    ),
     journal_column!("batch_regions_ended", KIND_BATCH_END, every, sum),
     journal_column!("verdict_proposed", KIND_ROOT_VERDICT, VERDICT_PROPOSED),
     journal_column!("verdict_read_live", KIND_ROOT_VERDICT, VERDICT_READ_LIVE),
@@ -2992,6 +2999,7 @@ impl WebCell {
                 ..=crate::journal::kinds::BATCH_END_RECALLED_AFTER_THE_TRACE)
                 .contains(&ending)
                 || ending == crate::journal::kinds::BATCH_END_WOUND_DOWN
+                || ending == crate::journal::kinds::BATCH_END_WOUND_DOWN_THEN_CUT
         });
         self.completed = tally(&|ending| ending == crate::journal::kinds::BATCH_END_COMPLETE);
         let mut by_mutator = std::collections::BTreeMap::<usize, usize>::new();
@@ -3204,6 +3212,10 @@ impl CellReading {
             ),
             ("recalls_by_the_mark", self.recalls.0.to_string()),
             ("recalls_by_a_take", self.recalls.1.to_string()),
+            (
+                "recalls_at_the_second_mark",
+                self.second_mark_recalls.to_string(),
+            ),
             ("token_waits", self.token_waits.waits.to_string()),
             (
                 "token_wait_us",
@@ -4097,6 +4109,7 @@ struct RoundFigures {
     token_waits: testing::TokenWaits,
     segment_times: testing::SegmentTimes,
     recalls: (usize, usize),
+    second_mark_recalls: usize,
     written_back: usize,
     generations: testing::Generations,
 }
@@ -4114,6 +4127,7 @@ impl RoundFigures {
             token_waits: testing::take_token_waits(),
             segment_times: testing::take_segment_times(),
             recalls: testing::take_recalls(),
+            second_mark_recalls: testing::take_second_mark_recalls(),
             written_back: testing::take_written_back(),
             generations: testing::take_generations(),
         }
@@ -4349,6 +4363,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         withdrawn,
         segment_times: figures.segment_times,
         recalls: figures.recalls,
+        second_mark_recalls: figures.second_mark_recalls,
         written_back: figures.written_back,
         generations: figures.generations,
         web,

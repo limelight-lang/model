@@ -205,7 +205,8 @@ pub(crate) struct TraceToken {
     /// and cleared once the take returns; [`RECALL_WIND_DOWN`] raised with no
     /// wait by a stack of returns withheld under the claim at its mark, and
     /// [`RECALL_STOP`] at its second ([`recall_this_threads_token`]), which
-    /// the next consent or the returns' going back whole clears; so that the
+    /// the next consent resets to the level the stacks then hold and the
+    /// returns' going back whole clears; so that the
     /// collector's trace, which reads it every
     /// `crate::cycle::arena::RECALL_STRIDE` positions, winds down or stops
     /// and releases (`rfc/model/gc/rc-cycle.md`, "The recall of the token").
@@ -303,8 +304,13 @@ impl TraceToken {
         }
 
         #[cfg(test)]
-        if before == RECALL_NONE {
-            crate::cycle::worker::testing::note_recall(true);
+        {
+            if before == RECALL_NONE {
+                crate::cycle::worker::testing::note_recall(true);
+            }
+            if level == RECALL_STOP {
+                crate::cycle::worker::testing::note_second_mark_recall();
+            }
         }
 
         self.waiting.store(level, Ordering::Relaxed);
@@ -426,17 +432,20 @@ impl TraceToken {
         // the recall once before its batch, after its acquire of the grant,
         // and a recall stored after the swap can land behind that reading.
         self.waiting.store(level, Ordering::Relaxed);
-        #[cfg(test)]
-        if level != RECALL_NONE {
-            crate::cycle::worker::testing::note_recall(true);
-        }
-
         let granted = word(COLLECTOR, slot(seen));
         self.word
             .compare_exchange(seen, granted, Ordering::Release, Ordering::Acquire)
             .map(|_| {
                 #[cfg(test)]
                 {
+                    // Counted on the swap that opened the grant, so that a
+                    // request withdrawn meanwhile counts no recall.
+                    if level != RECALL_NONE {
+                        crate::cycle::worker::testing::note_recall(true);
+                    }
+                    if level == RECALL_STOP {
+                        crate::cycle::worker::testing::note_second_mark_recall();
+                    }
                     self.consents.fetch_add(1, Ordering::Relaxed);
                     crate::cycle::worker::testing::note_request_ended(
                         self.address(),
@@ -600,8 +609,10 @@ impl TraceToken {
                     });
 
                     if !*recalled {
+                        // A take over a wind-down raises it to the stop, and
+                        // counts as a take's recall.
                         #[cfg(test)]
-                        if !self.is_recalled() {
+                        if self.recall_level() != RECALL_STOP {
                             crate::cycle::worker::testing::note_recall(false);
                         }
 

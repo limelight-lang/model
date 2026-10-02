@@ -412,3 +412,77 @@ fn a_grant_opened_on_a_stack_past_its_second_mark_starts_stopped() {
     drop(grant);
     drain();
 }
+
+/// One death whose run spans both of the blocks' marks raises the stop at
+/// once, past the wind-down, and tells the holder's slot once. Red where the
+/// second crossing is read only when the first is not: a reset of more than
+/// twice `BLOCKS_MARK` blocks would wind down and never stop.
+#[test]
+fn a_death_past_both_marks_stops_the_grant_at_once() {
+    use crate::cycle::token::RECALL_STOP;
+
+    let _guard = test_guard();
+    let token = this_thread_token();
+    let entity = crate::memory::large_entity::alloc((STOP_MARKS * BLOCKS_MARK - 1) * BLOCK_SIZE);
+    assert!(!entity.is_null(), "the system served");
+    let entity = unsafe { dead_entity(entity) };
+    let _ = take_the_recall_of(ELDER);
+
+    let mut holder = HeldByACollector::take(token, false);
+    unsafe { crate::memory::stdapi::ll_free(entity as *mut u8) };
+    assert_eq!(level(token), RECALL_STOP, "its run spans the second mark");
+    assert!(take_the_recall_of(ELDER), "the holder's slot is told");
+    holder.release();
+    drain();
+}
+
+/// The consent reads the blocks' and the chunks' stacks as it reads the
+/// deaths': a grant opened on either at its mark winds down. Red where the
+/// consent reads the deaths alone.
+#[test]
+fn a_consent_reads_the_blocks_and_the_chunks_stacks() {
+    use crate::cycle::token::RECALL_WIND_DOWN;
+
+    let _guard = test_guard();
+    let token = this_thread_token();
+    let consent_on = |withhold: &dyn Fn()| {
+        let mut holder = HeldByACollector::take(token, false);
+        withhold();
+        holder.release();
+        let _ = take_the_recall_of(ELDER);
+        unsafe { (*token).request_for_test(word(REQUESTED, ELDER)) };
+        let reading = crate::cycle::token::read_and_act_on_this_thread();
+        let grant = Consented(token);
+        assert_eq!(reading, crate::cycle::token::Reading::Collector);
+        let read = level(token);
+        drop(grant);
+        drain();
+        read
+    };
+
+    let entity = crate::memory::large_entity::alloc((BLOCKS_MARK - 1) * BLOCK_SIZE);
+    assert!(!entity.is_null(), "the system served");
+    let entity = unsafe { dead_entity(entity) } as usize;
+    assert_eq!(
+        consent_on(&|| unsafe { crate::memory::stdapi::ll_free(entity as *mut u8) }),
+        RECALL_WIND_DOWN,
+        "the blocks' stack"
+    );
+
+    let chunks: Vec<_> = (0..CHUNKS_MARK)
+        .map(|_| {
+            let (chunk, granted) = buffer_alloc_longlived_payload(256);
+            assert!(!chunk.is_null(), "the buffer arena served");
+            (chunk as usize, granted)
+        })
+        .collect();
+    assert_eq!(
+        consent_on(&|| {
+            for &(chunk, granted) in &chunks {
+                unsafe { buffer_free_longlived_payload(chunk as *mut u8, granted) };
+            }
+        }),
+        RECALL_WIND_DOWN,
+        "the chunks' stack"
+    );
+}
