@@ -1038,12 +1038,12 @@ mod the_cap_at_zero;
 mod the_cap_set_under_work;
 #[cfg(feature = "collector-chain")]
 mod the_chain;
+mod the_collectors_stamps;
 mod the_epoch_clock;
 #[cfg(feature = "hold-by-generation")]
 mod the_generations_in_the_chain;
 #[cfg(feature = "debug-journal")]
 mod the_journal_of_the_collector;
-mod the_live_list;
 mod the_merged_lane;
 mod the_posted_set;
 mod the_progress;

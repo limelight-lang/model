@@ -88,8 +88,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("AT_THE_SURPLUS_UNLINK", false), // test-only const Cell of an fn pointer, no drop glue
         ("BETWEEN_THE_READS", false),     // test-only const Cell of an fn pointer, no drop glue
         ("BLOCKS", false),
-        ("BLOCKS_ACROSS_A_LIST", false), // test-only const Cell of an Option pair, no drop glue
-        ("BLOCKS_CARVED", false),        // test-only const Cell, no drop glue
+        ("BLOCKS_CARVED", false), // test-only const Cell, no drop glue
         ("BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
         ("BLOCK_BUDGET", false),
         ("CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
@@ -150,16 +149,11 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("REPORT", false), // test-only const RefCell over a Copy report, no drop glue
         ("RESERVE", true),
         ("RING", false),
-        ("ROWS_LISTED", false), // test-only const Cell, no drop glue
-        ("ROWS_MET", false),    // test-only const Cell, no drop glue
+        ("ROWS_MET", false), // test-only const Cell, no drop glue
         ("ROWS_READ", false),
         ("SERVING_SLOT", false),   // test-only const Cell, no drop glue
         ("SINCE_THE_TURN", false), // test-only const Cell<u8>, no drop glue
         ("SLOTS_POPPED", false),   // test-only const Cell, no drop glue
-        ("STALE_LISTS_GIVEN_BACK", false), // test-only const Cell, no drop glue
-        ("STAMPED_AT_A_RETURN", false), // test-only const Cell, no drop glue
-        ("STAMPING_AT_A_RETURN", false), // test-only const Cell<bool>, no drop glue
-        ("STAMPS", false),         // test-only const Cell, no drop glue
         ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
         ("SURVIVORS_ADMITTED_BEFORE_REFUSAL", false), // test-only const Cell, no drop glue
         ("TAKE_THIS", false),      // test-only const Cell of a raw pointer, no drop glue

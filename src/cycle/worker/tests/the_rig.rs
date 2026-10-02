@@ -96,9 +96,6 @@
 //!   edge into a registered candidate past its root and expands it no further
 //!   (`mark::stop_at_candidates`), each part the walk of its root's first
 //!   region (`dev/plans/S67.md`, S67.9, run R2).
-//! - `LL_RIG_PRUNE_REGISTERED` — set to 1, every mark prunes a registered
-//!   target at its stamp like any other (`mark::prune_registered`), revision
-//!   3's (1') read before it is built (`dev/plans/S67.md`, S67.9, run R4);
 //! - `LL_RIG_HOLD_NOTHING` — set to 1, every mark expands its registered
 //!   targets as it meets them, the plain depth-first descent the held stack
 //!   reorders, as the control of `collector_passes`, `collector_held` and
@@ -2587,7 +2584,7 @@ struct CellReading {
     disposals: testing::VerdictCollections,
     /// What the collector's chain did, zero without it.
     chain: testing::ChainFigures,
-    /// What the live list and the lane cost, in every build.
+    /// What the collector's stamps and the lane cost, in every build.
     scheme: testing::SchemeFigures,
     token_waits: testing::TokenWaits,
     /// The requests collectors withdrew from the mutators' start to the
@@ -2687,23 +2684,14 @@ impl WindowEdge {
 /// processes over the window is void (`dev/plans/S67.md`, the protocol).
 const VOID_CORES: f64 = 0.5;
 
-/// The stamping's columns at a take and at a return, in the order
-/// `live_list::testing::Stamping` reads each.
-const STAMPING_COLUMNS: [[&str; 5]; 2] = [
-    [
-        "web_stamping_at_a_take_lists",
-        "web_stamping_at_a_take_entries_mean",
-        "web_stamping_at_a_take_entries_most",
-        "web_stamping_at_a_take_us_mean",
-        "web_stamping_at_a_take_longest_us",
-    ],
-    [
-        "web_stamping_at_a_return_lists",
-        "web_stamping_at_a_return_entries_mean",
-        "web_stamping_at_a_return_entries_most",
-        "web_stamping_at_a_return_us_mean",
-        "web_stamping_at_a_return_longest_us",
-    ],
+/// The collector's stamping's columns, in the order
+/// `collector_stamps::testing::Stamping` reads them.
+const STAMPING_COLUMNS: [&str; 5] = [
+    "web_stamping_walks",
+    "web_stamping_stamps_mean",
+    "web_stamping_stamps_most",
+    "web_stamping_us_mean",
+    "web_stamping_longest_us",
 ];
 
 /// The withheld returns' columns by stack, deaths, chunks and blocks, in the
@@ -2965,9 +2953,8 @@ struct WebCell {
     /// The returns the mutators withheld over the window, at the crossings
     /// and at the releases.
     withheld: testing::WithheldReadings,
-    /// The lists the mutators stamped from over the window, at a take and at
-    /// a return.
-    stamping: [crate::cycle::live_list::testing::Stamping; 2],
+    /// The stamps the collectors wrote over the window, under their grants.
+    stamping: crate::cycle::collector_stamps::testing::Stamping,
 }
 
 impl WebCell {
@@ -3293,10 +3280,10 @@ impl CellReading {
             ),
             ("batches_r_cut", self.chain.batches_r_cut.to_string()),
             (
-                "listed_registered",
-                self.scheme.listed_registered.to_string(),
+                "stamped_registered",
+                self.scheme.stamped_registered.to_string(),
             ),
-            ("listed_other", self.scheme.listed_other.to_string()),
+            ("stamped_other", self.scheme.stamped_other.to_string()),
             (
                 "collector_edges_pruned",
                 self.scheme.collector_edges_pruned.to_string(),
@@ -3968,18 +3955,16 @@ impl CellReading {
             fields.extend(WITHHELD_COLUMNS[stack].into_iter().zip(values));
         }
 
-        for (site, names) in STAMPING_COLUMNS.into_iter().enumerate() {
-            let stamping = web.stamping[site];
-            let lists = stamping.lists.max(1);
-            let values = [
-                stamping.lists.to_string(),
-                (stamping.entries / lists).to_string(),
-                stamping.entries_most.to_string(),
-                (stamping.wall.as_micros() / lists as u128).to_string(),
-                stamping.longest.as_micros().to_string(),
-            ];
-            fields.extend(names.into_iter().zip(values));
-        }
+        let stamping = web.stamping;
+        let walks = stamping.walks.max(1);
+        let values = [
+            stamping.walks.to_string(),
+            (stamping.stamps / walks).to_string(),
+            stamping.stamps_most.to_string(),
+            (stamping.wall.as_micros() / walks as u128).to_string(),
+            stamping.longest.as_micros().to_string(),
+        ];
+        fields.extend(STAMPING_COLUMNS.into_iter().zip(values));
         fields.extend([
             (
                 "web_registrations_a_second",
@@ -4178,7 +4163,6 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     // cell reads them, the setup's included.
     let first_regions = switch_from_env("LL_RIG_FIRST_REGIONS");
     crate::cycle::mark::stop_at_candidates(first_regions);
-    crate::cycle::mark::prune_registered(switch_from_env("LL_RIG_PRUNE_REGISTERED"));
     crate::cycle::mark::hold_nothing(switch_from_env("LL_RIG_HOLD_NOTHING"));
     let stop = Arc::new(AtomicBool::new(false));
     let start = Arc::new(Barrier::new(cell.mutators.len() + 1));
@@ -4249,7 +4233,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let journal_at_the_start = crate::journal::counts();
     let at_the_start = WindowEdge::now();
     let _ = testing::take_withheld_readings();
-    let _ = crate::cycle::live_list::testing::take_stamping();
+    let _ = crate::cycle::collector_stamps::testing::take_stamping();
     let _ = testing::take_withdrawn_standings();
     let collector_cpu_at_the_start = testing::collector_cpu_to_now();
     std::thread::sleep(cell.run_for - warm_up);
@@ -4285,7 +4269,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         web.window = stopped - at_the_start.at;
         web.read_the_cadence(&batches, at_the_start.at..stopped, cell.mutators.len());
         web.withheld = testing::take_withheld_readings();
-        web.stamping = crate::cycle::live_list::testing::take_stamping();
+        web.stamping = crate::cycle::collector_stamps::testing::take_stamping();
         let state = CORE_OBJECTS + VALUE_OBJECTS * load_web.values;
         web.batches_through_the_state = batches
             .iter()

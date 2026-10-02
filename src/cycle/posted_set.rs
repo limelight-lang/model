@@ -36,14 +36,13 @@
 //! before the member, and a return of one of them under `POSTED` drops the
 //! set whole
 //! ([`drop_before_a_return`]); every other return passes it by. The hooks
-//! stand where the live list's do: at the pool's `put` and at the unmapping
-//! of a run.
+//! stand at the pool's `put` and at the unmapping of a run.
 //!
 //! # The chain
 //!
 //! Two chains of GC blocks per grant, drawn on the collector's thread and
-//! handed to the mutator's with the release, as the live list's are
-//! (`crate::cycle::live_list`): the members' addresses, and the addresses of
+//! handed to the mutator's with the release (`gc_metadata::hand_over`): the
+//! members' addresses, and the addresses of
 //! the blocks they stand in, sorted in each block of the second chain at the
 //! publication so that a return reads a binary search per chain block. The
 //! first block of the members' chain names the first of the blocks' chain.
@@ -377,9 +376,11 @@ pub(crate) fn drop_before_a_return(block: *mut u8) {
 /// [`drop_before_a_return`] past its filter. The word is non-null here under
 /// `POSTED`, or under this thread's own claim between a take from `POSTED` and
 /// the collection over P that takes the set; a return under `COLLECTOR` is
-/// withheld ahead of both hooks, the live list's and this one
-/// (`crate::cycle::live_list`, the same argument), so the collector writing
-/// the word is never read here.
+/// withheld ahead of the hook — the pool's `put` withholds a block under a
+/// foreign trace before it, and a run is freed only by a death, which the free
+/// entry withholds whole under one (`crate::cycle::deferred_slot_reuse`, "A
+/// foreign holder of the token") — so the collector writing the word is never
+/// read here.
 #[cold]
 #[inline(never)]
 fn drop_at_a_return(record: &MutatorRecord, block: *mut u8) {

@@ -15,7 +15,7 @@
 //! | [`MUTATOR`] | the mutator | the mutator's own claim: a collection through its close, the exit's final claim, an initialisation not yet complete |
 //! | [`REQUESTED`]`\|s` | collector s | collector s asks to trace; the mutator has not consented |
 //! | [`COLLECTOR`]`\|s` | collector s, or the consenting mutator | collector s traces; the mutator withholds every return |
-//! | [`POSTED`] | collector s | no collector holds anything; the last batch's verdicts stand in P undisposed of, with its live list beside them (`crate::cycle::live_list`), and the mutator owes a collection over P |
+//! | [`POSTED`] | collector s | no collector holds anything; the last batch's verdicts stand in P undisposed of, with the set it proved beside them (`crate::cycle::posted_set`), and the mutator owes a collection over P |
 //! | [`ASKED`], `POSTED` with slot one | the elder | under a collector cap of zero: P is empty, and the mutator owes a collection over R whole ([`TraceToken::ask_to_collect_in_line`]) |
 //! | [`NOTHING_PROPOSED`], `POSTED` with slot two | collector s | as `POSTED`, and no verdict in P proposes a set: the mutator owes the disposition of P with no trace window |
 //!
@@ -178,9 +178,9 @@ pub(crate) enum Reading {
 
 /// Where a mutator's take found the byte. Every ending of a collection
 /// disposes of P whether or not the take consumed `POSTED`; what differs is
-/// the live list the collector's grant left beside it, which a take from
-/// `POSTED` stamps from or gives back before it returns ([`HeldToken`];
-/// `crate::cycle::live_list`).
+/// the posted set the collector's grant left beside it, which a take from
+/// `POSTED` keeps for the collection over P or gives back ([`HeldToken`];
+/// `crate::cycle::posted_set`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TookFrom {
     /// `FREE`, or a request refused: nothing stands in P.
@@ -373,7 +373,7 @@ impl TraceToken {
     /// ask it has not yet collected over, or a request or a grant a positive
     /// cap left. Relaxed: the collector published nothing of the mutator's
     /// and reads nothing after the swap, and the mutator's take from the ask
-    /// finds the live list's word null, no grant having written it.
+    /// finds the posted set's word null, no grant having written it.
     pub(crate) fn ask_to_collect_in_line(&self) -> Result<(), u8> {
         // Stamped before the swap, so that a take made at once finds it.
         #[cfg(test)]
@@ -735,11 +735,11 @@ impl TraceToken {
 
     /// Take `POSTED` as the mutator's own claim, and say whether the byte
     /// read it: the first half of a case's clearing of `POSTED`, which gives
-    /// the grant's live list back under the claim and then releases to
+    /// the grant's posted set back under the claim and then releases to
     /// `FREE` (`crate::cycle::mutator_record::MutatorRecord::clear_posted_for_test`).
     /// One swap per value a batch's release writes, `POSTED` and
     /// [`NOTHING_PROPOSED`], so that a release landing after a reading of the
-    /// byte is never cleared with its list still standing.
+    /// byte is never cleared with its set still standing.
     #[cfg(test)]
     pub(crate) fn take_posted_for_test(&self) -> bool {
         let taken = [POSTED, NOTHING_PROPOSED].into_iter().any(|posted| {
@@ -920,12 +920,11 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
 /// retirement pass — runs untokened, which excludes no one: a collector
 /// reaches a thread through its record, and this thread has none.
 ///
-/// **A take that consumes `POSTED` settles the live list before it
-/// returns**: stamps from it for a collection off the poll or by the explicit
-/// call, gives it back unread for a collection under pressure and for the
-/// exit ([`HeldToken::take_giving_back_the_live_list`]), so that the stamps
-/// precede every destructor and every free the claim goes on to run, and the
-/// release to `FREE` finds the word null (`crate::cycle::live_list`).
+/// **A take that consumes `POSTED` leaves the posted set for the collection
+/// over P**, or gives it back unread for a collection under pressure and for
+/// the exit ([`HeldToken::take_giving_back_the_posted_set`]); a claim that
+/// ran no collection over P gives it back at its drop, so that the release to
+/// `FREE` finds the word null (`crate::cycle::posted_set`).
 ///
 /// The drop releases on the unwind as well as on the return, so a panic
 /// inside a collection leaves no claim standing for a collector to skip
@@ -943,26 +942,26 @@ pub(crate) struct HeldToken {
 /// What a take does at `POSTED` ([`HeldToken`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AtPosted {
-    /// Take the byte and stamp from the live list, leaving the posted set for
-    /// the collection over P (`crate::cycle::posted_set`).
-    Stamp,
-    /// Take the byte and give the live list and the posted set back unread.
+    /// Take the byte, leaving the posted set for the collection over P
+    /// (`crate::cycle::posted_set`).
+    Keep,
+    /// Take the byte and give the posted set back unread.
     GiveBack,
-    /// Leave the byte, and the list with it, as they stand.
+    /// Leave the byte, and the set with it, as they stand.
     Hold,
 }
 
 impl HeldToken {
-    /// Take this thread's token, waiting while a collector holds it, and
-    /// stamp from the live list a take from `POSTED` finds.
+    /// Take this thread's token, waiting while a collector holds it, leaving
+    /// the set a take from `POSTED` finds for the collection over P.
     pub(crate) fn take() -> Self {
-        Self::take_unless(AtPosted::Stamp)
+        Self::take_unless(AtPosted::Keep)
     }
 
     /// Take this thread's token as [`take`](Self::take) does, and give back
-    /// unread the live list and the posted set a take from `POSTED` finds: the
-    /// pressure path's take and the exit's.
-    pub(crate) fn take_giving_back_the_live_list() -> Self {
+    /// unread the posted set a take from `POSTED` finds: the pressure path's
+    /// take and the exit's.
+    pub(crate) fn take_giving_back_the_posted_set() -> Self {
         Self::take_unless(AtPosted::GiveBack)
     }
 
@@ -974,8 +973,8 @@ impl HeldToken {
     /// that the pass, run with the gate closed, cannot be. The byte is
     /// decided on the read the swap acts on, after any wait, so a collector
     /// that releases `POSTED` into this take is held at `POSTED` too. The
-    /// live list stays with the byte: the caller decides what the list is
-    /// owed (`crate::cycle::live_list::drop_this_threads`).
+    /// posted set stays with the byte: the caller decides what the set is
+    /// owed (`crate::cycle::posted_set::drop_this_threads`).
     pub(crate) fn take_or_hold_posted() -> Self {
         Self::take_unless(AtPosted::Hold)
     }
@@ -990,16 +989,11 @@ impl HeldToken {
         match record_ref.token.take_unless(at_posted == AtPosted::Hold) {
             Some(took) => {
                 match took {
-                    TookFrom::Posted if at_posted == AtPosted::Stamp => unsafe {
-                        crate::cycle::live_list::stamp_from(record_ref)
-                    },
-                    TookFrom::Posted => {
-                        unsafe { crate::cycle::live_list::drop_from(record_ref) };
-                        crate::cycle::posted_set::drop_this_threads();
-                    }
+                    TookFrom::Posted if at_posted == AtPosted::Keep => {}
+                    TookFrom::Posted => crate::cycle::posted_set::drop_this_threads(),
                     TookFrom::Free => debug_assert!(
-                        record_ref.live_list().is_null() && record_ref.posted_set().is_null(),
-                        "FREE promises a null list word and a null set word"
+                        record_ref.posted_set().is_null(),
+                        "FREE promises a null set word"
                     ),
                 }
                 Self {
@@ -1094,10 +1088,6 @@ impl Drop for HeldToken {
             return;
         }
 
-        debug_assert!(
-            unsafe { (*self.releases).live_list() }.is_null(),
-            "FREE promises a null list word"
-        );
         // A take from `POSTED` leaves the posted set for the collection over
         // P, which takes it under this claim; a claim that ran none gives it
         // back here, so that `FREE` keeps its promise of a null set word.

@@ -181,12 +181,10 @@ pub(crate) unsafe fn free(block: *mut u8, kind: u32) {
             // `memory/retained.rs` states for the addresses it publishes.
             unsafe { unlink(block as *mut LargeEntityHeader) };
             let run_bytes = unsafe { (*(block as *const LargeEntityHeader)).run_bytes };
-            // A collector's live list may name this entity, and a stamp made
-            // after the unmapping would write into memory the system took
-            // back: under `POSTED` the list is stamped from now
-            // (`cycle::live_list`). The pooled form meets the same step in
-            // the pool's `put`.
-            crate::cycle::live_list::stamp_before_a_return();
+            // A set the collector proved unreachable may name this entity,
+            // and the owner must not read it after the unmapping: the set
+            // goes first (`cycle::posted_set`). The pooled form meets the
+            // same step in the pool's `put`.
             crate::cycle::posted_set::drop_before_a_return(block);
             crate::memory::os::unmap(block, run_bytes);
         }

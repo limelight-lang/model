@@ -557,7 +557,7 @@ pub(crate) unsafe fn for_each_met_row(
 /// Visit the index of every row of `array` the trace met and the scan left
 /// [`Color::Live`], in index order, by the walk `for_each_met_row` takes,
 /// stopping at the first `Break` `visit` answers, which it then answers. Its
-/// reader is the collector's live list (`crate::cycle::live_list`).
+/// reader is the collector's stamping (`crate::cycle::collector_stamps`).
 ///
 /// # Safety
 /// As `for_each_met_row`, and the collection has been scanned.

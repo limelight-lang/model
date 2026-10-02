@@ -198,12 +198,12 @@ impl CollectingThread {
     }
 
     /// [`take`](Self::take) for a collection under pressure, whose take of
-    /// the token gives back unread the live list a take from `POSTED` finds:
-    /// the thread wants the blocks, and the stamps are a later trace's
-    /// saving (`crate::cycle::live_list`).
+    /// the token gives back unread the posted set a take from `POSTED` finds:
+    /// the thread wants the blocks, and the collection over R whole reads
+    /// what the set holds anyway (`crate::cycle::posted_set`).
     fn take_under_pressure() -> Result<Self, GateClosed> {
         Self::take_by(
-            HeldToken::take_giving_back_the_live_list,
+            HeldToken::take_giving_back_the_posted_set,
             BatchForm::AllRoots,
         )
     }
@@ -377,7 +377,7 @@ pub(crate) unsafe fn collect_off_the_poll() -> usize {
 /// # Safety
 /// As [`collect_off_the_poll`].
 pub(crate) unsafe fn collect_over_the_verdicts() -> usize {
-    unsafe { collection(BatchForm::Verdicts) }.freed
+    unsafe { collection(BatchForm::Verdicts, ReadsStamps::Yes) }.freed
 }
 
 /// The disposition of P with no trace window, which `NOTHING_PROPOSED` arms
@@ -389,7 +389,6 @@ pub(crate) unsafe fn collect_over_the_verdicts() -> usize {
 /// of a collection over P.
 ///
 /// It is the collection over P's take and close with nothing between: the
-/// take of the token from `POSTED` stamps the batch's live list, and the
 /// guard's drop runs the disposition, spends the arming and arms the
 /// retirement pass where its count stands (`CollectingThread`'s drop). No
 /// window, arena or membership is opened.
@@ -461,14 +460,25 @@ pub(crate) struct Collection {
 /// # Safety
 /// As [`collect_off_the_poll`].
 pub(crate) unsafe fn collection_off_the_poll() -> Collection {
-    unsafe { collection(BatchForm::AllRoots) }
+    unsafe { collection(BatchForm::AllRoots, ReadsStamps::Yes) }
+}
+
+/// Whether a collection's mark reads the maturation stamps
+/// (`crate::cycle::arena::StampReading`): every collection does but the
+/// pressure path's and the exit's, which are after memory now rather than
+/// after the next trace's saving, and whose exhaustive reading a prune would
+/// cut (`dev/plans/S67.md`, S67.9, revision 3).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadsStamps {
+    Yes,
+    No,
 }
 
 /// [`collection_off_the_poll`] over `form`'s batch.
 ///
 /// # Safety
 /// As [`collect_off_the_poll`].
-unsafe fn collection(form: BatchForm) -> Collection {
+unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     let zero = |ending| Collection { freed: 0, ending };
     let Ok(_collecting) = CollectingThread::take(form) else {
         // Reached only by the explicit fire: the poll reads the gate before it
@@ -497,7 +507,8 @@ unsafe fn collection(form: BatchForm) -> Collection {
             None
         }
     };
-    let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS, form, set.as_ref()) } {
+    let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS, form, set.as_ref(), stamps) }
+    {
         Ok(traced) => traced,
         Err(TraceRefusal::NoWorkspace) => return zero(Ending::NoWorkspace),
         Err(TraceRefusal::EmptyLane) => return zero(Ending::EmptyLane),
@@ -569,6 +580,7 @@ unsafe fn open_and_trace(
     roots: usize,
     form: BatchForm,
     set: Option<&crate::cycle::posted_set::PostedSet>,
+    stamps: ReadsStamps,
 ) -> Result<(ActiveTrace, usize), TraceRefusal> {
     let Some(mut window) = ActiveTrace::open() else {
         return Err(TraceRefusal::NoWorkspace);
@@ -581,6 +593,10 @@ unsafe fn open_and_trace(
     let (arena, batch) = window.rows_and_roots();
     if batch.is_empty() {
         return Err(TraceRefusal::EmptyLane);
+    }
+
+    if stamps == ReadsStamps::No {
+        arena.read_no_stamp();
     }
 
     let (outcome, traced) = match form {
@@ -728,9 +744,9 @@ pub(crate) const EXIT_ROUNDS: usize = 8;
 /// As [`collect_off_the_poll`], with the heaps, the buffer arena and the weak
 /// table still alive for the destructors the rounds run.
 pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
-    // The live list goes back unread: no trace reads this heap after the
-    // exit's rounds, and a stamp would only prune those rounds' own traces.
-    let claim = HeldToken::take_giving_back_the_live_list();
+    // The posted set goes back unread: the rounds collect over R whole,
+    // which reads what it holds anyway.
+    let claim = HeldToken::take_giving_back_the_posted_set();
     let mut freed = 0;
     // By lane and not as one sum: a round that defers a verdict's root moves
     // it from P to the deferred lane, which the next round re-offers and
@@ -748,7 +764,7 @@ pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
             crate::cycle::chain::splice_this_threads_chain_into_r(true)
         };
 
-        let round = unsafe { collection_off_the_poll() };
+        let round = unsafe { collection(BatchForm::AllRoots, ReadsStamps::No) };
         freed += round.freed;
         let standing = crate::cycle::queue::registered_by_lane();
         let progressed = round.ending.ran_destructors() || standing != registered;
@@ -831,10 +847,10 @@ unsafe fn refused_under_pressure(closed: GateClosed) -> usize {
     // read as dead and took out of R returns through no other.
     if closed == GateClosed::Teardown {
         let _token = HeldToken::take_or_hold_posted();
-        // The hold leaves `POSTED` and the live list beside it; the list goes
+        // The hold leaves `POSTED` and the posted set beside it; the set goes
         // back unread here, as a pressure collection's take gives it back,
         // before the pass returns anything.
-        crate::cycle::live_list::drop_this_threads();
+        crate::cycle::posted_set::drop_this_threads();
         unsafe {
             crate::cycle::queue::retire_candidates();
             make_withheld_returns_before_the_retry();
@@ -1057,7 +1073,7 @@ unsafe fn make_withheld_returns_before_the_retry() {
 /// As [`collect_under_pressure`].
 unsafe fn trace_and_harvest(roots: usize) -> Traced {
     let (mut window, roots_traced) =
-        match unsafe { open_and_trace(roots, BatchForm::AllRoots, None) } {
+        match unsafe { open_and_trace(roots, BatchForm::AllRoots, None, ReadsStamps::No) } {
             Ok(traced) => traced,
             Err(TraceRefusal::EmptyLane) => return Traced::Nothing,
             Err(TraceRefusal::NoWorkspace | TraceRefusal::AllocationFailed) => {

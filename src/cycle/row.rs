@@ -271,10 +271,10 @@ pub(crate) unsafe fn for_each_live(
 /// `Break` `visit` answers, which it then answers.
 ///
 /// [`for_each_live`] over the met groups alone, so that the walk costs the
-/// rows a part met rather than every group of the block: its reader is the
-/// collector's live list, which walks each part's rows before the reset and
-/// may meet a block holding thousands of rows the part never touched
-/// (`crate::cycle::live_list`).
+/// rows a trace met rather than every group of the block: its reader is the
+/// collector's stamping, which walks a batch's rows before the reset and
+/// may meet a block holding thousands of rows the trace never touched
+/// (`crate::cycle::collector_stamps`).
 ///
 /// # Safety
 /// As [`for_each_unreachable`].

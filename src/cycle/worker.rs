@@ -99,9 +99,9 @@
 //! **The recall has two levels** (`dev/plans/S67.md`, S67.9, (10′)): the
 //! take's, and a withheld stack at [`STOP_MARKS`](crate::cycle::deferred_slot_reuse::STOP_MARKS)
 //! times its mark, stop the trace as above; a withheld stack at its mark asks
-//! it to wind down, the mutator running on. The mark, its passes, the pass
-//! before the trace and the live list's walk stop at either level; the scan at
-//! the stop alone. A mark the wind-down cut ends there, its remaining work
+//! it to wind down, the mutator running on. The mark, its passes and the
+//! pass before the trace stop at either level; the scan and the stamps' walk
+//! at the stop alone. A mark the wind-down cut ends there, its remaining work
 //! dropped, and the scan runs from every root, the roots posted off its
 //! colours with the set it proved ([`wind_down`]); a stop inside that scan
 //! posts the snapshot.
@@ -228,8 +228,7 @@
 //!
 //! A cap of zero removes the takes and keeps the thread: the elder is born
 //! by the poll's signal as under any cap, and its rounds visit every record,
-//! advance each epoch that is due and give back a stale live list, and
-//! request no token; no sibling is born under it, and every sibling standing
+//! advance each epoch that is due, and request no token; no sibling is born under it, and every sibling standing
 //! ends at the elder's next round without a backlog. The collections the
 //! takes would have made are the mutator's own, over R whole: the round that
 //! reads a mutator's R where it would have taken it — at the threshold,
@@ -1188,7 +1187,6 @@ unsafe fn read_one_record(
 
     let now = serve_clock_now();
     advance_the_epoch_if_due(unsafe { &*record }, now);
-    crate::cycle::live_list::give_back_a_stale_list(unsafe { &*record });
     // Under a cap of zero the visit keeps the clock and requests nothing.
     let served = if collectors_capped_at_zero() {
         unsafe { ask_for_an_in_line_collection(record, threshold, now) }
@@ -2339,10 +2337,9 @@ unsafe fn batch(
         },
         taken as u64,
     );
-    // The live list the trace writes, published below for the mutator's take;
-    // dropped on the unwind, which gives its blocks back here.
-    let mut live = crate::cycle::live_list::Writer::new(arena.turnovers());
-    // The set the trace proves unreachable, published beside it.
+    // The set the trace proves unreachable, published below for the mutator's
+    // collection over P; dropped on the unwind, which gives its blocks back
+    // here.
     let mut set = crate::cycle::posted_set::Writer::new();
     // From the guard on, every root is owed a verdict and R its advance, on
     // the unwind too, and the release that follows is to `POSTED` or, with no
@@ -2379,10 +2376,10 @@ unsafe fn batch(
     #[cfg(test)]
     let outcome = match testing::stubbed_trace() {
         Some(wall) => unsafe { stub_the_trace(arena, &mut posts, traced_from + wall) },
-        None => unsafe { trace_the_batch(arena, &mut posts, &mut live, &mut set) },
+        None => unsafe { trace_the_batch(mutator, arena, &mut posts, &mut set) },
     };
     #[cfg(not(test))]
-    let outcome = unsafe { trace_the_batch(arena, &mut posts, &mut live, &mut set) };
+    let outcome = unsafe { trace_the_batch(mutator, arena, &mut posts, &mut set) };
     let complete = outcome.complete;
     journal_event!(
         journal::KIND_BATCH_END,
@@ -2421,13 +2418,12 @@ unsafe fn batch(
     let backlog = reader.has_at_least_by_count(threshold);
 
     arena.reset();
-    // A batch that posted nothing into P releases `FREE`, and the live list
-    // goes back here, the mutator taking no list from `FREE`.
+    // A batch that posted nothing into P releases `FREE`, and the set goes
+    // back here, the mutator taking no set from `FREE`.
     if posted.get() {
-        live.publish(mutator, serve_clock_now());
         set.publish(mutator);
     } else {
-        drop((live, set));
+        drop(set);
     }
     mutator.note_batch();
     if at_the_threshold {
@@ -2705,7 +2701,7 @@ fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, outco
 /// Trace the batch's roots at once and post a verdict for each: the pass over
 /// the roots, every root met before any is expanded, one mark
 /// ([`crate::cycle::mark::drain`]), one scan from each root, the posts read off
-/// the colours, and the live list written once
+/// the colours, and the stamps written once
 /// (`dev/plans/S67.md`, S67.9, revision 3, (12')).
 ///
 /// A root no trace can place is posted first: a count read zero, and a root
@@ -2728,9 +2724,9 @@ fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, outco
 /// As [`drain`] through `AtomicCells`: the calling thread holds the mutator's
 /// token, and every root of `posts` is an entry of the mutator's R.
 unsafe fn trace_the_batch(
+    mutator: &MutatorRecord,
     arena: &mut TraceScratchArena,
     posts: &mut FinishThePosts<'_>,
-    live: &mut crate::cycle::live_list::Writer,
     set: &mut crate::cycle::posted_set::Writer,
 ) -> BatchOutcome {
     let outcome = BatchOutcome::default();
@@ -2802,9 +2798,22 @@ unsafe fn trace_the_batch(
         unsafe { set.append(arena) };
     }
 
-    // A recall inside the list's walk is a stop, though every verdict stands.
-    arena.stop_only_at(crate::cycle::token::RECALL_WIND_DOWN);
-    if unsafe { live.append_the_batch(arena) }.is_break() {
+    // A stop inside the stamps' walk ends the batch, though every verdict
+    // stands; a wind-down does not, as it does not end the scan. A stamp of an
+    // epoch the record has left reads as none, so a walk the round's
+    // re-naming moved the epoch under writes nothing (the Critic of
+    // 2026-09-30 on the collector writing the stamps, finding 4). Byte 6 is
+    // written only by the token's holder, so the walk runs under the grant.
+    #[cfg(test)]
+    testing::before_the_stamps(mutator);
+    debug_assert_eq!(
+        crate::cycle::token::state(mutator.token.read()),
+        crate::cycle::token::COLLECTOR,
+        "the collector stamps under its grant"
+    );
+    if mutator.turnovers() == arena.turnovers()
+        && unsafe { crate::cycle::collector_stamps::stamp_the_final_drain(arena) }.is_break()
+    {
         return BatchOutcome {
             stopped: true,
             regions_ended: true,

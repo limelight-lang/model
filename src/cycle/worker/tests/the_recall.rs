@@ -1382,9 +1382,9 @@ fn a_wind_down_inside_the_mark_scans_and_proposes_no_root_a_live_one_reaches() {
     }
 }
 
-/// A wind-down raised after the mark asks for nothing the scan does not
-/// already do: the scan runs to its end and every root is posted off its
-/// colours, the inner root read live; only the live list's walk stops at it.
+/// A wind-down raised after the mark asks for nothing the scan and the
+/// stamps' walk do not already do: both run to their end, the batch completes
+/// and every root is posted off its colours, the inner root read live.
 /// The same recall at the stop level stops the scan
 /// (`a_stop_inside_the_scan_reads_a_root_the_scan_coloured_live_as_live`).
 #[test]
@@ -1394,7 +1394,7 @@ fn a_wind_down_inside_the_mark_scans_and_proposes_no_root_a_live_one_reaches() {
 )]
 fn a_wind_down_after_the_mark_lets_the_scan_end() {
     use crate::cycle::token::RECALL_WIND_DOWN;
-    use crate::journal::kinds::BATCH_END_RECALLED_AFTER_THE_TRACE;
+    use crate::journal::kinds::BATCH_END_COMPLETE;
 
     let _g = test_guard();
     reset_lanes();
@@ -1415,16 +1415,10 @@ fn a_wind_down_after_the_mark_lets_the_scan_end() {
     let batches = testing::take_traced_batches();
     testing::read_traced_batches(false);
     assert!(
-        matches!(
-            served,
-            Served::Batch {
-                complete: false,
-                ..
-            }
-        ),
+        matches!(served, Served::Batch { complete: true, .. }),
         "{served:?}"
     );
-    assert_eq!(batches[0].ending, BATCH_END_RECALLED_AFTER_THE_TRACE);
+    assert_eq!(batches[0].ending, BATCH_END_COMPLETE);
     assert_eq!(
         standing_verdicts()
             .iter()

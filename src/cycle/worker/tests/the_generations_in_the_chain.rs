@@ -41,14 +41,15 @@ fn a_complete_serve() -> testing::Generations {
 }
 
 /// A young root read live goes on into P, not into the chain, and the
-/// mutator's disposition defers it with its core stamped, the root listed
-/// with it. Red with the generation not asked: the root goes into the
-/// chain's waiting part.
+/// mutator's disposition defers it; the core, walked in the root's first
+/// region, takes no stamp of the collector's
+/// (`crate::cycle::collector_stamps`). Red with the generation not asked: the
+/// root goes into the chain's waiting part.
 #[test]
 fn a_young_root_read_live_goes_on_into_p_and_is_deferred() {
     let _g = test_guard();
     reset();
-    let epoch = a_nonzero_epoch();
+    let _ = a_nonzero_epoch();
     let mut arena = Arena::new();
     let ring = unsafe { a_kept_ring(&mut arena, "HoldYoung") };
 
@@ -62,15 +63,10 @@ fn a_young_root_read_live_goes_on_into_p_and_is_deferred() {
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
     assert_eq!((candidate_count(), deferred_count()), (0, 1));
     assert!(
-        ring.members[1..]
+        ring.members
             .iter()
-            .all(|&member| unsafe { stamp_of(member) } == (epoch, 1)),
-        "the list stamped the core at the take"
-    );
-    assert_eq!(
-        unsafe { stamp_of(ring.root()) },
-        (epoch, 1),
-        "the batch's root is listed with its core"
+            .all(|&member| unsafe { stamp_of(member) }.1 == 0),
+        "the first region is not stamped"
     );
 
     unsafe { free_the_ring(&mut arena, ring) };

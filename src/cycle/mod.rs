@@ -101,8 +101,8 @@ pub(crate) mod epoch;
 // The first phase of a trace, reached from [`trace`] rather than from a
 // collection.
 pub(crate) mod mark;
-// The stamp a commit writes into the live components its trace read, which is
-// what a later trace's descent stops at.
+// The stamp an owner's commit writes into the live components its trace read,
+// which is what a later trace's descent stops at.
 pub(crate) mod maturation;
 // The roots a collector read live, kept in a chain on the mutator's record
 // rather than posted into P: the measured arm behind `collector-chain`.
@@ -116,9 +116,9 @@ pub(crate) mod chain;
     not(feature = "hold-by-generation")
 ))]
 compile_error!("`wait-by-readings` under `collector-chain` is built on `hold-by-generation`");
-// The live core a collector's batch read, listed for the mutator to stamp at
-// its take from `POSTED` without a descent, or to drop under pressure.
-pub(crate) mod live_list;
+// The stamps a collector's completed batch writes on the live core its final
+// drain read, under its grant and before the release.
+pub(crate) mod collector_stamps;
 // The set a collector's batch proved unreachable, posted for the mutator's
 // collection over P to validate and free as it stands.
 pub(crate) mod posted_set;

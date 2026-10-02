@@ -12,9 +12,8 @@
 //! there with K still sized by every batch. A batch's roots are registered
 //! again once its verdicts are discarded, so that R holds the same
 //! [`RINGS`] roots whatever K asks for: the mutator's collection over P never
-//! runs. The freeing arm's returns under `POSTED` stamp from the live list
-//! the batch left (`crate::cycle::live_list`, `stamp_before_a_return`), so
-//! the teardown turns the epoch first.
+//! runs. The batches stamp what their final drains read
+//! (`crate::cycle::collector_stamps`), so the teardown turns the epoch first.
 //!
 //! The file names nothing a tree before the batch in parts lacks, so that the
 //! same probe runs on both sides of the step.

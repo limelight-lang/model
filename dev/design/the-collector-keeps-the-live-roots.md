@@ -239,8 +239,9 @@ form D's pass**: mutator work for deaths the collector finds.
    2026-08-27 ("the deferred-candidate buffer is the owner's") and the
    ruling at lines 236-240 ("the collector keeps no cursor across batches
    … its per-owner batch size K excepted": the chain's words are a second
-   exception), Y12 clause 8, and `rfc/model/gc/rc-cycle.md` "The live list
-   of a batch", "The mutator's disposition" and "P does not grow". The code
+   exception), Y12 clause 8, and `rfc/model/gc/rc-cycle.md`'s section on the
+   live list (gone 2026-10-02), "The mutator's disposition" and "P does not
+   grow". The code
    docs that name the lane's mirror (`epoch.rs`, `HoldLine::turnover`, the
    `queue.rs` module doc) move with it.
 2. Form D stands on the Sage's ruling; recorded here for the plan.

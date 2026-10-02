@@ -16,9 +16,10 @@
 //!
 //! **The region above bit 15 is the collector's own**, and byte 6 of it
 //! carries the maturation stamp: the epoch at 16-17, the age at 18-19,
-//! and a reserve at 20-23 that nothing writes yet. The owning thread is
-//! the one writer, one byte wide, through [`write_maturation_stamp`] and
-//! [`stamp_as_read_live`], and
+//! and a reserve at 20-23 (`wait-by-readings` lays the byte out again). The
+//! holder of the mutator's token is the one writer at a time, one byte wide —
+//! the owner under its claim through [`write_maturation_stamp`], a collector
+//! under its grant through [`stamp_as_read_live`] — and
 //! `refcount::tests::the_header_the_compiler_shares` is what keeps a
 //! mutator constant from drifting into any of them. Bits 24-31 are
 //! unclaimed.
@@ -215,12 +216,13 @@ pub const IS_ESCAPEE: u32 = 1 << 11;
 /// the age at 20-21 and the count of live readings at 22-23
 /// (`SURVIVED_READINGS_MASK`).
 ///
-/// The byte has one writer, the owning thread — its commit
-/// ([`write_maturation_stamp`]) and its take of a collector's live list
-/// ([`stamp_as_read_live`]) — and the fields share it, so each is written by
-/// a byte-wide read-modify-write rather than by a store of the whole byte: a
-/// store would carry the reserve's bits down with it once the reserve has a
-/// writer of its own.
+/// The byte is written only by the holder of the mutator's token — the
+/// owner's commit under its own claim ([`write_maturation_stamp`]), and a
+/// collector's batch under its grant ([`stamp_as_read_live`],
+/// `crate::cycle::collector_stamps`) — and the fields share it, so each is
+/// written by a byte-wide read-modify-write rather than by a store of the
+/// whole byte: a store would carry the reserve's bits down with it once the
+/// reserve has a writer of its own.
 const MATURATION_STAMP_BYTE: usize = 6;
 
 /// The maturation epoch, bits 16-17: which epoch's collection wrote the age
@@ -1024,8 +1026,9 @@ pub(crate) struct MaturationStamp {
 ///
 /// # Safety
 /// `header` points at a live published entity, and the read is the owning
-/// thread's or a collector's — the byte is written by the owner alone, so
-/// either sees a whole stamp rather than a torn one.
+/// thread's or a collector's — the byte is written one byte wide by the
+/// holder of the mutator's token alone, so either sees a whole stamp rather
+/// than a torn one.
 #[inline]
 pub(crate) unsafe fn read_maturation_stamp(header: *const RcHeader) -> MaturationStamp {
     let byte = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) };
@@ -1044,12 +1047,13 @@ pub(crate) unsafe fn read_maturation_stamp(header: *const RcHeader) -> Maturatio
 /// the live subgraph its trace walked (`crate::cycle::maturation`).
 /// The access is one byte wide at [`MATURATION_STAMP_BYTE`], so it overlaps
 /// neither the counter nor the mutator's two bytes of the flags, and the
-/// read-modify-write is safe against no second writer rather than against
-/// none: byte 6 has one (`rfc/model/classes.md`, "Flags layout").
+/// read-modify-write is safe against no concurrent second writer rather than
+/// against none: byte 6 has one at a time, the token's holder
+/// (`rfc/model/classes.md`, "Flags layout").
 ///
 /// # Safety
 /// `header` points at a live published entity of this thread, and this thread
-/// is its owner.
+/// is its owner, holding its own token.
 #[inline]
 pub(crate) unsafe fn write_maturation_stamp(header: *mut RcHeader, stamp: MaturationStamp) {
     debug_assert!(stamp.epoch <= MATURATION_EPOCH_IN_BYTE as u32);
@@ -1064,19 +1068,19 @@ pub(crate) unsafe fn write_maturation_stamp(header: *mut RcHeader, stamp: Matura
 /// stamp already carries an age of at least one in that epoch; the rest of the
 /// byte stays as it stands.
 ///
-/// The writer behind a collector's list of the live core its batch read
-/// (`crate::cycle::live_list`), which the owner applies without a descent: an
-/// address in the list may name a slot its occupant left since the list was
-/// written, free or occupied again, and the stamp there is either written
-/// over by the next publication, which stores the whole word, or reduces the
-/// new occupant's suspicion until the turnover (`rfc/model/gc/rc-cycle.md`,
-/// "What a commit stamps"). One byte wide, as [`write_maturation_stamp`] is,
-/// and on the same one writer's terms.
+/// The writer behind the stamps a collector's completed batch writes on the
+/// live core its final drain read (`crate::cycle::collector_stamps`), without
+/// a descent: a member that died since its row was met takes a stamp the
+/// slot's next publication writes over, the whole word being stored then
+/// (`rfc/model/gc/rc-cycle.md`, "What a commit stamps"). One byte wide, as
+/// [`write_maturation_stamp`] is, and on the same terms: the writer holds the
+/// mutator's token.
 ///
 /// # Safety
-/// `header` is the first byte of a slot of this thread's entity memory whose
-/// block this thread has not given back, and no collector holds this thread's
-/// token.
+/// `header` is the first byte of a slot of the traced mutator's entity memory
+/// whose block that mutator has not given back, and the calling thread holds
+/// that mutator's token: the owner under its own claim, or a collector under
+/// its grant, every return of the mutator's withheld meanwhile.
 #[inline]
 pub(crate) unsafe fn stamp_as_read_live(header: *mut RcHeader, epoch: u32) {
     debug_assert!(epoch <= MATURATION_EPOCH_IN_BYTE as u32);

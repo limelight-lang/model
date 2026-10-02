@@ -39,12 +39,6 @@ collector-chain = []
 # on no gate but its own; measured against H and D.
 hold-by-generation = ["collector-chain"]
 
-# S65.36, the Sage's S1b: the collector lists no registered member of a live
-# core, a registered member's stamp being one no prune reads
-# (`dev/plans/S65.md`, S65.33). Off by default; measured against the build
-# without it, on D and on HG.
-unlisted-registered-members = []
-
 # S65.36, the Sage's G1, on `collector-chain`: the death check reads no entry
 # at the grant after its push, and starts a lap over the waiting part only in
 # the second half of an epoch and at most once in 2^k epochs, k growing after

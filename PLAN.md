@@ -181,9 +181,10 @@ the reading's reordered loads and `the_merged_lane`; the retirement pass under
 the token and the reordered state line; `the_batch`'s cases; `the_recall`'s
 stride and growth cases, its stops inside the trace, its two-mutator case's
 raw list pointer and its two grant-behind cases; `the_held_stack`'s cases;
-`when_a_withheld_stack_recalls_the_token`; `the_live_list`'s cases but the
-bound's (the chain's writes and reads, `refcount::stamp_as_read_live`,
-`shadow::for_each_live_met_row`, the block drawn back and filled);
+`when_a_withheld_stack_recalls_the_token`; `the_collectors_stamps`'s cases
+(the collector's byte-6 writes, `refcount::stamp_as_read_live`,
+`shadow::for_each_live_met_row`, the touched list's run reversed and put
+back);
 `the_cap_at_zero`'s cases, the ask's reading of a record under its
 hold; `the_cap_set_under_work`'s, the list's withdrawal;
 `what_the_poll_owes_the_queue::a_front_block_moved_under_a_reading_stays_in_the_circle`,
@@ -225,7 +226,9 @@ Notes: dev/plans/S65.md
         The parts went 2026-10-01 with S67.9 step (c).
 - [x] S65.8 The live core stamped from a list (package commit 6)
       handoff: `cycle::live_list`; the `dev/DECISIONS.md` entry it cites is quoted in
-        `dev/plans/S65.md`, S65.8; no check is named.
+        `dev/plans/S65.md`, S65.8; no check is named. The list went 2026-10-02
+        with S67.9 step (f): the collector stamps itself
+        (`cycle::collector_stamps`).
 - [x] S65.9 The retry at the ceiling (package commit 7)
       handoff: `RETRY_BLOCK_BUDGET` in `worker::trace_in_parts`; the `dev/DECISIONS.md`
         entry it cites is quoted in `dev/plans/S65.md`, S65.9. The retry went
@@ -685,10 +688,10 @@ against the code on 2026-09-24.
       запиши"). `rfc/model/gc` has no `NOTHING_PROPOSED`: form D's batch that
       proposed nothing releases to it (`cycle::collect`'s `dispose_of_p`),
       where the `rfc` describes the release to `POSTED` alone; and
-      `rc-cycle.md`, "The live list of a batch", lists every row a part left
-      live, where the code leaves the part's own root out since S65.34. The
-      live list is amended in any build; form D's release once S67's verdict
-      keeps D.
+      `rc-cycle.md`'s section on the live list listed every row a part left
+      live, where the code left the part's own root out since S65.34. The
+      live list went with S67.9 step (f), and its section with it
+      (2026-10-02); form D's release is amended once S67's verdict keeps D.
 
 - [ ] **The review's cuts of 2026-09-26** (pass 1 over `89bb0dc..49b544a`,
   with the comment reviewers' findings before the push): production —

@@ -306,28 +306,20 @@ fn a_collectors_trace_prunes_against_the_owners_epoch() {
     .join()
     .expect("the collector thread traced");
 
+    // The ring's other member, registered and unmet, is pruned too on a
+    // collector's trace (revision 3's (1′)).
     assert_eq!(
-        pruned, 1,
-        "the edge into the mature child, read against the owner's epoch"
+        pruned, 2,
+        "the edges into the mature child and the mature mate, read against the owner's epoch"
     );
     drop(arena);
     release_queue_segments();
 }
 
-/// Puts the module's exemption for registered targets back however the case
-/// ends.
-struct ExemptionRestored;
-
-impl Drop for ExemptionRestored {
-    fn drop(&mut self) {
-        prune_registered(false);
-    }
-}
-
 /// A target this trace has met is never pruned, whatever its stamp: a garbage
 /// ring of two whose members are both stamped mature and both roots of the
-/// batch reads zero on each row when registered targets are prunable (revision
-/// 3's (1'), the case's switch), because each member's row was met before the
+/// batch reads zero on each row when registered targets are prunable, as on a
+/// collector's batch (revision 3's (1′)), because each member's row was met before the
 /// edge into it was followed. A prune of a met target would leave each row at
 /// the edge it was owed and read the ring live.
 #[test]
@@ -350,10 +342,9 @@ fn a_target_the_trace_has_met_is_subtracted_whatever_its_stamp() {
         );
     }
 
-    let _restored = ExemptionRestored;
-    prune_registered(true);
     take_edges_pruned();
     let mut trace = crate::cycle::testing::open_arena();
+    trace.read_every_stamp_for_test();
     for &member in &members {
         assert!(unsafe { schedule_root_if_unvisited(&mut trace, member as *mut RcHeader) });
     }
@@ -364,7 +355,6 @@ fn a_target_the_trace_has_met_is_subtracted_whatever_its_stamp() {
     let counts = members.map(|member| unsafe { working_count(member) });
     trace.reset();
     drop(trace);
-    prune_registered(false);
 
     assert_eq!(counts, [0, 0], "each member's one in-edge came off its row");
     assert_eq!(

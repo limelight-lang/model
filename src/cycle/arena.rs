@@ -345,6 +345,25 @@ pub(crate) static GRANTS_RELEASED_AT: std::sync::atomic::AtomicUsize =
 /// aside. Not a measured figure; the rig of `PLAN.md`'s S65.17 reads it.
 pub(crate) const RECALL_STRIDE: usize = 1024;
 
+/// Which maturation stamps a trace over the arena reads, and so which edge
+/// targets its mark leaves to their own counts unexpanded
+/// (`crate::cycle::mark`, "The mature live core is not descended into").
+/// Every rule errs toward live alone: a target not expanded keeps its
+/// in-edges unsubtracted, so a prune costs recall and never frees.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum StampReading {
+    /// A fresh stamp prunes any target this trace has not met, registered or
+    /// not: a collector's batch (`dev/plans/S67.md`, S67.9, revision (1′)).
+    EveryTarget,
+    /// A fresh stamp prunes a target no queue entry names: the owner's
+    /// collections over R whole off the poll, by the explicit call and at a
+    /// cap of zero, whose exhaustive guarantee the exemption keeps.
+    UnregisteredTargets,
+    /// No stamp is read: the pressure path and the exit, which are after
+    /// memory now rather than after the next trace's saving.
+    Nothing,
+}
+
 /// One collection's memory: the thread's workspace for as long as the arena
 /// lives, and the blocks the bump grew into past it, which
 /// [`TraceScratchArena::reset`] returns.
@@ -425,6 +444,14 @@ pub(crate) struct TraceScratchArena {
     /// last sweep: every met root's first region expanded
     /// ([`regions_ended`](Self::regions_ended)).
     regions_ended: bool,
+    /// The touched list's head when the mark's final drain began, which every
+    /// array first touched in that drain stands before; `None` before a
+    /// final drain ([`note_the_final_drain`](Self::note_the_final_drain)).
+    final_drain_from: Option<*mut RowArray>,
+    /// Which stamps the mark reads ([`StampReading`]): every target's on a
+    /// collector thread, the unregistered targets' on the owner's, until a
+    /// caller asks for none ([`read_no_stamp`](Self::read_no_stamp)).
+    stamps: StampReading,
     /// The maturation descent's component stack: every live vertex it has
     /// visited and not yet assigned to a component
     /// ([`crate::cycle::maturation`]). Segments of this bump, like the
@@ -509,6 +536,7 @@ impl TraceScratchArena {
         let turnovers = unsafe { crate::cycle::epoch::of_record(owner) };
         let mut arena = Self::open_for(turnovers, crate::cycle::epoch::epoch_of(turnovers))?;
         arena.traced_token = unsafe { &raw const (*owner).token };
+        arena.stamps = StampReading::EveryTarget;
         Some(arena)
     }
 
@@ -544,6 +572,8 @@ impl TraceScratchArena {
             held_next: TraceStack::new(),
             in_a_pass: false,
             regions_ended: false,
+            final_drain_from: None,
+            stamps: StampReading::UnregisteredTargets,
             components: TraceStack::new(),
             drops: DeferredDrops::new(),
             published: 0,
@@ -814,6 +844,7 @@ impl TraceScratchArena {
         self.held_next.rewind();
         self.in_a_pass = false;
         self.regions_ended = false;
+        self.final_drain_from = None;
         // The descent that fills it ends inside the commit, so a stack still
         // holding a vertex here belongs to one that unwound
         // ([`crate::cycle::maturation`]).
@@ -1165,6 +1196,39 @@ impl TraceScratchArena {
         self.regions_ended
     }
 
+    /// Note that a mark's passes are over and its final drain begins: an array
+    /// linked into the touched list from here on is first touched in that
+    /// drain ([`final_drain_from`](Self::final_drain_from)).
+    pub(crate) fn note_the_final_drain(&mut self) {
+        self.final_drain_from = Some(self.touched);
+    }
+
+    /// The touched list's head when the final drain began, or `None` where no
+    /// final drain has begun since the last sweep. The arrays from
+    /// [`touched_head`](Self::touched_head) up to it, newest first, are the
+    /// ones first touched in that drain (`crate::cycle::collector_stamps`).
+    pub(crate) fn final_drain_from(&self) -> Option<*mut RowArray> {
+        self.final_drain_from
+    }
+
+    /// Which stamps the mark reads over this arena ([`StampReading`]).
+    pub(crate) fn stamp_reading(&self) -> StampReading {
+        self.stamps
+    }
+
+    /// Read every stamp, as a collector's batch does, on an arena the case
+    /// opened for its own thread (tests only).
+    #[cfg(test)]
+    pub(crate) fn read_every_stamp_for_test(&mut self) {
+        self.stamps = StampReading::EveryTarget;
+    }
+
+    /// Read no stamp for the rest of this arena's life: the pressure path's
+    /// traces and the exit's (`crate::cycle::collect`).
+    pub(crate) fn read_no_stamp(&mut self) {
+        self.stamps = StampReading::Nothing;
+    }
+
     /// Put a visited live vertex on the maturation descent's component stack,
     /// or answer **false** when both allocation paths refused a segment.
     ///
@@ -1392,7 +1456,7 @@ impl TraceScratchArena {
     pub(crate) fn read_the_recall_now(&mut self) -> ControlFlow<()> {
         // The traced mutator's own recall first: the batch ends, and a grant
         // held behind it is read at the pass its consent admitted, so the
-        // recall waits for no walk of the list.
+        // recall waits for no walk of the standing list.
         if self.recall_stands() {
             self.recalled = true;
             return ControlFlow::Break(());

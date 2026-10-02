@@ -289,8 +289,8 @@ pub(crate) fn release(block: *mut BlockHeader) {
 
 /// Give `blocks` GC blocks, and `bytes` of use charged inside them, to
 /// another thread, which ends them there through [`release`] and
-/// [`discharge`] after its [`take_over`]: the collector's live list, drawn on
-/// its thread and given back on the mutator's (`crate::cycle::live_list`).
+/// [`discharge`] after its [`take_over`]: the collector's posted set, drawn
+/// on its thread and given back on the mutator's (`crate::cycle::posted_set`).
 ///
 /// The process figures count GC memory whichever thread holds it, so nothing
 /// moves in them; the test build moves the pair off this thread's figures, so

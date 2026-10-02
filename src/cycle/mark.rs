@@ -49,9 +49,11 @@
 //! subtraction does not depend on when it is made; what the order changes is
 //! what a stop leaves, and the order in which blocks are first touched.
 //!
-//! Residual: two registered members of a garbage ring naming each other, no
-//! batch root among them, keep each other's row above zero and wait for the
-//! final drain.
+//! Residual: a garbage ring entered through a registered member no batch root
+//! is, whose own back edge is met only once that member is expanded, keeps the
+//! member's row above zero through every pass and waits for the final drain —
+//! and is stamped there if the scan colours it live
+//! (`crate::cycle::collector_stamps`, "What is stamped").
 //!
 //! # The mature live core is not descended into
 //!
@@ -66,15 +68,25 @@
 //! that reading (`crate::cycle::deferred_slot_reuse`), and the
 //! turnover is what offers it again (`crate::cycle::queue::reoffer_deferred_if_epoch_moved`).
 //!
+//! **Which stamps a trace reads is the arena's** (`StampReading`). A
+//! collector's batch prunes any stamped target, registered or not
+//! (`dev/plans/S67.md`, S67.9, revision (1′)): the state a web load keeps is
+//! entered through registered core objects, and a batch that walked it whole
+//! stamps it for the next. The owner's collections over R whole off the poll,
+//! by the explicit call and at a cap of zero keep the exemption below; the
+//! pressure path and the exit read no stamp at all; a collection over P
+//! follows no edge out of the set it validates and so prunes nothing
+//! ([`drain_within_the_met`]).
+//!
 //! **A target this trace has met is never pruned**, whatever its stamp: its row
 //! already holds its count, and the edge is one of the subtractions that row is
-//! owed. Today no prunable target can have been met, since every batch root
-//! carries the candidate bit that exempts it; the rule is read only where
-//! registered targets are prunable (`was_met`).
+//! owed. Under the exemption no prunable target can have been met, since every
+//! batch root carries the candidate bit that exempts it; the rule is read only
+//! where registered targets are prunable (`was_met`).
 //!
-//! **A target a queue entry names is never pruned, whatever its stamp**
-//! (`rfc/model/gc/rc-cycle.md`, "Candidate registration and trial
-//! deletion"). What the exemption saves is a ring whose members are all
+//! **Under the exemption a target a queue entry names is never pruned,
+//! whatever its stamp** (`rfc/model/gc/rc-cycle.md`, "Candidate registration
+//! and trial deletion"). What the exemption saves is a ring whose members are all
 //! registered: its garbage is found by the trace that meets it, every edge
 //! between members being an edge into a candidate. A ring one of whose mature
 //! members never observed a non-final decrement is not saved by it — the edge
@@ -107,7 +119,8 @@
 //! **The trace writes no stamp.** A stamp of another epoch is retired by being
 //! read against the epoch beside it, never by being cleared in place, so
 //! everything this module does to a mature entity is one byte-wide load
-//! (`crate::refcount::read_maturation_stamp`).
+//! (`crate::refcount::read_maturation_stamp`). A collector's batch stamps after
+//! its scan (`crate::cycle::collector_stamps`), never inside the mark.
 //!
 //! # What it owns, and what a refusal costs
 //!
@@ -147,7 +160,7 @@
 use std::ops::ControlFlow;
 
 use crate::cells::{self, Cell, CellReader, CellVisitor};
-use crate::cycle::arena::{RowLookup, TraceScratchArena, find_initialized_row};
+use crate::cycle::arena::{RowLookup, StampReading, TraceScratchArena, find_initialized_row};
 use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
 use crate::cycle::stack::WorklistEntry;
@@ -194,6 +207,7 @@ const _: () = assert!(
 struct Prune {
     epoch: u32,
     threshold: u32,
+    reads: StampReading,
 }
 
 impl Prune {
@@ -201,6 +215,7 @@ impl Prune {
         Self {
             epoch: arena.epoch(),
             threshold: traversal_age_threshold(),
+            reads: arena.stamp_reading(),
         }
     }
 }
@@ -315,8 +330,8 @@ pub(crate) unsafe fn mark<R: CellReader>(
 /// met**, and an edge into either is counted as an external reference and
 /// followed no further: what stands outside the GC heap, which keeps a ring
 /// through the arena — broken by the arena's own reset — out of the
-/// collector's reach (`crate::cycle::row`); and a mature edge target no queue
-/// entry names, for the epoch it matured in (module doc). Both raise the rows
+/// collector's reach (`crate::cycle::row`); and a mature edge target the
+/// arena's stamp reading prunes, for the epoch it matured in (module doc). Both raise the rows
 /// this trace leaves rather than lowering them, so what either costs is
 /// recall.
 ///
@@ -399,7 +414,9 @@ pub(crate) unsafe fn drain<R: CellReader>(arena: &mut TraceScratchArena) -> Mark
     }
 
     // The final drain: what no pass reached zero on, depth first, holding
-    // nothing more.
+    // nothing more. The arrays it touches first are the ones a completed
+    // batch stamps (`crate::cycle::collector_stamps`).
+    arena.note_the_final_drain();
     if arena.start_a_pass() {
         while let Some(entry) = arena.pop_held() {
             if !arena.push_work(entry) {
@@ -745,9 +762,7 @@ unsafe fn visit_child<R: CellReader>(
     prune: Prune,
     holding: Holding,
 ) -> bool {
-    if unsafe { stands_as_an_opaque_live_external(child, prune) }
-        && !(prunes_registered_targets() && unsafe { was_met(child) })
-    {
+    if unsafe { stands_as_an_opaque_live_external(child, prune) } {
         note_edge_pruned();
         return true;
     }
@@ -802,35 +817,45 @@ unsafe fn visit_child<R: CellReader>(
 ///
 /// Two fields of one byte decide the first half — an age that has reached
 /// `prune.threshold` under this collection's own epoch, a stamp of any other
-/// epoch reading as no age at all — and the mutator's flags decide the second:
-/// a target a queue entry names, in whichever lane that entry stands, is never
-/// pruned (module doc). The flags are read only where the stamp already says
-/// mature, which is why the two loads are in this order and not the reverse.
+/// epoch reading as no age at all — and the arena's [`StampReading`] the
+/// second: under [`StampReading::UnregisteredTargets`] a target a queue entry
+/// names, in whichever lane that entry stands, is never pruned, and under
+/// [`StampReading::EveryTarget`] a target this trace has met is never pruned
+/// ([`was_met`]; module doc). Each further test runs only where the stamp
+/// already says mature, which is why the loads are in this order.
 ///
 /// # Safety
-/// As [`visit_child`]: `child` is a live published entity header. The reader
-/// is the owning thread or a collector tracing for it, and the byte is the
-/// owner's to write, so the stamp read here is whole either way
+/// As [`visit_child`]: `child` is a live published entity header. Byte 6 is
+/// written only by the holder of the mutator's token, and this trace's caller
+/// holds it, so the stamp read here is whole and stands still
 /// (`crate::refcount::read_maturation_stamp`).
 #[inline]
-unsafe fn stands_as_an_opaque_live_external(child: *const RcHeader, prune: Prune) -> bool {
-    let stamp = unsafe { read_maturation_stamp(child) };
-    if prunes_registered_targets() {
-        return stamp.age >= prune.threshold && stamp.epoch == prune.epoch;
+unsafe fn stands_as_an_opaque_live_external(child: *mut RcHeader, prune: Prune) -> bool {
+    if prune.reads == StampReading::Nothing {
+        return false;
     }
-    stamp.age >= prune.threshold
-        && stamp.epoch == prune.epoch
-        && !is_registered_candidate(unsafe { mutator_flags(child) })
+
+    let stamp = unsafe { read_maturation_stamp(child) };
+    if stamp.age < prune.threshold || stamp.epoch != prune.epoch {
+        return false;
+    }
+
+    match prune.reads {
+        StampReading::EveryTarget => !unsafe { was_met(child) },
+        StampReading::UnregisteredTargets => {
+            !is_registered_candidate(unsafe { mutator_flags(child) })
+        }
+        StampReading::Nothing => false,
+    }
 }
 
 /// Whether this trace has met `child` already, which keeps a stamped target
 /// from being pruned: its row holds its count, and the edge is one of the
 /// subtractions that row is owed (`dev/plans/S67.md`, S67.9, the protocol
-/// Critic's F5). Asked only where registered targets are prunable
-/// ([`prunes_registered_targets`]): a target the module prunes carries no
-/// candidate bit, every batch root does, and a stamp does not move under the
-/// trace, so no prunable target has been met. The row is looked up without
-/// being met.
+/// Critic's F5). Asked only where registered targets are prunable: under the
+/// exemption a prunable target carries no candidate bit, every batch root
+/// does, and a stamp does not move under the trace, so no prunable target has
+/// been met. The row is looked up without being met.
 ///
 /// # Safety
 /// As [`visit_child`].
@@ -842,31 +867,6 @@ unsafe fn was_met(child: *mut RcHeader) -> bool {
     unsafe { find_initialized_row(row) }
         .is_some_and(|word| shadow::color(unsafe { word.read() }) != shadow::Color::Untouched)
 }
-
-/// Whether a registered target may be pruned: never in this build, the
-/// candidate bit exempting it (module doc); under the case's switch, revision
-/// 3's (1') read before it is built (`prune_registered`, tests only).
-#[inline]
-fn prunes_registered_targets() -> bool {
-    #[cfg(test)]
-    if PRUNES_REGISTERED.load(std::sync::atomic::Ordering::Relaxed) {
-        return true;
-    }
-
-    false
-}
-
-/// Prune a registered target like any other, or keep the module's exemption
-/// (tests only; revision 3's (1'), `dev/plans/S67.md`, S67.9, read on the
-/// rig before it is built). A batch root met from another root is pruned too,
-/// which only leaves its row above zero.
-#[cfg(test)]
-pub(crate) fn prune_registered(prunes: bool) {
-    PRUNES_REGISTERED.store(prunes, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[cfg(test)]
-static PRUNES_REGISTERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Add one to `EDGES_PRUNED`, and nothing at all without `cfg(test)`.
 ///

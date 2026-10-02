@@ -456,7 +456,8 @@ was 2 in 13 over S65.36's three gates and their re-runs, 752 against 753 and
 754 against 755; on 2026-09-29 it was 1 in 10 `debug-journal` runs over S67.5's three gates and a re-run,
 754 against 755; on 2026-10-01 it was 1 in 6 `debug-journal` runs over S67.9
 step (c)'s gate and its re-runs, the figures not kept; on 2026-10-02 1 in 3 over
-step (d)'s gate. What would close them is
+step (d)'s gate, and 1 in 7 over step (f)'s two gates and a re-run, the figures
+not kept. What would close them is
 a reading of a named thread's figures that outlives the thread, a structure
 rather than a patch; Edmond deferred building it on 2026-09-18 ("fix it
 later"), so the watch stands and the flake is re-run past, and until it is

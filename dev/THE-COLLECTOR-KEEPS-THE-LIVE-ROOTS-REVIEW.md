@@ -282,8 +282,8 @@ poll. Отдельно `cap 0`, временный закрытый gate, час
   [`a707b61`, 2026-09-22](https://github.com/limelight-lang/model/commit/a707b61).
 - `live_list.rs` и stamping из списка при take появились в
   [`2610a33`, 2026-09-24](https://github.com/limelight-lang/model/commit/2610a33f937faa21f88cc7d10255cde711364fd4).
-- Запись `dev/DECISIONS.md`, "the live core a batch read is stamped by the owner
-  from a list, at the take from `POSTED` or at the first return under it",
+- Запись `dev/DECISIONS.md` от 2026-09-24 о простановке меток владельцем
+  из списка (удалена 2026-10-02 вместе со списком, её хранит git),
   сообщает результат по строкам следующей трассы и прямо оставляет wall
   неизмеренным.
 

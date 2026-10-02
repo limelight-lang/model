@@ -755,6 +755,23 @@ pub(crate) fn between_the_phases() -> bool {
     BETWEEN_THE_NEXT_PHASES.run()
 }
 
+/// Turn the served record's epoch cell before the next batch's stamps, on the
+/// collector's thread, as the round's re-naming of the record to the elder
+/// may turn it inside a grant. One-shot.
+static TURN_BEFORE_THE_NEXT_STAMPS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn turn_the_epoch_before_the_next_stamps() {
+    TURN_BEFORE_THE_NEXT_STAMPS.store(true, Ordering::Relaxed);
+}
+
+/// Run the hook before the stamps on `mutator`, where a case installed one.
+pub(crate) fn before_the_stamps(mutator: &crate::cycle::mutator_record::MutatorRecord) {
+    if TURN_BEFORE_THE_NEXT_STAMPS.swap(false, Ordering::Relaxed) {
+        unsafe { crate::cycle::epoch::turn_the_cell_of(mutator) };
+    }
+}
+
 /// The positions the scan read after the hook between the phases, left by
 /// the hooked batch's trace for its own record, and `usize::MAX` for none:
 /// only a batch that ran the hook writes it, and the hook is one case's.
@@ -1518,16 +1535,16 @@ pub(crate) fn take_chain_figures() -> ChainFigures {
     }
 }
 
-/// What the schemes spend on the live list and the lane, in every build,
-/// since a case last asked: entries the collector listed that name a
-/// registered member and that name any other, the edges the collector's marks
+/// What the schemes spend on the collector's stamps and the lane, in every
+/// build, since a case last asked: stamps the collector wrote on a registered
+/// member and on any other (`crate::cycle::collector_stamps`), the edges the collector's marks
 /// pruned (the mutator's own collections not counted), and the roots the
 /// deferred lane held at the turns, which a turn hands back into R whole
 /// (pressure and the exit not counted) (`dev/plans/S65.md`, S65.36).
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct SchemeFigures {
-    pub(crate) listed_registered: usize,
-    pub(crate) listed_other: usize,
+    pub(crate) stamped_registered: usize,
+    pub(crate) stamped_other: usize,
     pub(crate) collector_edges_pruned: usize,
     pub(crate) roots_reoffered: usize,
     /// The collector's marks' held stack: passes over held entries, entries
@@ -1538,19 +1555,19 @@ pub(crate) struct SchemeFigures {
     pub(crate) collector_widest_pass: usize,
 }
 
-static LISTED_REGISTERED: AtomicUsize = AtomicUsize::new(0);
-static LISTED_OTHER: AtomicUsize = AtomicUsize::new(0);
+static STAMPED_REGISTERED: AtomicUsize = AtomicUsize::new(0);
+static STAMPED_OTHER: AtomicUsize = AtomicUsize::new(0);
 static EDGES_PRUNED: AtomicUsize = AtomicUsize::new(0);
 static ROOTS_REOFFERED: AtomicUsize = AtomicUsize::new(0);
 static HELD_PASSES: AtomicUsize = AtomicUsize::new(0);
 static HELD: AtomicUsize = AtomicUsize::new(0);
 static WIDEST_PASS: AtomicUsize = AtomicUsize::new(0);
 
-pub(crate) fn note_listed(registered: bool) {
+pub(crate) fn note_stamped(registered: bool) {
     let counter = if registered {
-        &LISTED_REGISTERED
+        &STAMPED_REGISTERED
     } else {
-        &LISTED_OTHER
+        &STAMPED_OTHER
     };
     counter.fetch_add(1, Ordering::Relaxed);
 }
@@ -1572,8 +1589,8 @@ pub(crate) fn note_reoffered(roots: usize) {
 /// The scheme figures since the last call, and zero them.
 pub(crate) fn take_scheme_figures() -> SchemeFigures {
     SchemeFigures {
-        listed_registered: LISTED_REGISTERED.swap(0, Ordering::Relaxed),
-        listed_other: LISTED_OTHER.swap(0, Ordering::Relaxed),
+        stamped_registered: STAMPED_REGISTERED.swap(0, Ordering::Relaxed),
+        stamped_other: STAMPED_OTHER.swap(0, Ordering::Relaxed),
         collector_edges_pruned: EDGES_PRUNED.swap(0, Ordering::Relaxed),
         roots_reoffered: ROOTS_REOFFERED.swap(0, Ordering::Relaxed),
         collector_passes: HELD_PASSES.swap(0, Ordering::Relaxed),

@@ -190,8 +190,8 @@ pub const BATCH_END_RECALLED_IN_THE_PASS: u64 = 2;
 /// [`KIND_BATCH_END`]: recalled inside the mark or the scan; the snapshot of
 /// the zero rows was posted.
 pub const BATCH_END_RECALLED_IN_THE_TRACE: u64 = 4;
-/// [`KIND_BATCH_END`]: recalled after the trace completed, in the live list's
-/// append.
+/// [`KIND_BATCH_END`]: recalled after the trace completed, in the walk of the
+/// collector's stamps (`crate::cycle::collector_stamps`).
 pub const BATCH_END_RECALLED_AFTER_THE_TRACE: u64 = 5;
 /// [`KIND_BATCH_END`]: an allocation refused inside the mark or the scan; the
 /// snapshot of the zero rows was posted.

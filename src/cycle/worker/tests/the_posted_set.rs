@@ -108,9 +108,8 @@ fn a_cycle_that_avoids_the_root_is_freed_without_reading_the_state() {
         !unsafe { &*record() }.posted_set().is_null(),
         "the batch posted the triangle"
     );
-    // A turn of the epoch first: the stamps the batch's live list would write
-    // at the take read stale, as after a stopped batch, which lists nothing,
-    // so no prune stands between the owner and the state.
+    // A turn of the epoch first, so that no stamp of the batch's stands and
+    // no prune is what keeps the owner off the state: it reads the set alone.
     crate::cycle::epoch::turn_this_threads_cell();
     crate::cycle::mark::record_expansions();
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 3, "the triangle is freed");

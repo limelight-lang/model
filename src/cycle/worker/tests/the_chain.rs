@@ -1,6 +1,6 @@
 //! The collector's chain under a grant (`crate::cycle::chain`, built behind
 //! the feature `collector-chain`): a batch whose roots all read live posts
-//! nothing into P, releases `FREE` and gives its live list back; the roots
+//! nothing into P and releases `FREE`; the roots
 //! wait in the chain until the epoch passes their block, and the next batch
 //! reads them beside R, the clamp shared; a pool that refuses the chain a
 //! block sends the root into P as without the chain; a chained root that
@@ -17,7 +17,6 @@ use crate::class::{Class, ClassBuilder};
 use crate::cycle::chain::testing::{REFUSE_BLOCKS, dismantle_this_threads, roots_of_this_threads};
 use crate::cycle::queue::verdicts::{Verdict, standing_verdicts, verdict_count};
 use crate::cycle::queue::{candidate_count, deferred_count};
-use crate::cycle::testing::stamp_of;
 use crate::cycle::token::{FREE, NOTHING_PROPOSED, state};
 use crate::gc::ll_gc_maybe_collect;
 use crate::memory::arena::Arena;
@@ -77,8 +76,8 @@ fn a_batch_of_live_roots_posts_nothing_releases_free_and_keeps_them_waiting() {
     );
     assert_eq!(verdict_count(), 0, "nothing in P");
     assert!(
-        unsafe { &*record() }.live_list().is_null(),
-        "the list went back on the collector's thread"
+        unsafe { &*record() }.posted_set().is_null(),
+        "no set stands under `FREE`"
     );
     let (ready, waiting) = roots_of_this_threads();
     assert_eq!(
@@ -647,13 +646,12 @@ fn with_one_slot_of_p_r_takes_it() {
 }
 
 #[test]
-fn a_batch_that_proposes_a_set_beside_live_roots_publishes_its_live_list() {
+fn a_batch_that_proposes_a_set_beside_live_roots_publishes_the_set() {
     let _g = test_guard();
     reset();
     let node = node_class("ChainMixedNode");
     let mut arena = Arena::new();
-    // Two live rings of two, each with its root of the second generation: the
-    // batch's root is listed with its core.
+    // Two live rings of two, each with its root of the second generation.
     let kept: Vec<KeptRing> = (0..2)
         .map(|index| unsafe {
             let ring = a_kept_ring_of(&mut arena, &format!("ChainMixedRing{index}"), 2);
@@ -670,8 +668,8 @@ fn a_batch_that_proposes_a_set_beside_live_roots_publishes_its_live_list() {
     ));
     assert_eq!(state(byte()), crate::cycle::token::POSTED);
     assert!(
-        !unsafe { &*record() }.live_list().is_null(),
-        "a batch that posted publishes its list, the live roots' cores in it"
+        !unsafe { &*record() }.posted_set().is_null(),
+        "a batch that proposed publishes the set it proved"
     );
     assert_eq!(
         roots_of_this_threads().1.len(),
@@ -679,13 +677,9 @@ fn a_batch_that_proposes_a_set_beside_live_roots_publishes_its_live_list() {
         "the live roots wait in the chain"
     );
 
-    // The collection over P stamps from the list and frees the ring.
+    // The collection over P reads the set and frees the ring.
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
-    assert!(unsafe { &*record() }.live_list().is_null());
-    for ring in &kept {
-        assert_eq!(unsafe { stamp_of(ring.members[1]) }.1, 1, "the core");
-        assert_eq!(unsafe { stamp_of(ring.root()) }.1, 1, "the batch's root");
-    }
+    assert!(unsafe { &*record() }.posted_set().is_null());
 
     for ring in kept {
         unsafe { free_the_ring(&mut arena, ring) };

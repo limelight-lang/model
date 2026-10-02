@@ -231,8 +231,8 @@ fn garbage_behind_a_closure_recalled_in_every_grant_is_freed_within_the_rounds()
 /// rule, and reach the rings within the rounds, each trace walking the core
 /// once whatever its roots. Under the parts each garbage ring's part met B
 /// with the grant's retry spent and was deferred. No turnover is made, so the
-/// core's live list is stamped in the epoch the next grant traces in; the
-/// registered members are cut by no stamp.
+/// stamps a completed batch writes stand in the epoch the next grant traces
+/// in, and its mark prunes at them, the registered members included.
 #[test]
 #[cfg_attr(miri, ignore = "300 blocks of objects are past what Miri affords")]
 #[cfg_attr(
