@@ -342,3 +342,73 @@ fn a_drain_ending_under_a_grant_keeps_its_recall() {
     drop(grant);
     drain();
 }
+
+/// The recall's level off the token.
+fn level(token: *const TraceToken) -> u8 {
+    unsafe { (*token).recall_level() }
+}
+
+/// The deaths' mark winds the grant down and [`STOP_MARKS`] times it stops it:
+/// each level is raised at the death that crosses its mark and at no other,
+/// and the holder's slot is told once, at the first raise. Red with one level:
+/// the mark stops the collector where it stands, with no scan.
+#[test]
+fn the_mark_winds_the_grant_down_and_its_second_stops_it() {
+    use crate::cycle::token::{RECALL_NONE, RECALL_STOP, RECALL_WIND_DOWN};
+
+    let _guard = test_guard();
+    let token = this_thread_token();
+    let second = STOP_MARKS * DEATHS_MARK;
+    let slots = unsafe { dead_slots(second) };
+    let _ = take_the_recall_of(ELDER);
+    let mut holder = HeldByACollector::take(token, false);
+    for &slot in &slots[..DEATHS_MARK] {
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+    }
+
+    assert_eq!(
+        level(token),
+        RECALL_WIND_DOWN,
+        "the mark winds the grant down"
+    );
+    assert!(take_the_recall_of(ELDER), "the holder's slot is told");
+    for &slot in &slots[DEATHS_MARK..second - 1] {
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+    }
+
+    assert_eq!(level(token), RECALL_WIND_DOWN, "short of the second mark");
+    unsafe { crate::memory::stdapi::ll_free(slots[second - 1]) };
+    assert_eq!(level(token), RECALL_STOP, "the second mark stops it");
+    assert!(!take_the_recall_of(ELDER), "the slot is told once");
+
+    holder.release();
+    drain();
+    assert_eq!(level(token), RECALL_NONE);
+}
+
+/// The consent stores the level the stacks hold: a grant opened on a stack
+/// past its second mark starts stopped.
+#[test]
+fn a_grant_opened_on_a_stack_past_its_second_mark_starts_stopped() {
+    use crate::cycle::token::RECALL_STOP;
+
+    let _guard = test_guard();
+    let token = this_thread_token();
+    let slots = unsafe { dead_slots(STOP_MARKS * DEATHS_MARK) };
+    let mut holder = HeldByACollector::take(token, false);
+    for &slot in &slots {
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+    }
+
+    holder.release();
+    let _ = take_the_recall_of(ELDER);
+    unsafe { (*token).request_for_test(word(REQUESTED, ELDER)) };
+    let reading = crate::cycle::token::read_and_act_on_this_thread();
+    let grant = Consented(token);
+    assert_eq!(reading, crate::cycle::token::Reading::Collector);
+    assert_eq!(level(token), RECALL_STOP, "the grant starts stopped");
+    assert!(take_the_recall_of(ELDER), "the holder's slot is told");
+
+    drop(grant);
+    drain();
+}

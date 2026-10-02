@@ -196,6 +196,10 @@ pub const BATCH_END_RECALLED_AFTER_THE_TRACE: u64 = 5;
 /// [`KIND_BATCH_END`]: an allocation refused inside the mark or the scan; the
 /// snapshot of the zero rows was posted.
 pub const BATCH_END_REFUSED_IN_THE_TRACE: u64 = 6;
+/// [`KIND_BATCH_END`]: the mutator's withheld returns crossed their mark inside
+/// the mark; the mark ended there, the scan ran to its end and the roots were
+/// posted off its colours.
+pub const BATCH_END_WOUND_DOWN: u64 = 7;
 
 /// [`KIND_ROOT_VERDICT`] and [`KIND_ROOT_WRITTEN_BACK`]: the discriminants of
 /// `cycle::queue::verdicts::Verdict`, which asserts them.

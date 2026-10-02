@@ -70,7 +70,7 @@
 //! (`rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of the thread it
 //! claimed").
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
 /// Nobody traces this thread; the mutator returns memory at once.
@@ -99,6 +99,16 @@ pub(crate) const ASKED: u8 = word(POSTED, 1);
 /// nothing; `crate::cycle::collect::Ending::NothingProposed` is a collection's
 /// own ending, whose scan proposed nothing.
 pub(crate) const NOTHING_PROPOSED: u8 = word(POSTED, 2);
+
+/// No recall: the collector traces on (`TraceToken::recall_level`).
+pub(crate) const RECALL_NONE: u8 = 0;
+/// The mutator's withheld returns crossed their mark: the collector ends its
+/// mark where it stands, scans what it marked and posts off the colours
+/// (`crate::cycle::worker`, "The recall of the token").
+pub(crate) const RECALL_WIND_DOWN: u8 = 1;
+/// The mutator waits for its token, or its withheld returns crossed their
+/// second mark: the collector stops wherever it stands and posts its snapshot.
+pub(crate) const RECALL_STOP: u8 = 2;
 
 /// The bits the state takes.
 pub(crate) const STATE_MASK: u8 = 0b111;
@@ -190,18 +200,20 @@ pub(crate) enum TookFrom {
 /// there.
 pub(crate) struct TraceToken {
     word: AtomicU8,
-    /// Whether the mutator recalls the token: set by its take
-    /// before it waits out a collector's claim and cleared once the take
-    /// returns, and set as well, with no wait, by a stack of returns withheld
-    /// under the claim once it holds its mark ([`recall_this_threads_token`]),
-    /// which the next consent or the returns' going back whole clears; so
-    /// that the collector's trace, which reads it every
-    /// `crate::cycle::arena::RECALL_STRIDE` positions, stops and releases
-    /// (`rfc/model/gc/rc-cycle.md`, "The recall of the token"). A hint and
-    /// not a claim: a reading that missed the store costs one stride more,
-    /// and nothing but the byte above decides who holds the token. Relaxed
-    /// on both sides, since nothing is published beside it.
-    waiting: AtomicBool,
+    /// How hard the mutator recalls the token, one of the `RECALL_*` levels:
+    /// [`RECALL_STOP`] set by its take before it waits out a collector's claim
+    /// and cleared once the take returns; [`RECALL_WIND_DOWN`] raised with no
+    /// wait by a stack of returns withheld under the claim at its mark, and
+    /// [`RECALL_STOP`] at its second ([`recall_this_threads_token`]), which
+    /// the next consent or the returns' going back whole clears; so that the
+    /// collector's trace, which reads it every
+    /// `crate::cycle::arena::RECALL_STRIDE` positions, winds down or stops
+    /// and releases (`rfc/model/gc/rc-cycle.md`, "The recall of the token").
+    /// The mutator is its one writer and raises it within a grant, never
+    /// lowers it. A hint and not a claim: a reading that missed the store
+    /// costs one stride more, and nothing but the byte above decides who holds
+    /// the token. Relaxed on both sides, since nothing is published beside it.
+    waiting: AtomicU8,
     wait: Mutex<()>,
     released: Condvar,
     /// How many times a taker has gone to wait on this token. A case reads
@@ -234,7 +246,7 @@ impl TraceToken {
     pub(crate) const fn new_held() -> Self {
         Self {
             word: AtomicU8::new(MUTATOR),
-            waiting: AtomicBool::new(false),
+            waiting: AtomicU8::new(RECALL_NONE),
             wait: Mutex::new(()),
             released: Condvar::new(),
             #[cfg(test)]
@@ -257,31 +269,48 @@ impl TraceToken {
         self.word.load(Ordering::Acquire)
     }
 
-    /// Whether the mutator recalls the token, asking a collector that
-    /// traces for it to stop: it stands in its take's wait, or a stack of
-    /// its withheld returns held its mark. The collector's reading of the
-    /// recall.
+    /// Whether the mutator recalls the token at either level: it stands in
+    /// its take's wait, or a stack of its withheld returns held its mark.
     #[inline]
     pub(crate) fn is_recalled(&self) -> bool {
+        self.recall_level() != RECALL_NONE
+    }
+
+    /// How hard the mutator recalls the token: [`RECALL_NONE`],
+    /// [`RECALL_WIND_DOWN`] or [`RECALL_STOP`]. The collector's reading of the
+    /// recall; the mutator is its one writer, and raises it monotonically
+    /// within a grant.
+    #[inline]
+    pub(crate) fn recall_level(&self) -> u8 {
         self.waiting.load(Ordering::Relaxed)
     }
 
-    /// Recall the token from the collector whose claim the byte reads, as a
-    /// take that meets the claim does, and go on without waiting. A byte that
-    /// reads no collector's claim is left alone.
-    fn recall_without_waiting(&self) {
+    /// Recall the token at `level` from the collector whose claim the byte
+    /// reads, without waiting, where the recall stands lower: a stack of
+    /// withheld returns crossing a mark. A byte that reads no collector's
+    /// claim is left alone. The first raise of a grant also sets the slot's
+    /// word, which releases the grant where the collector holds it behind
+    /// another mutator's batch.
+    fn recall_without_waiting(&self, level: u8) {
         let seen = self.read();
         if state(seen) != COLLECTOR {
             return;
         }
 
+        let before = self.recall_level();
+        if before >= level {
+            return;
+        }
+
         #[cfg(test)]
-        if !self.is_recalled() {
+        if before == RECALL_NONE {
             crate::cycle::worker::testing::note_recall(true);
         }
 
-        self.waiting.store(true, Ordering::Relaxed);
-        crate::cycle::worker::recall_the_grants_of(slot(seen));
+        self.waiting.store(level, Ordering::Relaxed);
+        if before == RECALL_NONE {
+            crate::cycle::worker::recall_the_grants_of(slot(seen));
+        }
     }
 
     /// Whether a collector traces this thread now: the byte at `COLLECTOR`.
@@ -388,17 +417,17 @@ impl TraceToken {
     /// thread made before its reading is ordered before the collector's
     /// loads after its grant; then the wake of s. `Err` is the byte the
     /// swap read back instead, which the caller acts on. The recall is set to
-    /// `recalled` first — whether a stack of withheld returns holds its mark —
-    /// so that a grant starts recalled exactly when a mark stands, and not
-    /// by a recall a mark raised under an earlier grant.
-    pub(crate) fn consent(&self, seen: u8, recalled: bool) -> Result<(), u8> {
+    /// `level` first — the level the stacks of withheld returns hold — so
+    /// that a grant starts recalled exactly as hard as the marks stand, and
+    /// not by a recall a mark raised under an earlier grant.
+    pub(crate) fn consent(&self, seen: u8, level: u8) -> Result<(), u8> {
         debug_assert_eq!(state(seen), REQUESTED);
         // Ahead of the release swap, which publishes it: the collector reads
         // the recall once before its batch, after its acquire of the grant,
         // and a recall stored after the swap can land behind that reading.
-        self.waiting.store(recalled, Ordering::Relaxed);
+        self.waiting.store(level, Ordering::Relaxed);
         #[cfg(test)]
-        if recalled {
+        if level != RECALL_NONE {
             crate::cycle::worker::testing::note_recall(true);
         }
 
@@ -520,13 +549,13 @@ impl TraceToken {
         // Cleared on the unwind too: a recall left standing would stop every
         // later grant's trace at its first reading.
         struct ClearTheRecall<'a> {
-            waiting: &'a AtomicBool,
+            waiting: &'a AtomicU8,
             recalled: bool,
         }
         impl Drop for ClearTheRecall<'_> {
             fn drop(&mut self) {
                 if self.recalled {
-                    self.waiting.store(false, Ordering::Relaxed);
+                    self.waiting.store(RECALL_NONE, Ordering::Relaxed);
                 }
             }
         }
@@ -576,7 +605,9 @@ impl TraceToken {
                             crate::cycle::worker::testing::note_recall(false);
                         }
 
-                        self.waiting.store(true, Ordering::Relaxed);
+                        // The take waits: the collector stops where it
+                        // stands, with no scan after its mark.
+                        self.waiting.store(RECALL_STOP, Ordering::Relaxed);
                         crate::cycle::worker::recall_the_grants_of(slot(seen));
                         *recalled = true;
                     }
@@ -671,7 +702,13 @@ impl TraceToken {
     /// traces on the calling thread against a recall standing.
     #[cfg(test)]
     pub(crate) fn recall_for_test(&self, waiting: bool) {
-        self.waiting.store(waiting, Ordering::Relaxed);
+        self.recall_at_level_for_test(if waiting { RECALL_STOP } else { RECALL_NONE });
+    }
+
+    /// Set the recall to `level`, for a case that recalls at the wind-down.
+    #[cfg(test)]
+    pub(crate) fn recall_at_level_for_test(&self, level: u8) {
+        self.waiting.store(level, Ordering::Relaxed);
     }
 
     /// Write `requested`, a `REQUESTED|s` byte, over `FREE`: a case standing
@@ -753,17 +790,35 @@ pub(crate) fn collector_is_tracing_this_thread() -> bool {
     !record.is_null() && unsafe { (*record).token.collector_is_tracing() }
 }
 
-/// Recall this thread's token from the collector that holds it, without
-/// waiting: what a stack of returns withheld under that collector does once
-/// it holds its mark (`crate::cycle::deferred_slot_reuse`, "The marks by
-/// stack length"). Nothing unless a collector holds the token; the consent
-/// that opens the next grant clears it.
+/// Recall this thread's token at `level` from the collector that holds it,
+/// without waiting: what a stack of returns withheld under that collector
+/// does once it holds a mark (`crate::cycle::deferred_slot_reuse`, "The marks
+/// by stack length"). Nothing unless a collector holds the token, or where
+/// the recall stands at `level` already; the consent that opens the next
+/// grant resets it.
 #[cold]
 #[inline(never)]
-pub(crate) fn recall_this_threads_token() {
+pub(crate) fn recall_this_threads_token(level: u8) {
     let record = crate::cycle::mutator_record::this_thread_record();
     if !record.is_null() {
-        unsafe { (*record).token.recall_without_waiting() };
+        unsafe { (*record).token.recall_without_waiting(level) };
+    }
+}
+
+/// Tell the collector whose claim this thread's byte reads that its grant
+/// stands recalled, setting its slot's word as a raise does: the consent
+/// stored the level ahead of its swap, where the collector reads it, and the
+/// word is what releases the grant where the collector holds it behind
+/// another mutator's batch. Nothing unless a collector holds the token.
+pub(crate) fn tell_this_threads_holder() {
+    let record = crate::cycle::mutator_record::this_thread_record();
+    if record.is_null() {
+        return;
+    }
+
+    let seen = unsafe { (*record).token.read() };
+    if state(seen) == COLLECTOR {
+        crate::cycle::worker::recall_the_grants_of(slot(seen));
     }
 }
 
@@ -783,7 +838,7 @@ pub(crate) fn forget_this_threads_recall() {
 
     let token = unsafe { &(*record).token };
     if token.is_recalled() && !token.collector_is_tracing() {
-        token.waiting.store(false, Ordering::Relaxed);
+        token.waiting.store(RECALL_NONE, Ordering::Relaxed);
     }
 }
 
@@ -824,7 +879,7 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
             }
             COLLECTOR => return Reading::Collector,
             MUTATOR => return Reading::Mutator,
-            _ => match token.consent(seen, crate::cycle::deferred_slot_reuse::a_mark_stands()) {
+            _ => match token.consent(seen, crate::cycle::deferred_slot_reuse::withheld_recall()) {
                 Ok(()) => {
                     #[cfg(test)]
                     crate::cycle::worker::testing::after_the_consents_swap();

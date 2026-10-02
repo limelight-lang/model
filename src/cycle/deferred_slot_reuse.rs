@@ -100,17 +100,20 @@
 //! took beside its head — deaths, chunks, and blocks, a run and a large
 //! entity's death counted by the blocks they span — and once a count holds
 //! its mark ([`DEATHS_MARK`], [`CHUNKS_MARK`], [`BLOCKS_MARK`]) the mutator
-//! recalls the grant as its take would, marking the token and the holder's
-//! slot, and goes on freeing: nothing blocks and nothing is returned
-//! (`crate::cycle::token::recall_this_threads_token`). The recall is made at
-//! the return that crosses the mark, and the returns past it ask nothing. The
-//! consent that opens the next grant sets the recall to whether a stack holds
-//! its mark, ahead of the swap that publishes the grant, and the drain that
+//! recalls the grant at the wind-down level, marking the token and the
+//! holder's slot, and goes on freeing: nothing blocks and nothing is returned
+//! (`crate::cycle::token::recall_this_threads_token`); the collector ends its
+//! mark, scans and posts. At [`STOP_MARKS`] times the mark it recalls at the
+//! stop level, as its take would, and the collector stops where it stands.
+//! Each level is raised at the return that crosses its mark, and the returns
+//! between and past them ask nothing. The consent that opens the next grant
+//! sets the recall to the level the stacks hold, ahead of the swap that
+//! publishes the grant, and the drain that
 //! gives the stacks back whole outside a grant clears it, so that a recall
 //! made at a mark stops no later grant; a stack still at its mark when a
 //! grant opens — a drain a new holder stopped, or a consent no drain preceded
 //! — recalls that grant at its consent, before the collector's reading ahead
-//! of its batch ([`a_mark_stands`], [`recall_if_a_mark_stands`]). A count is what
+//! of its batch ([`withheld_recall`], [`recall_if_a_mark_stands`]). A count is what
 //! its stack holds at every instant: the drain takes an item's weight off
 //! before the return, and a return withheld again counts anew, so a consent
 //! inside a drain, the drain's own chain in hand, reads it exactly
@@ -1449,11 +1452,13 @@ impl ForeignStack {
         self.head.get().is_null()
     }
 
-    /// Count `weight` toward `mark`, and recall the token at the return that
-    /// crosses it. A return past the mark asks nothing, so that the grant is
-    /// recalled once and the returns after it cost what they cost below it;
-    /// a stack that already holds its mark when a grant opens recalls that
-    /// grant at its consent ([`recall_if_a_mark_stands`]).
+    /// Count `weight` toward `mark`, and recall the token at the returns that
+    /// cross it and its second, [`STOP_MARKS`] times it: the first asks the
+    /// collector to wind down, the second to stop. A return between or past
+    /// the two asks nothing, so that each level is raised once and the
+    /// returns after it cost what they cost below it; a stack that already
+    /// holds a mark when a grant opens recalls that grant at its consent
+    /// ([`recall_if_a_mark_stands`]).
     #[inline]
     fn count(&self, weight: usize, mark: usize) {
         let before = self.held.get();
@@ -1468,7 +1473,20 @@ impl ForeignStack {
                     .expect("one of the three marks"),
                 held,
             );
-            crate::cycle::token::recall_this_threads_token();
+            crate::cycle::token::recall_this_threads_token(crate::cycle::token::RECALL_WIND_DOWN);
+        }
+
+        if before < STOP_MARKS * mark && held >= STOP_MARKS * mark {
+            crate::cycle::token::recall_this_threads_token(crate::cycle::token::RECALL_STOP);
+        }
+    }
+
+    /// The recall level this stack's count holds against `mark`.
+    fn level(&self, mark: usize) -> u8 {
+        match self.held.get() {
+            held if held >= STOP_MARKS * mark => crate::cycle::token::RECALL_STOP,
+            held if held >= mark => crate::cycle::token::RECALL_WIND_DOWN,
+            _ => crate::cycle::token::RECALL_NONE,
         }
     }
 
@@ -1492,19 +1510,27 @@ impl ForeignStack {
 /// another mutator's batch. Once per grant, after the consent
 /// (`crate::cycle::token::read_and_act_on_this_thread`).
 pub(crate) fn recall_if_a_mark_stands() {
-    if a_mark_stands() {
-        crate::cycle::token::recall_this_threads_token();
+    if withheld_recall() != crate::cycle::token::RECALL_NONE {
+        crate::cycle::token::tell_this_threads_holder();
     }
 }
 
-/// Whether one of this thread's three withheld stacks holds its mark: what
-/// the consent stores as the recall ahead of its swap
+/// The recall level this thread's three withheld stacks hold, the highest of
+/// the three: what the consent stores as the recall ahead of its swap
 /// (`crate::cycle::token::TraceToken::consent`).
-pub(crate) fn a_mark_stands() -> bool {
-    WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(DEATHS_MARK))
-        || CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(CHUNKS_MARK))
-        || BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.holds(BLOCKS_MARK))
+pub(crate) fn withheld_recall() -> u8 {
+    WITHHELD_UNDER_A_FOREIGN_TRACE
+        .with(|stack| stack.level(DEATHS_MARK))
+        .max(CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.level(CHUNKS_MARK)))
+        .max(BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.level(BLOCKS_MARK)))
 }
+
+/// The second mark of each stack, as a multiple of its first: past it the
+/// collector stops where it stands rather than winding down
+/// (`dev/plans/S67.md`, S67.9, revision 3, G7). One constant, as G7 rules,
+/// set at 2 until the switch cell's figures put it to Edmond (Q2): a steady
+/// freer then withholds up to twice its mark at a release.
+pub(crate) const STOP_MARKS: usize = 2;
 
 /// M: the deaths withheld under a foreign holder at which the mutator recalls
 /// its token. 8,192 deaths of 64 bytes are 512 KiB; the figure is the

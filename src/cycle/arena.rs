@@ -368,9 +368,17 @@ pub(crate) struct TraceScratchArena {
     /// Positions left to read before the next reading of the recall, from
     /// [`RECALL_STRIDE`] down to one.
     positions_to_the_reading: usize,
-    /// Whether a reading found the recall standing: what tells a trace the
-    /// recall stopped from one a refused allocation did.
+    /// Whether a reading found the recall standing at [`Self::stops_at`] or
+    /// above: what tells a trace the recall stopped from one a refused
+    /// allocation did.
     recalled: bool,
+    /// The recall level a reading stops the trace at: the wind-down for the
+    /// mark, its passes and the list's walk, the stop alone for the scan
+    /// (`crate::cycle::worker`, "The recall of the token").
+    stops_at: u8,
+    /// The level the reading that stopped the trace found, which tells a
+    /// wind-down from a stop.
+    level_seen: u8,
     /// The grants a collector thread holds unserved while this trace runs,
     /// released at a reading of the recall when their mutators wait
     /// ([`TraceScratchArena::hold_the_grants_behind`]); `None` for an
@@ -520,6 +528,8 @@ impl TraceScratchArena {
             traced_token: std::ptr::null(),
             positions_to_the_reading: RECALL_STRIDE,
             recalled: false,
+            stops_at: crate::cycle::token::RECALL_WIND_DOWN,
+            level_seen: crate::cycle::token::RECALL_NONE,
             grants_behind: None,
             #[cfg(test)]
             recall_readings: 0,
@@ -1351,7 +1361,11 @@ impl TraceScratchArena {
             if !self.traced_token.is_null()
                 && crate::cycle::worker::testing::recalls_at_the_reading(self.recall_readings)
             {
-                unsafe { (*self.traced_token).recall_for_test(true) };
+                unsafe {
+                    (*self.traced_token).recall_at_level_for_test(
+                        crate::cycle::worker::testing::level_at_the_reading(),
+                    )
+                };
             }
         }
 
@@ -1406,17 +1420,42 @@ impl TraceScratchArena {
         }
     }
 
-    /// Whether the traced mutator recalls its token. An arena opened
-    /// on the tracing thread's own behalf is recalled by nobody, whichever
-    /// reader its trace takes.
-    fn recall_stands(&self) -> bool {
-        !self.traced_token.is_null() && unsafe { (*self.traced_token).is_recalled() }
+    /// Whether the traced mutator recalls its token at [`Self::stops_at`] or
+    /// above, noting the level it read. An arena opened on the tracing
+    /// thread's own behalf is recalled by nobody, whichever reader its trace
+    /// takes.
+    fn recall_stands(&mut self) -> bool {
+        if self.traced_token.is_null() {
+            return false;
+        }
+
+        let level = unsafe { (*self.traced_token).recall_level() };
+        if level < self.stops_at {
+            return false;
+        }
+
+        self.level_seen = level;
+        true
+    }
+
+    /// Stop the trace at recall level `level` and above from here on, and
+    /// forget a stop read below it: the scan after a wind-down runs on to its
+    /// end unless the mutator recalls at the stop level.
+    pub(crate) fn stop_only_at(&mut self, level: u8) {
+        self.stops_at = level;
+        self.recalled = false;
     }
 
     /// Whether [`inspect_position`](Self::inspect_position) found the recall
-    /// standing since the open.
+    /// standing since the open, or since the last [`Self::stop_only_at`].
     pub(crate) fn was_recalled(&self) -> bool {
         self.recalled
+    }
+
+    /// Whether the recall that stopped the trace was the wind-down alone:
+    /// the mark ends, and the scan may run.
+    pub(crate) fn wound_down(&self) -> bool {
+        self.recalled && self.level_seen == crate::cycle::token::RECALL_WIND_DOWN
     }
 
     /// The positions this arena's trace has counted since the open.

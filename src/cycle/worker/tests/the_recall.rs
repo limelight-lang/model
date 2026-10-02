@@ -1282,3 +1282,165 @@ fn a_pool_refusal_inside_the_mark_posts_the_snapshot() {
     }
     reset_lanes();
 }
+
+/// R in the order the wind-down cases want: a root over three strides of
+/// unregistered elements, then an inner root held by the outer one alone,
+/// then the outer root the case holds. The worklist expands the outer root
+/// first, which subtracts the inner one's only reference, and the first
+/// stride reading falls inside the wide root's region.
+unsafe fn wide_then_inner_then_outer(
+    context: &mut LLContext,
+) -> (*mut Object, *mut Object, *mut Object) {
+    let element = ClassBuilder::new("WindDownElement").build();
+    let wide = unsafe { a_root_over_a_wide_region(context, element, CUT_ELEMENTS) };
+    let inner = unsafe { new_constructed(context, element, MemoryCategory::GcHeap) };
+    unsafe {
+        ll_retain(inner as *mut RcHeader);
+        assert!(
+            !ll_release(inner as *mut RcHeader),
+            "registered, held by the case"
+        );
+    }
+    let outer = unsafe { a_root_over(context, inner as *mut RcHeader, Tag::Object) };
+    (wide, inner, outer)
+}
+
+/// One serve whose trace the recall at `level` reaches at its first stride
+/// reading, inside the mark: the batch traced and the verdicts it posted.
+fn a_serve_recalled_in_the_mark_at(
+    level: u8,
+) -> (testing::TracedBatch, Vec<(*mut Object, Verdict)>) {
+    testing::read_traced_batches(true);
+    testing::recall_at_the_reading_at_level(1, level);
+    let served = super::the_batch::served_by_a_collector();
+    unsafe { &(*record()).token }.recall_for_test(false);
+    let batches = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert!(
+        matches!(
+            served,
+            Served::Batch {
+                complete: false,
+                ..
+            }
+        ),
+        "{served:?}"
+    );
+    let posted = standing_verdicts()
+        .iter()
+        .map(|&(root, verdict)| (root as *mut Object, verdict))
+        .collect();
+    (*batches.first().expect("the batch was traced"), posted)
+}
+
+/// A wind-down inside the mark ends the mark, scans, and posts off the
+/// colours: the inner root, whose row the mark read zero, is reached live from
+/// the outer one by the scan and is not proposed. The same recall at the stop
+/// level posts the snapshot, which proposes it — the owner then refutes it.
+#[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
+fn a_wind_down_inside_the_mark_scans_and_proposes_no_root_a_live_one_reaches() {
+    use crate::cycle::token::{RECALL_STOP, RECALL_WIND_DOWN};
+    use crate::journal::kinds::{BATCH_END_RECALLED_IN_THE_TRACE, BATCH_END_WOUND_DOWN};
+
+    for (level, ending, inner_verdict) in [
+        (RECALL_WIND_DOWN, BATCH_END_WOUND_DOWN, Verdict::Unwalked),
+        (
+            RECALL_STOP,
+            BATCH_END_RECALLED_IN_THE_TRACE,
+            Verdict::Proposed,
+        ),
+    ] {
+        let _g = test_guard();
+        reset_lanes();
+        let mut arena = Arena::new();
+        let mut context = LLContext { arena: &mut arena };
+        let (wide, inner, outer) = unsafe { wide_then_inner_then_outer(&mut context) };
+        assert_eq!(candidate_count(), 3);
+        let _clear = ClearTheRecall(unsafe { &(*record()).token });
+        unsafe { &*record() }.set_batch_size(3);
+
+        let (batch, posted) = a_serve_recalled_in_the_mark_at(level);
+        assert_eq!(batch.ending, ending, "level {level}");
+        let verdict_of = |root: *mut Object| {
+            posted
+                .iter()
+                .find(|&&(posted, _)| posted == root)
+                .map(|&(_, verdict)| verdict)
+        };
+        assert_eq!(verdict_of(inner), Some(inner_verdict), "level {level}");
+
+        crate::cycle::queue::verdicts::discard_standing_verdicts();
+        unsafe {
+            let_go(outer);
+            let_go(wide);
+        }
+        reset_lanes();
+    }
+}
+
+/// A wind-down raised after the mark asks for nothing the scan does not
+/// already do: the scan runs to its end and every root is posted off its
+/// colours, the inner root read live; only the live list's walk stops at it.
+/// The same recall at the stop level stops the scan
+/// (`a_stop_inside_the_scan_reads_a_root_the_scan_coloured_live_as_live`).
+#[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
+fn a_wind_down_after_the_mark_lets_the_scan_end() {
+    use crate::cycle::token::RECALL_WIND_DOWN;
+    use crate::journal::kinds::BATCH_END_RECALLED_AFTER_THE_TRACE;
+
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let (wide, inner, outer) = unsafe { wide_then_inner_then_outer(&mut context) };
+    let _clear = ClearTheRecall(unsafe { &(*record()).token });
+    unsafe { &*record() }.set_batch_size(3);
+
+    let token = unsafe { &raw const (*record()).token } as usize;
+    testing::between_the_next_phases(Box::new(move || {
+        unsafe { &*(token as *const crate::cycle::token::TraceToken) }
+            .recall_at_level_for_test(RECALL_WIND_DOWN)
+    }));
+    testing::read_traced_batches(true);
+    let served = super::the_batch::served_by_a_collector();
+    unsafe { &(*record()).token }.recall_for_test(false);
+    let batches = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+    assert!(
+        matches!(
+            served,
+            Served::Batch {
+                complete: false,
+                ..
+            }
+        ),
+        "{served:?}"
+    );
+    assert_eq!(batches[0].ending, BATCH_END_RECALLED_AFTER_THE_TRACE);
+    assert_eq!(
+        standing_verdicts()
+            .iter()
+            .map(|&(root, verdict)| (root as *mut Object, verdict))
+            .collect::<Vec<_>>(),
+        vec![
+            (wide, Verdict::ReadLive),
+            (inner, Verdict::ReadLive),
+            (outer, Verdict::ReadLive),
+        ]
+    );
+
+    assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
+    unsafe {
+        let_go(outer);
+        let_go(wide);
+    }
+    reset_lanes();
+}

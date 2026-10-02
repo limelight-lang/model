@@ -276,7 +276,11 @@ fn a_consent_and_a_refusal_move_the_slots_byte_number_and_a_plain_wake_does_not(
 
     let before = byte_wakes_of(SLOT);
     token.request_for_test(word(REQUESTED, SLOT));
-    assert!(token.consent(word(REQUESTED, SLOT), false).is_ok());
+    assert!(
+        token
+            .consent(word(REQUESTED, SLOT), crate::cycle::token::RECALL_NONE)
+            .is_ok()
+    );
     assert_eq!(byte_wakes_of(SLOT), before + 1, "the consent moved it");
     token.release_claim(SLOT, false);
 

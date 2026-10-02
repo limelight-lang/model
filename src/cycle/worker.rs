@@ -91,6 +91,16 @@
 //! bounded by what the trace touched — every heap block it met a row in and
 //! every block the arena drew — which with no budget is up to the traced
 //! mutator's state, about a sixteenth of its heap in rows. A recalled batch sizes K by where the stop fell, as any stop does.
+//!
+//! **The recall has two levels** (`dev/plans/S67.md`, S67.9, (10′)): the
+//! take's, and a withheld stack at [`STOP_MARKS`](crate::cycle::deferred_slot_reuse::STOP_MARKS)
+//! times its mark, stop the trace as above; a withheld stack at its mark asks
+//! it to wind down, the mutator running on. The mark, its passes, the pass
+//! before the trace and the live list's walk stop at either level; the scan at
+//! the stop alone. A mark the wind-down cut ends there, its remaining work
+//! dropped, and the scan runs from every root, the roots posted off its
+//! colours with the set it proved ([`wind_down`]); a stop inside that scan
+//! posts the snapshot.
 //! A mutator freeing under the grant recalls it the same way without waiting,
 //! once one of its withheld stacks holds its mark
 //! (`crate::cycle::deferred_slot_reuse`, "The marks by stack length").
@@ -2743,11 +2753,18 @@ unsafe fn trace_the_batch(
     }
 
     if unsafe { drain::<AtomicCells>(arena) } != MarkResult::Complete {
-        return unsafe { post_at_a_stop(arena, posts, set, outcome) };
+        return if arena.wound_down() {
+            unsafe { wind_down(arena, posts, set, outcome) }
+        } else {
+            unsafe { post_at_a_stop(arena, posts, set, outcome) }
+        };
     }
 
     #[cfg(test)]
     testing::note_the_mark_end(arena.positions_inspected());
+    // The scan stops at the stop level alone: a wind-down raised inside it
+    // asks for what the scan already does, an end on posts.
+    arena.stop_only_at(crate::cycle::token::RECALL_STOP);
     #[cfg(test)]
     let hooked_at = testing::between_the_phases().then(|| arena.positions_inspected());
     let mut scanned = true;
@@ -2784,6 +2801,7 @@ unsafe fn trace_the_batch(
     }
 
     // A recall inside the list's walk is a stop, though every verdict stands.
+    arena.stop_only_at(crate::cycle::token::RECALL_WIND_DOWN);
     if unsafe { live.append_the_batch(arena) }.is_break() {
         return BatchOutcome {
             stopped: true,
@@ -2799,6 +2817,67 @@ unsafe fn trace_the_batch(
         ..outcome
     }
     .ended(journal::BATCH_END_COMPLETE)
+}
+
+/// End a batch whose mark the mutator's wind-down cut: the mark's remaining
+/// work is dropped, the scan runs from every root to its end unless the
+/// mutator recalls at the stop level, and the roots are posted off its
+/// colours — potentially unreachable [`Verdict::Proposed`], live
+/// [`Verdict::ReadLive`] where the first regions had ended or the batch is
+/// its one root, as at a stop — with the set the scan proved
+/// (`crate::cycle::posted_set`). A mark cut short leaves rows above what a
+/// complete one would, an unexpanded entity's edges never subtracted, so the
+/// colours err toward live alone. A stop inside that scan posts the snapshot
+/// ([`post_at_a_stop`]). Nothing is listed live.
+///
+/// # Safety
+/// As [`trace_the_batch`], the stopped mark's rows still standing.
+unsafe fn wind_down(
+    arena: &mut TraceScratchArena,
+    posts: &mut FinishThePosts<'_>,
+    set: &mut crate::cycle::posted_set::Writer,
+    outcome: BatchOutcome,
+) -> BatchOutcome {
+    let regions_ended = arena.regions_ended();
+    arena.drop_the_work();
+    arena.stop_only_at(crate::cycle::token::RECALL_STOP);
+    for index in 0..posts.roots.len() {
+        if !posts.has_a_verdict(index)
+            && unsafe { scan::<AtomicCells>(arena, posts.root(index)) } != ScanResult::Complete
+        {
+            return unsafe { post_at_a_stop(arena, posts, set, outcome) };
+        }
+    }
+
+    let live_reads_live = regions_ended || posts.roots.len() == 1;
+    for index in 0..posts.roots.len() {
+        if posts.has_a_verdict(index) {
+            continue;
+        }
+
+        let RootReading::Tracked(key) = (unsafe { read_the_root(posts.root(index)) }) else {
+            continue;
+        };
+        let Some(row) = (unsafe { crate::cycle::arena::find_initialized_row(key) }) else {
+            continue;
+        };
+        match shadow::color(unsafe { row.read() }) {
+            Color::PotentiallyUnreachable => posts.post(index, Verdict::Proposed),
+            Color::Live if live_reads_live => posts.post(index, Verdict::ReadLive),
+            _ => {}
+        }
+    }
+
+    if posts.proposed.get() {
+        unsafe { set.append(arena) };
+    }
+
+    BatchOutcome {
+        stopped: true,
+        regions_ended,
+        ..outcome
+    }
+    .ended(journal::BATCH_END_WOUND_DOWN)
 }
 
 /// Post what a trace stopped by the recall or a refused allocation supports,

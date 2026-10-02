@@ -2810,6 +2810,7 @@ const JOURNAL_COLUMNS: &[JournalColumn] = &[
         KIND_BATCH_END,
         BATCH_END_REFUSED_IN_THE_TRACE
     ),
+    journal_column!("batch_end_wound_down", KIND_BATCH_END, BATCH_END_WOUND_DOWN),
     journal_column!("batch_regions_ended", KIND_BATCH_END, every, sum),
     journal_column!("verdict_proposed", KIND_ROOT_VERDICT, VERDICT_PROPOSED),
     journal_column!("verdict_read_live", KIND_ROOT_VERDICT, VERDICT_READ_LIVE),
@@ -2990,6 +2991,7 @@ impl WebCell {
             (crate::journal::kinds::BATCH_END_RECALLED_IN_THE_PASS
                 ..=crate::journal::kinds::BATCH_END_RECALLED_AFTER_THE_TRACE)
                 .contains(&ending)
+                || ending == crate::journal::kinds::BATCH_END_WOUND_DOWN
         });
         self.completed = tally(&|ending| ending == crate::journal::kinds::BATCH_END_COMPLETE);
         let mut by_mutator = std::collections::BTreeMap::<usize, usize>::new();

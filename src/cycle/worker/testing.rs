@@ -692,10 +692,28 @@ pub(crate) fn take_rows_met() -> usize {
 /// chooses, inside the mark's first regions or past them. One-shot; the case
 /// clears the recall afterwards.
 static RECALL_AT_THE_READING: AtomicUsize = AtomicUsize::new(0);
+/// The level the hook above raises.
+static LEVEL_AT_THE_READING: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(crate::cycle::token::RECALL_STOP);
 
+/// Raise the stop at the `reading`th stride reading of the next collector's
+/// trace, as a waiting take would.
 pub(crate) fn recall_at_the_reading(reading: usize) {
+    recall_at_the_reading_at_level(reading, crate::cycle::token::RECALL_STOP);
+}
+
+/// Raise `level` at the `reading`th stride reading of the next collector's
+/// trace: [`crate::cycle::token::RECALL_WIND_DOWN`] stands in for a withheld
+/// stack's crossing.
+pub(crate) fn recall_at_the_reading_at_level(reading: usize, level: u8) {
     assert_ne!(reading, 0, "the first reading is the first");
+    LEVEL_AT_THE_READING.store(level, Ordering::Relaxed);
     RECALL_AT_THE_READING.store(reading, Ordering::Relaxed);
+}
+
+/// The level [`recall_at_the_reading_at_level`] asked for.
+pub(crate) fn level_at_the_reading() -> u8 {
+    LEVEL_AT_THE_READING.load(Ordering::Relaxed)
 }
 
 /// Whether `reading`, a collector trace's count of its stride readings, is
