@@ -1500,10 +1500,12 @@ unsafe fn reclaim_what_the_second_reading_confirms<'a>(
 
 // Mutation injection, tests only, and for a state one thread has no other way
 // into: a store that lands after this thread's trace has proposed a component
-// and before the exact validation reads its counts. What stages it in
-// production is another thread's store, and the reading it produces —
-// `ExternallyReferenced` over a component the trace read as unreachable — is
-// what defers a batch
+// and before the exact validation reads its counts. No other thread writes a
+// count (`crate::refcount`, one thread per request), and this thread writes
+// none between its own trace and its validation; what stages the reading in
+// production is the owner's own store after a collector's trace, and the
+// reading it produces — `ExternallyReferenced` over a component the trace read
+// as unreachable — is what defers a batch
 // (`cycle/validation/tests/what_a_mutation_racing_the_verdict_costs.rs`).
 //
 // The armed store is three raw pointers rather than a closure so that the cell
