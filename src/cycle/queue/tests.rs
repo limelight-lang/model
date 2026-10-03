@@ -141,7 +141,6 @@ mod the_batch_a_collection_reads;
 mod the_tokens_every_lane_holds;
 mod what_a_reader_behind_the_writer_takes;
 mod what_a_registration_writes;
-mod what_a_rewrite_of_r_keeps;
 mod what_gc_owns;
 mod what_the_poll_owes_the_queue;
 mod where_a_full_segment_comes_from;

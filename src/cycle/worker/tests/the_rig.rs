@@ -39,8 +39,7 @@
 //! Beside those, with no case of known answer, a cell reads: the iterations
 //! longer than [`A_LONG_ITERATION`]; the collector's time in each grant
 //! segment; the mutators' dispositions of P with no trace window; the
-//! collector's chain's figures ([`testing::ChainFigures`]), zero without the
-//! chain; the completed deaths withheld by a queue entry, at the peak, on the
+//! completed deaths withheld by a queue entry, at the peak, on the
 //! mean and at the loop's end; how long the requests a mutator answered
 //! inside its loop stood, by consent and by its own take, how long the
 //! collectors' `POSTED` and `ASKED` stood until its take, and how long the
@@ -550,8 +549,8 @@ const LOADS: [Load; 23] = [
         live: Graph::NONE,
     },
     // `live-churn` whose rings die by their counts: each root read live
-    // dies a completed death behind its entry, the deaths the chain's check
-    // finds and the deferred lane's turnover retires.
+    // dies a completed death behind its entry, which the deferred lane's
+    // turnover retires.
     Load {
         name: "live-churn-dies-by-count",
         garbage_graphs: 0,
@@ -2611,8 +2610,6 @@ struct CellReading {
     verdict_collections: testing::VerdictCollections,
     /// The mutators' dispositions of P with no trace window.
     disposals: testing::VerdictCollections,
-    /// What the collector's chain did, zero without it.
-    chain: testing::ChainFigures,
     /// What the collector's stamps and the lane cost, in every build.
     scheme: testing::SchemeFigures,
     token_waits: testing::TokenWaits,
@@ -2626,9 +2623,6 @@ struct CellReading {
     /// Recalls raised to the stop level by a stack's second mark.
     second_mark_recalls: usize,
     written_back: usize,
-    /// What `hold-by-generation` did with the roots read live; zero without
-    /// the feature.
-    generations: testing::Generations,
     /// The GC ledger's high-water marks over the process so far: blocks
     /// reserved and bytes taken into use, both in bytes.
     ledger_peak: (usize, usize),
@@ -2843,16 +2837,6 @@ const JOURNAL_COLUMNS: &[JournalColumn] = &[
     journal_column!("deferred_from_r", KIND_ROOT_DEFERRED, DEFERRED_FROM_R),
     journal_column!("deferred_from_p", KIND_ROOT_DEFERRED, DEFERRED_FROM_P),
     journal_column!(
-        "deferred_into_the_waiting_part",
-        KIND_ROOT_DEFERRED,
-        DEFERRED_INTO_THE_WAITING_PART
-    ),
-    journal_column!(
-        "deferred_into_the_ready_part",
-        KIND_ROOT_DEFERRED,
-        DEFERRED_INTO_THE_READY_PART
-    ),
-    journal_column!(
         "written_back_proposed",
         KIND_ROOT_WRITTEN_BACK,
         VERDICT_PROPOSED
@@ -2888,18 +2872,6 @@ const JOURNAL_COLUMNS: &[JournalColumn] = &[
         "reoffered_every_lane",
         KIND_REOFFERED,
         REOFFERED_EVERY_LANE,
-        sum
-    ),
-    journal_column!(
-        "reoffered_chain_expired",
-        KIND_REOFFERED,
-        REOFFERED_CHAIN_EXPIRED,
-        sum
-    ),
-    journal_column!(
-        "reoffered_chain_into_r",
-        KIND_REOFFERED,
-        REOFFERED_CHAIN_INTO_R,
         sum
     ),
     journal_column!("turnover_by_proofs", KIND_TURNOVER, TURNOVER_BY_PROOFS),
@@ -3216,22 +3188,6 @@ impl CellReading {
                     .to_string(),
             ),
             ("written_back", self.written_back.to_string()),
-            (
-                "posted_first_generation",
-                self.generations.posted_first.to_string(),
-            ),
-            (
-                "posted_second_generation",
-                self.generations.posted_second.to_string(),
-            ),
-            (
-                "posted_unlisted",
-                self.generations.posted_unlisted.to_string(),
-            ),
-            (
-                "posted_in_an_old_core",
-                self.generations.posted_in_an_old_core.to_string(),
-            ),
             ("recalls_by_the_mark", self.recalls.0.to_string()),
             ("recalls_by_a_take", self.recalls.1.to_string()),
             (
@@ -3283,37 +3239,6 @@ impl CellReading {
                 "disposal_longest_us",
                 self.disposals.longest.as_micros().to_string(),
             ),
-            (
-                "chain_pushed_waiting",
-                self.chain.pushed_waiting.to_string(),
-            ),
-            ("chain_pushed_ready", self.chain.pushed_ready.to_string()),
-            ("chain_refusals", self.chain.refusals.to_string()),
-            ("chain_blocks_peak", self.chain.blocks_peak.to_string()),
-            (
-                "chain_headers_checked",
-                self.chain.headers_checked.to_string(),
-            ),
-            ("chain_deaths_posted", self.chain.deaths_posted.to_string()),
-            ("roots_from_r", self.chain.roots_from_r.to_string()),
-            (
-                "roots_from_the_chain",
-                self.chain.roots_from_the_chain.to_string(),
-            ),
-            (
-                "grants_r_left_unread",
-                self.chain.grants_r_left_unread.to_string(),
-            ),
-            (
-                "chain_headers_checked_in_a_lap",
-                self.chain.headers_checked_in_a_lap.to_string(),
-            ),
-            ("chain_laps", self.chain.laps.to_string()),
-            (
-                "chain_deaths_posted_in_a_lap",
-                self.chain.deaths_posted_in_a_lap.to_string(),
-            ),
-            ("batches_r_cut", self.chain.batches_r_cut.to_string()),
             (
                 "stamped_registered",
                 self.scheme.stamped_registered.to_string(),
@@ -4082,42 +4007,19 @@ impl CellReading {
 
     /// Per grant segment, in [`testing::SEGMENT_AROUND`]'s order: the takes
     /// whose wait met it and their wait, the returns withheld in it and their
-    /// time withheld, and for the three inside the batch the collector's time
-    /// in it, summed and at the longest.
+    /// time withheld, and for the trace the collector's time in it, summed and
+    /// at the longest.
     fn segment_fields(&self) -> Vec<(&'static str, String)> {
-        const TAKES: [&str; testing::SEGMENTS] = [
-            "token_waits_around",
-            "token_waits_expiry",
-            "token_waits_check",
-            "token_waits_trace",
-        ];
-        const TAKE_US: [&str; testing::SEGMENTS] = [
-            "token_wait_us_around",
-            "token_wait_us_expiry",
-            "token_wait_us_check",
-            "token_wait_us_trace",
-        ];
-        const RETURNS: [&str; testing::SEGMENTS] = [
-            "withheld_returns_around",
-            "withheld_returns_expiry",
-            "withheld_returns_check",
-            "withheld_returns_trace",
-        ];
-        const RETURN_US: [&str; testing::SEGMENTS] = [
-            "withheld_return_us_around",
-            "withheld_return_us_expiry",
-            "withheld_return_us_check",
-            "withheld_return_us_trace",
-        ];
+        const TAKES: [&str; testing::SEGMENTS] = ["token_waits_around", "token_waits_trace"];
+        const TAKE_US: [&str; testing::SEGMENTS] = ["token_wait_us_around", "token_wait_us_trace"];
+        const RETURNS: [&str; testing::SEGMENTS] =
+            ["withheld_returns_around", "withheld_returns_trace"];
+        const RETURN_US: [&str; testing::SEGMENTS] =
+            ["withheld_return_us_around", "withheld_return_us_trace"];
         // The collector's time is taken inside the batch alone, so the
         // segment around it has no column of its own.
-        const SEGMENT_US: [&str; testing::SEGMENTS - 1] =
-            ["segment_us_expiry", "segment_us_check", "segment_us_trace"];
-        const SEGMENT_LONGEST_US: [&str; testing::SEGMENTS - 1] = [
-            "segment_longest_us_expiry",
-            "segment_longest_us_check",
-            "segment_longest_us_trace",
-        ];
+        const SEGMENT_US: [&str; testing::SEGMENTS - 1] = ["segment_us_trace"];
+        const SEGMENT_LONGEST_US: [&str; testing::SEGMENTS - 1] = ["segment_longest_us_trace"];
         let mut fields = Vec::new();
         for segment in 0..testing::SEGMENTS {
             let returns = self.sum(|reading| reading.withheld_by_segment.returns[segment]);
@@ -4167,14 +4069,12 @@ struct RoundFigures {
     rounds: usize,
     verdict_collections: testing::VerdictCollections,
     disposals: testing::VerdictCollections,
-    chain: testing::ChainFigures,
     scheme: testing::SchemeFigures,
     token_waits: testing::TokenWaits,
     segment_times: testing::SegmentTimes,
     recalls: (usize, usize),
     second_mark_recalls: usize,
     written_back: usize,
-    generations: testing::Generations,
 }
 
 impl RoundFigures {
@@ -4185,14 +4085,12 @@ impl RoundFigures {
             rounds: testing::take_rounds(),
             verdict_collections: testing::take_verdict_collections(),
             disposals: testing::take_disposals(),
-            chain: testing::take_chain_figures(),
             scheme: testing::take_scheme_figures(),
             token_waits: testing::take_token_waits(),
             segment_times: testing::take_segment_times(),
             recalls: testing::take_recalls(),
             second_mark_recalls: testing::take_second_mark_recalls(),
             written_back: testing::take_written_back(),
-            generations: testing::take_generations(),
         }
     }
 }
@@ -4227,12 +4125,10 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let _ = testing::take_segment_times();
     let _ = testing::take_recalls();
     let _ = testing::take_written_back();
-    let _ = testing::take_generations();
     let _ = testing::take_outcomes();
     let _ = testing::take_rounds();
     let _ = testing::take_verdict_collections();
     let _ = testing::take_disposals();
-    let _ = testing::take_chain_figures();
     let _ = testing::take_scheme_figures();
     testing::record_standings(switch_from_env("LL_RIG_STANDINGS"));
     testing::permit_births(true);
@@ -4433,7 +4329,6 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         rounds: figures.rounds,
         verdict_collections: figures.verdict_collections,
         disposals: figures.disposals,
-        chain: figures.chain,
         scheme: figures.scheme,
         token_waits: figures.token_waits,
         withdrawn,
@@ -4441,7 +4336,6 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         recalls: figures.recalls,
         second_mark_recalls: figures.second_mark_recalls,
         written_back: figures.written_back,
-        generations: figures.generations,
         web,
         journal: (
             journal_at_the_stop.since(&journal_at_the_start),
@@ -4759,15 +4653,12 @@ fn the_rigs_figures_read_their_known_answers() {
     let mut taken = None;
     for _ in 0..4 {
         let _ = (testing::take_written_back(), testing::take_recalls());
-        let _ = (testing::take_token_waits(), testing::take_chain_figures());
+        let _ = testing::take_token_waits();
         let (_, _, whole, waited) = a_take(OVERLAPPING, class, Reading::Wall, &mut None, true);
         if whole {
             taken = Some((
                 waited.expect("the take waited"),
-                (
-                    testing::take_written_back(),
-                    testing::take_chain_figures().pushed_ready,
-                ),
+                testing::take_written_back(),
                 testing::take_recalls(),
                 testing::take_token_waits(),
             ));
@@ -4775,18 +4666,11 @@ fn the_rigs_figures_read_their_known_answers() {
         }
     }
 
-    let (waited, (written_back, into_the_ready_part), recalls, waits) =
-        taken.expect("a take carried the ring whole");
-    // Without the chain an `Unwalked` root goes round P → R → P once; with
-    // it the root goes to the ready part's tail and P carries nothing back.
-    let retried = if cfg!(feature = "collector-chain") {
-        (0, OVERLAPPING.roots())
-    } else {
-        (OVERLAPPING.roots(), 0)
-    };
+    let (waited, written_back, recalls, waits) = taken.expect("a take carried the ring whole");
+    // An `Unwalked` root goes round P → R → P once.
     assert_eq!(
-        ((written_back, into_the_ready_part), recalls, waits.waits),
-        (retried, (0, 1), 1),
+        (written_back, recalls, waits.waits),
+        (OVERLAPPING.roots(), (0, 1), 1),
         "every root once back for its retry, one recall by a take, one wait"
     );
     assert_eq!(
@@ -4836,7 +4720,7 @@ fn the_split_by_segment_reads_a_hold_the_case_sets() {
 
     let withheld = testing::take_withheld_by_segment();
     let trace = usize::from(testing::SEGMENT_TRACE);
-    assert_eq!(withheld.returns, [0, 0, 0, 3]);
+    assert_eq!(withheld.returns, [0, 3]);
     assert!(
         withheld.time[trace] >= 3 * HELD && withheld.time[trace] <= 3 * held,
         "three returns held {held:?} read {:?}",

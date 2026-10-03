@@ -172,10 +172,6 @@ const SLOT: usize = 5;
 /// collector read the clock as moving and never asked, and the lane waited for
 /// sixty-four of them or for pressure or exit.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_lane_behind_all_live_takes_oftener_than_x_is_reoffered_after_x() {
     let _g = test_guard();
     const X: Duration = Duration::from_millis(40);
@@ -196,9 +192,6 @@ fn a_lane_behind_all_live_takes_oftener_than_x_is_reoffered_after_x() {
         keepers.push(mutator.run(move |arena| {
             let ring = unsafe { crate::cycle::testing::long_ring(arena, class.into_inner(), 2) };
             unsafe { crate::refcount::ll_retain(ring[0].cast()) };
-            for &member in &ring {
-                unsafe { crate::cycle::testing::as_of_the_second_generation(member.cast()) };
-            }
             Sent(ring[0])
         }));
         assert!(

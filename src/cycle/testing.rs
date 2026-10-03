@@ -85,22 +85,6 @@ pub(crate) unsafe fn row_color(entity: *mut RcHeader) -> Color {
     shadow::color(unsafe { row_word(entity) })
 }
 
-/// Mark `entity` as of the second generation: under `hold-by-generation`,
-/// where the generation is the lane's mark on the root's entry in R, a batch
-/// that reads it live keeps it in the chain's waiting part, as the build
-/// without the feature does, which is what a case written for that build asks
-/// of a root (`dev/plans/S65.md`, S65.32). Nothing without the feature.
-///
-/// # Safety
-/// `entity` is a live entity of this thread's GC heap, and no collector holds
-/// this thread's token.
-pub(crate) unsafe fn as_of_the_second_generation(entity: *mut RcHeader) {
-    #[cfg(feature = "hold-by-generation")]
-    crate::cycle::queue::mark_as_reoffered(entity);
-    #[cfg(not(feature = "hold-by-generation"))]
-    let _ = entity;
-}
-
 /// The epoch and the age `entity`'s maturation stamp carries.
 ///
 /// Read by both trees the stamp has: the commit that writes it

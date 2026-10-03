@@ -105,17 +105,6 @@ struct LinkLine {
     /// release when a block is linked in; the reader loads it with acquire
     /// at its block change, and only for a block that is not the tail block.
     next: AtomicPtr<BlockHeader>,
-    /// A block of a record's chain ([`RecordChain`]): the record's epoch when
-    /// the block took its first entry, the index its death check has read up
-    /// to, and the block's tail when the check's current lap started, zero
-    /// for a block linked in since: a reading below it is the lap's, one at
-    /// or past it a fresh entry's. Unused in a ring's circle.
-    #[cfg(feature = "collector-chain")]
-    stamp: UnsafeCell<u64>,
-    #[cfg(feature = "collector-chain")]
-    checked: UnsafeCell<usize>,
-    #[cfg(feature = "collector-chain")]
-    lap_until: UnsafeCell<usize>,
 }
 
 /// A block's payload in ring form.
@@ -803,14 +792,6 @@ impl<'a> Reader<'a> {
     /// entry.
     pub(crate) fn has_at_least_by_count(&self, entries: usize) -> bool {
         self.unread_up_to(entries) >= entries
-    }
-
-    /// Entries not yet taken, exact below `limit` and `limit` for a ring that
-    /// holds `limit` or more: [`Reader::has_at_least_by_count`]'s walk, its
-    /// count answered.
-    #[cfg(feature = "collector-chain")]
-    pub(crate) fn unread_at_most(&self, limit: usize) -> usize {
-        self.unread_up_to(limit).min(limit)
     }
 
     /// Entries not yet taken, as of the tail the reader sees now: the front
@@ -1531,20 +1512,6 @@ impl<G: FnMut(*mut BlockHeader)> Drop for Retaining<'_, G> {
         }
     }
 }
-
-/// The block after `block` in its chain or circle.
-///
-/// # Safety
-/// `block` is a ring block whose holder the caller is.
-#[cfg(all(test, feature = "collector-chain"))]
-pub(crate) unsafe fn next_block(block: *mut BlockHeader) -> *mut BlockHeader {
-    unsafe { (*ring(block)).link.next.load(Ordering::Relaxed) }
-}
-
-#[cfg(feature = "collector-chain")]
-mod record_chain;
-#[cfg(feature = "collector-chain")]
-pub(crate) use record_chain::{ChainPeek, Checked, Lap, RecordChain};
 
 #[cfg(test)]
 pub(crate) mod testing;

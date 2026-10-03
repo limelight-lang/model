@@ -105,18 +105,6 @@ pub(crate) mod mark;
 // The stamp an owner's commit writes into the live components its trace read,
 // which is what a later trace's descent stops at.
 pub(crate) mod maturation;
-// The roots a collector read live, kept in a chain on the mutator's record
-// rather than posted into P: the measured arm behind `collector-chain`.
-#[cfg(feature = "collector-chain")]
-pub(crate) mod chain;
-// Without the generations every root read live would wait in the chain from
-// its first reading.
-#[cfg(all(
-    feature = "wait-by-readings",
-    feature = "collector-chain",
-    not(feature = "hold-by-generation")
-))]
-compile_error!("`wait-by-readings` under `collector-chain` is built on `hold-by-generation`");
 // The stamps a collector's completed batch writes on the live core its final
 // drain read, under its grant and before the release.
 pub(crate) mod collector_stamps;

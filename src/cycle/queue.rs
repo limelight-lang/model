@@ -36,12 +36,9 @@
 //! entry it read. **Bit 0 is the close's**, which is where it says a root
 //! belongs to the deferred lane ([`DEFERRED_MARK`]), written over the entries
 //! a collection read and read once, by the pass that disposes of them;
-//! **bit 2 is the lane's own**, written on every entry the lane or the
-//! collector's chain takes and kept by every rewrite of R, so that the entry
-//! spliced back into R still says a reading found the root live before it
-//! ([`REOFFERED_MARK`]); bit 1 is unused here, and P's ledger is
-//! `queue::verdicts`. Every walk that hands an entry out as an address masks
-//! both ([`ENTRY_MARK_BITS`]).
+//! bits 1 and 2 are unused here, and P's ledger is `queue::verdicts`. Every
+//! walk that hands an entry out as an address masks the mark
+//! ([`ENTRY_MARK_BITS`]).
 //!
 //! **The active lane is a ring R of the form `crate::ring` builds**: 64 KiB
 //! pool blocks linked in a circle, each carrying its own `front` and `tail`
@@ -356,14 +353,9 @@ const _: () = assert!(
     "the longest wait meets the stamp's epoch again"
 );
 
-/// The lanes a root read live is deferred into: all three in D; under
-/// `collector-chain` the first two, the chain holding a root read live more
-/// than twice at the third wait (`crate::cycle::chain::CHAIN_WAIT`), and a
-/// root the chain refused waiting in the second.
-#[cfg(all(feature = "wait-by-readings", not(feature = "collector-chain")))]
+/// The lanes a root read live is deferred into: all three.
+#[cfg(feature = "wait-by-readings")]
 const LANES_DEFERRED_INTO: usize = LANES;
-#[cfg(all(feature = "wait-by-readings", feature = "collector-chain"))]
-const LANES_DEFERRED_INTO: usize = 2;
 const _: () = assert!(align_of::<MutatorCycleState>() == 64);
 const _: () = assert!(POLL_STRIDE * 2 <= OVERFLOW_CAPACITY);
 const _: () = assert!(ring::BLOCK_ENTRIES > OVERFLOW_CAPACITY / 2);
@@ -1160,7 +1152,7 @@ impl Batch {
     /// The entity handed to the predicate carries no mark, and a deferral's
     /// mark already standing on an entry is overwritten rather than kept: it
     /// is one an unwound close left behind, and this close's reading is the
-    /// one that decides. The lane's mark ([`REOFFERED_MARK`]) is kept. P's
+    /// one that decides. P's
     /// entries that are not roots — read live, zero-count, disposed — are not
     /// asked and not marked.
     pub(crate) fn mark_for_deferral(
@@ -1211,27 +1203,12 @@ impl Batch {
 /// anything else masks it off first (`crate::cycle::queue::compaction`).
 pub(crate) const DEFERRED_MARK: usize = 1;
 
-/// Bit 2 of the stored address: a reading before this entry's found the root
-/// live, and the entry has been kept since. [`defer_entry`] writes it on every
-/// entry the deferred lane takes, in every build, and the collector's chain on
-/// every entry it takes; the passes that rewrite an entry of R keep it, so a
-/// re-offer of the lane and a splice of the chain carry it into R. The
-/// collector's batch reads it under `hold-by-generation` alone, as the root
-/// having outlived an epoch (`dev/plans/S65.md`, S65.32 and S65.33): the lane
-/// comes back at a turn, except under pressure (`collect_under_pressure`) and
-/// at `ll_gc_reoffer_deferred`, which re-offer it without one, so a root read
-/// live there reads old one epoch early and goes into the chain. Under
-/// `wait-by-readings` the mark is written and kept as here and read by no
-/// batch: the count of live readings in the header decides the generation
-/// (`crate::refcount::SURVIVED_READINGS_MASK`).
-pub(crate) const REOFFERED_MARK: usize = 4;
-
 /// The low bits of an entry that carry a mark, masked off wherever an entry
-/// is handed out as an address. The two bits written and not the three an
+/// is handed out as an address. The bit written and not the three an
 /// entry's alignment frees: a fixture's header stands on any eight-byte
 /// boundary, and a mask over bits nothing writes would fold two such headers
 /// into one.
-pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK | REOFFERED_MARK;
+pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK;
 
 /// Give every block of `record`'s R back and leave its two words null,
 /// whichever thread does it: the exit, or the collector whose hold the exit
@@ -1720,7 +1697,7 @@ fn defer_entry(
     #[cfg(not(feature = "wait-by-readings"))]
     let lane = mutator_state.deferred();
     let lane_was_empty = lane.is_empty();
-    lane.push(entity_entry(entity) | REOFFERED_MARK, || {
+    lane.push(entity_entry(entity), || {
         let block = take_spare(mutator_state);
         if !block.is_null() {
             charge_block();
@@ -1970,8 +1947,8 @@ pub(crate) fn overflow_len() -> usize {
     }
 }
 
-/// Registrations this thread holds by lane — the ring, the deferred lane
-/// with the collector's chain under `collector-chain`, the overflow buffer,
+/// Registrations this thread holds by lane — the ring, the deferred lane,
+/// the overflow buffer,
 /// and the verdicts standing in P — by the indices and
 /// the counts; P's entries are read for the null of a disposed one and
 /// dereferenced no more than any other entry.
@@ -1987,15 +1964,9 @@ pub(crate) fn registered_by_lane() -> [usize; 4] {
         return [0; 4];
     }
     let mutator_state = unsafe { mutator_state_ref(state) };
-    // The collector's chain counts beside the lane: both hold roots read
-    // live, which a round of the exit takes back into R.
-    #[cfg(feature = "collector-chain")]
-    let chained = crate::cycle::chain::len(this_thread_record_ref());
-    #[cfg(not(feature = "collector-chain"))]
-    let chained = 0;
     [
         candidate_ring().map_or(0, |ring| ring.count()),
-        mutator_state.deferred_len() + chained,
+        mutator_state.deferred_len(),
         usize::from(mutator_state.overflow_len.get()),
         standing_verdict_count(),
     ]
@@ -2013,49 +1984,6 @@ fn standing_verdict_count() -> usize {
         });
     }
     count
-}
-
-/// Put the lane's mark on every entry of this thread's R that names
-/// `entity`, as if the root had come back from the deferred lane at a turn: a
-/// case's way to hand the collector a root of the second generation under
-/// `hold-by-generation`, or to give an entry the mark the passes over R keep
-/// ([`REOFFERED_MARK`]). Under `wait-by-readings`, where the count of live
-/// readings in the header decides the generation, the root is given the two
-/// readings that make it old as well.
-#[cfg(test)]
-pub(crate) fn mark_as_reoffered(entity: *mut RcHeader) {
-    let Some(ring) = candidate_ring() else {
-        return;
-    };
-
-    #[cfg(feature = "wait-by-readings")]
-    while unsafe { crate::refcount::survived_readings(entity) } < 2 {
-        unsafe { crate::refcount::count_a_survived_reading(entity) };
-    }
-
-    ring.map_prefix_in_place(ring.count(), |slot| {
-        if entry_entity(*slot) == entity {
-            *slot |= REOFFERED_MARK;
-        }
-    });
-}
-
-/// The entries this thread's ring holds as they are stored, marks and all,
-/// from its front.
-#[cfg(test)]
-pub(crate) fn candidate_entries() -> Vec<usize> {
-    let mut stored = Vec::new();
-    if mutator_state().is_null() {
-        return stored;
-    }
-
-    if let Some(ring) = candidate_ring() {
-        ring.walk(|entry| {
-            stored.push(entry);
-            true
-        });
-    }
-    stored
 }
 
 /// Entries this thread's ring holds, by its indices.

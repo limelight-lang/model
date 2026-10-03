@@ -97,18 +97,12 @@ are in `docs/history/`, superseded by the collector thread that was built.
   | `drops` | the queue a teardown's displaced children wait in until the last member's free | `cycle::reclamation` |
   | `density`, `census`, `loads` | test builds only: the share of a touched block's slots a trace met, the census of one collection with its counters and its replay through both row forms (`dev/BENCHMARKS.md`, 2026-09-12), and the rings the census and `benches/census_driver.rs` build under the `bench-loads` feature | none |
 
-  The feature `hold-by-generation` is S65.32's arm on the collector's chain
-  (`dev/plans/S65.md`, S65.32): `FinishThePosts::post` sends a root read live
-  into the chain only once it has outlived an epoch
-  (`FinishThePosts::is_young`), and the cases are
-  `worker/tests/the_generations_in_the_chain.rs`.
-
   The feature `wait-by-readings` is S65.42's ladder of waits in both schemes
   (`dev/plans/S65.md`, S65.42): `refcount::SURVIVED_READINGS_MASK` counts a
-  root's live readings, raised by `queue::defer_entry`, D's three lanes go back
-  by `queue::reoffer_the_lanes_due` after 1, 3 and 7 turns, HG's chain waits
-  `chain::CHAIN_WAIT`, and an X turn (`MutatorRecord::note_an_x_turn`) releases
-  them all; the cases are `worker/tests/the_waits_by_readings.rs`.
+  root's live readings, raised by `queue::defer_entry`, the three lanes go back
+  by `queue::reoffer_the_lanes_due` after 1, 3 and 7 turns, and an X turn
+  (`MutatorRecord::note_an_x_turn`) releases them all; the cases are
+  `worker/tests/the_waits_by_readings.rs`.
 
   Two numbers about a row are pinned by tests: a count at the field's bound
   is a floor (`shadow::is_saturated`), and a block's first touch writes 121

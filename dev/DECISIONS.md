@@ -9,6 +9,27 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-03 — HG leaves the tree, and the proof-epoch collector is the default
+
+**Decided (Edmond, 2026-10-03, on S67.6's two verdicts):** HG — the
+collector's chain (`collector-chain`), its generations
+(`hold-by-generation`) and its death check's back-off
+(`death-check-back-off`) — is deleted ("да, удаляй HG"), and the best D
+build, named the proof-epoch collector, becomes the default ("думаю да").
+`826b1bd` is the last commit that holds HG; the deletion takes with it
+`cycle::chain`, `ring::record_chain`, their cases, the rig's chain columns
+and journal codes, and the lane's mark `REOFFERED_MARK`, which only HG's
+generations read. Folding `wait-by-readings` into the code is S67.10.
+
+**Why.** By S67.1's rule best HG won no cell against best D, and was dearer on
+the collector in every `web-heap` repeat (+5 to +10 %); a tie drops HG, the
+scheme with more machinery. Best D against plain D won no cell on CPU, but
+plain D left garbage at the drain's end in six of fifteen cells and held 6.5
+times best D's mean garbage on `web-heap`, which the rule's absolute gate and
+Edmond weighed over the letter (`dev/BENCHMARKS.md`, "S67.6").
+
+---
+
 ## 2026-10-03 — a cross-thread free under a foreign holder counts toward the deaths' mark
 
 **Decision (S65.29):** a slot another thread freed into this thread's entity

@@ -216,16 +216,9 @@ fn a_completed_batch_stamps_what_its_final_drain_read_before_the_release() {
             backlog: true,
         }
     );
-    // Under the chain the root read live waits in a chain block the
-    // collector drew, unless the generations send it, young, into P
-    // (`crate::cycle::chain`).
-    let chain_block = usize::from(cfg!(all(
-        feature = "collector-chain",
-        not(feature = "hold-by-generation")
-    )));
     assert_eq!(
         collector_after.current_blocks(),
-        collector_before.current_blocks() + 1 + chain_block,
+        collector_before.current_blocks() + 1,
         "the collector keeps its workspace and draws nothing for the stamps"
     );
     assert_eq!(take_stamps(), RING, "one stamp per ring member");
@@ -295,10 +288,6 @@ fn the_next_batch_prunes_at_a_stamped_registered_target() {
 /// after the turn, whose mark reads the old stamps as none (revision 3, the
 /// Sage B's H5: the request listed live at e and dead at e+1).
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "roots read live wait in the chain rather than in the deferred lane the case re-offers (`crate::cycle::chain`)"
-)]
 fn a_ring_stamped_live_in_one_epoch_dies_in_the_next() {
     let _g = test_guard();
     reset_lanes();

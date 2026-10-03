@@ -74,7 +74,6 @@ unsafe fn spread_core(arena: &mut Arena, name: &str, members: usize, roots: usiz
         for &root in &ring[..roots] {
             ll_retain(root as *mut RcHeader);
             assert!(!ll_release(root as *mut RcHeader), "an edge holds the root");
-            crate::cycle::testing::as_of_the_second_generation(root as *mut RcHeader);
         }
 
         store_prop(arena_ptr, keeper, prop_offset(0), ring[0]);
@@ -157,10 +156,6 @@ unsafe fn is_freed(ring: &[*mut Object]) -> bool {
 /// turnover to the same failure: the batch's one trace walks the closure
 /// whole, the ring's roots read zero, and the ring is proposed and freed.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn garbage_behind_a_live_closure_of_150_blocks_is_freed_within_the_rounds() {
     let _g = test_guard();
     reset_lanes();
@@ -191,10 +186,6 @@ fn garbage_behind_a_live_closure_of_150_blocks_is_freed_within_the_rounds() {
 /// ring in the grant that read it.
 #[test]
 #[cfg_attr(miri, ignore = "300 blocks of objects are past what Miri affords")]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn garbage_behind_a_closure_recalled_in_every_grant_is_freed_within_the_rounds() {
     let _g = test_guard();
     reset_lanes();
@@ -235,10 +226,6 @@ fn garbage_behind_a_closure_recalled_in_every_grant_is_freed_within_the_rounds()
 /// in, and its mark prunes at them, the registered members included.
 #[test]
 #[cfg_attr(miri, ignore = "300 blocks of objects are past what Miri affords")]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn garbage_behind_a_registered_core_is_freed_within_the_rounds() {
     let _g = test_guard();
     reset_lanes();

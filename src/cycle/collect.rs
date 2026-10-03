@@ -489,14 +489,6 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
         return zero(Ending::GateClosed);
     };
 
-    // A collection over R whole reads what the collector would have read
-    // next: the chain's ready part, the blocks the epoch passed moved into it
-    // first (`crate::cycle::chain`).
-    #[cfg(feature = "collector-chain")]
-    if form == BatchForm::AllRoots {
-        unsafe { crate::cycle::chain::splice_this_threads_chain_into_r(false) };
-    }
-
     // The set the collector's batch proved unreachable is the collection
     // over P's to validate, and no other collection reads it
     // (`crate::cycle::posted_set`).
@@ -756,13 +748,6 @@ pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
     for _ in 0..EXIT_ROUNDS {
         crate::cycle::queue::refill_and_drain();
         crate::cycle::queue::reoffer_deferred_candidates();
-        // The collector's chain comes back whole before every round, as the
-        // lane does: a root it holds read live may be garbage by now, and no
-        // later epoch comes to re-read it (`crate::cycle::chain`).
-        #[cfg(feature = "collector-chain")]
-        unsafe {
-            crate::cycle::chain::splice_this_threads_chain_into_r(true)
-        };
 
         let round = unsafe { collection(BatchForm::AllRoots, ReadsStamps::No) };
         freed += round.freed;
@@ -948,10 +933,6 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     // refused allocation would re-trace the lane's whole closure with no
     // lower bound.
     crate::cycle::queue::reoffer_deferred_candidates();
-    #[cfg(feature = "collector-chain")]
-    unsafe {
-        crate::cycle::chain::splice_this_threads_chain_into_r(true)
-    };
 
     let mut freed = 0;
     let mut roots = ALL_ROOTS;

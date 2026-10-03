@@ -1297,14 +1297,7 @@ pub(crate) unsafe fn serve(
     testing::between_the_take_and_the_reading();
     let reading = unsafe { Reader::new(mutator.candidate_ring()) }.front_block_reading();
     let room = unsafe { VerdictWriter::open(mutator) }.room_by_loads();
-    let branch = decide_the_branch_and_stamp_the_instant(
-        mutator,
-        reading,
-        merges,
-        threshold,
-        now,
-        standing_interval().as_nanos() as u64,
-    );
+    let branch = decide_the_branch_and_stamp_the_instant(mutator, reading, merges, threshold, now);
     if branch == RingRound::Leaves || room == 0 {
         return Served::Idle;
     }
@@ -1396,10 +1389,7 @@ unsafe fn ask_for_an_in_line_collection(
     // The merges before the ring, as `serve` reads them.
     let merges = mutator.merges();
     let reading = unsafe { Reader::new(mutator.candidate_ring()) }.front_block_reading();
-    // No term for the chain's death check here: under a cap of zero no grant
-    // follows to check, so only a ready part or an epoch past a waiting
-    // block's stamp makes the chain due.
-    if decide_the_branch_and_stamp_the_instant(mutator, reading, merges, threshold, now, u64::MAX)
+    if decide_the_branch_and_stamp_the_instant(mutator, reading, merges, threshold, now)
         == RingRound::Leaves
     {
         return Served::Idle;
@@ -1420,8 +1410,7 @@ unsafe fn ask_for_an_in_line_collection(
 /// reading apart.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RingRound {
-    /// R holds the round's threshold: the serve of today. Under
-    /// `collector-chain`, also a due chain whatever R holds.
+    /// R holds the round's threshold: the serve of today.
     Serves,
     /// R stands below the threshold and has stood an interval: the take.
     Takes,
@@ -1453,30 +1442,13 @@ enum RingRound {
 /// The instant and the merges seen are the collector's words on the
 /// record's hold line, read and written here under the reading hold
 /// ([`MutatorRecord::standing_since`], [`MutatorRecord::merges_seen`]).
-///
-/// Under `collector-chain` a due chain is served whatever R holds, and the
-/// instant is left as it stands. `chain_term` is the age, in the serve
-/// clock's nanoseconds, at which the waiting part's last death check makes
-/// the chain due, and `u64::MAX` for never; without the feature nothing
-/// reads it.
 fn decide_the_branch_and_stamp_the_instant(
     mutator: &MutatorRecord,
     reading: Option<crate::ring::FrontBlockReading>,
     merges: u32,
     threshold: usize,
     now: u64,
-    chain_term: u64,
 ) -> RingRound {
-    // A due chain needs a grant of its own, whatever R holds: a ready part
-    // stands, or the epoch has passed the waiting part's oldest stamp, or its
-    // last death check is `chain_term` old (`crate::cycle::chain::is_due`).
-    #[cfg(feature = "collector-chain")]
-    if crate::cycle::chain::is_due(mutator, now, chain_term) {
-        return RingRound::Serves;
-    }
-    #[cfg(not(feature = "collector-chain"))]
-    let _ = chain_term;
-
     let stands = reading.filter(|reading| reading.holds_at_least(1));
     let Some(ring) = stands else {
         mutator.note_standing_since(0);
@@ -2227,10 +2199,7 @@ impl Drop for Standing {
 ///
 /// `posted` is set once the batch is bound to leave verdicts in P, and
 /// `proposed` at the first [`Verdict::Proposed`] posted; the release reads
-/// both. Under `collector-chain` the batch first moves the chain's expired
-/// blocks to its ready part and posts the completed deaths the check finds,
-/// then reads the ready part beside R; a root read live or unwalked goes
-/// into the chain rather than into P (`crate::cycle::chain`).
+/// both.
 ///
 /// # Safety
 /// The calling thread holds `mutator`'s token and `mutator` is not collecting
@@ -2245,92 +2214,20 @@ unsafe fn batch(
     // Declared first so that it drops last: the posts `FinishThePosts` makes
     // on its drop count in the trace's segment.
     #[cfg(test)]
-    let mut segments = testing::BatchSegments::open(if cfg!(feature = "collector-chain") {
-        testing::SEGMENT_EXPIRY
-    } else {
-        testing::SEGMENT_TRACE
-    });
+    let _segments = testing::BatchSegments::open(testing::SEGMENT_TRACE);
     let verdicts = unsafe { VerdictWriter::open(mutator) };
     let reader = unsafe { Reader::new(mutator.candidate_ring()) };
-    // The chain's work before the roots: the blocks the epoch passed become
-    // ready, and the deaths the check finds are posted, each a `ZeroCount`
-    // verdict the mutator's disposition of P frees as any other.
-    #[cfg(feature = "collector-chain")]
-    unsafe {
-        crate::cycle::chain::expire(mutator, || arena.read_the_recall_now().is_break());
-        #[cfg(test)]
-        segments.enter(testing::SEGMENT_CHECK);
-        let deaths = crate::cycle::chain::check_the_deaths(
-            mutator,
-            serve_clock_now(),
-            || arena.read_the_recall_now().is_break(),
-            |entity| {
-                let posted =
-                    verdicts.room() > 0 && verdicts.post(entity, Verdict::ZeroCount).is_ok();
-                if posted {
-                    journal_verdict(entity, Verdict::ZeroCount);
-                }
-
-                posted
-            },
-        );
-        if deaths > 0 {
-            posted.set(true);
-        }
-    }
-    #[cfg(test)]
-    segments.enter(testing::SEGMENT_TRACE);
     let (at_the_threshold, clamp) = the_form_and_the_clamp(mutator, &reader, threshold);
-    // The clamp's shares: R alone takes the clamp its form reads. Beside a
-    // ready part R takes what it holds up to that clamp, and the ready part
-    // up to half the batch's bound whatever K reads — K grows only on R's
-    // batches at the threshold, and a ready part read at a small K would be
-    // read slower than it refills; where P's room holds less than both
-    // want, the two share it in halves, what one leaves the other taking.
-    #[cfg(feature = "collector-chain")]
-    let (take, chain_share) = match mutator.chain_ready().len() {
-        0 => (verdicts.room().min(clamp), 0),
-        ready => {
-            let wants_r = reader.unread_at_most(clamp);
-            let wants_chain = ready.min(BATCH_BOUND / 2);
-            let take = verdicts.room().min(BATCH_BOUND).min(wants_r + wants_chain);
-            let r_share = if wants_r + wants_chain <= take {
-                wants_r
-            } else {
-                wants_r.min(take.div_ceil(2).max(take.saturating_sub(wants_chain)))
-            };
-            #[cfg(test)]
-            if r_share < wants_r {
-                testing::note_r_cut();
-            }
-            (take, take - r_share)
-        }
-    };
-    #[cfg(not(feature = "collector-chain"))]
     let take = verdicts.room().min(clamp);
     if take == 0 {
         return served_without_roots(mutator, posted);
     }
     let copy = the_copy_in_the_workspace(arena, threshold, take);
 
-    // The entries copied out of the ready part and out of R, which stay in
-    // both until the advance.
+    // The entries copied out of R, which stay there until the advance.
     let out = unsafe { std::slice::from_raw_parts_mut(copy, take) };
-    #[cfg(feature = "collector-chain")]
-    let chain_peek =
-        unsafe { crate::cycle::chain::peek_the_ready_part(mutator, &mut out[..chain_share]) };
-    #[cfg(feature = "collector-chain")]
-    let from_the_chain = chain_peek.copied;
-    #[cfg(not(feature = "collector-chain"))]
-    let from_the_chain = 0;
-    let peeked = reader.peek(&mut out[from_the_chain..]);
-    let taken = from_the_chain + peeked.len();
-    #[cfg(all(test, feature = "collector-chain"))]
-    testing::note_chain_batch(
-        peeked.len(),
-        from_the_chain,
-        peeked.len() == 0 && reader.has_at_least_by_count(1),
-    );
+    let peeked = reader.peek(out);
+    let taken = peeked.len();
     if taken == 0 {
         return served_without_roots(mutator, posted);
     }
@@ -2353,10 +2250,7 @@ unsafe fn batch(
     let mut set = crate::cycle::posted_set::Writer::new();
     // From the guard on, every root is owed a verdict and R its advance, on
     // the unwind too, and the release that follows is to `POSTED` or, with no
-    // set proposed, to `NOTHING_PROPOSED`. With the chain a root read live
-    // or unwalked goes into it, and a batch that posted nothing into P
-    // releases `FREE`.
-    #[cfg(not(feature = "collector-chain"))]
+    // set proposed, to `NOTHING_PROPOSED`.
     posted.set(true);
     let mut posts = FinishThePosts {
         verdicts: &verdicts,
@@ -2364,13 +2258,6 @@ unsafe fn batch(
         reader: &reader,
         peeked,
         proposed,
-        #[cfg(feature = "collector-chain")]
-        chain: ChainPosts {
-            mutator,
-            posted,
-            peek: chain_peek,
-            now: serve_clock_now(),
-        },
     };
     #[cfg(test)]
     let (traced_from, positions_from) = testing::at_the_start_of_the_batchs_trace(arena);
@@ -2413,9 +2300,7 @@ unsafe fn batch(
         mutator.note_proving_wall(serve_clock_now().saturating_sub(began));
     }
     if at_the_threshold {
-        // K against what R gave: the chain's roots size no K, and R's share
-        // must fill K itself, as without the chain.
-        size_the_next_batch(mutator, clamp, taken - from_the_chain, &outcome);
+        size_the_next_batch(mutator, clamp, taken, &outcome);
     }
 
     Served::Batch {
@@ -2425,7 +2310,7 @@ unsafe fn batch(
     }
 }
 
-/// What a batch that took no root answers: where the chain's death check
+/// What a batch that took no root answers: where something was already
 /// posted into P the grant made a batch of no roots, which the round reads as
 /// work and the mutator answers by its disposition, and which the epoch
 /// clock does not count; otherwise nothing was taken.
@@ -2480,8 +2365,7 @@ fn the_form_and_the_clamp(
 
 /// Room for `take` entries in the batch's workspace, `arena`; `threshold` is
 /// the batch's, which bounds the copy of a take as K bounds a threshold
-/// batch's, and a take beside the collector's chain is bounded by
-/// [`BATCH_BOUND`] itself. Never null, by the bounds ([`BATCH_BOUND`]).
+/// batch's. Never null, by the bounds ([`BATCH_BOUND`]).
 fn the_copy_in_the_workspace(
     arena: &mut TraceScratchArena,
     threshold: usize,
@@ -2522,23 +2406,6 @@ struct FinishThePosts<'a> {
     /// Set at the first [`Verdict::Proposed`] posted, before the release
     /// reads it.
     proposed: &'a std::cell::Cell<bool>,
-    #[cfg(feature = "collector-chain")]
-    chain: ChainPosts<'a>,
-}
-
-/// What the batch owes the collector's chain: the roots it read out of the
-/// ready part, whose advance the drop makes beside R's, and the record the
-/// roots read live or unwalked go back into (`crate::cycle::chain`).
-#[cfg(feature = "collector-chain")]
-struct ChainPosts<'a> {
-    mutator: &'a MutatorRecord,
-    /// Set at the first post into P, which is what the release reads.
-    posted: &'a std::cell::Cell<bool>,
-    /// What the batch copied out of the ready part, committed on the drop.
-    peek: crate::ring::ChainPeek,
-    /// The serve clock's reading, in nanoseconds, that starts the death
-    /// check's term when a root read live enters an empty waiting part.
-    now: u64,
 }
 
 impl FinishThePosts<'_> {
@@ -2554,81 +2421,13 @@ impl FinishThePosts<'_> {
     fn post(&mut self, index: usize, verdict: Verdict) {
         debug_assert!(!self.has_a_verdict(index), "one verdict per root");
         journal_verdict(self.root(index), verdict);
-        // A root read live, or one the trace did not reach, goes into the
-        // chain rather than into P — but not on the unwind, where a drawn
-        // block is an allocation inside a drop, and not where the pool
-        // refused the block: P takes it then, as without the chain.
-        #[cfg(feature = "collector-chain")]
-        if !std::thread::panicking() {
-            let kept = match verdict {
-                // Under `hold-by-generation` only a root that has outlived an
-                // epoch goes into the chain; a younger one goes on into P, as
-                // a root the pool refused a block goes (`dev/plans/S65.md`,
-                // S65.32), and so does a younger one the trace did not reach,
-                // which the disposition writes back into R rather than behind
-                // the ready part (S65.33).
-                Verdict::ReadLive if !self.is_young_read_live(index) => unsafe {
-                    crate::cycle::chain::keep_read_live(
-                        self.chain.mutator,
-                        self.root(index),
-                        self.chain.now,
-                    )
-                },
-                Verdict::Unwalked if !self.is_young(index) => unsafe {
-                    crate::cycle::chain::keep_unwalked(self.chain.mutator, self.root(index))
-                },
-                Verdict::ReadLive | Verdict::Unwalked | Verdict::Proposed | Verdict::ZeroCount => {
-                    false
-                }
-            };
-            if kept {
-                self.roots[index] |= HAS_A_VERDICT;
-                return;
-            }
-        }
-        #[cfg(feature = "collector-chain")]
-        self.chain.posted.set(true);
-        // Every `ReadLive` posted here is deferred: a root of the first
-        // generation is posted by `post_first_generation` alone.
+        // Every `ReadLive` posted here is deferred.
         let posted = self.verdicts.post(self.root(index), verdict);
         posted.expect("the batch was clamped to P's room");
         self.roots[index] |= HAS_A_VERDICT;
         if verdict == Verdict::Proposed {
             self.proposed.set(true);
         }
-    }
-
-    /// Whether the root at `index` has not outlived an epoch: its entry lacks
-    /// the lane's mark (`crate::cycle::queue::REOFFERED_MARK`), so no reading
-    /// before this one found it live and kept the entry — the deferred lane
-    /// and the chain write the mark on every entry they take, and the lane
-    /// comes back at a turn. Always false without `hold-by-generation`.
-    #[cfg(feature = "collector-chain")]
-    fn is_young(&self, index: usize) -> bool {
-        // Under `wait-by-readings` the count of live readings decides:
-        // a root read live once or twice before waits in the mutator's lanes.
-        #[cfg(all(feature = "hold-by-generation", feature = "wait-by-readings"))]
-        {
-            unsafe { crate::refcount::survived_readings(self.root(index)) < 2 }
-        }
-        #[cfg(all(feature = "hold-by-generation", not(feature = "wait-by-readings")))]
-        {
-            self.roots[index] & crate::cycle::queue::REOFFERED_MARK == 0
-        }
-        #[cfg(not(feature = "hold-by-generation"))]
-        {
-            let _ = index;
-            false
-        }
-    }
-
-    /// [`Self::is_young`] for a root read live, the cases' count noted.
-    #[cfg(feature = "collector-chain")]
-    fn is_young_read_live(&self, index: usize) -> bool {
-        let young = self.is_young(index);
-        #[cfg(all(test, feature = "hold-by-generation"))]
-        testing::note_generation_posted(young, true, false);
-        young
     }
 
     /// Post [`Verdict::Unwalked`] for every root still without a verdict: no
@@ -2647,14 +2446,10 @@ impl Drop for FinishThePosts<'_> {
     fn drop(&mut self) {
         self.post_the_rest_unwalked();
         self.reader.commit(self.peeked);
-        #[cfg(feature = "collector-chain")]
-        unsafe {
-            crate::cycle::chain::commit_the_ready_part(self.chain.mutator, self.chain.peek)
-        };
     }
 }
 
-/// Record the verdict a collector posted for `root`, before the chain's keep.
+/// Record the verdict a collector posted for `root`.
 fn journal_verdict(root: *mut RcHeader, verdict: Verdict) {
     journal_event!(journal::KIND_ROOT_VERDICT, root as u64, verdict as u64, 0);
     #[cfg(not(feature = "debug-journal"))]

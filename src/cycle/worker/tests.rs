@@ -903,14 +903,8 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
     assert_eq!(testing::take_spawns(), 2);
 }
 
-/// The kept ring the generation group builds on,
-/// `the_generations_in_the_chain` (S65.32, on H), `the_chain`'s live cores
-/// and `the_waits_by_readings` (S65.42).
-#[cfg(any(feature = "collector-chain", feature = "wait-by-readings"))]
-#[cfg_attr(
-    not(any(feature = "hold-by-generation", feature = "wait-by-readings")),
-    allow(dead_code, reason = "`the_chain` takes the ring alone")
-)]
+/// The kept ring `the_waits_by_readings` builds on (S65.42).
+#[cfg(feature = "wait-by-readings")]
 mod generation_fixtures {
     use super::reset_lanes;
     use super::the_batch::keeper_class;
@@ -1036,12 +1030,8 @@ mod generation_fixtures {
 mod the_batch;
 mod the_cap_at_zero;
 mod the_cap_set_under_work;
-#[cfg(feature = "collector-chain")]
-mod the_chain;
 mod the_collectors_stamps;
 mod the_epoch_clock;
-#[cfg(feature = "hold-by-generation")]
-mod the_generations_in_the_chain;
 #[cfg(feature = "debug-journal")]
 mod the_journal_of_the_collector;
 mod the_merged_lane;

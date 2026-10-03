@@ -190,9 +190,9 @@ hold; `the_cap_set_under_work`'s, the list's withdrawal;
 `what_the_poll_owes_the_queue::a_front_block_moved_under_a_reading_stays_in_the_circle`,
 the hold's read-modify-write against a take (S65.22);
 `queue::arm_to_retire_if_the_count_stands` and the test ring's
-`fill_tail_block`, which writes the writer's copy of the front; under
-`collector-chain`, `ring::record_chain::tests` whole, for the check's and the
-expiry's stops (S65.28).
+`fill_tail_block`, which writes the writer's copy of the front. The
+collector's chain and its `ring::record_chain::tests` left the tree with HG
+(S67.11).
 Notes: dev/plans/S65.md
 
 - [x] S65.1 Correct `queue.rs`'s claim that an entry's low four bits are clear
@@ -456,9 +456,8 @@ Notes: dev/plans/S65.md
       done: each clause of Done-when read on the build the stage leaves, by
         the test or figure that shows it; the Miri list above run and
         recorded, with S65.27's additions (`cycle::queue::verdicts::tests`,
-        `worker::tests::the_batch` less its 16,000-member case, and under
-        `collector-chain` `the_chain::where_p_holds_less_than_both_want_r_`
-        `and_the_chain_share_it_in_halves`); the closed steps' debts ruled or
+        `worker::tests::the_batch` less its 16,000-member case; the chain's case
+        left with HG, S67.11); the closed steps' debts ruled or
         given a backlog line (the plan review's Critic, F11): S65.15's
         unpinned sibling and a take waiting on `COLLECTOR` across the cap's
         flip, S65.16's `partly-overlapping` remnant freed only across a
@@ -589,6 +588,20 @@ Notes: dev/plans/S67.md
         and holds 6.5 times bestD's mean garbage on `web-heap`; the latency
         gate is below the box's own A/A excess. Both verdicts put to Edmond;
         his answers decide HG's removal and the default build.
+- [ ] S67.10 The proof-epoch collector becomes the default build
+      done: `wait-by-readings` folded into the code unconditionally, the
+        plain build's one lane and its cases gone (Q3: a case pinning the
+        replaced mechanism is rewritten or deleted), the feature removed from
+        `Cargo.toml` and the gate, the rfc amended where it states one lane;
+        the gate green (Edmond, 2026-10-03: the second verdict, "думаю да")
+      tier: T2 · role: Critic
+- [x] S67.11 HG leaves the tree (Edmond, 2026-10-03: "да, удаляй HG")
+      done: `collector-chain`, `hold-by-generation` and
+        `death-check-back-off` deleted with the chain, `ring::record_chain`,
+        their cases, the rig's chain columns and journal codes, and the lane's
+        mark `REOFFERED_MARK` that only HG read; the commit to revert named in
+        `dev/DECISIONS.md`; the gate green
+      tier: T2
 
 ## Then: arrays as a performance problem
 
@@ -692,28 +705,6 @@ against the code on 2026-09-24.
 
 ## Residual / carried-over items
 
-- [ ] **If S67 keeps HG.** Owed by the chain's adoption (S65.28, the plan
-      review's Critic, F4): the cases S65.26 and its Critic named and did not
-      build — concurrent registration across R and the chain, the exit under
-      a reading hold or a standing request, a deferred part past B into the
-      chain, `cap 0`'s ask over an expired block — and the record's growth to
-      384 bytes against the poll. If S67's second verdict keeps HG without
-      the waits, S65.41's floor of time on the epoch's turn comes back: plain
-      HG re-reads 1.98 M roots a cell on `registered-ring-interleaved`
-      against D's 0.73 M (`dev/BENCHMARKS.md`, S65.42), the gap the waits
-      close. S65.41 as it stood:
-      S65.41 The epoch turns no sooner than a floor of time, whatever the
-              batches (the Sage, 2026-09-28: on `registered-ring-interleaved` HG
-              re-reads its chained live roots 1.93 M times a cell, about 83 epochs
-              of 64 small batches each; Edmond, 2026-09-27: "у D работа с
-              отложенными корнями идёт большими пачками а в HG — мелкими")
-            done: behind its own feature, `note_batch`'s turn held until the floor
-              has passed since the advance; red first on "64 batches inside the
-              floor turn no epoch"; built on S65.42's best builds as an arm of its
-              own at F = 250 ms, 500 only if 250 wins (the Sage, 2026-09-28, Final),
-              on `live-churn` and `deferred-then-dead` beside the five loads of
-              S65.36, both placements; verdicts and p99 / p999 put to Edmond
-            tier: T2 · role: Critic
 - [ ] **The `rfc` lags the default build** (Edmond, 2026-09-29: "в долг
       запиши"). `rfc/model/gc` has no `NOTHING_PROPOSED`: form D's batch that
       proposed nothing releases to it (`cycle::collect`'s `dispose_of_p`),

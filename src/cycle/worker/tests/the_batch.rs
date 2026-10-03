@@ -85,7 +85,6 @@ pub(super) unsafe fn kept_root(
     unsafe {
         crate::test_support::store_prop(arena, keeper, crate::test_support::prop_offset(0), root);
         assert!(!ll_release(root as *mut RcHeader), "the keeper holds it");
-        crate::cycle::testing::as_of_the_second_generation(root as *mut RcHeader);
     }
     (root as *mut RcHeader, keeper)
 }
@@ -117,10 +116,6 @@ fn verdicts() -> Vec<Verdict> {
 /// R's order — the completed death first, then the ring's two roots, then
 /// each kept root.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_batch_posts_one_verdict_per_root_the_reading_pass_first_and_advances_past_them() {
     let _g = test_guard();
     reset_lanes();
@@ -209,9 +204,8 @@ pub(super) fn record_batch_size() -> usize {
 /// P is empty at every grant, since the byte is `FREE` only over an empty P,
 /// and the batch is clamped to the whole block whatever the posts before it
 /// left in the writer's copy of P's front. The copy below is left reading
-/// one entry of room over an empty P, which is where the collector's chain
-/// left it when its batches posted nothing (`dev/BENCHMARKS.md`, "S65.24 A,
-/// B and C on a box with a PMU").
+/// one entry of room over an empty P, which is where a batch that posted
+/// nothing leaves it.
 #[test]
 fn a_batch_after_p_was_answered_for_takes_ps_whole_room() {
     let _g = test_guard();
@@ -247,10 +241,6 @@ fn a_batch_after_p_was_answered_for_takes_ps_whole_room() {
 }
 
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_batch_is_clamped_to_ps_room_and_to_k() {
     let _g = test_guard();
     reset_lanes();
@@ -354,10 +344,6 @@ fn a_batch_is_clamped_to_ps_room_and_to_k() {
 /// where r2 is inside r1's closure and r3 is not, the batch traces once and
 /// posts three verdicts in R's order, each read off the one trace's colours.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_batch_is_one_trace_with_a_verdict_per_root_in_rs_order() {
     let _g = test_guard();
     reset_lanes();
@@ -419,10 +405,6 @@ fn a_batch_is_one_trace_with_a_verdict_per_root_in_rs_order() {
 }
 
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn the_advance_follows_the_last_post_from_the_unwind_as_well() {
     let _g = test_guard();
     reset_lanes();
@@ -536,10 +518,6 @@ fn traced_and_verdicts_of_a_serve() -> (Vec<bool>, Vec<Verdict>) {
 /// A recall standing when the trace starts is read at the first root of the
 /// pass before the trace: no trace opens, and every root is posted `Unwalked`.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_recall_at_the_traces_start_opens_no_trace() {
     #[cfg(feature = "debug-journal")]
     let _sites = journal_the_collector();
@@ -616,10 +594,6 @@ fn a_mutator_collecting_in_line_is_skipped() {
 }
 
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none() {
     let _g = test_guard();
     reset_lanes();

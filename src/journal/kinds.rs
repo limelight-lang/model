@@ -118,7 +118,7 @@ pub const KIND_CANDIDATE_REGISTERED: u32 = 12;
 
 /// A collector's batch took its roots and starts its trace: `subject` is the
 /// mutator's record, `a` [`BATCH_AT_THE_THRESHOLD`] or
-/// [`BATCH_OF_A_STANDING_RING`], `b` the roots taken, R's and the chain's.
+/// [`BATCH_OF_A_STANDING_RING`], `b` the roots taken.
 /// A grant that takes no root writes [`KIND_GRANT_WITHOUT_BATCH`] instead.
 pub const KIND_BATCH_START: u32 = 13;
 
@@ -129,9 +129,7 @@ pub const KIND_BATCH_START: u32 = 13;
 pub const KIND_BATCH_END: u32 = 14;
 
 /// A verdict the collector posted for one root: `subject` is the root, `a`
-/// the verdict (the `VERDICT_*` codes), `b` unused. Written before the
-/// chain's keep, so a root the chain holds has its verdict here and its
-/// keep as a [`KIND_ROOT_DEFERRED`].
+/// the verdict (the `VERDICT_*` codes), `b` unused.
 pub const KIND_ROOT_VERDICT: u32 = 15;
 
 /// A root put where only a turnover gives it back: `subject` is the root,
@@ -220,10 +218,6 @@ pub const VERDICT_UNWALKED: u64 = 3;
 pub const DEFERRED_FROM_R: u64 = 0;
 /// [`KIND_ROOT_DEFERRED`]: into the deferred lane from P's disposition.
 pub const DEFERRED_FROM_P: u64 = 1;
-/// [`KIND_ROOT_DEFERRED`]: into the chain's waiting part, read live.
-pub const DEFERRED_INTO_THE_WAITING_PART: u64 = 2;
-/// [`KIND_ROOT_DEFERRED`]: to the chain's ready part, unwalked.
-pub const DEFERRED_INTO_THE_READY_PART: u64 = 3;
 
 /// [`KIND_REOFFERED`]: the one deferred lane at a turnover.
 pub const REOFFERED_AT_THE_TURN: u64 = 0;
@@ -232,10 +226,6 @@ pub const REOFFERED_LANE_DUE: u64 = 1;
 /// [`KIND_REOFFERED`]: every lane merged at once, before the pressure path
 /// or the exit, or by a driver's hand.
 pub const REOFFERED_EVERY_LANE: u64 = 2;
-/// [`KIND_REOFFERED`]: the chain's expired blocks moved to its ready part.
-pub const REOFFERED_CHAIN_EXPIRED: u64 = 3;
-/// [`KIND_REOFFERED`]: the chain spliced into R.
-pub const REOFFERED_CHAIN_INTO_R: u64 = 4;
 
 /// [`KIND_TURNOVER`]: the collector's work since the last advance reached
 /// `SPENT_PER_PROOF` times what its stamps cost to prove. Before 2026-10-03
@@ -263,8 +253,7 @@ pub const SLOT_FROM_A_DEFERRED_LANE: u64 = 5;
 pub const GRANT_RECALLED_BEFORE_THE_BATCH: u64 = 0;
 /// [`KIND_GRANT_WITHOUT_BATCH`]: the pool refused the workspace.
 pub const GRANT_WORKSPACE_REFUSED: u64 = 1;
-/// [`KIND_GRANT_WITHOUT_BATCH`]: R and the chain gave no root, or P had no
-/// room.
+/// [`KIND_GRANT_WITHOUT_BATCH`]: R gave no root, or P had no room.
 pub const GRANT_NOTHING_TAKEN: u64 = 2;
 
 /// The highest kind that has a site. The mask is a `u64`, so a kind past

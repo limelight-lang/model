@@ -1,5 +1,9 @@
 # The collector keeps the live roots
 
+HG, the scheme this design grew into, left the tree on 2026-10-03
+(`dev/DECISIONS.md`, "HG leaves the tree"); `826b1bd` is the last commit
+that holds it. Kept as the record of the design.
+
 Proposed 2026-09-26, not built, not ruled: the target of three design rounds
 (a Fable Critic and the Sage each round) over Edmond's two requirements —
 **the mutator does no unnecessary work, and the collector takes on the most

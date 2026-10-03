@@ -193,10 +193,6 @@ fn each_cause_of_a_turnover_is_journaled_under_its_code() {
 /// and after a turnover the poll hands their lane back into R in one record
 /// carrying both.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_lane_deferred_from_p_is_handed_back_at_the_turn_in_one_record() {
     let _sites = journal_the_collector();
     let _g = test_guard();
@@ -236,42 +232,5 @@ fn a_lane_deferred_from_p_is_handed_back_at_the_turn_in_one_record() {
         release_keeper(keeper_a);
         release_keeper(keeper_b);
     }
-    reset_lanes();
-}
-
-/// Under the chain, a root the trace did not reach goes to the ready part's
-/// tail rather than into P: two kept roots of the second generation, the
-/// recall standing at the trace's start.
-#[test]
-#[cfg(feature = "collector-chain")]
-fn an_unwalked_root_the_chain_keeps_is_journaled_as_deferred_into_its_ready_part() {
-    let _sites = journal_the_collector();
-    let _g = test_guard();
-    crate::cycle::chain::testing::dismantle_this_threads();
-    reset_lanes();
-    let node = node_class("JournalUnwalkedChainNode");
-    let mut arena = Arena::new();
-    let (_, keeper_a) = unsafe { kept_root(&mut arena, node, "JournalChainKeeperA") };
-    let (_, keeper_b) = unsafe { kept_root(&mut arena, node, "JournalChainKeeperB") };
-    unsafe { &*record() }.set_batch_size(2);
-
-    let token = unsafe { &raw const (*record()).token } as usize;
-    testing::at_the_start_of_the_next_trace(Box::new(move || {
-        unsafe { &*(token as *const crate::cycle::token::TraceToken) }.recall_for_test(true)
-    }));
-    let _ = served_by_a_collector();
-    unsafe { &*record() }.token.recall_for_test(false);
-    let collector = testing::take_the_serving_threads_counts();
-    assert_eq!(collector.records(KIND_ROOT_VERDICT, VERDICT_UNWALKED), 2);
-    assert_eq!(
-        collector.records(KIND_ROOT_DEFERRED, DEFERRED_INTO_THE_READY_PART),
-        2
-    );
-
-    unsafe {
-        release_keeper(keeper_a);
-        release_keeper(keeper_b);
-    }
-    crate::cycle::chain::testing::dismantle_this_threads();
     reset_lanes();
 }

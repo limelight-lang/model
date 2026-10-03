@@ -141,10 +141,6 @@ fn a_cycle_that_avoids_the_root_is_freed_without_reading_the_state() {
 /// inside its own, stays. R holds the wide root first, so the worklist expands
 /// the ring first and the first reading falls inside the wide region.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_stopped_trace_posts_its_zero_closure_and_the_owner_frees_it() {
     use crate::array::entity::ll_array_new;
     use crate::array::testing::push;

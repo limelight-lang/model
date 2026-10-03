@@ -158,52 +158,6 @@ pub(crate) struct MutatorRecord {
     /// The collector's hold over the rings' blocks for its pre-claim reading,
     /// and the exit's note of what it left to that hold.
     hold: HoldLine,
-    /// The collector's chain of the roots it read live
-    /// (`crate::cycle::chain`).
-    #[cfg(feature = "collector-chain")]
-    chain: ChainLine,
-}
-
-/// The collector's chain on the record: the waiting part, roots read live
-/// that wait for the record's epoch to pass their block's stamp, and the
-/// ready part, roots the next batch reads beside R, with the instant of the
-/// last death check. Written by the token's holder alone, but for
-/// `x_release_owed`, whose own rule is stated there; the round reads the two
-/// counts, the oldest stamp and the instant under its reading hold, as atomic
-/// loads that touch no block
-/// (`crate::ring::RecordChain`). Two
-/// lines, the record growing from 256 to 384 bytes in this build.
-#[cfg(feature = "collector-chain")]
-#[repr(C, align(64))]
-struct ChainLine {
-    waiting: crate::ring::RecordChain,
-    ready: crate::ring::RecordChain,
-    /// The serve clock's reading at the waiting part's last death check, or
-    /// at its first push after an empty chain.
-    checked_at: AtomicU64,
-    /// The turnovers at the death check's last lap, and the exponent k of
-    /// its back-off: a lap starts at most once in 2^k epochs
-    /// (`crate::cycle::chain`, under `death-check-back-off`).
-    #[cfg(feature = "death-check-back-off")]
-    lapped_at: AtomicU64,
-    #[cfg(feature = "death-check-back-off")]
-    lap_back_off: AtomicU8,
-    /// Whether a lap of the death check is open, and the headers it read and
-    /// the deaths it took so far (`crate::ring::Lap`).
-    #[cfg(any(test, feature = "death-check-back-off"))]
-    lap_open: AtomicU8,
-    #[cfg(any(test, feature = "death-check-back-off"))]
-    lap_read: AtomicUsize,
-    #[cfg(any(test, feature = "death-check-back-off"))]
-    lap_taken: AtomicUsize,
-    /// Set by the collector's X arm at its advance; taken by the next expiry,
-    /// which then makes the whole waiting part ready (`wait-by-readings`): the
-    /// chain's wait is counted in batch turns. Any thread sets it and only the
-    /// token's holder clears it, every writer storing true, so a store after
-    /// the holder's swap stands for the next grant and one before it is covered
-    /// by the release that swap makes.
-    #[cfg(feature = "wait-by-readings")]
-    x_release_owed: std::sync::atomic::AtomicBool,
 }
 
 /// The line the collector writes: where it reads R from, where it posts
@@ -504,10 +458,7 @@ impl WriterLine {
 unsafe impl Sync for MutatorRecord {}
 
 const _: () = assert!(size_of::<HoldLine>() == 64);
-#[cfg(not(feature = "collector-chain"))]
 const _: () = assert!(size_of::<MutatorRecord>() == 256);
-#[cfg(feature = "collector-chain")]
-const _: () = assert!(size_of::<MutatorRecord>() == 384);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, reader) == 64);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, writer) == 128);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, hold) == 192);
@@ -574,110 +525,7 @@ impl MutatorRecord {
                 advanced_at: AtomicU64::new(0),
                 merges_seen: AtomicU32::new(0),
             },
-            #[cfg(feature = "collector-chain")]
-            chain: ChainLine {
-                waiting: crate::ring::RecordChain::empty(),
-                ready: crate::ring::RecordChain::empty(),
-                checked_at: AtomicU64::new(0),
-                #[cfg(feature = "death-check-back-off")]
-                lapped_at: AtomicU64::new(0),
-                #[cfg(feature = "death-check-back-off")]
-                lap_back_off: AtomicU8::new(0),
-                #[cfg(any(test, feature = "death-check-back-off"))]
-                lap_open: AtomicU8::new(0),
-                #[cfg(any(test, feature = "death-check-back-off"))]
-                lap_read: AtomicUsize::new(0),
-                #[cfg(any(test, feature = "death-check-back-off"))]
-                lap_taken: AtomicUsize::new(0),
-                #[cfg(feature = "wait-by-readings")]
-                x_release_owed: std::sync::atomic::AtomicBool::new(false),
-            },
         }
-    }
-
-    /// The collector's chain's waiting part: roots read live, waiting for the
-    /// epoch to pass their block's stamp.
-    #[cfg(feature = "collector-chain")]
-    #[inline]
-    pub(crate) fn chain_waiting(&self) -> &crate::ring::RecordChain {
-        &self.chain.waiting
-    }
-
-    /// The collector's chain's ready part: roots the next batch reads beside
-    /// R.
-    #[cfg(feature = "collector-chain")]
-    #[inline]
-    pub(crate) fn chain_ready(&self) -> &crate::ring::RecordChain {
-        &self.chain.ready
-    }
-
-    /// The serve clock's reading at the waiting part's last death check.
-    #[cfg(feature = "collector-chain")]
-    #[inline]
-    pub(crate) fn chain_checked_at(&self) -> u64 {
-        self.chain.checked_at.load(Ordering::Relaxed)
-    }
-
-    /// The turnovers at the death check's last lap, and its back-off
-    /// exponent.
-    #[cfg(feature = "death-check-back-off")]
-    #[inline]
-    pub(crate) fn lap_state(&self) -> (u64, u8) {
-        (
-            self.chain.lapped_at.load(Ordering::Relaxed),
-            self.chain.lap_back_off.load(Ordering::Relaxed),
-        )
-    }
-
-    /// Note a lap of the death check at `turnovers`, with the back-off
-    /// exponent the lap's yield leaves, by the token's holder.
-    #[cfg(feature = "death-check-back-off")]
-    #[inline]
-    pub(crate) fn note_lap(&self, turnovers: u64, back_off: u8) {
-        self.chain.lapped_at.store(turnovers, Ordering::Relaxed);
-        self.chain.lap_back_off.store(back_off, Ordering::Relaxed);
-    }
-
-    /// The death check's lap as the last check left it. Kept only where the
-    /// back-off or the rig reads it: elsewhere every check starts from no
-    /// lap open, and a lap it starts counts nothing past that check.
-    #[cfg(feature = "collector-chain")]
-    #[inline]
-    pub(crate) fn lap(&self) -> crate::ring::Lap {
-        #[cfg(any(test, feature = "death-check-back-off"))]
-        {
-            crate::ring::Lap {
-                open: self.chain.lap_open.load(Ordering::Relaxed) != 0,
-                read: self.chain.lap_read.load(Ordering::Relaxed),
-                taken: self.chain.lap_taken.load(Ordering::Relaxed),
-            }
-        }
-        #[cfg(not(any(test, feature = "death-check-back-off")))]
-        crate::ring::Lap::default()
-    }
-
-    /// Note the death check's lap, by the token's holder.
-    #[cfg(feature = "collector-chain")]
-    #[inline]
-    pub(crate) fn set_lap(&self, lap: crate::ring::Lap) {
-        #[cfg(any(test, feature = "death-check-back-off"))]
-        {
-            self.chain
-                .lap_open
-                .store(u8::from(lap.open), Ordering::Relaxed);
-            self.chain.lap_read.store(lap.read, Ordering::Relaxed);
-            self.chain.lap_taken.store(lap.taken, Ordering::Relaxed);
-        }
-        #[cfg(not(any(test, feature = "death-check-back-off")))]
-        let _ = lap;
-    }
-
-    /// Note a death check of the waiting part at `now`, by the token's
-    /// holder.
-    #[cfg(feature = "collector-chain")]
-    #[inline]
-    pub(crate) fn note_chain_checked(&self, now: u64) {
-        self.chain.checked_at.store(now, Ordering::Relaxed);
     }
 
     /// The collector this mutator is named to (`crate::cycle::worker`).
@@ -942,14 +790,11 @@ impl MutatorRecord {
     }
 
     /// Count one turn the X arm made, on the collector's thread, after
-    /// [`Self::advance_the_epoch`]: the byte the lanes mirror, and under
-    /// `collector-chain` the chain's release of its whole waiting part.
+    /// [`Self::advance_the_epoch`]: the byte the lanes mirror.
     #[cfg(feature = "wait-by-readings")]
     #[inline]
     pub(crate) fn note_an_x_turn(&self) {
         self.x_turns.fetch_add(1, Ordering::Relaxed);
-        #[cfg(feature = "collector-chain")]
-        self.chain.x_release_owed.store(true, Ordering::Relaxed);
     }
 
     /// The count [`Self::note_an_x_turn`] keeps, on the mutator's thread.
@@ -957,30 +802,6 @@ impl MutatorRecord {
     #[inline]
     pub(crate) fn x_turns(&self) -> u8 {
         self.x_turns.load(Ordering::Relaxed)
-    }
-
-    /// Whether an X turn is owed the chain's whole waiting part, and clear it:
-    /// the token holder's expiry.
-    #[cfg(all(feature = "wait-by-readings", feature = "collector-chain"))]
-    #[inline]
-    pub(crate) fn take_the_x_release(&self) -> bool {
-        self.chain.x_release_owed.swap(false, Ordering::Relaxed)
-    }
-
-    /// Owe the chain's release again, after an expiry a recall stopped with
-    /// blocks of the waiting part left.
-    #[cfg(all(feature = "wait-by-readings", feature = "collector-chain"))]
-    #[inline]
-    pub(crate) fn owe_the_x_release(&self) {
-        self.chain.x_release_owed.store(true, Ordering::Relaxed);
-    }
-
-    /// Whether [`Self::take_the_x_release`] would answer true: the round's
-    /// reading of whether the chain owes a grant.
-    #[cfg(all(feature = "wait-by-readings", feature = "collector-chain"))]
-    #[inline]
-    pub(crate) fn owes_the_x_release(&self) -> bool {
-        self.chain.x_release_owed.load(Ordering::Relaxed)
     }
 
     /// The collector's clock at the last advance, or zero for a life no
@@ -1423,20 +1244,6 @@ unsafe fn reset_for_a_new_life(released: *mut MutatorRecord) {
                 .is_null(),
             "the exit's take consumes the posted set a life left"
         );
-        #[cfg(feature = "collector-chain")]
-        {
-            debug_assert!(
-                !(*released).chain.waiting.has_a_block() && !(*released).chain.ready.has_a_block(),
-                "the exit splices the chain into R and dismantles R"
-            );
-            (*released).chain.checked_at.store(0, Ordering::Relaxed);
-            #[cfg(feature = "death-check-back-off")]
-            {
-                (*released).chain.lapped_at.store(0, Ordering::Relaxed);
-                (*released).chain.lap_back_off.store(0, Ordering::Relaxed);
-            }
-            (*released).set_lap(crate::ring::Lap::default());
-        }
         (*released).hold.new_life.store(1, Ordering::Relaxed);
         // Last, with release: the next reading's take is what sees the
         // lines above as reset.

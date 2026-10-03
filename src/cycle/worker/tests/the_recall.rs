@@ -385,10 +385,6 @@ fn over_an_outside_storage_of_empty_cells() {
 /// root — and posts it read live, the snapshot's rule for a root whose own
 /// region was expanded (`dev/plans/S67.md`, S67.9, revision 3, G3).
 #[test]
-#[cfg_attr(
-    all(feature = "collector-chain", not(feature = "hold-by-generation")),
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_recalled_batch_posts_every_root_once_read_live_and_advances_r() {
     const ROOTS: usize = 5;
     let _g = test_guard();
@@ -433,58 +429,6 @@ fn a_recalled_batch_posts_every_root_once_read_live_and_advances_r() {
         unsafe { let_go(root) };
     }
 
-    reset_lanes();
-}
-
-/// Under the collector's chain the recalled batch's roots, read live by the
-/// snapshot once the first regions had ended, go to the chain's waiting part,
-/// each once, as a completed trace's roots read live do; nothing goes into P,
-/// and R advances past them as without the chain. The roots are of the second
-/// generation: under `hold-by-generation` a younger one goes into P
-/// (`the_generations_in_the_chain`).
-#[test]
-#[cfg(feature = "collector-chain")]
-fn under_the_chain_a_recalled_batch_puts_every_root_once_in_the_waiting_part() {
-    const ROOTS: usize = 5;
-    let _g = test_guard();
-    let _end = RetireOnDrop;
-    crate::cycle::chain::testing::dismantle_this_threads();
-    reset_lanes();
-    let mut arena = Arena::new();
-    let mut context = LLContext { arena: &mut arena };
-    let roots: Vec<*mut Object> = (0..ROOTS)
-        .map(|_| unsafe {
-            let (built, tag) = build(&mut context, Container::NullFields);
-            a_root_over(&mut context, built, tag)
-        })
-        .collect();
-    for &root in &roots {
-        unsafe { crate::cycle::testing::as_of_the_second_generation(root as *mut RcHeader) };
-    }
-
-    let (batch, _) = a_batch_asked_between_its_phases(|| {
-        drop(crate::cycle::token::HeldToken::take_or_hold_posted());
-    });
-    assert!(!batch.complete, "the recalled trace was abandoned");
-    assert_eq!(standing_verdicts(), Vec::new(), "nothing in P");
-    let (ready, waiting) = crate::cycle::chain::testing::roots_of_this_threads();
-    assert_eq!(
-        (
-            ready.len(),
-            waiting
-                .iter()
-                .map(|&root| root as *mut Object)
-                .collect::<Vec<_>>(),
-        ),
-        (0, roots.clone()),
-        "every root once, in R's order, in the waiting part"
-    );
-    assert_eq!(candidate_count(), 0, "R advanced past the batch");
-
-    for root in roots {
-        unsafe { let_go(root) };
-    }
-    crate::cycle::chain::testing::dismantle_this_threads();
     reset_lanes();
 }
 
@@ -1059,10 +1003,6 @@ fn a_serve_recalled_at_the_first_reading() -> (testing::TracedBatch, Vec<(*mut O
 /// of unregistered elements, so the first reading falls inside the first
 /// root's region.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_stop_inside_the_first_regions_posts_unwalked_and_halves_k_down_to_one_read_live_root() {
     use crate::journal::kinds::BATCH_END_RECALLED_IN_THE_TRACE;
 
@@ -1128,10 +1068,6 @@ fn a_stop_inside_the_first_regions_posts_unwalked_and_halves_k_down_to_one_read_
 /// whose scan the recall, raised between the phases, stops; the inner root's
 /// only reference is the outer root's.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_stop_inside_the_scan_reads_a_root_the_scan_coloured_live_as_live() {
     use crate::journal::kinds::BATCH_END_RECALLED_IN_THE_TRACE;
 
@@ -1214,10 +1150,6 @@ static RESERVE_TAKEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::
 /// that thread's pool to nothing and takes its reserve, so the first growth
 /// of the arena past its workspace is refused.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_pool_refusal_inside_the_mark_posts_the_snapshot() {
     use crate::journal::kinds::BATCH_END_REFUSED_IN_THE_TRACE;
 
@@ -1297,10 +1229,6 @@ static RESERVE_AT_THE_START: AtomicUsize = AtomicUsize::new(0);
 /// hook at the trace's start budgets the collector's pool to nothing and
 /// leaves its reserve standing. Red with the mark drawing the reserve.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_pool_refusal_inside_the_mark_leaves_the_reserve_whole() {
     use crate::journal::kinds::BATCH_END_REFUSED_IN_THE_TRACE;
 
@@ -1405,10 +1333,6 @@ fn a_serve_recalled_in_the_mark_at(
 /// the outer one by the scan and is not proposed. The same recall at the stop
 /// level posts the snapshot, which proposes it — the owner then refutes it.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_wind_down_inside_the_mark_scans_and_proposes_no_root_a_live_one_reaches() {
     use crate::cycle::token::{RECALL_STOP, RECALL_WIND_DOWN};
     use crate::journal::kinds::{BATCH_END_RECALLED_IN_THE_TRACE, BATCH_END_WOUND_DOWN};
@@ -1455,10 +1379,6 @@ fn a_wind_down_inside_the_mark_scans_and_proposes_no_root_a_live_one_reaches() {
 /// The same recall at the stop level stops the scan
 /// (`a_stop_inside_the_scan_reads_a_root_the_scan_coloured_live_as_live`).
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_wind_down_after_the_mark_lets_the_scan_end() {
     use crate::cycle::token::RECALL_WIND_DOWN;
     use crate::journal::kinds::BATCH_END_COMPLETE;
@@ -1554,10 +1474,6 @@ unsafe fn a_ring_then_a_held_root_over_registered_elements(
 /// whose own row reads above zero, read live. Red without the scan: every row
 /// stays unclassified and nothing is posted.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_wind_down_past_the_first_regions_proposes_the_ring_and_reads_the_held_root_live() {
     use crate::cycle::token::RECALL_WIND_DOWN;
     use crate::journal::kinds::BATCH_END_WOUND_DOWN;
@@ -1613,10 +1529,6 @@ fn a_wind_down_past_the_first_regions_proposes_the_ring_and_reads_the_held_root_
 /// after a wind-down that stops at nothing: the take would wait for the whole
 /// scan.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_stop_inside_a_wind_downs_scan_cuts_it() {
     use crate::cycle::token::RECALL_WIND_DOWN;
     use crate::journal::kinds::BATCH_END_WOUND_DOWN_THEN_CUT;
@@ -1661,10 +1573,6 @@ fn a_stop_inside_a_wind_downs_scan_cuts_it() {
 /// outer root that alone holds it, then the held root over registered
 /// elements, whose pass the fourth reading falls inside.
 #[test]
-#[cfg_attr(
-    feature = "collector-chain",
-    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
-)]
 fn a_wind_down_sends_back_a_root_read_live_only_through_another() {
     use crate::array::testing::push;
     use crate::cycle::token::RECALL_WIND_DOWN;

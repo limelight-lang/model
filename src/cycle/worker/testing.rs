@@ -1148,19 +1148,12 @@ pub(crate) fn note_token_wait(waited: std::time::Duration, segment: u8) {
 }
 
 /// The parts of a grant the rig splits the mutator's costs by: around the
-/// batch — the arena's open, the reset and the release — then, on the
-/// chain's arm, the expiry and the death check, and the trace with its
-/// posts. A slot's segment is [`SEGMENT_AROUND`] whenever its collector is
-/// not inside a batch.
+/// batch — the arena's open, the reset and the release — and the trace with
+/// its posts. A slot's segment is [`SEGMENT_AROUND`] whenever its collector
+/// is not inside a batch.
 pub(crate) const SEGMENT_AROUND: u8 = 0;
-pub(crate) const SEGMENT_EXPIRY: u8 = 1;
-#[cfg_attr(
-    not(feature = "collector-chain"),
-    expect(dead_code, reason = "the death check is the chain's")
-)]
-pub(crate) const SEGMENT_CHECK: u8 = 2;
-pub(crate) const SEGMENT_TRACE: u8 = 3;
-pub(crate) const SEGMENTS: usize = 4;
+pub(crate) const SEGMENT_TRACE: u8 = 1;
+pub(crate) const SEGMENTS: usize = 2;
 
 /// Each slot's segment, stored by its collector and read by the mutator
 /// whose token the slot holds.
@@ -1438,119 +1431,6 @@ pub(crate) fn note_disposal(took: std::time::Duration) {
     disposals.longest = disposals.longest.max(took);
 }
 
-/// What the collector's chain did since a case last asked
-/// (`crate::cycle::chain`): roots pushed into its waiting and its ready
-/// part, pushes the pool refused a block for, the most blocks it held,
-/// headers its death checks read and deaths they posted — those of a lap
-/// among them, a lap running over grants from the check that starts it to the
-/// one that finds every entry read — the laps started, and the roots batches
-/// took from R and from the ready part.
-#[derive(Clone, Copy, Default, Debug)]
-pub(crate) struct ChainFigures {
-    pub(crate) pushed_waiting: usize,
-    pub(crate) pushed_ready: usize,
-    pub(crate) refusals: usize,
-    pub(crate) blocks_peak: isize,
-    pub(crate) headers_checked: usize,
-    pub(crate) headers_checked_in_a_lap: usize,
-    pub(crate) laps: usize,
-    pub(crate) deaths_posted: usize,
-    pub(crate) deaths_posted_in_a_lap: usize,
-    pub(crate) roots_from_r: usize,
-    pub(crate) roots_from_the_chain: usize,
-    /// Grants whose batch took no root of a standing R because the chain's
-    /// share filled the clamp.
-    pub(crate) grants_r_left_unread: usize,
-    /// Batches whose R share was cut below what R offered by the chain's.
-    pub(crate) batches_r_cut: usize,
-}
-
-// The chain's figures, one relaxed atomic each, so that the arms whose
-// grants note them pay no lock the default build does not.
-static CHAIN_PUSHED_WAITING: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_PUSHED_READY: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_REFUSALS: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_BLOCKS: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-static CHAIN_BLOCKS_PEAK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-static CHAIN_HEADERS_CHECKED: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_HEADERS_CHECKED_IN_A_LAP: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_LAPS: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_DEATHS_POSTED_IN_A_LAP: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_BATCHES_R_CUT: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_DEATHS_POSTED: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_ROOTS_FROM_R: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_ROOTS_FROM_THE_CHAIN: AtomicUsize = AtomicUsize::new(0);
-static CHAIN_GRANTS_R_LEFT_UNREAD: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(feature = "collector-chain")]
-pub(crate) fn note_chain_push(ready: bool) {
-    let counter = if ready {
-        &CHAIN_PUSHED_READY
-    } else {
-        &CHAIN_PUSHED_WAITING
-    };
-    counter.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(feature = "collector-chain")]
-pub(crate) fn note_chain_refusal() {
-    CHAIN_REFUSALS.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(feature = "collector-chain")]
-pub(crate) fn note_chain_block(change: isize) {
-    let blocks = CHAIN_BLOCKS.fetch_add(change, Ordering::Relaxed) + change;
-    CHAIN_BLOCKS_PEAK.fetch_max(blocks, Ordering::Relaxed);
-}
-
-#[cfg(feature = "collector-chain")]
-pub(crate) fn note_chain_check(
-    read: usize,
-    posted: usize,
-    read_in_a_lap: usize,
-    posted_in_a_lap: usize,
-    lapped: bool,
-) {
-    CHAIN_HEADERS_CHECKED.fetch_add(read, Ordering::Relaxed);
-    CHAIN_HEADERS_CHECKED_IN_A_LAP.fetch_add(read_in_a_lap, Ordering::Relaxed);
-    CHAIN_LAPS.fetch_add(usize::from(lapped), Ordering::Relaxed);
-    CHAIN_DEATHS_POSTED.fetch_add(posted, Ordering::Relaxed);
-    CHAIN_DEATHS_POSTED_IN_A_LAP.fetch_add(posted_in_a_lap, Ordering::Relaxed);
-}
-
-#[cfg(feature = "collector-chain")]
-pub(crate) fn note_chain_batch(from_r: usize, from_the_chain: usize, r_left_unread: bool) {
-    CHAIN_ROOTS_FROM_R.fetch_add(from_r, Ordering::Relaxed);
-    CHAIN_ROOTS_FROM_THE_CHAIN.fetch_add(from_the_chain, Ordering::Relaxed);
-    CHAIN_GRANTS_R_LEFT_UNREAD.fetch_add(usize::from(r_left_unread), Ordering::Relaxed);
-}
-
-#[cfg(feature = "collector-chain")]
-pub(crate) fn note_r_cut() {
-    CHAIN_BATCHES_R_CUT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// The chain's figures since the last call, and zero them, the peak of
-/// blocks starting again from the blocks the chain holds now.
-pub(crate) fn take_chain_figures() -> ChainFigures {
-    let blocks = CHAIN_BLOCKS.load(Ordering::Relaxed);
-    ChainFigures {
-        pushed_waiting: CHAIN_PUSHED_WAITING.swap(0, Ordering::Relaxed),
-        pushed_ready: CHAIN_PUSHED_READY.swap(0, Ordering::Relaxed),
-        refusals: CHAIN_REFUSALS.swap(0, Ordering::Relaxed),
-        blocks_peak: CHAIN_BLOCKS_PEAK.swap(blocks, Ordering::Relaxed),
-        headers_checked: CHAIN_HEADERS_CHECKED.swap(0, Ordering::Relaxed),
-        headers_checked_in_a_lap: CHAIN_HEADERS_CHECKED_IN_A_LAP.swap(0, Ordering::Relaxed),
-        laps: CHAIN_LAPS.swap(0, Ordering::Relaxed),
-        deaths_posted: CHAIN_DEATHS_POSTED.swap(0, Ordering::Relaxed),
-        deaths_posted_in_a_lap: CHAIN_DEATHS_POSTED_IN_A_LAP.swap(0, Ordering::Relaxed),
-        roots_from_r: CHAIN_ROOTS_FROM_R.swap(0, Ordering::Relaxed),
-        roots_from_the_chain: CHAIN_ROOTS_FROM_THE_CHAIN.swap(0, Ordering::Relaxed),
-        grants_r_left_unread: CHAIN_GRANTS_R_LEFT_UNREAD.swap(0, Ordering::Relaxed),
-        batches_r_cut: CHAIN_BATCHES_R_CUT.swap(0, Ordering::Relaxed),
-    }
-}
-
 /// What the schemes spend on the collector's stamps and the lane, in every
 /// build, since a case last asked: stamps the collector wrote on a registered
 /// member and on any other (`crate::cycle::collector_stamps`), the edges the collector's marks
@@ -1666,49 +1546,6 @@ pub(crate) fn note_written_back() {
 
 pub(crate) fn take_written_back() -> usize {
     WRITTEN_BACK.swap(0, Ordering::Relaxed)
-}
-
-/// What `hold-by-generation` did with the roots the collector read live
-/// since a case last asked (`dev/plans/S65.md`, S65.32); zero without the
-/// feature. One relaxed atomic a note, as [`note_written_back`] is, so that
-/// the arm the rig times pays no lock the other does not.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Generations {
-    /// Posted unmarked: of the first generation, and listed alone.
-    pub(crate) posted_first: usize,
-    /// Posted marked for having outlived an epoch.
-    pub(crate) posted_second: usize,
-    /// Posted marked because the list took no more, the root being of the
-    /// first generation.
-    pub(crate) posted_unlisted: usize,
-    /// Posted marked, the root being of the first generation and met by a
-    /// part that lists its core.
-    pub(crate) posted_in_an_old_core: usize,
-}
-
-static POSTED_FIRST: AtomicUsize = AtomicUsize::new(0);
-static POSTED_SECOND: AtomicUsize = AtomicUsize::new(0);
-static POSTED_UNLISTED: AtomicUsize = AtomicUsize::new(0);
-static POSTED_IN_AN_OLD_CORE: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(feature = "hold-by-generation")]
-pub(crate) fn note_generation_posted(first: bool, listed: bool, in_an_old_core: bool) {
-    let counter = match (first, listed, in_an_old_core) {
-        (false, _, _) => &POSTED_SECOND,
-        (true, false, _) => &POSTED_UNLISTED,
-        (true, true, true) => &POSTED_IN_AN_OLD_CORE,
-        (true, true, false) => &POSTED_FIRST,
-    };
-    counter.fetch_add(1, Ordering::Relaxed);
-}
-
-pub(crate) fn take_generations() -> Generations {
-    Generations {
-        posted_first: POSTED_FIRST.swap(0, Ordering::Relaxed),
-        posted_second: POSTED_SECOND.swap(0, Ordering::Relaxed),
-        posted_unlisted: POSTED_UNLISTED.swap(0, Ordering::Relaxed),
-        posted_in_an_old_core: POSTED_IN_AN_OLD_CORE.swap(0, Ordering::Relaxed),
-    }
 }
 
 /// How long a byte state stood before its end: a count, the total and the

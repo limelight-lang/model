@@ -283,15 +283,6 @@ fn a_record_is_carved_from_a_gc_block_on_a_line_boundary() {
 
 #[test]
 fn a_record_is_whole_lines_and_a_block_holds_as_many_as_fit() {
-    // The collector's chain adds two lines after the four
-    // (`crate::cycle::chain`).
-    #[cfg(feature = "collector-chain")]
-    {
-        assert_eq!(size_of::<MutatorRecord>(), 384);
-        assert_eq!(std::mem::offset_of!(MutatorRecord, chain), 256);
-        assert_eq!(RECORDS_PER_BLOCK, BLOCK_PAYLOAD / 384);
-    }
-    #[cfg(not(feature = "collector-chain"))]
     assert_eq!(size_of::<MutatorRecord>(), 256);
     assert_eq!(std::mem::offset_of!(MutatorRecord, token), 0);
     assert_eq!(
@@ -309,7 +300,6 @@ fn a_record_is_whole_lines_and_a_block_holds_as_many_as_fit() {
         192,
         "the hold word the collector and the exit share is the fourth"
     );
-    #[cfg(not(feature = "collector-chain"))]
     assert_eq!(RECORDS_PER_BLOCK, 255);
 }
 

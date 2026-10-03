@@ -17,7 +17,7 @@
 //! second ring", "The in-line collection over R").
 //!
 //! **An unwind inside the pass leaves every lane whole.** The ring's pass
-//! and the chain's finish themselves on the unwind, keeping every entry not
+//! and the lane's finish themselves on the unwind, keeping every entry not
 //! yet answered for; the overflow pass is a frame of its own with the same
 //! drop. An entry whose free raised is the one exception: its slot is
 //! half-returned and cannot be retried, so its entry is dropped as
@@ -177,7 +177,7 @@ fn pass_over_r(mutator_state: &MutatorCycleState, ring: Quiescent<'_>, deferred_
                     // Both cells empty: the root stays in the ring and
                     // is offered to the next collection rather than to
                     // the turnover.
-                    pass.write(entity_entry(entity) | (entry & REOFFERED_MARK));
+                    pass.write(entity_entry(entity));
                     continue;
                 };
 
@@ -188,7 +188,7 @@ fn pass_over_r(mutator_state: &MutatorCycleState, ring: Quiescent<'_>, deferred_
             Destination::Keep => {
                 // The deferral's mark off, the lane's kept.
                 note_queue_work(0, 0, 1);
-                pass.write(entity_entry(entity) | (entry & REOFFERED_MARK));
+                pass.write(entity_entry(entity));
             }
         }
     }
