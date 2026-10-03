@@ -176,7 +176,13 @@ unsafe fn walk_the_empty_storage(
     visit: &mut dyn FnMut(Option<Cell>) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
     for index in 0..POSITIONS {
-        let at = (&raw const EMPTY_STORAGE[2 * index]) as *const u8;
+        // From the whole array, whose provenance covers the sixteen bytes a
+        // cell reads; a pointer to one element would cover its own eight.
+        let at = unsafe {
+            (&raw const EMPTY_STORAGE)
+                .cast::<AtomicU64>()
+                .add(2 * index)
+        } as *const u8;
         visit(unsafe { crate::cells::counted_box_cell::<crate::cells::AtomicCells>(at) })?;
     }
 
