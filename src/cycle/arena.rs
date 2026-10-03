@@ -380,6 +380,50 @@ pub(crate) fn keep_every_page(keeps: bool) {
     KEEPS_EVERY_PAGE.store(keeps, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// What a collector's resets cost, in their two parts: the sweep of the
+/// touched rows and the blocks' return (`dev/plans/S67.md`, S67.9, the
+/// Critic of 2026-09-30 on the ceiling, finding 7). Tests only.
+#[cfg(test)]
+#[derive(Clone, Copy, Default, Debug)]
+pub(crate) struct ResetTiming {
+    pub(crate) resets: usize,
+    pub(crate) sweep: std::time::Duration,
+    pub(crate) sweep_longest: std::time::Duration,
+    pub(crate) give_back: std::time::Duration,
+    pub(crate) give_back_longest: std::time::Duration,
+}
+
+#[cfg(test)]
+static RESET_TIMING: std::sync::Mutex<ResetTiming> = std::sync::Mutex::new(ResetTiming {
+    resets: 0,
+    sweep: std::time::Duration::ZERO,
+    sweep_longest: std::time::Duration::ZERO,
+    give_back: std::time::Duration::ZERO,
+    give_back_longest: std::time::Duration::ZERO,
+});
+
+#[cfg(test)]
+fn note_a_collectors_reset(sweep: std::time::Duration, give_back: std::time::Duration) {
+    let mut timing = RESET_TIMING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    timing.resets += 1;
+    timing.sweep += sweep;
+    timing.sweep_longest = timing.sweep_longest.max(sweep);
+    timing.give_back += give_back;
+    timing.give_back_longest = timing.give_back_longest.max(give_back);
+}
+
+/// The collectors' resets since the last call, which leaves them zero.
+#[cfg(test)]
+pub(crate) fn take_reset_timing() -> ResetTiming {
+    std::mem::take(
+        &mut *RESET_TIMING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
 /// The count [`BLOCKS_DISCARDED`] holds, leaving zero.
 #[cfg(test)]
 pub(crate) fn take_blocks_discarded() -> usize {
@@ -950,12 +994,16 @@ impl TraceScratchArena {
     /// return may not outrun is the unstamping, and the blocks below are the
     /// arena's own.
     pub(crate) fn reset(&mut self) {
+        #[cfg(test)]
+        let swept_from = std::time::Instant::now();
         // Kept here although the ordered close has swept already, because the
         // other caller is [`Drop`] and it has not: an unwind reaches this from
         // anywhere in a collection. Over a rewound worklist and an emptied
         // touched list the second pass reads two null heads and stores
         // nothing.
         self.sweep_rows();
+        #[cfg(test)]
+        let swept = swept_from.elapsed();
 
         // The block still under the bump has no further grant coming, and it
         // is being released in the same breath — rewound if it is the
@@ -988,7 +1036,13 @@ impl TraceScratchArena {
 
         fire_injected_reset_failure();
 
+        #[cfg(test)]
+        let given_from = std::time::Instant::now();
         self.give_the_blocks_back();
+        #[cfg(test)]
+        if !self.traced_token.is_null() {
+            note_a_collectors_reset(swept, given_from.elapsed());
+        }
     }
 
     /// Give every block the bump drew back: what the reserve lent to the

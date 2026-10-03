@@ -96,6 +96,9 @@
 //!   edge into a registered candidate past its root and expands it no further
 //!   (`mark::stop_at_candidates`), each part the walk of its root's first
 //!   region (`dev/plans/S67.md`, S67.9, run R2).
+//! - `LL_RIG_EPOCH_MS` — X, the epoch's longest stand, in milliseconds, in
+//!   place of the crate's 8 s (`ll_gc_set_epoch_interval`; the Critic of
+//!   2026-09-30 on the ceiling, finding 6);
 //! - `LL_RIG_KEEP_EVERY_PAGE` — set to 1, the arena's resets give back no
 //!   page to the operating system, the control of the discard past the warm
 //!   blocks (`arena::keep_every_page`);
@@ -2981,6 +2984,12 @@ struct WebCell {
     withheld: testing::WithheldReadings,
     /// The stamps the collectors wrote over the window, under their grants.
     stamping: crate::cycle::collector_stamps::testing::Stamping,
+    /// The sets the collectors posted over the window — their count, members
+    /// in all and at the most — and the sets a return dropped.
+    sets: (usize, usize, usize),
+    sets_dropped: usize,
+    /// The collectors' resets over the window, in their two parts.
+    resets: crate::cycle::arena::ResetTiming,
 }
 
 impl WebCell {
@@ -4008,6 +4017,32 @@ impl CellReading {
             stamping.longest.as_micros().to_string(),
         ];
         fields.extend(STAMPING_COLUMNS.into_iter().zip(values));
+        let (sets, members, members_most) = web.sets;
+        let resets = web.resets;
+        let resets_made = resets.resets.max(1) as u128;
+        fields.extend([
+            ("web_sets_posted", sets.to_string()),
+            ("web_set_members_mean", (members / sets.max(1)).to_string()),
+            ("web_set_members_most", members_most.to_string()),
+            ("web_sets_dropped_at_a_return", web.sets_dropped.to_string()),
+            ("web_collector_resets", resets.resets.to_string()),
+            (
+                "web_reset_sweep_us_mean",
+                (resets.sweep.as_micros() / resets_made).to_string(),
+            ),
+            (
+                "web_reset_sweep_longest_us",
+                resets.sweep_longest.as_micros().to_string(),
+            ),
+            (
+                "web_reset_give_back_us_mean",
+                (resets.give_back.as_micros() / resets_made).to_string(),
+            ),
+            (
+                "web_reset_give_back_longest_us",
+                resets.give_back_longest.as_micros().to_string(),
+            ),
+        ]);
         fields.extend([
             (
                 "web_registrations_a_second",
@@ -4208,6 +4243,9 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     crate::cycle::mark::stop_at_candidates(first_regions);
     crate::cycle::mark::hold_nothing(switch_from_env("LL_RIG_HOLD_NOTHING"));
     crate::cycle::arena::keep_every_page(switch_from_env("LL_RIG_KEEP_EVERY_PAGE"));
+    if let Ok(millis) = std::env::var("LL_RIG_EPOCH_MS") {
+        crate::gc::ll_gc_set_epoch_interval(millis.parse().expect("milliseconds"));
+    }
     crate::cycle::epoch::set_spent_per_proof_for_test(
         std::env::var("LL_RIG_SPENT_PER_PROOF")
             .map_or(0, |ratio| ratio.parse().expect("a whole ratio")),
@@ -4282,6 +4320,9 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let at_the_start = WindowEdge::now();
     let _ = testing::take_withheld_readings();
     let _ = crate::cycle::collector_stamps::testing::take_stamping();
+    let _ = crate::cycle::posted_set::testing::take_sets_posted();
+    let _ = crate::cycle::posted_set::testing::take_sets_dropped_at_a_return();
+    let _ = crate::cycle::arena::take_reset_timing();
     let _ = testing::take_withdrawn_standings();
     let collector_cpu_at_the_start = testing::collector_cpu_to_now();
     std::thread::sleep(cell.run_for - warm_up);
@@ -4318,6 +4359,9 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         web.read_the_cadence(&batches, at_the_start.at..stopped, cell.mutators.len());
         web.withheld = testing::take_withheld_readings();
         web.stamping = crate::cycle::collector_stamps::testing::take_stamping();
+        web.sets = crate::cycle::posted_set::testing::take_sets_posted();
+        web.sets_dropped = crate::cycle::posted_set::testing::take_sets_dropped_at_a_return();
+        web.resets = crate::cycle::arena::take_reset_timing();
         let state = CORE_OBJECTS + VALUE_OBJECTS * load_web.values;
         web.batches_through_the_state = batches
             .iter()

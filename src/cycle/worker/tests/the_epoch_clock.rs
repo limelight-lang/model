@@ -342,3 +342,26 @@ fn the_embedders_interval_replaces_the_default_and_zero_restores_it() {
         "zero restores the crate's"
     );
 }
+
+/// X turns no epoch before twice the wall of the batches that proved it: a
+/// walk longer than X would see its stamps retire before a batch prunes at
+/// them (`crate::cycle::epoch`, "The turn"). Red with X alone.
+#[test]
+fn x_waits_for_twice_the_proving_walk() {
+    let _g = test_guard();
+    let _x = EpochInterval::of(Duration::from_millis(1));
+    let record = unsafe { &*record() };
+    let _ = record.take_new_life();
+    record.advance_the_epoch(serve_clock_now(), crate::journal::kinds::TURNOVER_BY_HAND);
+    let turnovers = record.turnovers();
+
+    record.note_epoch_work(0, 1);
+    record.note_proving_wall(Duration::from_secs(60).as_nanos() as u64);
+    std::thread::sleep(Duration::from_millis(5));
+    visit(record);
+    assert_eq!(
+        record.turnovers(),
+        turnovers,
+        "X passed, the proof's wall has not"
+    );
+}

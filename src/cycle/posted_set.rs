@@ -446,6 +446,25 @@ pub(crate) mod testing {
 
     pub(super) fn note_members_posted(members: usize) {
         MEMBERS_POSTED.store(members, Ordering::Relaxed);
+        SETS_POSTED.fetch_add(1, Ordering::Relaxed);
+        MEMBERS_IN_ALL.fetch_add(members, Ordering::Relaxed);
+        MEMBERS_MOST.fetch_max(members, Ordering::Relaxed);
+    }
+
+    /// The sets published, their members in all and at the most, since a
+    /// call to [`take_sets_posted`]; process-wide, for the rig.
+    static SETS_POSTED: AtomicUsize = AtomicUsize::new(0);
+    static MEMBERS_IN_ALL: AtomicUsize = AtomicUsize::new(0);
+    static MEMBERS_MOST: AtomicUsize = AtomicUsize::new(0);
+
+    /// The sets published, their members in all and at the most, since the
+    /// last call, which leaves zero.
+    pub(crate) fn take_sets_posted() -> (usize, usize, usize) {
+        (
+            SETS_POSTED.swap(0, Ordering::Relaxed),
+            MEMBERS_IN_ALL.swap(0, Ordering::Relaxed),
+            MEMBERS_MOST.swap(0, Ordering::Relaxed),
+        )
     }
 
     /// The members the last published set held, or `None` since the last

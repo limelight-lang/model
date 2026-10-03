@@ -323,6 +323,15 @@ struct HoldLine {
     /// compare-and-swap, the exit's leave one too; the hand-back and the
     /// registry store.
     reading: AtomicU8,
+    /// The value of [`WriterLine::merges`] every entry of whose merges the
+    /// collector has accounted for: stored at the end of every grant, with
+    /// the count read under the token before the batch's peek, and at a
+    /// round that read the ring empty, with the count read before the ring.
+    /// A round that reads the ring below the threshold
+    /// and the two counts apart takes it. Read and written where
+    /// [`HoldLine::standing_since`] is, and for the same reason; relaxed,
+    /// the collector's own word; cleared at a re-take.
+    merges_seen: AtomicU32,
     /// The serve clock's reading at the round that first read this
     /// mutator's candidate ring non-empty and below the round's threshold,
     /// in nanoseconds since the base `crate::cycle::worker` fixes at the
@@ -359,7 +368,7 @@ struct HoldLine {
     /// which serves the mutators named to it. On this line because it is the
     /// one word a collector writes into a record it does not read for.
     collector: AtomicU8,
-    /// This word and the four after it, the epoch's, are written by the
+    /// This word and the five after it, the epoch's, are written by the
     /// advance outside the reading hold and the grant, unlike
     /// [`HoldLine::standing_since`]: the collector's visit advances before its
     /// serve requests the token, and a record between two lives is visited
@@ -384,6 +393,12 @@ struct HoldLine {
     /// relaxed; cleared at every advance and at a re-take.
     spent: AtomicU64,
     proving: AtomicU64,
+    /// The wall, in nanoseconds, the batches that wrote this epoch's proofs
+    /// took: X turns no epoch before `SPENT_PER_PROOF` times it, so that a
+    /// walk longer than X proves something before its stamps retire
+    /// (`crate::cycle::epoch`, "The turn"). Written and cleared as
+    /// [`HoldLine::spent`] is.
+    proving_wall: AtomicU64,
     /// This mutator's epoch clock: the turnovers of its epoch, full width and
     /// monotone across the record's lives. The epoch a maturation stamp
     /// carries is its low two bits (`crate::cycle::epoch`). Written by the
@@ -401,15 +416,6 @@ struct HoldLine {
     /// without advancing. The collector's own word, so relaxed; cleared at a
     /// re-take.
     advanced_at: AtomicU64,
-    /// The value of [`WriterLine::merges`] every entry of whose merges the
-    /// collector has accounted for: stored at the end of every grant, with
-    /// the count read under the token before the batch's peek, and at a
-    /// round that read the ring empty, with the count read before the ring.
-    /// A round that reads the ring below the threshold
-    /// and the two counts apart takes it. Read and written where
-    /// [`HoldLine::standing_since`] is, and for the same reason; relaxed,
-    /// the collector's own word; cleared at a re-take.
-    merges_seen: AtomicU32,
 }
 
 /// A collector is reading the rings' blocks under no claim.
@@ -563,6 +569,7 @@ impl MutatorRecord {
                 new_life: AtomicU8::new(0),
                 spent: AtomicU64::new(0),
                 proving: AtomicU64::new(0),
+                proving_wall: AtomicU64::new(0),
                 turnovers: AtomicU64::new(0),
                 advanced_at: AtomicU64::new(0),
                 merges_seen: AtomicU32::new(0),
@@ -907,6 +914,7 @@ impl MutatorRecord {
         self.hold.advanced_at.store(now, Ordering::Relaxed);
         self.hold.spent.store(0, Ordering::Relaxed);
         self.hold.proving.store(0, Ordering::Relaxed);
+        self.hold.proving_wall.store(0, Ordering::Relaxed);
         crate::journal::kinds::journal_event!(
             crate::journal::kinds::KIND_TURNOVER,
             std::ptr::from_ref(self) as u64,
@@ -973,6 +981,23 @@ impl MutatorRecord {
     #[inline]
     pub(crate) fn note_advanced_at(&self, now: u64) {
         self.hold.advanced_at.store(now, Ordering::Relaxed);
+    }
+
+    /// The wall the proving batches of this epoch took, in nanoseconds
+    /// ([`HoldLine::proving_wall`]).
+    #[inline]
+    pub(crate) fn proving_wall(&self) -> u64 {
+        self.hold.proving_wall.load(Ordering::Relaxed)
+    }
+
+    /// Add `nanos` to [`Self::proving_wall`], on the collector's thread: the
+    /// wall of a batch that wrote proofs. Saturating.
+    #[inline]
+    pub(crate) fn note_proving_wall(&self, nanos: u64) {
+        let wall = self.proving_wall();
+        self.hold
+            .proving_wall
+            .store(wall.saturating_add(nanos), Ordering::Relaxed);
     }
 
     /// The positions spent and the proofs written since the last advance
@@ -1385,6 +1410,7 @@ fn take_record() -> *mut MutatorRecord {
             // the epoch's work restart with the life.
             (*released).hold.spent.store(0, Ordering::Relaxed);
             (*released).hold.proving.store(0, Ordering::Relaxed);
+            (*released).hold.proving_wall.store(0, Ordering::Relaxed);
             (*released).hold.advanced_at.store(0, Ordering::Relaxed);
             (*released).hold.merges_seen.store(0, Ordering::Relaxed);
             debug_assert!(
@@ -1594,6 +1620,7 @@ pub(crate) fn scribble_lines_for_test(record: *mut MutatorRecord) {
         (*record).hold.advanced_at.store(7, Ordering::Relaxed);
         (*record).hold.spent.store(7, Ordering::Relaxed);
         (*record).hold.proving.store(7, Ordering::Relaxed);
+        (*record).hold.proving_wall.store(7, Ordering::Relaxed);
         (*record).hold.merges_seen.store(7, Ordering::Relaxed);
         (*record).writer.merges.store(7, Ordering::Relaxed);
     }
@@ -1622,6 +1649,7 @@ pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
         && unsafe { (*record).hold.advanced_at.load(Ordering::Relaxed) == 0 }
         && unsafe { (*record).hold.spent.load(Ordering::Relaxed) == 0 }
         && unsafe { (*record).hold.proving.load(Ordering::Relaxed) == 0 }
+        && unsafe { (*record).hold.proving_wall.load(Ordering::Relaxed) == 0 }
         && unsafe { (*record).hold.merges_seen.load(Ordering::Relaxed) == 0 }
         && writer.merges.load(Ordering::Relaxed) == 0
         && writer.r_tail_block.load(Ordering::Relaxed).is_null()

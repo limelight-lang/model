@@ -48,7 +48,10 @@
 //! the positions of every batch it makes once a price stands, the proving
 //! batch's own walk not among them; the cell turns at a visit once the
 //! positions reach [`SPENT_PER_PROOF`] times the prices — work the stamps could
-//! prune has paid for the re-proof — or at X. An epoch in which the collector
+//! prune has paid for the re-proof — or at X, though never before the epoch
+//! has stood `SPENT_PER_PROOF` times the wall of the batches that proved it,
+//! so that a walk longer than X sees a batch prune at its stamps before they
+//! retire. An epoch in which the collector
 //! proves nothing turns at X alone: none of its stamps stands to retire, the
 //! owner's commits' stamps aging at X as before. Garbage behind
 //! a stamped core waits at most two epochs, `k + 1` behind a chain of `k`

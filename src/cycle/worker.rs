@@ -639,7 +639,13 @@ fn advance_the_epoch_if_due(record: &MutatorRecord, now: u64) {
 
     let (spent, proving) = record.epoch_work();
     let by_proofs = proving > 0 && spent >= crate::cycle::epoch::spent_per_proof() * proving;
-    if by_proofs || now.saturating_sub(last) >= epoch_interval().as_nanos() as u64 {
+    // X retires no proof before the epoch has stood its walk's wall
+    // `SPENT_PER_PROOF` times over: a walk longer than X would otherwise
+    // see its stamps retire before a batch prunes at them (`dev/plans/S67.md`,
+    // S67.9, the Critic of 2026-09-30 on the ceiling, finding 6).
+    let x = (epoch_interval().as_nanos() as u64)
+        .max(crate::cycle::epoch::spent_per_proof() * record.proving_wall());
+    if by_proofs || now.saturating_sub(last) >= x {
         let why = if by_proofs {
             journal::TURNOVER_BY_PROOFS
         } else {
@@ -2338,6 +2344,8 @@ unsafe fn batch(
         },
         taken as u64,
     );
+    // The batch's start on the serve clock, which prices its proofs' wall.
+    let began = serve_clock_now();
     // The set the trace proves unreachable, published below for the mutator's
     // collection over P; dropped on the unwind, which gives its blocks back
     // here.
@@ -2430,6 +2438,9 @@ unsafe fn batch(
         drop(set);
     }
     mutator.note_epoch_work(spent as u64, outcome.proving);
+    if outcome.proving > 0 {
+        mutator.note_proving_wall(serve_clock_now().saturating_sub(began));
+    }
     if at_the_threshold {
         // K against what R gave: the chain's roots size no K, and R's share
         // must fill K itself, as without the chain.
