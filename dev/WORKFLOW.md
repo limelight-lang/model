@@ -487,7 +487,8 @@ once in three runs at eight threads over S67.9 step (e)'s tree, and once in a
 plain run over step (d)'s gate on 2026-10-02; it calls no collector code, and
 a run alone passed. On 2026-10-03 it read 4.39 ms once in three runs alone and
 twice in full runs at four threads, on S67.10's tree with a Miri run holding
-the box's cores (load average 3.2).
+the box's cores (load average 3.2), and once more at eight threads that
+evening beside two Miri slices, green in five runs alone after.
 `the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_disposition`
 read red once the same day in a run where a collector thread panicked beside
 it, and green in every run after.
