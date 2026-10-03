@@ -851,6 +851,11 @@ against the code on 2026-09-24.
   (five files), the sleepers' start and end in `under_stress.rs`, the three
   hooks forwarding to one `OneShot`, the two `EmbeddersInterval` guards.
   done: each under its threshold or recorded as kept.
+- [ ] **A case that expects a debug assertion's abort fails in a release
+  test build.** `memory::heap::tests::a_thread_outside_its_life::a_second_init_on_a_started_thread_is_refused`
+  reads the child exit 0 under `cargo test --release` (2026-10-03, with and
+  without S67.12); the gate runs the debug build alone. Whether it is gated to
+  debug assertions is Edmond's (no muting without him).
 - [ ] **A born sibling under the cap's flip has no case.** S65.15's
   per-slot case stands in for it (`dev/plans/S65.md`, S65.30): a sibling
   birthed by a backlog, the cap set to zero under its round, its own
