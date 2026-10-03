@@ -276,3 +276,108 @@ fn a_registered_chain_is_expanded_in_one_pass_whatever_its_length() {
     }
     release_queue_segments();
 }
+
+/// Links of the chain the hub names in a shuffled order.
+const SHUFFLED: usize = 128;
+
+/// A chain of registered links that a hub names as well, the hub's properties
+/// in a seeded shuffle of the chain's order: each link waits on its
+/// predecessor's expansion, and a pass meets the links in the hub's order, so
+/// it advances a link or two along the chain, and uncapped passes read the
+/// held entries a number of times quadratic in N (`dev/plans/S67.md`,
+/// the external review's R1). Capped at [`HELD_PASSES`] they read at most that
+/// many times N, and the rows are those of a mark that holds nothing. Red
+/// without the cap, on the reads.
+#[test]
+fn a_chain_met_in_a_shuffled_order_reads_its_held_entries_a_bounded_number_of_times() {
+    let _g = test_guard();
+    release_queue_segments();
+    let names: Vec<String> = (0..SHUFFLED).map(|index| format!("link{index}")).collect();
+    let hub_class = names
+        .iter()
+        .fold(ClassBuilder::new("ShuffledHub"), |class, name| {
+            class.prop(name, true)
+        })
+        .build();
+    let link_class = node_class("ShuffledLink");
+    let mut arena = Arena::new();
+    let hub = unsafe { a_held_object(&mut arena, hub_class) };
+    let links: Vec<*mut Object> = (0..SHUFFLED)
+        .map(|_| unsafe { a_held_object(&mut arena, link_class) })
+        .collect();
+
+    // A seeded Fisher–Yates shuffle of the chain's order for the hub.
+    let mut order: Vec<usize> = (0..SHUFFLED).collect();
+    let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+    for index in (1..SHUFFLED).rev() {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        order.swap(index, (seed >> 33) as usize % (index + 1));
+    }
+
+    unsafe {
+        for pair in links.windows(2) {
+            store_prop(&mut arena, pair[0], prop_offset(0), pair[1]);
+        }
+        for (property, &link) in order.iter().enumerate() {
+            store_prop(&mut arena, hub, prop_offset(property as u32), links[link]);
+        }
+        // The creation reference goes: each link is held by the hub and by
+        // its predecessor, and the decrement registers it.
+        for &link in &links {
+            assert!(!ll_release(link as *mut RcHeader));
+        }
+    }
+
+    let counts = |holding_nothing: bool| {
+        let _restored = HoldingRestored;
+        hold_nothing(holding_nothing);
+        let _ = take_held_figures();
+        let mut trace = open_arena();
+        assert_eq!(
+            unsafe { mark::<PlainCells>(&mut trace, hub as *mut RcHeader) },
+            MarkResult::Complete
+        );
+        let figures = take_held_figures();
+        let rows: Vec<u32> = links
+            .iter()
+            .map(|&link| unsafe { working_count(link) })
+            .collect();
+        trace.reset();
+        (figures, rows)
+    };
+    let (held, rows) = counts(false);
+    let (_, plain) = counts(true);
+
+    // Linear in the chain, at twice the cap's own bound; the uncapped passes
+    // read 5,775 entries over 89 passes here, about forty-five times N.
+    assert!(
+        held.passes <= HELD_PASSES && held.reads <= 2 * HELD_PASSES * SHUFFLED,
+        "{held:?}"
+    );
+    assert_eq!(
+        rows, plain,
+        "the held order leaves the rows a plain descent does"
+    );
+
+    unsafe {
+        for &link in &links {
+            ll_retain(link as *mut RcHeader);
+        }
+        for (property, _) in order.iter().enumerate() {
+            store_prop(
+                &mut arena,
+                hub,
+                prop_offset(property as u32),
+                std::ptr::null_mut(),
+            );
+        }
+        for &link in &links {
+            store_prop(&mut arena, link, prop_offset(0), std::ptr::null_mut());
+        }
+        for &entity in std::iter::once(&hub).chain(links.iter()) {
+            assert!(ll_release(entity as *mut RcHeader));
+            ll_object_die(entity);
+        }
+    }
+    release_queue_segments();
+}

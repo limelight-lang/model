@@ -39,7 +39,8 @@
 //! held entries expand each one whose row reads zero — every referrer of it
 //! already met and subtracted — reading in the same pass what that expansion
 //! holds, and leave the rest for the next pass, for as long as a pass expands
-//! anything; the entries left are then expanded depth first with nothing held.
+//! anything and at most [`HELD_PASSES`] passes; the entries left are then
+//! expanded depth first with nothing held.
 //! A dead request's registered interior, one in-edge each, is expanded before
 //! the state its registered core objects lead into, so a stop inside the
 //! state's walk would find the request's rows at zero — what a trace that keeps
@@ -179,6 +180,16 @@ use crate::refcount::{
     ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, MATURATION_AGE_MAX, RcHeader, header_refcount,
     is_registered_candidate, mutator_flags, read_maturation_stamp,
 };
+
+/// The passes over the held entries a mark makes at most before its final
+/// drain. A pass reads every entry still held, so a chain of registered
+/// targets met in an order unrelated to its own advances a link or two a
+/// pass and would read N(N+1)/2 entries over N passes (`dev/plans/S67.md`,
+/// the external review's R1); past this many the entries left are expanded
+/// depth first. A complete mark's rows are the same in either order (module
+/// doc, "The held stack"), so the cap costs only what a stop inside the
+/// final drain finds at zero; the web loads make 0.9 to 1.6 passes a batch.
+pub(crate) const HELD_PASSES: usize = 4;
 
 /// The age at which an edge target stops being descended into: `k`, the
 /// traversal age threshold of `rfc/model/gc/rc-cycle.md`, "Candidate
@@ -379,8 +390,11 @@ pub(crate) unsafe fn drain<R: CellReader>(arena: &mut TraceScratchArena) -> Mark
     // A pass reads every entry held for it, and what its own expansions hold
     // in the same pass, so a chain of registered entities one in-edge each is
     // expanded in one pass whatever its length; an entry above zero waits for
-    // the next. The passes end when one expands nothing.
-    while arena.start_a_pass() {
+    // the next. The passes end when one expands nothing, or at
+    // [`HELD_PASSES`], where the final drain takes what is left.
+    let mut passes = 0;
+    while passes < HELD_PASSES && arena.start_a_pass() {
+        passes += 1;
         #[cfg(test)]
         let mut read_in_the_pass = 0;
         let mut expanded = false;
@@ -388,6 +402,7 @@ pub(crate) unsafe fn drain<R: CellReader>(arena: &mut TraceScratchArena) -> Mark
             #[cfg(test)]
             {
                 read_in_the_pass += 1;
+                note_held(|figures| figures.reads += 1);
             }
 
             // Each entry is a position toward the recall, as a cell is: a
@@ -543,12 +558,22 @@ pub(crate) struct HeldFigures {
     pub(crate) passes: usize,
     pub(crate) held: usize,
     pub(crate) widest_pass: usize,
+    /// Held entries the passes read, an entry read again at each pass that
+    /// leaves it above zero.
+    pub(crate) reads: usize,
 }
 
 #[cfg(test)]
 thread_local! {
     static HELD_FIGURES: std::cell::Cell<HeldFigures> =
-        const { std::cell::Cell::new(HeldFigures { passes: 0, held: 0, widest_pass: 0 }) };
+        const {
+            std::cell::Cell::new(HeldFigures {
+                passes: 0,
+                held: 0,
+                widest_pass: 0,
+                reads: 0,
+            })
+        };
 }
 
 #[cfg(test)]

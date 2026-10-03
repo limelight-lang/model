@@ -621,13 +621,22 @@ Notes: dev/plans/S67.md
         give-back and its page discards after the release where the token
         allows; the time from the stop signal to the release read by the rig
       tier: T2 · role: Critic
-- [ ] S67.14 The held passes in linear time (the review's R1)
+- [x] S67.14 The held passes in linear time (the review's R1)
       done: a held entry a later subtraction brings to zero is pushed to the
         worklist at once, by a bit of its row, so a mark reads each held
         entry a bounded number of times; a case of a chain of N registered
         targets met in a seeded random order, its reads counted, red today
         (N(N+1)/2) and rows equal to a mark that holds nothing
       tier: T1 · role: Critic
+      handoff: 2026-10-03, the passes capped at `mark::HELD_PASSES` (4), the
+        final drain taking what is left, instead of the row bit: the row has
+        no spare bit, and the colour the Sage proposed is read before the
+        scan by the stop's path (`undo_the_unreachable`,
+        `colour_the_zero_closure`) and would need a walk to clear after a
+        complete mark (the Sage: the cap is acceptable then). The case
+        (`the_held_stack`, a hub naming 128 links in a seeded shuffle) reads
+        5,775 entries over 89 passes uncapped and at most 8N capped, the rows
+        equal to a mark that holds nothing.
 - [ ] S67.15 The epoch's ratio read on `web-heap` (the review's R5)
       done: `SPENT_PER_PROOF` at 2, 4 and 8 on `web-heap` and
         `web-arena-40k`, the turns by proofs, the stamps written, the
