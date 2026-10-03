@@ -343,15 +343,18 @@ const _: () = assert!(size_of::<MutatorCycleState>() == 128);
 #[cfg(feature = "wait-by-readings")]
 const LANES: usize = 3;
 
-/// Batch turns a root waits in each lane before it goes back into R. None is
-/// a multiple of four: the stamp's epoch is sixteen wide under the feature,
-/// and a wait of four or eight beside a turn of lag would still meet it
-/// again sooner than the waits' least common gap (`dev/plans/S65.md`, S65.42).
+/// Epoch turns a root waits in each lane before it goes back into R. The
+/// longest, with a turn of lag, stays below the stamp's epochs, sixteen wide
+/// under the feature, so a member's stamp of the root's last reading never
+/// reads current at the next (`dev/plans/S65.md`, S65.42).
 #[cfg(feature = "wait-by-readings")]
 const LANE_WAITS: [u8; LANES] = [1, 3, 7];
 
 #[cfg(feature = "wait-by-readings")]
-const _: () = assert!(LANE_WAITS[0] % 4 != 0 && LANE_WAITS[1] % 4 != 0 && LANE_WAITS[2] % 4 != 0);
+const _: () = assert!(
+    (LANE_WAITS[LANES - 1] as u32) + 1 < 1 << crate::refcount::MATURATION_EPOCH_MASK.count_ones(),
+    "the longest wait meets the stamp's epoch again"
+);
 
 /// The lanes a root read live is deferred into: all three in D; under
 /// `collector-chain` the first two, the chain holding a root read live more
@@ -1517,8 +1520,7 @@ fn reoffer_every_lane(why: u64) {
     mutator_state.for_each_lane(|lane| {
         let moved = lane.len();
         if let Some((first, last)) = lane.take() {
-            let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
-            unsafe { writer.splice_after_tail(first, last) };
+            unsafe { this_thread_record_ref().splice_into_r(first, last) };
             journal_reoffered(why, moved);
         }
     });
@@ -1632,8 +1634,7 @@ fn hand_the_lane_back(lane: &mut Chain) -> bool {
     let Some((first, last)) = lane.take() else {
         return false;
     };
-    let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
-    unsafe { writer.splice_after_tail(first, last) };
+    unsafe { this_thread_record_ref().splice_into_r(first, last) };
     journal_reoffered(crate::journal::kinds::REOFFERED_LANE_DUE, moved);
     true
 }
@@ -1702,8 +1703,8 @@ pub(crate) mod verdicts;
 /// a collection's close would be a request under the pressure that can have
 /// started it (`rfc/model/gc/cycle/questions.md`, Y12 clause 8). The low
 /// eight bits of `at_turnovers` are recorded as the turnover mirror only
-/// where the lane goes from empty to occupied — the oldest deferred record is what decides when the mutator owes
-/// a re-offer — and `None` records nothing.
+/// where the lane goes from empty to occupied — the oldest deferred record is
+/// what decides when the mutator owes a re-offer — and `None` records nothing.
 fn defer_entry(
     mutator_state: &MutatorCycleState,
     entity: *mut RcHeader,
@@ -2068,8 +2069,8 @@ pub(crate) fn candidate_count() -> usize {
 }
 
 /// Every candidate token this thread's queue holds, appended to `out`: the
-/// ring from its front, then the deferred lane oldest first, then the overflow buffer oldest entry first, then the
-/// verdicts standing in P.
+/// ring from its front, then the deferred lane oldest first, then the overflow
+/// buffer oldest entry first, then the verdicts standing in P.
 ///
 /// [`candidate_count`] answers the ring alone, and a count of one lane
 /// can state neither half of the rule this exists for — a `CANDIDATE_BIT`

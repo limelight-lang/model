@@ -8,6 +8,87 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-03 — S67.6: D and HG on the web loads, on a four-core box without counters: best HG is dropped, dearer than best D on the collector in every `web-heap` repeat; the best D cuts `web-heap`'s mean garbage 6.5 times and frees every cell inside the drain, where D leaves garbage behind in six of fifteen
+
+**The box, and what of S67.1's protocol it could not run.** A cloud
+container of four cores and no PMU (`/sys/bus/event_source/devices` holds no
+`cpu`), so: two mutators on CPUs 1–2 and cap 1's collector on 3, CPU 0 the
+box's, in place of six mutators and a spare core; no cap-4 cells, which want
+four spare cores; and CPU time in place of instructions as the primary metric.
+The metric is the loop's: the mutators' CPU in the loop plus the collectors'
+CPU to the stop, over the loop's iterations, the warm-up included, since the
+rig keeps no mutator snapshot at the warm-up's end; the drawn spin is seeded,
+so it is the same in every arm and only dilutes. CPU's spread puts the
+tolerance at 8–21 %, so the run cannot resolve the 3 % the rule was built
+for. Every cell read under half a core of other CPU (at most 0.29), so none
+was void.
+
+**The run.** Four arms built at `a72693d`, told apart by their binaries'
+hashes: D `bb9cb27d439d`, HG (`hold-by-generation`) `3694c3caef63`, bestD
+(`wait-by-readings`) `3c29855bc740`, bestHG (`wait-by-readings`,
+`hold-by-generation`, `death-check-back-off`) `263af54b4a5a`. Pilots of bestD,
+50 s with a 10 s warm-up, set the interarrivals as S67.1 does, the mean
+service and draw over 0.6: `web-arena-40k` 31.08 ms (17.33 + 1.31 ms),
+`web-arena-150k` 31.04 ms (17.40 + 1.23), `web-heap` 46.78 ms (26.29 +
+1.78). `dev/tools/arms.sh` phase `web`, `CAPS=1`, `WEB_MUTATORS=1,2`,
+`WEB_COLLECTORS_CAP1=3`, five repeats, the arms rotated, 116 s with a 20 s
+warm-up and a 12 s drain, 11:00–13:15 UTC; 60 cells, none failed. The
+controls (`deferred-live-large`, `live-churn-dies-by-count`) were not run
+with it and count toward nothing. Medians of five:
+
+| load | CPU ms a request D / HG / bestD / bestHG | spread D / bestD | mean garbage MB | peak garbage MB | cells with garbage at the drain's end |
+| --- | --- | --- | --- | --- | --- |
+| web-arena-40k | 10.34 / 11.00 / 10.39 / 11.00 | 8.7 / 10.4 % | 1.50 / 1.45 / 1.54 / 1.63 | 2.95 / 2.99 / 3.12 / 3.19 | 5 / 5 / 0 / 0 of 5 |
+| web-arena-150k | 19.01 / 19.02 / 18.98 / 19.02 | 5.6 / 4.1 % | 5.45 / 3.91 / 4.72 / 4.26 | 8.17 / 5.94 / 7.00 / 6.71 | 1 / 1 / 0 / 0 |
+| web-heap | 23.88 / 25.35 / 24.57 / 24.97 | 4.5 / 3.8 % | 461 / 341 / 71.2 / 74.2 | 750 / 617 / 345 / 272 | 0 / 5 / 0 / 0 |
+
+A cell with garbage at the drain's end has its last free at the drain's
+12 s, cut there; the garbage left is 16–143 KiB under D on `web-arena-40k`,
+7–350 KiB under HG, 5–249 KiB under HG on `web-heap`. The best builds' last
+free comes at 3.3–10.8 s, so the absolute gate passes with a second or more
+to spare. Retained blocks less the live writes' read 0–18 by cell;
+`token_wait_longest_us` 0 in every cell. The epoch turns by X on the arena
+loads and by proofs on `web-heap`: in the window, 28–34 X turns and 7–44 by
+proofs on `web-arena-40k`, 33–36 and 0–7 on `web-arena-150k`, 12 and 48–76
+on `web-heap`. On `web-arena-150k` the X turns release every wait, so the
+best builds read there as the builds without the waits — the finding S67.1's
+answer 5 named in advance.
+
+**Verdict 1, best HG against best D.** CPU +6.0 %, +0.2 % and +1.6 %
+against tolerances of 20.8 %, 8.2 % and 7.6 %: no cell won, so under the
+rule's own four of six, unreachable from three cells, HG is dropped, and a
+tie drops it as well. The loss is consistent below the tolerance: best HG is
+dearer in four of five repeats on `web-arena-40k` and five of five on
+`web-heap` (+1.3 to +3.7 %), its collector CPU +5.1 to +10.3 % in every
+`web-heap` repeat. No garbage gate fails either way. HG against D, reported:
+no cell won.
+
+**The latency gate cannot be read on this box.** The paired p99.9 of best
+HG's excess less best D's reads 25.7, 20.0 and 216 ms from arrival against
+the gate's 1 ms. One A/A pairing of bestD with itself at repeat 1 (the
+draws' checksum equal), run after the arms, reads 31.7 ms on `web-arena-40k`
+and 120 ms on `web-heap` from arrival (9.0 and 72.5 ms from service), none on
+`web-arena-150k`. One pair is one sample, and the A/A cells drifted from the
+run's (their peak garbage 366–371 MB against bestD's 311–357), so the
+reading is of the order only: the box's own excess is tens of milliseconds,
+and the 1 ms gate says nothing here either way. On `web-heap` the arms' 216
+ms is 1.8 times the one A/A sample.
+
+**Verdict 2, best against plain, on the surviving scheme D.** CPU +0.4 %,
+−0.1 % and +2.9 % against tolerances of 17.5 %, 11.3 % and 9.0 %: no cell
+won, so by the letter of the rule the plain build stays. Against it: D
+leaves garbage at the drain's end in six of the fifteen cap-1 cells, which
+the absolute gate fails, where bestD frees all fifteen; and on `web-heap`
+bestD holds 71 MB of garbage on the mean against D's 461 MB, and 345 against
+750 MB at the peak. Its price: collector CPU +6.3 to +11.1 % over D in every
+`web-heap` repeat, total CPU −0.5 to +2.9 %; its latency gate against D is as
+unreadable as verdict 1's. The rule sends to Edmond an absolute gate the
+best build fails too, and is silent on a plain build that fails one alone;
+the choice is put to him with these figures.
+
+Scratchpad: the CSV, the requests and the analysis
+(`s676/web.csv`, `s676/web-requests/`, `s676.py`, `s676/aa/`), not kept.
+
 ## 2026-09-28 — S65.43: a crossing of the heap's growth releases the lanes about twice a turn and does not bring `live-churn`'s held garbage near D's; not adopted in either scheme
 
 **The run.** Six arms built at `0148ad3`, told apart by their binaries'

@@ -16,12 +16,13 @@
 //!
 //! An entry is the entity's address with one of four verdicts in its low
 //! two bits ([`Verdict`]): the collector's reading of the root, made on a
-//! copy of the candidates and the entities the trace reaches, under a budget, so none of the four is a fact the
-//! mutator acts on without reading again. The mutator is the one party that
-//! changes state (`rfc/model/gc/rc-cycle.md`, "The mutator's disposition").
-//! Bit 2 is the mark that defers an entry ([`VERDICT_DEFER_MARK`]): the
-//! mutator's, written by a close over a root it read live. An entry whose address is null is one the
-//! mutator has answered for in place and the next advance of P's front drops.
+//! copy of the candidates and the entities the trace reaches, under a budget,
+//! so none of the four is a fact the mutator acts on without reading again. The
+//! mutator is the one party that changes state (`rfc/model/gc/rc-cycle.md`,
+//! "The mutator's disposition"). Bit 2 is the mark that defers an entry
+//! ([`VERDICT_DEFER_MARK`]): the mutator's, written by a close over a root it
+//! read live. An entry whose address is null is one the mutator has answered
+//! for in place and the next advance of P's front drops.
 //!
 //! # Who writes P's slots
 //!

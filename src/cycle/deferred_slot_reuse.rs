@@ -71,7 +71,9 @@
 //! that arrives meanwhile leaves them standing. A cross-thread free of an
 //! entity slot is a return of the mutator's memory made at the mutator's reclaim
 //! of its remote stack, and that reclaim waits the same way
-//! ([`returns_are_withheld`]). What this costs is the churn one trace lasts,
+//! ([`returns_are_withheld`]): under a foreign holder it moves the remote
+//! stack onto the deaths' stack, counted there as the owner's own deaths
+//! ([`withhold_remote_frees`]). What this costs is the churn one trace lasts,
 //! measured in `dev/BENCHMARKS.md`, "S38.3 what a foreign holder costs the
 //! owner".
 //!
@@ -849,8 +851,10 @@ pub(crate) unsafe fn withhold_under_a_trace_or_make_returns(ptr: *mut u8, kind: 
 /// Whether a return of this thread's entity memory would be made under a
 /// trace — this thread's own window, or a foreign holder of its token — and
 /// so has to wait. For the reclaim of cross-thread frees, which reaches no
-/// `ll_free` on the mutator: the slots stay on their block's remote stack until
-/// a collect that finds no trace (`crate::memory::heap::Heap::collect_remote`).
+/// `ll_free` on the mutator: under this thread's own window the slots stay on
+/// their block's remote stack until a collect that finds no trace, and under
+/// a foreign holder they wait on the deaths' stack
+/// (`crate::memory::heap::Heap::collect_remote`, [`withhold_remote_frees`]).
 #[inline]
 pub(crate) fn returns_are_withheld() -> bool {
     !DEFERRED_RETURNS.with(Cell::get).is_null()
@@ -941,7 +945,7 @@ unsafe fn set_block_link(block: *mut u8, next: *mut u8) {
 /// frees no chunk and no block while it traces
 /// (`rfc/model/gc/rc-cycle.md`, "The deferral's contract").
 #[inline]
-fn under_a_foreign_holder() -> bool {
+pub(crate) fn under_a_foreign_holder() -> bool {
     // `try_with`: the pool's `put` runs from a thread-local's drop on the
     // exit path, and a `const` cell with no drop glue is never destroyed
     // before it, so the fallback is the null it would read anyway.
@@ -1043,6 +1047,47 @@ unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8, kind: u32) {
     }
     #[cfg(test)]
     crate::cycle::worker::testing::note_a_return_withheld();
+}
+
+/// Withhold the slots other threads freed into one of this thread's entity
+/// blocks while another thread's trace holds its token: the chain the block's
+/// remote stack held goes onto the deaths' stack, each slot counted toward
+/// [`DEATHS_MARK`] as a death of the owner's own, and goes back through the
+/// same drain once the holder lets go. Counted, so that a producer freeing
+/// into this thread's blocks recalls the grant as the owner's own frees
+/// would, instead of growing the owner's heap by a block each time a class
+/// fills (`dev/plans/S65.md`, S65.29).
+///
+/// The remote stack and this one link through the same word
+/// ([`withheld_link`]), so the walk only re-stores each link as the release
+/// the deaths' stack is read by. Each slot carries the final header its
+/// free left and `used` still counts it, so the drain's hand-back frees it
+/// as an ordinary owner free.
+///
+/// # Safety
+/// `head` is a chain this thread swapped off one of its own entity blocks'
+/// remote stacks, under a foreign holder.
+#[cold]
+#[inline(never)]
+pub(crate) unsafe fn withhold_remote_frees(head: *mut u8) {
+    let mut slots = 1;
+    let mut last = head;
+    loop {
+        let next = unsafe { withheld_next(last) };
+        if next.is_null() {
+            break;
+        }
+
+        unsafe { set_withheld_next(last, next) };
+        slots += 1;
+        last = next;
+    }
+
+    WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| {
+        unsafe { set_withheld_next(last, stack.head.get()) };
+        stack.head.set(head);
+        stack.count(slots, DEATHS_MARK);
+    });
 }
 
 /// Count a large entity's withheld death toward the blocks' mark, by the

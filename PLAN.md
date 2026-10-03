@@ -410,7 +410,7 @@ Notes: dev/plans/S65.md
         the default build S65.28 leaves, since under H a deferred part past
         B goes into the chain; the load is S65.17's that meets `B_max`
       tier: T2 · role: Critic
-- [ ] S65.29 Decide whether a grant bounds the cross-thread frees it
+- [x] S65.29 Decide whether a grant bounds the cross-thread frees it
         withholds (the plan review's Critic, F5; raised by S65.7's Critic)
       done: a slot another thread frees waits on its block's remote list
         while the token is held (`Heap::collect_remote`, through
@@ -420,6 +420,12 @@ Notes: dev/plans/S65.md
         `dev/DECISIONS.md` exempts them from F3 with a figure of what a
         producer holds under the longest grant the rig reads
       tier: T2 · role: Critic
+      handoff: 2026-10-03, counted: under a foreign holder the reclaim moves
+        the remote stack onto the deaths' stack, each slot toward
+        `DEATHS_MARK` (`deferred_slot_reuse::withhold_remote_frees`); the
+        Critic broke a first form counted in pool blocks (five findings,
+        `dev/plans/S65.md`, S65.29). One case, red without the move; one
+        rewritten.
 - [x] S65.47 The refused arms leave the tree (Edmond, 2026-09-29: "удаляй!")
       done: `deferral-by-generation`, `lane-back-by-blocks`,
         `r-first-under-a-small-chain` and `release-on-heap-growth` deleted
@@ -429,12 +435,16 @@ Notes: dev/plans/S65.md
       handoff: deleted 2026-09-29, `bc642d0` the last commit holding them
         (`dev/DECISIONS.md`, "the refused arms leave the tree"); the gate
         keeps ten arm builds and one refused pair.
-- [ ] S65.46 The review's cuts of 2026-09-29 (the plan review, pass 1)
+- [x] S65.46 The review's cuts of 2026-09-29 (the plan review, pass 1)
       done: each cut of
         `dev/plans/S65.md`, S65.46, that stands in the code left is made or
         recorded as kept with its reason; the thresholds read again over the
         cut functions
       tier: T1
+      handoff: 2026-10-03, ten cuts made, eight gone with earlier steps, the
+        cuts inside `collector-chain` and `wait-by-readings` kept until
+        S67.6's verdicts decide those builds, the rig kept as S67's
+        instrument (`dev/plans/S65.md`, S65.46, "The cuts, read 2026-10-03").
 - [ ] S65.30 The stage's close: Done-when read clause by clause
       done: each clause of Done-when read on the build the stage leaves, by
         the test or figure that shows it; the Miri list above run and
@@ -561,10 +571,17 @@ Notes: dev/plans/S67.md
         behind the state and behind cut traces freed within one X on
         web-heap-150k and web-arena-40k. Open: Q2 and Q1 to Edmond; the
         chain of rings to idea (ii).
-- [ ] S67.6 Measure D and HG on the web loads
+- [x] S67.6 Measure D and HG on the web loads
       done: the run by S67.1's rule, the arms fresh and interleaved, the
         figures in `dev/BENCHMARKS.md`, the verdict put to Edmond
       tier: T2 · role: Critic
+      handoff: 2026-10-03 on the four-core cloud box, cap 1 only and CPU in
+        place of instructions (`dev/BENCHMARKS.md`, "S67.6"): best HG wins no
+        cell and is dropped by the rule; best D against D wins no cell on
+        CPU, while D fails the drain's absolute gate in six of fifteen cells
+        and holds 6.5 times bestD's mean garbage on `web-heap`; the latency
+        gate is below the box's own A/A excess. Both verdicts put to Edmond;
+        his answers decide HG's removal and the default build.
 
 ## Then: arrays as a performance problem
 

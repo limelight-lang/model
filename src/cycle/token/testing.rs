@@ -1,8 +1,9 @@
 //! A token held from another thread, for the cases that need one: the
 //! stand-in for a collector tracing this mutator's candidates and the
-//! entities the trace reaches, which holds and traces nothing, where the collector thread of `cycle::worker` takes the
-//! token through the mutator's record and traces under it. A collector thread
-//! that traces as well as holds is `cells::tests::what_a_collector_thread_reads`'.
+//! entities the trace reaches, which holds and traces nothing, where the
+//! collector thread of `cycle::worker` takes the token through the mutator's
+//! record and traces under it. A collector thread that traces as well as holds
+//! is `cells::tests::what_a_collector_thread_reads`'.
 //!
 //! Two test trees hold a token this way — the token's own, and the entity
 //! allocation's slow path, which reaches the wait through a refusal — and a
@@ -96,5 +97,31 @@ impl HeldByACollector {
 impl Drop for HeldByACollector {
     fn drop(&mut self) {
         self.release();
+    }
+}
+
+/// The wait the rig reads of a take, from the first reading of a claim to
+/// whatever ends the take, noted at the drop.
+#[derive(Default)]
+pub(crate) struct TimedWait(Option<(std::time::Instant, u8)>);
+
+impl TimedWait {
+    /// Start the wait at the first claim `seen` reads, and keep the start
+    /// at every later one.
+    pub(crate) fn begin(&mut self, seen: u8) {
+        self.0.get_or_insert_with(|| {
+            (
+                std::time::Instant::now(),
+                crate::cycle::worker::testing::segment_of_the_holder(seen),
+            )
+        });
+    }
+}
+
+impl Drop for TimedWait {
+    fn drop(&mut self) {
+        if let Some((from, segment)) = self.0 {
+            crate::cycle::worker::testing::note_token_wait(from.elapsed(), segment);
+        }
     }
 }

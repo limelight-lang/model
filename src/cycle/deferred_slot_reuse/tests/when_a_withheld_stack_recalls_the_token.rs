@@ -104,6 +104,74 @@ fn the_mth_death_under_a_grant_recalls_it_and_the_mutator_never_waits() {
     assert!(!recalled(token), "the drain under FREE clears the recall");
 }
 
+/// Red without the remote frees' count: slots another thread frees into this
+/// thread's blocks wait on their remote stacks under a grant, the heap takes
+/// a fresh block each time a class fills, and nothing recalls the grant
+/// (`dev/plans/S65.md`, S65.29). Counted, the reclaim under the holder moves
+/// them onto the deaths' stack, where the mark recalls the grant, hands none
+/// of them out, and the drain gives every one back.
+#[test]
+fn a_producers_frees_into_this_threads_blocks_recall_the_grant_at_the_mark() {
+    let _guard = test_guard();
+    let token = this_thread_token();
+    let slots = unsafe { dead_slots(DEATHS_MARK) };
+    let sent: Vec<Sent> = slots.iter().map(|&slot| Sent(slot)).collect();
+    std::thread::spawn(move || {
+        for slot in sent {
+            unsafe { crate::memory::heap::free_foreign(slot.pointer()) };
+        }
+    })
+    .join()
+    .expect("the producer freed");
+    let _ = take_the_recall_of(ELDER);
+
+    let mut holder = HeldByACollector::take(token, false);
+    let mut under_the_holder = Vec::new();
+    let slots_a_block = BLOCK_SIZE / ENTITY_SIZE;
+    while foreign_withheld_count() < DEATHS_MARK && under_the_holder.len() < 16 * slots_a_block {
+        let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+        assert!(!slot.is_null(), "the heap served");
+        assert!(
+            !slots.contains(&slot),
+            "a slot the producer freed was handed out under the holder"
+        );
+        unsafe { live_entity(slot, 1) };
+        under_the_holder.push(slot);
+    }
+
+    assert_eq!(
+        foreign_withheld_count(),
+        DEATHS_MARK,
+        "the reclaims under the holder withheld every slot the producer freed"
+    );
+    assert!(recalled(token), "the mark's slot recalls the grant");
+    assert!(take_the_recall_of(ELDER), "the holder's slot is told");
+
+    holder.release();
+    drain();
+    let mut taken_back = 0;
+    let mut after = Vec::new();
+    for _ in 0..DEATHS_MARK + 16 * slots_a_block {
+        let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
+        assert!(!slot.is_null(), "the heap served");
+        unsafe { live_entity(slot, 1) };
+        after.push(slot);
+        taken_back += usize::from(slots.contains(&slot));
+        if taken_back == DEATHS_MARK {
+            break;
+        }
+    }
+
+    assert_eq!(
+        taken_back, DEATHS_MARK,
+        "the drain gave every slot back to the allocator"
+    );
+    for slot in under_the_holder.into_iter().chain(after) {
+        unsafe { crate::refcount::set_header_refcount(slot as *mut RcHeader, 0) };
+        unsafe { crate::memory::stdapi::ll_free(slot) };
+    }
+}
+
 /// Red if the drain leaves the count: the next grant would be recalled
 /// before its own mark, or never, the count standing past the mark already.
 #[test]

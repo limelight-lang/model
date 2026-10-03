@@ -35,17 +35,17 @@
 //! [`arena`] holds the blocks a single trace bumps into past that workspace
 //! and the worklist [`stack`] draws its segments from that bump,
 //! [`deferred_slot_reuse`] opens its control line over the workspace's fixed
-//! region and holds every withheld return in the dying entity itself, and the rows [`shadow`], [`mark`] and
-//! [`scan`] read die with it. [`row`], [`shadow`] and the test-only `testing`
-//! own no memory at all — they are arithmetic over memory somebody else holds,
-//! and [`validation`] reads the heap rather than a row. [`finalization`] holds
-//! less than either: four counters, three on the frame that drives the
-//! teardown and one on the answer a component's reading gives it, the writes
-//! they make standing in the members' own headers until a counted release
-//! takes them off — its own, over a component it reads as externally
-//! referenced, or the teardown's ([`reclamation`], which holds the queue of
-//! children its sever displaced out of a component — segments of the arena's
-//! bump, emptied at the end of every component).
+//! region and holds every withheld return in the dying entity itself, and the
+//! rows [`shadow`], [`mark`] and [`scan`] read die with it. [`row`], [`shadow`]
+//! and the test-only `testing` own no memory at all — they are arithmetic over
+//! memory somebody else holds, and [`validation`] reads the heap rather than a
+//! row. [`finalization`] holds less than either: four counters, three on the
+//! frame that drives the teardown and one on the answer a component's reading
+//! gives it, the writes they make standing in the members' own headers until a
+//! counted release takes them off — its own, over a component it reads as
+//! externally referenced, or the teardown's ([`reclamation`], which holds the
+//! queue of children its sever displaced out of a component — segments of the
+//! arena's bump, emptied at the end of every component).
 //!
 //! **A collection's memory is refusable, and the refusal ends the collection
 //! rather than the process.** A refused block leaves the heap byte-identical,
@@ -78,9 +78,10 @@
 //! claim of its token lasts from its take through its close, and the rows
 //! die at the window's close** (`rfc/model/gc/rc-cycle.md`, "Concurrency";
 //! `rfc/dev/design/trace-token-handshake.md`, E10). Validation, teardown and
-//! the slot returns run under the claim, and [`validation`] re-reads the heap rather than a row. A collection off the poll keeps its rows open through the teardown
-//! ([`membership`]), a collection under pressure gives them back before it
-//! ([`members`]) — and on neither path does a row outlive its window.
+//! the slot returns run under the claim, and [`validation`] re-reads the heap
+//! rather than a row. A collection off the poll keeps its rows open through the
+//! teardown ([`membership`]), a collection under pressure gives them back
+//! before it ([`members`]) — and on neither path does a row outlive its window.
 
 // `ActiveTrace` owns the `TraceScratchArena`, which the collection opens.
 pub(crate) mod arena;

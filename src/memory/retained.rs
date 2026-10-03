@@ -436,10 +436,10 @@ unsafe fn is_occupied(address: usize) -> bool {
     }
 }
 
-/// Whether `block` counts an occupant whose allocation is still held. A reset in flight asks it about
-/// a block it retained, whose count it has not established yet, to tell
-/// its own zero-count member from an occupant an earlier reset counted
-/// (`memory::reset_window::absorbs_retained_free`).
+/// Whether `block` counts an occupant whose allocation is still held. A reset
+/// in flight asks it about a block it retained, whose count it has not
+/// established yet, to tell its own zero-count member from an occupant an
+/// earlier reset counted (`memory::reset_window::absorbs_retained_free`).
 ///
 /// The count and not the list: a block pinned for bytes alone never gets
 /// a list, and one whose reset could place no list still counts its

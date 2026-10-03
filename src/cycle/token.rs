@@ -1,6 +1,7 @@
 //! The trace token: the per-mutator byte whose state says who may trace that
 //! mutator's candidates and the entities the trace reaches — the arena, the
-//! block triples, the touched list — and read its candidate ring (`rfc/model/gc/rc-cycle.md`, "Concurrency";
+//! block triples, the touched list — and read its candidate ring
+//! (`rfc/model/gc/rc-cycle.md`, "Concurrency";
 //! `rfc/dev/design/trace-token-handshake.md`, the ruled form).
 //!
 //! One byte per mutator thread, in the thread's record, whose storage
@@ -580,20 +581,8 @@ impl TraceToken {
     fn take_recalling(&self, hold_at_posted: bool, recalled: &mut bool) -> Option<TookFrom> {
         let mut guard = None;
         let mut seen = self.read();
-        // The wait the rig reads, from the first reading of a claim to
-        // whatever ends the take.
         #[cfg(test)]
-        struct TimedWait(Option<(std::time::Instant, u8)>);
-        #[cfg(test)]
-        impl Drop for TimedWait {
-            fn drop(&mut self) {
-                if let Some((from, segment)) = self.0 {
-                    crate::cycle::worker::testing::note_token_wait(from.elapsed(), segment);
-                }
-            }
-        }
-        #[cfg(test)]
-        let mut waited = TimedWait(None);
+        let mut waited = testing::TimedWait::default();
         loop {
             let took = match state(seen) {
                 FREE | REQUESTED => TookFrom::Free,
@@ -601,12 +590,7 @@ impl TraceToken {
                 POSTED => TookFrom::Posted,
                 COLLECTOR => {
                     #[cfg(test)]
-                    waited.0.get_or_insert_with(|| {
-                        (
-                            std::time::Instant::now(),
-                            crate::cycle::worker::testing::segment_of_the_holder(seen),
-                        )
-                    });
+                    waited.begin(seen);
 
                     if !*recalled {
                         // A take over a wind-down raises it to the stop, and
@@ -1038,8 +1022,8 @@ thread_local! {
 }
 
 /// Name the mutator whose candidates, and the entities the trace reaches,
-/// the calling collector thread traces under a foreign claim, or null once its trace is over, and do nothing at all
-/// without `cfg(test)`.
+/// the calling collector thread traces under a foreign claim, or null once its
+/// trace is over, and do nothing at all without `cfg(test)`.
 ///
 /// Called by `cycle::worker` around its trace, and by the verdict ring's
 /// test collector (`cycle::queue::verdicts::testing`).

@@ -102,70 +102,11 @@ pub(super) fn compact(
     };
 
     if sweep_deferred {
-        let mut keep = |entry| {
-            note_queue_work(0, 1, 0);
-            let entity = entry_entity(entry);
-            if !completed_death(entity) {
-                return true;
-            }
-
-            free(entity, journal::SLOT_FROM_A_DEFERRED_LANE);
-            false
-        };
-        let mut give_back = |block| {
-            discharge_block();
-            return_surplus_block(mutator_state, block);
-        };
-        mutator_state.for_each_lane(|lane| lane.retain(&mut keep, &mut give_back));
+        sweep_the_lanes(mutator_state);
     }
 
     if let Some(ring) = ring {
-        let mut pass = ring.packing();
-        while let Some(entry) = pass.read() {
-            note_queue_work(0, 1, 0);
-            let marked = entry & DEFERRED_MARK != 0;
-            let entity = entry_entity(entry);
-            let destination = if completed_death(entity) {
-                Destination::Free
-            } else if marked && deferred_at.is_some() {
-                Destination::Deferred
-            } else {
-                Destination::Keep
-            };
-            // Before the disposition acts: an unwind here keeps the entry
-            // as it stood, mark and all.
-            checkpoint(1);
-
-            match destination {
-                Destination::Free => {
-                    pass.discard();
-                    free(entity, journal::SLOT_FROM_R);
-                }
-                Destination::Deferred => {
-                    // Out of the ring before it is in the lane, so that no
-                    // unwind between the two finds it in both.
-                    pass.discard();
-                    let deferred = defer_entry(mutator_state, entity, deferred_at);
-                    note_queue_work(0, 0, 1);
-                    let Ok(lane) = deferred else {
-                        // Both cells empty: the root stays in the ring and
-                        // is offered to the next collection rather than to
-                        // the turnover.
-                        pass.write(entity_entry(entity) | (entry & REOFFERED_MARK));
-                        continue;
-                    };
-
-                    journal_deferred(entity, journal::DEFERRED_FROM_R, lane);
-
-                    checkpoint(3);
-                }
-                Destination::Keep => {
-                    // The deferral's mark off, the lane's kept.
-                    note_queue_work(0, 0, 1);
-                    pass.write(entity_entry(entity) | (entry & REOFFERED_MARK));
-                }
-            }
-        }
+        pass_over_r(mutator_state, ring, deferred_at);
     }
 
     checkpoint(4);
@@ -177,6 +118,79 @@ pub(super) fn compact(
     // that the unwind meets no more frees than it must.
     if lanes == Lanes::Overflow && !std::thread::panicking() {
         free_the_front_run();
+    }
+}
+
+/// The deferred lanes' own entries read for completed deaths: each such
+/// entry's slot freed and dropped from its lane, and a lane block emptied
+/// by the sweep given back.
+fn sweep_the_lanes(mutator_state: &MutatorCycleState) {
+    let mut keep = |entry| {
+        note_queue_work(0, 1, 0);
+        let entity = entry_entity(entry);
+        if !completed_death(entity) {
+            return true;
+        }
+
+        free(entity, journal::SLOT_FROM_A_DEFERRED_LANE);
+        false
+    };
+    let mut give_back = |block| {
+        discharge_block();
+        return_surplus_block(mutator_state, block);
+    };
+    mutator_state.for_each_lane(|lane| lane.retain(&mut keep, &mut give_back));
+}
+
+/// The pass over R whole: a completed death freed, a root the batch marked
+/// for deferral moved into its lane where `deferred_at` names the epoch,
+/// and every other entry kept with its deferral mark off.
+fn pass_over_r(mutator_state: &MutatorCycleState, ring: Quiescent<'_>, deferred_at: Option<u64>) {
+    let mut pass = ring.packing();
+    while let Some(entry) = pass.read() {
+        note_queue_work(0, 1, 0);
+        let marked = entry & DEFERRED_MARK != 0;
+        let entity = entry_entity(entry);
+        let destination = if completed_death(entity) {
+            Destination::Free
+        } else if marked && deferred_at.is_some() {
+            Destination::Deferred
+        } else {
+            Destination::Keep
+        };
+        // Before the disposition acts: an unwind here keeps the entry
+        // as it stood, mark and all.
+        checkpoint(1);
+
+        match destination {
+            Destination::Free => {
+                pass.discard();
+                free(entity, journal::SLOT_FROM_R);
+            }
+            Destination::Deferred => {
+                // Out of the ring before it is in the lane, so that no
+                // unwind between the two finds it in both.
+                pass.discard();
+                let deferred = defer_entry(mutator_state, entity, deferred_at);
+                note_queue_work(0, 0, 1);
+                let Ok(lane) = deferred else {
+                    // Both cells empty: the root stays in the ring and
+                    // is offered to the next collection rather than to
+                    // the turnover.
+                    pass.write(entity_entry(entity) | (entry & REOFFERED_MARK));
+                    continue;
+                };
+
+                journal_deferred(entity, journal::DEFERRED_FROM_R, lane);
+
+                checkpoint(3);
+            }
+            Destination::Keep => {
+                // The deferral's mark off, the lane's kept.
+                note_queue_work(0, 0, 1);
+                pass.write(entity_entry(entity) | (entry & REOFFERED_MARK));
+            }
+        }
     }
 }
 

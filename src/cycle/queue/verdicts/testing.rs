@@ -52,6 +52,32 @@ pub(crate) unsafe fn post_batch_released_as_the_collector_does(
     unsafe { post_batch_releasing(record, k, verdict_for, true) }
 }
 
+/// The release of [`post_batch_releasing`]'s claim, on the unwind as well:
+/// to `FREE` where nothing was posted, and otherwise to `POSTED`, or to
+/// `NOTHING_PROPOSED` where the batch proposed nothing and is released by
+/// the rule.
+struct ReleaseOnDrop<'a> {
+    token: &'a crate::cycle::token::TraceToken,
+    posted: std::cell::Cell<bool>,
+    proposed: std::cell::Cell<bool>,
+    by_the_rule: bool,
+}
+
+impl Drop for ReleaseOnDrop<'_> {
+    fn drop(&mut self) {
+        use crate::cycle::token::{FREE, NOTHING_PROPOSED, POSTED};
+
+        crate::cycle::token::note_traced_mutator(std::ptr::null_mut());
+        let released = match (self.posted.get(), self.proposed.get() || !self.by_the_rule) {
+            (false, _) => FREE,
+            (true, true) => POSTED,
+            (true, false) => NOTHING_PROPOSED,
+        };
+        self.token
+            .release_claim_to(crate::cycle::worker::ELDER, released);
+    }
+}
+
 /// The body of both: with `by_the_rule` the batch is released as the
 /// collector's is, and without it to `POSTED` whenever it posted.
 ///
@@ -63,31 +89,11 @@ unsafe fn post_batch_releasing(
     mut verdict_for: impl FnMut(*mut RcHeader) -> Verdict,
     by_the_rule: bool,
 ) -> Posted {
-    use crate::cycle::token::{FREE, NOTHING_PROPOSED, POSTED};
-
     let record = unsafe { &*record };
     if !record.token.claim_for_test(crate::cycle::worker::ELDER) {
         return Posted::TokenHeld;
     }
 
-    struct ReleaseOnDrop<'a> {
-        token: &'a crate::cycle::token::TraceToken,
-        posted: std::cell::Cell<bool>,
-        proposed: std::cell::Cell<bool>,
-        by_the_rule: bool,
-    }
-    impl Drop for ReleaseOnDrop<'_> {
-        fn drop(&mut self) {
-            crate::cycle::token::note_traced_mutator(std::ptr::null_mut());
-            let released = match (self.posted.get(), self.proposed.get() || !self.by_the_rule) {
-                (false, _) => FREE,
-                (true, true) => POSTED,
-                (true, false) => NOTHING_PROPOSED,
-            };
-            self.token
-                .release_claim_to(crate::cycle::worker::ELDER, released);
-        }
-    }
     let release = ReleaseOnDrop {
         token: &record.token,
         posted: std::cell::Cell::new(false),

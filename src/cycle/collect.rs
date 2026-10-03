@@ -349,10 +349,10 @@ impl Drop for CollectingThread {
 /// distinguish them; [`collection_off_the_poll`] does, for the one caller that
 /// reports the difference. Before final mutator retirement, each
 /// refusal leaves the candidates and the entities the trace reached
-/// byte-identical and no live root loses its registration. The `CollectingThread` guard then removes completed
-/// deaths left by this or an earlier collection, so a zero answer does not
-/// promise that the candidate queue, its dead slots or their blocks remain
-/// byte-identical
+/// byte-identical and no live root loses its registration. The
+/// `CollectingThread` guard then removes completed deaths left by this or an
+/// earlier collection, so a zero answer does not promise that the candidate
+/// queue, its dead slots or their blocks remain byte-identical
 /// (`dev/DECISIONS.md`, "under memory starvation a collection ends itself and
 /// gives back everything").
 ///

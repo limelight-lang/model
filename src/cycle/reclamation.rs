@@ -8,8 +8,8 @@
 //! (`rfc/model/gc/rc-cycle.md`, "Cycle finalization and reclamation", step 6).
 //! A child inside the component is released where it is met — it stops at its
 //! own guard, every member carrying one until this call ends — and a child
-//! outside it is held in [`DeferredDrops`](crate::cycle::drops::DeferredDrops) until the frees are behind, because
-//! its release runs its destructor.
+//! outside it is held in [`DeferredDrops`](crate::cycle::drops::DeferredDrops)
+//! until the frees are behind, because its release runs its destructor.
 //!
 //! [`reclaim_before_drops`] is the teardown, and [`DeferredReclamation`] is
 //! what it hands back: the queued children, held until the driver has ended

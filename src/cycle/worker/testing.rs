@@ -2334,3 +2334,50 @@ impl Drop for HeldRequestWait {
 pub(crate) fn request_wait() -> std::time::Duration {
     std::time::Duration::from_millis(REQUEST_WAIT_MILLIS.load(Ordering::Relaxed) as u64)
 }
+
+/// The figures a batch's trace starts from, taken after the hook a case
+/// runs at its start: the instant and the arena's positions, the trace's
+/// own counters emptied of what came before it.
+pub(super) fn at_the_start_of_the_batchs_trace(
+    arena: &crate::cycle::arena::TraceScratchArena,
+) -> (std::time::Instant, usize) {
+    at_the_start_of_the_trace();
+    let _ = (
+        crate::cycle::mark::take_edges_pruned(),
+        crate::cycle::mark::take_held_figures(),
+        take_rows_met(),
+        take_widest_part(),
+    );
+    (std::time::Instant::now(), arena.positions_inspected())
+}
+
+/// Note what a batch's trace did, against the figures
+/// [`at_the_start_of_the_batchs_trace`] took.
+pub(super) fn note_the_batchs_trace(
+    mutator: &MutatorRecord,
+    arena: &crate::cycle::arena::TraceScratchArena,
+    roots: usize,
+    outcome: &super::BatchOutcome,
+    traced_from: std::time::Instant,
+    positions_from: usize,
+) {
+    let edges_pruned = crate::cycle::mark::take_edges_pruned();
+    note_edges_pruned(edges_pruned);
+    note_held_figures(crate::cycle::mark::take_held_figures());
+    note_traced_batch(|| TracedBatch {
+        roots,
+        traced: outcome.traced,
+        complete: outcome.complete,
+        blocks: arena.blocks_held(),
+        wall: traced_from.elapsed(),
+        positions_after_the_hook: take_positions_after_the_hook(),
+        edges_pruned,
+        rows_met: take_rows_met(),
+        mutator: std::ptr::from_ref(mutator) as usize,
+        ended: std::time::Instant::now(),
+        widest_part: take_widest_part(),
+        positions: arena.positions_inspected() - positions_from,
+        ending: outcome.ending,
+        turnovers: mutator.turnovers(),
+    });
+}

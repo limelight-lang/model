@@ -9,6 +9,27 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-03 — a cross-thread free under a foreign holder counts toward the deaths' mark
+
+**Decision (S65.29):** a slot another thread freed into this thread's entity
+block, reclaimed while a foreign trace holds this thread's token, moves from
+the block's remote stack onto the stack the owner's own withheld deaths wait
+on, counted toward `DEATHS_MARK`, and goes back through the same drain.
+Under the owner's own window the slots stay on the remote stack as before.
+
+**Why.** No mark counted them, so a producer freeing into the owner's blocks
+grew the owner's heap by a block each time a class filled under a grant that
+nothing recalled (S65's F3). The two stacks link through the same word, the
+slot carries its final header, and `used` still counts it, so the move is a
+walk and a splice and the return is an ordinary owner free.
+
+**Rejected:** a fourth count in pool blocks taken past kept frees (its Critic:
+cleared where nothing is taken back, a stray free counting every take of a
+growing live set); exempting the frees by a ruling, which would need a
+figure of a load built for it alone and would bound nothing.
+
+---
+
 ## 2026-10-03 — the epoch turns when the collector's work reaches twice what its proofs cost
 
 **Decision (the Sage of S67.9 on the epoch's turn, 2026-09-30, Final; built

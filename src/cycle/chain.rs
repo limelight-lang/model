@@ -66,8 +66,8 @@ pub(crate) const CHAIN_WAIT: u64 = 7;
 
 #[cfg(feature = "wait-by-readings")]
 const _: () = assert!(
-    CHAIN_WAIT % 4 != 0,
-    "a wait of a multiple of four meets the stamp's epoch again sooner"
+    CHAIN_WAIT + 1 < 1 << crate::refcount::MATURATION_EPOCH_MASK.count_ones(),
+    "the chain's wait meets the stamp's epoch again"
 );
 
 /// The stamp a block of the waiting part takes at `turnovers`: the turn after
@@ -478,8 +478,7 @@ unsafe fn splice(record: &MutatorRecord, part: &RecordChain) {
         }
         crate::cycle::worker::testing::note_chain_block(-blocks);
     }
-    let writer = unsafe { crate::ring::Writer::new(record.candidate_ring()) };
-    unsafe { writer.splice_after_tail(first, last) };
+    unsafe { record.splice_into_r(first, last) };
     record.note_a_merge();
 }
 

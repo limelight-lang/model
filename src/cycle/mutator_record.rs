@@ -196,12 +196,12 @@ struct ChainLine {
     lap_read: AtomicUsize,
     #[cfg(any(test, feature = "death-check-back-off"))]
     lap_taken: AtomicUsize,
-    /// Set by the collector's X arm at its advance; taken by the next expiry, which then makes the whole waiting
-    /// part ready (`wait-by-readings`): the chain's wait is counted in batch
-    /// turns. Any thread sets it and only the token's holder clears it, every
-    /// writer storing true, so a store after the holder's swap stands for the
-    /// next grant and one before it is covered by the release that swap
-    /// makes.
+    /// Set by the collector's X arm at its advance; taken by the next expiry,
+    /// which then makes the whole waiting part ready (`wait-by-readings`): the
+    /// chain's wait is counted in batch turns. Any thread sets it and only the
+    /// token's holder clears it, every writer storing true, so a store after
+    /// the holder's swap stands for the next grant and one before it is covered
+    /// by the release that swap makes.
     #[cfg(feature = "wait-by-readings")]
     x_release_owed: std::sync::atomic::AtomicBool,
 }
@@ -817,6 +817,20 @@ impl MutatorRecord {
         }
     }
 
+    /// Splice the chain `first..=last` behind R's tail, as the owner's
+    /// writer.
+    ///
+    /// # Safety
+    /// As [`crate::ring::Writer::splice_after_tail`], on the owner's thread.
+    pub(crate) unsafe fn splice_into_r(
+        &self,
+        first: *mut crate::memory::block_pool::BlockHeader,
+        last: *mut crate::memory::block_pool::BlockHeader,
+    ) {
+        let writer = unsafe { crate::ring::Writer::new(self.candidate_ring()) };
+        unsafe { writer.splice_after_tail(first, last) };
+    }
+
     /// P's two words: the front block on the writer's line, since the mutator
     /// is P's reader, and the tail block on the reader's, the collector being
     /// its writer.
@@ -1374,6 +1388,62 @@ fn blocks_are_the_mutators(record: *mut MutatorRecord) -> bool {
     unsafe { &(*record).hold.reading }.load(Ordering::Acquire) & (READING | R_LEFT | P_LEFT) == 0
 }
 
+/// Reset a released record's lines for the life the take hands it to.
+///
+/// # Safety
+/// `released` is a record the registry's free list held, taken off it under
+/// the registry's lock.
+unsafe fn reset_for_a_new_life(released: *mut MutatorRecord) {
+    unsafe {
+        (*released).free_link.set(std::ptr::null_mut());
+        (*released).reader.reset();
+        (*released).writer.reset();
+        (*released).hold.collector.store(0, Ordering::Relaxed);
+        (*released).hold.standing_since.store(0, Ordering::Relaxed);
+        // The stamp of the list the record last stood in: cleared by the
+        // unlink already, and cleared again here because a record whose
+        // life ended under a standing request is unlinked by its
+        // collector's pass and not by this path.
+        (*released).hold.standing_slot.store(0, Ordering::Relaxed);
+        // The clock itself is left where the last life moved it: the
+        // collector's next visit advances it once, so that no stamp that
+        // life wrote reads fresh against this one's
+        // (`crate::cycle::epoch`, "A record's next life"). The instant and
+        // the epoch's work restart with the life.
+        (*released).hold.spent.store(0, Ordering::Relaxed);
+        (*released).hold.proving.store(0, Ordering::Relaxed);
+        (*released).hold.proving_wall.store(0, Ordering::Relaxed);
+        (*released).hold.advanced_at.store(0, Ordering::Relaxed);
+        (*released).hold.merges_seen.store(0, Ordering::Relaxed);
+        debug_assert!(
+            (*released)
+                .writer
+                .posted_set
+                .load(Ordering::Relaxed)
+                .is_null(),
+            "the exit's take consumes the posted set a life left"
+        );
+        #[cfg(feature = "collector-chain")]
+        {
+            debug_assert!(
+                !(*released).chain.waiting.has_a_block() && !(*released).chain.ready.has_a_block(),
+                "the exit splices the chain into R and dismantles R"
+            );
+            (*released).chain.checked_at.store(0, Ordering::Relaxed);
+            #[cfg(feature = "death-check-back-off")]
+            {
+                (*released).chain.lapped_at.store(0, Ordering::Relaxed);
+                (*released).chain.lap_back_off.store(0, Ordering::Relaxed);
+            }
+            (*released).set_lap(crate::ring::Lap::default());
+        }
+        (*released).hold.new_life.store(1, Ordering::Relaxed);
+        // Last, with release: the next reading's take is what sees the
+        // lines above as reset.
+        (*released).hold.reading.store(0, Ordering::Release);
+    }
+}
+
 /// Take a record out of the registry: a released one first, then one carved
 /// out of the head block, then one out of a block drawn for it. Null when
 /// the pool refuses that draw.
@@ -1392,55 +1462,7 @@ fn take_record() -> *mut MutatorRecord {
         // In place rather than a fresh `taken()`: a collector's pointer to the
         // token outlives the last life, and the word it will compare must be
         // the held one the exit left rather than a rewritten one.
-        unsafe {
-            (*released).free_link.set(std::ptr::null_mut());
-            (*released).reader.reset();
-            (*released).writer.reset();
-            (*released).hold.collector.store(0, Ordering::Relaxed);
-            (*released).hold.standing_since.store(0, Ordering::Relaxed);
-            // The stamp of the list the record last stood in: cleared by the
-            // unlink already, and cleared again here because a record whose
-            // life ended under a standing request is unlinked by its
-            // collector's pass and not by this path.
-            (*released).hold.standing_slot.store(0, Ordering::Relaxed);
-            // The clock itself is left where the last life moved it: the
-            // collector's next visit advances it once, so that no stamp that
-            // life wrote reads fresh against this one's
-            // (`crate::cycle::epoch`, "A record's next life"). The instant and
-            // the epoch's work restart with the life.
-            (*released).hold.spent.store(0, Ordering::Relaxed);
-            (*released).hold.proving.store(0, Ordering::Relaxed);
-            (*released).hold.proving_wall.store(0, Ordering::Relaxed);
-            (*released).hold.advanced_at.store(0, Ordering::Relaxed);
-            (*released).hold.merges_seen.store(0, Ordering::Relaxed);
-            debug_assert!(
-                (*released)
-                    .writer
-                    .posted_set
-                    .load(Ordering::Relaxed)
-                    .is_null(),
-                "the exit's take consumes the posted set a life left"
-            );
-            #[cfg(feature = "collector-chain")]
-            {
-                debug_assert!(
-                    !(*released).chain.waiting.has_a_block()
-                        && !(*released).chain.ready.has_a_block(),
-                    "the exit splices the chain into R and dismantles R"
-                );
-                (*released).chain.checked_at.store(0, Ordering::Relaxed);
-                #[cfg(feature = "death-check-back-off")]
-                {
-                    (*released).chain.lapped_at.store(0, Ordering::Relaxed);
-                    (*released).chain.lap_back_off.store(0, Ordering::Relaxed);
-                }
-                (*released).set_lap(crate::ring::Lap::default());
-            }
-            (*released).hold.new_life.store(1, Ordering::Relaxed);
-            // Last, with release: the next reading's take is what sees the
-            // lines above as reset.
-            (*released).hold.reading.store(0, Ordering::Release);
-        }
+        unsafe { reset_for_a_new_life(released) };
         return released;
     }
 

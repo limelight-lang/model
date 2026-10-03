@@ -36,28 +36,27 @@
 //! is posted *proposed* or *read live* off its colour ([`verdict_for`]); a
 //! batch that proposes posts beside its verdicts the set it proved
 //! unreachable, which the owner's collection over P validates alone
-//! (`crate::cycle::posted_set`). No budget bounds the trace: what bounds it is the traced mutator's heap
-//! (`dev/DECISIONS.md`, 2026-09-30, "the collector's trace has no rows
-//! ceiling"). A refused allocation or the mutator's recall of its token at the
-//! stop level stops the trace where it stands — a recall at the wind-down
-//! level ends the mark on a scan instead ("The recall of the token") — and the
-//! stop posts the snapshot ([`post_at_a_stop`]): a root the scan of a
-//! completed mark coloured live is *read live*; one
-//! whose met row reads zero otherwise is *proposed*, a candidate for the
-//! owner's exact validation rather than a scan's verdict, which can cost the
-//! owner a walk from a root a live referrer holds; one above zero is *read
-//! live* where the mark's first regions had ended or where the batch is its
-//! one root, and every other root is posted *unwalked*, which the mutator's
-//! collection over P writes back into R untraced for the next batch
-//! (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner handoff"). R's
-//! front advances past the batch only after every verdict is posted, by
-//! one guard that runs from the unwind as well and posts *unwalked* for
-//! every root the unwind left without a verdict ([`FinishThePosts`]), so
-//! that no entry is consumed without a verdict and none twice. The arena is opened under
-//! the grant, one per batch, and is reset before the token goes — on the
-//! unwind as on the return, since its rows stand over the mutator's blocks
-//! (`rfc/dev/design/trace-token-handshake.md`, E2); a workspace the pool
-//! refuses is a grant released with no batch.
+//! (`crate::cycle::posted_set`). No budget bounds the trace: what bounds it is
+//! the traced mutator's heap (`dev/DECISIONS.md`, 2026-09-30, "the collector's
+//! trace has no rows ceiling"). A refused allocation or the mutator's recall of
+//! its token at the stop level stops the trace where it stands — a recall at
+//! the wind-down level ends the mark on a scan instead ("The recall of the
+//! token") — and the stop posts the snapshot ([`post_at_a_stop`]): a root the
+//! scan of a completed mark coloured live is *read live*; one whose met row
+//! reads zero otherwise is *proposed*, a candidate for the owner's exact
+//! validation rather than a scan's verdict, which can cost the owner a walk
+//! from a root a live referrer holds; one above zero is *read live* where the
+//! mark's first regions had ended or where the batch is its one root, and every
+//! other root is posted *unwalked*, which the mutator's collection over P
+//! writes back into R untraced for the next batch (`rfc/model/gc/rc-cycle.md`,
+//! "Worker-to-owner handoff"). R's front advances past the batch only after
+//! every verdict is posted, by one guard that runs from the unwind as well and
+//! posts *unwalked* for every root the unwind left without a verdict
+//! ([`FinishThePosts`]), so that no entry is consumed without a verdict and
+//! none twice. The arena is opened under the grant, one per batch, and is reset
+//! before the token goes — on the unwind as on the return, since its rows stand
+//! over the mutator's blocks (`rfc/dev/design/trace-token-handshake.md`, E2); a
+//! workspace the pool refuses is a grant released with no batch.
 //!
 //! K starts at [`INITIAL_BATCH`] and doubles after a batch over its whole
 //! clamp that completed or stopped past the mark's first regions, up to
@@ -94,7 +93,8 @@
 //! (`rfc/model/gc/rc-cycle.md`, "The recall of the token"). The reset is
 //! bounded by what the trace touched — every heap block it met a row in and
 //! every block the arena drew — which with no budget is up to the traced
-//! mutator's state, about a sixteenth of its heap in rows. A recalled batch sizes K by where the stop fell, as any stop does.
+//! mutator's state, about a sixteenth of its heap in rows. A recalled batch
+//! sizes K by where the stop fell, as any stop does.
 //!
 //! **The recall has two levels** (`dev/plans/S67.md`, S67.9, (10′)): the
 //! take's, and a withheld stack at [`STOP_MARKS`](crate::cycle::deferred_slot_reuse::STOP_MARKS)
@@ -229,12 +229,12 @@
 //!
 //! A cap of zero removes the takes and keeps the thread: the elder is born
 //! by the poll's signal as under any cap, and its rounds visit every record,
-//! advance each epoch that is due, and request no token; no sibling is born under it, and every sibling standing
-//! ends at the elder's next round without a backlog. The collections the
-//! takes would have made are the mutator's own, over R whole: the round that
-//! reads a mutator's R where it would have taken it — at the threshold,
-//! standing past its interval, or merged into — asks for one by writing
-//! [`ASKED`](crate::cycle::token::ASKED) over an empty P
+//! advance each epoch that is due, and request no token; no sibling is born
+//! under it, and every sibling standing ends at the elder's next round without
+//! a backlog. The collections the takes would have made are the mutator's own,
+//! over R whole: the round that reads a mutator's R where it would have taken
+//! it — at the threshold, standing past its interval, or merged into — asks for
+//! one by writing [`ASKED`](crate::cycle::token::ASKED) over an empty P
 //! ([`ask_for_an_in_line_collection`]); a merged deferred lane is asked for as
 //! a take would have taken it, at the round after the merge
 //! (`rfc/model/gc/rc-cycle.md`, "Decision summary"). R is read by the elder
@@ -357,11 +357,11 @@ const FALLBACK_INTERVAL_MAX: Duration = Duration::from_secs(1);
 /// The longest a mutator's epoch stands before its collector advances it,
 /// on the collector's own clock: the bound on how long a component that
 /// became garbage behind a deferred root waits on a thread whose batches
-/// prove nothing, or too little to turn it first ("The epoch clock"). 8 s, borrowed from V8's memory reducer, which collects a mutator
-/// that went quiet after the same delay; not measured here, and the field
-/// runs from that to Go's two minutes (`dev/RESEARCH.md`, "the idle-GC
-/// timers of five runtimes"). The embedder's figure replaces it
-/// ([`set_epoch_interval`]).
+/// prove nothing, or too little to turn it first ("The epoch clock"). 8 s,
+/// borrowed from V8's memory reducer, which collects a mutator that went quiet
+/// after the same delay; not measured here, and the field runs from that to
+/// Go's two minutes (`dev/RESEARCH.md`, "the idle-GC timers of five runtimes").
+/// The embedder's figure replaces it ([`set_epoch_interval`]).
 const EPOCH_INTERVAL: Duration = Duration::from_secs(8);
 
 /// The embedder's epoch interval in nanoseconds, or zero for
@@ -620,11 +620,11 @@ pub(crate) fn serve_clock_now() -> u64 {
 /// The epoch clock (module doc): advance `record`'s cell when the registry
 /// noted a new life since the last visit, or once the collector's work since
 /// the last advance has reached [`crate::cycle::epoch::SPENT_PER_PROOF`] times
-/// what its stamps cost to prove, or [`epoch_interval`] has passed; the first visit of a life stamps the
-/// instant and advances nothing. `now` is the round's one reading of the
-/// clock for this record, the one its serve reads too. The mutator reads the
-/// advance at its next poll (`crate::gc`, the poll) and at its next
-/// collection's open (`crate::cycle::arena`).
+/// what its stamps cost to prove, or [`epoch_interval`] has passed; the first
+/// visit of a life stamps the instant and advances nothing. `now` is the
+/// round's one reading of the clock for this record, the one its serve reads
+/// too. The mutator reads the advance at its next poll (`crate::gc`, the poll)
+/// and at its next collection's open (`crate::cycle::arena`).
 fn advance_the_epoch_if_due(record: &MutatorRecord, now: u64) {
     if record.take_new_life() {
         record.advance_the_epoch(now, journal::TURNOVER_NEW_LIFE);
@@ -1823,15 +1823,16 @@ impl Drop for WithdrawOnDrop<'_> {
 
 /// The requests a collector left standing on the bytes of mutators that did
 /// not answer inside the wait: a doubly linked list threaded through the
-/// records ([`MutatorRecord::standing_next`], [`MutatorRecord::standing_prev`]), its two ends on the
-/// collector thread's frame, with no capacity — the number of mutators is
-/// nobody's to know in advance (`dev/DECISIONS.md`, "the standing request
-/// lives on the record, the checkpoint serves one grant, and no count is
-/// capped"). Read at the checkpoints, withdrawn when the thread ends. A
-/// standing request costs no wait; the consent wake cannot be lost, since
-/// the slot's wake word makes a wake sent mid-round end the next wait at
-/// once, and the slot's byte-event number ([`Collector::byte_wakes`]) says
-/// whether a checkpoint has anything to read.
+/// records ([`MutatorRecord::standing_next`],
+/// [`MutatorRecord::standing_prev`]), its two ends on the collector thread's
+/// frame, with no capacity — the number of mutators is nobody's to know in
+/// advance (`dev/DECISIONS.md`, "the standing request lives on the record, the
+/// checkpoint serves one grant, and no count is capped"). Read at the
+/// checkpoints, withdrawn when the thread ends. A standing request costs no
+/// wait; the consent wake cannot be lost, since the slot's wake word makes a
+/// wake sent mid-round end the next wait at once, and the slot's byte-event
+/// number ([`Collector::byte_wakes`]) says whether a checkpoint has anything to
+/// read.
 pub(crate) struct Standing {
     slot: usize,
     /// The first and the last record of the list, null when it is empty;
@@ -2372,16 +2373,7 @@ unsafe fn batch(
         },
     };
     #[cfg(test)]
-    testing::at_the_start_of_the_trace();
-    #[cfg(test)]
-    let (traced_from, positions_from) = (std::time::Instant::now(), arena.positions_inspected());
-    #[cfg(test)]
-    let _ = (
-        crate::cycle::mark::take_edges_pruned(),
-        crate::cycle::mark::take_held_figures(),
-        testing::take_rows_met(),
-        testing::take_widest_part(),
-    );
+    let (traced_from, positions_from) = testing::at_the_start_of_the_batchs_trace(arena);
     #[cfg(test)]
     let outcome = match testing::stubbed_trace() {
         Some(wall) => unsafe { stub_the_trace(arena, &mut posts, traced_from + wall) },
@@ -2397,28 +2389,7 @@ unsafe fn batch(
         u64::from(outcome.regions_ended),
     );
     #[cfg(test)]
-    let edges_pruned = crate::cycle::mark::take_edges_pruned();
-    #[cfg(test)]
-    testing::note_edges_pruned(edges_pruned);
-    #[cfg(test)]
-    testing::note_held_figures(crate::cycle::mark::take_held_figures());
-    #[cfg(test)]
-    testing::note_traced_batch(|| testing::TracedBatch {
-        roots: taken,
-        traced: outcome.traced,
-        complete,
-        blocks: arena.blocks_held(),
-        wall: traced_from.elapsed(),
-        positions_after_the_hook: testing::take_positions_after_the_hook(),
-        edges_pruned,
-        rows_met: testing::take_rows_met(),
-        mutator: std::ptr::from_ref(mutator) as usize,
-        ended: std::time::Instant::now(),
-        widest_part: testing::take_widest_part(),
-        positions: arena.positions_inspected() - positions_from,
-        ending: outcome.ending,
-        turnovers: mutator.turnovers(),
-    });
+    testing::note_the_batchs_trace(mutator, arena, taken, &outcome, traced_from, positions_from);
 
     posts.post_the_rest_unwalked();
     #[cfg(test)]

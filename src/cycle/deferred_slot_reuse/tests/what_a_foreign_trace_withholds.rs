@@ -215,23 +215,10 @@ fn the_exit_makes_the_returns_after_its_wait() {
     );
 }
 
-/// A pointer handed to the thread that frees it from outside.
-struct Sent(*mut u8);
-
-unsafe impl Send for Sent {}
-
-impl Sent {
-    /// The pointer, through a method so that a closure captures the wrapper
-    /// rather than its field.
-    fn pointer(&self) -> *mut u8 {
-        self.0
-    }
-}
-
 /// A slot another thread freed is reclaimed by the mutator onto its free list,
 /// and that reclaim is a return of the mutator's memory: under a holder it
-/// waits on the block's remote stack, where nothing hands it out, and once
-/// the holder lets go the next reclaim takes it.
+/// waits on the deaths' stack, where nothing hands it out, and once the
+/// holder lets go the poll gives it back and an allocation takes it.
 #[test]
 fn a_cross_thread_free_is_not_reclaimed_under_a_holder() {
     let _guard = test_guard();
@@ -271,7 +258,14 @@ fn a_cross_thread_free_is_not_reclaimed_under_a_holder() {
         under_the_holder.push(slot);
     }
 
+    assert_eq!(
+        foreign_withheld_count(),
+        1,
+        "the reclaim under the holder withheld the slot as a death"
+    );
     holder.release();
+    unsafe { crate::gc::ll_gc_maybe_collect() };
+    assert_eq!(foreign_withheld_count(), 0, "the poll gave the slot back");
     let mut reclaimed = false;
     let mut after = Vec::new();
     for _ in 0..filler.len() * 2 {
@@ -286,7 +280,7 @@ fn a_cross_thread_free_is_not_reclaimed_under_a_holder() {
         after.push(slot);
     }
 
-    assert!(reclaimed, "the release let the next reclaim take the slot");
+    assert!(reclaimed, "an allocation after the poll took the slot");
 
     for slot in filler.into_iter().chain(under_the_holder).chain(after) {
         unsafe { crate::refcount::set_header_refcount(slot as *mut RcHeader, 0) };

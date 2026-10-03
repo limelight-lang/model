@@ -20,17 +20,18 @@
 //! from either of its roots, so the entities a second collection frees cannot
 //! see one lost token inside one ring; a second ring makes a lost token cost
 //! two entities. The tokens themselves are read through
-//! [`collect_lane_tokens`](crate::cycle::queue::collect_lane_tokens), a count of one lane being unable to state either
-//! half of the rule — a bit standing over no record, or one entity recorded
-//! twice.
+//! [`collect_lane_tokens`](crate::cycle::queue::collect_lane_tokens), a count
+//! of one lane being unable to state either half of the rule — a bit standing
+//! over no record, or one entity recorded twice.
 //!
 //! **A token's lane is asserted separately from its identity.**
-//! [`collect_lane_tokens`](crate::cycle::queue::collect_lane_tokens) concatenates the active chain, the deferred lane
-//! and the overflow buffer, so the multiset says which entities are recorded
-//! and never where. [`candidate_count`] answers the active chain alone, and
-//! the two together pin all four tokens to it: a deferral that took half of
-//! them would keep the multiset whole while `retire_candidates`, which walks
-//! the active lane only, left two slots withheld for the life of the thread.
+//! [`collect_lane_tokens`](crate::cycle::queue::collect_lane_tokens)
+//! concatenates the active chain, the deferred lane and the overflow buffer, so
+//! the multiset says which entities are recorded and never where.
+//! [`candidate_count`] answers the active chain alone, and the two together pin
+//! all four tokens to it: a deferral that took half of them would keep the
+//! multiset whole while `retire_candidates`, which walks the active lane only,
+//! left two slots withheld for the life of the thread.
 //!
 //! **The collection is proved to have traced.** Zero is the answer to a
 //! refused workspace, an empty lane and a trace that met a refused allocation

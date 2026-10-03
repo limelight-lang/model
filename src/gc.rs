@@ -249,33 +249,10 @@ pub extern "C" fn ll_gc_reoffer_deferred() -> usize {
     records
 }
 
-/// ABI: fire a collection only if one was *armed*, else do nothing. This is
-/// the poll the compiler injects at the safepoints it chooses — statement
-/// boundary, allocation slow path, request end (`rfc/model/gc/strategies.md`,
-/// §2 and "Collection requests and triggers"). Where the polls stand is the
-/// compiler's; what they fire is armed by the runtime — the byte's `POSTED`
-/// for P and its `NOTHING_PROPOSED` for P's disposition, a refused
-/// allocation for R whole, the free path's count of completed deaths for a
-/// retirement pass ([`Arming`]), and under a collector
-/// cap of zero the elder's ask over an empty P for R whole ([`arm`]) — and
-/// collected here,
-/// where the graph is clean. The search is the collector thread's, which
-/// takes a batch on the count of an owner's ring it reads itself
-/// (`crate::cycle::worker`, `SOFT_THRESHOLD`) and arms nothing; the poll's
-/// wake to the collector is sent on a block of R filled, and decides
-/// nothing.
-///
-/// The reserve refills and queue maintenance below happen whether or not the
-/// fire does, an unarmed poll being the ordinary case and the maintenance
-/// being what every poll owes.
-///
-/// **A destructor the fire runs can ask for the thread's exit**, as under
-/// [`ll_gc_collect_cycles`]: the request waits for the thread's top.
-///
-/// # Safety
-/// Callable at a safepoint of the calling mutator.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
+/// The refills a safepoint owes before anything it may fire: the barrier's
+/// reserve, the critical reserve, and the candidate queue's spare cells with
+/// the overflow buffer drained behind them.
+fn refill_at_the_safepoint() {
     // The safepoint is also where the barrier's reserve is refilled. It
     // is the only place that can be: drawing on the reserve happens
     // inside `ll_ref_store`, which has no way to report anything, while
@@ -304,6 +281,36 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // made. The exit's collection runs the same before each of its rounds
     // (`crate::cycle::queue::refill_and_drain`).
     crate::cycle::queue::refill_and_drain();
+}
+
+/// ABI: fire a collection only if one was *armed*, else do nothing. This is
+/// the poll the compiler injects at the safepoints it chooses — statement
+/// boundary, allocation slow path, request end (`rfc/model/gc/strategies.md`,
+/// §2 and "Collection requests and triggers"). Where the polls stand is the
+/// compiler's; what they fire is armed by the runtime — the byte's `POSTED`
+/// for P and its `NOTHING_PROPOSED` for P's disposition, a refused
+/// allocation for R whole, the free path's count of completed deaths for a
+/// retirement pass ([`Arming`]), and under a collector
+/// cap of zero the elder's ask over an empty P for R whole ([`arm`]) — and
+/// collected here,
+/// where the graph is clean. The search is the collector thread's, which
+/// takes a batch on the count of an owner's ring it reads itself
+/// (`crate::cycle::worker`, `SOFT_THRESHOLD`) and arms nothing; the poll's
+/// wake to the collector is sent on a block of R filled, and decides
+/// nothing.
+///
+/// The reserve refills and queue maintenance below happen whether or not the
+/// fire does, an unarmed poll being the ordinary case and the maintenance
+/// being what every poll owes.
+///
+/// **A destructor the fire runs can ask for the thread's exit**, as under
+/// [`ll_gc_collect_cycles`]: the request waits for the thread's top.
+///
+/// # Safety
+/// Callable at a safepoint of the calling mutator.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
+    refill_at_the_safepoint();
 
     // The gate, read once: a poll inside a teardown, a reset or a collection
     // fires nothing, and an arming made under it stands for the next clean

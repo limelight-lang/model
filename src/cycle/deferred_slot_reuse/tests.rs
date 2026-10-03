@@ -60,6 +60,19 @@ unsafe fn live_entity(slot: *mut u8, count: u32) -> *mut RcHeader {
     header
 }
 
+/// A pointer handed to the thread that frees it from outside.
+struct Sent(*mut u8);
+
+unsafe impl Send for Sent {}
+
+impl Sent {
+    /// The pointer, through a method so that a closure captures the wrapper
+    /// rather than its field.
+    fn pointer(&self) -> *mut u8 {
+        self.0
+    }
+}
+
 /// The block an entity stands in, as the `*mut u8` the heap's readers take.
 fn block_of<T>(entity: *mut T) -> *mut u8 {
     BlockHeader::of_ptr(entity as *const u8) as *mut u8

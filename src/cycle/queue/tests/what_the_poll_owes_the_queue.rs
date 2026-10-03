@@ -115,12 +115,15 @@ fn the_poll_unlinks_the_block_a_burst_left_empty_behind_the_tail() {
 }
 
 /// Hand a reading's hold back on the way out, an unwind included, so that a
-/// failing case leaves the harness thread's record free for the next.
-struct HandBack(*mut MutatorRecord);
+/// failing case leaves the harness thread's record free for the next; with
+/// a gate, only where the gate reads that the hold was taken.
+struct HandBack(*mut MutatorRecord, Option<&'static AtomicBool>);
 
 impl Drop for HandBack {
     fn drop(&mut self) {
-        unsafe { mutator_record::hand_back_reading(self.0) };
+        if self.1.is_none_or(|taken| taken.load(Ordering::Relaxed)) {
+            unsafe { mutator_record::hand_back_reading(self.0) };
+        }
     }
 }
 
@@ -140,7 +143,7 @@ fn the_poll_leaves_the_circle_alone_while_a_reading_holds_the_record() {
 
     let record = mutator_record::this_thread_record();
     assert!(unsafe { mutator_record::take_for_reading(record) });
-    let hand_back = HandBack(record);
+    let hand_back = HandBack(record, None);
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
     assert_eq!(
         segment_count(),
@@ -155,18 +158,6 @@ fn the_poll_leaves_the_circle_alone_while_a_reading_holds_the_record() {
 /// Whether [`a_front_block_moved_under_a_reading_stays_in_the_circle`]'s act
 /// took the hold; the case runs under `test_guard`, one at a time.
 static TAKEN_INSIDE_THE_POLL: AtomicBool = AtomicBool::new(false);
-
-/// Hand back the hold the act took, an unwind included; nothing where the act
-/// did not take it.
-struct HandBackIfTaken(*mut MutatorRecord);
-
-impl Drop for HandBackIfTaken {
-    fn drop(&mut self) {
-        if TAKEN_INSIDE_THE_POLL.load(Ordering::Relaxed) {
-            unsafe { mutator_record::hand_back_reading(self.0) };
-        }
-    }
-}
 
 /// The poll begins, a reading takes the hold and a batch on another thread
 /// moves R's front block past the first block, and only then does the unlink
@@ -184,7 +175,10 @@ fn a_front_block_moved_under_a_reading_stays_in_the_circle() {
     assert!(needs_spares(), "a cell is short, so the poll would unlink");
 
     TAKEN_INSIDE_THE_POLL.store(false, Ordering::Relaxed);
-    let hand_back = HandBackIfTaken(mutator_record::this_thread_record());
+    let hand_back = HandBack(
+        mutator_record::this_thread_record(),
+        Some(&TAKEN_INSIDE_THE_POLL),
+    );
     at_the_next_surplus_unlink(|| {
         let record = mutator_record::this_thread_record();
         let taken = unsafe { mutator_record::take_for_reading(record) };

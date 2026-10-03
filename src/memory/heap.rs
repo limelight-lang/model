@@ -1290,15 +1290,30 @@ impl Heap {
         // An entity slot another thread freed is a return of this thread's
         // memory, and it waits for a trace more coarsely than a local free
         // does — a local free returns a death in a block the owner's own
-        // window never touched, while the slots here stay on the remote
-        // stack, where nothing hands them out, until a collect that finds no
-        // window and no holder
-        // (`cycle::deferred_slot_reuse::returns_are_withheld`). Not for
+        // window never touched. Under the owner's own window the slots stay
+        // on the remote stack, where nothing hands them out, until a collect
+        // that finds no window; under a foreign holder they move onto the
+        // stack the owner's own deaths wait on, whose mark recalls the grant
+        // (`cycle::deferred_slot_reuse::withhold_remote_frees`). Not for
         // `collect_remote_locked`: an abandoned block is under no trace, by
         // the exit's order.
         if unsafe { (*block).kind.load(Ordering::Relaxed) } == BLOCK_KIND_ENTITY
             && crate::cycle::deferred_slot_reuse::returns_are_withheld()
         {
+            if crate::cycle::deferred_slot_reuse::under_a_foreign_holder() {
+                let head = unsafe {
+                    (*block)
+                        .remote
+                        .remote_free
+                        .swap(std::ptr::null_mut(), Ordering::Acquire)
+                };
+                if !head.is_null() {
+                    unsafe {
+                        crate::cycle::deferred_slot_reuse::withhold_remote_frees(head as *mut u8)
+                    };
+                }
+            }
+
             return false;
         }
 

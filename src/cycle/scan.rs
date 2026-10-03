@@ -55,12 +55,10 @@
 //! **Nothing here outlives the call.** The rows, the bitmap and the worklist
 //! are the caller's arena. The scan asks that arena for one thing only, a
 //! worklist segment through
-//! [`TraceScratchArena::push_work`](crate::cycle::arena::TraceScratchArena::push_work) — it reads rows
-//! through
-//! [`find_initialized_row`], which
-//! allocates nothing — and a refusal there answers
-//! [`ScanResult::AllocationFailed`] and abandons the trace with the heap
-//! untouched.
+//! [`TraceScratchArena::push_work`](crate::cycle::arena::TraceScratchArena::push_work)
+//! — it reads rows through [`find_initialized_row`], which allocates nothing —
+//! and a refusal there answers [`ScanResult::AllocationFailed`] and abandons
+//! the trace with the heap untouched.
 //!
 //! The ordering the module rests on is the token: every row this file reads
 //! is read before the trace token is released (`rfc/model/gc/rc-cycle.md`,

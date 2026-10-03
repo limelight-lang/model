@@ -12,14 +12,15 @@
 //!
 //! The turnover period `N` is 64 collections ([`N`]), YRC's figure: the
 //! collector's turn is set by its proofs (`crate::cycle::epoch`, "The turn"),
-//! and the probe fixes a period of its own to read the lane against. The probe's in-line collections stand in for those batches:
-//! the harness turns the epoch cell after every `N` of them, as the
-//! collector's count would (`crate::cycle::worker`, "The epoch clock"). In
-//! production an in-line collection counts toward nothing, so the recall
-//! reading's `N − d + 1` is the model's figure for a thread whose every
-//! collection is a collector's batch, and follows from the stand-in by
-//! construction; what the probe measures of the lane is the volume. Two figures decide it, and both follow a rate
-//! the harness sets, so a single figure would be its own input read back
+//! and the probe fixes a period of its own to read the lane against. The
+//! probe's in-line collections stand in for those batches: the harness turns
+//! the epoch cell after every `N` of them, as the collector's count would
+//! (`crate::cycle::worker`, "The epoch clock"). In production an in-line
+//! collection counts toward nothing, so the recall reading's `N − d + 1` is the
+//! model's figure for a thread whose every collection is a collector's batch,
+//! and follows from the stand-in by construction; what the probe measures of
+//! the lane is the volume. Two figures decide it, and both follow a rate the
+//! harness sets, so a single figure would be its own input read back
 //! (`dev/DECISIONS.md`, 2026-09-19, "the calibration runs on a parameterized
 //! test heap, and the entry names its parameters"): the volume the turnover
 //! splices back, and the recall a deferral costs.
