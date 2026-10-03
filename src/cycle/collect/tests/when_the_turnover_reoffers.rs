@@ -22,7 +22,8 @@
 //!
 //! **The collector's advance is stood in for by the case.** The epoch cell is
 //! the collector's (`crate::cycle::epoch`), and a case that waits for X or for
-//! 64 batches to reach a reading one store states turns the cell itself
+//! the collector's proofs to reach a reading one store states turns the cell
+//! itself
 //! (`crate::cycle::epoch::turn_this_threads_cell`), as the collector's round
 //! would: the poll's comparison reads the byte the turn stores, so a cell
 //! that stood is no turnover and one turned is.
@@ -73,6 +74,11 @@ unsafe fn collect_with_a_reference_taken_mid_trace(
 
     unsafe { ll_gc_collect_cycles() }
 }
+
+/// Polls a case makes to show that none of them re-offers: YRC's 64
+/// collections an epoch, a count of the probe's and not the collector's turn
+/// (`crate::cycle::epoch`, "The turn").
+const POLLS: usize = 64;
 
 /// A ring whose keeper goes while the ring is mature has no root in any lane:
 /// the decrement meets the standing candidate bit and registers nothing, and
@@ -206,7 +212,7 @@ fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_advances_it
 
     let turnovers = epoch::this_threads_turnovers();
     let _ = take_dispatches_in_mark_phase();
-    for _ in 0..epoch::BATCHES_PER_EPOCH {
+    for _ in 0..POLLS {
         assert_eq!(
             unsafe { crate::gc::ll_gc_maybe_collect() },
             0,
@@ -281,7 +287,7 @@ fn an_idle_threads_poll_leaves_its_deferred_lane_until_the_collector_advances_it
         0
     );
     assert_eq!(deferred_count(), 2);
-    for _ in 0..epoch::BATCHES_PER_EPOCH {
+    for _ in 0..POLLS {
         assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);
     }
     assert_eq!(

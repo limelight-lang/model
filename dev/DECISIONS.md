@@ -9,6 +9,29 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-03 — the epoch turns when the collector's work reaches twice what its proofs cost
+
+**Decision (the Sage of S67.9 on the epoch's turn, 2026-09-30, Final; built
+2026-10-03).** The collector advances a mutator's epoch at a visit once the
+positions its batches read since the last advance, once a price stands,
+reach `SPENT_PER_PROOF` = 2 times the summed price of the stamps they wrote —
+a completed batch's final-drain positions times its stamps over that drain's
+rows — or at X. An epoch that proves
+nothing turns at X alone. `BATCHES_PER_EPOCH` (64, YRC's) goes.
+
+**Why.** The epoch is the window the collector's proofs of liveness stand in;
+a turn retires every stamp, and what it costs is the re-proof. A count of
+batches ignores both: a mutator whose batches walk its state every time turns
+as often as one whose batches prune at it. At two, the re-proof never costs
+more than the rest of the collector's work. The ratio goes to Edmond with the
+rig's readings.
+
+**Rejected:** the largest complete batch as the price (a small R and a large
+lane re-walk the same live components for ever); a pass over R as the turn
+(false when the mutator writes R faster than the collector reads it).
+
+---
+
 ## 2026-10-02 — a collector's batch prunes any stamped target it has not met, and stamps only what its final drain touched first
 
 **Decision (S67.9's revision 3, items (1′)–(3′), built as step (f)).** On a

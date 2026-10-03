@@ -134,7 +134,7 @@ pub(crate) struct MutatorRecord {
     /// wrap at 256 turnovers, which at X is over half an hour of a thread
     /// that never polls; the price of the alias is one more X.
     turnover: AtomicU8,
-    /// Turns the collector's X arm made, as against its 64 batches, counted
+    /// Turns the collector's X arm made, as against its proofs' arm, counted
     /// modulo 256 by the collector alone at each advance that arm makes
     /// (`wait-by-readings`). A deferred lane mirrors it when it fills and
     /// goes back into R at the first poll that reads it moved, whatever the
@@ -359,7 +359,7 @@ struct HoldLine {
     /// which serves the mutators named to it. On this line because it is the
     /// one word a collector writes into a record it does not read for.
     collector: AtomicU8,
-    /// This word and the three after it, the epoch's, are written by the
+    /// This word and the four after it, the epoch's, are written by the
     /// advance outside the reading hold and the grant, unlike
     /// [`HoldLine::standing_since`]: the collector's visit advances before its
     /// serve requests the token, and a record between two lives is visited
@@ -375,12 +375,15 @@ struct HoldLine {
     /// Set by the registry, cleared by the collector; relaxed, since a flag
     /// read late costs recall until the next advance and nothing else.
     new_life: AtomicU8,
-    /// Batches the collector made for this mutator since the last advance,
-    /// saturating: the advance comes at the first of
-    /// `crate::cycle::epoch::BATCHES_PER_EPOCH` of them or X of the
-    /// collector's clock. Written by the collector the record is named to
-    /// alone, so relaxed; cleared at every advance and at a re-take.
-    batches_since: AtomicU8,
+    /// The positions the collector's batches for this mutator read since the
+    /// last advance, and what the stamps they wrote cost to prove: the
+    /// advance comes once the first is `crate::cycle::epoch::SPENT_PER_PROOF`
+    /// times the second, or at X of the collector's clock
+    /// (`crate::cycle::epoch`, "The turn"). Written by the collector the
+    /// record is named to alone, at each batch's end and at the advance, so
+    /// relaxed; cleared at every advance and at a re-take.
+    spent: AtomicU64,
+    proving: AtomicU64,
     /// This mutator's epoch clock: the turnovers of its epoch, full width and
     /// monotone across the record's lives. The epoch a maturation stamp
     /// carries is its low two bits (`crate::cycle::epoch`). Written by the
@@ -558,7 +561,8 @@ impl MutatorRecord {
                 standing_slot: AtomicU8::new(0),
                 collector: AtomicU8::new(0),
                 new_life: AtomicU8::new(0),
-                batches_since: AtomicU8::new(0),
+                spent: AtomicU64::new(0),
+                proving: AtomicU64::new(0),
                 turnovers: AtomicU64::new(0),
                 advanced_at: AtomicU64::new(0),
                 merges_seen: AtomicU32::new(0),
@@ -901,7 +905,8 @@ impl MutatorRecord {
             .wrapping_add(1);
         self.turnover.store(turnovers as u8, Ordering::Relaxed);
         self.hold.advanced_at.store(now, Ordering::Relaxed);
-        self.hold.batches_since.store(0, Ordering::Relaxed);
+        self.hold.spent.store(0, Ordering::Relaxed);
+        self.hold.proving.store(0, Ordering::Relaxed);
         crate::journal::kinds::journal_event!(
             crate::journal::kinds::KIND_TURNOVER,
             std::ptr::from_ref(self) as u64,
@@ -970,21 +975,33 @@ impl MutatorRecord {
         self.hold.advanced_at.store(now, Ordering::Relaxed);
     }
 
-    /// Batches made for this mutator since the last advance
-    /// ([`HoldLine::batches_since`]).
+    /// The positions spent and the proofs written since the last advance
+    /// ([`HoldLine::spent`]), in that order.
     #[inline]
-    pub(crate) fn batches_since_the_advance(&self) -> u8 {
-        self.hold.batches_since.load(Ordering::Relaxed)
+    pub(crate) fn epoch_work(&self) -> (u64, u64) {
+        (
+            self.hold.spent.load(Ordering::Relaxed),
+            self.hold.proving.load(Ordering::Relaxed),
+        )
     }
 
-    /// Count one batch made for this mutator, on the collector's thread,
-    /// saturating.
+    /// Count one batch's work toward the epoch's turn, on the collector's
+    /// thread: `spent` positions read, `proving` the price of the stamps it
+    /// wrote. The positions count only once a proof stands from an earlier
+    /// batch, so a turn is paid for by work the stamps could prune — never by
+    /// the proving batch's own walk (`crate::cycle::epoch`, "The turn").
+    /// Saturating.
     #[inline]
-    pub(crate) fn note_batch(&self) {
-        let batches = self.hold.batches_since.load(Ordering::Relaxed);
+    pub(crate) fn note_epoch_work(&self, spent: u64, proving: u64) {
+        let (spent_before, proving_before) = self.epoch_work();
+        if proving_before > 0 {
+            self.hold
+                .spent
+                .store(spent_before.saturating_add(spent), Ordering::Relaxed);
+        }
         self.hold
-            .batches_since
-            .store(batches.saturating_add(1), Ordering::Relaxed);
+            .proving
+            .store(proving_before.saturating_add(proving), Ordering::Relaxed);
     }
 
     /// Whether the registry handed this record out again since the last
@@ -1365,8 +1382,9 @@ fn take_record() -> *mut MutatorRecord {
             // collector's next visit advances it once, so that no stamp that
             // life wrote reads fresh against this one's
             // (`crate::cycle::epoch`, "A record's next life"). The instant and
-            // the batch count restart with the life.
-            (*released).hold.batches_since.store(0, Ordering::Relaxed);
+            // the epoch's work restart with the life.
+            (*released).hold.spent.store(0, Ordering::Relaxed);
+            (*released).hold.proving.store(0, Ordering::Relaxed);
             (*released).hold.advanced_at.store(0, Ordering::Relaxed);
             (*released).hold.merges_seen.store(0, Ordering::Relaxed);
             debug_assert!(
@@ -1560,7 +1578,7 @@ pub(crate) fn refuse_record_draws(refuse: bool) {
 /// Write into `record`'s lines, for a case that reads whether a re-take
 /// empties them: the batch size, which no exit reads, the merge count, and
 /// on the hold line the standing instant, the list's stamp, the advance's
-/// instant, its batch count and the merges seen. The four block words are left alone, because the
+/// instant, its epoch work and the merges seen. The four block words are left alone, because the
 /// exit reads both rings through them and a scribbled pointer would be
 /// followed; they are nulled by the rings' dismantle before the record goes
 /// back, which is what the reset repeats. The collecting word is left alone
@@ -1574,7 +1592,8 @@ pub(crate) fn scribble_lines_for_test(record: *mut MutatorRecord) {
         (*record).hold.standing_since.store(7, Ordering::Relaxed);
         (*record).hold.standing_slot.store(7, Ordering::Relaxed);
         (*record).hold.advanced_at.store(7, Ordering::Relaxed);
-        (*record).hold.batches_since.store(7, Ordering::Relaxed);
+        (*record).hold.spent.store(7, Ordering::Relaxed);
+        (*record).hold.proving.store(7, Ordering::Relaxed);
         (*record).hold.merges_seen.store(7, Ordering::Relaxed);
         (*record).writer.merges.store(7, Ordering::Relaxed);
     }
@@ -1589,7 +1608,7 @@ pub(crate) fn note_new_life_for_test(record: *mut MutatorRecord) {
 
 /// Whether `record`'s lines hold what a fresh life starts with: R's words,
 /// the batch size, the standing instant, the standing list's stamp, the
-/// advance's instant, its batch count, the merge count and the merges seen
+/// advance's instant, its epoch work, the merge count and the merges seen
 /// empty, the collecting word clear, and P's two words naming one block.
 #[cfg(test)]
 pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
@@ -1601,7 +1620,8 @@ pub(crate) fn lines_are_fresh(record: *mut MutatorRecord) -> bool {
         && unsafe { (*record).hold.standing_since.load(Ordering::Relaxed) == 0 }
         && unsafe { (*record).hold.standing_slot.load(Ordering::Relaxed) == 0 }
         && unsafe { (*record).hold.advanced_at.load(Ordering::Relaxed) == 0 }
-        && unsafe { (*record).hold.batches_since.load(Ordering::Relaxed) == 0 }
+        && unsafe { (*record).hold.spent.load(Ordering::Relaxed) == 0 }
+        && unsafe { (*record).hold.proving.load(Ordering::Relaxed) == 0 }
         && unsafe { (*record).hold.merges_seen.load(Ordering::Relaxed) == 0 }
         && writer.merges.load(Ordering::Relaxed) == 0
         && writer.r_tail_block.load(Ordering::Relaxed).is_null()

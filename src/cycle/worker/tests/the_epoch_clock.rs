@@ -1,6 +1,6 @@
 //! The collector's epoch clock: the first visit of a life stamps the instant
-//! and advances nothing, X of the collector's clock or sixty-four of its
-//! batches advance the cell and the byte the poll reads, a new life advances
+//! and advances nothing, X of the collector's clock or its work at twice what
+//! its proofs cost advance the cell and the byte the poll reads, a new life advances
 //! at the first visit, and what the mutator does between visits moves
 //! nothing — a thread whose live roots the collector takes oftener than X has
 //! its deferred lane re-offered after X.
@@ -80,41 +80,60 @@ fn the_first_visit_stamps_and_a_visit_after_x_advances() {
     assert!(record.advanced_at() > stamped, "and the advance restamped");
 }
 
-/// Sixty-four batches advance the epoch inside X, and the count starts again
-/// from the advance: a thread the collector serves at a high rate turns over
-/// at its batches' rate rather than waiting out X.
+/// Work at twice what its proofs cost advances the epoch inside X, and the
+/// count starts again from the advance: a thread whose batches re-prove a
+/// small core turns over at the rate its proofs pay for rather than waiting
+/// out X (`crate::cycle::epoch`, "The turn"). Red with the batch count's turn,
+/// and with the proving batch's own positions counted.
 #[test]
-fn sixty_four_batches_advance_the_epoch_before_x() {
+fn work_at_twice_its_proofs_advances_the_epoch_before_x() {
+    use crate::cycle::epoch::SPENT_PER_PROOF;
+    const PROVING: u64 = 1_000;
     let _g = test_guard();
     let _x = EpochInterval::of(Duration::from_secs(60));
     let record = unsafe { &*record() };
     let _ = record.take_new_life();
-    // An advance by hand, for a count of zero and an instant of now.
+    // An advance by hand, for no work and an instant of now.
     record.advance_the_epoch(serve_clock_now(), crate::journal::kinds::TURNOVER_BY_HAND);
     let turnovers = record.turnovers();
 
-    for _ in 1..crate::cycle::epoch::BATCHES_PER_EPOCH {
-        record.note_batch();
-    }
+    // The proving batch's own walk counts toward nothing.
+    record.note_epoch_work(SPENT_PER_PROOF * PROVING, PROVING);
+    visit(record);
+    assert_eq!(record.epoch_work(), (0, PROVING), "the proof alone");
+    record.note_epoch_work(SPENT_PER_PROOF * PROVING - 1, 0);
     visit(record);
     assert_eq!(
         record.turnovers(),
         turnovers,
-        "sixty-three batches inside X advance nothing"
+        "work short of twice its proofs advances nothing"
     );
 
-    record.note_batch();
+    record.note_epoch_work(1, 0);
     visit(record);
     assert_eq!(
         record.turnovers(),
         turnovers + 1,
-        "the sixty-fourth advanced the epoch inside X"
+        "work at twice its proofs advanced the epoch inside X"
     );
-    assert_eq!(
-        record.batches_since_the_advance(),
-        0,
-        "and the count starts again"
-    );
+    assert_eq!(record.epoch_work(), (0, 0), "and the count starts again");
+}
+
+/// An epoch whose batches proved nothing turns at X alone, however much they
+/// read: no stamp stands for a turn to retire, and a turn would re-offer the
+/// deferred lane for nothing. Red with a turn on work alone.
+#[test]
+fn work_that_proves_nothing_waits_for_x() {
+    let _g = test_guard();
+    let _x = EpochInterval::of(Duration::from_secs(60));
+    let record = unsafe { &*record() };
+    let _ = record.take_new_life();
+    record.advance_the_epoch(serve_clock_now(), crate::journal::kinds::TURNOVER_BY_HAND);
+    let turnovers = record.turnovers();
+
+    record.note_epoch_work(u64::MAX / 2, 0);
+    visit(record);
+    assert_eq!(record.turnovers(), turnovers, "no proof, no turn inside X");
 }
 
 /// The registry's note of a new life is advanced past at the collector's next

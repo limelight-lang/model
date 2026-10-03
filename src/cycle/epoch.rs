@@ -17,10 +17,10 @@
 //! bounds the mutator's wait instead of the budget"): a full-width count of
 //! turnovers in the mutator's record (`crate::cycle::mutator_record`, the hold
 //! line), written by the collector the record is named to and by nobody else.
-//! It advances at the first of [`BATCHES_PER_EPOCH`] batches that collector
-//! made for the mutator or X of the collector's own clock since the last
-//! advance (`crate::cycle::worker`, "The epoch clock"), so a thread's stamps
-//! age whether or not it collects, and the mutator stores nothing for it.
+//! It advances at the turn below or at X of the collector's own clock since
+//! the last advance (`crate::cycle::worker`, "The epoch clock"), so a thread's
+//! stamps age whether or not it collects, and the mutator stores nothing for
+//! it.
 //! Every collection over a mutator's graph reads the cell once, at its
 //! arena's open, and prunes, stamps and records the deferred lane's mirror
 //! against that one reading; the entities of one mutator are that mutator's
@@ -32,6 +32,28 @@
 //! which two wrapped bits cannot answer; what the header carries is the low
 //! two bits, because that is what byte 6 can spare
 //! (`crate::refcount::MATURATION_EPOCH_MASK`).
+//!
+//! # The turn
+//!
+//! The epoch is the window in which the collector's proofs of liveness stand
+//! (`dev/plans/S67.md`, S67.9, the Sage of 2026-09-30 on the epoch's turn):
+//! a stamp lets the next batches prune at a live core instead of walking it,
+//! and the turn retires every stamp at once, so that a core that died while
+//! stamped is walked again. What a turn costs is the re-proof — the walks
+//! that write the stamps again — so the window is set by the collector's own
+//! work rather than by a count of batches. Each batch whose trace completed
+//! prices its stamps at the positions its mark's final drain read times the
+//! stamps it wrote over the rows that drain met — the walk of the live core
+//! the stamps stand on. The collector adds those prices over the epoch, and
+//! the positions of every batch it makes once a price stands, the proving
+//! batch's own walk not among them; the cell turns at a visit once the
+//! positions reach [`SPENT_PER_PROOF`] times the prices — work the stamps could
+//! prune has paid for the re-proof — or at X. An epoch in which the collector
+//! proves nothing turns at X alone: none of its stamps stands to retire, the
+//! owner's commits' stamps aging at X as before. Garbage behind
+//! a stamped core waits at most two epochs, `k + 1` behind a chain of `k`
+//! stamped components, where the collector reads R as fast as the mutator
+//! writes it.
 //!
 //! **A reading that missed an advance is conservative.** The stamp is read
 //! by the mark's test for an opaque live external (`crate::cycle::mark`), and
@@ -54,16 +76,12 @@
 use crate::cycle::mutator_record::{MutatorRecord, this_thread_record};
 use crate::refcount::MATURATION_EPOCH_MASK;
 
-/// Batches a collector makes for one mutator before it advances that
-/// mutator's epoch, if X has not come first.
-///
-/// 64, YRC's published value for the collections one epoch spans
-/// (`rfc/model/gc/cycle/questions.md`, Y9), which no reading has replaced: the
-/// lane re-offers `rate × N` records per turnover and a component that dies
-/// behind a deferral waits up to `N` batches, so a reading gives an exchange
-/// rate and the side to pay is a ruling (`dev/BENCHMARKS.md`, "S37.5 what a
-/// turnover re-offers, and what a deferral costs").
-pub(crate) const BATCHES_PER_EPOCH: u8 = 64;
+/// How many times the price of an epoch's proofs the collector's work in it
+/// reaches before the epoch turns ("The turn"). Two is break-even: the
+/// re-proof after the turn costs no more than the rest of the collector's
+/// work. The Sage's figure; put to Edmond with the rig's readings
+/// (`dev/plans/S67.md`, S67.9).
+pub(crate) const SPENT_PER_PROOF: u64 = 2;
 
 /// Epochs the header's field tells apart, past which the count wraps: four,
 /// and sixteen under `wait-by-readings`

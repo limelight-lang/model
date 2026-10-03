@@ -1066,7 +1066,8 @@ pub(crate) unsafe fn write_maturation_stamp(header: *mut RcHeader, stamp: Matura
 
 /// Stamp the slot at `header` as read live in `epoch`, at age one, unless its
 /// stamp already carries an age of at least one in that epoch; the rest of the
-/// byte stays as it stands.
+/// byte stays as it stands. True when it wrote: the stamps a batch adds price
+/// its proof (`crate::cycle::epoch`, "The turn").
 ///
 /// The writer behind the stamps a collector's completed batch writes on the
 /// live core its final drain read (`crate::cycle::collector_stamps`), without
@@ -1082,16 +1083,17 @@ pub(crate) unsafe fn write_maturation_stamp(header: *mut RcHeader, stamp: Matura
 /// that mutator's token: the owner under its own claim, or a collector under
 /// its grant, every return of the mutator's withheld meanwhile.
 #[inline]
-pub(crate) unsafe fn stamp_as_read_live(header: *mut RcHeader, epoch: u32) {
+pub(crate) unsafe fn stamp_as_read_live(header: *mut RcHeader, epoch: u32) -> bool {
     debug_assert!(epoch <= MATURATION_EPOCH_IN_BYTE as u32);
     let byte = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) };
     let fields = MATURATION_EPOCH_IN_BYTE | MATURATION_AGE_IN_BYTE;
     if byte & MATURATION_EPOCH_IN_BYTE == epoch as u8 && byte & MATURATION_AGE_IN_BYTE != 0 {
-        return;
+        return false;
     }
 
     let stamp = epoch as u8 | (1 << MATURATION_AGE_SHIFT_IN_BYTE);
     unsafe { header_byte_store(header, MATURATION_STAMP_BYTE, (byte & !fields) | stamp) };
+    true
 }
 
 /// Byte 7 of the header, whose bit 0 is the flags word's bit 24

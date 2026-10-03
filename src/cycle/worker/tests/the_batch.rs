@@ -139,7 +139,9 @@ fn a_batch_posts_one_verdict_per_root_the_reading_pass_first_and_advances_past_t
     DESTRUCTOR_RUNS.store(0, Ordering::Relaxed);
     let mut expected = Vec::new();
     collect_lane_tokens(&mut expected);
-    let batches = unsafe { &*record() }.batches_since_the_advance();
+    // A proof stands, so the batch's positions count toward the turn.
+    unsafe { &*record() }.note_epoch_work(0, 1);
+    let (spent, _) = unsafe { &*record() }.epoch_work();
     // K at R's count, so that the batch takes its whole clamp.
     unsafe { &*record() }.set_batch_size(5);
 
@@ -151,10 +153,9 @@ fn a_batch_posts_one_verdict_per_root_the_reading_pass_first_and_advances_past_t
             backlog: false,
         }
     );
-    assert_eq!(
-        unsafe { &*record() }.batches_since_the_advance(),
-        batches.saturating_add(1),
-        "the batch counts toward the epoch's advance"
+    assert!(
+        unsafe { &*record() }.epoch_work().0 > spent,
+        "the batch's positions count toward the epoch's advance"
     );
     assert_eq!(candidate_count(), 0, "R's front moved past the batch");
     assert_eq!(

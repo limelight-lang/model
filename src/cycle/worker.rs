@@ -123,14 +123,15 @@
 //!
 //! The collector keeps the epoch clock of every mutator named to it
 //! (`crate::cycle::epoch`). At each visit of a round, before the serve, it
-//! advances the record's cell once [`crate::cycle::epoch::BATCHES_PER_EPOCH`]
-//! batches or [`EPOCH_INTERVAL`] of its own clock — X, the rfc's letter for
-//! it (`rfc/model/gc/cycle/questions.md`, Y9) — have passed since the last
-//! advance, whichever comes first ([`advance_the_epoch_if_due`]), and stores
+//! advances the record's cell once the positions its batches read since the
+//! last advance reach [`crate::cycle::epoch::SPENT_PER_PROOF`] times what the
+//! stamps they wrote cost to prove, or once [`EPOCH_INTERVAL`] of its own
+//! clock — X, the rfc's letter for it (`rfc/model/gc/cycle/questions.md`, Y9)
+//! — has passed, whichever comes first ([`advance_the_epoch_if_due`]), and stores
 //! the cell's low eight bits on the record's token line, where the mutator's
 //! poll compares them with its deferred lane's mirror and re-offers the lane
 //! (`crate::cycle::queue::reoffer_deferred_if_epoch_moved`). The mutator
-//! stores nothing into its clock, so a thread whose batches all read live,
+//! stores nothing into its clock, so a thread whose batches prove nothing,
 //! and one that registers nothing, turns over at X like any other, and a
 //! component that became garbage behind one of its deferred roots waits
 //! about one X and the next round's take of the merged lane rather than
@@ -355,9 +356,8 @@ const FALLBACK_INTERVAL_MAX: Duration = Duration::from_secs(1);
 
 /// The longest a mutator's epoch stands before its collector advances it,
 /// on the collector's own clock: the bound on how long a component that
-/// became garbage behind a deferred root waits on a thread whose batches do
-/// not reach [`crate::cycle::epoch::BATCHES_PER_EPOCH`] first ("The epoch
-/// clock"). 8 s, borrowed from V8's memory reducer, which collects a mutator
+/// became garbage behind a deferred root waits on a thread whose batches
+/// prove nothing, or too little to turn it first ("The epoch clock"). 8 s, borrowed from V8's memory reducer, which collects a mutator
 /// that went quiet after the same delay; not measured here, and the field
 /// runs from that to Go's two minutes (`dev/RESEARCH.md`, "the idle-GC
 /// timers of five runtimes"). The embedder's figure replaces it
@@ -618,9 +618,9 @@ pub(crate) fn serve_clock_now() -> u64 {
 }
 
 /// The epoch clock (module doc): advance `record`'s cell when the registry
-/// noted a new life since the last visit, or once
-/// [`crate::cycle::epoch::BATCHES_PER_EPOCH`] batches or [`epoch_interval`]
-/// have passed since the last advance; the first visit of a life stamps the
+/// noted a new life since the last visit, or once the collector's work since
+/// the last advance has reached [`crate::cycle::epoch::SPENT_PER_PROOF`] times
+/// what its stamps cost to prove, or [`epoch_interval`] has passed; the first visit of a life stamps the
 /// instant and advances nothing. `now` is the round's one reading of the
 /// clock for this record, the one its serve reads too. The mutator reads the
 /// advance at its next poll (`crate::gc`, the poll) and at its next
@@ -637,16 +637,17 @@ fn advance_the_epoch_if_due(record: &MutatorRecord, now: u64) {
         return;
     }
 
-    let by_batches = record.batches_since_the_advance() >= crate::cycle::epoch::BATCHES_PER_EPOCH;
-    if by_batches || now.saturating_sub(last) >= epoch_interval().as_nanos() as u64 {
-        let why = if by_batches {
-            journal::TURNOVER_BY_BATCHES
+    let (spent, proving) = record.epoch_work();
+    let by_proofs = proving > 0 && spent >= crate::cycle::epoch::SPENT_PER_PROOF * proving;
+    if by_proofs || now.saturating_sub(last) >= epoch_interval().as_nanos() as u64 {
+        let why = if by_proofs {
+            journal::TURNOVER_BY_PROOFS
         } else {
             journal::TURNOVER_BY_X
         };
         record.advance_the_epoch(now, why);
         #[cfg(feature = "wait-by-readings")]
-        if !by_batches {
+        if !by_proofs {
             record.note_an_x_turn();
         }
     }
@@ -2417,6 +2418,9 @@ unsafe fn batch(
     drop(posts);
     let backlog = reader.has_at_least_by_count(threshold);
 
+    // The batch's work toward the epoch's turn: every position its trace
+    // read, the arena being this grant's.
+    let spent = arena.positions_inspected();
     arena.reset();
     // A batch that posted nothing into P releases `FREE`, and the set goes
     // back here, the mutator taking no set from `FREE`.
@@ -2425,7 +2429,7 @@ unsafe fn batch(
     } else {
         drop(set);
     }
-    mutator.note_batch();
+    mutator.note_epoch_work(spent as u64, outcome.proving);
     if at_the_threshold {
         // K against what R gave: the chain's roots size no K, and R's share
         // must fill K itself, as without the chain.
@@ -2760,6 +2764,7 @@ unsafe fn trace_the_batch(
 
     #[cfg(test)]
     testing::note_the_mark_end(arena.positions_inspected());
+    let (drained, drained_rows) = arena.final_drain_work();
     // The scan stops at the stop level alone: a wind-down raised inside it
     // asks for what the scan already does, an end on posts.
     arena.stop_only_at(crate::cycle::token::RECALL_STOP);
@@ -2811,12 +2816,26 @@ unsafe fn trace_the_batch(
         crate::cycle::token::COLLECTOR,
         "the collector stamps under its grant"
     );
-    if mutator.turnovers() == arena.turnovers()
-        && unsafe { crate::cycle::collector_stamps::stamp_the_final_drain(arena) }.is_break()
-    {
+    if mutator.turnovers() != arena.turnovers() {
+        return BatchOutcome {
+            complete: true,
+            regions_ended: true,
+            ..outcome
+        }
+        .ended(journal::BATCH_END_COMPLETE);
+    }
+
+    let walk = unsafe { crate::cycle::collector_stamps::stamp_the_final_drain(arena) };
+    // What the stamps cost to prove: the final drain's positions shared over
+    // the rows it met, the walk that reached the live core they stand on
+    // (`crate::cycle::epoch`, "The turn"); a walk a stop cut short proved
+    // what it wrote.
+    let proving = (drained as u128 * walk.stamps as u128 / drained_rows.max(1) as u128) as u64;
+    if walk.stopped {
         return BatchOutcome {
             stopped: true,
             regions_ended: true,
+            proving,
             ..outcome
         }
         .ended(journal::BATCH_END_RECALLED_AFTER_THE_TRACE);
@@ -2825,6 +2844,7 @@ unsafe fn trace_the_batch(
     BatchOutcome {
         complete: true,
         regions_ended: true,
+        proving,
         ..outcome
     }
     .ended(journal::BATCH_END_COMPLETE)
@@ -3084,6 +3104,10 @@ struct BatchOutcome {
     regions_ended: bool,
     /// Which exit ended the trace, one of the journal's `BATCH_END_*` codes.
     ending: u64,
+    /// The positions the stamps it wrote cost to prove: the trace's positions
+    /// times the stamps over the rows it met, zero where it wrote none
+    /// (`crate::cycle::epoch`, "The turn").
+    proving: u64,
 }
 
 impl BatchOutcome {

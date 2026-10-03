@@ -284,7 +284,7 @@ fn an_x_turn_makes_the_chains_waiting_part_due() {
     dismantle_this_threads();
 }
 
-/// The collector's X arm notes its turn, and the arm of 64 batches does not.
+/// The collector's X arm notes its turn, and the arm of the proofs does not.
 /// Red with the arms swapped, and with every advance noted as the X arm's.
 #[test]
 fn only_the_x_arm_notes_an_x_turn() {
@@ -296,12 +296,11 @@ fn only_the_x_arm_notes_an_x_turn() {
     record.note_advanced_at(now);
     let x_turns = record.x_turns();
 
-    for _ in 0..crate::cycle::epoch::BATCHES_PER_EPOCH {
-        record.note_batch();
-    }
+    record.note_epoch_work(0, 1);
+    record.note_epoch_work(crate::cycle::epoch::SPENT_PER_PROOF, 0);
     let turnovers = record.turnovers();
     advance_the_epoch_if_due(record, now);
-    assert_eq!(record.turnovers(), turnovers + 1, "the batches turned it");
+    assert_eq!(record.turnovers(), turnovers + 1, "the proofs turned it");
     assert_eq!(record.x_turns(), x_turns, "and noted no X turn");
 
     advance_the_epoch_if_due(record, now + epoch_interval().as_nanos() as u64);

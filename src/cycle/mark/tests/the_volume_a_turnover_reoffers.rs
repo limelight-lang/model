@@ -10,9 +10,9 @@
 //!
 //! # Two readings, and why neither is one number
 //!
-//! The turnover period `N` is 64 of the collector's batches for the mutator
-//! (`crate::cycle::epoch::BATCHES_PER_EPOCH`), taken from YRC and never
-//! measured here. The probe's in-line collections stand in for those batches:
+//! The turnover period `N` is 64 collections ([`N`]), YRC's figure: the
+//! collector's turn is set by its proofs (`crate::cycle::epoch`, "The turn"),
+//! and the probe fixes a period of its own to read the lane against. The probe's in-line collections stand in for those batches:
 //! the harness turns the epoch cell after every `N` of them, as the
 //! collector's count would (`crate::cycle::worker`, "The epoch clock"). In
 //! production an in-line collection counts toward nothing, so the recall
@@ -60,13 +60,16 @@ use std::cell::Cell;
 use std::ptr;
 
 use super::*;
-use crate::cycle::epoch::{self, BATCHES_PER_EPOCH};
+use crate::cycle::epoch;
 use crate::cycle::queue::{
     deferred_count, refill_spares, release_queue_segments, reoffer_deferred_if_epoch_moved,
 };
 use crate::cycle::row::take_edge_dispatches;
 use crate::cycle::testing::{move_prop, on_a_fresh_thread};
 use crate::gc::ll_gc_collect_cycles;
+
+/// The probe's turnover period in collections, YRC's 64 (module doc).
+const N: u8 = 64;
 
 /// Live components built before each collection, and with the collection count
 /// the arrival rate the lane's growth answers.
@@ -169,7 +172,7 @@ fn drain() {
 /// collector's advance at `N` collections is made first, where it is due, by
 /// the harness standing in for it.
 fn poll_and_collect() -> usize {
-    if SINCE_THE_TURN.with(Cell::get) == BATCHES_PER_EPOCH {
+    if SINCE_THE_TURN.with(Cell::get) == N {
         turn_the_cell();
     }
 
@@ -251,7 +254,7 @@ fn a_recall_delay(death_at: usize, background: usize) -> usize {
             break collected;
         }
         assert!(
-            waited <= usize::from(BATCHES_PER_EPOCH),
+            waited <= usize::from(N),
             "a turnover closes inside one epoch's worth of collections"
         );
     };
@@ -308,7 +311,7 @@ fn a_deferred_death_waits_for_the_traffic_behind_it() {
             let expected = if background == 0 {
                 1
             } else {
-                usize::from(BATCHES_PER_EPOCH) - death_at + 1
+                usize::from(N) - death_at + 1
             };
             assert_eq!(
                 waited, expected,

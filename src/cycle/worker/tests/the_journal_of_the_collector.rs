@@ -166,9 +166,8 @@ fn each_cause_of_a_turnover_is_journaled_under_its_code() {
     testing::advance_epochs_after(Some(Duration::from_secs(60)));
 
     visit(record);
-    for _ in 0..crate::cycle::epoch::BATCHES_PER_EPOCH {
-        record.note_batch();
-    }
+    record.note_epoch_work(0, 1);
+    record.note_epoch_work(crate::cycle::epoch::SPENT_PER_PROOF, 0);
     visit(record);
     testing::advance_epochs_after(Some(Duration::from_millis(1)));
     std::thread::sleep(Duration::from_millis(5));
@@ -180,7 +179,7 @@ fn each_cause_of_a_turnover_is_journaled_under_its_code() {
 
     let read = counts.so_far();
     for code in [
-        TURNOVER_BY_BATCHES,
+        TURNOVER_BY_PROOFS,
         TURNOVER_BY_X,
         TURNOVER_NEW_LIFE,
         TURNOVER_BY_HAND,

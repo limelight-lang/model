@@ -404,9 +404,12 @@ pub(crate) struct TraceScratchArena {
     /// in-line collection.
     grants_behind: Option<GrantsBehind>,
     /// Readings of the recall made so far: with the countdown, the positions
-    /// this arena's trace has read, which a case reads.
-    #[cfg(test)]
+    /// this arena's trace has read, which the collector's epoch rule counts
+    /// as its work (`crate::cycle::epoch`, "The turn").
     recall_readings: usize,
+    /// Rows this arena's traces met for the first time since the open: a
+    /// completed batch's proof is priced per row (`crate::cycle::epoch`).
+    rows_met: usize,
     /// The collection's one reading of the epoch cell of the mutator whose
     /// graph this trace walks — the opening thread's own for an in-line
     /// collection, the served mutator's for a collector thread
@@ -448,6 +451,9 @@ pub(crate) struct TraceScratchArena {
     /// array first touched in that drain stands before; `None` before a
     /// final drain ([`note_the_final_drain`](Self::note_the_final_drain)).
     final_drain_from: Option<*mut RowArray>,
+    /// The positions and the rows met when the final drain began, from which
+    /// [`final_drain_work`](Self::final_drain_work) counts.
+    final_drain_at: (usize, usize),
     /// Which stamps the mark reads ([`StampReading`]): every target's on a
     /// collector thread, the unregistered targets' on the owner's, until a
     /// caller asks for none ([`read_no_stamp`](Self::read_no_stamp)).
@@ -559,8 +565,8 @@ impl TraceScratchArena {
             stops_at: crate::cycle::token::RECALL_WIND_DOWN,
             level_seen: crate::cycle::token::RECALL_NONE,
             grants_behind: None,
-            #[cfg(test)]
             recall_readings: 0,
+            rows_met: 0,
             turnovers,
             epoch,
             cursor: unsafe { payload.add(WORKSPACE_PREFIX_BYTES) },
@@ -573,6 +579,7 @@ impl TraceScratchArena {
             in_a_pass: false,
             regions_ended: false,
             final_drain_from: None,
+            final_drain_at: (0, 0),
             stamps: StampReading::UnregisteredTargets,
             components: TraceStack::new(),
             drops: DeferredDrops::new(),
@@ -788,6 +795,7 @@ impl TraceScratchArena {
         let first_visit = shadow::color(unsafe { *word }) == Color::Untouched;
         if first_visit {
             unsafe { word.write(shadow::compose(Color::Unclassified, refcount)) };
+            self.rows_met += 1;
         }
 
         RowLookup::Ready {
@@ -1201,6 +1209,22 @@ impl TraceScratchArena {
     /// drain ([`final_drain_from`](Self::final_drain_from)).
     pub(crate) fn note_the_final_drain(&mut self) {
         self.final_drain_from = Some(self.touched);
+        self.final_drain_at = (self.positions_inspected(), self.rows_met);
+    }
+
+    /// The positions read and the rows met since the final drain began: what
+    /// the walk of the live core cost, read at the mark's end, which prices
+    /// the stamps the batch writes on it (`crate::cycle::epoch`, "The turn").
+    /// Zero where no final drain began.
+    pub(crate) fn final_drain_work(&self) -> (usize, usize) {
+        if self.final_drain_from.is_none() {
+            return (0, 0);
+        }
+
+        (
+            self.positions_inspected() - self.final_drain_at.0,
+            self.rows_met - self.final_drain_at.1,
+        )
     }
 
     /// The touched list's head when the final drain began, or `None` where no
@@ -1421,9 +1445,9 @@ impl TraceScratchArena {
     #[cold]
     fn read_the_recall(&mut self) -> ControlFlow<()> {
         self.positions_to_the_reading = RECALL_STRIDE;
+        self.recall_readings += 1;
         #[cfg(test)]
         {
-            self.recall_readings += 1;
             if !self.traced_token.is_null()
                 && crate::cycle::worker::testing::recalls_at_the_reading(self.recall_readings)
             {
@@ -1533,8 +1557,9 @@ impl TraceScratchArena {
         self.recalled && self.level_seen == crate::cycle::token::RECALL_WIND_DOWN
     }
 
-    /// The positions this arena's trace has counted since the open.
-    #[cfg(test)]
+    /// The positions this arena's traces have counted since the open: the
+    /// cells, held entries and rows a collector's trace read toward the
+    /// recall. An in-line collection counts none.
     pub(crate) fn positions_inspected(&self) -> usize {
         self.recall_readings * RECALL_STRIDE + (RECALL_STRIDE - self.positions_to_the_reading)
     }

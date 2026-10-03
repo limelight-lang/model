@@ -488,7 +488,7 @@ const LOADS: [Load; 23] = [
     },
     // 70,000 live rings of one member, their roots registered once and
     // deferred when read live: more than 64 batches of K = 1,024 hold, so
-    // the deferred set outlasts an epoch's reading of it. Each iteration
+    // the deferred set outlasts a reading of 64 batches. Each iteration
     // builds one garbage ring of six.
     Load {
         name: "deferred-live-large",
@@ -595,7 +595,8 @@ fn churn_window() -> usize {
     })
 }
 
-/// Live rings of `deferred-live-large`: past 64 batches of `BATCH_BOUND`.
+/// Live rings of `deferred-live-large`: past 64 batches of `BATCH_BOUND`, YRC's
+/// collections an epoch.
 const DEFERRED_LARGE: usize = 70_000;
 
 /// Registrations the build of a registered-once live set makes between two
@@ -2873,7 +2874,7 @@ const JOURNAL_COLUMNS: &[JournalColumn] = &[
         REOFFERED_CHAIN_INTO_R,
         sum
     ),
-    journal_column!("turnover_by_batches", KIND_TURNOVER, TURNOVER_BY_BATCHES),
+    journal_column!("turnover_by_proofs", KIND_TURNOVER, TURNOVER_BY_PROOFS),
     journal_column!("turnover_by_x", KIND_TURNOVER, TURNOVER_BY_X),
     journal_column!("turnover_new_life", KIND_TURNOVER, TURNOVER_NEW_LIFE),
     journal_column!("turnover_by_hand", KIND_TURNOVER, TURNOVER_BY_HAND),
@@ -3673,7 +3674,7 @@ impl CellReading {
                 (stop.members_reclaimed - start.members_reclaimed).to_string(),
             ),
             (
-                "window_turnovers_by_batches",
+                "window_turnovers_by_proofs",
                 (stop.turnovers[0] - start.turnovers[0]).to_string(),
             ),
             (

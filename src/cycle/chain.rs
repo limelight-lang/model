@@ -274,14 +274,18 @@ const LAP_BACK_OFF_MAX: u8 = 3;
 
 /// Whether the death check may start a lap over `record`'s waiting part:
 /// always without `death-check-back-off`; under it, in the second half of an
-/// epoch and once 2^k epochs have passed since the last lap, k its back-off.
+/// epoch's work toward its turn — an epoch that proves nothing has none, and
+/// turns at X (`crate::cycle::epoch`, "The turn") — and once 2^k epochs have
+/// passed since the last lap, k its back-off.
 /// A death a lap does not reach is found by the ready part's reading after
 /// the turn, at the same count of operations, its slot held longer.
 fn may_lap(record: &MutatorRecord) -> bool {
     #[cfg(feature = "death-check-back-off")]
     {
         let (lapped_at, back_off) = record.lap_state();
-        record.batches_since_the_advance() >= crate::cycle::epoch::BATCHES_PER_EPOCH / 2
+        let (spent, proving) = record.epoch_work();
+        proving > 0
+            && spent >= crate::cycle::epoch::SPENT_PER_PROOF * proving / 2
             && record.turnovers().wrapping_sub(lapped_at) >= 1 << back_off
     }
     #[cfg(not(feature = "death-check-back-off"))]

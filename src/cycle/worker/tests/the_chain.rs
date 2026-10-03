@@ -367,9 +367,10 @@ fn under_the_back_off_a_death_p_had_no_room_for_is_the_laps_next_post() {
         Served::Batch { roots: 3, .. }
     ));
     let record = unsafe { &*record() };
-    while record.batches_since_the_advance() < crate::cycle::epoch::BATCHES_PER_EPOCH / 2 {
-        record.note_batch();
-    }
+    // A proof stands, and the work since it reaches the second half of the
+    // epoch's way to its turn.
+    record.note_epoch_work(0, 1);
+    record.note_epoch_work(1, 0);
 
     unsafe {
         release_keeper(kept[0].1);
@@ -720,9 +721,13 @@ fn under_the_back_off_a_fresh_entry_waits_for_a_lap() {
     assert_eq!(roots_of_this_threads().1.len(), 2);
 
     let record = unsafe { &*record() };
-    while record.batches_since_the_advance() < crate::cycle::epoch::BATCHES_PER_EPOCH / 2 {
-        record.note_batch();
-    }
+    // A proof stands, and the work since it is short of half the way to the
+    // turn: no lap yet. Red with a gate any proof opens.
+    const PROOF: u64 = u64::MAX / 8;
+    record.note_epoch_work(0, PROOF);
+    let _ = a_checking_serve();
+    assert_eq!(testing::take_chain_figures().laps, 0, "the first half");
+    record.note_epoch_work(PROOF, 0);
     let _ = a_checking_serve();
     let figures = testing::take_chain_figures();
     assert_eq!((figures.laps, figures.headers_checked_in_a_lap), (1, 2));
@@ -746,9 +751,10 @@ fn a_lap_that_found_nothing_raises_the_back_off_and_one_that_found_a_death_reset
     let kept = unsafe { kept_roots(&mut arena, node, 2) };
     assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
     let record = unsafe { &*record() };
-    while record.batches_since_the_advance() < crate::cycle::epoch::BATCHES_PER_EPOCH / 2 {
-        record.note_batch();
-    }
+    // A proof stands, and the work since it reaches the second half of the
+    // epoch's way to its turn.
+    record.note_epoch_work(0, 1);
+    record.note_epoch_work(1, 0);
 
     let _ = testing::take_chain_figures();
     let _ = a_checking_serve();
@@ -895,9 +901,10 @@ fn a_barren_laps_back_off_holds_the_next_epochs_lap() {
     assert!(matches!(served_by_a_collector(), Served::Batch { .. }));
     let record = unsafe { &*record() };
     let into_the_second_half = || {
-        while record.batches_since_the_advance() < crate::cycle::epoch::BATCHES_PER_EPOCH / 2 {
-            record.note_batch();
-        }
+        // A proof stands, and the work since it reaches the second half of the
+        // epoch's way to its turn.
+        record.note_epoch_work(0, 1);
+        record.note_epoch_work(1, 0);
     };
     into_the_second_half();
     let _ = testing::take_chain_figures();

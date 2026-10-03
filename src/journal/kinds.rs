@@ -237,8 +237,10 @@ pub const REOFFERED_CHAIN_EXPIRED: u64 = 3;
 /// [`KIND_REOFFERED`]: the chain spliced into R.
 pub const REOFFERED_CHAIN_INTO_R: u64 = 4;
 
-/// [`KIND_TURNOVER`]: the collector's batches since the last advance.
-pub const TURNOVER_BY_BATCHES: u64 = 0;
+/// [`KIND_TURNOVER`]: the collector's work since the last advance reached
+/// `SPENT_PER_PROOF` times what its stamps cost to prove. Before 2026-10-03
+/// the code named the turn after 64 batches, which it replaced.
+pub const TURNOVER_BY_PROOFS: u64 = 0;
 /// [`KIND_TURNOVER`]: X of the collector's clock since the last advance.
 pub const TURNOVER_BY_X: u64 = 1;
 /// [`KIND_TURNOVER`]: the record's new life.

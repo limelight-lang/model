@@ -56,23 +56,34 @@ use crate::cycle::row;
 use crate::cycle::shadow::RowArray;
 use crate::refcount::{SlotState, slot_state, stamp_as_read_live};
 
+/// What a walk of the stamps did: whether the recall stopped it, and the
+/// stamps it wrote — rows it found stamped in the epoch already not counted.
+pub(crate) struct Walk {
+    pub(crate) stopped: bool,
+    pub(crate) stamps: usize,
+}
+
 /// Stamp `{e, 1}`, `e` the arena's epoch, on every entity a completed trace's
 /// scan left live in an array first touched in the mark's final drain, the
-/// oldest array first, reading the recall every stride of rows: `Break` where
-/// it stood, the stamps written before the reading kept. Nothing where no
-/// final drain ran.
+/// oldest array first, reading the recall every stride of rows and stopping
+/// where it stood, the stamps written before the reading kept. Nothing where
+/// no final drain ran.
 ///
 /// # Safety
 /// The trace completed on this thread under the traced mutator's token, which
 /// the thread still holds, and its rows still stand: after the scan and before
 /// the arena's reset.
-pub(crate) unsafe fn stamp_the_final_drain(arena: &mut TraceScratchArena) -> ControlFlow<()> {
+pub(crate) unsafe fn stamp_the_final_drain(arena: &mut TraceScratchArena) -> Walk {
+    let mut stamps = 0;
     let Some(stop) = arena.final_drain_from() else {
-        return ControlFlow::Continue(());
+        return Walk {
+            stopped: false,
+            stamps,
+        };
     };
 
     #[cfg(test)]
-    let (from, mut stamped, mut raised_at) = (std::time::Instant::now(), 0, None);
+    let (from, mut raised_at) = (std::time::Instant::now(), None);
     let epoch = arena.epoch();
     let run = unsafe { Reversed::new(arena.touched_head(), stop) };
     let mut array = run.head;
@@ -94,13 +105,14 @@ pub(crate) unsafe fn stamp_the_final_drain(arena: &mut TraceScratchArena) -> Con
                     return ControlFlow::Continue(());
                 }
 
-                stamp_as_read_live(entity, epoch);
+                if !stamp_as_read_live(entity, epoch) {
+                    return ControlFlow::Continue(());
+                }
+
+                stamps += 1;
                 #[cfg(test)]
-                {
-                    stamped += 1;
-                    if testing::note_stamped(entity) {
-                        raised_at = Some(arena.positions_inspected());
-                    }
+                if testing::note_stamped(entity) {
+                    raised_at = Some(arena.positions_inspected());
                 }
                 ControlFlow::Continue(())
             })
@@ -111,14 +123,17 @@ pub(crate) unsafe fn stamp_the_final_drain(arena: &mut TraceScratchArena) -> Con
     drop(run);
     #[cfg(test)]
     {
-        testing::note_stamping(stamped, from.elapsed());
+        testing::note_stamping(stamps, from.elapsed());
         if let Some(raised_at) = raised_at {
             crate::cycle::worker::testing::note_positions_after_the_hook(
                 arena.positions_inspected() - raised_at,
             );
         }
     }
-    walked
+    Walk {
+        stopped: walked.is_break(),
+        stamps,
+    }
 }
 
 /// A run of the touched list, from its head up to the array `stop`, reversed

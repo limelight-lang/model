@@ -453,6 +453,54 @@ fn the_walk_stamps_the_oldest_arrays_first() {
     unsafe { let_the_state_go(&mut arena, state) };
 }
 
+/// A batch that stamps the ring prices its proof at its final drain's walk
+/// and counts none of its own positions toward the turn; the next batch, which
+/// prunes at the stamps, counts its positions and proves nothing. The turn
+/// comes once those positions reach twice the price
+/// (`crate::cycle::epoch`, "The turn"). Red with no price written, and with
+/// the proving batch's own positions counted.
+#[test]
+fn a_batch_prices_its_proof_and_the_next_pays_toward_the_turn() {
+    let _g = test_guard();
+    reset_lanes();
+    let _ = a_nonzero_epoch();
+    let mut arena = Arena::new();
+    let state = unsafe {
+        a_state_behind_a_held_entry(
+            &mut arena,
+            "PricedState",
+            member_class("PricedMember"),
+            RING,
+        )
+    };
+    let record = unsafe { &*record() };
+    record.advance_the_epoch(
+        crate::cycle::worker::serve_clock_now(),
+        crate::journal::kinds::TURNOVER_BY_HAND,
+    );
+    record.set_batch_size(1);
+    let _ = served_by_a_collector();
+    let (spent, proving) = record.epoch_work();
+    assert!(proving > 0, "the stamps were priced");
+    assert_eq!(
+        spent, 0,
+        "the proving batch's own walk counts toward nothing"
+    );
+    unsafe { ll_gc_maybe_collect() };
+
+    unsafe { register(state.ring[0]) };
+    record.set_batch_size(1);
+    let _ = served_by_a_collector();
+    assert!(
+        record.epoch_work().0 > 0,
+        "the next batch's positions count"
+    );
+    assert_eq!(record.epoch_work().1, proving, "and it proved nothing");
+
+    unsafe { ll_gc_maybe_collect() };
+    unsafe { let_the_state_go(&mut arena, state) };
+}
+
 /// A stop raised inside the stamps' walk is read within a stride of rows and
 /// ends the batch before the release, and the stamps written before it stay:
 /// they are live rows of a trace that completed (`dev/S65-PLAN-CRITIC.md`,
