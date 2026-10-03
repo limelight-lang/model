@@ -371,7 +371,7 @@ Notes: dev/plans/S65.md
       closed 2026-09-29, not built: Edmond, "нет не строим - это ухудшит
         release код" — the count stands on the release build's decrement
         path (`dev/DECISIONS.md`, 2026-09-29).
-- [ ] S65.17 The rig's run: three placements, three arms
+- [x] S65.17 The rig's run: three placements, three arms
       done: the placements of F6 and the S64 analysis (C−1 mutators and the
         collector on its own core, C mutators and the collector competing,
         C+1 mutators under `cap 0`) measured under each arm and recorded in
@@ -393,6 +393,13 @@ Notes: dev/plans/S65.md
         turnover period `N` is unruled"; the grant of 1,024 parts G is
         compared against is re-measured on that build, S65.27 having changed
         the batch's sizing.
+      handoff: 2026-10-03 on the four-core cloud box, three usable cores, 63
+        cells (`dev/BENCHMARKS.md`, "S65.17"): no take waited in any cell, so
+        the stride N stands; X turns the arena loads' epochs and every web
+        cell frees inside the drain; M is never reached; a grant on
+        `web-arena-40k` lasts up to 185 ms with up to 582 blocks withheld at
+        its release against `BLOCKS_MARK` 16. G is put to Edmond beside Q2.
+        The grant of 1,024 parts is gone with the parts (S67.9 step (c)).
 - [x] S65.18 The price of a batch that goes on past a part at B (Edmond,
         2026-09-24, on S65.9's second Critic round, finding 1)
       dropped 2026-10-01: the parts, B and `B_max` went with S67.9 step (c)

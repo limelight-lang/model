@@ -8,6 +8,58 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-03 — S65.17: cap 1, cap 4 and cap 0 on the default build: no take waited in 63 cells; a grant on `web-arena-40k` lasts up to 97–185 ms and the mutator's withheld blocks reach 129–582 at its release, against a mark of 16
+
+**The run.** The default build at `c52ff90` (binary `ae85a184e925`), on the
+four-core cloud box of S67.6, F6's placements with three usable cores: cap 1
+two mutators on CPUs 1–2 and the collector on 3; cap 4 three mutators on 1–3
+and the collectors on 1, 2, 3 and 0, competing; cap 0 four mutators on 0–3.
+The modes differ in their mutator count by design, so a per-operation figure
+compares placements, not the collector alone. Seven loads paced as S65.42
+paced them (`web-arena-40k` at 27.5 ms), 10 s and a 12 s drain, three
+repeats, 63 cells, none failed; other CPU at most 0.61 of a core. CPU per
+operation is the rig's (no PMU, so no instructions). Medians of three:
+
+| load | CPU µs an op cap 1 / cap 4 / cap 0 | iterations over 200 µs | longest grant µs cap 1 / cap 4 | collector CPU ms cap 1 / cap 4 / cap 0 |
+| --- | --- | --- | --- | --- |
+| live-churn | 85.8 / 80.9 / 134 | 1,350 / 1,700 / 3,580 | 2,200 / 3,070 | 501 / 722 / 19 |
+| live-churn-dies-by-count | 60.1 / 61.5 / 79.3 | 259 / 388 / 767 | 3,270 / 5,000 | 353 / 519 / 97 |
+| deferred-then-dead | 29.8 / 28.3 / 33.0 | 36 / 43 / 121 | 832 / 839 | 60 / 89 / 13 |
+| deferred-live-large | 27.8 / 27.7 / 31.6 | 18 / 40 / 142 | 1,420 / 1,260 | 111 / 163 / 11 |
+| registered-ring-interleaved | 930 / 941 / 877 | 206 / 512 / 45 | 3,670 / 4,830 | 525 / 887 / 22 |
+| disjoint-live | 26.4 / 26.4 / 27.2 | 4 / 6 / 7 | 0 / 0 | 0 / 0 / 0 |
+| web-arena-40k | 3,140 / 3,080 / 3,570 | 727 / 1,090 / 1,450 | 105,000 / 113,000 | 2,460 / 6,360 / 4 |
+
+**What each figure says.**
+- No take waited on its token in any cell (`token_wait_longest_us` 0
+  throughout): the mutator's own collections never met a grant they had to
+  wait out, so the recall stride N (1,024 positions) is not what bounds a
+  mutator here, and it stands.
+- Cap 0 moves the collection onto the mutators: CPU an operation +56 % on
+  `live-churn`, +32 % on `live-churn-dies-by-count`, +11–14 % on the
+  deferred loads and +14 % on `web-arena-40k` against cap 1, and two to eight
+  times the iterations past 200 µs; `registered-ring-interleaved` alone reads
+  cheaper at cap 0 (−6 %, 45 long iterations against 206).
+- The deaths' mark M (8,192) is never reached on these loads: the withheld
+  deaths peak at 64–1,710. `web-arena-40k` recalls at the blocks' mark: 53
+  times at the mark and 42 at the second in a cap-1 cell, 200 and 138 at cap
+  4. Yet the grant it recalls lasts up to 97–185 ms, the returns withheld
+  under a trace wait 5.5 ms on the mean at cap 1 and 6.3 ms at cap 4 (3,086
+  and 11,371 of them), and the blocks withheld at a release reach 129–582,
+  8–36 times the mark of 16. The recall is read; what holds the token past
+  it is the collector's work after the stop and the grant behind another
+  mutator's batch (`dev/plans/S67.md`, S67.9, Q2's figures), which no
+  stride shortens.
+- X: the arena loads turn their epoch by X (S67.6), and every cell of this
+  run frees its web garbage inside the drain.
+
+**Put to Edmond:** whether a grant needs G, a bound in touched blocks, with
+these figures — a grant of up to 185 ms and 582 withheld blocks (36 MiB) at
+its release on `web-arena-40k` — beside Q2's second recall level, which
+asks the same of the collector's stop.
+
+Scratchpad: `s6517/cells.csv`, `s6517.py`, not kept.
+
 ## 2026-10-03 — S67.6: D and HG on the web loads, on a four-core box without counters: best HG is dropped, dearer than best D on the collector in every `web-heap` repeat; the best D cuts `web-heap`'s mean garbage 6.5 times and frees every cell inside the drain, where D leaves garbage behind in six of fifteen
 
 **The box, and what of S67.1's protocol it could not run.** A cloud
