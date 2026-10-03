@@ -4186,6 +4186,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     ));
     testing::pin_collectors_to(&cell.collector_cpus);
     set_collector_cap(cell.cap);
+    testing::time_the_withheld_returns(true);
     let _ = testing::take_spawns();
     let _ = testing::take_collectors_pinned();
     let _ = testing::take_collector_lives();
@@ -4782,6 +4783,7 @@ fn the_rigs_figures_read_their_known_answers() {
 fn the_split_by_segment_reads_a_hold_the_case_sets() {
     const HELD: Duration = Duration::from_millis(20);
     let _g = test_guard();
+    testing::time_the_withheld_returns(true);
     let token = &unsafe { &*super::record() }.token;
     let _ = testing::take_withheld_by_segment();
     assert!(token.claim_for_test(ELDER), "the token was free");

@@ -860,7 +860,22 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
     }
 
     let token = unsafe { &(*record).token };
-    let mut seen = token.read();
+    let seen = token.read();
+    match state(seen) {
+        FREE => Reading::Free,
+        COLLECTOR => Reading::Collector,
+        MUTATOR => Reading::Mutator,
+        _ => act_on_the_byte(token, seen),
+    }
+}
+
+/// [`read_and_act_on_this_thread`] past the three states that ask for no act:
+/// a request's consent and `POSTED`'s arming, out of the line of every free
+/// the reading sits on, whose body would otherwise keep two more registers
+/// (`dev/plans/S65.md`, S65.30, the free's price).
+#[cold]
+#[inline(never)]
+fn act_on_the_byte(token: &TraceToken, mut seen: u8) -> Reading {
     loop {
         match state(seen) {
             FREE => return Reading::Free,

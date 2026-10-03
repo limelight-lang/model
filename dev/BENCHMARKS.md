@@ -8,6 +8,41 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-03 — S65.30: the free against S65.7's — 44.13 instructions a returned free as at S65.7 once the slot entry stays out of `ll_free`'s line, and the poll at 172; the test probe's 47 ns withheld free was the rig's clock
+
+**The production count.** A scratch binary over the library without
+`cfg(test)` (`ll_thread_init`, then 100 rounds of 20,000 `ll_malloc(64)`
+freed by `ll_c_free`), `valgrind --tool=callgrind --toggle-collect=ll_c_free`,
+two million frees, at S65.7's commit `6e87d71` and on the tree:
+
+| build | instructions a free | median ns a free, 5 runs |
+| --- | ---: | ---: |
+| S65.7 `6e87d71` | 44.13 | 3.89–4.41 |
+| the tree, `withhold_under_a_trace_or_make_returns` inlined | 48.13 | 4.98–5.19 |
+| the tree, it kept out of line (`#[inline(never)]`) | 44.13 | 4.37–4.60 |
+
+The four instructions were two more registers saved and restored by
+`ll_free`, whose body grew by the slot entry LLVM inlined once the byte's
+reading had grown (the arming of `POSTED`'s three readings, the consent's
+withheld recall); S65.7's build called it. The byte's reading keeps its three
+plain states inline and acts on the rest out of line (`token::act_on_the_byte`),
+which brings the poll's count (the S65.30 entry below, same method) from 181
+on the tree to 172, against the stage's base's 175.
+
+**The test probe** (`what_a_foreign_holder_costs`, run against S65.7's test
+binary on CPU 2) first read the withheld slot free at 47 ns against 4.5 and
+the returned at 41 against 23: test hooks on every free — the rig's timing
+of each withheld return (two clock readings), and two mutexes taken on every
+drain (a case's hook before the returns, the rig's reading at a release).
+Each now reads an atomic first and skips; the rig turns the timing on
+(`testing::time_the_withheld_returns`). After that the returned slot free reads
+10.0–11.5 ns against S65.7's 22.6–24.5 (whose drain took the hook's mutex too)
+and the withheld 6.0–7.0 against 4.5–5.5; the production build has no foreign
+holder to time a withheld free with, and its withheld path is S65.7's — a call
+into the slot entry, the byte's reading, the push and the count, whose two
+crossings now share one test that reads two compares below the first mark, as
+S65.7's one crossing did.
+
 ## 2026-10-03 — S67.15: the epoch's ratio at 2, 4 and 8 — on `web-heap` 4 cuts the collector's CPU by a fifth and the mean garbage by two fifths against 2, and 8 turns no epoch by proofs and lets the garbage grow
 
 **The run.** One test binary of the rig at `7a47efb` in release

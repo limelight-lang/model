@@ -1278,8 +1278,22 @@ thread_local! {
         const { std::cell::RefCell::new(WithheldBySegment::EMPTY) };
 }
 
+/// Whether the returns withheld are timed by segment: the rig's cells and the
+/// case of the split turn it on, so that a probe of the free path prices the
+/// path and one load rather than two readings of the clock a return.
+static TIMES_THE_WITHHELD: AtomicBool = AtomicBool::new(false);
+
+/// Time the returns withheld by segment from here on, or stop.
+pub(crate) fn time_the_withheld_returns(on: bool) {
+    TIMES_THE_WITHHELD.store(on, Ordering::Relaxed);
+}
+
 /// Count a return this thread withholds under a foreign holder of its token.
 pub(crate) fn note_a_return_withheld() {
+    if !TIMES_THE_WITHHELD.load(Ordering::Relaxed) {
+        return;
+    }
+
     let record = crate::cycle::mutator_record::this_thread_record();
     if record.is_null() {
         return;
@@ -1298,6 +1312,10 @@ pub(crate) fn note_a_return_withheld() {
 /// Close the time of every return this thread withheld: the drain gave
 /// every stack back.
 pub(crate) fn note_the_returns_given_back() {
+    if !TIMES_THE_WITHHELD.load(Ordering::Relaxed) {
+        return;
+    }
+
     let now = segment_clock_now();
     WITHHELD_BY_SEGMENT.with(|withheld| {
         let mut withheld = withheld.borrow_mut();
@@ -1467,6 +1485,11 @@ pub(crate) fn note_withheld_at_the_crossing(stack: usize, held: usize) {
 /// Note the three stacks' counts as a release's drain begins, each one that
 /// holds anything.
 pub(crate) fn note_withheld_at_the_release(held: [usize; 3]) {
+    // Every free's drain reaches here, almost always with nothing held.
+    if held == [0; 3] {
+        return;
+    }
+
     let mut readings = lock(&WITHHELD_READINGS);
     for (stack, &held) in held.iter().enumerate().filter(|(_, held)| **held > 0) {
         readings.releases[stack] += 1;

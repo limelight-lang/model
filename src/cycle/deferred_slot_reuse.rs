@@ -818,7 +818,11 @@ impl Drop for ActiveTrace {
 /// sentinel `ptr` addresses an entity rather than the block itself — the push
 /// writes the stack link into `ptr`'s byte 8, and a block base passed under
 /// any other kind would land it in the block's own header.
-#[inline]
+///
+/// Out of the free's line: inlined, its three arms keep two more registers
+/// in every free's body than the call costs (`dev/plans/S65.md`, S65.30, the
+/// free's price).
+#[inline(never)]
 pub(crate) unsafe fn withhold_under_a_trace_or_make_returns(ptr: *mut u8, kind: u32) -> bool {
     let control = DEFERRED_RETURNS.with(Cell::get);
     if !control.is_null() {
@@ -1509,7 +1513,14 @@ impl ForeignStack {
         let before = self.held.get();
         let held = before + weight;
         self.held.set(held);
-        if before < mark && held >= mark {
+        // Both crossings under one test, which below the first mark is the
+        // two compares one crossing took (`dev/plans/S65.md`, S65.30, the
+        // free's price).
+        if before >= STOP_MARKS * mark || held < mark {
+            return;
+        }
+
+        if before < mark {
             #[cfg(test)]
             crate::cycle::worker::testing::note_withheld_at_the_crossing(
                 [DEATHS_MARK, CHUNKS_MARK, BLOCKS_MARK]
@@ -1521,7 +1532,7 @@ impl ForeignStack {
             crate::cycle::token::recall_this_threads_token(crate::cycle::token::RECALL_WIND_DOWN);
         }
 
-        if before < STOP_MARKS * mark && held >= STOP_MARKS * mark {
+        if held >= STOP_MARKS * mark {
             crate::cycle::token::recall_this_threads_token(crate::cycle::token::RECALL_STOP);
         }
     }
@@ -1693,23 +1704,38 @@ type HookBeforeTheReturns = (std::thread::ThreadId, Box<dyn FnOnce() + Send>);
 static BEFORE_THE_NEXT_RETURNS: std::sync::Mutex<Option<HookBeforeTheReturns>> =
     std::sync::Mutex::new(None);
 
+/// Whether [`BEFORE_THE_NEXT_RETURNS`] may hold a hook, written under its
+/// lock: every free's drain reads this rather than taking the mutex, so that
+/// a probe of the free path prices the path.
+#[cfg(test)]
+static A_HOOK_BEFORE_THE_RETURNS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Run `act` at the start of this thread's next drain of the withheld returns.
 #[cfg(test)]
 pub(crate) fn before_the_next_returns(act: Box<dyn FnOnce() + Send>) {
-    *BEFORE_THE_NEXT_RETURNS
+    let mut hook = BEFORE_THE_NEXT_RETURNS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-        Some((std::thread::current().id(), act));
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *hook = Some((std::thread::current().id(), act));
+    A_HOOK_BEFORE_THE_RETURNS.store(true, std::sync::atomic::Ordering::Release);
 }
 
 #[cfg(test)]
 fn run_the_hook_before_the_returns() {
+    if !A_HOOK_BEFORE_THE_RETURNS.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+
     let act = {
         let mut hook = BEFORE_THE_NEXT_RETURNS
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match hook.take() {
-            Some((thread, act)) if thread == std::thread::current().id() => Some(act),
+            Some((thread, act)) if thread == std::thread::current().id() => {
+                A_HOOK_BEFORE_THE_RETURNS.store(false, std::sync::atomic::Ordering::Relaxed);
+                Some(act)
+            }
             other => {
                 *hook = other;
                 None
