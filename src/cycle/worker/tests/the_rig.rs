@@ -3996,6 +3996,16 @@ impl CellReading {
             stamping.longest.as_micros().to_string(),
         ];
         fields.extend(STAMPING_COLUMNS.into_iter().zip(values));
+        // What a stamp the walks wrote saved the marks after it: the edges the
+        // collector's marks left unexpanded, over the stamps written in the
+        // same window (`dev/plans/S67.md`, the external review's R5, the Sage).
+        fields.push((
+            "web_edges_pruned_per_stamp",
+            format!(
+                "{:.3}",
+                self.scheme.collector_edges_pruned as f64 / stamping.stamps.max(1) as f64
+            ),
+        ));
         let (sets, members, members_most) = web.sets;
         let resets = web.resets;
         let resets_made = resets.resets.max(1) as u128;
