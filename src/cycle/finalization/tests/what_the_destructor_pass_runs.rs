@@ -35,7 +35,7 @@ fn a_pending_destructor_runs_once_over_the_whole_finalization() {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [ring[0] as *mut RcHeader, ring[1] as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
         ValidationResult::Unreachable
     );
 
@@ -108,7 +108,7 @@ fn a_member_carrying_no_class_word_is_passed_over() {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [holder as *mut RcHeader, array as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
         ValidationResult::Unreachable,
         "the property and the element are the only two references there are"
     );

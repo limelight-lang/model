@@ -47,7 +47,7 @@ fn stamped(epoch: u32, age: u32) -> MaturationStamp {
 unsafe fn commit_reading_live(members: &mut [*mut RcHeader]) {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(members)) },
+        unsafe { finalization.confirm(&Membership::listed(members), None) },
         ValidationResult::ExternallyReferenced,
         "the fixture holds this component from outside"
     );
@@ -279,7 +279,7 @@ unsafe fn a_component_read_unreachable_takes_no_stamp(classes: [*const crate::cl
 
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut membership)) },
+        unsafe { finalization.confirm(&Membership::listed(&mut membership), None) },
         ValidationResult::Unreachable
     );
 
@@ -329,7 +329,7 @@ fn a_resurrected_component_is_stamped_at_the_second_reading() {
 
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut component)) },
+        unsafe { finalization.confirm(&Membership::listed(&mut component), None) },
         ValidationResult::Unreachable
     );
     assert_eq!(

@@ -164,6 +164,55 @@ fn a_set_garbage_whole_reserves_its_outside_children_by_the_drain() {
     }
 }
 
+/// A set garbage whole whose member takes a reference from outside between
+/// the trace and the commit: the members' counts no longer sum to the internal
+/// edges the drain read, the commit falls to the exact validation, which reads
+/// the reference, and nothing is freed. Red on a commit that takes the trace's
+/// answer for a set found garbage whole (`dev/plans/S67.md`, S67.12).
+#[test]
+fn a_reference_taken_after_the_trace_sends_a_set_garbage_whole_to_the_validation() {
+    let _g = test_guard();
+    let node = ClassBuilder::new("PostedSetRacedRingNode")
+        .prop("next", true)
+        .build();
+    let mut arena = Arena::new();
+    let ring = unsafe { long_ring(&mut arena, node, 3) };
+    let keeper = unsafe { held(&mut arena, keeper_class("PostedSetRacedKeeper")) };
+    assert_eq!(stand_in_posts(1, Verdict::Proposed), Posted::Batch(1));
+    post_for_test(&headers(&ring));
+
+    let _ = crate::cycle::trace::take_sets_garbage_whole();
+    {
+        let _race = crate::cycle::collect::InjectedVerdictRace::arm(&mut arena, keeper, ring[0]);
+        assert_eq!(unsafe { ll_gc_maybe_collect() }, 0, "nothing is freed");
+    }
+    assert_eq!(
+        crate::cycle::trace::take_sets_garbage_whole(),
+        1,
+        "the trace found the set garbage whole"
+    );
+    for &member in &ring {
+        assert_eq!(
+            unsafe { slot_state(member as *const RcHeader) },
+            SlotState::Live,
+            "the keeper's reference holds the ring"
+        );
+    }
+
+    // The keeper lets the ring go, and the ring is garbage for the next
+    // collection to find.
+    unsafe {
+        crate::test_support::store_prop(
+            &mut arena,
+            keeper,
+            crate::test_support::prop_offset(0),
+            std::ptr::null_mut(),
+        );
+        let_go(keeper);
+        crate::gc::ll_gc_collect_cycles();
+    }
+}
+
 /// A member whose block goes back under `POSTED` — a member proposed wrongly,
 /// which died since — drops the set before the pool can hand the block on, in
 /// the pooled form through `put` and in the run form before the unmapping; the

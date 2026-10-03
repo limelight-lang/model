@@ -485,6 +485,7 @@ pub(crate) unsafe fn drain_within_the_met<R: CellReader>(
                 && let Some(row) = unsafe { find_initialized_row(key) }
             {
                 unsafe { shadow::subtract(row, 1, !R::CONCURRENT) };
+                arena.note_a_cell_subtracted();
             } else {
                 arena.note_a_cell_left_out();
             }

@@ -103,7 +103,7 @@ fn a_destructor_reads_null_through_the_cell_naming_the_other_member() {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [target as *mut RcHeader, probe as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
         ValidationResult::Unreachable,
         "the ring is held by nothing outside it"
     );
@@ -177,7 +177,7 @@ fn a_destructor_of_one_component_reads_null_through_a_cell_naming_another() {
     ];
     for members in &mut components {
         assert_eq!(
-            unsafe { finalization.confirm(&Membership::listed(members)) },
+            unsafe { finalization.confirm(&Membership::listed(members), None) },
             ValidationResult::Unreachable
         );
     }
@@ -253,7 +253,7 @@ fn every_destructor_of_the_finalization_reads_null_through_the_other_s_cell() {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
         ValidationResult::Unreachable
     );
     let invalidated = finalization.seal();
@@ -315,7 +315,7 @@ fn a_release_inside_a_destructor_stops_at_the_other_member_s_guard() {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [target as *mut RcHeader, probe as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut members)) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
         ValidationResult::Unreachable
     );
     assert_eq!(

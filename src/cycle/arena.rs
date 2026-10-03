@@ -513,6 +513,14 @@ pub(crate) struct TraceScratchArena {
     /// The cells the drain within the met read whose child it subtracted from
     /// no row, since its start ([`crate::cycle::mark::drain_within_the_met`]).
     cells_left_out: usize,
+    /// The cells the same drain subtracted from a row.
+    cells_subtracted: usize,
+    /// The internal edges a trace within a set read off its drain where it
+    /// found the set garbage whole, for the commit to check the members'
+    /// counts against in place of the exact validation
+    /// (`crate::cycle::finalization::Finalization::confirm`); `None` where no
+    /// such trace ran.
+    internal_edges_read: Option<usize>,
     /// The external children a trace within a set read off its drain where
     /// it found the set garbage whole, for the teardown to reserve by in place
     /// of its own walk of the cells (`crate::cycle::reclamation`); `None`
@@ -687,7 +695,9 @@ impl TraceScratchArena {
             level_seen: crate::cycle::token::RECALL_NONE,
             grants_behind: None,
             cells_left_out: 0,
+            cells_subtracted: 0,
             external_children_read: None,
+            internal_edges_read: None,
             #[cfg(test)]
             swept: std::time::Duration::ZERO,
             recall_readings: 0,
@@ -975,6 +985,7 @@ impl TraceScratchArena {
         // pointer into an array this call is about to unstamp.
         self.worklist.rewind();
         self.external_children_read = None;
+        self.internal_edges_read = None;
         // The held entries carry row pointers the same way.
         self.held.rewind();
         self.held_next.rewind();
@@ -1667,6 +1678,13 @@ impl TraceScratchArena {
     /// Start the count of cells a drain within the met leaves out.
     pub(crate) fn start_counting_cells_left_out(&mut self) {
         self.cells_left_out = 0;
+        self.cells_subtracted = 0;
+    }
+
+    /// Count a cell the drain within the met subtracted from a row.
+    #[inline]
+    pub(crate) fn note_a_cell_subtracted(&mut self) {
+        self.cells_subtracted += 1;
     }
 
     /// Count a cell the drain within the met subtracted from no row.
@@ -1676,10 +1694,17 @@ impl TraceScratchArena {
     }
 
     /// Keep the cells the drain left out as the external children of a set
-    /// it found garbage whole: every met row is a member, so a cell is
-    /// external exactly where the drain subtracted from no row.
+    /// it found garbage whole, and the cells it subtracted as its internal
+    /// edges: every met row is a member, so a cell is external exactly where
+    /// the drain subtracted from no row.
     pub(crate) fn keep_the_cells_left_out_as_external_children(&mut self) {
         self.external_children_read = Some(self.cells_left_out);
+        self.internal_edges_read = Some(self.cells_subtracted);
+    }
+
+    /// The internal edges a trace kept, which it forgets.
+    pub(crate) fn take_internal_edges_read(&mut self) -> Option<usize> {
+        self.internal_edges_read.take()
     }
 
     /// The external children a trace kept, which it forgets.

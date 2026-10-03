@@ -1447,7 +1447,7 @@ unsafe fn commit_before_drops<'a>(
     let initial = if members.len() == 0 {
         ValidationResult::ZeroCountMember
     } else {
-        unsafe { finalization.confirm(members) }
+        unsafe { finalization.confirm(members, arena.take_internal_edges_read()) }
     };
     initial_disposition(initial);
     let confirmed = initial == ValidationResult::Unreachable;

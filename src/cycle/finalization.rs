@@ -264,8 +264,22 @@ impl Finalization {
     /// thread's GC heap whose slot is still its own, and the call runs on the
     /// owning thread with no mutator beside it. The invalidation reads the
     /// same headers under the same rule.
-    pub(crate) unsafe fn confirm(&mut self, members: &Membership<'_>) -> ValidationResult {
-        let result = unsafe { validate_component(members, 0) };
+    pub(crate) unsafe fn confirm(
+        &mut self,
+        members: &Membership<'_>,
+        internal_edges: Option<usize>,
+    ) -> ValidationResult {
+        let result = match internal_edges {
+            Some(edges) if unsafe { counts_sum_to(members, edges) } => {
+                debug_assert_eq!(
+                    unsafe { validate_component(members, 0) },
+                    ValidationResult::Unreachable,
+                    "the counts that sum to the internal edges validate"
+                );
+                ValidationResult::Unreachable
+            }
+            _ => unsafe { validate_component(members, 0) },
+        };
         if result != ValidationResult::Unreachable {
             if result == ValidationResult::ExternallyReferenced {
                 unsafe { stamp_component(members, self.epoch) };
@@ -309,6 +323,24 @@ impl Finalization {
             _not_send: PhantomData,
         }
     }
+}
+
+/// Whether the counts of `members` sum to `edges`, the internal edges the
+/// drain of a trace within a set subtracted where it found the set garbage
+/// whole: every member's row read zero after the drain, so each count was
+/// exactly its in-edges from members, and a sum read again here is that total
+/// unless a count moved since the trace. Nothing on this thread writes a count
+/// between its trace and this reading, and no other thread writes one
+/// (`crate::refcount`), so the sum stands in for the exact validation's walk
+/// of the cells, one header a member; a sum that differs sends the commit to
+/// that walk ([`Finalization::confirm`]; `dev/plans/S67.md`, S67.12).
+///
+/// # Safety
+/// As [`validate_component`].
+unsafe fn counts_sum_to(members: &Membership<'_>, edges: usize) -> bool {
+    let mut sum = 0usize;
+    unsafe { members.for_each(|member| sum += crate::refcount::header_refcount(member) as usize) };
+    sum == edges
 }
 
 impl Drop for Finalization {
