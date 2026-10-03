@@ -8,6 +8,29 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-03 — S67.13: the grants behind a stop released at it and the blocks given back after the release change nothing the web loads read; no take met a claim in twelve cells
+
+**The run.** `591e153` (before) against the tree of `ea8339b` (after), test
+binaries of the rig in release, on the four-core cloud box of S67.6: two
+mutators on CPUs 1 and 2, cap 1 on CPU 3, `dev/tools/arms.sh … 3 web`,
+116 s with a 20 s warm-up and a 12 s drain, the arms' order rotated; other
+processes' CPU 0.04–0.05 cores in every cell. A first run is void and
+discarded: a Miri slice left running took 1.1 cores.
+
+| load | arm | second-mark recalls | withheld return mean | collector CPU | resets | give-back mean | under the claim |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `web-heap` | before | 0 | — | 45.1–47.4 s | 9,526–9,646 | 13–15 µs | — |
+| `web-heap` | after | 0 | — | 47.0–47.4 s | 4,743–4,836 | 25–28 µs | 0 |
+| `web-arena-40k` | before | 436–502 | 15.5–15.7 ms | 19.8–21.7 s | 2,764–2,972 | 41–44 µs | — |
+| `web-arena-40k` | after | 371–573 | 14.6–18.4 ms | 18.5–22.2 s | 1,321–1,531 | 81–107 µs | 0 |
+
+The before arm counted each collector reset twice (the batch's and the
+drop's, the second over an emptied arena), so its resets read double and its
+means half: per batch the give-back is the same. `token_waits` read zero in
+all twelve cells, so the time from a take's stop to the release, which the
+step's two changes shorten, has no instance on these loads; the withheld
+returns' wait on `web-arena-40k` differs by less than the cells' spread.
+
 ## 2026-10-03 — S65.30: the unarmed poll read 183 instructions against the stage's base's 175; the arming kept as its enum and fired out of line bring it back to 175
 
 **The count.** `ll_gc_maybe_collect` with its callees, executed

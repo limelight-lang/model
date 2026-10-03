@@ -47,7 +47,10 @@ cell() {
 }
 
 # Append the cell's line from LOG to OUT, the header first; answers 1 where
-# the line reads void (`other_cpu_cores` past half a core).
+# the line reads void (`other_cpu_cores` past half a core). The line is laid
+# out by OUT's header, which the first cell wrote: an arm built before or
+# after a column was added leaves that column empty or drops it, rather than
+# shifting every column after it, and the drop is said on stderr.
 record() {
     local arm=$1 what=$2 repeat=$3
     if ! grep -q '1 passed' "$LOG"; then
@@ -59,13 +62,21 @@ record() {
         echo "arm,repeat,$(grep -o 'rig-header,.*' "$LOG" | cut -d, -f2-)" > "$OUT"
         HEADED=1
     fi
-    echo "$arm,$repeat,$(grep -o '\brig,.*' "$LOG" | cut -d, -f2-)" >> "$OUT"
-    python3 - "$LOG" <<'PY'
+    python3 - "$LOG" "$OUT" "$arm" "$repeat" <<'PY'
 import re, sys
-text = open(sys.argv[1]).read()
+log, out, arm, repeat = sys.argv[1:]
+text = open(log).read()
 header = re.search(r'rig-header,(.*)', text).group(1).split(',')
 line = re.search(r'\brig,(.*)', text).group(1).split(',')
-sys.exit(1 if dict(zip(header, line)).get('void') == '1' else 0)
+cell = dict(zip(header, line))
+columns = open(out).readline().rstrip('\n').split(',')[2:]
+dropped = [column for column in header if column not in columns]
+if dropped:
+    print(f"{arm} {repeat}: columns not in {out}'s header, dropped: {' '.join(dropped)}",
+          file=sys.stderr)
+with open(out, 'a') as appended:
+    appended.write(','.join([arm, repeat] + [cell.get(column, '') for column in columns]) + '\n')
+sys.exit(1 if cell.get('void') == '1' else 0)
 PY
     [ $? -eq 1 ] && return 1
     return 0

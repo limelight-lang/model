@@ -613,7 +613,7 @@ Notes: dev/plans/S67.md
         kept as garbage-proportional; the chosen one built, a case of a set of
         about 400k members, and `web-heap` measured against today's 157 ms
       tier: T2 · role: Critic
-- [ ] S67.13 Shorten the token's tail after a stop (the review's R3)
+- [x] S67.13 Shorten the token's tail after a stop (the review's R3)
       done: a stopped trace releases the grants standing behind it before its
         tail (`release_the_grants_behind` on the stop's path), with a case of
         two mutators; the stamps' walk reads the recall at the wind-down level
@@ -621,6 +621,13 @@ Notes: dev/plans/S67.md
         give-back and its page discards after the release where the token
         allows; the time from the stop signal to the release read by the rig
       tier: T2 · role: Critic
+      handoff: 2026-10-03, built but for the stamps' walk, which keeps
+        reading the stop alone (the Critic: a walk stopped at a wind-down
+        raised before it would never stamp the state); the rig's
+        `token_wait_*` read the stop-to-release time and read zero on
+        `web-heap` and `web-arena-40k`, where no take met a claim; the
+        withheld returns' wait on `web-arena-40k` unchanged within the
+        cells' spread (`dev/plans/S67.md`, S67.13).
 - [x] S67.14 The held passes in linear time (the review's R1)
       done: a held entry a later subtraction brings to zero is pushed to the
         worklist at once, by a bit of its row, so a mark reads each held
