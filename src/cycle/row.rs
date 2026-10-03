@@ -238,6 +238,69 @@ pub(crate) unsafe fn for_each_unreachable(
     }
 }
 
+/// Colour every row the trace met over the arrays of `touched` potentially
+/// unreachable, and answer true, where every one of them reads a working
+/// count of zero; answer false and write nothing otherwise. What the scan
+/// would answer over such a trace, at the cost of the rows alone: with no row
+/// above zero no colour is ever raised live, and every met row is reached
+/// from a root the scan starts at. A saturated row reads above zero and falls
+/// to the scan. The check walks every row before the first write, because a
+/// scan run after a part of the rows were coloured would stop at them
+/// (`crate::cycle::scan`). The collection over a posted set's fast path
+/// (`crate::cycle::trace::trace_within_the_set`; `dev/plans/S67.md`, S67.12).
+///
+/// # Safety
+/// Every array of `touched` is an initialised array of this collection,
+/// marked and not yet scanned, written for a block that is live.
+pub(crate) unsafe fn colour_unreachable_where_every_met_row_reads_zero(
+    touched: *mut crate::cycle::shadow::RowArray,
+) -> bool {
+    use crate::cycle::shadow::{Color, color, count, recolor};
+    use std::ops::ControlFlow;
+    let each_met_row = |visit: &mut dyn FnMut(*mut u32) -> bool| -> bool {
+        let mut array = touched;
+        while !array.is_null() {
+            let (block, population) = unsafe { ((*array).block, (*array).population) };
+            let whole = if population == Population::SingleEntity {
+                let row = unsafe { crate::memory::large_entity::shadow_row(block) };
+                color(unsafe { *row }) == Color::Untouched || visit(row)
+            } else {
+                unsafe {
+                    crate::cycle::shadow::for_each_met_row(array, |index| {
+                        if visit(crate::cycle::shadow::row(array, index)) {
+                            ControlFlow::Continue(())
+                        } else {
+                            ControlFlow::Break(())
+                        }
+                    })
+                }
+                .is_continue()
+            };
+            if !whole {
+                return false;
+            }
+
+            array = unsafe { (*array).next };
+        }
+
+        true
+    };
+
+    // Unclassified as the mark left every row it met, and at zero: a row the
+    // trace coloured otherwise goes to the scan, which reads its colour.
+    if !each_met_row(&mut |row| {
+        let word = unsafe { *row };
+        color(word) == Color::Unclassified && count(word) == 0
+    }) {
+        return false;
+    }
+
+    each_met_row(&mut |row| {
+        unsafe { recolor(row, Color::PotentiallyUnreachable) };
+        true
+    })
+}
+
 /// Visit the index of every row of `block` the scan left
 /// [`Color::Live`](crate::cycle::shadow::Color), stopping where `visit`
 /// answers false, and answer **false when it stopped early**.

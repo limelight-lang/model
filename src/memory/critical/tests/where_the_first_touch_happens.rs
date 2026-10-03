@@ -155,13 +155,14 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("RING", false),
         ("ROWS_MET", false), // test-only const Cell, no drop glue
         ("ROWS_READ", false),
-        ("SERVING_SLOT", false),   // test-only const Cell, no drop glue
-        ("SINCE_THE_TURN", false), // test-only const Cell<u8>, no drop glue
-        ("SLOTS_POPPED", false),   // test-only const Cell, no drop glue
+        ("SERVING_SLOT", false),       // test-only const Cell, no drop glue
+        ("SETS_GARBAGE_WHOLE", false), // test-only const Cell, no drop glue
+        ("SINCE_THE_TURN", false),     // test-only const Cell<u8>, no drop glue
+        ("SLOTS_POPPED", false),       // test-only const Cell, no drop glue
         ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
         ("SURVIVORS_ADMITTED_BEFORE_REFUSAL", false), // test-only const Cell, no drop glue
-        ("TAKE_THIS", false),      // test-only const Cell of a raw pointer, no drop glue
-        ("TEARDOWN_DEPTH", false), // const Cell<u32>, no drop glue
+        ("TAKE_THIS", false),          // test-only const Cell of a raw pointer, no drop glue
+        ("TEARDOWN_DEPTH", false),     // const Cell<u32>, no drop glue
         ("THIS_THREADS_STANDINGS", false), // test-only const RefCell of counts, no drop glue
         ("THREAD_BUFFER_ARENA", false),
         ("THREAD_CACHE", true),

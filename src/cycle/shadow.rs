@@ -546,7 +546,6 @@ pub(crate) unsafe fn for_each_of_color(
 /// # Safety
 /// `array` is an initialised array of this collection, and its rows still
 /// stand.
-#[cfg(test)]
 pub(crate) unsafe fn for_each_met_row(
     array: *mut RowArray,
     visit: impl FnMut(u32) -> std::ops::ControlFlow<()>,

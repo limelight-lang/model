@@ -145,13 +145,29 @@ pub(crate) unsafe fn trace_batch<R: CellReader>(
 #[cfg(test)]
 mod tests;
 
+// The traces within a set that found it garbage whole and skipped the scan
+// (tests only). Per thread, as a collection is.
+#[cfg(test)]
+thread_local! {
+    static SETS_GARBAGE_WHOLE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The traces within a set on this thread that skipped the scan since this
+/// last answered, which it leaves at zero.
+#[cfg(test)]
+pub(crate) fn take_sets_garbage_whole() -> usize {
+    SETS_GARBAGE_WHOLE.with(|count| count.replace(0))
+}
+
 /// Trace the set a collection over P validates: every member of `set` and
 /// every root of `batch` met first, a slot whose count reads zero met by
 /// nobody, then [`drain_within_the_met`], then a scan from each — trial
 /// deletion restricted to the set, whose potentially unreachable rows are
 /// closed under referrers whatever the set holds
-/// (`crate::cycle::posted_set`, "Why the set and not its roots"). Without a
-/// set the roots are the set. Answers the roots of `batch` traced, as
+/// (`crate::cycle::posted_set`, "Why the set and not its roots"), the scan
+/// skipped where every met row reads zero
+/// ([`crate::cycle::row::colour_unreachable_where_every_met_row_reads_zero`]).
+/// Without a set the roots are the set. Answers the roots of `batch` traced, as
 /// [`trace_batch`] does.
 ///
 /// # Safety
@@ -179,6 +195,17 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
     }
 
     crate::cycle::row::note_phase_boundary();
+    // A set none of whose met rows any edge from outside holds is garbage
+    // whole, and its colours need no scan of its cells.
+    if unsafe {
+        crate::cycle::row::colour_unreachable_where_every_met_row_reads_zero(arena.touched_head())
+    } {
+        #[cfg(test)]
+        SETS_GARBAGE_WHOLE.with(|count| count.set(count.get() + 1));
+        crate::cycle::token::note_last_row_read();
+        return (TraceOutcome::Complete, traced);
+    }
+
     if members().any(|member| unsafe { scan::<R>(arena, member) } != ScanResult::Complete) {
         return (TraceOutcome::AllocationFailed, traced);
     }

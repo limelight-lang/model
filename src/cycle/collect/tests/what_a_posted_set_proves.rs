@@ -64,7 +64,13 @@ fn a_set_frees_its_garbage_and_leaves_a_live_member_unstamped() {
     set.push(live);
     post_for_test(&headers(&set));
 
+    let _ = crate::cycle::trace::take_sets_garbage_whole();
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 3, "the ring is freed");
+    assert_eq!(
+        crate::cycle::trace::take_sets_garbage_whole(),
+        0,
+        "the live member's row kept the scan"
+    );
     assert!(!a_set_stands(), "the collection took the set");
     assert_eq!(
         unsafe { slot_state(live as *const RcHeader) },
@@ -77,6 +83,34 @@ fn a_set_frees_its_garbage_and_leaves_a_live_member_unstamped() {
     );
 
     unsafe { let_go(live) };
+}
+
+/// A set that is garbage whole — a ring of three — reads every met row at zero
+/// after the mark and skips the scan, and the ring is freed as the scan would
+/// have had it (`dev/plans/S67.md`, S67.12). Red with the scan always run.
+#[test]
+fn a_set_garbage_whole_is_freed_without_a_scan() {
+    let _g = test_guard();
+    let node = node_class("PostedSetWholeRingNode", nothing_to_dispose as *const ());
+    let mut arena = Arena::new();
+    let ring = unsafe { long_ring(&mut arena, node, 3) };
+    assert_eq!(stand_in_posts(1, Verdict::Proposed), Posted::Batch(1));
+    post_for_test(&headers(&ring));
+
+    let _ = crate::cycle::trace::take_sets_garbage_whole();
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 3, "the ring is freed");
+    assert_eq!(
+        crate::cycle::trace::take_sets_garbage_whole(),
+        1,
+        "the trace skipped the scan"
+    );
+    assert!(!a_set_stands(), "the collection took the set");
+    for member in ring {
+        assert_ne!(
+            unsafe { slot_state(member as *const RcHeader) },
+            SlotState::Live
+        );
+    }
 }
 
 /// A member whose block goes back under `POSTED` — a member proposed wrongly,
