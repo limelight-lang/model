@@ -4021,6 +4021,10 @@ impl CellReading {
                 "web_reset_give_back_longest_us",
                 resets.give_back_longest.as_micros().to_string(),
             ),
+            (
+                "web_resets_under_the_claim",
+                resets.under_the_claim.to_string(),
+            ),
         ]);
         fields.extend([
             (

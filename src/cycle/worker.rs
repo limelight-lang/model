@@ -1746,9 +1746,10 @@ unsafe fn serve_the_grant(
 
     // Declared after the release guard, so that its drop — the reset of
     // the rows, which stand over the mutator's blocks — runs before the
-    // release on the unwind as on the return. The epoch is the served
-    // mutator's cell, not this thread's: the stamps this trace reads were
-    // written against that mutator's clock (`crate::cycle::epoch`).
+    // release on the unwind; on the return the batch sweeps them itself.
+    // The epoch is the served mutator's cell, not this thread's: the stamps
+    // this trace reads were written against that mutator's clock
+    // (`crate::cycle::epoch`).
     let Some(mut arena) = (unsafe { TraceScratchArena::open_for_owner(mutator) }) else {
         journal_event!(
             journal::KIND_GRANT_WITHOUT_BATCH,
@@ -1769,7 +1770,15 @@ unsafe fn serve_the_grant(
     });
     #[cfg(test)]
     testing::note_serving_slot(slot);
-    unsafe { batch(mutator, &mut arena, threshold, &held.posted, &held.proposed) }
+    let served = unsafe { batch(mutator, &mut arena, threshold, &held.posted, &held.proposed) };
+    // The batch swept the rows, so the release goes first and the arena's
+    // blocks back after it, their page discards off the mutator's wait; the
+    // grants behind the trace are read between the two, for a recall that
+    // landed in the batch's tail (`dev/plans/S67.md`, S67.13).
+    drop(held);
+    arena.release_the_grants_behind();
+    drop(arena);
+    served
 }
 
 /// A request between its swap and its grant, withdrawn on the unwind.
@@ -2286,7 +2295,9 @@ unsafe fn batch(
     // The batch's work toward the epoch's turn: every position its trace
     // read, the arena being this grant's.
     let spent = arena.positions_inspected();
-    arena.reset();
+    // The rows alone, which stand over the mutator's blocks: the arena's own
+    // blocks go back after the release ([`serve_the_grant`]).
+    arena.sweep_rows();
     // A batch that posted nothing into P releases `FREE`, and the set goes
     // back here, the mutator taking no set from `FREE`.
     if posted.get() {

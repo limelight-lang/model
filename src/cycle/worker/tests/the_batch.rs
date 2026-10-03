@@ -491,6 +491,61 @@ fn an_unwind_inside_the_trace_posts_every_root_unwalked_and_advances_once() {
     reset_lanes();
 }
 
+/// A batch sweeps its rows under the claim and gives the arena's blocks back
+/// after the release, so that their page discards are off the mutator's wait;
+/// an unwind gives them back ahead of the release, as its rows go
+/// (`dev/plans/S67.md`, S67.13).
+#[test]
+fn a_batch_gives_its_blocks_back_after_the_release_and_an_unwind_before_it() {
+    let _g = test_guard();
+    reset_lanes();
+    let node = node_class("GiveBackNode");
+    let mut arena = Arena::new();
+    let (_, keeper_a) = unsafe { kept_root(&mut arena, node, "GiveBackKeeperA") };
+    let (_, keeper_b) = unsafe { kept_root(&mut arena, node, "GiveBackKeeperB") };
+    unsafe { &*record() }.set_batch_size(1);
+    let _ = crate::cycle::arena::take_reset_timing();
+
+    assert!(matches!(
+        served_by_a_collector(),
+        Served::Batch { roots: 1, .. }
+    ));
+    let returned = crate::cycle::arena::take_reset_timing();
+    assert_eq!(returned.resets, 1, "the batch's arena was reset once");
+    assert_eq!(
+        returned.under_the_claim, 0,
+        "the blocks went back after the release"
+    );
+
+    discard_standing_verdicts();
+    testing::at_the_start_of_the_next_trace(Box::new(|| {
+        panic!("a trace unwound, by the case's request")
+    }));
+    let sent = Sent(record());
+    let outcome = testing::consent_while(std::thread::spawn(move || {
+        assert!(crate::memory::heap::ll_thread_init());
+        let record = sent.into_inner();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            testing::serve_alone(record)
+        }))
+    }));
+    assert!(outcome.is_err(), "the trace panicked where the case asked");
+    let returned = crate::cycle::arena::take_reset_timing();
+    assert_eq!(
+        (returned.resets, returned.under_the_claim),
+        (1, 1),
+        "the unwind gave the blocks back under the claim"
+    );
+
+    discard_standing_verdicts();
+    unsafe { &*record() }.clear_posted_for_test();
+    unsafe {
+        release_keeper(keeper_a);
+        release_keeper(keeper_b);
+    }
+    reset_lanes();
+}
+
 /// Set this thread's recall of its token from the collector's thread, as a
 /// take would, without a mutator waiting on the token.
 fn recall_from_the_collector() -> Box<dyn FnOnce() + Send> {

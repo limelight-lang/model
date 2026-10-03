@@ -735,7 +735,7 @@ fn record_token() -> *const crate::cycle::token::TraceToken {
 /// the grant held behind it has no batch of its own to abandon.
 #[test]
 fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
-    let released_at = released_behind_another_batch(testing::at_the_start_of_the_next_trace);
+    let released_at = released_behind_another_batch(testing::at_the_start_of_the_next_trace, false);
     assert_eq!(
         released_at, 0,
         "the grant was released at the first reading after its mutator stood in the wait"
@@ -746,10 +746,29 @@ fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
 /// other batch's trace, is released at the next reading of the stride.
 #[test]
 fn a_grant_behind_another_trace_is_released_at_the_strides_next_reading() {
-    let released_at = released_behind_another_batch(testing::between_the_next_phases);
+    let released_at = released_behind_another_batch(testing::between_the_next_phases, false);
     assert!(
         released_at > 0 && released_at % RECALL_STRIDE == 0,
         "the grant was released at a reading of the stride, at {released_at} positions"
+    );
+}
+
+/// The same grant, the traced mutator asking for its token too, is released
+/// at the reading that stops the other batch rather than after that batch's
+/// tail: the stop reads the grants behind the trace as a reading at the
+/// stride does (`dev/plans/S67.md`, S67.13).
+#[test]
+fn a_grant_behind_a_stopped_trace_is_released_at_the_stop() {
+    let released_at = released_behind_another_batch(testing::between_the_next_phases, true);
+    assert!(
+        crate::cycle::arena::GRANTS_RELEASED_UNDER_THE_CLAIM
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "the grant was released under the traced mutator's claim"
+    );
+    assert!(
+        released_at > 0 && released_at % RECALL_STRIDE == 0,
+        "the grant was released at the reading of the stride that stopped the other batch, at \
+         {released_at} positions"
     );
 }
 
@@ -757,10 +776,12 @@ fn a_grant_behind_another_trace_is_released_at_the_strides_next_reading() {
 /// have the first ask for its token at the point `ask_at` installs its act,
 /// and answer the positions the other's trace had read when a reading released
 /// the grant. The mutator behind took its token before the other batch ended.
+/// With `traced_asks`, the traced mutator asks for its own token there too,
+/// after the mutator behind, and its batch stops.
 ///
 /// The collector is the case's thread with a list of its own on a slot no
 /// thread stands in, as in `the_standing_list`.
-fn released_behind_another_batch(ask_at: fn(Box<dyn FnOnce() + Send>)) -> usize {
+fn released_behind_another_batch(ask_at: fn(Box<dyn FnOnce() + Send>), traced_asks: bool) -> usize {
     const SLOT: usize = 6;
     let _g = test_guard();
     reset_lanes();
@@ -795,30 +816,49 @@ fn released_behind_another_batch(ask_at: fn(Box<dyn FnOnce() + Send>)) -> usize 
     let (took, behind_took) = std::sync::mpsc::channel::<Sent<Instant>>();
     let behind_jobs = behind.jobs.clone();
     let behind_token = unsafe { &raw const (*behind.record).token } as usize;
+    let (traced_took, traced_took_at) = std::sync::mpsc::channel::<()>();
+    let traced_jobs = traced.jobs.clone();
+    let traced_token = unsafe { &raw const (*traced.record).token } as usize;
     let waiting_from = std::sync::Arc::new(std::sync::Mutex::new(None));
     let stamp = std::sync::Arc::clone(&waiting_from);
     ask_at(Box::new(move || {
-        let token = unsafe { &*(behind_token as *const crate::cycle::token::TraceToken) };
-        let before = token.waits();
-        behind_jobs
-            .send(Box::new(move |_| {
-                crate::cycle::token::read_and_act_on_this_thread();
-                drop(crate::cycle::token::HeldToken::take());
-                took.send(Sent(Instant::now())).expect("the case waits");
-            }))
-            .expect("the mutator behind runs");
-        let deadline = Instant::now() + A_BIRTH;
-        while token.waits() == before {
-            assert!(
-                Instant::now() < deadline,
-                "the mutator behind stood in its token's wait"
-            );
-            std::hint::spin_loop();
-        }
-
+        type Jobs = std::sync::mpsc::Sender<Box<dyn FnOnce(&mut Arena) + Send>>;
+        let stand_in_the_wait =
+            |jobs: &Jobs, token: usize, took: Box<dyn FnOnce() + Send>, who: &str| {
+                let token = unsafe { &*(token as *const crate::cycle::token::TraceToken) };
+                let before = token.waits();
+                jobs.send(Box::new(move |_| {
+                    crate::cycle::token::read_and_act_on_this_thread();
+                    drop(crate::cycle::token::HeldToken::take());
+                    took();
+                }))
+                .expect("the mutator runs");
+                let deadline = Instant::now() + A_BIRTH;
+                while token.waits() == before {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the {who} mutator stood in its token's wait"
+                    );
+                    std::hint::spin_loop();
+                }
+            };
+        stand_in_the_wait(
+            &behind_jobs,
+            behind_token,
+            Box::new(move || took.send(Sent(Instant::now())).expect("the case waits")),
+            "behind",
+        );
         *stamp
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Instant::now());
+        if traced_asks {
+            stand_in_the_wait(
+                &traced_jobs,
+                traced_token,
+                Box::new(move || traced_took.send(()).expect("the case waits")),
+                "traced",
+            );
+        }
     }));
     crate::cycle::arena::GRANTS_RELEASED_AT.store(usize::MAX, std::sync::atomic::Ordering::Relaxed);
     standing.start_a_round();
@@ -856,12 +896,19 @@ fn released_behind_another_batch(ask_at: fn(Box<dyn FnOnce() + Send>)) -> usize 
     }
     reset_lanes();
 
+    if traced_asks {
+        traced_took_at
+            .recv_timeout(A_BIRTH)
+            .expect("the traced mutator took its token");
+    }
     assert!(
-        matches!(served, Served::Batch { complete: true, .. }),
-        "the traced batch ran to its end: {served:?}"
+        matches!(served, Served::Batch { complete, .. } if complete != traced_asks),
+        "the traced batch ran to its end unless its mutator asked: {served:?}"
     );
+    // A stopped batch's tail is shorter than the wake of the mutator behind,
+    // so the release's place is read from the reading that made it alone.
     assert!(
-        behind_took < traced_batch_ended,
+        traced_asks || behind_took < traced_batch_ended,
         "the mutator behind waited out the other's batch"
     );
     released_at

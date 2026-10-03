@@ -44,10 +44,15 @@
 //! The walk reads the recall every `RECALL_STRIDE` rows and stops at the
 //! stop level alone, as the scan does, keeping what it wrote: stamps on live
 //! rows of a completed trace are as sound as a whole walk's, and keeping them
-//! puts nothing between the reading and the release. A wind-down asks for
-//! what the walk already does, an end on posts: a batch that dropped its
-//! stamps at one would leave the state unstamped for the next batch to walk
-//! whole again, which is what raised the wind-down.
+//! puts nothing between the reading and the release. A take recalls at the
+//! stop, so no waiting mutator sits behind the walk. A wind-down is left to
+//! run on: the level only rises within a grant, and a mark long enough to
+//! cross the deaths' first mark has usually raised it before the walk
+//! begins, so a walk that stopped at it would stamp a stride and leave the
+//! state for the next batch to walk whole again, crossing the mark again. What
+//! running on costs is withheld returns up to the second mark, the budget
+//! `crate::cycle::deferred_slot_reuse`'s `STOP_MARKS` grants (`dev/plans/S67.md`,
+//! S67.13, the Critic).
 
 use std::ops::ControlFlow;
 

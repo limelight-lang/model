@@ -338,6 +338,13 @@ impl GrantsBehind {
 pub(crate) static GRANTS_RELEASED_AT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(usize::MAX);
 
+/// Whether the traced mutator's token stood claimed by the collector at the
+/// reading that last released the grants behind its trace: a release at a
+/// reading of the trace rather than after the traced mutator's own release.
+#[cfg(test)]
+pub(crate) static GRANTS_RELEASED_UNDER_THE_CLAIM: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Positions of storage a collector's trace reads between two readings of
 /// the traced mutator's recall of its token
 /// ([`TraceScratchArena::inspect_position`]): what a mutator asking for its
@@ -391,6 +398,10 @@ pub(crate) struct ResetTiming {
     pub(crate) sweep_longest: std::time::Duration,
     pub(crate) give_back: std::time::Duration,
     pub(crate) give_back_longest: std::time::Duration,
+    /// The resets that gave the blocks back while the traced mutator's token
+    /// stood claimed: an unwind's, or a batch's whose blocks went back ahead
+    /// of the release.
+    pub(crate) under_the_claim: usize,
 }
 
 #[cfg(test)]
@@ -400,10 +411,15 @@ static RESET_TIMING: std::sync::Mutex<ResetTiming> = std::sync::Mutex::new(Reset
     sweep_longest: std::time::Duration::ZERO,
     give_back: std::time::Duration::ZERO,
     give_back_longest: std::time::Duration::ZERO,
+    under_the_claim: 0,
 });
 
 #[cfg(test)]
-fn note_a_collectors_reset(sweep: std::time::Duration, give_back: std::time::Duration) {
+fn note_a_collectors_reset(
+    sweep: std::time::Duration,
+    give_back: std::time::Duration,
+    under_the_claim: bool,
+) {
     let mut timing = RESET_TIMING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -412,6 +428,7 @@ fn note_a_collectors_reset(sweep: std::time::Duration, give_back: std::time::Dur
     timing.sweep_longest = timing.sweep_longest.max(sweep);
     timing.give_back += give_back;
     timing.give_back_longest = timing.give_back_longest.max(give_back);
+    timing.under_the_claim += usize::from(under_the_claim);
 }
 
 /// The collectors' resets since the last call, which leaves them zero.
@@ -493,6 +510,11 @@ pub(crate) struct TraceScratchArena {
     /// ([`TraceScratchArena::hold_the_grants_behind`]); `None` for an
     /// in-line collection.
     grants_behind: Option<GrantsBehind>,
+    /// The time the sweeps of the rows took since the last reset, which the
+    /// reset reports with its give-back: a collector's batch sweeps before
+    /// its release and gives the blocks back after it.
+    #[cfg(test)]
+    swept: std::time::Duration,
     /// Readings of the recall made so far: with the countdown, the positions
     /// this arena's trace has read, which the collector's epoch rule counts
     /// as its work (`crate::cycle::epoch`, "The turn").
@@ -656,6 +678,8 @@ impl TraceScratchArena {
             stops_at: crate::cycle::token::RECALL_WIND_DOWN,
             level_seen: crate::cycle::token::RECALL_NONE,
             grants_behind: None,
+            #[cfg(test)]
+            swept: std::time::Duration::ZERO,
             recall_readings: 0,
             rows_met: 0,
             turnovers,
@@ -934,6 +958,8 @@ impl TraceScratchArena {
     ///
     /// Idempotent, over a rewound worklist and an emptied touched list.
     pub(crate) fn sweep_rows(&mut self) {
+        #[cfg(test)]
+        let swept_from = std::time::Instant::now();
         // Ahead of the sweep, which owes an empty worklist: an abort is raised
         // with entities still queued, and every one of them carries a row
         // pointer into an array this call is about to unstamp.
@@ -965,6 +991,10 @@ impl TraceScratchArena {
         );
         self.drops.rewind();
         self.clear_touched_rows();
+        #[cfg(test)]
+        {
+            self.swept += swept_from.elapsed();
+        }
     }
 
     /// End the collection's hold on memory: give every block back, the
@@ -994,8 +1024,6 @@ impl TraceScratchArena {
     /// return may not outrun is the unstamping, and the blocks below are the
     /// arena's own.
     pub(crate) fn reset(&mut self) {
-        #[cfg(test)]
-        let swept_from = std::time::Instant::now();
         // Kept here although the ordered close has swept already, because the
         // other caller is [`Drop`] and it has not: an unwind reaches this from
         // anywhere in a collection. Over a rewound worklist and an emptied
@@ -1003,7 +1031,7 @@ impl TraceScratchArena {
         // nothing.
         self.sweep_rows();
         #[cfg(test)]
-        let swept = swept_from.elapsed();
+        let swept = std::mem::take(&mut self.swept);
 
         // The block still under the bump has no further grant coming, and it
         // is being released in the same breath — rewound if it is the
@@ -1038,10 +1066,14 @@ impl TraceScratchArena {
 
         #[cfg(test)]
         let given_from = std::time::Instant::now();
+        #[cfg(test)]
+        let under_the_claim = !self.traced_token.is_null()
+            && crate::cycle::token::state(unsafe { (*self.traced_token).read() })
+                == crate::cycle::token::COLLECTOR;
         self.give_the_blocks_back();
         #[cfg(test)]
         if !self.traced_token.is_null() {
-            note_a_collectors_reset(swept, given_from.elapsed());
+            note_a_collectors_reset(swept, given_from.elapsed(), under_the_claim);
         }
     }
 
@@ -1605,13 +1637,15 @@ impl TraceScratchArena {
     /// pass before them reads (`crate::cycle::worker`, "The batch"). Answers
     /// `Break` once the recall stands at the level this phase stops at,
     /// releasing the grants behind the trace otherwise, as a reading at the
-    /// stride does.
+    /// stride does, and at the stop as well.
     pub(crate) fn read_the_recall_now(&mut self) -> ControlFlow<()> {
-        // The traced mutator's own recall first: the batch ends, and a grant
-        // held behind it is read at the pass its consent admitted, so the
-        // recall waits for no walk of the standing list.
+        // The grants behind the trace are read at the stop too, ahead of the
+        // batch's tail rather than after it: the traced mutator's stop pays
+        // a walk of the standing list where one of them recalled, a few
+        // records against a tail of milliseconds (`dev/plans/S67.md`, S67.13).
         if self.recall_stands() {
             self.recalled = true;
+            self.release_the_grants_behind();
             return ControlFlow::Break(());
         }
 
@@ -1628,8 +1662,10 @@ impl TraceScratchArena {
 
     /// Release the grants behind this trace whose mutators recall them, if one of
     /// them set the word since the last reading: the word is taken before
-    /// the release, so a set that lands during it is read at the next.
-    fn release_the_grants_behind(&self) {
+    /// the release, so a set that lands during it is read at the next. The
+    /// batch's caller reads it once more after the traced mutator's release,
+    /// for a set that landed during the tail.
+    pub(crate) fn release_the_grants_behind(&self) {
         let Some(behind) = &self.grants_behind else {
             return;
         };
@@ -1640,10 +1676,17 @@ impl TraceScratchArena {
                 .swap(false, std::sync::atomic::Ordering::Acquire)
         {
             #[cfg(test)]
-            GRANTS_RELEASED_AT.store(
-                self.positions_inspected(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            {
+                GRANTS_RELEASED_AT.store(
+                    self.positions_inspected(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                let claimed = !self.traced_token.is_null()
+                    && crate::cycle::token::state(unsafe { (*self.traced_token).read() })
+                        == crate::cycle::token::COLLECTOR;
+                GRANTS_RELEASED_UNDER_THE_CLAIM
+                    .store(claimed, std::sync::atomic::Ordering::Relaxed);
+            }
             unsafe { (behind.release)(behind.list) };
         }
     }
