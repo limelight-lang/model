@@ -8,6 +8,35 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-03 — S67.15: the epoch's ratio at 2, 4 and 8 — on `web-heap` 4 cuts the collector's CPU by a fifth and the mean garbage by two fifths against 2, and 8 turns no epoch by proofs and lets the garbage grow
+
+**The run.** One test binary of the rig at `7a47efb` in release
+(`585024d462b9`), the ratio set by `LL_RIG_SPENT_PER_PROOF` through a wrapper
+an arm (`r2`, `r4`, `r8`; 2 is the default), on the four-core box of S67.6:
+two mutators on CPUs 1 and 2, cap 1 on CPU 3, `dev/tools/arms.sh … 3 web`
+over `web-heap:46.78` and `web-arena-40k:31.08`, 116 s with a 20 s warm-up
+and a 12 s drain, the arms' order rotated; other processes' CPU 0.03–0.11
+cores. Raw lines: `dev/data/s67.15/cells.csv`. Ranges over three repeats:
+
+| load | ratio | turns by proofs | by X | stamps a walk | pruned a stamp | collector CPU | garbage mean | garbage peak |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `web-heap` | 2 | 52–54 | 12 | 16,345–16,642 | 0.17 | 44.7–45.6 s | 63–87 MB | 300–376 MB |
+| `web-heap` | 4 | 26–30 | 12–15 | 8,186–8,561 | 0.34–0.36 | 35.2–36.4 s | 41–47 MB | 287–341 MB |
+| `web-heap` | 8 | 0 | 36 | 5,728–5,915 | 0.47–0.48 | 33.1–34.5 s | 108–112 MB | 321–371 MB |
+| `web-arena-40k` | 2 | 12–19 | 32–34 | 10,840–10,920 | 0.10–0.11 | 16.2–20.5 s | 1.51–1.68 MB | 3.10–3.97 MB |
+| `web-arena-40k` | 4 | 6–11 | 34 | 7,792–8,717 | 0.12–0.14 | 14.7–17.8 s | 1.48–1.55 MB | 2.86–3.50 MB |
+| `web-arena-40k` | 8 | 1–4 | 34–36 | 7,224–7,709 | 0.13–0.16 | 12.7–16.8 s | 1.43–1.53 MB | 2.85–3.62 MB |
+
+"Pruned a stamp" is `web_edges_pruned_per_stamp`, the collector's pruned
+edges over the stamps its walks wrote in the window. On `web-heap` the
+three ratios' CPU and mean-garbage ranges do not overlap: at 4 the stamps
+live twice as long, each prunes twice the edges, and the collector both
+spends less and keeps pace better than at 2; at 8 no turn comes by proofs,
+X turns the epoch (36 turns against 12), the stamps go stale between X's
+turns and the garbage grows to 1.6 times 2's. The mutator's CPU in the loop
+(78.3–81.0 s), the last free (6.9–9.4 s) and the arrivals' p99.9 read the
+same in every arm. On `web-arena-40k` the ranges overlap.
+
 ## 2026-10-03 — S67.13: the grants behind a stop released at it and the blocks given back after the release change nothing the web loads read; no take met a claim in twelve cells
 
 **The run.** `591e153` (before) against the tree of `ea8339b` (after), test

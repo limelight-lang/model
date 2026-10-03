@@ -644,13 +644,17 @@ Notes: dev/plans/S67.md
         (`the_held_stack`, a hub naming 128 links in a seeded shuffle) reads
         5,775 entries over 89 passes uncapped and at most 8N capped, the rows
         equal to a mark that holds nothing.
-- [ ] S67.15 The epoch's ratio read on `web-heap` (the review's R5)
+- [x] S67.15 The epoch's ratio read on `web-heap` (the review's R5)
       done: `SPENT_PER_PROOF` at 2, 4 and 8 on `web-heap` and
         `web-arena-40k`, the turns by proofs, the stamps written, the
         collector's CPU and the garbage's age read side by side; the ratio
         put to Edmond with the figures (the backlog's "The turn's ratio is
         unread by Edmond")
       tier: T2
+      handoff: 2026-10-03, read and put to Edmond with a recommendation of 4:
+        on `web-heap` 4 against 2 cuts the collector's CPU by a fifth and the
+        mean garbage by two fifths, and 8 turns no epoch by proofs and lets
+        the garbage grow 1.6 times (`dev/plans/S67.md`, S67.15).
 - [x] S67.11 HG leaves the tree (Edmond, 2026-10-03: "да, удаляй HG")
       done: `collector-chain`, `hold-by-generation` and
         `death-check-back-off` deleted with the chain, `ring::record_chain`,
@@ -830,13 +834,17 @@ against the code on 2026-09-24.
   (five files), the sleepers' start and end in `under_stress.rs`, the three
   hooks forwarding to one `OneShot`, the two `EmbeddersInterval` guards.
   done: each under its threshold or recorded as kept.
+- [ ] **A born sibling under the cap's flip has no case.** S65.15's
+  per-slot case stands in for it (`dev/plans/S65.md`, S65.30): a sibling
+  birthed by a backlog, the cap set to zero under its round, its own
+  checkpoint withdrawing its list and the elder ending it.
 - [ ] **The turn's ratio is unread by Edmond.** The batch count `N_b` went
   with S67.9: the epoch turns when the collector's work reaches
   `epoch::SPENT_PER_PROOF` (2) times what its proofs cost, or at X
   (`worker::EPOCH_INTERVAL`), X waiting for twice the proving walk
-  (`dev/DECISIONS.md`, 2026-10-03). The ratio 2 is the Sage's and goes to
-  Edmond with the figures of `dev/plans/S67.md`, S67.9 (ratios 1, 2 and 4
-  read on `web-arena-40k`, moving nothing within the spread). Y9's
+  (`dev/DECISIONS.md`, 2026-10-03). The ratio 2 is the Sage's; put to
+  Edmond on 2026-10-03 with S67.15's figures (`dev/plans/S67.md`), 4
+  recommended. Y9's
   minimum-over-stamped-members question changes no prune at `k = 1` and
   reopens with any `k` above 1
   (`mark::tests::the_pruned_share_against_a_survival_rate` under

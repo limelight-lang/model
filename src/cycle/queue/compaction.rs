@@ -451,7 +451,8 @@ impl Drop for OverflowPass {
 
 #[cfg(test)]
 thread_local! {
-    static FAIL_AT: Cell<Option<usize>> = const { Cell::new(None) };
+    /// The armed point and the hits of it left before the one that raises.
+    static FAIL_AT: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
 }
 
 /// A point the pass passes through, where a case may raise an unwind
@@ -466,13 +467,16 @@ thread_local! {
 #[inline]
 fn checkpoint(_point: usize) {
     #[cfg(test)]
-    if FAIL_AT.with(|point| {
-        if point.get() == Some(_point) {
-            point.set(None);
+    if FAIL_AT.with(|armed| match armed.get() {
+        Some((point, 0)) if point == _point => {
+            armed.set(None);
             true
-        } else {
+        }
+        Some((point, hits)) if point == _point => {
+            armed.set(Some((point, hits - 1)));
             false
         }
+        _ => false,
     }) {
         panic!("injected queue compaction unwind at {_point}");
     }
@@ -493,7 +497,15 @@ pub(super) const FRONT_RUN_CHECKPOINT: usize = 8;
 /// Arm one unwind at `point` for this thread's next pass.
 #[cfg(test)]
 pub(super) fn inject(point: usize) -> Injection {
-    FAIL_AT.with(|slot| slot.set(Some(point)));
+    inject_at_hit(point, 1)
+}
+
+/// Arm one unwind at the `hit`-th time this thread's passes reach `point`,
+/// counting from one.
+#[cfg(test)]
+pub(super) fn inject_at_hit(point: usize, hit: usize) -> Injection {
+    assert!(hit > 0, "hits count from one");
+    FAIL_AT.with(|slot| slot.set(Some((point, hit - 1))));
     Injection
 }
 

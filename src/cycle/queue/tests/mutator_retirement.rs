@@ -452,6 +452,61 @@ fn an_unwind_inside_the_front_run_leaves_the_rest_for_the_next_close() {
     reset();
 }
 
+/// An unwind after the k-th free of the run, past the first, leaves R's front
+/// past the k entries freed and the rest of the run standing for the next
+/// close; and an unwind inside the k-th free finds that entry already out of
+/// R as the first's does (`dev/plans/S65.md`, S65.23, the
+/// debt S65.30 names).
+#[test]
+fn an_unwind_at_a_later_free_of_the_front_run_leaves_the_rest_for_the_next_close() {
+    const DEATHS: usize = 5;
+    const K: usize = 3;
+    for point in [compaction::FRONT_RUN_CHECKPOINT, 2] {
+        let _g = test_guard();
+        reset();
+        assert!(refill_spares());
+        let mut arena = Arena::new();
+        let class = candidate_class("RunUnwoundLater");
+        let deaths: Vec<_> = (0..DEATHS)
+            .map(|_| append_real(&mut arena, class, false))
+            .collect();
+        let survivor = append_real(&mut arena, class, false);
+        for &entity in &deaths {
+            unsafe { dismantle_candidate(entity) };
+        }
+
+        // Nothing stands in P or the overflow buffer, so every free the
+        // close reaches is the run's.
+        let raised = {
+            let _injection = compaction::inject_at_hit(point, K);
+            std::panic::catch_unwind(close_over_p)
+        };
+        assert!(
+            raised.is_err(),
+            "the run's {K}th pass of point {point} raised"
+        );
+        let mut left = Vec::new();
+        collect_lane_tokens(&mut left);
+        let mut standing = deaths[K..].to_vec();
+        standing.push(survivor);
+        assert_eq!(
+            left, standing,
+            "the first {K} deaths left R at point {point}, the rest stand in order"
+        );
+
+        close_over_p();
+        assert_eq!(
+            ring_tokens(),
+            vec![survivor],
+            "the next close freed the rest"
+        );
+        unsafe { dismantle_candidate(survivor) };
+        close_over_p();
+        assert_eq!(candidate_count(), 0);
+        reset();
+    }
+}
+
 /// A run longer than a block crosses into the next one: every death is freed,
 /// R's front moves into the second block, and both blocks stay in the circle.
 #[test]

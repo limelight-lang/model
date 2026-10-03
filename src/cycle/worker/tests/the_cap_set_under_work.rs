@@ -176,6 +176,74 @@ fn a_trace_running_when_the_cap_goes_to_zero_finishes_and_p_is_collected() {
     reset_lanes();
 }
 
+/// A take waiting on `COLLECTOR` while the cap goes to zero returns: the
+/// running trace reads the take's recall, stops, and releases as it would
+/// under any cap, and the token is left with the mutator, no claim standing
+/// (`dev/plans/S65.md`, S65.15's Critic, finding 4, the debt S65.30 names).
+#[test]
+fn a_take_waiting_on_the_collector_when_the_cap_goes_to_zero_returns() {
+    let _g = test_guard();
+    reset_lanes();
+    let freed = Arc::new(AtomicUsize::new(0));
+    let mutator = Mutator::start_polling(Arc::clone(&freed));
+    let record = mutator.record;
+    unsafe { &*record }.name_to_collector(SLOT);
+    testing::confine_rounds_to(record);
+    let class = Sent(node_class("TakeAtZeroNode"));
+    mutator.run(move |arena| {
+        let class = class.into_inner();
+        for _ in 0..SOFT_THRESHOLD / 2 {
+            let _ = unsafe { crate::cycle::testing::ring(arena, [class, class]) };
+        }
+    });
+
+    // At the trace's start the cap goes to zero and the mutator asks for its
+    // token; the trace goes on once the take stands in the token's wait.
+    let cap = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let set = Arc::clone(&cap);
+    let (took, took_back) = std::sync::mpsc::channel::<()>();
+    let jobs = mutator.jobs.clone();
+    let token = unsafe { &raw const (*record).token } as usize;
+    testing::at_the_start_of_the_next_trace(Box::new(move || {
+        *set.lock().expect("the case holds no lock") = Some(CapAtZero::set());
+        let token = unsafe { &*(token as *const crate::cycle::token::TraceToken) };
+        let before = token.waits();
+        jobs.send(Box::new(move |_| {
+            crate::cycle::token::read_and_act_on_this_thread();
+            drop(crate::cycle::token::HeldToken::take());
+            took.send(()).expect("the case waits");
+        }))
+        .expect("the mutator runs");
+        let deadline = std::time::Instant::now() + A_BIRTH;
+        while token.waits() == before {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the take stood in the token's wait"
+            );
+            std::hint::spin_loop();
+        }
+    }));
+    let mut standing = Standing::new(SLOT);
+    let served = round(SLOT, SOFT_THRESHOLD, &mut standing);
+    assert!(served.made_a_batch, "the trace ran to its batch");
+    assert!(collectors_capped_at_zero(), "under the cap it set");
+    took_back.recv_timeout(A_BIRTH).expect("the take returned");
+    assert_ne!(
+        crate::cycle::token::state(unsafe { &*record }.token.read()),
+        COLLECTOR,
+        "no claim stands on the token"
+    );
+
+    drop(cap.lock().expect("the hook ran").take());
+    testing::confine_rounds_to_records(&[]);
+    unsafe { &*record }.name_to_collector(ELDER);
+    mutator.run(|_| unsafe {
+        crate::gc::ll_gc_collect_cycles();
+    });
+    drop(mutator);
+    reset_lanes();
+}
+
 /// Two collectors, each with a request standing on a mutator of its own: each
 /// one's next round under the cap withdraws its own list and no other's.
 #[test]
