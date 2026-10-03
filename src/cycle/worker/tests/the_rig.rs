@@ -3227,6 +3227,36 @@ impl CellReading {
                 "verdict_collection_positions_longest",
                 self.verdict_collections.positions_longest.to_string(),
             ),
+            (
+                "verdict_trace_us",
+                self.verdict_collections.phases[0].as_micros().to_string(),
+            ),
+            (
+                "verdict_membership_us",
+                self.verdict_collections.phases[1].as_micros().to_string(),
+            ),
+            (
+                "verdict_commit_us",
+                self.verdict_collections.phases[2].as_micros().to_string(),
+            ),
+            (
+                "verdict_longest_trace_us",
+                self.verdict_collections.phases_of_the_longest[0]
+                    .as_micros()
+                    .to_string(),
+            ),
+            (
+                "verdict_longest_membership_us",
+                self.verdict_collections.phases_of_the_longest[1]
+                    .as_micros()
+                    .to_string(),
+            ),
+            (
+                "verdict_longest_commit_us",
+                self.verdict_collections.phases_of_the_longest[2]
+                    .as_micros()
+                    .to_string(),
+            ),
             ("disposals", self.disposals.collections.to_string()),
             ("disposal_us", self.disposals.total.as_micros().to_string()),
             (
@@ -4591,6 +4621,18 @@ fn the_rigs_figures_read_their_known_answers() {
         "{:?}, {} collections over P",
         read.outcomes,
         read.verdict_collections.collections
+    );
+    // The phases of the collections over P fit inside their whole time, each
+    // and those of the longest alike, and a collection that freed spent time
+    // in its commit.
+    let collections = read.verdict_collections;
+    let phases: Duration = collections.phases.iter().sum();
+    let longest: Duration = collections.phases_of_the_longest.iter().sum();
+    assert!(
+        phases <= collections.total
+            && longest <= collections.longest
+            && (collections.freed == 0 || collections.phases[2] > Duration::ZERO),
+        "{collections:?}"
     );
     println!(
         "calibration: garbage-100 built {built} and freed them all, {} by polls in {} \

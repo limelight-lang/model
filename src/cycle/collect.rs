@@ -499,6 +499,8 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
             None
         }
     };
+    #[cfg(test)]
+    let from = std::time::Instant::now();
     let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS, form, set.as_ref(), stamps) }
     {
         Ok(traced) => traced,
@@ -511,6 +513,8 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     _collecting.its_reading_saw(window.arena().turnovers());
 
     unsafe { note_scan_end(window.arena(), roots) };
+    #[cfg(test)]
+    let traced = std::time::Instant::now();
 
     // The rows this trace wrote, read as the commit's membership. They stand
     // until the window's close sweeps them, which is after everything below.
@@ -520,9 +524,19 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     };
 
     let proposed = members.len() > 0;
+    #[cfg(test)]
+    let read = std::time::Instant::now();
     // A collection over P read the set alone, so a row it leaves live is no
     // proof of liveness, and it stamps nothing.
     let outcome = unsafe { commit(&members, window.arena(), form == BatchForm::AllRoots) };
+    #[cfg(test)]
+    if form == BatchForm::Verdicts {
+        crate::cycle::worker::testing::note_collection_phases([
+            traced - from,
+            read - traced,
+            read.elapsed(),
+        ]);
+    }
     // Per root and not per batch: one trace answers about as many components
     // as its lane holds roots, and the three answers go three ways
     // (`dev/DECISIONS.md`, "a queue root is the candidate bit, and the epoch is

@@ -1339,6 +1339,28 @@ pub(crate) struct VerdictCollections {
     /// the most one collection did (`crate::cycle::mark::take_owner_positions`).
     pub(crate) positions: usize,
     pub(crate) positions_longest: usize,
+    /// The collection's phases ([`COLLECTION_PHASES`]: the trace within the
+    /// set, the membership's reading, the commit), in all and those of the
+    /// longest collection; the close is what the total leaves.
+    pub(crate) phases: [std::time::Duration; COLLECTION_PHASES],
+    pub(crate) phases_of_the_longest: [std::time::Duration; COLLECTION_PHASES],
+}
+
+/// The phases of a collection over P the rig splits its pause into.
+pub(crate) const COLLECTION_PHASES: usize = 3;
+
+thread_local! {
+    /// The phases the collection over P running on this thread noted, read by
+    /// the note of its whole time ([`note_verdict_collection`]), on the same
+    /// thread: every mutator collects over its own P.
+    static PENDING_PHASES: std::cell::Cell<[std::time::Duration; COLLECTION_PHASES]> =
+        const { std::cell::Cell::new([std::time::Duration::ZERO; COLLECTION_PHASES]) };
+}
+
+/// Note the phases of the collection over P now closing
+/// (`crate::cycle::collect`).
+pub(crate) fn note_collection_phases(phases: [std::time::Duration; COLLECTION_PHASES]) {
+    PENDING_PHASES.with(|pending| pending.set(phases));
 }
 
 static VERDICT_COLLECTIONS: Mutex<VerdictCollections> = Mutex::new(VerdictCollections {
@@ -1348,12 +1370,21 @@ static VERDICT_COLLECTIONS: Mutex<VerdictCollections> = Mutex::new(VerdictCollec
     freed: 0,
     positions: 0,
     positions_longest: 0,
+    phases: [std::time::Duration::ZERO; COLLECTION_PHASES],
+    phases_of_the_longest: [std::time::Duration::ZERO; COLLECTION_PHASES],
 });
 
 pub(crate) fn note_verdict_collection(took: std::time::Duration, freed: usize, positions: usize) {
+    let phases = PENDING_PHASES.with(|pending| pending.take());
     let mut collections = lock(&VERDICT_COLLECTIONS);
     collections.collections += 1;
     collections.total += took;
+    if took > collections.longest {
+        collections.phases_of_the_longest = phases;
+    }
+    for (sum, phase) in collections.phases.iter_mut().zip(phases) {
+        *sum += phase;
+    }
     collections.longest = collections.longest.max(took);
     collections.freed += freed;
     collections.positions += positions;
@@ -1375,6 +1406,8 @@ static DISPOSALS: Mutex<VerdictCollections> = Mutex::new(VerdictCollections {
     freed: 0,
     positions: 0,
     positions_longest: 0,
+    phases: [std::time::Duration::ZERO; COLLECTION_PHASES],
+    phases_of_the_longest: [std::time::Duration::ZERO; COLLECTION_PHASES],
 });
 
 /// The returns a mutator withheld under a foreign holder, by stack — deaths,
