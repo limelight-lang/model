@@ -98,11 +98,23 @@ fn a_set_garbage_whole_is_freed_without_a_scan() {
     post_for_test(&headers(&ring));
 
     let _ = crate::cycle::trace::take_sets_garbage_whole();
+    let _ = crate::cycle::finalization::take_confirmed_by_the_sum();
+    let _ = crate::cycle::reclamation::take_reserved_by_the_drain();
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 3, "the ring is freed");
     assert_eq!(
         crate::cycle::trace::take_sets_garbage_whole(),
         1,
         "the trace skipped the scan"
+    );
+    assert_eq!(
+        crate::cycle::finalization::take_confirmed_by_the_sum(),
+        1,
+        "the counts' sum confirmed the set"
+    );
+    assert_eq!(
+        crate::cycle::reclamation::take_reserved_by_the_drain(),
+        0,
+        "the members' destructors ran, so the teardown walked the cells"
     );
     assert!(!a_set_stands(), "the collection took the set");
     for member in ring {
@@ -148,11 +160,17 @@ fn a_set_garbage_whole_reserves_its_outside_children_by_the_drain() {
     post_for_test(&headers(&ring));
 
     let _ = crate::cycle::trace::take_sets_garbage_whole();
+    let _ = crate::cycle::reclamation::take_reserved_by_the_drain();
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 3, "the ring is freed");
     assert_eq!(
         crate::cycle::trace::take_sets_garbage_whole(),
         1,
         "the trace skipped the scan"
+    );
+    assert_eq!(
+        crate::cycle::reclamation::take_reserved_by_the_drain(),
+        1,
+        "the teardown reserved by the drain's count"
     );
     for child in outside {
         assert_eq!(
@@ -182,6 +200,7 @@ fn a_reference_taken_after_the_trace_sends_a_set_garbage_whole_to_the_validation
     post_for_test(&headers(&ring));
 
     let _ = crate::cycle::trace::take_sets_garbage_whole();
+    let _ = crate::cycle::finalization::take_confirmed_by_the_sum();
     {
         let _race = crate::cycle::collect::InjectedVerdictRace::arm(&mut arena, keeper, ring[0]);
         assert_eq!(unsafe { ll_gc_maybe_collect() }, 0, "nothing is freed");
@@ -190,6 +209,11 @@ fn a_reference_taken_after_the_trace_sends_a_set_garbage_whole_to_the_validation
         crate::cycle::trace::take_sets_garbage_whole(),
         1,
         "the trace found the set garbage whole"
+    );
+    assert_eq!(
+        crate::cycle::finalization::take_confirmed_by_the_sum(),
+        0,
+        "the sum fell to the exact validation"
     );
     for &member in &ring {
         assert_eq!(

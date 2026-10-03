@@ -263,7 +263,9 @@ impl Finalization {
     /// As [`validate_component`]: every member is an entity header of this
     /// thread's GC heap whose slot is still its own, and the call runs on the
     /// owning thread with no mutator beside it. The invalidation reads the
-    /// same headers under the same rule.
+    /// same headers under the same rule. With `internal_edges`, no count and no
+    /// counted cell of a member changed since the trace that read them
+    /// (`counts_sum_to`).
     pub(crate) unsafe fn confirm(
         &mut self,
         members: &Membership<'_>,
@@ -271,6 +273,8 @@ impl Finalization {
     ) -> ValidationResult {
         let result = match internal_edges {
             Some(edges) if unsafe { counts_sum_to(members, edges) } => {
+                #[cfg(test)]
+                CONFIRMED_BY_THE_SUM.with(|count| count.set(count.get() + 1));
                 debug_assert_eq!(
                     unsafe { validate_component(members, 0) },
                     ValidationResult::Unreachable,
@@ -325,18 +329,38 @@ impl Finalization {
     }
 }
 
+// The confirmations the members' counts made in place of the exact
+// validation (tests only). Per thread, as a commit is.
+#[cfg(test)]
+thread_local! {
+    static CONFIRMED_BY_THE_SUM: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The confirmations on this thread the counts' sum made since this last
+/// answered, which it leaves at zero.
+#[cfg(test)]
+pub(crate) fn take_confirmed_by_the_sum() -> usize {
+    CONFIRMED_BY_THE_SUM.with(|count| count.replace(0))
+}
+
 /// Whether the counts of `members` sum to `edges`, the internal edges the
 /// drain of a trace within a set subtracted where it found the set garbage
 /// whole: every member's row read zero after the drain, so each count was
-/// exactly its in-edges from members, and a sum read again here is that total
-/// unless a count moved since the trace. Nothing on this thread writes a count
-/// between its trace and this reading, and no other thread writes one
-/// (`crate::refcount`), so the sum stands in for the exact validation's walk
-/// of the cells, one header a member; a sum that differs sends the commit to
-/// that walk ([`Finalization::confirm`]; `dev/plans/S67.md`, S67.12).
+/// exactly its in-edges from members. The sum stands in for the exact
+/// validation's walk of the cells, one header a member, **only because no
+/// count and no counted cell changes between that trace and this reading**:
+/// nothing on this thread runs between them and no other thread writes a
+/// count (`crate::refcount`). A sum that differs sends the commit to the walk,
+/// but the check is partial — it compares counts read now with edges read at
+/// the trace, so a store that raises one member's count and a store that cuts
+/// an internal edge to another pass it together — and a design that runs code
+/// between the trace and the commit forgets the edges read
+/// (`TraceScratchArena::take_internal_edges_read`) instead of relying on it
+/// (`dev/plans/S67.md`, S67.12, the Critic).
 ///
 /// # Safety
-/// As [`validate_component`].
+/// As [`validate_component`], and no count or counted cell of a member changed
+/// since the trace that read `edges`.
 unsafe fn counts_sum_to(members: &Membership<'_>, edges: usize) -> bool {
     let mut sum = 0usize;
     unsafe { members.for_each(|member| sum += crate::refcount::header_refcount(member) as usize) };

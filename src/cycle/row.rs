@@ -257,6 +257,10 @@ pub(crate) unsafe fn colour_unreachable_where_every_met_row_reads_zero(
 ) -> bool {
     use crate::cycle::shadow::{Color, color, count, recolor};
     use std::ops::ControlFlow;
+    // A trace that met nothing has no set to call garbage.
+    if touched.is_null() {
+        return false;
+    }
     let each_met_row = |visit: &mut dyn FnMut(*mut u32) -> bool| -> bool {
         let mut array = touched;
         while !array.is_null() {

@@ -163,6 +163,20 @@ pub(crate) unsafe fn reclaim(
     Reclaimed::Freed
 }
 
+// The teardowns that reserved by the drain's count rather than a walk of the
+// cells (tests only). Per thread, as a commit is.
+#[cfg(test)]
+thread_local! {
+    static RESERVED_BY_THE_DRAIN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The teardowns on this thread that reserved by the drain's count since this
+/// last answered, which it leaves at zero.
+#[cfg(test)]
+pub(crate) fn take_reserved_by_the_drain() -> usize {
+    RESERVED_BY_THE_DRAIN.with(|count| count.replace(0))
+}
+
 /// Tear one confirmed component down — sever its internal edges, free every
 /// member, take the guards off — and hand back the children the sever
 /// displaced out of it, held for a drain the caller times.
@@ -217,6 +231,8 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
     let read = arena.take_external_children_read();
     let external_children = match read {
         Some(read) if component.no_destructor_ran() => {
+            #[cfg(test)]
+            RESERVED_BY_THE_DRAIN.with(|count| count.set(count.get() + 1));
             debug_assert_eq!(
                 read,
                 unsafe { members.external_children() },
