@@ -1092,6 +1092,11 @@ pub(crate) unsafe fn withhold_remote_frees(head: *mut u8) {
         stack.head.set(head);
         stack.count(slots, DEATHS_MARK);
     });
+    // Each slot is a return withheld as a free's is, for the rig's timing.
+    #[cfg(test)]
+    for _ in 0..slots {
+        crate::cycle::worker::testing::note_a_return_withheld();
+    }
 }
 
 /// Count a large entity's withheld death toward the blocks' mark, by the

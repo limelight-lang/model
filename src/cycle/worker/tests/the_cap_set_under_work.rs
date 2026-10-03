@@ -224,8 +224,15 @@ fn a_take_waiting_on_the_collector_when_the_cap_goes_to_zero_returns() {
         }
     }));
     let mut standing = Standing::new(SLOT);
+    testing::read_traced_batches(true);
     let served = round(SLOT, SOFT_THRESHOLD, &mut standing);
+    let batches = testing::take_traced_batches();
+    testing::read_traced_batches(false);
     assert!(served.made_a_batch, "the trace ran to its batch");
+    assert!(
+        matches!(batches.as_slice(), [batch] if !batch.complete),
+        "the take's recall stopped the trace"
+    );
     assert!(collectors_capped_at_zero(), "under the cap it set");
     took_back.recv_timeout(A_BIRTH).expect("the take returned");
     assert_ne!(

@@ -102,8 +102,8 @@
 //!   page to the operating system, the control of the discard past the warm
 //!   blocks (`arena::keep_every_page`);
 //! - `LL_RIG_SPENT_PER_PROOF` — the ratio of the epoch's turn in place of
-//!   `epoch::SPENT_PER_PROOF` (`dev/plans/S67.md`, S67.9, the ratio put to
-//!   Edmond);
+//!   `epoch::SPENT_PER_PROOF`, set through `ll_gc_set_epoch_ratio`
+//!   (`dev/plans/S67.md`, S67.15);
 //! - `LL_RIG_HOLD_NOTHING` — set to 1, every mark expands its registered
 //!   targets as it meets them, the plain depth-first descent the held stack
 //!   reorders, as the control of `collector_passes`, `collector_held` and
@@ -4211,7 +4211,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     if let Ok(millis) = std::env::var("LL_RIG_EPOCH_MS") {
         crate::gc::ll_gc_set_epoch_interval(millis.parse().expect("milliseconds"));
     }
-    crate::cycle::epoch::set_spent_per_proof_for_test(
+    crate::gc::ll_gc_set_epoch_ratio(
         std::env::var("LL_RIG_SPENT_PER_PROOF")
             .map_or(0, |ratio| ratio.parse().expect("a whole ratio")),
     );
@@ -4782,8 +4782,16 @@ fn the_rigs_figures_read_their_known_answers() {
 #[test]
 fn the_split_by_segment_reads_a_hold_the_case_sets() {
     const HELD: Duration = Duration::from_millis(20);
+    struct StopTiming;
+    impl Drop for StopTiming {
+        fn drop(&mut self) {
+            testing::time_the_withheld_returns(false);
+        }
+    }
+
     let _g = test_guard();
     testing::time_the_withheld_returns(true);
+    let _stop = StopTiming;
     let token = &unsafe { &*super::record() }.token;
     let _ = testing::take_withheld_by_segment();
     assert!(token.claim_for_test(ELDER), "the token was free");

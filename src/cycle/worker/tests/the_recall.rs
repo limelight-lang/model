@@ -383,7 +383,8 @@ fn over_an_outside_storage_of_empty_cells() {
 /// R past all of them: raised between the phases, after the mark's first
 /// regions ended, it finds each root's row above zero — the case holds every
 /// root — and posts it read live, the snapshot's rule for a root whose own
-/// region was expanded (`dev/plans/S67.md`, S67.9, revision 3, G3).
+/// region was expanded (`dev/plans/S67.md`, S67.9, revision 3, G3); and the
+/// grant resets its arena once.
 #[test]
 fn a_recalled_batch_posts_every_root_once_read_live_and_advances_r() {
     const ROOTS: usize = 5;
@@ -400,12 +401,18 @@ fn a_recalled_batch_posts_every_root_once_read_live_and_advances_r() {
         .collect();
     assert_eq!(candidate_count(), ROOTS, "R holds the roots alone");
 
+    let _ = crate::cycle::arena::take_reset_timing();
     let (batch, _) = a_batch_asked_between_its_phases(|| {
         // At `POSTED` the hold leaves the byte as it stands, so the posts
         // are read before any collection disposes of them.
         drop(crate::cycle::token::HeldToken::take_or_hold_posted());
     });
     assert!(!batch.complete, "the recalled trace was abandoned");
+    assert_eq!(
+        crate::cycle::arena::take_reset_timing().resets,
+        1,
+        "the recalled grant reset its arena once"
+    );
     let posted = standing_verdicts();
     assert_eq!(
         posted

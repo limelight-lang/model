@@ -278,3 +278,60 @@ pub unsafe fn release_ring(built: &mut Built) {
         }
     }
 }
+
+/// The calling thread's token held under the elder collector's claim, from
+/// [`claim_this_threads_token`] to the drop, for a driver that prices a free
+/// made under a foreign holder: the free reads the byte alone, so the claim is
+/// made on this thread, and the returns it withholds go back at the next free
+/// or poll after the drop (`dev/BENCHMARKS.md`, "S65.30: the free against
+/// S65.7's").
+#[cfg(feature = "bench-loads")]
+pub struct ForeignClaim(*const crate::cycle::token::TraceToken);
+
+/// Claim the calling thread's token as the elder collector would, for
+/// [`ForeignClaim`]'s life. Panics if the token is not free or the thread has
+/// no record.
+#[cfg(feature = "bench-loads")]
+pub fn claim_this_threads_token() -> ForeignClaim {
+    let token = crate::cycle::token::this_thread_token();
+    assert!(!token.is_null(), "the thread has a record");
+    assert!(
+        unsafe { (*token).claim_for_test(crate::cycle::worker::ELDER) },
+        "the token was free"
+    );
+    ForeignClaim(token)
+}
+
+#[cfg(feature = "bench-loads")]
+impl Drop for ForeignClaim {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.0).release_claim_to(crate::cycle::worker::ELDER, crate::cycle::token::FREE)
+        };
+    }
+}
+
+/// `count` dead entities of 64 bytes, each slot's header written at a count of
+/// zero, for a driver that frees them through `ll_free` as the death path does.
+///
+/// # Safety
+/// The calling thread is registered.
+#[cfg(feature = "bench-loads")]
+pub unsafe fn dead_entity_slots(count: usize) -> Vec<*mut u8> {
+    use crate::refcount::{MemoryCategory, RcHeader};
+    (0..count)
+        .map(|_| {
+            let slot = unsafe { crate::memory::heap::entity_alloc(64) };
+            assert!(!slot.is_null(), "the heap served");
+            let header = slot as *mut RcHeader;
+            unsafe {
+                header.write(RcHeader::new(
+                    MemoryCategory::GcHeap,
+                    crate::refcount::EntityKind::Object.to_flags(),
+                ));
+                crate::refcount::set_header_refcount(header, 0);
+            }
+            slot
+        })
+        .collect()
+}

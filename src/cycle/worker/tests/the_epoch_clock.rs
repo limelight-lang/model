@@ -119,6 +119,54 @@ fn work_at_twice_its_proofs_advances_the_epoch_before_x() {
     assert_eq!(record.epoch_work(), (0, 0), "and the count starts again");
 }
 
+/// The embedder's ratio stands in for [`crate::cycle::epoch::SPENT_PER_PROOF`]
+/// and zero restores it: at a ratio of one the epoch turns once the work
+/// reaches the proofs' price, a unit short advancing nothing.
+#[test]
+fn the_embedders_ratio_sets_where_the_epoch_turns_and_zero_restores_the_default() {
+    const PROVING: u64 = 1_000;
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::gc::ll_gc_set_epoch_ratio(0);
+        }
+    }
+
+    let _g = test_guard();
+    let _restore = Restore;
+    let _x = EpochInterval::of(Duration::from_secs(60));
+    let record = unsafe { &*record() };
+    let _ = record.take_new_life();
+    record.advance_the_epoch(serve_clock_now(), crate::journal::kinds::TURNOVER_BY_HAND);
+    let turnovers = record.turnovers();
+
+    crate::gc::ll_gc_set_epoch_ratio(1);
+    assert_eq!(crate::cycle::epoch::spent_per_proof(), 1);
+    record.note_epoch_work(PROVING, PROVING);
+    visit(record);
+    record.note_epoch_work(PROVING - 1, 0);
+    visit(record);
+    assert_eq!(
+        record.turnovers(),
+        turnovers,
+        "work short of its proofs advances nothing at a ratio of one"
+    );
+    record.note_epoch_work(1, 0);
+    visit(record);
+    assert_eq!(
+        record.turnovers(),
+        turnovers + 1,
+        "work at its proofs advanced the epoch at a ratio of one"
+    );
+
+    crate::gc::ll_gc_set_epoch_ratio(0);
+    assert_eq!(
+        crate::cycle::epoch::spent_per_proof(),
+        crate::cycle::epoch::SPENT_PER_PROOF,
+        "zero restored the crate's ratio"
+    );
+}
+
 /// An epoch whose batches proved nothing turns at X alone, however much they
 /// read: no stamp stands for a turn to retire, and a turn would re-offer the
 /// deferred lane for nothing. Red with a turn on work alone.

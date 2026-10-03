@@ -654,7 +654,10 @@ Notes: dev/plans/S67.md
       handoff: 2026-10-03, read and put to Edmond with a recommendation of 4:
         on `web-heap` 4 against 2 cuts the collector's CPU by a fifth and the
         mean garbage by two fifths, and 8 turns no epoch by proofs and lets
-        the garbage grow 1.6 times (`dev/plans/S67.md`, S67.15).
+        the garbage grow 1.6 times (`dev/plans/S67.md`, S67.15). Edmond
+        asked for a dial and a reading at 1: `ll_gc_set_epoch_ratio`, the
+        default 2 until he names one; at 1 the collector falls behind on
+        `web-heap`.
 - [x] S67.11 HG leaves the tree (Edmond, 2026-10-03: "да, удаляй HG")
       done: `collector-chain`, `hold-by-generation` and
         `death-check-back-off` deleted with the chain, `ring::record_chain`,

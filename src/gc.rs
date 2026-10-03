@@ -452,6 +452,19 @@ pub extern "C" fn ll_gc_set_epoch_interval(millis: u64) {
     crate::cycle::worker::set_epoch_interval(std::time::Duration::from_millis(millis));
 }
 
+/// ABI: set how many times the price of an epoch's proofs the collector's
+/// work in it reaches before the epoch turns; zero restores the crate's
+/// default (`crate::cycle::epoch`, "The turn"). The embedder's dial between
+/// the collector's work and the garbage's wait: a higher ratio keeps the
+/// stamps longer, so more of each mark prunes at a stamped core, and lets
+/// garbage behind a core that died while stamped wait longer for the turn
+/// (`dev/BENCHMARKS.md`, "S67.15"). Callable at any time from any thread; the
+/// next visit of a mutator's clock reads it.
+#[unsafe(no_mangle)]
+pub extern "C" fn ll_gc_set_epoch_ratio(ratio: u64) {
+    crate::cycle::epoch::set_spent_per_proof(ratio);
+}
+
 /// ABI: set how long a mutator's candidate ring may stand non-empty below
 /// the collector's serve threshold before the round takes it as an ordinary
 /// batch, in milliseconds; zero restores the crate's default

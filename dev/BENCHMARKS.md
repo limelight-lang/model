@@ -8,6 +8,25 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-03 — S67.15, ratio 1: the collector falls behind on `web-heap` — 56–60 s of CPU and 385–550 MB of mean garbage against ratio 2's 45–46 s and 74–78 MB
+
+Asked by Edmond after S67.15 ("а что если он равен 1 интересно?"). The same
+binary and wrappers as S67.15 (`585024d462b9`), arms `r1` and `r2` rotated,
+three repeats of 116 s on `web-heap:46.78` and `web-arena-40k:31.08`; other
+processes' CPU 0.04–0.11 cores. Raw lines: `dev/data/s67.15/cells-ratio-1.csv`.
+
+| load | ratio | turns by proofs | stamps a walk | pruned a stamp | collector CPU | garbage mean | garbage peak | last free |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `web-heap` | 1 | 89–90 | 30,283–30,700 | 0.09 | 56.1–60.1 s | 385–550 MB | 673–876 MB | 12.0 s |
+| `web-heap` | 2 | 52–54 | 16,087–16,816 | 0.17–0.19 | 44.5–45.9 s | 74–78 MB | 318–339 MB | 8.1–9.0 s |
+| `web-arena-40k` | 1 | 23–28 | 14,670–16,285 | 0.07–0.08 | 21.3–21.6 s | 1.7–1.8 MB | 3.7–4.1 MB | 6.0–9.2 s |
+| `web-arena-40k` | 2 | 12–17 | 10,713–11,453 | 0.09–0.10 | 15.1–21.6 s | 1.5–1.6 MB | 3.1–4.0 MB | 4.2–8.3 s |
+
+At 1 the epoch turns as soon as the work pays for the proofs, so each stamp
+prunes half what it does at 2 and the walks re-stamp twice as often; on
+`web-heap` the collector no longer keeps pace and the last free reaches the
+drain's 12 s cut. Ratio 2 repeats S67.15's reading (44.7–45.6 s, 63–87 MB).
+
 ## 2026-10-03 — S65.30: the free against S65.7's — 44.13 instructions a returned free as at S65.7 once the slot entry stays out of `ll_free`'s line, and the poll at 172; the test probe's 47 ns withheld free was the rig's clock
 
 **The production count.** A scratch binary over the library without
@@ -38,10 +57,24 @@ Each now reads an atomic first and skips; the rig turns the timing on
 (`testing::time_the_withheld_returns`). After that the returned slot free reads
 10.0–11.5 ns against S65.7's 22.6–24.5 (whose drain took the hook's mutex too)
 and the withheld 6.0–7.0 against 4.5–5.5; the production build has no foreign
-holder to time a withheld free with, and its withheld path is S65.7's — a call
-into the slot entry, the byte's reading, the push and the count, whose two
-crossings now share one test that reads two compares below the first mark, as
-S65.7's one crossing did.
+holder to time a withheld free with in the test build, and the Code Reviewer
+of the stage's close asked for one in the production build.
+
+**The withheld free in production.** The `bench-loads` feature carries a
+claim of the calling thread's token as the elder's
+(`loads::claim_this_threads_token`) and dead entity slots
+(`loads::dead_entity_slots`); the same two functions patched into a scratch
+copy of `6e87d71`. 100 rounds of 8,000 dead entities freed by `ll_c_free`
+under the claim, below the deaths' mark, the poll after each round giving them
+back; callgrind toggled on `ll_c_free`, and the wall of each round's frees:
+
+| build | instructions a withheld free | median ns a free, 5 runs |
+| --- | ---: | ---: |
+| S65.7 `6e87d71` | 92.0 | 6.87–7.56 |
+| the tree | 89.0 | 6.27–6.91 |
+
+The two crossings of the marks share one test, which below the first mark
+reads two compares, as S65.7's one crossing did.
 
 ## 2026-10-03 — S67.15: the epoch's ratio at 2, 4 and 8 — on `web-heap` 4 cuts the collector's CPU by a fifth and the mean garbage by two fifths against 2, and 8 turns no epoch by proofs and lets the garbage grow
 

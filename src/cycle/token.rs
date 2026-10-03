@@ -741,7 +741,7 @@ impl TraceToken {
     /// a consent, and say whether it landed: a case standing in for a
     /// collector on a mutator that is blocked in the case's own join, so
     /// that no store of the mutator's races the stand-in's loads.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench-loads"))]
     #[must_use]
     pub(crate) fn claim_for_test(&self, slot: usize) -> bool {
         self.word
@@ -766,7 +766,7 @@ impl TraceToken {
 /// final claim is a token at `MUTATOR` until the record's next thread
 /// completes its initialisation and releases it. Null for a thread with no
 /// record.
-#[cfg(test)]
+#[cfg(any(test, feature = "bench-loads"))]
 pub(crate) fn this_thread_token() -> *const TraceToken {
     let record = crate::cycle::mutator_record::this_thread_record();
     if record.is_null() {
