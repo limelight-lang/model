@@ -30,6 +30,11 @@ rig's readings.
 lane re-walk the same live components for ever); a pass over R as the turn
 (false when the mutator writes R faster than the collector reads it).
 
+**Amended 2026-10-03:** X turns no epoch before twice the wall of the batches
+that proved it. At X = 150 ms under a 180-ms walk of web-heap-150k's state the
+stamps retired before any batch pruned at them, and 2.8 GB stood at the
+drain's end against 0.3 GB with the guard.
+
 ---
 
 ## 2026-10-02 — a collector's batch prunes any stamped target it has not met, and stamps only what its final drain touched first

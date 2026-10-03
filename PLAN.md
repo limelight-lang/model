@@ -542,7 +542,7 @@ Notes: dev/plans/S67.md
         the garbage ceiling, best D's `instructions_a_request` spreads 48M to
         27M between two cells and its A/A p99.9 is 657 ms, every cell void on
         a shared box — put to Edmond before S67.6.
-- [ ] S67.9 The collector's progress guarantee — first, before S67.6
+- [x] S67.9 The collector's progress guarantee — first, before S67.6
       done: garbage behind a live component larger than B, and garbage whose
         trace outlasts the mutator's poll interval, are each freed within a
         bounded number of turnovers on the web loads and on a case of each;
@@ -555,6 +555,12 @@ Notes: dev/plans/S67.md
         cells) (Edmond, 2026-09-30: "это баг алгоритма. Его надо решать
         первым", and he held it decided earlier)
       tier: T2 · role: Critic
+      handoff: closed 2026-10-03 on `fb08f9e` (`dev/plans/S67.md`, S67.9,
+        "done-line read"): one trace a batch, the posted set, two recall
+        levels, the collector's stamps, the epoch turned by proofs; garbage
+        behind the state and behind cut traces freed within one X on
+        web-heap-150k and web-arena-40k. Open: Q2 and Q1 to Edmond; the
+        chain of rings to idea (ii).
 - [ ] S67.6 Measure D and HG on the web loads
       done: the run by S67.1's rule, the arms fresh and interleaved, the
         figures in `dev/BENCHMARKS.md`, the verdict put to Edmond
