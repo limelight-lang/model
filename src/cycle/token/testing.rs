@@ -73,11 +73,11 @@ impl HeldByACollector {
             if until_waited {
                 wait_for_a_waiter(token, waits_before);
             } else {
-                // No timeout: under Miri the clock is virtual and runs with the
-                // instructions interpreted, so a case freeing thousands of
-                // slots under the holder outran a ten-second bound and found
-                // the token free. The release, or the guard's drop on the
-                // unwind, drops the sender and ends the wait.
+                // No timeout: Miri's clock is virtual and runs with the
+                // instructions interpreted, so a bound in seconds expires
+                // under a case that frees thousands of slots under the holder
+                // and leaves the token free. The release, or the guard's drop
+                // on the unwind, drops the sender and ends the wait.
                 let _ = release_receiver.recv();
             }
 
