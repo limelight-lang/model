@@ -8,6 +8,33 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-03 — S65.30: the unarmed poll read 183 instructions against the stage's base's 175; the arming kept as its enum and fired out of line bring it back to 175
+
+**The count.** `ll_gc_maybe_collect` with its callees, executed
+instructions counted by `valgrind --tool=callgrind
+--toggle-collect=ll_gc_maybe_collect`, two million polls of a registered
+thread with nothing to do, from a release binary that links the library
+without `cfg(test)` (a scratch `main` calling `ll_thread_init` then the poll
+in a loop); the box has no PMU, so callgrind stands in for S65.12's
+`perf stat`. The stage's base is `e367a83`, the tree S65.12 compared
+against:
+
+| build | instructions a poll |
+| --- | ---: |
+| base `e367a83` | 175.0 |
+| `3ec8765`, before the repair | 183.0 |
+| the arming as a `Cell<Arming>` | 182.0 |
+| and the fire out of line behind one compare | 175.0 |
+
+Where the eight went, by callgrind's lines: the match of five armings
+(S65.25 added `Disposal` as the fifth) compiled to a jump table's bound and
+index on the unarmed path, plus the byte's conversion into the enum; the
+token's reading, the queue's refills and the withheld returns' drain read
+as they did. The test build's probe (`what_the_poll_costs`) reads 224
+against 171 instructions, the difference there being the test-only hooks
+on the drain's path (a mutex-guarded hook and the rig's readings), which no
+production build carries.
+
 ## 2026-10-03 — S65.17: cap 1, cap 4 and cap 0 on the default build: no take waited in 63 cells; a grant on `web-arena-40k` lasts up to 97–185 ms and the mutator's withheld blocks reach 129–582 at its release, against a mark of 16
 
 **The run.** The default build at `c52ff90` (binary `ae85a184e925`), on the
