@@ -115,6 +115,9 @@ fn a_producers_frees_into_this_threads_blocks_recall_the_grant_at_the_mark() {
     let _guard = test_guard();
     let token = this_thread_token();
     let slots = unsafe { dead_slots(DEATHS_MARK) };
+    // A set rather than the vector: each allocation below is checked against
+    // all of them, which a scan of the vector makes quadratic under Miri.
+    let freed: std::collections::HashSet<usize> = slots.iter().map(|&slot| slot as usize).collect();
     let sent: Vec<Sent> = slots.iter().map(|&slot| Sent(slot)).collect();
     std::thread::spawn(move || {
         for slot in sent {
@@ -132,7 +135,7 @@ fn a_producers_frees_into_this_threads_blocks_recall_the_grant_at_the_mark() {
         let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
         assert!(!slot.is_null(), "the heap served");
         assert!(
-            !slots.contains(&slot),
+            !freed.contains(&(slot as usize)),
             "a slot the producer freed was handed out under the holder"
         );
         unsafe { live_entity(slot, 1) };
@@ -156,7 +159,7 @@ fn a_producers_frees_into_this_threads_blocks_recall_the_grant_at_the_mark() {
         assert!(!slot.is_null(), "the heap served");
         unsafe { live_entity(slot, 1) };
         after.push(slot);
-        taken_back += usize::from(slots.contains(&slot));
+        taken_back += usize::from(freed.contains(&(slot as usize)));
         if taken_back == DEATHS_MARK {
             break;
         }
