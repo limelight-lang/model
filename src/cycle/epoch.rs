@@ -83,6 +83,32 @@ use crate::refcount::MATURATION_EPOCH_MASK;
 /// (`dev/plans/S67.md`, S67.9).
 pub(crate) const SPENT_PER_PROOF: u64 = 2;
 
+/// [`SPENT_PER_PROOF`], or the ratio a case or the rig's cell set
+/// (`set_spent_per_proof_for_test`, tests only).
+#[inline]
+pub(crate) fn spent_per_proof() -> u64 {
+    #[cfg(test)]
+    match SPENT_PER_PROOF_FOR_TEST.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => {}
+        ratio => return ratio,
+    }
+
+    SPENT_PER_PROOF
+}
+
+/// The ratio [`spent_per_proof`] answers in place of [`SPENT_PER_PROOF`], zero
+/// for none; process-wide, for the rig's cell, which compares ratios.
+#[cfg(test)]
+static SPENT_PER_PROOF_FOR_TEST: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Turn the epoch at `ratio` times the proofs' price, zero for the crate's
+/// own (tests only).
+#[cfg(test)]
+pub(crate) fn set_spent_per_proof_for_test(ratio: u64) {
+    SPENT_PER_PROOF_FOR_TEST.store(ratio, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Epochs the header's field tells apart, past which the count wraps: four,
 /// and sixteen under `wait-by-readings`
 /// (`crate::refcount::MATURATION_EPOCH_MASK`).

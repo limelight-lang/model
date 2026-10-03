@@ -121,6 +121,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("HELD_AT_LAST_ROW_READ", false), // test-only const Cell, no drop glue
         ("HELD_FIGURES", false),          // test-only const Cell of a Copy struct, no drop glue
         ("LATE_CELL", false),
+        ("LEAVES_MET", false),    // test-only const Cell, no drop glue
         ("MARK_ENDED_AT", false), // test-only const Cell, no drop glue
         ("MEMBER_LIST", false),
         ("MEMBER_LIST_HELD", false),

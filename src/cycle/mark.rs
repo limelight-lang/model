@@ -55,6 +55,17 @@
 //! and is stamped there if the scan colours it live
 //! (`crate::cycle::collector_stamps`, "What is stamped").
 //!
+//! # Leaves are not pushed
+//!
+//! A child whose kind or class yields no counted cell — a string, a Box, a
+//! weak cell, an object of no counted property — is met and subtracted like
+//! any other, its row standing for the scan, and goes on no worklist and no
+//! held chain: an entry would cost 16 bytes and a pop to expand nothing, and
+//! a wide array of small leaves would draw a worklist of about their own size
+//! (`dev/plans/S67.md`, S67.9, the Critic of 2026-09-30 on the ceiling,
+//! finding 4). What the expansion would have counted toward the recall, one
+//! position, is not counted.
+//!
 //! # The mature live core is not descended into
 //!
 //! An edge target carrying this collection's epoch at an age that has reached
@@ -165,8 +176,8 @@ use crate::cycle::row::{EdgeTarget, resolve_edge_target};
 use crate::cycle::shadow;
 use crate::cycle::stack::WorklistEntry;
 use crate::refcount::{
-    MATURATION_AGE_MAX, RcHeader, header_refcount, is_registered_candidate, mutator_flags,
-    read_maturation_stamp,
+    ENTITY_KIND_MASK, ENTITY_KIND_SHIFT, MATURATION_AGE_MAX, RcHeader, header_refcount,
+    is_registered_candidate, mutator_flags, read_maturation_stamp,
 };
 
 /// The age at which an edge target stops being descended into: `k`, the
@@ -798,10 +809,18 @@ unsafe fn visit_child<R: CellReader>(
                 return true;
             }
 
+            // A leaf is met and subtracted, and has nothing to expand: it
+            // takes no worklist entry (module doc, "Leaves are not pushed").
+            let flags = unsafe { mutator_flags(child) };
+            let kind = (flags & ENTITY_KIND_MASK) >> ENTITY_KIND_SHIFT;
+            if unsafe { cells::yields_no_cell::<R>(child, kind) } {
+                #[cfg(test)]
+                LEAVES_MET.with(|count| count.set(count.get() + 1));
+                return true;
+            }
+
             let entry = WorklistEntry { entity: child, row };
-            if holding == Holding::Registered
-                && is_registered_candidate(unsafe { mutator_flags(child) })
-            {
+            if holding == Holding::Registered && is_registered_candidate(flags) {
                 #[cfg(test)]
                 note_held(|figures| figures.held += 1);
                 arena.hold(entry)
@@ -905,6 +924,19 @@ pub(crate) fn stop_at_candidates(stops: bool) {
 unsafe fn stops_at_a_candidate(child: *mut RcHeader) -> bool {
     STOPS_AT_CANDIDATES.load(std::sync::atomic::Ordering::Relaxed)
         && is_registered_candidate(unsafe { mutator_flags(child) })
+}
+
+// Leaves the marks of this thread met and pushed nowhere (tests only).
+#[cfg(test)]
+thread_local! {
+    static LEAVES_MET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Leaves the marks of this thread met since this last answered, which it
+/// leaves at zero.
+#[cfg(test)]
+pub(crate) fn take_leaves_met() -> usize {
+    LEAVES_MET.with(|count| count.replace(0))
 }
 
 // Edges the marks of this thread have pruned (tests only). Per thread,

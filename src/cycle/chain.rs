@@ -285,7 +285,7 @@ fn may_lap(record: &MutatorRecord) -> bool {
         let (lapped_at, back_off) = record.lap_state();
         let (spent, proving) = record.epoch_work();
         proving > 0
-            && spent >= crate::cycle::epoch::SPENT_PER_PROOF * proving / 2
+            && spent >= crate::cycle::epoch::spent_per_proof() * proving / 2
             && record.turnovers().wrapping_sub(lapped_at) >= 1 << back_off
     }
     #[cfg(not(feature = "death-check-back-off"))]

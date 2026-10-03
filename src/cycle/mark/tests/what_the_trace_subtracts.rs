@@ -201,3 +201,63 @@ fn a_second_root_already_met_leaves_every_count_where_it_was() {
         }
     }
 }
+
+/// A leaf is met and subtracted like any other child, and expanded by
+/// nothing: an object of no counted property met from the root, and one met
+/// from a middle entity, each end at the count the trace owes it and take no
+/// worklist entry (`crate::cycle::mark`, "Leaves are not pushed"). Red with
+/// every child pushed.
+#[test]
+fn a_leaf_is_met_and_subtracted_and_pushed_nowhere() {
+    let _g = test_guard();
+    let forked = ClassBuilder::new("MarkLeafFork")
+        .prop("left", true)
+        .prop("right", true)
+        .build();
+    let single = ClassBuilder::new("MarkLeafMiddle")
+        .prop("next", true)
+        .build();
+    let bare = ClassBuilder::new("MarkLeaf").build();
+
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let root = unsafe { new_constructed(&mut context, forked, MemoryCategory::GcHeap) };
+    let middle = unsafe { new_constructed(&mut context, single, MemoryCategory::GcHeap) };
+    let near = unsafe { new_constructed(&mut context, bare, MemoryCategory::GcHeap) };
+    let far = unsafe { new_constructed(&mut context, bare, MemoryCategory::GcHeap) };
+    unsafe {
+        store_prop(&mut arena, root, prop_offset(0), near);
+        store_prop(&mut arena, root, prop_offset(1), middle);
+        store_prop(&mut arena, middle, prop_offset(0), far);
+        for entity in [middle, near] {
+            assert!(!ll_release(entity as *mut RcHeader));
+        }
+    }
+
+    let _ = crate::cycle::mark::take_leaves_met();
+    let mut shadow_arena = crate::cycle::testing::open_arena();
+    assert_eq!(
+        unsafe { mark::<PlainCells>(&mut shadow_arena, root as *mut RcHeader) },
+        MarkResult::Complete
+    );
+    assert_eq!(crate::cycle::mark::take_leaves_met(), 2, "both leaves");
+    assert_eq!(unsafe { working_count(near) }, 0, "one in-edge, subtracted");
+    assert_eq!(
+        unsafe { working_count(far) },
+        1,
+        "its in-edge subtracted, the case's own reference standing"
+    );
+    shadow_arena.reset();
+    drop(shadow_arena);
+
+    unsafe {
+        store_prop(&mut arena, middle, prop_offset(0), std::ptr::null_mut());
+        store_prop(&mut arena, root, prop_offset(0), std::ptr::null_mut());
+        store_prop(&mut arena, root, prop_offset(1), std::ptr::null_mut());
+        for entity in [far, root] {
+            assert!(ll_release(entity as *mut RcHeader));
+            crate::object::ll_object_die(entity);
+        }
+    }
+    crate::cycle::queue::release_queue_segments();
+}

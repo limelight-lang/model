@@ -948,7 +948,11 @@ fn a_pass_over_held_entries_reads_the_recall() {
     reset_lanes();
     let mut arena = Arena::new();
     let mut context = LLContext { arena: &mut arena };
-    let empty = ClassBuilder::new("RecallHeldElement").build();
+    // One counted property, left null: an element of no counted cell is a
+    // leaf, which the mark never holds (`crate::cycle::mark`).
+    let empty = ClassBuilder::new("RecallHeldElement")
+        .prop("next", true)
+        .build();
     let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
     let elements: Vec<*mut Object> = (0..HELD_ELEMENTS)
         .map(|_| unsafe {
@@ -1453,7 +1457,11 @@ unsafe fn a_ring_then_a_held_root_over_registered_elements(
         .prop("next", true)
         .build();
     let ring = unsafe { crate::cycle::testing::long_ring(&mut *context.arena, node, 2) };
-    let element = ClassBuilder::new("WindDownHeldElement").build();
+    // One counted property, left null, so that each element is held rather
+    // than met as a leaf (`crate::cycle::mark`).
+    let element = ClassBuilder::new("WindDownHeldElement")
+        .prop("next", true)
+        .build();
     let array = unsafe { ll_array_new(MemoryCategory::GcHeap) };
     let items: Vec<*mut Object> = (0..CUT_ELEMENTS)
         .map(|_| unsafe {
@@ -1602,7 +1610,11 @@ fn a_wind_down_sends_back_a_root_read_live_only_through_another() {
     reset_lanes();
     let mut arena = Arena::new();
     let mut context = LLContext { arena: &mut arena };
-    let element = ClassBuilder::new("WindDownInnerElement").build();
+    // One counted property, left null, so that each item is held rather
+    // than met as a leaf (`crate::cycle::mark`).
+    let element = ClassBuilder::new("WindDownInnerElement")
+        .prop("next", true)
+        .build();
     let inner = unsafe { new_constructed(&mut context, element, MemoryCategory::GcHeap) };
     unsafe {
         ll_retain(inner as *mut RcHeader);

@@ -96,6 +96,9 @@
 //!   edge into a registered candidate past its root and expands it no further
 //!   (`mark::stop_at_candidates`), each part the walk of its root's first
 //!   region (`dev/plans/S67.md`, S67.9, run R2).
+//! - `LL_RIG_SPENT_PER_PROOF` — the ratio of the epoch's turn in place of
+//!   `epoch::SPENT_PER_PROOF` (`dev/plans/S67.md`, S67.9, the ratio put to
+//!   Edmond);
 //! - `LL_RIG_HOLD_NOTHING` — set to 1, every mark expands its registered
 //!   targets as it meets them, the plain depth-first descent the held stack
 //!   reorders, as the control of `collector_passes`, `collector_held` and
@@ -1417,6 +1420,10 @@ struct WebReading {
     garbage_peak: ([usize; 3], usize),
     /// The garbage at the drain's end, in bytes.
     garbage_at_the_drain_end: usize,
+    /// The roots standing in the deferred lane and in R at the drain's end:
+    /// garbage behind a root read live waits in the first for a turn.
+    deferred_at_the_drain_end: usize,
+    candidates_at_the_drain_end: usize,
     /// The cache and the sessions over the window.
     counts: CacheCounts,
     /// Requests whose end landed on a registered root, over the window.
@@ -1877,6 +1884,8 @@ impl WebLoop {
         reading.remnant_wait = remnant_wait.unwrap_or(drain);
         reading.last_free = last_free.unwrap_or(drain);
         self.reading.garbage_at_the_drain_end = self.garbage.current().iter().sum();
+        self.reading.deferred_at_the_drain_end = crate::cycle::queue::deferred_count();
+        self.reading.candidates_at_the_drain_end = crate::cycle::queue::candidate_count();
     }
 
     /// Let the state go and free it: a state the collections read live is
@@ -3803,6 +3812,14 @@ impl CellReading {
                 "web_garbage_at_the_drain_end_bytes",
                 sum(&|reading| reading.garbage_at_the_drain_end),
             ),
+            (
+                "web_deferred_at_the_drain_end",
+                sum(&|reading| reading.deferred_at_the_drain_end),
+            ),
+            (
+                "web_candidates_at_the_drain_end",
+                sum(&|reading| reading.candidates_at_the_drain_end),
+            ),
             ("web_hits", sum(&|reading| reading.counts.hits)),
             (
                 "web_hits_registering",
@@ -4165,6 +4182,10 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let first_regions = switch_from_env("LL_RIG_FIRST_REGIONS");
     crate::cycle::mark::stop_at_candidates(first_regions);
     crate::cycle::mark::hold_nothing(switch_from_env("LL_RIG_HOLD_NOTHING"));
+    crate::cycle::epoch::set_spent_per_proof_for_test(
+        std::env::var("LL_RIG_SPENT_PER_PROOF")
+            .map_or(0, |ratio| ratio.parse().expect("a whole ratio")),
+    );
     let stop = Arc::new(AtomicBool::new(false));
     let start = Arc::new(Barrier::new(cell.mutators.len() + 1));
     let stages = Arc::new(Barrier::new(cell.mutators.len() + 1));

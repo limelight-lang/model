@@ -598,6 +598,48 @@ pub(crate) unsafe fn trace_cells<R: CellReader>(
     let _ = unsafe { trace_cells_until::<R>(entity, kind, visit) };
 }
 
+/// Whether [`trace_cells`] would yield no cell of `entity`, whatever it
+/// holds: a kind that closes no ring — a string, a Box, a weak cell — or an
+/// object whose class has no counted cell in its body or outside it. A trace
+/// meets such a child and subtracts the edge into it, and has nothing to
+/// expand (`crate::cycle::mark`, "Leaves are not pushed"). An object that is
+/// no longer live under a concurrent reader is one too: its cells are
+/// severed, as [`trace_cells_until`] reads it.
+///
+/// # Safety
+/// As [`trace_cells`], `kind` being `entity`'s.
+#[inline]
+pub(crate) unsafe fn yields_no_cell<R: CellReader>(entity: *mut RcHeader, kind: u32) -> bool {
+    const OBJECT: u32 = EntityKind::Object as u32;
+    const LAZY: u32 = EntityKind::Lazy as u32;
+    const STRING: u32 = EntityKind::String as u32;
+    const STRING_DYNAMIC: u32 = EntityKind::StringDynamic as u32;
+    const BOX: u32 = EntityKind::Box as u32;
+    const WEAKREF: u32 = EntityKind::WeakRef as u32;
+    const CLASS_OFFSET: usize = std::mem::offset_of!(crate::object::Object, class);
+    match kind {
+        STRING | STRING_DYNAMIC | BOX | WEAKREF => true,
+        OBJECT | LAZY => {
+            let class = unsafe { R::ptr((entity as *const u8).add(CLASS_OFFSET)) }
+                as *const crate::class::Class;
+            // The class word read before the slot's state, as the stride
+            // reads them: a word read after the death is the withheld
+            // returns' link, and the state then reads the death.
+            if R::CONCURRENT
+                && unsafe { crate::refcount::slot_state(entity) }
+                    != crate::refcount::SlotState::Live
+            {
+                return true;
+            }
+
+            let flags = unsafe { crate::class::Class::flags_of(class) };
+            flags & (crate::class::CLASS_TEMPLATE | crate::class::CLASS_OUTSIDE_CELLS) == 0
+                && unsafe { (*class).ptr_run_count == 0 && (*class).box_run_count == 0 }
+        }
+        _ => false,
+    }
+}
+
 /// [`trace_cells`] with a visitor that sees every position and may stop the
 /// stride: `Break` when `visit` answered it, and nothing read after that
 /// position ([`CellVisitor`]). The trace's two phases are its callers.

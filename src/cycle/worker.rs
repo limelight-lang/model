@@ -638,7 +638,7 @@ fn advance_the_epoch_if_due(record: &MutatorRecord, now: u64) {
     }
 
     let (spent, proving) = record.epoch_work();
-    let by_proofs = proving > 0 && spent >= crate::cycle::epoch::SPENT_PER_PROOF * proving;
+    let by_proofs = proving > 0 && spent >= crate::cycle::epoch::spent_per_proof() * proving;
     if by_proofs || now.saturating_sub(last) >= epoch_interval().as_nanos() as u64 {
         let why = if by_proofs {
             journal::TURNOVER_BY_PROOFS
