@@ -2310,8 +2310,8 @@ unsafe fn batch(
     }
 }
 
-/// What a batch that took no root answers: where something was already
-/// posted into P the grant made a batch of no roots, which the round reads as
+/// What a batch that took no root answers: where P already holds a post
+/// the grant made a batch of no roots, which the round reads as
 /// work and the mutator answers by its disposition, and which the epoch
 /// clock does not count; otherwise nothing was taken.
 fn served_without_roots(mutator: &MutatorRecord, posted: &std::cell::Cell<bool>) -> Served {
