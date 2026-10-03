@@ -531,10 +531,15 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     let outcome = unsafe { commit(&members, window.arena(), form == BatchForm::AllRoots) };
     #[cfg(test)]
     if form == BatchForm::Verdicts {
+        let [confirm, destructors, reclaim, drops] =
+            crate::cycle::worker::testing::take_commit_split();
         crate::cycle::worker::testing::note_collection_phases([
             traced - from,
             read - traced,
-            read.elapsed(),
+            confirm,
+            destructors,
+            reclaim,
+            drops,
         ]);
     }
     // Per root and not per batch: one trace answers about as many components
@@ -1304,7 +1309,11 @@ unsafe fn commit(
         })
     } {
         Some((freed, deferred)) => {
+            #[cfg(test)]
+            let from = std::time::Instant::now();
             deferred.drain();
+            #[cfg(test)]
+            crate::cycle::worker::testing::note_commit_part(3, from.elapsed());
             freed
         }
         None => 0,
@@ -1428,6 +1437,8 @@ unsafe fn commit_before_drops<'a>(
     if stamps {
         unsafe { stamp_live_components(members, arena, finalization.epoch()) };
     }
+    #[cfg(test)]
+    let from = std::time::Instant::now();
     let initial = if members.len() == 0 {
         ValidationResult::ZeroCountMember
     } else {
@@ -1435,11 +1446,19 @@ unsafe fn commit_before_drops<'a>(
     };
     initial_disposition(initial);
     let confirmed = initial == ValidationResult::Unreachable;
+    #[cfg(test)]
+    let confirmed_at = std::time::Instant::now();
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_commit_part(0, confirmed_at - from);
 
     let mut pass = finalization.seal().destructors();
     if confirmed {
         unsafe { pass.run(members) };
     }
+    #[cfg(test)]
+    let destructed_at = std::time::Instant::now();
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_commit_part(1, destructed_at - confirmed_at);
 
     let mut revalidation = pass.close();
     let mut reclaimed = None;
@@ -1447,6 +1466,8 @@ unsafe fn commit_before_drops<'a>(
         reclaimed =
             unsafe { reclaim_what_the_second_reading_confirms(&mut revalidation, members, arena) };
     }
+    #[cfg(test)]
+    crate::cycle::worker::testing::note_commit_part(2, destructed_at.elapsed());
 
     revalidation.close();
     reclaimed

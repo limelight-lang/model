@@ -133,3 +133,75 @@ fn measure_what_the_poll_costs_with_a_deferred_record_standing() {
     );
     assert_eq!(unsafe { ll_gc_collect_cycles() }, 2, "the ring went back");
 }
+
+/// Objects of the acyclic tree the cascade probe frees: the largest request
+/// `web-heap` draws (`worker::tests::the_web_loads`, `MOST_OBJECTS`).
+const CASCADE_OBJECTS: usize = 400_000;
+
+/// What reference counting alone pays to free a tree of `CASCADE_OBJECTS`
+/// objects by the release of its root: the least cost a collection over a posted
+/// set of that size is read against (`dev/plans/S67.md`, S67.12). A binary
+/// tree of plain objects, two counted properties each, built in one arena
+/// and released once; the minimum and the median of `ROUNDS`, in ms and per
+/// object.
+#[test]
+#[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
+fn measure_an_acyclic_cascade_of_a_requests_size() {
+    let _g = test_guard();
+    let class = ClassBuilder::new("CascadeNode")
+        .prop("left", true)
+        .prop("right", true)
+        .build();
+    let mut samples = Vec::with_capacity(ROUNDS);
+    for round in 0..=ROUNDS {
+        let mut arena = Arena::new();
+        let nodes: Vec<*mut Object> = (0..CASCADE_OBJECTS)
+            .map(|_| {
+                let mut context = LLContext { arena: &mut arena };
+                unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) }
+            })
+            .collect();
+        // Node i holds nodes 2i + 1 and 2i + 2, each child's creation
+        // reference moved into its parent's property, so no decrement registers
+        // a candidate.
+        for (index, &node) in nodes.iter().enumerate() {
+            for (property, child) in [2 * index + 1, 2 * index + 2].into_iter().enumerate() {
+                if child < CASCADE_OBJECTS {
+                    unsafe {
+                        crate::cycle::testing::move_prop(
+                            node,
+                            prop_offset(property as u32),
+                            nodes[child],
+                        )
+                    };
+                }
+            }
+        }
+
+        let start = Instant::now();
+        assert!(
+            unsafe { ll_release(nodes[0] as *mut RcHeader) },
+            "the root's release is its last"
+        );
+        unsafe { crate::object::ll_object_die(nodes[0]) };
+        let took = start.elapsed();
+        let last = nodes[CASCADE_OBJECTS - 1] as *mut RcHeader;
+        assert_ne!(
+            unsafe { crate::refcount::slot_state(last) },
+            crate::refcount::SlotState::Live,
+            "the release reached the tree's last leaf"
+        );
+        if round > 0 {
+            samples.push(took);
+        }
+    }
+
+    samples.sort();
+    let (minimum, median) = (samples[0], samples[samples.len() / 2]);
+    println!(
+        "acyclic_cascade objects={CASCADE_OBJECTS}: min={:.1} ms median={:.1} ms, {:.0} ns an object at the minimum",
+        minimum.as_secs_f64() * 1e3,
+        median.as_secs_f64() * 1e3,
+        minimum.as_nanos() as f64 / CASCADE_OBJECTS as f64
+    );
+}

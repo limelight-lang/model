@@ -605,14 +605,13 @@ Notes: dev/plans/S67.md
         the lanes stated (`model/gc/rc-cycle.md`, "Deferred lanes").
 - [ ] S67.12 Bound the owner's pause over a posted set (the external review's
         R4, its critics and the Sage of 2026-10-03)
-      done: the collection over one posted set is one pause of 124–215 ms on
-        `web-heap` over sets of up to 410k members, and neither K nor the
-        recall bounds it (`dev/data/s67.6/cells.csv`,
-        `verdict_collection_longest_us`); the rig splits that pause into its
-        phases, and the owner's work per poll is bounded — the set posted in
-        parts, or its teardown spread over polls — keeping "any subset is
-        sound"; a case of a set of about 400k members under the bound, every
-        member freed in the end; measured on `web-heap` against today's
+      done: the collection over one posted set is one pause of up to 157 ms on
+        `web-heap` over one request's 358k members, the proof about 130 ms of
+        it and the frees about 20 (`dev/plans/S67.md`, S67.12); the direction
+        put to Edmond with those figures — the validation's constant cut, a
+        validation across polls behind an increment barrier, or the pause
+        kept as garbage-proportional; the chosen one built, a case of a set of
+        about 400k members, and `web-heap` measured against today's 157 ms
       tier: T2 · role: Critic
 - [ ] S67.13 Shorten the token's tail after a stop (the review's R3)
       done: a stopped trace releases the grants standing behind it before its

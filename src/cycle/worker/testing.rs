@@ -1340,14 +1340,37 @@ pub(crate) struct VerdictCollections {
     pub(crate) positions: usize,
     pub(crate) positions_longest: usize,
     /// The collection's phases ([`COLLECTION_PHASES`]: the trace within the
-    /// set, the membership's reading, the commit), in all and those of the
-    /// longest collection; the close is what the total leaves.
+    /// set, the membership's reading, and the commit's first reading,
+    /// destructors, second reading with the teardown, and drops), in all and
+    /// those of the longest collection; the close is what the total leaves.
     pub(crate) phases: [std::time::Duration; COLLECTION_PHASES],
     pub(crate) phases_of_the_longest: [std::time::Duration; COLLECTION_PHASES],
 }
 
 /// The phases of a collection over P the rig splits its pause into.
-pub(crate) const COLLECTION_PHASES: usize = 3;
+pub(crate) const COLLECTION_PHASES: usize = 6;
+
+thread_local! {
+    /// The commit's split as the commit running on this thread noted it:
+    /// the first reading, the destructors, the second reading with the
+    /// teardown, the drops (`crate::cycle::collect::commit`).
+    static COMMIT_SPLIT: std::cell::Cell<[std::time::Duration; 4]> =
+        const { std::cell::Cell::new([std::time::Duration::ZERO; 4]) };
+}
+
+/// Note one part of the commit running on this thread.
+pub(crate) fn note_commit_part(part: usize, took: std::time::Duration) {
+    COMMIT_SPLIT.with(|split| {
+        let mut parts = split.get();
+        parts[part] = took;
+        split.set(parts);
+    });
+}
+
+/// The commit's split this thread noted, and zero it.
+pub(crate) fn take_commit_split() -> [std::time::Duration; 4] {
+    COMMIT_SPLIT.with(|split| split.take())
+}
 
 thread_local! {
     /// The phases the collection over P running on this thread noted, read by

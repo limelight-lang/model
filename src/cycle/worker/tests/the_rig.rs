@@ -3236,8 +3236,20 @@ impl CellReading {
                 self.verdict_collections.phases[1].as_micros().to_string(),
             ),
             (
-                "verdict_commit_us",
+                "verdict_confirm_us",
                 self.verdict_collections.phases[2].as_micros().to_string(),
+            ),
+            (
+                "verdict_destructors_us",
+                self.verdict_collections.phases[3].as_micros().to_string(),
+            ),
+            (
+                "verdict_reclaim_us",
+                self.verdict_collections.phases[4].as_micros().to_string(),
+            ),
+            (
+                "verdict_drops_us",
+                self.verdict_collections.phases[5].as_micros().to_string(),
             ),
             (
                 "verdict_longest_trace_us",
@@ -3252,8 +3264,26 @@ impl CellReading {
                     .to_string(),
             ),
             (
-                "verdict_longest_commit_us",
+                "verdict_longest_confirm_us",
                 self.verdict_collections.phases_of_the_longest[2]
+                    .as_micros()
+                    .to_string(),
+            ),
+            (
+                "verdict_longest_destructors_us",
+                self.verdict_collections.phases_of_the_longest[3]
+                    .as_micros()
+                    .to_string(),
+            ),
+            (
+                "verdict_longest_reclaim_us",
+                self.verdict_collections.phases_of_the_longest[4]
+                    .as_micros()
+                    .to_string(),
+            ),
+            (
+                "verdict_longest_drops_us",
+                self.verdict_collections.phases_of_the_longest[5]
                     .as_micros()
                     .to_string(),
             ),
@@ -4631,7 +4661,7 @@ fn the_rigs_figures_read_their_known_answers() {
     assert!(
         phases <= collections.total
             && longest <= collections.longest
-            && (collections.freed == 0 || collections.phases[2] > Duration::ZERO),
+            && (collections.freed == 0 || collections.phases[4] > Duration::ZERO),
         "{collections:?}"
     );
     println!(
