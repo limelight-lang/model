@@ -10,9 +10,10 @@
 #      MUTATORS (2,4), SPARE (6), SHARED (4): CPUs for the two placements;
 #      LOADS, the deciding phase's loads as load:pace, default all six.
 # The web phase is S67's protocol (`dev/plans/S67.md`, S67.7): six mutators on
-# CPUs 2-12, one a core; CAPS ("1 4"), cap 1's collector on 14 and cap 4's on
-# 14, 0, 15 and 1; WEB_LOADS as load:interarrival_ms, the interarrival each
-# load's pilot of best D found; 116 s with a 20 s warm-up and a 12 s drain;
+# CPUs 2-12, one a core (WEB_MUTATORS); CAPS ("1 4"), cap 1's collector on 14
+# and cap 4's on 14, 0, 15 and 1 (WEB_COLLECTORS_CAP1, WEB_COLLECTORS_CAP4);
+# WEB_LOADS as load:interarrival_ms, the interarrival each load's pilot of best
+# D found; 116 s with a 20 s warm-up and a 12 s drain;
 # each cell's requests beside OUT for dev/tools/paired_excess.py; a cell whose
 # line reads void is run again once after the last repeat, and a second void
 # is reported, not run again.
@@ -73,8 +74,8 @@ PY
 # One cell of the web phase: arm, cap, load, interarrival in ms, repeat.
 web_cell() {
     local arm=$1 cap=$2 load=$3 interarrival=$4 repeat=$5
-    local collectors=14
-    [ "$cap" = 4 ] && collectors=14,0,15,1
+    local collectors=$WEB_COLLECTORS_CAP1
+    [ "$cap" = 4 ] && collectors=$WEB_COLLECTORS_CAP4
     LL_RIG_PLACEMENT=cap-$cap LL_RIG_LOAD=$load LL_RIG_MUTATOR_CPUS=$WEB_MUTATORS \
         LL_RIG_COLLECTOR_CPUS=$collectors LL_RIG_CAP=$cap LL_RIG_SECONDS=116 \
         LL_RIG_WARM_UP_SECONDS=20 LL_RIG_DRAIN_MS=12000 LL_RIG_ARRIVALS=1 \
@@ -97,6 +98,8 @@ rotated() {
 
 if [ "$PHASE" = web ]; then
     WEB_MUTATORS=${WEB_MUTATORS:-2,4,6,8,10,12}
+    WEB_COLLECTORS_CAP1=${WEB_COLLECTORS_CAP1:-14}
+    WEB_COLLECTORS_CAP4=${WEB_COLLECTORS_CAP4:-14,0,15,1}
     CAPS=${CAPS:-"1 4"}
     WEB_LOADS=${WEB_LOADS:?"WEB_LOADS as load:interarrival_ms, from each load's pilot"}
     REQUESTS_DIR="${OUT%.csv}-requests"

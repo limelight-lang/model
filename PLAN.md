@@ -759,15 +759,13 @@ against the code on 2026-09-24.
   (five files), the sleepers' start and end in `under_stress.rs`, the three
   hooks forwarding to one `OneShot`, the two `EmbeddersInterval` guards.
   done: each under its threshold or recorded as kept.
-- [ ] **The turnover period `N` is unruled.** `epoch::BATCHES_PER_EPOCH` is
-  YRC's 64 (Y9's dial, `rfc/model/gc/cycle/questions.md`), the batches a
-  collector makes for one mutator before it advances that mutator's epoch
-  unless X (`worker::EPOCH_INTERVAL`) comes first; the package names it `N_b`
-  and S65.17's rig reads it. Both costs are
-  linear in it and pull opposite ways, measured on the test heap
-  (`dev/BENCHMARKS.md`, "S37.5 what a turnover re-offers, and what a
-  deferral costs"). Which side pays is Edmond's; the ruling goes to
-  `dev/DECISIONS.md` with the constant, X beside it. Y9's
+- [ ] **The turn's ratio is unread by Edmond.** The batch count `N_b` went
+  with S67.9: the epoch turns when the collector's work reaches
+  `epoch::SPENT_PER_PROOF` (2) times what its proofs cost, or at X
+  (`worker::EPOCH_INTERVAL`), X waiting for twice the proving walk
+  (`dev/DECISIONS.md`, 2026-10-03). The ratio 2 is the Sage's and goes to
+  Edmond with the figures of `dev/plans/S67.md`, S67.9 (ratios 1, 2 and 4
+  read on `web-arena-40k`, moving nothing within the spread). Y9's
   minimum-over-stamped-members question changes no prune at `k = 1` and
   reopens with any `k` above 1
   (`mark::tests::the_pruned_share_against_a_survival_rate` under
