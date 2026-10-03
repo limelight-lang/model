@@ -2857,12 +2857,6 @@ const JOURNAL_COLUMNS: &[JournalColumn] = &[
         VERDICT_UNWALKED
     ),
     journal_column!(
-        "reoffered_at_the_turn",
-        KIND_REOFFERED,
-        REOFFERED_AT_THE_TURN,
-        sum
-    ),
-    journal_column!(
         "reoffered_lane_due",
         KIND_REOFFERED,
         REOFFERED_LANE_DUE,

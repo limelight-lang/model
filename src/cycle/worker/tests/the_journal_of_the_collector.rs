@@ -220,9 +220,6 @@ fn a_lane_deferred_from_p_is_handed_back_at_the_turn_in_one_record() {
     unsafe { ll_gc_maybe_collect() };
     assert_eq!(deferred_count(), 0, "the poll handed the lane back");
     let handed_back = counts.so_far().since(&deferred);
-    #[cfg(not(feature = "wait-by-readings"))]
-    let code = REOFFERED_AT_THE_TURN;
-    #[cfg(feature = "wait-by-readings")]
     let code = REOFFERED_LANE_DUE;
     assert_eq!(handed_back.records(KIND_REOFFERED, code), 1);
     assert_eq!(handed_back.sum_of_b(KIND_REOFFERED, code), 2);

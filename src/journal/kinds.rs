@@ -133,8 +133,8 @@ pub const KIND_BATCH_END: u32 = 14;
 pub const KIND_ROOT_VERDICT: u32 = 15;
 
 /// A root put where only a turnover gives it back: `subject` is the root,
-/// `a` where (the `DEFERRED_*` codes), `b` the lane's index under
-/// `wait-by-readings` and 0 otherwise. A refused push writes nothing here:
+/// `a` where (the `DEFERRED_*` codes), `b` the lane's index. A refused push
+/// writes nothing here:
 /// the root is written back or kept, and that is what is recorded.
 pub const KIND_ROOT_DEFERRED: u32 = 16;
 
@@ -219,9 +219,7 @@ pub const DEFERRED_FROM_R: u64 = 0;
 /// [`KIND_ROOT_DEFERRED`]: into the deferred lane from P's disposition.
 pub const DEFERRED_FROM_P: u64 = 1;
 
-/// [`KIND_REOFFERED`]: the one deferred lane at a turnover.
-pub const REOFFERED_AT_THE_TURN: u64 = 0;
-/// [`KIND_REOFFERED`]: a lane whose wait passed, under `wait-by-readings`.
+/// [`KIND_REOFFERED`]: a lane whose wait passed.
 pub const REOFFERED_LANE_DUE: u64 = 1;
 /// [`KIND_REOFFERED`]: every lane merged at once, before the pressure path
 /// or the exit, or by a driver's hand.

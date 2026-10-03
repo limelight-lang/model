@@ -286,19 +286,15 @@ fn a_deferred_batch_keeps_one_token_until_the_turnover_reoffers_it() {
 /// and what the queue's release has to discharge, and the re-offer splices
 /// every block of it into the circle.
 #[test]
-#[cfg_attr(
-    feature = "wait-by-readings",
-    ignore = "the fixture registers one entity a block over, so under `wait-by-readings` its third and later copies go to the third lane and the spare cells fund two lanes, not three; the lanes are `worker::tests::the_waits_by_readings`"
-)]
 fn a_deferred_lane_of_two_blocks_is_spliced_back_whole() {
     let _g = test_guard();
     reset();
     assert!(refill_spares());
 
-    let mut filler = candidate(2);
+    let mut fillers = distinct_candidates(BLOCK_ENTRIES);
     let mut grew = candidate(2);
     let grew_entity = &raw mut grew;
-    unsafe { ring_of_two_blocks(&raw mut filler, grew_entity) };
+    unsafe { ring_of_two_blocks_of_distinct(fillers.as_mut_ptr(), fillers.len(), grew_entity) };
 
     // The deferral fills its blocks from the spare cells, which the growth
     // above spent: refilled first, so that the lane can take every record
@@ -365,10 +361,6 @@ fn a_deferred_lane_of_two_blocks_is_spliced_back_whole() {
 /// into the circle after the tail block and read after what stood there,
 /// with no allocation and no pool request.
 #[test]
-#[cfg_attr(
-    feature = "wait-by-readings",
-    ignore = "the fixture registers one entity a block over, so under `wait-by-readings` its third and later copies go to the third lane and the spare cells fund two lanes, not three; the lanes are `worker::tests::the_waits_by_readings`"
-)]
 fn a_reoffer_at_a_poll_with_nothing_to_draw_splices_the_lane_in() {
     let _g = test_guard();
     reset();
@@ -377,18 +369,19 @@ fn a_reoffer_at_a_poll_with_nothing_to_draw_splices_the_lane_in() {
     // and starts a second, the second fills that one and starts a third.
     // Two locals rather than an array: indexing an array takes a `&mut` of
     // the whole of it, which retags away the pointer the earlier round
-    // registered (`dev/WORKFLOW.md`, Miri).
+    // registered (`dev/WORKFLOW.md`, Miri). Each round's fillers are a slice
+    // of their own, read through its base pointer alone.
     // Every registered header outlives the case: the second deferral's
     // sweep reads the first's records through their entries.
-    let mut first_filler = candidate(2);
-    let mut second_filler = candidate(2);
+    let mut first_fillers = distinct_candidates(BLOCK_ENTRIES);
+    let mut second_fillers = distinct_candidates(BLOCK_ENTRIES);
     let mut first_grew = candidate(2);
     let mut second_grew = candidate(2);
-    let fillers = [&raw mut first_filler, &raw mut second_filler];
+    let fillers = [first_fillers.as_mut_ptr(), second_fillers.as_mut_ptr()];
     let grew = [&raw mut first_grew, &raw mut second_grew];
-    for (round, &filler_entity) in fillers.iter().enumerate() {
+    for (round, &round_fillers) in fillers.iter().enumerate() {
         assert!(refill_spares());
-        unsafe { ring_of_two_blocks(filler_entity, grew[round]) };
+        unsafe { ring_of_two_blocks_of_distinct(round_fillers, BLOCK_ENTRIES, grew[round]) };
         // The lane's blocks come from the cells too.
         assert!(refill_spares());
         defer_candidates(read_batch(), 0);
@@ -433,11 +426,13 @@ fn a_reoffer_at_a_poll_with_nothing_to_draw_splices_the_lane_in() {
         tokens[0], ahead_entity,
         "what stood in the ring is read first"
     );
-    for filler_entity in fillers {
+    for round_fillers in fillers {
+        let first = round_fillers as usize;
+        let past = first + BLOCK_ENTRIES * size_of::<RcHeader>();
         assert_eq!(
             tokens
                 .iter()
-                .filter(|&&entry| entry == filler_entity)
+                .filter(|&&entry| (first..past).contains(&(entry as usize)))
                 .count(),
             BLOCK_ENTRIES,
             "and the lane's records follow it whole"

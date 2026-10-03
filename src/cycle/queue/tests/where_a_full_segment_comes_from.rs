@@ -285,21 +285,14 @@ fn a_bulk_release_polls_on_its_own_backedge() {
 /// compaction has emptied the block after the tail block, the next growth
 /// moves into it and takes no spare and no reserve block.
 #[test]
-#[cfg_attr(
-    feature = "wait-by-readings",
-    ignore = "the fixture registers one entity a block over, so under `wait-by-readings` its third and later copies go to the third lane and the spare cells fund two lanes, not three; the lanes are `worker::tests::the_waits_by_readings`"
-)]
 fn a_consumed_block_is_written_again_without_a_spare() {
     let _g = test_guard();
     reset();
     assert!(refill_spares(), "the cells start full");
 
-    let mut first = candidate(2);
-    let first_entity = &raw mut first;
-    assert!(unsafe { !release(first_entity) });
-    fill_tail_block(first_entity);
+    let mut fillers = distinct_candidates(BLOCK_ENTRIES);
     let mut second = candidate(2);
-    assert!(unsafe { !release(&raw mut second) });
+    unsafe { ring_of_two_blocks_of_distinct(fillers.as_mut_ptr(), fillers.len(), &raw mut second) };
     assert_eq!(segment_count(), 2, "two blocks in the circle");
     assert_eq!(spare_count(), SPARE_SEGMENTS - 2);
 

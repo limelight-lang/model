@@ -2,10 +2,11 @@
 
 The proof-epoch collector (`rfc/dev/GLOSSARY.md`) is the cycle collector
 measured as `bestD` on 2026-10-03 (`dev/BENCHMARKS.md`, "S67.6"): the
-default build of that day plus the feature `wait-by-readings`, at
-`c52ff90`. Its name is for its epoch, which turns when the collector's work
-reaches twice what its proofs cost. Edmond took it as the default build on
-2026-10-03.
+default build of that day plus the feature `wait-by-readings`, built at
+`a72693d` (`c52ff90` is S65.17's build, plain D). Its name is for its epoch,
+which turns when the collector's work reaches twice what its proofs cost.
+Edmond took it as the default build on 2026-10-03, and S67.10 folded the
+feature into the code, so the default build is this collector.
 Written for readers outside the project: it states the algorithm as the code
 runs it and names the source of each part. The normative text is
 `rfc/model/gc/rc-cycle.md`; where the two differ, the code is what was
@@ -155,8 +156,8 @@ also on unwind), resets its arena, and releases the token to `POSTED` or
 
 ## 5. The owner's collection over P
 
-At its next free or poll the mutator reads `POSTED` and runs the
-**collection over P** under its own token (`cycle::collect`,
+The mutator's next free or poll reads `POSTED` and arms the **collection
+over P**; the poll runs it, under the mutator's own token (`cycle::collect`,
 `cycle::queue::verdicts`):
 
 - it meets every member of the posted set, follows only the edges between
@@ -164,8 +165,10 @@ At its next free or poll the mutator reads `POSTED` and runs the
   deletion restricted to a set is sound for any set of live entities: an
   edge not followed leaves its target's row higher, so a wrong member costs
   a refusal, never a wrong free. A listed slot whose occupant died and was
-  reused costs that member a refusal; a block a member stands in that goes
-  back to the pool under `POSTED` drops the set whole;
+  reused is read as its new occupant, by its current count and fields: a
+  live occupant is refused, and one that is garbage with the rest of the
+  set is freed with it, either way soundly; a block a member stands in that
+  goes back to the pool under `POSTED` drops the set whole;
 - it disposes of P whole: a root whose death completed is retired; a root
   read live goes to a deferred lane (section 7); an unwalked root, and
   anything the close cannot dispose of, is written back into R.
@@ -204,12 +207,12 @@ until enough epoch turns pass for its reading to be worth repeating.
 - At its poll the mutator compares the collector's epoch byte with each
   lane's mirror and splices every lane whose wait has passed back into R
   behind its tail; a turn made by X releases every lane at once.
-- The stamp's epoch is sixteen wide under this build, so the longest wait
+- The stamp's epoch is sixteen wide, so the longest wait
   plus a turn of lag stays below a full cycle of the epoch, and a member's
   stamp of a root's last reading never reads current at its next.
 
-Without the feature (plain D) there is one lane, re-offered at every epoch
-turn.
+Plain D, the build measured beside it, had one lane, re-offered at every
+epoch turn.
 
 ## 8. Constants
 
@@ -234,15 +237,30 @@ turn.
   under its own token, and on the withholding of every memory return while
   a collector holds the token. A collector's verdict alone frees nothing.
 - **Progress** (`dev/plans/S67.md`, S67.9): with no budget on the trace, a
-  completed batch stamps the state it walked, so the next batches prune at
-  it until the epoch turns; garbage behind a live component is freed within
-  a bounded number of turns. On the web loads every best-D cell freed all
-  its garbage inside a 12 s drain.
-- **Open, measured** (`dev/BENCHMARKS.md`, "S65.17"): a grant on
-  `web-arena-40k` lasts up to 185 ms, and the blocks a mutator withholds at
-  its release reach 129–582 against a mark of 16. The recall is read; the
-  token is held past it by the collector's work after the stop and by a
-  grant standing behind another mutator's batch.
+  completed batch stamps the live rows its final drain touched first, so the
+  next batches prune at them until the epoch turns; garbage behind a live
+  component is freed within a bounded number of turns **where a batch over
+  it completes**. A garbage component whose own walk outlasts every grant,
+  each one recalled inside its mark, is not freed by the collector: a stop
+  posts its root read live or unwalked and keeps no continuation, and only
+  the owner's collections over R whole — under pressure and at the exit —
+  collect it (`dev/plans/S67.md`, Q1, open). On the web loads every best-D
+  cell freed all its garbage inside a 12 s drain.
+- **Open, measured** (`dev/BENCHMARKS.md`, "S65.17", plain D): a grant on
+  `web-arena-40k` lasts up to 185 ms in all, and the blocks a mutator
+  withholds at its release reach 129–582 against a mark of 16; under best D
+  in S67.6, 438–945. The recall is read; the token is held past it by the
+  collector's work after the stop — the stamps' walk after a completed
+  trace, which reads the recall at the stop level alone, is the longest
+  part, 105–123 ms on `web-heap` and 23–32 ms on `web-arena-40k` — and by a grant standing behind another
+  mutator's batch, which a stopped trace does not release before its tail.
+- **Open, measured** (`dev/data/s67.6/cells.csv`,
+  `verdict_collection_longest_us`): the owner's collection over one posted
+  set is one pause at one poll, 124–215 ms on `web-heap` over sets of up to
+  410k members. Neither K nor the recall bounds it.
+- **Open, latent**: the passes over held entries read N(N+1)/2 entries on a
+  chain of N registered targets met in an order unrelated to the chain; on
+  the web loads 0.9–1.6 passes a batch.
 - **Open, measured**: on the arena loads the epoch turns mostly by X, which
   releases every lane, so there the waits by readings act little.
 
@@ -250,11 +268,13 @@ turn.
 
 The collector is the arm *best D*. Four arms — D, HG, best D, best HG — on two mutators and one collector of a
 four-core box without hardware counters, three web loads, five repeats,
-116 s with a 20 s warm-up and a 12 s drain. Best D against plain D: the same
-CPU a request within the spread (+0.4 %, −0.1 %, +2.9 %); garbage left at the
+116 s with a 20 s warm-up and a 12 s drain. Best D against plain D: no CPU
+difference resolved (+0.4 %, −0.1 %, +2.9 % against tolerances of 9–17.5 %);
+garbage left at the
 drain's end in no cell against six of fifteen for D; on `web-heap` 71 MB of
 garbage on the mean against 461 MB, and 345 against 750 MB at the peak, for
-+6 to +11 % of collector CPU. Best HG ties best D on CPU and is dearer on the
++6 to +11 % of collector CPU (to the loop's stop, the warm-up included).
+Best HG ties best D on CPU and is dearer on the
 collector in every `web-heap` repeat. Full figures, the protocol's
 deviations and the gates: `dev/BENCHMARKS.md`, "S67.6"; data:
 `dev/data/s67.6/README.md`.

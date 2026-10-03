@@ -652,7 +652,6 @@ fn advance_the_epoch_if_due(record: &MutatorRecord, now: u64) {
             journal::TURNOVER_BY_X
         };
         record.advance_the_epoch(now, why);
-        #[cfg(feature = "wait-by-readings")]
         if !by_proofs {
             record.note_an_x_turn();
         }

@@ -904,7 +904,6 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
 }
 
 /// The kept ring `the_waits_by_readings` builds on (S65.42).
-#[cfg(feature = "wait-by-readings")]
 mod generation_fixtures {
     use super::reset_lanes;
     use super::the_batch::keeper_class;
@@ -1043,7 +1042,6 @@ mod the_rig;
 mod the_siblings;
 mod the_standing_list;
 mod the_take_after_an_interval;
-#[cfg(feature = "wait-by-readings")]
 mod the_waits_by_readings;
 mod the_web_loads;
 mod under_stress;

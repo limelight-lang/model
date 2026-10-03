@@ -125,22 +125,20 @@ pub(crate) struct MutatorRecord {
     /// The low eight bits of this mutator's epoch cell
     /// ([`HoldLine::turnovers`]), stored by the collector at every advance
     /// and by nobody else. The poll that finds the deferred lane occupied
-    /// compares it with the lane's mirror and re-offers the lane when the two
-    /// differ — under `wait-by-readings`, when the byte is a lane's wait past
-    /// it (`crate::gc`, the poll; `crate::cycle::queue`, the deferred
-    /// lane). On this line because the poll reads the token beside it.
+    /// compares it with each lane's mirror and re-offers a lane when the byte
+    /// is the lane's wait past it (`crate::gc`, the poll;
+    /// `crate::cycle::queue`, the deferred lanes). On this line because the poll reads the token beside it.
     /// Relaxed on both sides: nothing is published beside it, and a byte read
     /// late delays the re-offer by one poll, never a wrong free. Eight bits
     /// wrap at 256 turnovers, which at X is over half an hour of a thread
     /// that never polls; the price of the alias is one more X.
     turnover: AtomicU8,
     /// Turns the collector's X arm made, as against its proofs' arm, counted
-    /// modulo 256 by the collector alone at each advance that arm makes
-    /// (`wait-by-readings`). A deferred lane mirrors it when it fills and
+    /// modulo 256 by the collector alone at each advance that arm makes. A
+    /// deferred lane mirrors it when it fills and
     /// goes back into R at the first poll that reads it moved, whatever the
     /// lane's wait: an X turn comes at X, so a wait counted in such turns would
     /// hold a dead ring 7 X. Relaxed on both sides, as `turnover` is.
-    #[cfg(feature = "wait-by-readings")]
     x_turns: AtomicU8,
     /// The next free record, meaningful while this one is on the registry's
     /// free list and written under its lock alone.
@@ -505,7 +503,6 @@ impl MutatorRecord {
         Self {
             token: TraceToken::new_held(),
             turnover: AtomicU8::new(0),
-            #[cfg(feature = "wait-by-readings")]
             x_turns: AtomicU8::new(0),
             free_link: Cell::new(std::ptr::null_mut()),
             #[cfg(test)]
@@ -791,14 +788,12 @@ impl MutatorRecord {
 
     /// Count one turn the X arm made, on the collector's thread, after
     /// [`Self::advance_the_epoch`]: the byte the lanes mirror.
-    #[cfg(feature = "wait-by-readings")]
     #[inline]
     pub(crate) fn note_an_x_turn(&self) {
         self.x_turns.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The count [`Self::note_an_x_turn`] keeps, on the mutator's thread.
-    #[cfg(feature = "wait-by-readings")]
     #[inline]
     pub(crate) fn x_turns(&self) -> u8 {
         self.x_turns.load(Ordering::Relaxed)

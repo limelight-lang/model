@@ -1,5 +1,5 @@
 //! A root read live waits longer the more live readings it has survived
-//! (`wait-by-readings`, `dev/plans/S65.md`, S65.42): 1, 3 and 7 epoch turns in
+//! (`dev/plans/S65.md`, S65.42): 1, 3 and 7 epoch turns in
 //! three lanes; a turn the X arm
 //! made releases every wait; the stamp's epoch is sixteen wide, so a silently
 //! dead ring read after a wait of eight or twelve turns is traced and freed,

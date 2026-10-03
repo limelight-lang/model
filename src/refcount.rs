@@ -15,8 +15,8 @@
 //! "Concurrency").
 //!
 //! **The region above bit 15 is the collector's own**, and byte 6 of it
-//! carries the maturation stamp: the epoch at 16-17, the age at 18-19,
-//! and a reserve at 20-23 (`wait-by-readings` lays the byte out again). The
+//! carries the maturation stamp: the epoch at 16-19, the age at 20-21, and
+//! the count of a candidate's live readings at 22-23. The
 //! holder of the mutator's token is the one writer at a time, one byte wide —
 //! the owner under its claim through [`write_maturation_stamp`], a collector
 //! under its grant through [`stamp_as_read_live`] — and
@@ -210,11 +210,9 @@ pub const DEAD_IN_PLACE: u32 = 1 << 15;
 pub const IS_ESCAPEE: u32 = 1 << 11;
 
 /// Byte 6 of the header, where the collector keeps the maturation stamp: the
-/// epoch it was written in at bits 16-17, the age at 18-19, and bits 20-23
-/// reserved (`rfc/model/classes.md`, "Flags layout"). Under
-/// `wait-by-readings` the byte is laid out again whole: the epoch at 16-19,
-/// the age at 20-21 and the count of live readings at 22-23
-/// (`SURVIVED_READINGS_MASK`).
+/// epoch it was written in at bits 16-19, the age at 20-21, and the count of
+/// live readings at 22-23 (`SURVIVED_READINGS_MASK`; `rfc/model/classes.md`,
+/// "Flags layout").
 ///
 /// The byte is written only by the holder of the mutator's token — the
 /// owner's commit under its own claim ([`write_maturation_stamp`]), and a
@@ -225,32 +223,17 @@ pub const IS_ESCAPEE: u32 = 1 << 11;
 /// reserve has a writer of its own.
 const MATURATION_STAMP_BYTE: usize = 6;
 
-/// The maturation epoch, bits 16-17: which epoch's collection wrote the age
-/// beside it. An age under any other epoch reads as no age at all, which is
-/// what retires a stamp without clearing it in place.
-#[cfg(not(feature = "wait-by-readings"))]
-pub(crate) const MATURATION_EPOCH_MASK: u32 = 0b11 << 16;
-
-/// The maturation epoch under `wait-by-readings`, bits 16-19: a root
+/// The maturation epoch, bits 16-19: a root
 /// that waits up to seven turns between two readings would meet a two-bit
 /// epoch again after four, and its members' stamps of the last reading would
 /// read current and be pruned at; sixteen epochs put that gap past the
 /// longest wait (`dev/plans/S65.md`, S65.42).
-#[cfg(feature = "wait-by-readings")]
 pub(crate) const MATURATION_EPOCH_MASK: u32 = 0b1111 << 16;
 
-/// The maturation age, bits 18-19: how many consecutive collections of the
-/// epoch read the entity's component as externally referenced, counted from
-/// one and saturated at [`MATURATION_AGE_MAX`].
-#[cfg(not(feature = "wait-by-readings"))]
-pub(crate) const MATURATION_AGE_MASK: u32 = 0b11 << 18;
-
-/// The maturation age under `wait-by-readings`, bits 20-21, above the
-/// wider epoch.
-#[cfg(feature = "wait-by-readings")]
+/// The maturation age, bits 20-21, above the epoch.
 pub(crate) const MATURATION_AGE_MASK: u32 = 0b11 << 20;
 
-/// Bits 22-23 under `wait-by-readings`: how many times a collection read
+/// Bits 22-23: how many times a collection read
 /// this candidate live and its root was deferred, saturated at three, which
 /// picks the deferred lane it waits in (`crate::cycle::queue`). Written by the
 /// owning thread alone, at the deferral, by the byte-wide read-modify-write
@@ -258,11 +241,9 @@ pub(crate) const MATURATION_AGE_MASK: u32 = 0b11 << 20;
 /// whose hand-off orders the two. Zeroed by the publication's store of the
 /// whole word, and not otherwise: the candidate bit is cleared only before the
 /// free, so a root registers once a life and its count never needs a reset.
-#[cfg(feature = "wait-by-readings")]
 pub(crate) const SURVIVED_READINGS_MASK: u32 = 0b11 << 22;
 
 /// [`SURVIVED_READINGS_MASK`] inside byte 6.
-#[cfg(feature = "wait-by-readings")]
 const SURVIVED_READINGS_IN_BYTE: u8 = (SURVIVED_READINGS_MASK >> MATURATION_STAMP_SHIFT) as u8;
 
 /// The count [`SURVIVED_READINGS_MASK`] holds for `header`.
@@ -270,7 +251,6 @@ const SURVIVED_READINGS_IN_BYTE: u8 = (SURVIVED_READINGS_MASK >> MATURATION_STAM
 /// # Safety
 /// `header` points at a live published entity, read by its owner or by a
 /// collector holding the owner's token.
-#[cfg(feature = "wait-by-readings")]
 #[inline]
 pub(crate) unsafe fn survived_readings(header: *const RcHeader) -> u32 {
     let byte = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) };
@@ -282,7 +262,6 @@ pub(crate) unsafe fn survived_readings(header: *const RcHeader) -> u32 {
 ///
 /// # Safety
 /// As [`write_maturation_stamp`].
-#[cfg(feature = "wait-by-readings")]
 #[inline]
 pub(crate) unsafe fn count_a_survived_reading(header: *mut RcHeader) -> u32 {
     let byte = unsafe { header_byte_load(header, MATURATION_STAMP_BYTE) };

@@ -50,18 +50,8 @@ fn flags_layout_matches_the_normative_table() {
     assert_eq!(DESTRUCTOR_PENDING, 1 << 13);
     assert_eq!(DESTRUCTOR_RAN, 1 << 14);
     assert_eq!(DEAD_IN_PLACE, 1 << 15, "dead in place: bit 15");
-    #[cfg(not(feature = "wait-by-readings"))]
-    {
-        assert_eq!(MATURATION_EPOCH_MASK, 0b11 << 16, "epoch: bits 16-17");
-        assert_eq!(
-            MATURATION_AGE_MASK,
-            0b11 << 18,
-            "maturation age: bits 18-19"
-        );
-    }
     // The build of S65.42 re-lays byte 6 whole: epoch 16-19, age 20-21, the
     // count of live readings 22-23 (`dev/plans/S65.md`, S65.42).
-    #[cfg(feature = "wait-by-readings")]
     {
         assert_eq!(MATURATION_EPOCH_MASK, 0b1111 << 16, "epoch: bits 16-19");
         assert_eq!(
@@ -112,13 +102,6 @@ fn flags_layout_matches_the_normative_table() {
         0,
         "no mutator flag claims bits 16-31"
     );
-    #[cfg(not(feature = "wait-by-readings"))]
-    assert_eq!(
-        (MATURATION_EPOCH_MASK | MATURATION_AGE_MASK) & 0xFFF0_FFFF,
-        0,
-        "the collector's fields are inside bits 16-19"
-    );
-    #[cfg(feature = "wait-by-readings")]
     assert_eq!(
         (MATURATION_EPOCH_MASK | MATURATION_AGE_MASK | crate::refcount::SURVIVED_READINGS_MASK)
             & 0xFF00_FFFF,

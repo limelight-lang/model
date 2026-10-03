@@ -123,6 +123,46 @@ unsafe fn ring_of_two_blocks(filler: *mut RcHeader, grew: *mut RcHeader) {
     assert_eq!(segment_count(), 2);
 }
 
+/// `count` candidates of their own, held in one boxed slice whose base
+/// pointer the case keeps, so that a registration made through it outlives
+/// every later reading (`dev/WORKFLOW.md`, Miri).
+fn distinct_candidates(count: usize) -> Box<[RcHeader]> {
+    (0..count).map(|_| candidate(2)).collect()
+}
+
+/// Register the candidates at `fillers` in turn until R's tail block is
+/// full, the first registration drawing the ring's first block, and answer
+/// how many were registered. Each is a candidate of its own, so a deferral
+/// reads no live reading on any of them and sends every one to the first
+/// lane, where copies of one entity would move up a lane at each reading
+/// (`queue::defer_entry`).
+///
+/// # Safety
+/// `fillers` names `len` headers this thread owns that outlive every read of
+/// the queue.
+unsafe fn fill_tail_block_with_distinct(fillers: *mut RcHeader, len: usize) -> usize {
+    assert!(unsafe { !release(fillers) });
+    let mut used = 1;
+    while unsafe { Writer::new(this_thread_record_ref().candidate_ring()) }.tail_block_has_room() {
+        assert!(used < len, "the fillers cover the tail block");
+        assert!(unsafe { !release(fillers.add(used)) });
+        used += 1;
+    }
+    used
+}
+
+/// [`ring_of_two_blocks`] over distinct fillers
+/// ([`fill_tail_block_with_distinct`]).
+///
+/// # Safety
+/// As [`fill_tail_block_with_distinct`], and `grew` points at a header this
+/// thread owns that outlives every read of the queue.
+unsafe fn ring_of_two_blocks_of_distinct(fillers: *mut RcHeader, len: usize, grew: *mut RcHeader) {
+    unsafe { fill_tail_block_with_distinct(fillers, len) };
+    assert!(unsafe { !release(grew) });
+    assert_eq!(segment_count(), 2);
+}
+
 /// Empty the queue and the spare cells, and give every block back.
 ///
 /// Every test here starts and ends with it, because the queue is per

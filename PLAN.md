@@ -588,13 +588,54 @@ Notes: dev/plans/S67.md
         and holds 6.5 times bestD's mean garbage on `web-heap`; the latency
         gate is below the box's own A/A excess. Both verdicts put to Edmond;
         his answers decide HG's removal and the default build.
-- [ ] S67.10 The proof-epoch collector becomes the default build
+- [x] S67.10 The proof-epoch collector becomes the default build
       done: `wait-by-readings` folded into the code unconditionally, the
         plain build's one lane and its cases gone (Q3: a case pinning the
         replaced mechanism is rewritten or deleted), the feature removed from
         `Cargo.toml` and the gate, the rfc amended where it states one lane;
         the gate green (Edmond, 2026-10-03: the second verdict, "думаю да")
       tier: T2 · role: Critic
+      handoff: 2026-10-03, the feature's branches kept and the plain
+        build's dropped by evaluating every `cfg` with the feature on; the
+        three cases the plain lane's fixture ignored under the feature
+        rewritten over distinct candidates (`queue::tests`,
+        `fill_tail_block_with_distinct`) rather than left ignored; the
+        journal's `REOFFERED_AT_THE_TURN` gone with the one lane; the rfc's
+        byte 6 laid out at 16-19, 20-21 and 22-23 (`model/classes.md`) and
+        the lanes stated (`model/gc/rc-cycle.md`, "Deferred lanes").
+- [ ] S67.12 Bound the owner's pause over a posted set (the external review's
+        R4, its critics and the Sage of 2026-10-03)
+      done: the collection over one posted set is one pause of 124–215 ms on
+        `web-heap` over sets of up to 410k members, and neither K nor the
+        recall bounds it (`dev/data/s67.6/cells.csv`,
+        `verdict_collection_longest_us`); the rig splits that pause into its
+        phases, and the owner's work per poll is bounded — the set posted in
+        parts, or its teardown spread over polls — keeping "any subset is
+        sound"; a case of a set of about 400k members under the bound, every
+        member freed in the end; measured on `web-heap` against today's
+      tier: T2 · role: Critic
+- [ ] S67.13 Shorten the token's tail after a stop (the review's R3)
+      done: a stopped trace releases the grants standing behind it before its
+        tail (`release_the_grants_behind` on the stop's path), with a case of
+        two mutators; the stamps' walk reads the recall at the wind-down level
+        too (105–123 ms on `web-heap` today, at the stop alone); the block
+        give-back and its page discards after the release where the token
+        allows; the time from the stop signal to the release read by the rig
+      tier: T2 · role: Critic
+- [ ] S67.14 The held passes in linear time (the review's R1)
+      done: a held entry a later subtraction brings to zero is pushed to the
+        worklist at once, by a bit of its row, so a mark reads each held
+        entry a bounded number of times; a case of a chain of N registered
+        targets met in a seeded random order, its reads counted, red today
+        (N(N+1)/2) and rows equal to a mark that holds nothing
+      tier: T1 · role: Critic
+- [ ] S67.15 The epoch's ratio read on `web-heap` (the review's R5)
+      done: `SPENT_PER_PROOF` at 2, 4 and 8 on `web-heap` and
+        `web-arena-40k`, the turns by proofs, the stamps written, the
+        collector's CPU and the garbage's age read side by side; the ratio
+        put to Edmond with the figures (the backlog's "The turn's ratio is
+        unread by Edmond")
+      tier: T2
 - [x] S67.11 HG leaves the tree (Edmond, 2026-10-03: "да, удаляй HG")
       done: `collector-chain`, `hold-by-generation` and
         `death-check-back-off` deleted with the chain, `ring::record_chain`,

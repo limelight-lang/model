@@ -1,7 +1,7 @@
 //! The collection epoch: the mutator's epoch clock, which the collector keeps,
-//! and the two-bit stamp a maturation carries — four bits under
-//! `wait-by-readings`, whose longest wait between two readings of a root would
-//! meet a two-bit epoch again (`crate::refcount::MATURATION_EPOCH_MASK`).
+//! and the four-bit epoch a maturation stamp carries: the deferred lanes'
+//! longest wait between two readings of a root would meet a two-bit epoch
+//! again (`crate::refcount::MATURATION_EPOCH_MASK`).
 //!
 //! A maturation stamp says that the collection of one epoch read a component
 //! as held from outside — its exact validation reading it as externally
@@ -112,9 +112,8 @@ pub(crate) fn set_spent_per_proof_for_test(ratio: u64) {
     SPENT_PER_PROOF_FOR_TEST.store(ratio, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Epochs the header's field tells apart, past which the count wraps: four,
-/// and sixteen under `wait-by-readings`
-/// (`crate::refcount::MATURATION_EPOCH_MASK`).
+/// Epochs the header's field tells apart, past which the count wraps:
+/// sixteen (`crate::refcount::MATURATION_EPOCH_MASK`).
 const EPOCHS: u64 = (MATURATION_EPOCH_MASK >> MATURATION_EPOCH_MASK.trailing_zeros()) as u64 + 1;
 
 const _: () = assert!(
