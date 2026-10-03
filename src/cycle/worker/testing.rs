@@ -645,6 +645,22 @@ pub(crate) fn at_the_start_of_the_trace() {
     AT_THE_NEXT_TRACE.run();
 }
 
+/// The blocks the collector thread's critical reserve held when the last cut
+/// mark ended, `usize::MAX` for none since a case took it: what the mark left
+/// to the posts.
+static RESERVE_AT_THE_CUT: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+pub(crate) fn note_the_reserve_at_the_cut(blocks: usize) {
+    RESERVE_AT_THE_CUT.store(blocks, Ordering::Relaxed);
+}
+
+pub(crate) fn take_the_reserve_at_the_cut() -> Option<usize> {
+    match RESERVE_AT_THE_CUT.swap(usize::MAX, Ordering::Relaxed) {
+        usize::MAX => None,
+        blocks => Some(blocks),
+    }
+}
+
 thread_local! {
     /// Rows the parts on this thread met since the last take.
     static ROWS_MET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

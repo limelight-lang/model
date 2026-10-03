@@ -2750,6 +2750,9 @@ unsafe fn trace_the_batch(
     };
     #[cfg(test)]
     let traced_from = (arena.positions_inspected(), std::time::Instant::now());
+    // The mark leaves the critical reserve to what ends the batch: the scan,
+    // the zero closure, the set (`TraceScratchArena::keep_the_reserve`).
+    arena.keep_the_reserve(true);
     for index in 0..posts.roots.len() {
         if !posts.has_a_verdict(index)
             && !unsafe { schedule_root_if_unvisited(arena, posts.root(index)) }
@@ -2762,6 +2765,7 @@ unsafe fn trace_the_batch(
         return unsafe { end_the_mark_cut(arena, posts, set, outcome) };
     }
 
+    arena.keep_the_reserve(false);
     #[cfg(test)]
     testing::note_the_mark_end(arena.positions_inspected());
     let (drained, drained_rows) = arena.final_drain_work();
@@ -2875,6 +2879,9 @@ unsafe fn end_the_mark_cut(
     set: &mut crate::cycle::posted_set::Writer,
     outcome: BatchOutcome,
 ) -> BatchOutcome {
+    #[cfg(test)]
+    testing::note_the_reserve_at_the_cut(crate::memory::critical::blocks_held());
+    arena.keep_the_reserve(false);
     if arena.wound_down() {
         unsafe { wind_down(arena, posts, set, outcome) }
     } else {

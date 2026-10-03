@@ -99,6 +99,28 @@ pub(crate) mod fault {
     }
 }
 
+/// Tell the operating system that the pages of `[ptr, ptr + bytes)` hold
+/// nothing worth keeping: their memory goes back to the system, and the next
+/// touch maps a fresh page — zero-filled on unix, of unspecified contents on
+/// windows. The span stays mapped and the caller's; nothing is unmapped.
+///
+/// `ptr` and `bytes` are multiples of [`DISCARD_ALIGN`] and the span lies in
+/// one mapping of [`map_aligned`]'s. Nothing at all under Miri, which has no
+/// such call and loses nothing by it.
+pub(crate) fn discard(ptr: *mut u8, bytes: usize) {
+    debug_assert_eq!(ptr as usize % DISCARD_ALIGN, 0);
+    debug_assert_eq!(bytes % DISCARD_ALIGN, 0);
+    #[cfg(not(miri))]
+    platform::discard(ptr, bytes);
+    #[cfg(miri)]
+    let _ = (ptr, bytes);
+}
+
+/// The alignment [`discard`] asks of its span: 16 KiB, the largest page size
+/// of the targets this module serves (Apple's arm64), so that a span aligned
+/// to it is page-aligned on every one of them.
+pub(crate) const DISCARD_ALIGN: usize = 16 * 1024;
+
 /// Give back a mapping obtained from [`map_aligned`].
 ///
 /// `ptr` and `bytes` must be the pointer that call returned and the size it
@@ -195,6 +217,17 @@ mod platform {
             offset: i64,
         ) -> *mut c_void;
         fn munmap(addr: *mut c_void, len: usize) -> i32;
+        fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
+    }
+
+    /// `MADV_DONTNEED`, 4 on every target the gate above lets through.
+    const MADV_DONTNEED: i32 = 4;
+
+    /// A refusal costs only the memory it would have given back, so its
+    /// answer is not read.
+    #[cfg(not(miri))]
+    pub(super) fn discard(ptr: *mut u8, bytes: usize) {
+        unsafe { madvise(ptr as *mut c_void, bytes, MADV_DONTNEED) };
     }
 
     /// `mmap` guarantees page alignment and nothing more, so an aligned
@@ -324,6 +357,7 @@ mod platform {
     const MEM_COMMIT: u32 = 0x1000;
     const MEM_RESERVE: u32 = 0x2000;
     const MEM_RELEASE: u32 = 0x8000;
+    const MEM_RESET: u32 = 0x80000;
     const PAGE_READWRITE: u32 = 0x04;
 
     unsafe extern "system" {
@@ -356,6 +390,13 @@ mod platform {
         };
 
         base as *mut u8
+    }
+
+    /// `MEM_RESET` marks the pages' contents as of no interest, so the system
+    /// drops them rather than paging them out; a refusal costs only that.
+    #[cfg(not(miri))]
+    pub(super) fn discard(ptr: *mut u8, bytes: usize) {
+        unsafe { VirtualAlloc(ptr as *mut c_void, bytes, MEM_RESET, PAGE_READWRITE) };
     }
 
     /// `MEM_RELEASE` frees the whole reservation, so the size argument

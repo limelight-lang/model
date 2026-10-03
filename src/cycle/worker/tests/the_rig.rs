@@ -96,6 +96,9 @@
 //!   edge into a registered candidate past its root and expands it no further
 //!   (`mark::stop_at_candidates`), each part the walk of its root's first
 //!   region (`dev/plans/S67.md`, S67.9, run R2).
+//! - `LL_RIG_KEEP_EVERY_PAGE` — set to 1, the arena's resets give back no
+//!   page to the operating system, the control of the discard past the warm
+//!   blocks (`arena::keep_every_page`);
 //! - `LL_RIG_SPENT_PER_PROOF` — the ratio of the epoch's turn in place of
 //!   `epoch::SPENT_PER_PROOF` (`dev/plans/S67.md`, S67.9, the ratio put to
 //!   Edmond);
@@ -1424,6 +1427,9 @@ struct WebReading {
     /// garbage behind a root read live waits in the first for a turn.
     deferred_at_the_drain_end: usize,
     candidates_at_the_drain_end: usize,
+    /// The process's resident set at this mutator's drain's end, in bytes,
+    /// zero where `/proc` does not answer.
+    resident_at_the_drain_end: usize,
     /// The cache and the sessions over the window.
     counts: CacheCounts,
     /// Requests whose end landed on a registered root, over the window.
@@ -1886,6 +1892,7 @@ impl WebLoop {
         self.reading.garbage_at_the_drain_end = self.garbage.current().iter().sum();
         self.reading.deferred_at_the_drain_end = crate::cycle::queue::deferred_count();
         self.reading.candidates_at_the_drain_end = crate::cycle::queue::candidate_count();
+        self.reading.resident_at_the_drain_end = resident_bytes();
     }
 
     /// Let the state go and free it: a state the collections read live is
@@ -2530,6 +2537,15 @@ fn dump_the_batches_to(batches: &[testing::TracedBatch], start: Instant, suffix:
         );
     }
     std::fs::write(path, text).expect("the batch dump is written");
+}
+
+/// The process's resident set in bytes, read from `/proc/self/statm` at a
+/// 4-KiB page, or zero where it cannot be read.
+fn resident_bytes() -> usize {
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|statm| statm.split_whitespace().nth(1)?.parse::<usize>().ok())
+        .map_or(0, |pages| pages * 4096)
 }
 
 /// Whether the switch `variable` is on: unset is off and `1` is on; any other
@@ -3813,6 +3829,15 @@ impl CellReading {
                 sum(&|reading| reading.garbage_at_the_drain_end),
             ),
             (
+                "web_resident_at_the_drain_end_bytes",
+                web.mutators
+                    .iter()
+                    .map(|reading| reading.resident_at_the_drain_end)
+                    .max()
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            (
                 "web_deferred_at_the_drain_end",
                 sum(&|reading| reading.deferred_at_the_drain_end),
             ),
@@ -4182,6 +4207,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let first_regions = switch_from_env("LL_RIG_FIRST_REGIONS");
     crate::cycle::mark::stop_at_candidates(first_regions);
     crate::cycle::mark::hold_nothing(switch_from_env("LL_RIG_HOLD_NOTHING"));
+    crate::cycle::arena::keep_every_page(switch_from_env("LL_RIG_KEEP_EVERY_PAGE"));
     crate::cycle::epoch::set_spent_per_proof_for_test(
         std::env::var("LL_RIG_SPENT_PER_PROOF")
             .map_or(0, |ratio| ratio.parse().expect("a whole ratio")),

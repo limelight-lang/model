@@ -392,3 +392,37 @@ fn every_block_the_reserve_lent_comes_back_to_it() {
     assert_eq!(BlockPool::global().blocks_out(), before);
     crate::memory::critical::drain_for_test();
 }
+
+/// A walk past the warm blocks gives the pages of the blocks beyond them back
+/// to the operating system at its reset, and those of the warm ones not: the
+/// count of blocks discarded is the count drawn less `WARM_BLOCKS`. Each block
+/// goes on to the pool as before, and one drawn again after it is writable
+/// whole. Red with no discard.
+#[test]
+fn a_reset_past_the_warm_blocks_discards_the_pages_of_the_rest() {
+    let _g = test_guard();
+    crate::memory::critical::drain_for_test();
+    let before = BlockPool::global().blocks_out();
+
+    let mut arena = crate::cycle::testing::open_arena();
+    for _ in 0..2 * (WARM_BLOCKS + 4) {
+        assert!(!arena.alloc(BLOCK_PAYLOAD / 2).is_null());
+    }
+    let drawn = arena.blocks_held();
+    assert!(drawn > WARM_BLOCKS, "the walk drew past the warm blocks");
+
+    let _ = take_blocks_discarded();
+    arena.reset();
+    assert_eq!(take_blocks_discarded(), drawn - WARM_BLOCKS);
+    assert_eq!(BlockPool::global().blocks_out(), before);
+    drop(arena);
+
+    let mut again = crate::cycle::testing::open_arena();
+    for _ in 0..2 * (WARM_BLOCKS + 4) {
+        let grant = again.alloc(BLOCK_PAYLOAD / 2);
+        assert!(!grant.is_null());
+        unsafe { grant.write_bytes(0xA5, BLOCK_PAYLOAD / 2) };
+    }
+    again.reset();
+    crate::memory::critical::drain_for_test();
+}

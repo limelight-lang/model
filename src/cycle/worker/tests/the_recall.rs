@@ -1287,6 +1287,69 @@ fn a_pool_refusal_inside_the_mark_posts_the_snapshot() {
     reset_lanes();
 }
 
+/// The critical reserve's blocks the collector thread held when its trace
+/// began, for the case to compare with what the cut mark left.
+static RESERVE_AT_THE_START: AtomicUsize = AtomicUsize::new(0);
+
+/// A pool that refuses the collector inside the mark stops it with the
+/// thread's critical reserve whole: the mark never draws it, leaving it to
+/// the posts that end the batch (`TraceScratchArena::keep_the_reserve`). The
+/// hook at the trace's start budgets the collector's pool to nothing and
+/// leaves its reserve standing. Red with the mark drawing the reserve.
+#[test]
+#[cfg_attr(
+    feature = "collector-chain",
+    ignore = "under the chain the collector keeps a root read live or unwalked in its chain, not in P (`crate::cycle::chain`)"
+)]
+fn a_pool_refusal_inside_the_mark_leaves_the_reserve_whole() {
+    use crate::journal::kinds::BATCH_END_REFUSED_IN_THE_TRACE;
+
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let element = ClassBuilder::new("ReserveRegionElement").build();
+    let roots: Vec<*mut Object> = (0..2)
+        .map(|_| unsafe { a_root_over_a_wide_region(&mut context, element, REFUSED_ELEMENTS) })
+        .collect();
+    unsafe { &*record() }.set_batch_size(2);
+
+    testing::at_the_start_of_the_next_trace(Box::new(|| {
+        std::mem::forget(crate::memory::block_pool::budget_blocks(0));
+        RESERVE_AT_THE_START.store(crate::memory::critical::blocks_held(), Ordering::Relaxed);
+    }));
+    let _ = testing::take_the_reserve_at_the_cut();
+    testing::read_traced_batches(true);
+    let served = super::the_batch::served_by_a_collector();
+    let batches = testing::take_traced_batches();
+    testing::read_traced_batches(false);
+
+    assert!(
+        matches!(
+            served,
+            Served::Batch {
+                complete: false,
+                ..
+            }
+        ),
+        "{served:?}"
+    );
+    assert_eq!(batches[0].ending, BATCH_END_REFUSED_IN_THE_TRACE);
+    let at_the_start = RESERVE_AT_THE_START.load(Ordering::Relaxed);
+    assert!(at_the_start > 0, "the collector thread holds a reserve");
+    assert_eq!(
+        testing::take_the_reserve_at_the_cut(),
+        Some(at_the_start),
+        "the mark drew none of it"
+    );
+
+    crate::cycle::queue::verdicts::discard_standing_verdicts();
+    for root in roots {
+        unsafe { let_go(root) };
+    }
+    reset_lanes();
+}
+
 /// R in the order the wind-down cases want: a root over three strides of
 /// unregistered elements, then an inner root held by the outer one alone,
 /// then the outer root the case holds. The worklist expands the outer root

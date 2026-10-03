@@ -123,8 +123,8 @@ use crate::cycle::shadow::{self, Color, RowArray};
 use crate::cycle::stack::{SEGMENT_BYTES, SEGMENT_ENTRIES, TraceStack, WorklistEntry};
 #[cfg(test)]
 use crate::memory::block_pool::BlockPool;
-use crate::memory::block_pool::{BLOCK_PAYLOAD, BlockHeader};
-use crate::memory::gc_metadata;
+use crate::memory::block_pool::{BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader};
+use crate::memory::{gc_metadata, os};
 use crate::refcount::RcHeader;
 
 /// What one meeting of an entity answers: its row, or the two reasons
@@ -345,6 +345,47 @@ pub(crate) static GRANTS_RELEASED_AT: std::sync::atomic::AtomicUsize =
 /// aside. Not a measured figure; the rig of `PLAN.md`'s S65.17 reads it.
 pub(crate) const RECALL_STRIDE: usize = 1024;
 
+/// Blocks a reset gives back to the pool with their pages standing, the next
+/// walk's to draw warm: 1 MiB, of no measurement — about what a batch of a
+/// thousand roots over a small state draws (`dev/plans/S67.md`, S67.9). The
+/// blocks past it go back with their pages discarded
+/// ([`TraceScratchArena::reset`]).
+const WARM_BLOCKS: usize = 16;
+
+/// Blocks the resets gave back with their pages discarded, since a case last
+/// took the count (tests only); process-wide, a collector's reset being on
+/// its own thread.
+#[cfg(test)]
+static BLOCKS_DISCARDED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether a reset discards the pages past the warm blocks: always, but
+/// where the rig's control arm keeps every page (`keep_every_page`, tests
+/// only).
+#[inline]
+fn discards_pages() -> bool {
+    #[cfg(test)]
+    if KEEPS_EVERY_PAGE.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+
+    true
+}
+
+#[cfg(test)]
+static KEEPS_EVERY_PAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Keep every page at the resets, the control of the discard (tests only).
+#[cfg(test)]
+pub(crate) fn keep_every_page(keeps: bool) {
+    KEEPS_EVERY_PAGE.store(keeps, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The count [`BLOCKS_DISCARDED`] holds, leaving zero.
+#[cfg(test)]
+pub(crate) fn take_blocks_discarded() -> usize {
+    BLOCKS_DISCARDED.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Which maturation stamps a trace over the arena reads, and so which edge
 /// targets its mark leaves to their own counts unexpanded
 /// (`crate::cycle::mark`, "The mature live core is not descended into").
@@ -379,6 +420,11 @@ pub(crate) struct TraceScratchArena {
     /// arena does not record *which*: a block is a block, and the count
     /// is what restores the reserve's size.
     from_reserve: usize,
+    /// Whether the reserve allocation path is closed to this arena's growth:
+    /// a collector's mark leaves the thread's critical reserve to the scan
+    /// and the posts that follow a refusal
+    /// ([`keep_the_reserve`](Self::keep_the_reserve)).
+    reserve_kept: bool,
     /// The token of the mutator a collector thread traces for, whose recall
     /// the trace reads every [`RECALL_STRIDE`] positions; null for an
     /// in-line collection, which nobody recalls
@@ -559,6 +605,7 @@ impl TraceScratchArena {
             base: LentWorkspace { block: base },
             blocks: std::ptr::null_mut(),
             from_reserve: 0,
+            reserve_kept: false,
             traced_token: std::ptr::null(),
             positions_to_the_reading: RECALL_STRIDE,
             recalled: false,
@@ -945,8 +992,14 @@ impl TraceScratchArena {
     }
 
     /// Give every block the bump drew back: what the reserve lent to the
-    /// reserve, the rest to the pool ([`reset`](Self::reset) says why).
+    /// reserve, the rest to the pool ([`reset`](Self::reset) says why). A
+    /// walk past [`WARM_BLOCKS`] gives the pages of the blocks beyond them
+    /// back to the operating system as well, their header page kept, so that
+    /// the peak a collector's walk drew does not stay in the process's
+    /// resident set (`dev/plans/S67.md`, S67.9, the Critic of 2026-09-30 on
+    /// the ceiling, findings 8 and 9).
     fn give_the_blocks_back(&mut self) {
+        let mut returned = 0;
         while !self.blocks.is_null() {
             let block = self.blocks;
             self.blocks = unsafe { (*block).next };
@@ -954,6 +1007,13 @@ impl TraceScratchArena {
                 self.from_reserve -= 1;
                 gc_metadata::release_to_critical(block);
             } else {
+                if returned >= WARM_BLOCKS && discards_pages() {
+                    let past_the_header = unsafe { (block as *mut u8).add(os::DISCARD_ALIGN) };
+                    os::discard(past_the_header, BLOCK_SIZE - os::DISCARD_ALIGN);
+                    #[cfg(test)]
+                    BLOCKS_DISCARDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                returned += 1;
                 gc_metadata::release(block);
             }
 
@@ -1247,6 +1307,17 @@ impl TraceScratchArena {
         self.stamps = StampReading::EveryTarget;
     }
 
+    /// Close the reserve allocation path to this arena's growth, or open it
+    /// again: a collector's mark runs with it closed, so that a pool refusal
+    /// stops the mark with the thread's critical reserve whole for the scan,
+    /// the zero closure and the posts that end the batch (`dev/plans/S67.md`,
+    /// S67.9, the Critic of 2026-09-30 on the ceiling, finding 5). An in-line
+    /// collection never closes it: on the pressure path the reserve is its
+    /// first draw.
+    pub(crate) fn keep_the_reserve(&mut self, kept: bool) {
+        self.reserve_kept = kept;
+    }
+
     /// Read no stamp for the rest of this arena's life: the pressure path's
     /// traces and the exit's (`crate::cycle::collect`).
     pub(crate) fn read_no_stamp(&mut self) {
@@ -1397,6 +1468,10 @@ impl TraceScratchArena {
         let mut block = gc_metadata::acquire();
         let mut funding = Funding::Pool;
         if block.is_null() {
+            if self.reserve_kept {
+                return false;
+            }
+
             block = gc_metadata::adopt(crate::memory::critical::draw());
             if block.is_null() {
                 return false;
