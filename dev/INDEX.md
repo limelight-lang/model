@@ -397,6 +397,12 @@ best D build of S67.6, stated for reviewers outside the project;
 `dev/data/s67.6/` — that run's raw cells, requests, A/A check, pilots and
 analysis script (`README.md` there).
 
+`dev/design/the-proof-epoch-collector.ru.md` — the Russian translation, with
+explicit notes on the original's limits; `dev/PROOF-EPOCH-COLLECTOR-REVIEW-RU.md`
+— the 2026-10-03 review, updated after a second round by three critics on
+`826b1bd`: algorithmic cost, mutator latency, progress, the S67.6 evidence
+and the empty-poll improvement, with counterexamples and acceptance criteria.
+
 `dev/design/debug-modes.md` — observability and debug levels: object
 registry, lifetimes, shadow metadata, integrity checks, metrics export.
 §9, the event journal, is built behind the `debug-journal` feature
