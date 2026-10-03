@@ -1,6 +1,6 @@
 //! The collector's epoch clock: the first visit of a life stamps the instant
-//! and advances nothing, X of the collector's clock or its work at twice what
-//! its proofs cost advance the cell and the byte the poll reads, a new life advances
+//! and advances nothing, X of the collector's clock or its work at the ratio
+//! of what its proofs cost advance the cell and the byte the poll reads, a new life advances
 //! at the first visit, and what the mutator does between visits moves
 //! nothing — a thread whose live roots the collector takes oftener than X has
 //! its deferred lane re-offered after X.
@@ -80,13 +80,13 @@ fn the_first_visit_stamps_and_a_visit_after_x_advances() {
     assert!(record.advanced_at() > stamped, "and the advance restamped");
 }
 
-/// Work at twice what its proofs cost advances the epoch inside X, and the
+/// Work at the ratio of what its proofs cost advances the epoch inside X, and the
 /// count starts again from the advance: a thread whose batches re-prove a
 /// small core turns over at the rate its proofs pay for rather than waiting
 /// out X (`crate::cycle::epoch`, "The turn"). Red with the batch count's turn,
 /// and with the proving batch's own positions counted.
 #[test]
-fn work_at_twice_its_proofs_advances_the_epoch_before_x() {
+fn work_at_the_ratio_of_its_proofs_advances_the_epoch_before_x() {
     use crate::cycle::epoch::SPENT_PER_PROOF;
     const PROVING: u64 = 1_000;
     let _g = test_guard();
@@ -106,7 +106,7 @@ fn work_at_twice_its_proofs_advances_the_epoch_before_x() {
     assert_eq!(
         record.turnovers(),
         turnovers,
-        "work short of twice its proofs advances nothing"
+        "work short of the ratio of its proofs advances nothing"
     );
 
     record.note_epoch_work(1, 0);
@@ -114,7 +114,7 @@ fn work_at_twice_its_proofs_advances_the_epoch_before_x() {
     assert_eq!(
         record.turnovers(),
         turnovers + 1,
-        "work at twice its proofs advanced the epoch inside X"
+        "work at the ratio of its proofs advanced the epoch inside X"
     );
     assert_eq!(record.epoch_work(), (0, 0), "and the count starts again");
 }
@@ -384,11 +384,11 @@ fn the_embedders_interval_replaces_the_default_and_zero_restores_it() {
     );
 }
 
-/// X turns no epoch before twice the wall of the batches that proved it: a
+/// X turns no epoch before the ratio of the wall of the batches that proved it: a
 /// walk longer than X would see its stamps retire before a batch prunes at
 /// them (`crate::cycle::epoch`, "The turn"). Red with X alone.
 #[test]
-fn x_waits_for_twice_the_proving_walk() {
+fn x_waits_for_the_ratio_of_the_proving_walk() {
     let _g = test_guard();
     let _x = EpochInterval::of(Duration::from_millis(1));
     let record = unsafe { &*record() };

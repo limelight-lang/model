@@ -9,6 +9,31 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-03 — the epoch's ratio is 4, and the embedder's to set
+
+**Decided (Edmond, 2026-10-03):** "я бы сделал этот параметр настраиваемым"
+("I would make this parameter tunable"), then "пусть будет пока 4" ("let it be
+4 for now"). `epoch::SPENT_PER_PROOF` is 4, and `ll_gc_set_epoch_ratio` sets
+another, zero restoring it. It replaces the ratio 2 of the entry "the epoch
+turns when the collector's work reaches twice what its proofs cost" below;
+the turn's rule there stands.
+
+**Why 4.** Of 1, 2, 4 and 8, three repeats each on `web-heap`, 4 reads the
+least mean garbage (41–47 MB against 2's 63–87) and a collector CPU a fifth
+below 2's (35.2–36.4 against 44.7–45.6 s), the ranges apart: each stamp lives
+twice as long and prunes twice the edges. At 1 the collector falls behind
+(385–550 MB), and at 8 no epoch turns by proofs and the garbage grows to
+108–112 MB. On `web-arena-40k` the four overlap (`dev/BENCHMARKS.md`, "S67.15"
+and "S67.15, ratio 1").
+
+**What is not read.** 3, 5 and 6; `web-arena-150k`; the rig's ring loads, among
+them the ones whose live core dies (`live-churn`, `deferred-then-dead`), where a
+stamp that lives longer keeps the garbage behind a dead core waiting longer;
+cap 4. "For now" is his: the ratio is open to those readings. X also waits the
+ratio times the proving walk's wall, four times it from here.
+
+---
+
 ## 2026-10-03 — HG leaves the tree, and the proof-epoch collector is the default
 
 **Decided (Edmond, 2026-10-03, on S67.6's two verdicts):** HG — the
@@ -52,6 +77,9 @@ figure of a load built for it alone and would bound nothing.
 ---
 
 ## 2026-10-03 — the epoch turns when the collector's work reaches twice what its proofs cost
+
+The ratio is 4 since the same day, the entry "the epoch's ratio is 4, and the
+embedder's to set" above.
 
 **Decision (the Sage of S67.9 on the epoch's turn, 2026-09-30, Final; built
 2026-10-03).** The collector advances a mutator's epoch at a visit once the

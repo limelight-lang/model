@@ -80,11 +80,14 @@ use crate::cycle::mutator_record::{MutatorRecord, this_thread_record};
 use crate::refcount::MATURATION_EPOCH_MASK;
 
 /// How many times the price of an epoch's proofs the collector's work in it
-/// reaches before the epoch turns ("The turn"). Two is break-even: the
-/// re-proof after the turn costs no more than the rest of the collector's
-/// work. The Sage's figure; put to Edmond with the rig's readings
-/// (`dev/plans/S67.md`, S67.9).
-pub(crate) const SPENT_PER_PROOF: u64 = 2;
+/// reaches before the epoch turns ("The turn"), and how many times the wall
+/// of the batches that proved them X waits for. Four, Edmond's of
+/// 2026-10-03: of 1, 2, 4 and 8 on `web-heap` it reads the least garbage and
+/// near the least collector CPU, the stamps living long enough for each to
+/// prune twice what it does at the break-even 2 (`dev/BENCHMARKS.md`,
+/// "S67.15"); the loads whose live core dies are not read at it yet. The
+/// embedder sets another (`crate::gc::ll_gc_set_epoch_ratio`).
+pub(crate) const SPENT_PER_PROOF: u64 = 4;
 
 /// [`SPENT_PER_PROOF`], or the ratio the embedder set
 /// (`crate::gc::ll_gc_set_epoch_ratio`).

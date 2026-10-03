@@ -655,9 +655,9 @@ Notes: dev/plans/S67.md
         on `web-heap` 4 against 2 cuts the collector's CPU by a fifth and the
         mean garbage by two fifths, and 8 turns no epoch by proofs and lets
         the garbage grow 1.6 times (`dev/plans/S67.md`, S67.15). Edmond
-        asked for a dial and a reading at 1: `ll_gc_set_epoch_ratio`, the
-        default 2 until he names one; at 1 the collector falls behind on
-        `web-heap`.
+        asked for a dial and a reading at 1: `ll_gc_set_epoch_ratio`; at 1
+        the collector falls behind on `web-heap`; the default 4, his "for
+        now".
 - [x] S67.11 HG leaves the tree (Edmond, 2026-10-03: "да, удаляй HG")
       done: `collector-chain`, `hold-by-generation` and
         `death-check-back-off` deleted with the chain, `ring::record_chain`,
@@ -841,13 +841,11 @@ against the code on 2026-09-24.
   per-slot case stands in for it (`dev/plans/S65.md`, S65.30): a sibling
   birthed by a backlog, the cap set to zero under its round, its own
   checkpoint withdrawing its list and the elder ending it.
-- [ ] **The turn's ratio is unread by Edmond.** The batch count `N_b` went
-  with S67.9: the epoch turns when the collector's work reaches
-  `epoch::SPENT_PER_PROOF` (2) times what its proofs cost, or at X
-  (`worker::EPOCH_INTERVAL`), X waiting for twice the proving walk
-  (`dev/DECISIONS.md`, 2026-10-03). The ratio 2 is the Sage's; put to
-  Edmond on 2026-10-03 with S67.15's figures (`dev/plans/S67.md`), 4
-  recommended. Y9's
+- [ ] **The turn's ratio is 4 "for now".** Edmond set it on 2026-10-03
+  (`dev/DECISIONS.md`, "the epoch's ratio is 4, and the embedder's to set")
+  over `web-heap` and `web-arena-40k` alone; 3, 5 and 6, `web-arena-150k` and
+  the ring loads whose live core dies (`live-churn`, `deferred-then-dead`) are
+  unread at it, a run of 2, 3, 4 and 6 over them put to him. Y9's
   minimum-over-stamped-members question changes no prune at `k = 1` and
   reopens with any `k` above 1
   (`mark::tests::the_pruned_share_against_a_survival_rate` under

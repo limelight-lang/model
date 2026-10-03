@@ -182,12 +182,14 @@ Each mutator's epoch is kept by its collector (`cycle::epoch`). The
 collector advances it at a visit when either holds:
 
 - **by proofs**: the positions its batches inspected since the last turn
-  reach `SPENT_PER_PROOF` = 2 times what the stamps they wrote cost to prove.
+  reach `SPENT_PER_PROOF` = 2 times what the stamps they wrote cost to prove
+  (2 in the measured build; 4 by default since Edmond's ruling after S67.15,
+  the same day, and the embedder's to set through `ll_gc_set_epoch_ratio`).
   A completed batch prices its proof as
   `final-drain positions × stamps / final-drain rows`; work counts toward
   the turn only once a price stands;
 - **by time**: X = `EPOCH_INTERVAL` = 8 s of the collector's clock, but not
-  before twice the wall of the batch that proved the epoch.
+  before `SPENT_PER_PROOF` times the wall of the batch that proved the epoch.
 
 The epoch is the validity window of the collector's proofs: a stamp of an
 older epoch reads as no stamp, so every turn makes the next batches walk
