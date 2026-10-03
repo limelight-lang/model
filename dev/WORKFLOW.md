@@ -489,6 +489,11 @@ a run alone passed. On 2026-10-03 it read 4.39 ms once in three runs alone and
 twice in full runs at four threads, on S67.10's tree with a Miri run holding
 the box's cores (load average 3.2), and once more at eight threads that
 evening beside two Miri slices, green in five runs alone after.
+`worker::tests::the_merged_lane::a_merge_under_a_grant_is_taken_at_the_next_round`
+read red once on 2026-10-03 in a full run under `debug-journal` at eight
+threads, beside two Miri slices, on S67.12's tree after the Critic's
+counters; its message was not kept, and three full runs and six of its file
+alone were green after. Unexplained; under watch.
 `the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_disposition`
 read red once the same day in a run where a collector thread panicked beside
 it, and green in every run after.
