@@ -501,6 +501,8 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     };
     #[cfg(test)]
     let from = std::time::Instant::now();
+    #[cfg(test)]
+    let _ = crate::cycle::row::take_phase_boundary_instant();
     let (mut window, roots) = match unsafe { open_and_trace(ALL_ROOTS, form, set.as_ref(), stamps) }
     {
         Ok(traced) => traced,
@@ -515,6 +517,8 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     unsafe { note_scan_end(window.arena(), roots) };
     #[cfg(test)]
     let traced = std::time::Instant::now();
+    #[cfg(test)]
+    let scanned_from = crate::cycle::row::take_phase_boundary_instant().unwrap_or(traced);
 
     // The rows this trace wrote, read as the commit's membership. They stand
     // until the window's close sweeps them, which is after everything below.
@@ -534,7 +538,8 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
         let [confirm, destructors, reclaim, drops] =
             crate::cycle::worker::testing::take_commit_split();
         crate::cycle::worker::testing::note_collection_phases([
-            traced - from,
+            scanned_from - from,
+            traced - scanned_from,
             read - traced,
             confirm,
             destructors,

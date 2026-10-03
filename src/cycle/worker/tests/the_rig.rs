@@ -3228,62 +3228,72 @@ impl CellReading {
                 self.verdict_collections.positions_longest.to_string(),
             ),
             (
-                "verdict_trace_us",
+                "verdict_mark_us",
                 self.verdict_collections.phases[0].as_micros().to_string(),
             ),
             (
-                "verdict_membership_us",
+                "verdict_scan_us",
                 self.verdict_collections.phases[1].as_micros().to_string(),
             ),
             (
-                "verdict_confirm_us",
+                "verdict_membership_us",
                 self.verdict_collections.phases[2].as_micros().to_string(),
             ),
             (
-                "verdict_destructors_us",
+                "verdict_confirm_us",
                 self.verdict_collections.phases[3].as_micros().to_string(),
             ),
             (
-                "verdict_reclaim_us",
+                "verdict_destructors_us",
                 self.verdict_collections.phases[4].as_micros().to_string(),
             ),
             (
-                "verdict_drops_us",
+                "verdict_reclaim_us",
                 self.verdict_collections.phases[5].as_micros().to_string(),
             ),
             (
-                "verdict_longest_trace_us",
+                "verdict_drops_us",
+                self.verdict_collections.phases[6].as_micros().to_string(),
+            ),
+            (
+                "verdict_longest_mark_us",
                 self.verdict_collections.phases_of_the_longest[0]
                     .as_micros()
                     .to_string(),
             ),
             (
-                "verdict_longest_membership_us",
+                "verdict_longest_scan_us",
                 self.verdict_collections.phases_of_the_longest[1]
                     .as_micros()
                     .to_string(),
             ),
             (
-                "verdict_longest_confirm_us",
+                "verdict_longest_membership_us",
                 self.verdict_collections.phases_of_the_longest[2]
                     .as_micros()
                     .to_string(),
             ),
             (
-                "verdict_longest_destructors_us",
+                "verdict_longest_confirm_us",
                 self.verdict_collections.phases_of_the_longest[3]
                     .as_micros()
                     .to_string(),
             ),
             (
-                "verdict_longest_reclaim_us",
+                "verdict_longest_destructors_us",
                 self.verdict_collections.phases_of_the_longest[4]
                     .as_micros()
                     .to_string(),
             ),
             (
-                "verdict_longest_drops_us",
+                "verdict_longest_reclaim_us",
                 self.verdict_collections.phases_of_the_longest[5]
+                    .as_micros()
+                    .to_string(),
+            ),
+            (
+                "verdict_longest_drops_us",
+                self.verdict_collections.phases_of_the_longest[6]
                     .as_micros()
                     .to_string(),
             ),
@@ -4676,7 +4686,7 @@ fn the_rigs_figures_read_their_known_answers() {
     assert!(
         phases <= collections.total
             && longest <= collections.longest
-            && (collections.freed == 0 || collections.phases[4] > Duration::ZERO),
+            && (collections.freed == 0 || collections.phases[5] > Duration::ZERO),
         "{collections:?}"
     );
     println!(

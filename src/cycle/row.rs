@@ -516,7 +516,24 @@ thread_local! {
 #[inline]
 pub(crate) fn note_phase_boundary() {
     #[cfg(test)]
-    DISPATCHES_AT_PHASE_BOUNDARY.with(|at| at.set(EDGE_DISPATCHES.with(std::cell::Cell::get)));
+    {
+        DISPATCHES_AT_PHASE_BOUNDARY.with(|at| at.set(EDGE_DISPATCHES.with(std::cell::Cell::get)));
+        PHASE_BOUNDARY_AT.with(|at| at.set(Some(std::time::Instant::now())));
+    }
+}
+
+// The instant of this thread's last phase boundary, which splits a collection
+// over P's trace into its mark and its scan for the rig (tests only).
+#[cfg(test)]
+thread_local! {
+    static PHASE_BOUNDARY_AT: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The instant of this thread's last phase boundary, which it forgets.
+#[cfg(test)]
+pub(crate) fn take_phase_boundary_instant() -> Option<std::time::Instant> {
+    PHASE_BOUNDARY_AT.with(std::cell::Cell::take)
 }
 
 /// Record where the trace's dispatches ended and the maturation descent's

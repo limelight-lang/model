@@ -132,7 +132,8 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PANIC_IN_CLOSE", false),
         ("PANIC_IN_HARVEST", false),
         ("PANIC_IN_RESET", false),
-        ("PENDING_PHASES", false), // test-only const Cell, no drop glue
+        ("PENDING_PHASES", false),    // test-only const Cell, no drop glue
+        ("PHASE_BOUNDARY_AT", false), // test-only const Cell, no drop glue
         ("PINNED", false),
         ("PINNED_THRESHOLD", false), // test-only const Cell, no drop glue
         ("POOL_REQUESTS", false),

@@ -1358,7 +1358,7 @@ pub(crate) struct VerdictCollections {
     pub(crate) positions: usize,
     pub(crate) positions_longest: usize,
     /// The collection's phases ([`COLLECTION_PHASES`]: the trace within the
-    /// set, the membership's reading, and the commit's first reading,
+    /// set as its mark and its scan, the membership's reading, and the commit's first reading,
     /// destructors, second reading with the teardown, and drops), in all and
     /// those of the longest collection; the close is what the total leaves.
     pub(crate) phases: [std::time::Duration; COLLECTION_PHASES],
@@ -1366,7 +1366,7 @@ pub(crate) struct VerdictCollections {
 }
 
 /// The phases of a collection over P the rig splits its pause into.
-pub(crate) const COLLECTION_PHASES: usize = 6;
+pub(crate) const COLLECTION_PHASES: usize = 7;
 
 thread_local! {
     /// The commit's split as the commit running on this thread noted it:
