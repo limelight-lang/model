@@ -1357,7 +1357,7 @@ thread_local! {
         const { std::cell::Cell::new([std::time::Duration::ZERO; COLLECTION_PHASES]) };
 }
 
-/// Note the phases of the collection over P now closing
+/// Note the phases of the collection over P that is closing
 /// (`crate::cycle::collect`).
 pub(crate) fn note_collection_phases(phases: [std::time::Duration; COLLECTION_PHASES]) {
     PENDING_PHASES.with(|pending| pending.set(phases));
