@@ -127,11 +127,12 @@ pub(crate) struct MutatorRecord {
     /// and by nobody else. The poll that finds the deferred lane occupied
     /// compares it with each lane's mirror and re-offers a lane when the byte
     /// is the lane's wait past it (`crate::gc`, the poll;
-    /// `crate::cycle::queue`, the deferred lanes). On this line because the poll reads the token beside it.
-    /// Relaxed on both sides: nothing is published beside it, and a byte read
-    /// late delays the re-offer by one poll, never a wrong free. Eight bits
-    /// wrap at 256 turnovers, which at X is over half an hour of a thread
-    /// that never polls; the price of the alias is one more X.
+    /// `crate::cycle::queue`, the deferred lanes). On this line because the
+    /// poll reads the token beside it. Relaxed on both sides: nothing is
+    /// published beside it, and a byte read late delays the re-offer by one
+    /// poll, never a wrong free. Eight bits wrap at 256 turnovers, which at X
+    /// is over half an hour of a thread that never polls; the price of the
+    /// alias is one more X.
     turnover: AtomicU8,
     /// Turns the collector's X arm made, as against its proofs' arm, counted
     /// modulo 256 by the collector alone at each advance that arm makes. A

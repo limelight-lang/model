@@ -252,7 +252,8 @@ epoch turn.
   in S67.6, 438–945. The recall is read; the token is held past it by the
   collector's work after the stop — the stamps' walk after a completed
   trace, which reads the recall at the stop level alone, is the longest
-  part, 105–123 ms on `web-heap` and 23–32 ms on `web-arena-40k` — and by a grant standing behind another
+  part, 105–123 ms on `web-heap` and 23–32 ms on `web-arena-40k` — and by
+  a grant standing behind another
   mutator's batch, which a stopped trace does not release before its tail.
 - **Open, measured** (`dev/data/s67.6/cells.csv`,
   `verdict_collection_longest_us`): the owner's collection over one posted
