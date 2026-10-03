@@ -452,7 +452,7 @@ Notes: dev/plans/S65.md
         cuts inside `collector-chain` and `wait-by-readings` kept until
         S67.6's verdicts decide those builds, the rig kept as S67's
         instrument (`dev/plans/S65.md`, S65.46, "The cuts, read 2026-10-03").
-- [ ] S65.30 The stage's close: Done-when read clause by clause
+- [x] S65.30 The stage's close: Done-when read clause by clause
       done: each clause of Done-when read on the build the stage leaves, by
         the test or figure that shows it; the Miri list above run and
         recorded, with S65.27's additions (`cycle::queue::verdicts::tests`,
@@ -464,6 +464,13 @@ Notes: dev/plans/S65.md
         turnover, S65.23's k-th free past the first never fault-injected;
         then the Code Reviewer over the stage
       tier: T2 · role: Code Reviewer
+      handoff: 2026-10-03, every clause read (`dev/plans/S65.md`, S65.30): the
+        free at S65.7's count in a production build, returned and withheld;
+        the poll at 172 against 175; the Miri list green but for two cases a
+        long run's clock ran out on, each green alone, one Stacked Borrows
+        violation in a case's helper fixed; the debts built or given a backlog
+        line; the Code Reviewer's findings taken but a per-grant positions
+        case, ruled not needed.
 
 ## S67 — A web-server load on the rig  [in progress]
 
