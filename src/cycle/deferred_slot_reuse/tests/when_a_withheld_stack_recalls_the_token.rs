@@ -131,7 +131,9 @@ fn a_producers_frees_into_this_threads_blocks_recall_the_grant_at_the_mark() {
     let mut holder = HeldByACollector::take(token, false);
     let mut under_the_holder = Vec::new();
     let slots_a_block = BLOCK_SIZE / ENTITY_SIZE;
-    while foreign_withheld_count() < DEATHS_MARK && under_the_holder.len() < 16 * slots_a_block {
+    // The stack's count, which the walk of `foreign_withheld_count` checks once
+    // below: a walk an allocation would be quadratic under Miri.
+    while foreign_withheld_counts().0 < DEATHS_MARK && under_the_holder.len() < 16 * slots_a_block {
         let slot = unsafe { crate::memory::heap::entity_alloc(ENTITY_SIZE) };
         assert!(!slot.is_null(), "the heap served");
         assert!(
