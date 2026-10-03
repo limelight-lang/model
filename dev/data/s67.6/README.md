@@ -1,8 +1,8 @@
 # S67.6 run data: D, HG, best D and best HG on the web loads
 
 The raw data of the run recorded in `dev/BENCHMARKS.md`, "S67.6", 2026-10-03,
-11:00–13:30 UTC. The algorithm of the best D build is
-`dev/design/the-best-d-collector.md`.
+11:00–13:30 UTC. The best D build is the proof-epoch collector,
+`dev/design/the-proof-epoch-collector.md`.
 
 ## The box and the arms
 

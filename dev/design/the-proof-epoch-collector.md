@@ -1,7 +1,11 @@
-# The best D collector: an algorithm description for review
+# The proof-epoch collector: an algorithm description for review
 
-Status: the build measured as `bestD` on 2026-10-03 (`dev/BENCHMARKS.md`,
-"S67.6"), the default build plus the feature `wait-by-readings`, at `c52ff90`.
+The proof-epoch collector (`rfc/dev/GLOSSARY.md`) is the cycle collector
+measured as `bestD` on 2026-10-03 (`dev/BENCHMARKS.md`, "S67.6"): the
+default build of that day plus the feature `wait-by-readings`, at
+`c52ff90`. Its name is for its epoch, which turns when the collector's work
+reaches twice what its proofs cost. Edmond took it as the default build on
+2026-10-03.
 Written for readers outside the project: it states the algorithm as the code
 runs it and names the source of each part. The normative text is
 `rfc/model/gc/rc-cycle.md`; where the two differ, the code is what was
@@ -187,7 +191,7 @@ older epoch reads as no stamp, so every turn makes the next batches walk
 the state again. The collector publishes the epoch's low byte beside the
 token, where the mutator's poll reads it.
 
-## 7. Deferral with waits by readings (what makes this build "best")
+## 7. Deferral with waits by readings
 
 A root read live is not re-traced at once; it waits in a deferred lane
 until enough epoch turns pass for its reading to be worth repeating.
@@ -244,7 +248,7 @@ turn.
 
 ## 10. How it measured (S67.6, summary)
 
-Four arms — D, HG, best D, best HG — on two mutators and one collector of a
+The collector is the arm *best D*. Four arms — D, HG, best D, best HG — on two mutators and one collector of a
 four-core box without hardware counters, three web loads, five repeats,
 116 s with a 20 s warm-up and a 12 s drain. Best D against plain D: the same
 CPU a request within the spread (+0.4 %, −0.1 %, +2.9 %); garbage left at the
