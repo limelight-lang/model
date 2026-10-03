@@ -510,6 +510,14 @@ pub(crate) struct TraceScratchArena {
     /// ([`TraceScratchArena::hold_the_grants_behind`]); `None` for an
     /// in-line collection.
     grants_behind: Option<GrantsBehind>,
+    /// The cells the drain within the met read whose child it subtracted from
+    /// no row, since its start ([`crate::cycle::mark::drain_within_the_met`]).
+    cells_left_out: usize,
+    /// The external children a trace within a set read off its drain where
+    /// it found the set garbage whole, for the teardown to reserve by in place
+    /// of its own walk of the cells (`crate::cycle::reclamation`); `None`
+    /// where no such trace ran.
+    external_children_read: Option<usize>,
     /// The time the sweeps of the rows took since the last reset, which the
     /// reset reports with its give-back: a collector's batch sweeps before
     /// its release and gives the blocks back after it.
@@ -678,6 +686,8 @@ impl TraceScratchArena {
             stops_at: crate::cycle::token::RECALL_WIND_DOWN,
             level_seen: crate::cycle::token::RECALL_NONE,
             grants_behind: None,
+            cells_left_out: 0,
+            external_children_read: None,
             #[cfg(test)]
             swept: std::time::Duration::ZERO,
             recall_readings: 0,
@@ -964,6 +974,7 @@ impl TraceScratchArena {
         // with entities still queued, and every one of them carries a row
         // pointer into an array this call is about to unstamp.
         self.worklist.rewind();
+        self.external_children_read = None;
         // The held entries carry row pointers the same way.
         self.held.rewind();
         self.held_next.rewind();
@@ -1651,6 +1662,29 @@ impl TraceScratchArena {
 
         self.release_the_grants_behind();
         ControlFlow::Continue(())
+    }
+
+    /// Start the count of cells a drain within the met leaves out.
+    pub(crate) fn start_counting_cells_left_out(&mut self) {
+        self.cells_left_out = 0;
+    }
+
+    /// Count a cell the drain within the met subtracted from no row.
+    #[inline]
+    pub(crate) fn note_a_cell_left_out(&mut self) {
+        self.cells_left_out += 1;
+    }
+
+    /// Keep the cells the drain left out as the external children of a set
+    /// it found garbage whole: every met row is a member, so a cell is
+    /// external exactly where the drain subtracted from no row.
+    pub(crate) fn keep_the_cells_left_out_as_external_children(&mut self) {
+        self.external_children_read = Some(self.cells_left_out);
+    }
+
+    /// The external children a trace kept, which it forgets.
+    pub(crate) fn take_external_children_read(&mut self) -> Option<usize> {
+        self.external_children_read.take()
     }
 
     /// Have the readings of the recall release the grants the collector

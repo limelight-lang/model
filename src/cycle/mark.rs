@@ -475,15 +475,18 @@ pub(crate) unsafe fn drain<R: CellReader>(arena: &mut TraceScratchArena) -> Mark
 pub(crate) unsafe fn drain_within_the_met<R: CellReader>(
     arena: &mut TraceScratchArena,
 ) -> MarkResult {
+    arena.start_counting_cells_left_out();
     while let Some(entry) = arena.pop_work() {
         #[cfg(test)]
         note_expansion(entry.entity);
         let kind = unsafe { cells::entity_kind(entry.entity) };
-        let expansion = Expansion::<R, _>::new(arena, |_, child| {
+        let expansion = Expansion::<R, _>::new(arena, |arena, child| {
             if let EdgeTarget::Tracked(key) = unsafe { resolve_edge_target(child) }
                 && let Some(row) = unsafe { find_initialized_row(key) }
             {
                 unsafe { shadow::subtract(row, 1, !R::CONCURRENT) };
+            } else {
+                arena.note_a_cell_left_out();
             }
             true
         });

@@ -202,6 +202,7 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
     } {
         #[cfg(test)]
         SETS_GARBAGE_WHOLE.with(|count| count.set(count.get() + 1));
+        arena.keep_the_cells_left_out_as_external_children();
         crate::cycle::token::note_last_row_read();
         return (TraceOutcome::Complete, traced);
     }

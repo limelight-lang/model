@@ -694,6 +694,13 @@ impl<'a> GuardedComponent<'a> {
         self.members
     }
 
+    /// Whether no member's destructor ran in this commit, so that no member's
+    /// cell changed since the trace read it (as [`Revalidation::revalidate`]
+    /// reasons).
+    pub(crate) fn no_destructor_ran(&self) -> bool {
+        !self.revalidation.any_destructor_ran
+    }
+
     /// The caller has severed the component, freed what reached zero and taken
     /// the guard reference off every member, which ends this component's
     /// finalization.

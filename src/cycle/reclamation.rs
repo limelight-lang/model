@@ -211,7 +211,21 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
         "the component read again and the membership severed are the same"
     );
 
-    let external_children = unsafe { members.external_children() };
+    // A set the trace found garbage whole had its external children read off
+    // the drain; with no destructor run since, no member's cell changed, and
+    // the walk would read the same count (`dev/plans/S67.md`, S67.12).
+    let read = arena.take_external_children_read();
+    let external_children = match read {
+        Some(read) if component.no_destructor_ran() => {
+            debug_assert_eq!(
+                read,
+                unsafe { members.external_children() },
+                "the drain's count is the walk's"
+            );
+            read
+        }
+        _ => unsafe { members.external_children() },
+    };
     #[cfg(any(test, feature = "debug-journal"))]
     let member_count = component.members();
     #[cfg(feature = "debug-journal")]

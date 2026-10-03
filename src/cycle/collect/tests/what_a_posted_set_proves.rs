@@ -113,6 +113,57 @@ fn a_set_garbage_whole_is_freed_without_a_scan() {
     }
 }
 
+/// A set garbage whole whose ring holds two objects outside it reserves its
+/// teardown's room by the drain's count of the cells it subtracted from no
+/// row, the walk of the cells skipped: two deferred drops, after which each
+/// outside object stands at the case's reference alone. Red on a count off by
+/// a cell, which the sever's check in every build reads, and the debug build
+/// reads the count against the walk (`dev/plans/S67.md`, S67.12).
+#[test]
+fn a_set_garbage_whole_reserves_its_outside_children_by_the_drain() {
+    let _g = test_guard();
+    // No destructor, as on `web-heap`: a member's destructor would discard the
+    // drain's count for the walk.
+    let node = ClassBuilder::new("PostedSetOutsideRingNode")
+        .prop("next", true)
+        .prop("out", true)
+        .build();
+    let mut arena = Arena::new();
+    let ring = unsafe { long_ring(&mut arena, node, 3) };
+    let outside = [
+        unsafe { held(&mut arena, keeper_class("PostedSetOutsideA")) },
+        unsafe { held(&mut arena, keeper_class("PostedSetOutsideB")) },
+    ];
+    for (member, child) in ring.iter().zip(outside) {
+        unsafe {
+            crate::test_support::store_prop(
+                &mut arena,
+                *member,
+                crate::test_support::prop_offset(1),
+                child,
+            )
+        };
+    }
+    assert_eq!(stand_in_posts(1, Verdict::Proposed), Posted::Batch(1));
+    post_for_test(&headers(&ring));
+
+    let _ = crate::cycle::trace::take_sets_garbage_whole();
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 3, "the ring is freed");
+    assert_eq!(
+        crate::cycle::trace::take_sets_garbage_whole(),
+        1,
+        "the trace skipped the scan"
+    );
+    for child in outside {
+        assert_eq!(
+            unsafe { crate::refcount::header_refcount(child as *const RcHeader) },
+            1,
+            "the drop gave back the ring's reference"
+        );
+        unsafe { let_go(child) };
+    }
+}
+
 /// A member whose block goes back under `POSTED` — a member proposed wrongly,
 /// which died since — drops the set before the pool can hand the block on, in
 /// the pooled form through `put` and in the run form before the unmapping; the
