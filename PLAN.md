@@ -610,7 +610,7 @@ Notes: dev/plans/S67.md
         journal's `REOFFERED_AT_THE_TURN` gone with the one lane; the rfc's
         byte 6 laid out at 16-19, 20-21 and 22-23 (`model/classes.md`) and
         the lanes stated (`model/gc/rc-cycle.md`, "Deferred lanes").
-- [ ] S67.12 Bound the owner's pause over a posted set (the external review's
+- [x] S67.12 Bound the owner's pause over a posted set (the external review's
         R4, its critics and the Sage of 2026-10-03)
       done: the collection over one posted set is one pause of up to 157 ms on
         `web-heap` over one request's 358k members, the proof about 130 ms of
@@ -620,6 +620,13 @@ Notes: dev/plans/S67.md
         kept as garbage-proportional; the chosen one built, a case of a set of
         about 400k members, and `web-heap` measured against today's 157 ms
       tier: T2 · role: Critic
+      handoff: 2026-10-03, the constant cut by a fast path for a set garbage
+        whole — no scan, the teardown reserved and the commit confirmed off
+        the drain's counts — chosen by the model on Edmond's word; the
+        longest pause on `web-heap` 67–103 ms against 117–173, a 400k-member
+        ring 26 ms (`dev/plans/S67.md`, S67.12; `dev/BENCHMARKS.md`). The
+        pause stays proportional to the set; bounding it is the Δ-test
+        across polls, not built.
 - [x] S67.13 Shorten the token's tail after a stop (the review's R3)
       done: a stopped trace releases the grants standing behind it before its
         tail (`release_the_grants_behind` on the stop's path), with a case of

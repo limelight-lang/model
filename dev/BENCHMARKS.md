@@ -8,6 +8,41 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-03 — S67.12: the owner's longest pause over a posted set falls from 117–173 to 67–103 ms on `web-heap`, its collections' time by a third and the mutator's CPU by a seventh
+
+**The change.** A set whose met rows all read zero after the owner's drain
+skips the scan, reserves its teardown by the drain's count of cells left out,
+and is confirmed by its members' counts summing to the drain's internal edges
+rather than by the exact validation's walk (`dev/plans/S67.md`, S67.12).
+
+**The run.** `1023761` (before) against `7bfc978` (after, the three steps
+and the Critic's counters), test binaries of the rig in release, both at
+`LL_RIG_SPENT_PER_PROOF=4`; `web-heap:46.78`, two mutators on CPUs 1 and 2,
+cap 1 on CPU 3, three repeats of 116 s, the arms rotated; other processes'
+CPU 0.03–0.09 cores. Raw lines: `dev/data/s67.12/cells.csv`.
+
+| | before | after |
+| --- | ---: | ---: |
+| collections over P | 4,365–4,490 | 4,302–4,405 |
+| their time in all | 24.8–25.6 s | 16.4–16.5 s |
+| the longest one | 116.6–172.7 ms | 66.6–103.4 ms |
+| the scan in all / of the longest | 5.3–5.5 s / 24.3–34.0 ms | 1.6–1.7 s / 1.7–2.2 ms |
+| the first reading in all / of the longest | 4.6–4.7 s / 24.3–37.1 ms | 2.0–2.1 s / 7.1–14.7 ms |
+| the teardown in all / of the longest | 8.0–8.2 s / 35.9–53.8 ms | 5.6 s / 24.5–37.1 ms |
+| the mark in all | 4.9–5.1 s | 4.8–5.0 s |
+| mutator CPU in the loop | 74.3–74.9 s | 63.8–64.5 s |
+| collector CPU | 34.3–35.3 s | 34.1–35.2 s |
+| mean garbage | 38–49 MB | 39–47 MB |
+
+The scan that remains (1.6 s) is the collections whose set held a row above
+zero. The set's size at its most reads the same, 274–400k members.
+
+**The probe.** `what_a_posted_set_proves::measure_the_pause_over_a_set_of_a_requests_size`,
+a garbage ring of 400,000 plain members posted whole, release: 26.1–26.3 ms,
+66 ns a member; reference counting's cascade over a tree of the same size in
+the same session, 9.4–9.7 ms, 24 ns an object (the box ran it at 19.9–23.8 ms
+in the morning). The pause over the fast path is some 2.7 times the floor.
+
 ## 2026-10-03 — S67.15, ratio 1: the collector falls behind on `web-heap` — 56–60 s of CPU and 385–550 MB of mean garbage against ratio 2's 45–46 s and 74–78 MB
 
 Asked by Edmond after S67.15 ("а что если он равен 1 интересно?"). The same

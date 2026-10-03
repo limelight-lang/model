@@ -364,3 +364,73 @@ fn a_refused_block_lists_no_member_without_its_block() {
 
     unsafe { let_go(member) };
 }
+
+/// Members of the set the pause probe collects: the largest request
+/// `web-heap` draws (`worker::tests::the_web_loads`, `MOST_OBJECTS`).
+const SET_MEMBERS: usize = 400_000;
+
+/// The owner's pause over a set of `SET_MEMBERS` garbage members, a ring
+/// whose one root R holds, the set posted whole: what the collection over P
+/// costs at the size of the largest request, read against reference counting's
+/// own cascade over a tree of the same size
+/// (`what_the_poll_costs::measure_an_acyclic_cascade_of_a_requests_size`;
+/// `dev/plans/S67.md`, S67.12). The ring holds no destructor and every member
+/// row reads zero after the drain, so the collection takes the set's fast
+/// path; the minimum and the median of three rounds, in ms and per member.
+#[test]
+#[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
+fn measure_the_pause_over_a_set_of_a_requests_size() {
+    const ROUNDS: usize = 3;
+    let _g = test_guard();
+    let class = ClassBuilder::new("PauseRingNode")
+        .prop("next", true)
+        .build();
+    let mut samples = Vec::with_capacity(ROUNDS);
+    for _ in 0..ROUNDS {
+        let mut arena = Arena::new();
+        let ring: Vec<*mut Object> = (0..SET_MEMBERS)
+            .map(|_| unsafe { held(&mut arena, class) })
+            .collect();
+        // Each member's creation reference goes to its predecessor, so that no
+        // decrement registers a candidate but the root's below.
+        for index in 0..SET_MEMBERS {
+            unsafe {
+                crate::cycle::testing::move_prop(
+                    ring[index],
+                    crate::test_support::prop_offset(0),
+                    ring[(index + 1) % SET_MEMBERS],
+                )
+            };
+        }
+        unsafe {
+            ll_retain(ring[0] as *mut RcHeader);
+            assert!(
+                !ll_release(ring[0] as *mut RcHeader),
+                "the root is registered"
+            );
+        }
+        assert_eq!(stand_in_posts(1, Verdict::Proposed), Posted::Batch(1));
+        post_for_test(&headers(&ring));
+
+        let _ = crate::cycle::trace::take_sets_garbage_whole();
+        let start = std::time::Instant::now();
+        let freed = unsafe { ll_gc_maybe_collect() };
+        let took = start.elapsed();
+        assert_eq!(freed, SET_MEMBERS, "the ring is freed");
+        assert_eq!(
+            crate::cycle::trace::take_sets_garbage_whole(),
+            1,
+            "the set took the fast path"
+        );
+        samples.push(took);
+    }
+
+    samples.sort_unstable();
+    let median = samples[ROUNDS / 2];
+    eprintln!(
+        "pause over a set of {SET_MEMBERS}: min {:.1} ms, median {:.1} ms, {:.0} ns a member",
+        samples[0].as_secs_f64() * 1e3,
+        median.as_secs_f64() * 1e3,
+        median.as_nanos() as f64 / SET_MEMBERS as f64,
+    );
+}
