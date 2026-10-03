@@ -392,6 +392,11 @@ committed. `docs/history/rc-cycle-infographic-2026-08-31.html` is the
 picture of 2026-08-31, before the collection driver and the collector
 thread, kept as a record.
 
+`dev/design/the-best-d-collector.md` — the best D build's collector stated
+for reviewers outside the project, as the code ran it in S67.6;
+`dev/data/s67.6/` — that run's raw cells, requests, A/A check, pilots and
+analysis script (`README.md` there).
+
 `dev/design/debug-modes.md` — observability and debug levels: object
 registry, lifetimes, shadow metadata, integrity checks, metrics export.
 §9, the event journal, is built behind the `debug-journal` feature
