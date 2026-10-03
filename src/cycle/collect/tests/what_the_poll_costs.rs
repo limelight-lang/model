@@ -162,7 +162,7 @@ fn measure_an_acyclic_cascade_of_a_requests_size() {
             })
             .collect();
         // Node i holds nodes 2i + 1 and 2i + 2, each child's creation
-        // reference moved into its parent's property, so no decrement registers
+        // reference handed to its parent's property, so no decrement registers
         // a candidate.
         for (index, &node) in nodes.iter().enumerate() {
             for (property, child) in [2 * index + 1, 2 * index + 2].into_iter().enumerate() {
