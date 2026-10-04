@@ -144,7 +144,12 @@ pub(crate) unsafe fn as_table_mut<'a>(a: *mut LLArray) -> (&'a mut Table, &'a St
     // Every write into the array's slots, its relocations included, comes
     // through a mutable view, so the view is where the array is tagged as
     // the holder whose slots changed (`dev/design/recycler-over-counts.md`,
-    // §2) — ahead of any `begin_move` the caller then makes.
+    // §2) — ahead of any `begin_move` the caller then makes. Tagged before
+    // the writes, so that a checkpoint the caller reaches after them (a
+    // release that runs a destructor that polls) finds the tag already
+    // stored; which makes it a rule that a view's writes precede the
+    // caller's first free, poll or consent — a consent between them would
+    // open a window the tag does not carry. Every caller keeps it.
     #[cfg(feature = "recycler-over-counts")]
     unsafe {
         crate::refcount::tag_with_the_window(a as *mut RcHeader)

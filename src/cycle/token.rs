@@ -216,12 +216,12 @@ pub(crate) struct TraceToken {
     /// costs one stride more, and nothing but the byte above decides who holds
     /// the token. Relaxed on both sides, since nothing is published beside it.
     waiting: AtomicU8,
-    /// The window the mutator opened at its last consent, 1..=255
+    /// The window the mutator's last consent opened, 1..=255
     /// (`dev/design/recycler-over-counts.md`, §2): every count write and
-    /// pointer store of the mutator's tags header byte 7 with it while the
-    /// grant stands, and the collector reads it after its acquire of the
-    /// grant to know which tag means "touched under this grant". Stored by the
-    /// mutator ahead of the consent's release swap, which publishes it;
+    /// tagging slot store of the mutator's tags header byte 7 with it from
+    /// the consent on, and the collector reads it after its acquire of the
+    /// grant to know which tag means "touched under this grant". Stored by
+    /// the mutator ahead of the consent's release swap, which publishes it;
     /// relaxed on both sides.
     #[cfg(feature = "recycler-over-counts")]
     window: AtomicU8,
@@ -444,15 +444,19 @@ impl TraceToken {
         // the recall once before its batch, after its acquire of the grant,
         // and a recall stored after the swap can land behind that reading.
         self.waiting.store(level, Ordering::Relaxed);
-        // The grant's window, ahead of the swap for the same reason: a
-        // consent the swap then loses spends a number and opens nothing.
+        // The grant's window, ahead of the swap for the same reason. The
+        // thread opens it only once the swap succeeds, so a lost swap spends
+        // no number; no count write falls between the two.
         #[cfg(feature = "recycler-over-counts")]
-        self.window
-            .store(crate::refcount::open_the_next_window(), Ordering::Relaxed);
+        let window = crate::refcount::the_next_window();
+        #[cfg(feature = "recycler-over-counts")]
+        self.window.store(window, Ordering::Relaxed);
         let granted = word(COLLECTOR, slot(seen));
         self.word
             .compare_exchange(seen, granted, Ordering::Release, Ordering::Acquire)
             .map(|_| {
+                #[cfg(feature = "recycler-over-counts")]
+                crate::refcount::set_window(window);
                 #[cfg(test)]
                 {
                     // Counted on the swap that opened the grant, so that a

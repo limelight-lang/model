@@ -303,6 +303,32 @@ unsafe fn heap_into_heap(
     leaf: *const Class,
     mask: usize,
 ) -> Duration {
+    unsafe { heap_into_heap_tagging(ctx, arena, holder, leaf, mask, false) }
+}
+
+/// [`heap_into_heap`] with the holder's tag the slot-store primitives add
+/// under `recycler-over-counts` (`ll_store_*_in`): the two arms differ by that
+/// one byte store alone (`PLAN.md` S68.3).
+#[cfg(feature = "recycler-over-counts")]
+unsafe fn heap_into_heap_holder_tagged(
+    ctx: *mut LLContext,
+    arena: *mut Arena,
+    holder: *const Class,
+    leaf: *const Class,
+    mask: usize,
+) -> Duration {
+    unsafe { heap_into_heap_tagging(ctx, arena, holder, leaf, mask, true) }
+}
+
+#[inline(always)]
+unsafe fn heap_into_heap_tagging(
+    ctx: *mut LLContext,
+    arena: *mut Arena,
+    holder: *const Class,
+    leaf: *const Class,
+    mask: usize,
+    tag_the_holder: bool,
+) -> Duration {
     unsafe {
         let values = children(ctx, leaf, MemoryCategory::GcHeap, mask + 1);
         let owner = new_constructed(ctx, holder, MemoryCategory::GcHeap);
@@ -310,6 +336,12 @@ unsafe fn heap_into_heap(
 
         let start = Instant::now();
         for i in 0..trip(STORES) {
+            #[cfg(feature = "recycler-over-counts")]
+            if tag_the_holder {
+                crate::refcount::tag_with_the_window(owner as *mut RcHeader);
+            }
+            #[cfg(not(feature = "recycler-over-counts"))]
+            let _ = tag_the_holder;
             assert!(store_box(
                 arena,
                 MemoryCategory::GcHeap,
@@ -628,6 +660,14 @@ fn arms_for(
             round: Box::new(move || unsafe { arena_into_heap(ctx, arena, holder, leaf, mask) }),
         },
     ];
+
+    #[cfg(feature = "recycler-over-counts")]
+    arms.push(Arm {
+        label: "heap_into_heap_holder_tagged".to_string(),
+        round: Box::new(move || unsafe {
+            heap_into_heap_holder_tagged(ctx, arena, holder, leaf, mask)
+        }),
+    });
 
     for k in SWEEP {
         arms.push(Arm {

@@ -21,7 +21,12 @@ deferred lanes are all as in the default build.
 
 1. A collector requests the token and the mutator consents. From the consent
    the mutator's window is open, numbered 1..255; the number advances at every
-   consent; 0 means closed.
+   consent, and only once the consent's swap succeeds. It stays open after the
+   grant ends: the collector releases the token on its own thread and cannot
+   close the mutator's window, and a tag written after the grant names a
+   number no later grant carries until it comes round. A close at a recall
+   would be unsound — a wind-down still scans, and zeros stored before T would
+   erase the tags the Δ-test reads. 0 is the number before the first consent.
 2. While the window is open the mutator works as today and also writes the
    window number into header byte 7:
    - of the entity whose count it writes — every count write, through the one
@@ -33,7 +38,7 @@ deferred lanes are all as in the default build.
      permutations (`begin_move`/`set_storage`: the tag precedes
      `begin_move`'s fence, since arrays are strided outside the version
      bracket).
-   One relaxed one-byte store, no branch (a closed window writes 0). Holders
+   One relaxed one-byte store, no branch. Holders
    in an arena need no tag (`owner_cat` is a compile-time constant).
 3. Byte 7 has no other writer: the reset's COW reconciliation, which held
    bit 24 there, marks the survivors it has in hand by a bias on the count
@@ -86,8 +91,9 @@ deferred lanes are all as in the default build.
     thread's block, large runs) but not `free_remote`, whose withholding would
     recall the collector itself; registered members stay dead in place for
     the owner's retirement pass, as today.
-11. The collector releases the token; the window closes (a set dropped unread
-    — pressure, exit, a block return — closes it too).
+11. The collector releases the token (a set dropped unread — pressure, exit,
+    a block return — releases it too); the window stays open until the next
+    consent opens the next one (§2.1).
 
 ## 6. The owner's poll
 

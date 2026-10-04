@@ -44,6 +44,40 @@ fn a_consent_opens_the_next_window_and_publishes_it() {
     set_window(0);
 }
 
+/// A consent whose swap fails — the request it read is gone — opens no window
+/// and spends no number: the thread keeps tagging with the window it had, and
+/// the next consent that succeeds opens the number this one would have.
+#[test]
+fn a_lost_consent_spends_no_number() {
+    // A slot no other case of the binary consents on.
+    const SLOT: usize = 5;
+    let token = TraceToken::new_held();
+    token.release();
+    set_window(30);
+
+    // No request stands, so the swap from REQUESTED reads the mutator's byte.
+    assert!(token.consent(word(REQUESTED, SLOT), RECALL_NONE).is_err());
+    let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+    let header: *mut RcHeader = &raw mut h;
+    unsafe { ll_retain(header) };
+    assert_eq!(
+        unsafe { window_tag(header) },
+        30,
+        "the lost consent opened nothing"
+    );
+
+    token.request_for_test(word(REQUESTED, SLOT));
+    assert!(token.consent(word(REQUESTED, SLOT), RECALL_NONE).is_ok());
+    assert_eq!(
+        token.window(),
+        31,
+        "the number the lost consent did not spend"
+    );
+    token.release_claim(SLOT, false);
+
+    set_window(0);
+}
+
 /// A retain and a release each tag the entity whose count they write with the
 /// window open at the time.
 #[test]
@@ -58,6 +92,25 @@ fn every_count_write_tags_its_entity() {
     set_window(6);
     assert!(!release(&mut h));
     assert_eq!(unsafe { window_tag(&raw mut h) }, 6, "the release tagged");
+
+    set_window(0);
+}
+
+/// The count writes outside retain and release — a count set whole, the
+/// teardown guard's `+1` — tag through the same primitive.
+#[test]
+fn the_other_count_writes_tag_too() {
+    let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
+    let header: *mut RcHeader = &raw mut h;
+
+    set_window(11);
+    unsafe { set_header_refcount(header, 3) };
+    assert_eq!(unsafe { window_tag(header) }, 11, "the count set whole");
+
+    set_window(12);
+    unsafe { mutator_guard_retain(header) };
+    assert_eq!(unsafe { window_tag(header) }, 12, "the guard's +1");
+    assert_eq!(unsafe { header_refcount(header) }, 4);
 
     set_window(0);
 }
@@ -93,9 +146,10 @@ fn the_tag_and_the_stamp_stand_apart() {
 
 /// A store into an object's slot tags the object holding the slot, besides
 /// the stored entity's count write; a write into an array's slots tags the
-/// array.
+/// array, a vector's and a hash's alike.
 #[test]
 fn a_slot_write_tags_its_holder() {
+    use crate::array::table::Key;
     use crate::class::ClassBuilder;
     use crate::memory::arena::Arena;
     use crate::memory::context::LLContext;
@@ -135,7 +189,29 @@ fn a_slot_write_tags_its_holder() {
         "the array whose slots changed"
     );
 
+    // A hash array, whose writes come through the table's mutable view: an
+    // insert, then a remove, each in a window of its own.
+    let table = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
+    set_window(41);
+    let inserted = unsafe { crate::array::testing::insert(table, Key::Int(1), Value::int(2)) };
+    assert!(matches!(inserted, Some((true, None))));
+    assert_eq!(
+        unsafe { window_tag(table as *const RcHeader) },
+        41,
+        "the insert"
+    );
+    set_window(42);
+    assert!(unsafe { crate::array::testing::remove(table, Key::Int(1)) }.is_some());
+    set_window(0);
+    assert_eq!(
+        unsafe { window_tag(table as *const RcHeader) },
+        42,
+        "the remove"
+    );
+
     unsafe {
+        assert!(ll_release(table as *mut RcHeader));
+        crate::object::ll_entity_die(table as *mut RcHeader);
         store_prop(
             arena_ptr,
             holder,

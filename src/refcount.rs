@@ -711,7 +711,8 @@ pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
 /// The header is read in two narrow relaxed loads — the flags half for
 /// the category tests, then the counter — and only the 4-byte counter
 /// half is stored back. That is the narrow-mutator rule: no flags store,
-/// nothing beyond the counter itself. Why narrow beats wide on both
+/// nothing beyond the counter itself — under `recycler-over-counts` the
+/// window tag's whole-byte store at byte 7 aside ([`refcount_store`]). Why narrow beats wide on both
 /// sides is [`refcount_load`]'s argument, measured in
 /// `dev/BENCHMARKS.md`, 2026-07-27.
 ///
@@ -741,15 +742,17 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
             return;
         }
 
-        // Narrow loads, narrow counter store, no flags store — so this
-        // path cannot bury a concurrent stamp in the collector's byte.
+        // Narrow loads, narrow counter store, no store over byte 6 — so
+        // this path cannot bury a concurrent stamp in the collector's byte.
         unsafe { refcount_store(header, refcount + 1) };
     }
 }
 
 /// Store only the 4-byte refcount half, relaxed — the narrow-mutator
 /// store (`dev/BENCHMARKS.md`, 2026-07-27). Must stay an aligned atomic
-/// store: the collector reads the containing word concurrently.
+/// store: the collector reads the containing word concurrently. Under
+/// `recycler-over-counts` it also tags byte 7 with the thread's window, a
+/// whole-byte store that leaves byte 6 and the mutator's flags untouched.
 #[inline]
 unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
     unsafe {
@@ -764,38 +767,38 @@ unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
 
 #[cfg(feature = "recycler-over-counts")]
 thread_local! {
-    /// The window a collector holding this thread's token opened, 1..=255,
-    /// or 0 while none holds it (`dev/design/recycler-over-counts.md`, §2).
+    /// The window this thread's last consent opened, 1..=255, or 0 before
+    /// its first (`dev/design/recycler-over-counts.md`, §2). It stays open
+    /// after the grant ends: the collector releases the token on its own
+    /// thread and cannot close it, and a tag written after the grant names a
+    /// window no later grant carries until the number comes round.
     /// `Cell<u8>` has no drop glue, which is the rule for anything a
     /// thread exit can reach.
     static COLLECTOR_WINDOW: core::cell::Cell<u8> = const { core::cell::Cell::new(0) };
 }
 
-/// Open the window `window` on this thread, or close it with 0. The token's
-/// consent opens the next window ([`open_the_next_window`]); a measurement
-/// of the tag's price and a case set one directly.
+/// Open the window `window` on this thread: every count write and slot
+/// store after this one tags with it. The consent opens
+/// [`the_next_window`] once its swap succeeds; a measurement of the tag's
+/// price and a case set one directly. Crate-private: a window out of step
+/// with the token's would make the tags lie.
 #[cfg(feature = "recycler-over-counts")]
-pub fn set_window(window: u8) {
+pub(crate) fn set_window(window: u8) {
     COLLECTOR_WINDOW.with(|open| open.set(window));
 }
 
-/// Open the next window on this thread and answer its number: 1..=255, one
-/// past the last, 255 wrapping to 1 — 0 is no window's. Called by the
-/// consent alone (`crate::cycle::token::TraceToken::consent`). A tag of a
-/// window 255 consents old reads as touched again, which refuses a set and
-/// frees nothing.
+/// The number the next consent opens: one past this thread's window, 255
+/// wrapping to 1 — 0 is no window's. Answered without opening it, so that a
+/// consent whose swap fails spends no number. A tag of a window 255 consents
+/// old reads as touched again, which refuses a set and frees nothing.
 #[cfg(feature = "recycler-over-counts")]
-pub(crate) fn open_the_next_window() -> u8 {
-    COLLECTOR_WINDOW.with(|open| {
-        let next = open.get() % 255 + 1;
-        open.set(next);
-        next
-    })
+pub(crate) fn the_next_window() -> u8 {
+    COLLECTOR_WINDOW.with(|open| open.get() % 255 + 1)
 }
 
 /// The window tag in header byte 7: the number of the window in which the
-/// entity's count or one of its slots last changed, or 0
-/// ([`tag_with_the_window`]).
+/// entity's count last changed or a tagging slot store last wrote into it,
+/// or 0 ([`tag_with_the_window`]).
 ///
 /// # Safety
 /// `header` points at a published entity whose first eight bytes are
@@ -808,10 +811,10 @@ pub(crate) unsafe fn window_tag(header: *const RcHeader) -> u8 {
     unsafe { header_byte_load(header, WINDOW_TAG_BYTE) }
 }
 
-/// Write the open window's number into header byte 7: this entity's count
-/// or one of its slots changed while the window stood. One relaxed byte
-/// store, no branch — a closed window writes 0, which no window carries
-/// (`dev/design/recycler-over-counts.md`, §2).
+/// Write this thread's window number into header byte 7: this entity's
+/// count or one of its slots changed while the window stood. One relaxed
+/// byte store, no branch; before the thread's first consent it writes 0,
+/// which no window carries (`dev/design/recycler-over-counts.md`, §2).
 ///
 /// # Safety
 /// `header` points at a published entity whose first eight bytes are
@@ -1181,9 +1184,10 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
 }
 
 /// Write the refcount of a **published** header — the store twin of
-/// [`header_refcount`], and narrow for the same reason: the flags half
-/// is neither read nor written, so a byte the collector puts there
-/// cannot be buried by this store.
+/// [`header_refcount`], and narrow for the same reason: byte 6 and the
+/// mutator's flags are neither read nor written (byte 7's window tag is,
+/// whole, under `recycler-over-counts`), so a byte the collector puts in
+/// byte 6 cannot be buried by this store.
 ///
 /// A count changed by a delta reads with [`header_refcount`] and writes
 /// here. There is no read-modify-write helper, because the two halves
@@ -1409,9 +1413,10 @@ pub(crate) unsafe fn clear_candidate_bit(header: *mut RcHeader) {
     unsafe { update_header_flags(header, |flags| flags & !CANDIDATE_BIT) };
 }
 
-/// The teardown guard's `+1`, as a narrow counter store: the flags half
-/// is not read and not written, so nothing the collector puts there can
-/// be buried by it.
+/// The teardown guard's `+1`, as a narrow counter store: byte 6 and the
+/// mutator's flags are not read and not written (byte 7's tag aside, as
+/// [`refcount_store`] says), so nothing the collector puts there can be
+/// buried by it.
 #[inline]
 pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
     let refcount = unsafe { refcount_load(header) };

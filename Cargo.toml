@@ -75,8 +75,8 @@ debug-journal = []
 hash-folding = []
 
 # Recycler over counts (`dev/design/recycler-over-counts.md`, PLAN.md S68):
-# while a collector holds the mutator's token, every count write tags the
-# entity's header byte 7 with the open window's number, so the collector can
+# every count write and every tagging slot store stores the window of the
+# mutator's last consent into the entity's header byte 7, so the collector can
 # judge a garbage set alone. Off by default: the default build is the arm it
 # is measured against, and the tag is a store on every count write.
 recycler-over-counts = []

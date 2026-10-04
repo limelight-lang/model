@@ -136,7 +136,7 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       on the count word instead of bit 24, and a block a reset empties stays
       with its size class until the reset ends.
 - [ ] S68.3 The window and the tags, behind the feature: the window number
-      in the record (1..255, advanced at the consent, 0 closed); the tag in
+      in the record (1..255, advanced at the consent, never closed); the tag in
       `refcount_store`, the slot-write primitives and the in-array
       permutations; the holder through the barrier (the ABI change).
 - [ ] S68.4 The collector records the edges it subtracts, and its scan runs
