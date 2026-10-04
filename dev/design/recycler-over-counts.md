@@ -229,6 +229,110 @@ notifications, the teardown and the close are the rest. So the steps:
   Its pause is then the drops' cascade and one splice a block. The entity
   deaths the journal records for an owner's free are written at the
   application, one a chain, not a member.
+- **S68.6c, the split, the second chance and the taint** (the plan, before
+  the code; revised after the Critic of 2026-10-04 on it).
+  1. *The split.* A seed is a member the first form cannot free: ineligible
+     by S68.6b's list, weakly held, holding a child with an ownership mark,
+     or standing in a block that is not a slotted block of the granting
+     mutator's heap. S is the seeds' closure over the recorded runs inside
+     W, and C = W − S; S is closed under successors, so no destructor and no
+     weak upgrade in S reaches C. The closure is complete: a completed mark
+     expands every met entity that is not a leaf once, and an edge out of a
+     member never expanded was never subtracted, so its target is not in W.
+     It is a walk on the collector's thread before the preparation, over the
+     run indices the scan's first pass left in the header rows, marking S by
+     the top bit of a potentially unreachable row's payload (the record's
+     bound, `recorded_edges::MAX_ENTRIES`, halves to leave it). The
+     preparation and the commit then read C alone; a member of C's drops are
+     the counted cells naming anything outside C, S included; the cap counts
+     C. An empty C is the S68.6a path as it stands. **A preparation that
+     fails after the split** — past the cap, a pool refusal, a recall, frees
+     standing — drops it: the S bits are ignored and W goes the S68.6a way
+     whole, with W's edge count.
+  2. *What the owner receives of S.* S is listed in the posted set and C is
+     not (the append reads S's rows alone when a split is carried); the
+     roots in C read their completed deaths, the roots in S `Proposed`.
+     **No set with a weakly-held member is ever marked proved** — not S, not
+     a W whose C is empty, not a W a failed preparation sent back whole: an
+     upgrade after T paired with a cut keeps the sum and frees an entity a
+     global holds (the Critic, round 2, finding 1). S, with no weakly-held
+     member, is marked proved with the edges recorded between two members of
+     S plus C's edges into S, and **C's drops into S are held back** on the
+     record beside the rest, apart: the poll applies C's other drops, reads
+     P, and the commit confirms S by the sum before any drop into S has run,
+     so no member of S can have died or had its slot reused at the reading
+     (the Critic, round 1, finding 1: applied first, a drop can free a member
+     of S and a destructor reuse its slot for an entity held from outside,
+     which the sum alone would confirm). S confirmed and freed, its held
+     drops are discarded with it; S walked instead, or P given back unread
+     on any path, the held drops are applied at the next point where
+     destructors may run — the poll, the pressure path, the exit — and
+     lower S's counts to a release that registers it again. The teardown's
+     refusal splices and applies nothing that runs user code. Every reader
+     of P applies C's other drops first, the explicit fire
+     (`ll_gc_collect_cycles`) under an open gate among them; one that did
+     not would read S live and stamp it. An S no root of the batch lands in
+     is not posted: its held drops are applied at the poll, and it waits to
+     be registered again.
+  3. *The Δ-test.* `WeaklyHeld` no longer refuses the set; a weakly-held
+     member is a seed. `Touched` and `NoCheckpoint` still refuse it whole.
+  4. *The second chance.* A set refused as `Touched` posts its roots whose
+     rows read potentially unreachable `Unwalked`, so the disposition writes
+     them back into R for the next batch; roots read live stay `ReadLive`.
+     The exception is a refused set one of whose potentially unreachable
+     roots' entries carries the second-chance bit — bit 2 of an R entry, set
+     by the disposition on each `Unwalked` entry it writes back and on no
+     other write: that set goes the exact way whole, as today.
+     `ENTRY_MARK_BITS` becomes bits 0 and 2 and the queue's ledger says so,
+     so that no owner's walk hands out an address carrying it, nor a P entry
+     built from one reads it as `VERDICT_DEFER_MARK`. A path that strips the
+     bit — `pass_over_r`'s keep, `defer_entry`, the overflow buffer — gives
+     a root one more chance; all but the overflow follow an owner's trace.
+     The refusal is of the batch's whole W, so a ring untouched since the
+     consent goes back with a touched one, and at its next refusal — by any
+     touched member of the next batch's W — the exact way: under steady
+     touch traffic the second chance saves only batches with no touched
+     member (the Critic, round 2, finding 4).
+  5. *The taint: none in S68.6, measured first* (the plan's proposal, for
+     the Sage). Transitive — a run tainted by a tagged header or a tainted
+     raise, its targets tainted, tainted rows never stamped, a tainted root
+     posted `Unwalked` once — leaves a hot holder's whole state unstamped
+     and walked again every batch, the pruning the stamps buy lost (the
+     Critic, round 1, finding 3). One hop — only the targets a tagged header
+     raises — holds less than it seems: a dropped entity carries the window
+     itself, from its own decrement, so its children are tainted too and a
+     subtree deeper than two levels is still stamped and held for the
+     epoch; and it costs 8 bytes a run in every record (the record holds
+     rows, and a row of a slotted block maps back to no entity), a random
+     header read a live run in a scan built to read the record alone, and
+     the second-chance bit spent on live children of hot holders (round 2).
+     The held garbage the taint targets has not been measured: S68.8 reads
+     it against the default build, the gate's "held garbage no worse".
+     Should it be material, the first variant measured is the near-free
+     one — the stamps' walk, which loads every header it stamps, passes
+     over a row whose own byte 7 carries the window — and one hop is judged
+     against that.
+  6. *Counted.* Members put in S by reason (ineligible, weakly held,
+     ownership mark, foreign block, reached), sets split, sets whose split
+     a failed preparation dropped, S's held drops discarded and applied,
+     sets re-queued and sets taken the exact way on a second refusal; in
+     `frees_counts()` (`NOT_FREED` resized), the
+     Δ-test's counts and the rig's columns; a journal kind for a split and
+     one for a re-queue.
+  7. *Tests.* A ring with one destructor-bearing member and a garbage tail
+     hanging off a clean ring: the collector frees C, the owner frees S;
+     the Critic's round-1 finding 1 as a case — a destructor in S that
+     would free a member of S and reuse its slot, were the drop into S
+     applied before the reading — run under the release profile too, where
+     no debug assertion stands between it and a free; a weakly-held member
+     splits the set rather than refusing it, and S then goes unmarked; a
+     preparation failing past the cap after a split sends W the S68.6a way
+     whole, unmarked where a member is weakly held; an S that C holds is
+     confirmed by the sum with C's edges and freed, its held drops
+     discarded; a walked S gets its held drops at the next poll; the
+     explicit fire applies the frees before it reads P; a touched set is re-queued once,
+     its live roots read live, and taken the exact way at its second
+     refusal.
 
 ## 6. The owner's poll
 

@@ -2612,6 +2612,10 @@ unsafe fn trace_the_batch(
         && unsafe { crate::cycle::delta_test::test_the_set_by_its_tags(mutator, arena) }
             == crate::cycle::delta_test::TagReading::Garbage
     {
+        #[cfg(debug_assertions)]
+        unsafe {
+            crate::cycle::collector_frees::check_every_count_is_internal(arena)
+        };
         match unsafe { crate::cycle::collector_frees::prepare(mutator, arena) } {
             Ok(mut frees) => {
                 unsafe { crate::cycle::collector_frees::commit(arena, &mut frees) };

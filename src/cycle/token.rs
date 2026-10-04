@@ -1210,3 +1210,8 @@ mod tests;
 // exists too. How to run it, and what it demonstrated, are in the file.
 #[cfg(loom)]
 mod free_path_model;
+
+// The loom model of the handshake at the checkpoint, the same way: under
+// `--cfg loom` and the feature alone, run by hand as its file says.
+#[cfg(all(loom, feature = "recycler-over-counts"))]
+mod checkpoint_model;

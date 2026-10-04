@@ -477,23 +477,20 @@ pub(crate) unsafe fn prepare(
         return Err(note_not_freed(NotFreed::AllocationFailed));
     }
 
-    #[cfg(debug_assertions)]
-    unsafe {
-        check_every_count_is_internal(&*arena_ptr)
-    };
     let _ = drops;
     Ok(frees)
 }
 
-/// The exact check a debug build runs beside the Δ-test, read-only on the
-/// collector's thread before anything is written: every member's count is the
-/// number of counted cells of members naming it, so nothing outside W refers
-/// into it.
+/// The exact check a debug build runs beside every verdict the Δ-test proves,
+/// read-only on the collector's thread before anything is written: every
+/// member's count is the number of counted cells of members naming it, so
+/// nothing outside W refers into it. A primitive that changed a count or a
+/// slot and left no tag fails here, on the first set it touches.
 ///
 /// # Safety
 /// As [`prepare`].
 #[cfg(debug_assertions)]
-unsafe fn check_every_count_is_internal(arena: &TraceScratchArena) {
+pub(crate) unsafe fn check_every_count_is_internal(arena: &TraceScratchArena) {
     let mut internal = std::collections::HashMap::<usize, u32>::new();
     let _ = unsafe {
         for_each_member(arena, |step| {

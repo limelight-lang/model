@@ -213,11 +213,19 @@ pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
     // A standing arming is spent where the fire can happen: the collection
     // reads R whole and disposes of P whole, which is everything either
     // arming asks for; a fire the gate refuses keeps it for the next poll.
-    if crate::cycle::collect::may_collect() {
-        let _ = take_arming();
+    if !crate::cycle::collect::may_collect() {
+        return unsafe { crate::cycle::collect::collect_off_the_poll() };
     }
 
-    unsafe { crate::cycle::collect::collect_off_the_poll() }
+    let _ = take_arming();
+    // What a collector freed on this thread's behalf, applied before the
+    // collection reads P, as the poll applies it
+    // (`crate::cycle::collector_frees`).
+    #[cfg(feature = "recycler-over-counts")]
+    let freed_by_the_collector = unsafe { crate::cycle::collector_frees::apply_this_threads() };
+    #[cfg(not(feature = "recycler-over-counts"))]
+    let freed_by_the_collector = 0;
+    freed_by_the_collector + unsafe { crate::cycle::collect::collect_off_the_poll() }
 }
 
 /// Fixture hook for the `benches/` driver, compiled under `bench-loads`

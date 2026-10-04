@@ -842,16 +842,19 @@ report under that case, or one under any other, is a finding.
 
 Loom explores the executions the C11 model permits, which is how an
 ordering defect is exhibited on a box whose hardware reorders nothing.
-Three models exist, four cases each — `src/array/version_bracket_model.rs`
-for the array table's version bracket, `src/journal/ring_model.rs` for
-the journal ring's, which is the same bracket read the other way round,
-and `src/cycle/token/free_path_model.rs` for the free path's reading of
-the trace token against a collector's take, the store-buffering pair:
+Four models exist — `src/array/version_bracket_model.rs` for the array
+table's version bracket, `src/journal/ring_model.rs` for the journal
+ring's, which is the same bracket read the other way round,
+`src/cycle/token/free_path_model.rs` for the free path's reading of the
+trace token against a collector's take, the store-buffering pair, and,
+under `recycler-over-counts`, `src/cycle/token/checkpoint_model.rs` for the
+handshake at the checkpoint, the window tag and its stale clear:
 
 ```
 RUSTFLAGS="--cfg loom" cargo test --lib version_bracket
 RUSTFLAGS="--cfg loom" cargo test --lib ring_bracket
 RUSTFLAGS="--cfg loom" cargo test --lib free_path
+RUSTFLAGS="--cfg loom" cargo test --lib --features recycler-over-counts checkpoint_model
 ```
 
 It is outside the commit gate, and the dependency is gated the same way
@@ -864,7 +867,11 @@ raw pointers or reaches thread-locals cannot run under it — a model is a
 hand-written **copy of the protocol**, and it drifts from the code
 silently unless someone keeps the two in step. And loom's own README
 records gaps in its model, load buffering among them, so a green run is
-weak evidence while a red one exhibits an execution. Write the model so
+weak evidence while a red one exhibits an execution. Loom 0.7 also lets a
+compare-and-swap read past a plain store to the same location, an outcome
+the C11 model forbids (2026-10-04: a swap read 6 and left 0 after a store
+of 7); a model whose RMW races a store writes the store as a swap, which
+stands for the same position in the modification order. Write the model so
 that the defective configurations stay pinned as `should_panic` tests:
 that is the half of the run that proves something.
 

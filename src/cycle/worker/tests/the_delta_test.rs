@@ -96,6 +96,35 @@ fn an_untouched_garbage_ring_is_proved_by_its_tags() {
     reset_lanes();
 }
 
+/// The explicit fire applies what a collector freed before it reads P, as the
+/// poll does, and counts it.
+#[test]
+fn the_explicit_fire_applies_the_collectors_frees() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let _ = unsafe { a_garbage_ring(&mut arena) };
+    let freed_before = crate::cycle::collector_frees::frees_counts();
+
+    let counts = served_and_counted();
+    assert_eq!((counts.proved, counts.touched), (1, 0));
+    assert_eq!(
+        crate::cycle::collector_frees::frees_counts().members - freed_before.members,
+        2
+    );
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_collect_cycles() },
+        2,
+        "the fire applied the frees"
+    );
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        0,
+        "nothing stood after it"
+    );
+    reset_lanes();
+}
+
 /// A proved ring the collector does not free itself — a member with a
 /// destructor — reaches the owner marked: the owner meets its members with no
 /// trace of their cells, confirms the set by the counts' sum against the edges
