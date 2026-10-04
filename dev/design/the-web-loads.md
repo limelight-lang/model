@@ -62,6 +62,8 @@ is in the GC heap.
 | random draws | seeded per mutator and repeat, the same sequence in every arm | the paired comparison below |
 | during waits and between requests | the mutator sleeps and makes no poll | the first finding above |
 | polls inside CPU phases | every 50 µs of the synthetic CPU | [A] |
+| polls inside a request's build | after every `BIRTHS_AN_ADVANCE` births (`POLL_STRIDE`, 4,072), as a compiled build loop polls on its back-edge | the Sage, 2026-10-05 |
+| the draw of the next plan | inside a blocking stretch: the harness's bookkeeping, already subtracted from the window, touches no runtime entity | the Sage, 2026-10-05 |
 | cache lookups per request | 20, keys drawn Zipf (s = 1) over 4 N keys | [A]; sets the registered population with N |
 
 The synthetic CPU is a counted loop of a calibrated number of instructions

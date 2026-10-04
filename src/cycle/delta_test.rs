@@ -79,6 +79,9 @@ pub(crate) enum TagReading {
 pub(crate) struct TagTest {
     pub(crate) reading: TagReading,
     pub(crate) weakly_held: bool,
+    /// Whether a member's address could not be recovered to read its tag:
+    /// a refusal no write proves.
+    pub(crate) unreadable: bool,
 }
 
 /// Sets read untouched, read touched in some member, holding a weakly-held
@@ -155,12 +158,14 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
         return TagTest {
             reading: TagReading::NoCheckpoint,
             weakly_held: false,
+            unreadable: false,
         };
     }
 
     let window = token.window();
     let mut touched = false;
     let mut weakly_held = false;
+    let mut unreadable = false;
     let mut array = arena.touched_head();
     while !array.is_null() {
         let (block, population) = unsafe { ((*array).block, (*array).population) };
@@ -171,6 +176,7 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
                     // A member whose tag cannot be read is not one the test
                     // may pass over.
                     touched = true;
+                    unreadable = true;
                     crate::cycle::split::mark(row);
                     return std::ops::ControlFlow::Continue(());
                 };
@@ -205,6 +211,7 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
     TagTest {
         reading,
         weakly_held,
+        unreadable,
     }
 }
 

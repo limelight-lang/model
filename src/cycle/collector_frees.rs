@@ -51,10 +51,14 @@ use crate::memory::block_pool::{BLOCK_MASK, BLOCK_PAYLOAD, BlockHeader, LINE_SIZ
 use crate::memory::gc_metadata;
 use crate::refcount::{EntityKind, MemoryCategory, RcHeader};
 
-/// The largest W the collector frees itself, the act the recall waits for
-/// being bounded by it: a W past it goes the owner's way. A first setting,
-/// which S68.8's runs read.
-pub(crate) const MEMBER_CAP: usize = 65_536;
+/// The largest C the collector frees itself: the bound of a take's wait,
+/// since a take under pressure, the exit and the explicit fire wait out the
+/// whole commit, and so does a second mutator's take while one collector
+/// commits another's set. A C past it goes the owner's way. Not a soundness
+/// bound. At 1M a commit read 8.7–12.0 ms on `web-heap` and no take waited
+/// on one; at 64k a set past the cap paused its owner 144–167 ms
+/// (`dev/DECISIONS.md`, 2026-10-05).
+pub(crate) const MEMBER_CAP: usize = 1 << 20;
 
 /// The cap in force: [`MEMBER_CAP`], or what a measurement set.
 static CAP: AtomicUsize = AtomicUsize::new(MEMBER_CAP);

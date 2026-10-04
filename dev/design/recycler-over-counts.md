@@ -284,7 +284,11 @@ notifications, the teardown and the close are the rest. So the steps:
      The exception is a refused set one of whose potentially unreachable
      roots' entries carries the second-chance bit — bit 2 of an R entry, set
      by the disposition on each `Unwalked` entry it writes back and on no
-     other write: that set goes the exact way whole, as today.
+     other write: that set goes the exact way whole, as today. *Amended by
+     the Sage, 2026-10-05 (§5d):* at a second refusal U leaves W as at the
+     first and its roots carrying the bit read `ReadLive`, S staying proved;
+     only a set one of whose members' addresses could not be read keeps U
+     in W and goes unmarked (`kind::UNREADABLE`).
      `ENTRY_MARK_BITS` becomes bits 0 and 2 and the queue's ledger says so,
      so that no owner's walk hands out an address carrying it, nor a P entry
      built from one reads it as `VERDICT_DEFER_MARK`. A path that strips the

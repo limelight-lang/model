@@ -80,6 +80,12 @@ pub(super) const MOST_OBJECTS: usize = 400_000;
 /// stride, so that a poll between two advances always finds R within it.
 pub(super) const REGISTRATIONS_AN_ADVANCE: usize = POLL_STRIDE / 2;
 
+/// The births one step of a request's build makes before the rig polls
+/// (`Request::advance_at_most`): a compiled build loop polls on its
+/// back-edge, and `POLL_STRIDE` is the runtime's own stride for a loop it
+/// cannot see inside (`ll_release_vector`). It bounds births, not time.
+pub(super) const BIRTHS_AN_ADVANCE: usize = POLL_STRIDE;
+
 /// The cache lookups of a request [A].
 pub(super) const LOOKUPS: usize = 20;
 
@@ -923,10 +929,32 @@ impl Request {
     /// # Safety
     /// As [`Request::start`], on the same `build`.
     pub(super) unsafe fn advance(&mut self, build: &mut RequestBuild, to: f64) -> Advanced {
+        unsafe { self.advance_at_most(build, to, usize::MAX) }.0
+    }
+
+    /// [`Request::advance`] stopped after `births` births: what it did, and
+    /// whether the bound stopped it before `to` — the caller polls and calls
+    /// again with the same `to`, and the events come in the order one
+    /// unbounded advance makes them.
+    ///
+    /// # Safety
+    /// As [`Request::advance`].
+    pub(super) unsafe fn advance_at_most(
+        &mut self,
+        build: &mut RequestBuild,
+        to: f64,
+        births: usize,
+    ) -> (Advanced, bool) {
         let mut advanced = Advanced::default();
-        let mut events = 0;
+        let (mut events, mut born) = (0, 0);
         while let Some(event) = self.next_event(to) {
-            if !matches!(event, Event::Birth) {
+            if matches!(event, Event::Birth) {
+                if born == births {
+                    return (advanced, true);
+                }
+
+                born += 1;
+            } else {
                 if events == REGISTRATIONS_AN_ADVANCE {
                     break;
                 }
@@ -961,7 +989,7 @@ impl Request {
             }
         }
 
-        advanced
+        (advanced, false)
     }
 
     /// The next event placed before `to`, the earliest of the next birth,
@@ -1020,6 +1048,11 @@ impl Request {
 
         self.objects.push(born);
         size_index
+    }
+
+    /// The objects born so far.
+    pub(super) fn born(&self) -> usize {
+        self.objects.len()
     }
 
     /// Whether every birth, registration and lookup is done.
@@ -2332,6 +2365,46 @@ fn an_advance_registers_at_most_half_the_stride() {
     let second = unsafe { request.advance(&mut build, 1.0) };
     assert_eq!(second.registered, planned - REGISTRATIONS_AN_ADVANCE);
     assert!(request.is_complete());
+    let _ = unsafe { request.end() };
+    unsafe { crate::gc::ll_gc_collect_cycles() };
+    fixture.let_go();
+}
+
+/// A bounded advance stops at its births and the next goes on from there:
+/// the steps together build the whole plan, and only a step the bound
+/// stopped says so.
+#[test]
+fn a_bounded_advance_stops_at_its_births_and_goes_on() {
+    let _g = test_guard();
+    let mut fixture = Fixture::with_core("BoundedAdvance", 10);
+    let plan = fixture.plan(5, 3_000);
+    let (births, bytes, registrations) =
+        (plan.objects.len(), plan.bytes(), plan.registrations.len());
+    let mut build = fixture.build();
+    let (mut request, started) = unsafe { Request::start(&mut build, plan) };
+    let mut built = started;
+    let mut cuts = 0;
+    while !request.is_complete() {
+        let before = request.born();
+        let (advanced, cut) = unsafe { request.advance_at_most(&mut build, 1.0, 500) };
+        let born = request.born() - before;
+        assert!(born <= 500, "a step of {born}");
+        if cut {
+            assert_eq!(born, 500, "the bound stopped it");
+            cuts += 1;
+        }
+
+        built.add(advanced);
+    }
+
+    assert_eq!(request.born(), births);
+    assert_eq!(cuts, (births - CONTEXT - 1) / 500, "{births} births");
+    assert_eq!(built.born, bytes);
+    assert_eq!(
+        built.registered,
+        registrations + 1,
+        "and the start's context root"
+    );
     let _ = unsafe { request.end() };
     unsafe { crate::gc::ll_gc_collect_cycles() };
     fixture.let_go();

@@ -217,10 +217,12 @@ fn a_member_touched_in_the_window_sends_what_it_reaches_back_once() {
     reset_lanes();
 }
 
-/// A root whose closure a touch refused once, touched again, is refused no
-/// second time: its closure joins S, unmarked, and goes the owner's exact way.
+/// A root whose closure a touch refused once, touched again, is read live:
+/// a garbage set is written in at most one window, the one it died in. Its
+/// closure reaches no owner's collection, and its roots wait in a lane until
+/// a batch proves the ring untouched.
 #[test]
-fn a_closure_touched_twice_goes_the_exact_way() {
+fn a_closure_touched_twice_is_read_live() {
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
@@ -231,24 +233,25 @@ fn a_closure_touched_twice_goes_the_exact_way() {
 
     touch_between_the_phases(a);
     let second = crate::cycle::split::split_counts()[2];
-    let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
+    let deferred = crate::cycle::queue::deferred_count();
     let counts = served_and_counted();
     assert_eq!(counts.touched, 1);
     assert_eq!(
         crate::cycle::split::split_counts()[2] - second,
         1,
-        "the second refusal kept the closure in W"
+        "the second refusal read its roots live"
     );
-    assert_eq!(
-        unsafe { ll_gc_maybe_collect() },
-        2,
-        "the exact validation freed it"
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0, "no owner's collection");
+    assert!(
+        crate::cycle::queue::deferred_count() > deferred,
+        "its roots deferred"
     );
-    assert_eq!(
-        crate::cycle::trace::take_sets_proved_by_tags_validated(),
-        0,
-        "unmarked"
-    );
+
+    unsafe { &*crate::cycle::mutator_record::this_thread_record() }.note_an_x_turn();
+    assert!(crate::cycle::queue::reoffer_deferred_if_epoch_moved());
+    let counts = served_and_counted();
+    assert_eq!((counts.proved, counts.touched), (1, 0));
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2, "freed once untouched");
     reset_lanes();
 }
 
@@ -650,11 +653,11 @@ fn a_touch_refuses_its_closure_and_the_rest_is_freed() {
     reset_lanes();
 }
 
-/// At a second refusal the touched closure stays in W as a seed of S, which
-/// goes the owner's exact way unmarked, while the collector frees C beside
-/// it; the owner applies C's drop into S before it reads P.
+/// At a second refusal the touched closure is read live while the collector
+/// frees the clean ring beside it, the second batch as the first; no owner's
+/// collection runs.
 #[test]
-fn a_second_refusal_beside_a_clean_ring_frees_both() {
+fn a_second_refusal_beside_a_clean_ring_reads_the_ring_live() {
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
@@ -667,13 +670,19 @@ fn a_second_refusal_beside_a_clean_ring_frees_both() {
 
     touch_between_the_phases(a1);
     let second = crate::cycle::split::split_counts()[2];
+    let collections = crate::cycle::split::split_counts()[4];
     let counts = served_and_counted();
     assert_eq!(counts.touched, 1);
     assert_eq!(crate::cycle::split::split_counts()[2] - second, 1);
     assert_eq!(
+        crate::cycle::split::split_counts()[4],
+        collections,
+        "no member unreadable, so U left W"
+    );
+    assert_eq!(
         unsafe { ll_gc_maybe_collect() },
-        2,
-        "the refused ring, the exact way"
+        0,
+        "the refused ring read live"
     );
     reset_lanes();
 }

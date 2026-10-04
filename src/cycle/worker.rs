@@ -2432,6 +2432,19 @@ impl FinishThePosts<'_> {
         self.roots[index] & HAS_A_VERDICT != 0
     }
 
+    /// Whether the root at `index` came back to R after a refusal already
+    /// (`crate::cycle::queue::SECOND_CHANCE_MARK`); false in a build without
+    /// the split.
+    fn second_chance_spent(&self, index: usize) -> bool {
+        #[cfg(feature = "recycler-over-counts")]
+        return self.roots[index] & crate::cycle::queue::SECOND_CHANCE_MARK != 0;
+        #[cfg(not(feature = "recycler-over-counts"))]
+        {
+            let _ = index;
+            false
+        }
+    }
+
     /// Whether a root without a verdict stands in the split's marked rows and
     /// came back to R after a refusal already: its second chance spent
     /// (`crate::cycle::queue::SECOND_CHANCE_MARK`).
@@ -2639,7 +2652,8 @@ unsafe fn trace_the_batch(
 
     for index in 0..posts.roots.len() {
         if !posts.has_a_verdict(index) {
-            let verdict = unsafe { verdict_for(posts.root(index)) };
+            let verdict =
+                unsafe { verdict_for(posts.root(index), posts.second_chance_spent(index)) };
             posts.post(index, verdict);
         }
     }
@@ -3051,8 +3065,11 @@ unsafe fn split_and_free(
         TagReading::Garbage => false,
     };
 
-    // U: refused and sent back to R once, or, a root of it having spent its
-    // second chance, kept in W as a seed of S, which then goes unmarked.
+    // U: refused, its roots sent back to R once and read live at a second
+    // refusal — a garbage set is refused by a write at most once, in the
+    // window it died in, so a set refused again has a second write. Where a
+    // member's address could not be read no write proves the refusal, and a
+    // second one keeps U in W as a seed of S, which then goes unmarked.
     let mut s_proved = !test.weakly_held;
     // U kept in W: the proof does not cover it, and the debug build's exact
     // check, which asserts every count of W internal, has no premise.
@@ -3064,16 +3081,21 @@ unsafe fn split_and_free(
             split::note(split::Counted::Dropped);
             return (Posting::Unmarked, kind::UNMARKED_WHOLE);
         }
-        if unsafe { posts.a_marked_root_spent_its_second_chance() } {
+        let second = unsafe { posts.a_marked_root_spent_its_second_chance() };
+        if second && test.unreadable {
             s_proved = false;
             #[cfg(debug_assertions)]
             {
                 u_kept = true;
             }
-            split::note(split::Counted::SecondRefusal);
+            split::note(split::Counted::Unreadable);
         } else {
             unsafe { split::refuse_the_marked(arena) };
-            split::note(split::Counted::Requeued);
+            split::note(if second {
+                split::Counted::SecondRefusal
+            } else {
+                split::Counted::Requeued
+            });
         }
     }
 
@@ -3098,7 +3120,7 @@ unsafe fn split_and_free(
     let s_kind = if s_proved {
         kind::PROVED_S
     } else if touched {
-        kind::SECOND_REFUSAL
+        kind::UNREADABLE
     } else {
         kind::WEAKLY_HELD
     };
@@ -3182,12 +3204,15 @@ unsafe fn a_root_reads_unreachable(posts: &FinishThePosts<'_>) -> bool {
 /// potentially unreachable being [`Verdict::Proposed`] and live being
 /// [`Verdict::ReadLive`]. A root with no met row is read live too: the trace
 /// could not place it, which the trace's own rule reads as an external live
-/// reference.
+/// reference. A root of a refused U is [`Verdict::Unwalked`], or read live
+/// where `second_chance_spent`.
 ///
 /// # Safety
 /// The trace over `root`'s closure completed on this thread and its rows still
 /// stand.
-unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
+unsafe fn verdict_for(root: *mut RcHeader, second_chance_spent: bool) -> Verdict {
+    #[cfg(not(feature = "recycler-over-counts"))]
+    let _ = second_chance_spent;
     let key = match unsafe { read_the_root(root) } {
         RootReading::Verdict(verdict) => return verdict,
         RootReading::Tracked(key) => key,
@@ -3196,10 +3221,10 @@ unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
     match unsafe { crate::cycle::arena::find_initialized_row(key) } {
         Some(row) => match shadow::color(unsafe { *row }) {
             Color::PotentiallyUnreachable => Verdict::Proposed,
-            // U, refused by a touch: back to R for the next batch
-            // (`crate::cycle::split`).
+            // U, refused by a touch: back to R for the next batch, or read
+            // live at a second refusal (`crate::cycle::split`).
             #[cfg(feature = "recycler-over-counts")]
-            Color::Unclassified => Verdict::Unwalked,
+            Color::Unclassified if !second_chance_spent => Verdict::Unwalked,
             _ => Verdict::ReadLive,
         },
         None => Verdict::ReadLive,

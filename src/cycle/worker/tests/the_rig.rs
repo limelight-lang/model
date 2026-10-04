@@ -133,9 +133,9 @@
 //! cycle::worker::tests::the_rig::a_cell_of_the_rig --test-threads=1 --nocapture`.
 
 use super::the_web_loads::{
-    Advanced, Arrivals, CORE_OBJECTS, CacheCounts, Garbage, LongLived, LongLivedShape, Plan,
-    Request, RequestBuild, Streams, VALUE_OBJECTS, Variant, WebClasses, held_by_size,
-    specified_interarrival,
+    Advanced, Arrivals, BIRTHS_AN_ADVANCE, CORE_OBJECTS, CacheCounts, Garbage, LongLived,
+    LongLivedShape, Plan, Request, RequestBuild, Streams, VALUE_OBJECTS, Variant, WebClasses,
+    held_by_size, specified_interarrival,
 };
 use super::what_a_take_costs::{MEMBER_CLASS_BYTES, member_class};
 use super::*;
@@ -1600,10 +1600,11 @@ impl WebLoop {
     }
 
     /// Draw one request and run it: started, advanced at [`REQUEST_STEPS`]
-    /// even steps of its timeline with a poll after each and on to its end,
-    /// ended, and a poll.
+    /// even steps of its timeline and on to its end, a poll after every
+    /// [`BIRTHS_AN_ADVANCE`] births and at each step, ended, and a poll.
     fn run_a_request(&mut self) {
-        let plan = Plan::draw(&mut self.streams, self.long_lived.targets());
+        let plan =
+            in_a_blocking_stretch(|| Plan::draw(&mut self.streams, self.long_lived.targets()));
         let variant = plan.variant;
         let garbage = &mut self.garbage;
         let mut build = RequestBuild {
@@ -1615,12 +1616,21 @@ impl WebLoop {
         account(garbage, advanced);
         for step in 1..=REQUEST_STEPS {
             let to = step as f64 / REQUEST_STEPS as f64;
-            account(garbage, unsafe { request.advance(&mut build, to) });
-            self.freed_by_polls += poll_and_read(garbage);
+            loop {
+                let (advanced, cut) =
+                    unsafe { request.advance_at_most(&mut build, to, BIRTHS_AN_ADVANCE) };
+                account(garbage, advanced);
+                self.freed_by_polls += poll_and_read(garbage);
+                if !cut {
+                    break;
+                }
+            }
         }
 
         while !request.is_complete() {
-            account(garbage, unsafe { request.advance(&mut build, 1.0) });
+            let (advanced, _) =
+                unsafe { request.advance_at_most(&mut build, 1.0, BIRTHS_AN_ADVANCE) };
+            account(garbage, advanced);
             self.freed_by_polls += poll_and_read(garbage);
         }
 
@@ -1778,26 +1788,31 @@ impl WebLoop {
 
     /// The next request's plan, its draw's instructions counted where
     /// `counted`: the rig's work and not the runtime's, subtracted from the
-    /// window's.
+    /// window's. The draw runs in a blocking stretch, entered and left
+    /// outside the count: it touches no entity of the runtime's heap, and a
+    /// program has no such stretch to miss a checkpoint in.
     fn draw_a_plan(
         &mut self,
         counters: &ThreadCounters,
         figures: &mut ArrivalFigures,
         counted: bool,
     ) -> Plan {
-        let (before, drawn_from) = (counters.instructions(), Instant::now());
-        let plan = Plan::draw(&mut self.streams, self.long_lived.targets());
-        if counted {
-            figures.plan_instructions += counters.instructions() - before;
-            figures.plan_wall += drawn_from.elapsed();
-        }
-        plan
+        in_a_blocking_stretch(|| {
+            let (before, drawn_from) = (counters.instructions(), Instant::now());
+            let plan = Plan::draw(&mut self.streams, self.long_lived.targets());
+            if counted {
+                figures.plan_instructions += counters.instructions() - before;
+                figures.plan_wall += drawn_from.elapsed();
+            }
+            plan
+        })
     }
 
     /// Serve one request of `plan`: its three phases of drawn CPU split at
     /// its waits' places, each run in slices of [`SLICE`] of the drawn CPU —
-    /// the timeline advanced to the slice's end, a poll, and the timed spin
-    /// to the slice's deadline — and each wait slept without a poll. The
+    /// the timeline advanced to the slice's end, a poll after every
+    /// [`BIRTHS_AN_ADVANCE`] births and at the end, and the timed spin to the
+    /// slice's deadline — and each wait slept without a poll. The
     /// build's work is inside the drawn CPU; a poll's wall moves the
     /// deadline, so that the runtime's pauses add to the request's wall. Answers whether the
     /// build and the polls outran the drawn CPU.
@@ -1821,10 +1836,18 @@ impl WebLoop {
             let (low, high) = (bounds[phase], bounds[phase + 1]);
             let spun = run_a_phase(cpu.mul_f64(high - low), |share| {
                 let to = low + (high - low) * share;
-                account(garbage, unsafe { request.advance(&mut build, to) });
-                let polled = Instant::now();
-                self.freed_by_polls += poll_and_read(garbage);
-                polled.elapsed()
+                let mut polls = Duration::ZERO;
+                loop {
+                    let (advanced, cut) =
+                        unsafe { request.advance_at_most(&mut build, to, BIRTHS_AN_ADVANCE) };
+                    account(garbage, advanced);
+                    let polled = Instant::now();
+                    self.freed_by_polls += poll_and_read(garbage);
+                    polls += polled.elapsed();
+                    if !cut {
+                        break polls;
+                    }
+                }
             });
             overran |= phase == 2 && spun.overran;
             figures.spin_turns += spun.turns;
@@ -1835,7 +1858,9 @@ impl WebLoop {
         }
 
         while !request.is_complete() {
-            account(garbage, unsafe { request.advance(&mut build, 1.0) });
+            let (advanced, _) =
+                unsafe { request.advance_at_most(&mut build, 1.0, BIRTHS_AN_ADVANCE) };
+            account(garbage, advanced);
             self.freed_by_polls += poll_and_read(garbage);
         }
 
@@ -2241,13 +2266,22 @@ impl Cell {
 /// its checkpoint at once. Under `LL_RIG_NO_BLOCKING` it is not, the first
 /// reading's behaviour; without `recycler-over-counts` the blocking stretch is a no-op.
 fn sleep_without_poll(wait: Duration) {
+    in_a_blocking_stretch(|| std::thread::sleep(wait));
+}
+
+/// Run `work`, which writes no count, slot or tag of the runtime's heap,
+/// inside a blocking stretch, unless `LL_RIG_NO_BLOCKING` is set or the
+/// gate is closed.
+fn in_a_blocking_stretch<R>(work: impl FnOnce() -> R) -> R {
     static NO_BLOCKING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let blocking = !*NO_BLOCKING.get_or_init(|| std::env::var_os("LL_RIG_NO_BLOCKING").is_some())
         && crate::cycle::token::enter_blocking_on_this_thread();
-    std::thread::sleep(wait);
+    let done = work();
     if blocking {
         crate::cycle::token::leave_blocking_on_this_thread();
     }
+
+    done
 }
 
 /// Turns the timed spin makes between two readings of its deadline.
@@ -2366,6 +2400,17 @@ fn an_arrival_waits_behind_the_services_before_it() {
 /// slice, the same; with a poll
 /// of 100 µs a slice, at least the CPU and the polls' walls together; and
 /// work of twice a slice outruns its deadline.
+/// The rig's own work — the draw of a plan, a wait — stands in a blocking
+/// stretch, left when the work returns.
+#[cfg(all(feature = "recycler-over-counts", debug_assertions))]
+#[test]
+fn the_rigs_own_work_stands_in_a_blocking_stretch() {
+    let _g = test_guard();
+    let inside = in_a_blocking_stretch(crate::cycle::token::this_thread_is_blocking);
+    assert!(inside, "entered");
+    assert!(!crate::cycle::token::this_thread_is_blocking(), "and left");
+}
+
 #[test]
 fn a_phase_spins_its_cpu_and_its_polls_add_to_it() {
     let cpu = Duration::from_millis(2);
@@ -3232,7 +3277,7 @@ impl CellReading {
             ),
             // By the kind of set read (`crate::cycle::posted_set::kind`):
             // not tested, proved S, proved whole, no checkpoint, past the
-            // cap, touched, second refusal, weakly held, cut, unmarked whole,
+            // cap, touched, unreadable, weakly held, cut, unmarked whole,
             // mark lost, none.
             (
                 "verdict_collection_longest_by_kind_us",
@@ -3793,6 +3838,7 @@ impl CellReading {
             ("split_requeued", split_counts()[1].to_string()),
             ("split_second_refusals", split_counts()[2].to_string()),
             ("split_dropped", split_counts()[3].to_string()),
+            ("split_unreadable", split_counts()[4].to_string()),
         ]
     }
 
@@ -4578,13 +4624,13 @@ fn frees_counts() -> [u128; 12] {
 }
 
 /// [`crate::cycle::split::split_counts`], zeros without the feature.
-fn split_counts() -> [usize; 4] {
+fn split_counts() -> [usize; 5] {
     #[cfg(feature = "recycler-over-counts")]
     {
         crate::cycle::split::split_counts()
     }
     #[cfg(not(feature = "recycler-over-counts"))]
-    [0; 4]
+    [0; 5]
 }
 
 /// One cell's line, prefixed `rig,` for the driver, after the header's

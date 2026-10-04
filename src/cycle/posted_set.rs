@@ -114,8 +114,9 @@ pub(crate) mod kind {
     pub(crate) const PAST_THE_CAP: u8 = 4;
     /// Touched: W, U out, unmarked.
     pub(crate) const TOUCHED: u8 = 5;
-    /// U kept at a second refusal: S unmarked.
-    pub(crate) const SECOND_REFUSAL: u8 = 6;
+    /// U kept at a second refusal of a set with a member whose address
+    /// could not be read: S unmarked.
+    pub(crate) const UNREADABLE: u8 = 6;
     /// A weakly-held member: unmarked.
     pub(crate) const WEAKLY_HELD: u8 = 7;
     /// The batch's trace or scan cut short: its set posted at the stop.
