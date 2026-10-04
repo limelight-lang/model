@@ -180,7 +180,12 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       polling every `POLL_STRIDE` births; (b) the member cap 1M by default;
       (c) a second refusal reads live; (d) the application in slices; each
       with its Critic; then five 96 s cells of A and B and a take-on-commit
-      cell.
+      cell. Built (a)–(d) and read (2026-10-05, `dev/BENCHMARKS.md`): the
+      collector frees 99.8 % of the cyclic garbage, the owner's longest
+      pause 10–34 ms, every one a no-checkpoint set while the host held the
+      mutator's vCPU; the Δ-test's wait at 20 ms leaves the owner no
+      collection. Open: the take-on-commit cell; the posted set held unread
+      through a stretch entered over standing frees (222–279 a cell).
 - [ ] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9): the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the
