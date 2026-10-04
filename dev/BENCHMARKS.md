@@ -8,12 +8,92 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-04 — readings the S65 and S67 stage notes held, carried at the stages' close
+
+Each was recorded only in the stage's notes file, which the close deletes;
+the figures are as the notes gave them, each under the date it was read.
+
+**A background mode before the close stopped reading R** (S65.17's first run,
+2026-09-25, three modes at three, four and five mutators, ten seconds a cell,
+twice). At cap 1 the polls freed 14–41 % of the garbage built while the loops
+ran; at cap 0 all of it, at 2.6–8.0 times the operations. Each collection over
+P compacted R whole: 260 thousand records a collection against an R of up to
+405 thousand on `garbage-25` at three mutators, 13 ms a collection.
+
+**`partly-overlapping`'s remnant** (S65.16's smoke run, 2026-09-25): 600 to
+720 members unfreed after eight further collections and a re-offer of the
+lane; none with the epoch advanced every 1 or 20 ms.
+
+**A mutator asleep to its requests** (S67.2, 2026-09-29, 64 rings): polling,
+619 requests consented, 0.80 ms mean, 5.4 ms longest, 47 unanswered; without
+polls, 363 consented, 9.5 ms mean, 15.4 ms longest, 375 unanswered; at 256
+rings 771, 0.86 ms, 6.1 ms and 76 against 439, 8.5 ms, 14.7 ms and 457; at
+the load's own 16 rings an iteration no collector is born (a box at a load
+average of 11 to 14).
+
+**The heap's held-bytes counter** (S67.3): +437, +720 and +1,480
+instructions an iteration over 168–173 thousand, inside a 2.8 % spread.
+
+**The web loads' cache** (S67.4, the LRU's simulation): a hit rate of 85 % at
+40k values and 86 % at 150k, 31.6 % and 31.5 % of evictions silent; the steady
+state, N keys held and then N evictions more, after 171k and 427k draws at
+40k and 712k and 1.77M at 150k; a
+walk of the state about 426k objects over about 1,000 blocks at 40k and 1.53M
+over about 3,600 at 150k.
+
+**Why the first web cells freed nothing** (S67.5 and S67.8, 2026-09-29 and
+2026-09-30): on `web-heap` 2,209 parts all met B and 13,932 roots all read
+live, then 1.60M registrations against 18,304 roots batched, 17,420 verdicts
+all live and 5,998 parts met B; on `web-arena-40k` 413 of 521 batches ended
+inside a part with 593 recalls, 68,055 roots unwalked and 227 proposed, then
+all 512 loop batches recalled inside their first part, 4,654 registrations
+against 436,794 decrements over a candidate.
+
+**The protocol's instruments** (S67.7, 2026-09-30): the spin costs 227.2
+instructions a call and 4.0960 a turn; it is 45–49 % of the mutators'
+instructions on the arena loads and 11–13 % on `web-heap`; the first pilots'
+interarrivals 29.68, 29.46 and 108.6 ms, all void; `web-heap` ran at the
+ceiling, 6.3 of 9.7 GB; `instructions_a_request` read 48.3M and 27.5M on one
+binary, and the A/A p99.9 657 ms.
+
+**The block mark's recall** (S67.9, 2026-09-30): on `web-arena` every loop
+grant is recalled by M_b = 16 blocks, 589–598 crossings a cell, at a median
+of about 140,000 positions against the 8.5–87 million a finished trace reads;
+finishing would withhold an estimated 47–620 MiB.
+
+**Runs R0 to R4** (S67.9, 2026-09-30): R0, 65.8 and 41.0 batches a second, R
+read at 2.90 and 3.13 times the registration rate; R1, one complete walk a
+load, `web-heap-150k`'s 1.53M rows in 167 blocks (10.4 MiB) in 202 ms, the scan
+reading as many positions as the mark to 0.01 %; R2, the first regions against
+the mark of the day, the withheld stack 50 blocks on the mean and 755 and 796
+at the most, the owner's collections over P 90.8 s in a 30 s window, p99.9
+6.98 s; R3, 130,560 stamps costing 1.7–2.5 ms at a take and 5.1 ms inside
+`ll_free`; R4, an epoch's first batch reading 33.6M positions against 0.27M for
+the rest, 19.1M freed.
+
+**The steps of the proof-epoch build** (S67.9, 2026-10-01 to 2026-10-03): the
+zero closure 7 s to 0.15–0.18 s (step (e)); on `web-heap` 24.47M freed against
+9.22M and p99.9 302–436 against 738 ms (step (f)); the epoch by proofs at a
+p99.9 of 75–84 ms; the ratio's rule on `web-heap`, p99.9 117–134 against
+185–201 ms and garbage 363–396 against 678–719 MB; 1,671 posted sets a window,
+218.5k members at the most; at the stop level of two marks, 27,074 withheld
+returns at 7.1 ms and up to 369 blocks.
+
+**The owner's pause before S67.12** (2026-10-03): 142.7 ms over a set of 358k
+members; the 157.4 ms pause split into the trace 53.2, the first reading 27.2,
+the second with the teardown 47.5 and the close about 25 ms.
+
+**The page discards at the arena's reset** (2026-10-03): the resident set at
+the drain's end 1,063–1,084 MB against 1,102–1,196 MB without, inside the
+spread; minor faults up.
+
 ## 2026-10-03 — S67.12: the owner's longest pause over a posted set falls from 117–173 to 67–103 ms on `web-heap`, its collections' time by a third and the mutator's CPU by a seventh
 
 **The change.** A set whose met rows all read zero after the owner's drain
 skips the scan, reserves its teardown by the drain's count of cells left out,
 and is confirmed by its members' counts summing to the drain's internal edges
-rather than by the exact validation's walk (`dev/plans/S67.md`, S67.12).
+rather than by the exact validation's walk (`dev/plans/S67.md` at `410b856`,
+S67.12).
 
 **The run.** `1023761` (before) against `7bfc978` (after, the three steps
 and the Critic's counters), test binaries of the rig in release, both at
@@ -230,8 +310,8 @@ operation is the rig's (no PMU, so no instructions). Medians of three:
   and 11,371 of them), and the blocks withheld at a release reach 129–582,
   8–36 times the mark of 16. The recall is read; what holds the token past
   it is the collector's work after the stop and the grant behind another
-  mutator's batch (`dev/plans/S67.md`, S67.9, Q2's figures), which no
-  stride shortens.
+  mutator's batch (`dev/plans/S67.md` at `410b856`, S67.9, Q2's figures),
+  which no stride shortens.
 - X: the arena loads turn their epoch by X (S67.6), and every cell of this
   run frees its web garbage inside the drain.
 
@@ -321,7 +401,8 @@ best build fails too, and is silent on a plain build that fails one alone;
 the choice is put to him with these figures.
 
 Scratchpad: the CSV, the requests and the analysis
-(`s676/web.csv`, `s676/web-requests/`, `s676.py`, `s676/aa/`), not kept.
+(`s676/web.csv`, `s676/web-requests/`, `s676.py`, `s676/aa/`), kept since
+in `dev/data/s67.6/`.
 
 ## 2026-09-28 — S65.43: a crossing of the heap's growth releases the lanes about twice a turn and does not bring `live-churn`'s held garbage near D's; not adopted in either scheme
 
@@ -355,14 +436,14 @@ turn's poll crosses again. What it releases does not free the garbage that
 stands: the heap at the stop moves 41.6 → 44.0 MB at the spare core and
 39.6 → 24.0 MB at the shared one, a single sample of a sawtooth in either
 case. The cause is not established. A hypothesis the code's Critic named
-(`dev/plans/S65.md`, S65.43, finding 1): a crossing hands back the roots a
-lane took in its own turn with the older ones, and those are re-read in the
-epoch of their reading, pruned at their stamped cores and counted up to the
-wait of seven. `deferred-then-dead` does not move, as the ruling expected:
-the drain draws no block. Over the loop and the drain together D, bestD and
-bestDR read within 2 % of each other on the churn loads: the waits' 12–17 %
-in the loop is the teardown moved into the drain, as the Critic of the
-design predicted, and the best builds' real saving is on
+(`dev/plans/S65.md` at `410b856`, S65.43, finding 1): a crossing hands back
+the roots a lane took in its own turn with the older ones, and those are
+re-read in the epoch of their reading, pruned at their stamped cores and
+counted up to the wait of seven. `deferred-then-dead` does not move, as the
+ruling expected: the drain draws no block. Over the loop and the drain
+together D, bestD and bestDR read within 2 % of each other on the churn loads:
+the waits' 12–17 % in the loop is the teardown moved into the drain, as the
+Critic of the design predicted, and the best builds' real saving is on
 `deferred-live-large` alone (24,196 → 15,844 with the drain). This run's D
 holds 2.5–5.5 MB on `live-churn` where S65.42's held 10.0 MB, which says the
 heap at the stop is too noisy a single figure to gate one run on.
@@ -475,8 +556,8 @@ and HGS1b on `registered-ring-interleaved` paced 15 ms, 15:07–15:16. The
 other session paused; load average 0.93 at the start, 1.2–1.4 at the phases'
 ends. Verdicts by `dev/tools/two_arms_table.py` (S65.28's rule), each arm
 against the build without its feature. An earlier run of 2026-09-28 09:12 was
-stopped after 28 cells for the Critic's round 2 (`dev/plans/S65.md`, S65.36)
-and is not read.
+stopped after 28 cells for the Critic's round 2 (`dev/plans/S65.md` at
+`410b856`, S65.36) and is not read.
 
 | arm | against | verdict spare / shared | what it was built for, medians |
 | --- | --- | --- | --- |
@@ -592,11 +673,11 @@ tie on `live-churn`, +1.9 % and +3.1 % on `live-churn-dies-by-count`; against D:
 
 **The run, on `04ed821`.** Arms built fresh from that tree and told apart by
 their test lists: D the default, H `collector-chain`, HG `hold-by-generation`
-(`dev/plans/S65.md`, S65.32, the rule as Edmond ruled it). Interleaved and
-rotated, three repeats, both placements, paced 1 ms, 10 s and a 12 s drain, on
-the three loads the schemes differ on — `live-churn`,
-`live-churn-dies-by-count`, `deferred-live-large` — and, in a CSV of its own and
-not deciding, `live-churn` at `LL_RIG_CHURN_WINDOW=256`. `garbage-25`,
+(`dev/plans/S65.md` at `410b856`, S65.32, the rule as Edmond ruled it).
+Interleaved and rotated, three repeats, both placements, paced 1 ms, 10 s and
+a 12 s drain, on the three loads the schemes differ on — `live-churn`,
+`live-churn-dies-by-count`, `deferred-live-large` — and, in a CSV of its own
+and not deciding, `live-churn` at `LL_RIG_CHURN_WINDOW=256`. `garbage-25`,
 `registered-ring-live` and `deferred-then-dead` were left out: the rule of
 S65.28 cannot take HG over D (H ties D on those two and HG cannot beat H's
 instructions), and a second critic of the loads found those three decide no
@@ -637,12 +718,13 @@ window 256 66,636 / 60,474 / 17,280 (D / H / HG).
 ## 2026-09-27 — S65.31 deferral by generation against D: D stays, the arm winning no deciding load and losing 4 of 6 shared and 5 of 6 spare; writing young live roots back into R doubles the collector's re-reads and slows the garbage it was built to free sooner
 
 **The run the protocol of S65.28 decides, on `0224fa4`.** Baseline D, the
-default build; candidate `--features deferral-by-generation` (`dev/plans/S65.md`,
-S65.31). Box, placements and driver as the entry below; `ARMS_DIR=target/arms31
-ARMS="dispose generation"`, three repeats; a seventh cell, `live-churn` with
-`LL_RIG_CHURN_WINDOW=256`, rings living a quarter as long. Load average
-1.3–3.7 at the phases' ends. A run on `01bf7d6` was stopped and discarded: its
-generation counters took a mutex a root in the timed arm alone.
+default build; candidate `--features deferral-by-generation`
+(`dev/plans/S65.md` at `410b856`, S65.31). Box, placements and driver as the
+entry below; `ARMS_DIR=target/arms31 ARMS="dispose generation"`, three
+repeats; a seventh cell, `live-churn` with `LL_RIG_CHURN_WINDOW=256`, rings
+living a quarter as long. Load average 1.3–3.7 at the phases' ends. A run on
+`01bf7d6` was stopped and discarded: its generation counters took a mutex a
+root in the timed arm alone.
 
 | load | placement | instructions D / G | verdict | heap MB D / G | last free ms D / G | long D / G | collector s D / G |
 | --- | --- | --- | --- | --- | --- | --- | --- |

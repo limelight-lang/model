@@ -872,7 +872,7 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
 /// [`read_and_act_on_this_thread`] past the three states that ask for no act:
 /// a request's consent and `POSTED`'s arming, out of the line of every free
 /// the reading sits on, whose body would otherwise keep two more registers
-/// (`dev/plans/S65.md`, S65.30, the free's price).
+/// (`dev/BENCHMARKS.md`, "S65.30: the free against S65.7's").
 #[cold]
 #[inline(never)]
 fn act_on_the_byte(token: &TraceToken, mut seen: u8) -> Reading {

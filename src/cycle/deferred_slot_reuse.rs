@@ -820,8 +820,8 @@ impl Drop for ActiveTrace {
 /// any other kind would land it in the block's own header.
 ///
 /// Out of the free's line: inlined, its three arms keep two more registers
-/// in every free's body than the call costs (`dev/plans/S65.md`, S65.30, the
-/// free's price).
+/// in every free's body than the call costs (`dev/BENCHMARKS.md`, "S65.30: the
+/// free against S65.7's").
 #[inline(never)]
 pub(crate) unsafe fn withhold_under_a_trace_or_make_returns(ptr: *mut u8, kind: u32) -> bool {
     let control = DEFERRED_RETURNS.with(Cell::get);
@@ -1060,7 +1060,8 @@ unsafe fn withhold_under_a_foreign_trace(ptr: *mut u8, kind: u32) {
 /// same drain once the holder lets go. Counted, so that a producer freeing
 /// into this thread's blocks recalls the grant as the owner's own frees
 /// would, instead of growing the owner's heap by a block each time a class
-/// fills (`dev/plans/S65.md`, S65.29).
+/// fills (`dev/DECISIONS.md`, "a cross-thread free under a foreign holder
+/// counts toward the deaths' mark").
 ///
 /// The remote stack and this one link through the same word
 /// ([`withheld_link`]), so the walk only re-stores each link as the release
@@ -1519,8 +1520,7 @@ impl ForeignStack {
         let held = before + weight;
         self.held.set(held);
         // Both crossings under one test, which below the first mark is the
-        // two compares one crossing took (`dev/plans/S65.md`, S65.30, the
-        // free's price).
+        // two compares one crossing took (`dev/BENCHMARKS.md`, "S65.30: the free against S65.7's").
         if before >= STOP_MARKS * mark || held < mark {
             return;
         }
@@ -1588,23 +1588,26 @@ pub(crate) fn withheld_recall() -> u8 {
 
 /// The second mark of each stack, as a multiple of its first: past it the
 /// collector stops where it stands rather than winding down
-/// (`dev/plans/S67.md`, S67.9, revision 3, G7). One constant, as G7 rules,
-/// set at 2 until the switch cell's figures put it to Edmond (Q2): a steady
-/// freer then withholds up to twice its mark at a release.
+/// (`dev/DECISIONS.md`, "a grant is bounded by the mutator's situation, not by
+/// a count of work"). One constant, set at 2 until the switch cell's figures
+/// put it to Edmond: a steady freer then withholds up to twice its mark at a
+/// release.
 pub(crate) const STOP_MARKS: usize = 2;
 
 /// M: the deaths withheld under a foreign holder at which the mutator recalls
-/// its token. 8,192 deaths of 64 bytes are 512 KiB; the figure is the
-/// package's starting point and unmeasured, S65.17 measures it.
+/// its token. 8,192 deaths of 64 bytes are 512 KiB; the figure is the package's
+/// starting point and unmeasured as a mark; what it lets a grant withhold is
+/// read in `dev/BENCHMARKS.md`, "S65.17: cap 1, cap 4 and cap 0 on the default
+/// build".
 pub(crate) const DEATHS_MARK: usize = 8_192;
 
 /// M_b: the blocks withheld under a foreign holder, a run and a large
 /// entity counted by the blocks they span, at which the mutator recalls its
-/// token. 16 blocks are 1 MiB; unmeasured, S65.17 measures it.
+/// token. 16 blocks are 1 MiB; unmeasured as a mark, read as [`DEATHS_MARK`] is.
 pub(crate) const BLOCKS_MARK: usize = 16;
 
 /// M_c: the buffer chunks withheld under a foreign holder at which the
-/// mutator recalls its token. Unmeasured, S65.17 measures it.
+/// mutator recalls its token. Unmeasured as a mark, read as [`DEATHS_MARK`] is.
 pub(crate) const CHUNKS_MARK: usize = 256;
 
 thread_local! {

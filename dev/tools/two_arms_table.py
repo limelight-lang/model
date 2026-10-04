@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Two arms of `dev/tools/arms.sh`'s CSV read by the decision rule `PLAN.md`
-S65.28 fixed before its run: per load and placement, the mutators'
-instructions an iteration, a win or a loss past max(3 %, twice the baseline's
+"""Two arms of `dev/tools/arms.sh`'s CSV read by the decision rule fixed before
+the run of `dev/BENCHMARKS.md`, "S65.28 D against H on the repaired build": per
+load and placement, the mutators' instructions an iteration, a win or a loss past max(3 %, twice the baseline's
 spread); the gates on medians — heap garbage at the stop at most 1.10 x the
 baseline's + 64 KiB, the last free at most the baseline's + 4 s, completion in
 every repeat the baseline completes, iterations over 200 us at most 1.25 x the

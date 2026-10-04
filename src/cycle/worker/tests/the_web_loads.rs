@@ -1,9 +1,9 @@
 //! The web loads' request (`dev/design/the-web-loads.md`, "`web-heap`, a
 //! request"): the draws that shape one request, the request built
 //! object by object along its drawn timeline, its end, and the garbage it
-//! leaves, in bytes by size. The rig's loop (S67.5) and the arrivals, the
-//! spin and the waits' durations (S67.7) drive what is here; the cases below
-//! read each figure once on an input whose answer is known.
+//! leaves, in bytes by size. The rig's loop and the arrivals, the spin and the
+//! waits' durations drive what is here; the cases below read each figure once
+//! on an input whose answer is known.
 //!
 //! **The shape.** A context cycle of [`CONTEXT`] objects holds the request's
 //! external reference. Under it a payload tree, each object hung in a free
@@ -42,7 +42,8 @@
 //! lookups' values and [`ARENA_CORE_EDGES`] edges into the core — are stores
 //! into arena slots that the store barrier logs, released at the reset, and
 //! 30 % of its requests write an object into the session, which escapes and
-//! is promoted into a block the reset retains (`dev/plans/S67.md`, S67.5).
+//! is promoted into a block the reset retains (`dev/design/the-web-loads.md`,
+//! "`web-arena`, a request").
 
 use super::*;
 use crate::class::{Class, ClassBuilder};
@@ -116,7 +117,7 @@ pub(super) const SESSION_WRITE_PERCENT: f64 = 30.0;
 /// The share of sessions holding a write at the steady state: a session
 /// lives a geometric count of touches, one in a hundred replacing it, and a
 /// touch writes at [`SESSION_WRITE_PERCENT`], so the share holding none is
-/// E[0.7^k] = 0.007 / 0.307 (`dev/plans/S67.md`, S67.5, item 5).
+/// E[0.7^k] = 0.007 / 0.307.
 pub(super) const SESSION_WRITE_STEADY_SHARE: f64 = 1.0 - 0.007 / 0.307;
 
 /// The slot of a session's head a write takes: slot 0 chains the cycle and
@@ -151,7 +152,7 @@ fn draw_a_duration(draws: &mut Draws, median: Duration) -> Duration {
 /// The specification's mean interarrival, E[CPU] + E[waits] over
 /// [`BUSY_SHARE`], a lognormal's mean being its median times e^(σ²/2):
 /// 27.48 ms. The protocol replaces it by a pilot's where a request's build
-/// is not free (`dev/plans/S67.md`, S67.7, ruled 2026-09-30).
+/// is not free (`dev/design/the-web-loads.md`, "Common to both").
 pub(super) fn specified_interarrival() -> Duration {
     let mean_of =
         |median: Duration| median.as_secs_f64() * (TIMING_SIGMA * TIMING_SIGMA / 2.0).exp();
@@ -1803,7 +1804,8 @@ unsafe fn build_the_core(
 
 /// An LRU of `values` entries run on keys drawn from `keys` until it holds
 /// `values` keys and then until it has evicted as many, its steady state by
-/// the simulation of `dev/plans/S67.md`, S67.4's Critic, finding 2.
+/// an independent simulation (`dev/BENCHMARKS.md`, "readings the S65 and S67
+/// stage notes held, carried at the stages' close", the web loads' cache).
 fn run_to_the_steady_state(values: usize, keys: &Zipf, setup: &mut Draws) -> KeyedLru {
     let mut lru = KeyedLru::new(values, values * KEYS_A_VALUE);
     let mut evictions = 0;
@@ -2723,10 +2725,10 @@ fn the_setup_builds_and_registers_the_steady_state() {
 }
 
 /// The cache's LRU reaches the steady state of an independent simulation of
-/// the same Zipf and LRU (`dev/plans/S67.md`, S67.4's Critic, finding 2): at
-/// N = 40k, a hit rate of 84.5 %, 31.6 % of evictions silent and 17,966
-/// resident values hit since their insertion, over 70,000 lookups after the
-/// setup's run.
+/// the same Zipf and LRU (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage
+/// notes held, carried at the stages' close", the web loads' cache): at N =
+/// 40k, a hit rate of 84.5 %, 31.6 % of evictions silent and 17,966 resident
+/// values hit since their insertion, over 70,000 lookups after the setup's run.
 #[test]
 fn the_cache_reaches_the_simulated_steady_state() {
     let values = 40_000;
@@ -2976,9 +2978,9 @@ fn the_timing_and_the_arrivals_hold_their_distributions() {
     );
 }
 
-/// `web-heap`'s plans at a fixed seed fold to the digests pinned here, those
-/// of the plans S67.4's code drew, so that the arena variant's draws, on the
-/// same streams, move none of `web-heap`'s.
+/// `web-heap`'s plans at a fixed seed fold to the digests pinned here, those of
+/// the plans the loads' first build drew, so that the arena variant's draws, on
+/// the same streams, move none of `web-heap`'s.
 #[test]
 fn a_heap_plan_folds_to_its_pinned_digest() {
     let targets = Targets::new(&LongLivedShape::specified(40_000), Variant::Heap);

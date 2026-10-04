@@ -9,8 +9,8 @@
 # Env: ARMS_DIR (binaries named by arm, default target/arms), ARMS ("A B C"),
 #      MUTATORS (2,4), SPARE (6), SHARED (4): CPUs for the two placements;
 #      LOADS, the deciding phase's loads as load:pace, default all six.
-# The web phase is S67's protocol (`dev/plans/S67.md`, S67.7): six mutators on
-# CPUs 2-12, one a core (WEB_MUTATORS); CAPS ("1 4"), cap 1's collector on 14
+# The web phase is the web loads' protocol (`dev/design/the-web-loads.md`):
+# six mutators on CPUs 2-12, one a core (WEB_MUTATORS); CAPS ("1 4"), cap 1's collector on 14
 # and cap 4's on 14, 0, 15 and 1 (WEB_COLLECTORS_CAP1, WEB_COLLECTORS_CAP4);
 # WEB_LOADS as load:interarrival_ms, the interarrival each load's pilot of best
 # D found; 116 s with a 20 s warm-up and a 12 s drain;

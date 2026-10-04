@@ -227,7 +227,8 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
 
     // A set the trace found garbage whole had its external children read off
     // the drain; with no destructor run since, no member's cell changed, and
-    // the walk would read the same count (`dev/plans/S67.md`, S67.12).
+    // the walk would read the same count (`dev/DECISIONS.md`, "rulings the S65
+    // and S67 stage notes held, carried at the stages' close").
     let read = arena.take_external_children_read();
     let external_children = match read {
         Some(read) if component.no_destructor_ran() => {

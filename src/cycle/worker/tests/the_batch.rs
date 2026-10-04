@@ -494,7 +494,7 @@ fn an_unwind_inside_the_trace_posts_every_root_unwalked_and_advances_once() {
 /// A batch sweeps its rows under the claim and gives the arena's blocks back
 /// after the release, so that their page discards are off the mutator's wait;
 /// an unwind gives them back ahead of the release, as its rows go
-/// (`dev/plans/S67.md`, S67.13).
+/// (`dev/BENCHMARKS.md`, "S67.13: the grants behind a stop released at it").
 #[test]
 fn a_batch_gives_its_blocks_back_after_the_release_and_an_unwind_before_it() {
     let _g = test_guard();
@@ -791,10 +791,11 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
 }
 
 /// K after each kind of batch end, from 16 at a clamp of 16
-/// (`dev/plans/S67.md`, S67.9, revision 3, G5): a trace complete over its
-/// whole clamp doubles it, and so does a stop over its whole clamp after the
-/// mark's first regions; either short of its clamp leaves it; a stop inside
-/// the first regions halves it, down to one root.
+/// (`dev/DECISIONS.md`, "rulings the S65 and S67 stage notes held, carried at
+/// the stages' close"): a trace complete over its whole clamp doubles it, and
+/// so does a stop over its whole clamp after the mark's first regions; either
+/// short of its clamp leaves it; a stop inside the first regions halves it,
+/// down to one root.
 #[test]
 fn k_doubles_on_a_full_trace_and_a_late_stop_and_halves_on_an_early_one() {
     let _g = test_guard();

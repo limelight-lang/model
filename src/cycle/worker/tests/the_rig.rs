@@ -67,7 +67,9 @@
 //!   `LL_RIG_WAIT_WITHOUT_POLL` is set; unpaced when unset;
 //! - `LL_RIG_WAIT_WITHOUT_POLL` — set to 1, the paced wait is one
 //!   [`sleep_without_poll`] to the next iteration's start
-//!   (`dev/plans/S67.md`, S67.2); the drain polls every millisecond either way;
+//!   (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage notes held, carried
+//!   at the stages' close", a mutator asleep to its requests); the drain polls
+//!   every millisecond either way;
 //! - `LL_RIG_STANDINGS` — set to 1, the tokens' byte states are timed
 //!   (`worker::testing::record_standings`), whose table's lock the handshake
 //!   then takes on both sides; the standing figures read zero when unset;
@@ -87,15 +89,17 @@
 //!   milliseconds in place of its parts and posts its roots read live
 //!   (`worker::testing::stub_the_trace`), so that with
 //!   `LL_RIG_TRACED_BATCHES` the batches a second a mutator read the rounds'
-//!   cadence alone (`dev/plans/S67.md`, S67.9, run R0); the real trace when
-//!   unset;
+//!   cadence alone (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage notes
+//!   held, carried at the stages' close", run R0); the real trace when unset;
 //! - `LL_RIG_BATCH_ROOTS` — every batch at the threshold after the setup
-//!   takes this many roots, K fixed rather than grown (`dev/plans/S67.md`,
-//!   S67.9, run R2); the mutators' own K when unset;
+//!   takes this many roots, K fixed rather than grown (`dev/BENCHMARKS.md`,
+//!   "readings the S65 and S67 stage notes held, carried at the stages' close",
+//!   run R2); the mutators' own K when unset;
 //! - `LL_RIG_FIRST_REGIONS` — set to 1, every collector's mark subtracts an
 //!   edge into a registered candidate past its root and expands it no further
 //!   (`mark::stop_at_candidates`), each part the walk of its root's first
-//!   region (`dev/plans/S67.md`, S67.9, run R2).
+//!   region (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage notes held,
+//!   carried at the stages' close", run R2).
 //! - `LL_RIG_EPOCH_MS` — X, the epoch's longest stand, in milliseconds, in
 //!   place of the crate's 8 s (`ll_gc_set_epoch_interval`; the Critic of
 //!   2026-09-30 on the ceiling, finding 6);
@@ -104,17 +108,16 @@
 //!   blocks (`arena::keep_every_page`);
 //! - `LL_RIG_SPENT_PER_PROOF` — the ratio of the epoch's turn in place of
 //!   `epoch::SPENT_PER_PROOF`, set through `ll_gc_set_epoch_ratio`
-//!   (`dev/plans/S67.md`, S67.15);
+//!   (`dev/BENCHMARKS.md`, "S67.15: the epoch's ratio at 2, 4 and 8");
 //! - `LL_RIG_HOLD_NOTHING` — set to 1, every mark expands its registered
 //!   targets as it meets them, the plain depth-first descent the held stack
 //!   reorders, as the control of `collector_passes`, `collector_held` and
-//!   `collector_widest_pass` (`mark::hold_nothing`; `dev/plans/S67.md`, S67.9,
-//!   J3);
+//!   `collector_widest_pass` (`mark::hold_nothing`);
 //! - `LL_RIG_BATCH_DUMP` — a path: every batch of the loop is written there,
 //!   one CSV line each, with the mutator's epoch clock at its end, and every
 //!   batch of the drain to the same path with `.drain` appended.
 //!
-//! **The web loads** (`dev/plans/S67.md`, S67.5) run [`a_web_mutator`] in
+//! **The web loads** (`dev/design/the-web-loads.md`) run [`a_web_mutator`] in
 //! place of the ring loop: an iteration is one request of
 //! `the_web_loads`, its latency the request's wall, and the line's columns
 //! from `web_values` on are theirs (`WebCell`), zero for a ring load.
@@ -308,12 +311,13 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
     }
 }
 
-/// The loads of the S64 analysis's list, then those of `dev/BENCHMARKS.md`,
-/// "S65.21 the front run against leaving the deaths in R" and "S65.24 A, B
-/// and C on the rig", then the web loads of `dev/design/the-web-loads.md`, "The
-/// protocol (S67.1, before any run)", its deciding cells. Change a name or
-/// add a ring load, and change `LOADS` in `dev/tools/rig.sh` with it; the
-/// web loads are not in its sweep.
+/// The loads of `docs/history/s64-gc-improvement-analysis-2026-09-27.md`'s
+/// list, then those of `dev/BENCHMARKS.md`, "S65.21 the front run against
+/// leaving the deaths in R" and "S65.24 A, B and C on the rig", then the web
+/// loads of `dev/design/the-web-loads.md`, "The protocol (fixed before any run,
+/// 2026-09-28)", its deciding cells. Change a name or add a ring load, and
+/// change `LOADS` in `dev/tools/rig.sh` with it; the web loads are not in its
+/// sweep.
 const LOADS: [Load; 23] = [
     // Garbage at 0, 25, 50, 75 and 100 % of the roots, rounded to whole
     // rings of 63.
@@ -583,9 +587,11 @@ const LOADS: [Load; 23] = [
         live: Graph::NONE,
     },
     // `web-heap` at the larger cache, whose scan the specification names
-    // (`dev/plans/S67.md`, S67.5's Critic, finding 5), and `web-arena` at
-    // both; `web-heap` at the smaller one for the footprint of a complete
-    // walk (S67.9, run R1).
+    // (`dev/design/the-web-loads.md`, "The protocol (fixed before any run,
+    // 2026-09-28)", its deciding cells), and `web-arena` at both; `web-heap` at
+    // the smaller one for the footprint of a complete walk
+    // (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage notes held, carried
+    // at the stages' close", run R1).
     web("web-heap", Variant::Heap, 150_000),
     web("web-heap-40k", Variant::Heap, 40_000),
     web("web-arena-40k", Variant::Arena, 40_000),
@@ -1177,7 +1183,7 @@ struct MutatorReading {
     /// The thread's user-mode instructions over the loop and the drain
     /// together: a build that frees in the loop what another leaves to the
     /// drain is charged for the same teardown in both
-    /// (`dev/plans/S65.md`, S65.43).
+    /// (`dev/BENCHMARKS.md`, "S65.43: a crossing of the heap's growth releases the lanes").
     instructions_with_the_drain: u64,
     /// Garbage built and not yet freed at the loop's end.
     backlog_at_the_stop: usize,
@@ -1191,7 +1197,8 @@ struct MutatorReading {
     /// How long the requests this thread answered and the `POSTED` releases
     /// and `ASKED` asks it consumed stood, for those answered and consumed
     /// inside the loop; a request standing at the loop's end counts nowhere
-    /// (`dev/plans/S67.md`, S67.2).
+    /// (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage notes held,
+    /// carried at the stages' close", a mutator asleep to its requests).
     standings: testing::MutatorStandings,
     /// How long after the loop's end the drain's polls took to free every
     /// garbage member built and bring the withheld deaths to zero, or the
@@ -1386,7 +1393,7 @@ fn a_mutator(
 
 /// The steps a paced web request's timeline is advanced in, a poll after
 /// each [A]; a cell with `LL_RIG_ARRIVALS` spins the drawn CPU instead, in
-/// slices of [`SLICE`] (`dev/plans/S67.md`, S67.7).
+/// slices of [`SLICE`].
 const REQUEST_STEPS: usize = 128;
 
 /// The synthetic CPU between two polls of a request's phase
@@ -1394,18 +1401,17 @@ const REQUEST_STEPS: usize = 128;
 const SLICE: Duration = Duration::from_micros(50);
 
 /// The garbage a web mutator may hold before its loop ends early: 1.5 GiB
-/// [A], six mutators' with their long-lived state inside the box's memory
-/// (`dev/plans/S67.md`, S67.3's Critic, finding 7).
+/// [A], six mutators' with their long-lived state inside the box's memory.
 const WEB_GARBAGE_CEILING: usize = 3 << 29;
 
 /// The requests whose draws the checksum folds, with the setup's: fewer
 /// than any arm completes in a cell, so that two paired arms print the same
-/// sum (`dev/plans/S67.md`, S67.5's Critic, finding 4).
+/// sum.
 const CHECKSUM_REQUESTS: usize = 500;
 
 /// The most passes of the teardown, a turnover by hand and a collection
 /// each: one pass does not always free the whole state, and the smoke cells
-/// took one to three (`dev/plans/S67.md`, S67.5).
+/// took one to three.
 const TEARDOWN_PASSES: usize = 20;
 
 /// What one web mutator read beside its [`MutatorReading`]. The figures
@@ -1474,7 +1480,7 @@ struct RequestRecord {
 }
 
 /// What a web mutator's arrivals' loop read over its window, the arrivals
-/// in `[warm-up, LL_RIG_SECONDS)` (`dev/plans/S67.md`, S67.7).
+/// in `[warm-up, LL_RIG_SECONDS)`.
 #[derive(Clone, Default)]
 struct ArrivalFigures {
     /// Each request's wall from its arrival and from its service's start.
@@ -1677,7 +1683,7 @@ impl WebLoop {
     /// window is the arrivals from the warm-up to `run_for`, the same set in
     /// every arm; its figures and the thread's instructions run from the
     /// first one's service to the last one's end, the backlog at `run_for`
-    /// served after it (`dev/plans/S67.md`, S67.7's Critic, finding 2).
+    /// served after it.
     fn run_the_arrivals(
         &mut self,
         from: Instant,
@@ -1772,7 +1778,7 @@ impl WebLoop {
 
     /// The next request's plan, its draw's instructions counted where
     /// `counted`: the rig's work and not the runtime's, subtracted from the
-    /// window's (`dev/plans/S67.md`, S67.7's Critic, finding 9).
+    /// window's.
     fn draw_a_plan(
         &mut self,
         counters: &ThreadCounters,
@@ -1793,8 +1799,7 @@ impl WebLoop {
     /// the timeline advanced to the slice's end, a poll, and the timed spin
     /// to the slice's deadline — and each wait slept without a poll. The
     /// build's work is inside the drawn CPU; a poll's wall moves the
-    /// deadline, so that the runtime's pauses add to the request's wall
-    /// (`dev/plans/S67.md`, S67.7's Critic, finding 4). Answers whether the
+    /// deadline, so that the runtime's pauses add to the request's wall. Answers whether the
     /// build and the polls outran the drawn CPU.
     fn serve(&mut self, plan: Plan, figures: &mut ArrivalFigures) -> bool {
         let variant = plan.variant;
@@ -1902,8 +1907,8 @@ impl WebLoop {
     /// stamped and freed only after a turnover, and its roots read live
     /// stand in the deferred lane, so each pass turns the thread's epoch by
     /// hand, re-offers the lane and collects, until the heap holds the
-    /// setup's baseline again or [`TEARDOWN_PASSES`] ran (`dev/plans/S67.md`,
-    /// S67.5, item 10). Answers the reading with what the teardown left.
+    /// setup's baseline again or [`TEARDOWN_PASSES`] ran. Answers the reading
+    /// with what the teardown left.
     fn tear_down(self, reading: &mut MutatorReading) -> WebReading {
         let mut web_reading = self.reading;
         let _ = unsafe { self.long_lived.let_go() };
@@ -1945,8 +1950,7 @@ struct PhaseSpun {
 /// to there and a poll, answering the poll's wall — and the timed spin to the
 /// slice's deadline. The deadlines run from the phase's start by the slices'
 /// CPU, and each poll's wall pushes them back, so the work is inside the
-/// drawn CPU and the polls add to it (`dev/plans/S67.md`, S67.7's Critic,
-/// finding 4).
+/// drawn CPU and the polls add to it.
 fn run_a_phase(cpu: Duration, mut step: impl FnMut(f64) -> Duration) -> PhaseSpun {
     let slices = cpu.as_nanos().div_ceil(SLICE.as_nanos()).max(1) as u32;
     let mut spun = PhaseSpun {
@@ -2227,7 +2231,7 @@ impl Cell {
 /// blocked in `accept` or on a database read makes none: its byte is not
 /// read, so a request stands and a `POSTED` release waits until the thread
 /// polls or frees again, and the returns it withholds under a foreign trace
-/// stay withheld through the sleep. The web loads' wait (S67.5) is its second
+/// stay withheld through the sleep. The web loads' wait is its second
 /// caller.
 fn sleep_without_poll(wait: Duration) {
     std::thread::sleep(wait);
@@ -2238,7 +2242,7 @@ const SPIN_CHUNK: u64 = 1_000;
 
 /// Spin until `deadline`, in chunks of [`SPIN_CHUNK`] turns of a
 /// `black_box` addition with the clock read before each: the synthetic CPU
-/// of a web request's phase (`dev/plans/S67.md`, S67.7, item 3). Answers the
+/// of a web request's phase. Answers the
 /// turns spun, zero where the deadline had passed. Not inlined, so that each
 /// call costs what [`SpinCost`] fitted.
 #[inline(never)]
@@ -2257,8 +2261,7 @@ fn spin_until(deadline: Instant) -> u64 {
 
 /// What [`spin_until`] costs in user-mode instructions: `per_call` for a call
 /// and `per_turn` for a turn, the clock's reading between chunks inside the
-/// latter. Fitted on the calling thread from two runs and checked on a third
-/// (`dev/plans/S67.md`, S67.7's Critic, finding 3).
+/// latter. Fitted on the calling thread from two runs and checked on a third.
 #[derive(Clone, Copy, Default)]
 struct SpinCost {
     per_call: f64,
@@ -2642,8 +2645,7 @@ struct CellReading {
 
 /// What the driver reads at an edge of the window: the collector threads'
 /// instructions so far, the box's busy time and the process's own from
-/// `/proc`, the members commits reclaimed and the turnovers by cause
-/// (`dev/plans/S67.md`, S67.7, items 5, 7 and 8).
+/// `/proc`, the members commits reclaimed and the turnovers by cause.
 #[derive(Clone, Copy)]
 struct WindowEdge {
     at: Instant,
@@ -2695,8 +2697,7 @@ impl WindowEdge {
     /// The other processes' CPU in the guest between `earlier` and this
     /// edge, in cores: the box's busy jiffies less the process's own, at 100
     /// a second, over the wall. Under WSL2 the host's load is charged to the
-    /// guest's tasks and not read here (`dev/plans/S67.md`, S67.7's Critic,
-    /// finding 5).
+    /// guest's tasks and not read here.
     fn other_cores_since(&self, earlier: &WindowEdge) -> f64 {
         const JIFFIES_A_SECOND: f64 = 100.0;
         let other = (self.box_busy - earlier.box_busy) as f64 - (self.own - earlier.own) as f64;
@@ -2780,7 +2781,7 @@ macro_rules! journal_column {
     };
 }
 
-/// The journal's columns of the rig's line (S67.8 in `dev/plans/S67.md`), in
+/// The journal's columns of the rig's line, in
 /// the kinds' order: what the collector and the mutators' dispositions did,
 /// counted where a cell's records outrun a ring.
 const JOURNAL_COLUMNS: &[JournalColumn] = &[
@@ -3539,7 +3540,7 @@ impl CellReading {
     /// cell: the requests and their latencies from arrival and from service,
     /// the queue, the busy share, the backlog at the stop, the spin's cost and
     /// share, and the mutators' instructions with the spin and the plans'
-    /// draws taken out (`dev/plans/S67.md`, S67.7).
+    /// draws taken out.
     fn arrival_fields(&self) -> Vec<(&'static str, String)> {
         let figures: Vec<&ArrivalFigures> =
             self.web.mutators.iter().map(|web| &web.arrivals).collect();
@@ -4009,7 +4010,7 @@ impl CellReading {
         fields.extend(STAMPING_COLUMNS.into_iter().zip(values));
         // What a stamp the walks wrote saved the marks after it: the edges the
         // collector's marks left unexpanded, over the stamps written in the
-        // same window (`dev/plans/S67.md`, the external review's R5, the Sage).
+        // same window.
         fields.push((
             "web_edges_pruned_per_stamp",
             format!(
@@ -4273,15 +4274,14 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         )
     });
     if load.web.is_some() {
-        // The setups' collections, apart from the loop's
-        // (`dev/plans/S67.md`, S67.5's Critic, finding 3).
+        // The setups' collections, apart from the loop's.
         web.setup = RoundFigures::take();
         let _ = crate::memory::heap::take_frees_from_another_thread();
         testing::read_traced_batches(switch_from_env("LL_RIG_TRACED_BATCHES"));
     }
 
     // The arrivals' window starts after the warm-up, where the driver takes
-    // its counters' first readings (`dev/plans/S67.md`, S67.7, item 4); a
+    // its counters' first readings; a
     // paced cell reads from the start barrier.
     let warm_up = if arrivals {
         seconds_from_env("LL_RIG_WARM_UP_SECONDS")
@@ -4320,8 +4320,7 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
         journal_at_the_stop = Some(crate::journal::counts());
         at_the_stop = Some(WindowEdge::now());
         if arrivals {
-            // The window's collections, apart from the drain's
-            // (`dev/plans/S67.md`, S67.7's Critic, finding 10).
+            // The window's collections, apart from the drain's.
             round_figures = Some(RoundFigures::take());
         }
         web.retained_at_the_stop = crate::memory::retained::retained_block_count();

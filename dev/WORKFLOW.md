@@ -449,25 +449,25 @@ loop's, the trampoline's and the guard's. One further red came on
 2026-09-19, in a run whose name the command's tail did not keep, and seven
 `debug-journal` runs of the same tree after it were green; on 2026-09-22 it
 was 4 in 54 `debug-journal` runs, one of them under the two-core load recipe
-and two in the runs of the standing list's step, whose new cases start twenty mutator threads; on 2026-09-23 it was 1 in 7 over
-S65.2's two gates, 112 against 113 again; on 2026-09-25 it was 1 in 11
-`debug-journal` runs over S65.20's gates, 750 against 751; on 2026-09-28 it
-was 2 in 13 over S65.36's three gates and their re-runs, 752 against 753 and
-754 against 755; on 2026-09-29 it was 1 in 10 `debug-journal` runs over S67.5's three gates and a re-run,
-754 against 755; on 2026-10-01 it was 1 in 6 `debug-journal` runs over S67.9
-step (c)'s gate and its re-runs, the figures not kept; on 2026-10-02 1 in 3 over
-step (d)'s gate, and 1 in 7 over step (f)'s two gates and a re-run, the figures
-not kept; on 2026-10-03 2 in 7 over the leaves' gate and four re-runs, and 1 in 5 over
-the reserve's and the discard's gate and two re-runs. What would close them is
-a reading of a named thread's figures that outlives the thread, a structure
-rather than a patch; Edmond deferred building it on 2026-09-18 ("fix it
-later"), so the watch stands and the flake is re-run past, and until it is
-built a case that starts a runtime thread takes
-`block_pool::test_guard()` whatever it asserts
-(`POSTMORTEM.md`, "a case that starts a thread without the pool's guard is
-the third thread another case's ledger reading cannot survive"; the per-thread
-ledger is `DECISIONS.md`, "the test-facing reading of the GC ledger is per
-thread").
+and two in the runs of the standing list's step, whose new cases start twenty
+mutator threads; on 2026-09-23 it was 1 in 7 over two gates, 112 against 113
+again; on 2026-09-25 it was 1 in 11 `debug-journal` runs over one step's
+gates, 750 against 751; on 2026-09-28 it was 2 in 13 over three gates and
+their re-runs, 752 against 753 and 754 against 755; on 2026-09-29 it was 1 in
+10 `debug-journal` runs over three gates and a re-run, 754 against 755; on
+2026-10-01 it was 1 in 6 `debug-journal` runs over the proof-epoch build's
+step (c) gate and its re-runs, the figures not kept; on 2026-10-02 1 in 3 over
+step (d)'s gate, and 1 in 7 over step (f)'s two gates and a re-run, the
+figures not kept; on 2026-10-03 2 in 7 over the leaves' gate and four re-runs,
+and 1 in 5 over the reserve's and the discard's gate and two re-runs. What
+would close them is a reading of a named thread's figures that outlives the
+thread, a structure rather than a patch; Edmond deferred building it on
+2026-09-18 ("fix it later"), so the watch stands and the flake is re-run past,
+and until it is built a case that starts a runtime thread takes
+`block_pool::test_guard()` whatever it asserts (`POSTMORTEM.md`, "a case that
+starts a thread without the pool's guard is the third thread another case's
+ledger reading cannot survive"; the per-thread ledger is `DECISIONS.md`, "the
+test-facing reading of the GC ledger is per thread").
 
 A case of another class joined the watch on 2026-09-27:
 `worker::tests::the_batch::every_part_draws_under_the_budget_of_its_own`
@@ -477,23 +477,24 @@ on `c27a551` and 0 in 40 runs of `cycle::worker::tests` under the two-core
 load. `worker::serve` answers `Idle` on seven paths — among them a reading of
 the record another thread holds, a cap stored as zero, a recall standing
 before the batch and a refused workspace — and which one fired is not
-established. The case went on 2026-10-01 with the parts it pinned (S67.9 step
-(c)); the class it stood for stays under watch.
+established. The case went on 2026-10-01 with the parts it pinned (the
+proof-epoch build's step (c)); the class it stood for stays under watch.
 
 A timing case joined the watch on 2026-10-01:
 `worker::tests::the_rig::a_phase_spins_its_cpu_and_its_polls_add_to_it`
 asserts that 2 ms of spun CPU runs short of 4 ms of wall, and read past it
-once in three runs at eight threads over S67.9 step (e)'s tree, and once in a
-plain run over step (d)'s gate on 2026-10-02; it calls no collector code, and
-a run alone passed. On 2026-10-03 it read 4.39 ms once in three runs alone and
-twice in full runs at four threads, on S67.10's tree with a Miri run holding
-the box's cores (load average 3.2), and once more at eight threads that
-evening beside two Miri slices, green in five runs alone after.
+once in three runs at eight threads over the proof-epoch build's step (e)
+tree, and once in a plain run over step (d)'s gate on 2026-10-02; it calls no
+collector code, and a run alone passed. On 2026-10-03 it read 4.39 ms once in
+three runs alone and twice in full runs at four threads, on that day's tree
+with a Miri run holding the box's cores (load average 3.2), and once more at
+eight threads that evening beside two Miri slices, green in five runs alone
+after.
 `worker::tests::the_merged_lane::a_merge_under_a_grant_is_taken_at_the_next_round`
 read red once on 2026-10-03 in a full run under `debug-journal` at eight
-threads, beside two Miri slices, on S67.12's tree after the Critic's
-counters; its message was not kept, and three full runs and six of its file
-alone were green after. Unexplained; under watch.
+threads, beside two Miri slices, on the tree of the owner's fast path after
+the Critic's counters; its message was not kept, and three full runs and six
+of its file alone were green after. Unexplained; under watch.
 `the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_disposition`
 read red once the same day in a run where a collector thread panicked beside
 it, and green in every run after.
@@ -501,6 +502,11 @@ it, and green in every run after.
 **Never mute, skip, weaken or delete an existing test to go green.** A
 failing old test is a signal: either the change broke behaviour, or the
 contract genuinely moved. Those cannot be told apart silently — ask.
+
+A case that pins a mechanism the step itself replaces is the one kind
+answered in advance: it is rewritten onto the new mechanism or deleted in that
+step, without a separate ask (`dev/DECISIONS.md`, "rulings the S65 and S67
+stage notes held, carried at the stages' close").
 
 The one sanctioned exception is an environment that physically cannot
 express what the test checks, marked narrowly and still running

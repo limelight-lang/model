@@ -455,8 +455,9 @@ fn an_unwind_inside_the_front_run_leaves_the_rest_for_the_next_close() {
 /// An unwind after the k-th free of the run, past the first, leaves R's front
 /// past the k entries freed and the rest of the run standing for the next
 /// close; and an unwind inside the k-th free finds that entry already out of
-/// R as the first's does (`dev/plans/S65.md`, S65.23, the
-/// debt S65.30 names).
+/// R as the first's does (`dev/DECISIONS.md`, "the close of a collection over P
+/// frees the run of completed deaths at R's front, and no block leaves R while
+/// a collector's reading holds it").
 #[test]
 fn an_unwind_at_a_later_free_of_the_front_run_leaves_the_rest_for_the_next_close() {
     const DEATHS: usize = 5;

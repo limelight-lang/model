@@ -1,7 +1,8 @@
 //! The maturation stamps a collector's completed batch writes itself, under
 //! its grant and before the release (`dev/DECISIONS.md`, "the collector writes
-//! the maturation stamps itself, and the live list goes"; `dev/plans/S67.md`,
-//! S67.9, revision 3's (2′) and (3′)).
+//! the maturation stamps itself, and the live list goes"; `dev/DECISIONS.md`,
+//! "a collector's batch prunes any stamped target it has not met, and stamps
+//! only what its final drain touched first").
 //!
 //! # What is stamped
 //!
@@ -16,9 +17,12 @@
 //! 2026-09-30, round 2). The rule is by block, and it is not exact: a request
 //! entered through a registered member the batch does not hold as a root, its
 //! interior in blocks of its own, is walked in the final drain and stamped,
-//! and so is garbage a batch boundary read live behind such a member; either
-//! waits for the turn (`dev/plans/S67.md`, S67.9, the Critic of the build of
-//! step (f), findings 1 and 3). The stamp is `{e, 1}` in the epoch the batch's arena read, by
+//! and so is garbage a batch boundary read live behind such a member, and the
+//! links of a registered chain past the held passes' cap
+//! (`crate::cycle::mark::HELD_PASSES`); each waits for the turn
+//! (`dev/DECISIONS.md`, "a collector's batch prunes any stamped target it has
+//! not met, and stamps only what its final drain touched first"). The stamp is
+//! `{e, 1}` in the epoch the batch's arena read, by
 //! [`crate::refcount::stamp_as_read_live`]'s rule: at the traversal threshold
 //! of one it prunes what a stamp per strongly connected component would
 //! (`crate::cycle::maturation`), so no component is computed and nothing is
@@ -51,8 +55,9 @@
 //! begins, so a walk that stopped at it would stamp a stride and leave the
 //! state for the next batch to walk whole again, crossing the mark again. What
 //! running on costs is withheld returns up to the second mark, the budget
-//! `crate::cycle::deferred_slot_reuse`'s `STOP_MARKS` grants (`dev/plans/S67.md`,
-//! S67.13, the Critic).
+//! `crate::cycle::deferred_slot_reuse`'s `STOP_MARKS` grants
+//! (`dev/DECISIONS.md`, "rulings the S65 and S67 stage notes held, carried at
+//! the stages' close").
 
 use std::ops::ControlFlow;
 

@@ -44,11 +44,12 @@
 //! A dead request's registered interior, one in-edge each, is expanded before
 //! the state its registered core objects lead into, so a stop inside the
 //! state's walk would find the request's rows at zero — what a trace that keeps
-//! its rows at a stop reads (`dev/plans/S67.md`, S67.9, the Sage of
-//! 2026-09-30, J1). A complete mark leaves every row as a plain depth-first
-//! descent would, since every met entity is expanded once either way and a
-//! subtraction does not depend on when it is made; what the order changes is
-//! what a stop leaves, and the order in which blocks are first touched.
+//! its rows at a stop reads (`dev/DECISIONS.md`, "the collector's walk defers
+//! the batch's registered targets and expands first those whose row reads
+//! zero"). A complete mark leaves every row as a plain depth-first descent
+//! would, since every met entity is expanded once either way and a subtraction
+//! does not depend on when it is made; what the order changes is what a stop
+//! leaves, and the order in which blocks are first touched.
 //!
 //! Residual: a garbage ring entered through a registered member no batch root
 //! is, whose own back edge is met only once that member is expanded, keeps the
@@ -63,9 +64,9 @@
 //! any other, its row standing for the scan, and goes on no worklist and no
 //! held chain: an entry would cost 16 bytes and a pop to expand nothing, and
 //! a wide array of small leaves would draw a worklist of about their own size
-//! (`dev/plans/S67.md`, S67.9, the Critic of 2026-09-30 on the ceiling,
-//! finding 4). What the expansion would have counted toward the recall, one
-//! position, is not counted.
+//! (`dev/DECISIONS.md`, "the collector's trace has no rows ceiling, and the
+//! runtime sets no memory limit of its own"). What the expansion would have
+//! counted toward the recall, one position, is not counted.
 //!
 //! # The mature live core is not descended into
 //!
@@ -82,12 +83,13 @@
 //!
 //! **Which stamps a trace reads is the arena's** (`StampReading`). A
 //! collector's batch prunes any stamped target, registered or not
-//! (`dev/plans/S67.md`, S67.9, revision (1′)): the state a web load keeps is
-//! entered through registered core objects, and a batch that walked it whole
-//! stamps it for the next. The owner's collections over R whole off the poll,
-//! by the explicit call and at a cap of zero keep the exemption below; the
-//! pressure path and the exit read no stamp at all; a collection over P
-//! follows no edge out of the set it validates and so prunes nothing
+//! (`dev/DECISIONS.md`, "a collector's batch prunes any stamped target it has
+//! not met, and stamps only what its final drain touched first"): the state a
+//! web load keeps is entered through registered core objects, and a batch that
+//! walked it whole stamps it for the next. The owner's collections over R whole
+//! off the poll, by the explicit call and at a cap of zero keep the exemption
+//! below; the pressure path and the exit read no stamp at all; a collection
+//! over P follows no edge out of the set it validates and so prunes nothing
 //! ([`drain_within_the_met`]).
 //!
 //! **A target this trace has met is never pruned**, whatever its stamp: its row
@@ -184,11 +186,16 @@ use crate::refcount::{
 /// The passes over the held entries a mark makes at most before its final
 /// drain. A pass reads every entry still held, so a chain of registered
 /// targets met in an order unrelated to its own advances a link or two a
-/// pass and would read N(N+1)/2 entries over N passes (`dev/plans/S67.md`,
-/// the external review's R1); past this many the entries left are expanded
-/// depth first. A complete mark's rows are the same in either order (module
-/// doc, "The held stack"), so the cap costs only what a stop inside the
-/// final drain finds at zero; the web loads make 0.9 to 1.6 passes a batch.
+/// pass and would read N(N+1)/2 entries over N passes (`dev/DECISIONS.md`,
+/// "rulings the S65 and S67 stage notes held, carried at the stages' close");
+/// past this many the entries left are expanded depth first. A complete mark's
+/// rows are the same in either order (module doc, "The held stack"), so the cap
+/// costs a stop inside the final drain what it finds at zero, and it moves what
+/// a completed batch stamps: the links a capped chain leaves to the final drain
+/// are met there, in arrays the stamps' walk reads
+/// (`crate::cycle::collector_stamps`, "What is stamped"), so a live request
+/// with such a chain is stamped and its garbage waits for the epoch's turn once
+/// it dies. The web loads make 0.9 to 1.6 passes a batch.
 pub(crate) const HELD_PASSES: usize = 4;
 
 /// The age at which an edge target stops being descended into: `k`, the
@@ -526,7 +533,8 @@ impl Holding {
 
 /// Expand every target as it is met, holding nothing: the depth-first
 /// descent the held stack reorders, as a control (tests only;
-/// `dev/plans/S67.md`, S67.9, the Sage of 2026-09-30, J3).
+/// `dev/DECISIONS.md`, "the collector's walk defers the batch's registered
+/// targets and expands first those whose row reads zero").
 #[cfg(test)]
 pub(crate) fn hold_nothing(holds_nothing: bool) {
     HOLDS_NOTHING.store(holds_nothing, std::sync::atomic::Ordering::Relaxed);
@@ -555,7 +563,7 @@ pub(crate) fn record_expansions() {
 
 /// What the held stack did on one thread's marks: the passes over held
 /// entries, the entries a descent held, and the most entries one pass read
-/// (tests only; the rig's columns, `dev/plans/S67.md`, S67.9, J3).
+/// (tests only; the rig's columns).
 #[cfg(test)]
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(crate) struct HeldFigures {
@@ -899,11 +907,12 @@ unsafe fn stands_as_an_opaque_live_external(child: *mut RcHeader, prune: Prune) 
 
 /// Whether this trace has met `child` already, which keeps a stamped target
 /// from being pruned: its row holds its count, and the edge is one of the
-/// subtractions that row is owed (`dev/plans/S67.md`, S67.9, the protocol
-/// Critic's F5). Asked only where registered targets are prunable: under the
-/// exemption a prunable target carries no candidate bit, every batch root
-/// does, and a stamp does not move under the trace, so no prunable target has
-/// been met. The row is looked up without being met.
+/// subtractions that row is owed (`dev/DECISIONS.md`, "a collector's batch
+/// prunes any stamped target it has not met, and stamps only what its final
+/// drain touched first"). Asked only where registered targets are prunable:
+/// under the exemption a prunable target carries no candidate bit, every batch
+/// root does, and a stamp does not move under the trace, so no prunable target
+/// has been met. The row is looked up without being met.
 ///
 /// # Safety
 /// As [`visit_child`].
@@ -930,9 +939,10 @@ fn note_edge_pruned() {
 }
 
 /// Whether the collector's marks subtract an edge into a registered candidate
-/// and expand no further, a first region's walk (`dev/plans/S67.md`, S67.9,
-/// run R2), the owner's own marks descending as ever; process-wide, for the
-/// rig's cell alone.
+/// and expand no further, a first region's walk (`dev/BENCHMARKS.md`, "readings
+/// the S65 and S67 stage notes held, carried at the stages' close", run R2),
+/// the owner's own marks descending as ever; process-wide, for the rig's cell
+/// alone.
 #[cfg(test)]
 static STOPS_AT_CANDIDATES: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -987,7 +997,8 @@ pub(crate) fn take_edges_pruned() -> usize {
 }
 
 // Positions the owner's own traces on this thread inspected, which count
-// none toward a recall (tests only; `dev/plans/S67.md`, S67.9, run R2).
+// none toward a recall (tests only; `dev/BENCHMARKS.md`, "readings the S65 and
+// S67 stage notes held, carried at the stages' close", run R2).
 #[cfg(test)]
 thread_local! {
     static OWNER_POSITIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

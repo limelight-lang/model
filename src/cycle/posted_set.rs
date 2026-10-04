@@ -1,6 +1,7 @@
 //! The set a collector's batch proved unreachable, posted beside its verdicts
 //! for the mutator's collection over P to validate and free as it stands
-//! (`dev/plans/S67.md`, S67.9, build step (e)).
+//! (`dev/DECISIONS.md`, "the collector posts the set it proved unreachable, and
+//! the owner validates that set alone").
 //!
 //! # Why the set and not its roots
 //!

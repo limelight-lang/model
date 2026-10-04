@@ -389,8 +389,9 @@ fn over_an_outside_storage_of_empty_cells() {
 /// R past all of them: raised between the phases, after the mark's first
 /// regions ended, it finds each root's row above zero — the case holds every
 /// root — and posts it read live, the snapshot's rule for a root whose own
-/// region was expanded (`dev/plans/S67.md`, S67.9, revision 3, G3); and the
-/// grant resets its arena once.
+/// region was expanded (`dev/DECISIONS.md`, "rulings the S65 and S67 stage
+/// notes held, carried at the stages' close"); and the grant resets its arena
+/// once.
 #[test]
 fn a_recalled_batch_posts_every_root_once_read_live_and_advances_r() {
     const ROOTS: usize = 5;
@@ -769,7 +770,7 @@ fn a_grant_behind_another_trace_is_released_at_the_strides_next_reading() {
 /// The same grant, the traced mutator asking for its token too, is released
 /// at the reading that stops the other batch rather than after that batch's
 /// tail: the stop reads the grants behind the trace as a reading at the
-/// stride does (`dev/plans/S67.md`, S67.13).
+/// stride does (`dev/BENCHMARKS.md`, "S67.13: the grants behind a stop released at it").
 #[test]
 fn a_grant_behind_a_stopped_trace_is_released_at_the_stop() {
     let released_at = released_behind_another_batch(testing::between_the_next_phases, true);
@@ -1058,10 +1059,10 @@ fn a_serve_recalled_at_the_first_reading() -> (testing::TracedBatch, Vec<(*mut O
 /// A stop inside the mark's first regions leaves every root above zero
 /// *unwalked* and halves K; at one root K halves no further, and the root
 /// cut inside its own region is read live, out of R, so that it does not come
-/// back cut at every grant (`dev/plans/S67.md`, S67.9, revision 3, G3,
-/// "*unwalked* once"). Each root is held by the case and heads three strides
-/// of unregistered elements, so the first reading falls inside the first
-/// root's region.
+/// back cut at every grant (`dev/DECISIONS.md`, "rulings the S65 and S67 stage
+/// notes held, carried at the stages' close"). Each root is held by the case
+/// and heads three strides of unregistered elements, so the first reading falls
+/// inside the first root's region.
 #[test]
 fn a_stop_inside_the_first_regions_posts_unwalked_and_halves_k_down_to_one_read_live_root() {
     use crate::journal::kinds::BATCH_END_RECALLED_IN_THE_TRACE;

@@ -29,34 +29,33 @@
 //! — so a collector thread tracing for a mutator reads the cell out of that
 //! mutator's record ([`of_record`]). The width is full because the deferred
 //! lane's mirror compares turnovers to see one the thread slept through,
-//! which two wrapped bits cannot answer; what the header carries is the low
-//! two bits, because that is what byte 6 can spare
+//! which four wrapped bits cannot answer; what the header carries is the low
+//! four bits, because that is what byte 6 can spare
 //! (`crate::refcount::MATURATION_EPOCH_MASK`).
 //!
 //! # The turn
 //!
 //! The epoch is the window in which the collector's proofs of liveness stand
-//! (`dev/plans/S67.md`, S67.9, the Sage of 2026-09-30 on the epoch's turn):
-//! a stamp lets the next batches prune at a live core instead of walking it,
-//! and the turn retires every stamp at once, so that a core that died while
-//! stamped is walked again. What a turn costs is the re-proof — the walks
-//! that write the stamps again — so the window is set by the collector's own
-//! work rather than by a count of batches. Each batch whose trace completed
-//! prices its stamps at the positions its mark's final drain read times the
-//! stamps it wrote over the rows that drain met — the walk of the live core
-//! the stamps stand on. The collector adds those prices over the epoch, and
-//! the positions of every batch it makes once a price stands, the proving
-//! batch's own walk not among them; the cell turns at a visit once the
-//! positions reach [`SPENT_PER_PROOF`] times the prices — work the stamps could
-//! prune has paid for the re-proof — or at X, though never before the epoch
-//! has stood `SPENT_PER_PROOF` times the wall of the batches that proved it,
-//! so that a walk longer than X sees a batch prune at its stamps before they
-//! retire. An epoch in which the collector
-//! proves nothing turns at X alone: none of its stamps stands to retire, the
-//! owner's commits' stamps aging at X as before. Garbage behind
-//! a stamped core waits at most two epochs, `k + 1` behind a chain of `k`
-//! stamped components, where the collector reads R as fast as the mutator
-//! writes it.
+//! (`dev/DECISIONS.md`, "the epoch turns when the collector's work reaches
+//! twice what its proofs cost"): a stamp lets the next batches prune at a live
+//! core instead of walking it, and the turn retires every stamp at once, so
+//! that a core that died while stamped is walked again. What a turn costs is
+//! the re-proof — the walks that write the stamps again — so the window is set
+//! by the collector's own work rather than by a count of batches. Each batch
+//! whose trace completed prices its stamps at the positions its mark's final
+//! drain read times the stamps it wrote over the rows that drain met — the walk
+//! of the live core the stamps stand on. The collector adds those prices over
+//! the epoch, and the positions of every batch it makes once a price stands,
+//! the proving batch's own walk not among them; the cell turns at a visit once
+//! the positions reach [`SPENT_PER_PROOF`] times the prices — work the stamps
+//! could prune has paid for the re-proof — or at X, though never before the
+//! epoch has stood `SPENT_PER_PROOF` times the wall of the batches that proved
+//! it, so that a walk longer than X sees a batch prune at its stamps before
+//! they retire. An epoch in which the collector proves nothing turns at X
+//! alone: none of its stamps stands to retire, the owner's commits' stamps
+//! aging at X as before. Garbage behind a stamped core waits at most two
+//! epochs, `k + 1` behind a chain of `k` stamped components, where the
+//! collector reads R as fast as the mutator writes it.
 //!
 //! **A reading that missed an advance is conservative.** The stamp is read
 //! by the mark's test for an opaque live external (`crate::cycle::mark`), and
@@ -84,9 +83,10 @@ use crate::refcount::MATURATION_EPOCH_MASK;
 /// of the batches that proved them X waits for. Four, Edmond's of
 /// 2026-10-03: of 1, 2, 4 and 8 on `web-heap` it reads the least garbage and
 /// near the least collector CPU, the stamps living long enough for each to
-/// prune twice what it does at the break-even 2 (`dev/BENCHMARKS.md`,
-/// "S67.15"); the loads whose live core dies are not read at it yet. The
-/// embedder sets another (`crate::gc::ll_gc_set_epoch_ratio`).
+/// prune twice what it does at the break-even 2 (`dev/BENCHMARKS.md`, "S67.15:
+/// the epoch's ratio at 2, 4 and 8"); the loads whose live core dies are not
+/// read at it yet. The embedder sets another
+/// (`crate::gc::ll_gc_set_epoch_ratio`).
 pub(crate) const SPENT_PER_PROOF: u64 = 4;
 
 /// [`SPENT_PER_PROOF`], or the ratio the embedder set

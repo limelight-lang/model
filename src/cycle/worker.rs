@@ -29,34 +29,35 @@
 //! clamped to P's room and to what R holds, and copies them into its
 //! workspace. It posts first the roots no trace can place, a count read zero
 //! *zero-count* and a root with no row *read live*, and traces the rest in
-//! one trace ([`trace_the_batch`]; `dev/plans/S67.md`, S67.9, revision 3):
-//! every root is met before any is expanded, one mark
-//! ([`crate::cycle::mark::drain`]) expands what they reach in the held
-//! stack's order, one scan from each root colours the closure, and each root
-//! is posted *proposed* or *read live* off its colour ([`verdict_for`]); a
-//! batch that proposes posts beside its verdicts the set it proved
-//! unreachable, which the owner's collection over P validates alone
-//! (`crate::cycle::posted_set`). No budget bounds the trace: what bounds it is
-//! the traced mutator's heap (`dev/DECISIONS.md`, 2026-09-30, "the collector's
-//! trace has no rows ceiling"). A refused allocation or the mutator's recall of
-//! its token at the stop level stops the trace where it stands — a recall at
-//! the wind-down level ends the mark on a scan instead ("The recall of the
-//! token") — and the stop posts the snapshot ([`post_at_a_stop`]): a root the
-//! scan of a completed mark coloured live is *read live*; one whose met row
-//! reads zero otherwise is *proposed*, a candidate for the owner's exact
-//! validation rather than a scan's verdict, which can cost the owner a walk
-//! from a root a live referrer holds; one above zero is *read live* where the
-//! mark's first regions had ended or where the batch is its one root, and every
-//! other root is posted *unwalked*, which the mutator's collection over P
-//! writes back into R untraced for the next batch (`rfc/model/gc/rc-cycle.md`,
-//! "Worker-to-owner handoff"). R's front advances past the batch only after
-//! every verdict is posted, by one guard that runs from the unwind as well and
-//! posts *unwalked* for every root the unwind left without a verdict
-//! ([`FinishThePosts`]), so that no entry is consumed without a verdict and
-//! none twice. The arena is opened under the grant, one per batch, and is reset
-//! before the token goes — on the unwind as on the return, since its rows stand
-//! over the mutator's blocks (`rfc/dev/design/trace-token-handshake.md`, E2); a
-//! workspace the pool refuses is a grant released with no batch.
+//! one trace ([`trace_the_batch`]; `dev/DECISIONS.md`, "the collector's walk is
+//! ordered by the candidate bit, one trace a batch, and a stale stamp neither
+//! prunes nor orders"): every root is met before any is expanded, one mark
+//! ([`crate::cycle::mark::drain`]) expands what they reach in the held stack's
+//! order, one scan from each root colours the closure, and each root is posted
+//! *proposed* or *read live* off its colour ([`verdict_for`]); a batch that
+//! proposes posts beside its verdicts the set it proved unreachable, which the
+//! owner's collection over P validates alone (`crate::cycle::posted_set`). No
+//! budget bounds the trace: what bounds it is the traced mutator's heap
+//! (`dev/DECISIONS.md`, 2026-09-30, "the collector's trace has no rows
+//! ceiling"). A refused allocation or the mutator's recall of its token at the
+//! stop level stops the trace where it stands — a recall at the wind-down level
+//! ends the mark on a scan instead ("The recall of the token") — and the stop
+//! posts the snapshot ([`post_at_a_stop`]): a root the scan of a completed mark
+//! coloured live is *read live*; one whose met row reads zero otherwise is
+//! *proposed*, a candidate for the owner's exact validation rather than a
+//! scan's verdict, which can cost the owner a walk from a root a live referrer
+//! holds; one above zero is *read live* where the mark's first regions had
+//! ended or where the batch is its one root, and every other root is posted
+//! *unwalked*, which the mutator's collection over P writes back into R
+//! untraced for the next batch (`rfc/model/gc/rc-cycle.md`, "Worker-to-owner
+//! handoff"). R's front advances past the batch only after every verdict is
+//! posted, by one guard that runs from the unwind as well and posts *unwalked*
+//! for every root the unwind left without a verdict ([`FinishThePosts`]), so
+//! that no entry is consumed without a verdict and none twice. The arena is
+//! opened under the grant, one per batch, and is reset before the token goes —
+//! on the unwind as on the return, since its rows stand over the mutator's
+//! blocks (`rfc/dev/design/trace-token-handshake.md`, E2); a workspace the pool
+//! refuses is a grant released with no batch.
 //!
 //! K starts at [`INITIAL_BATCH`] and doubles after a batch over its whole
 //! clamp that completed or stopped past the mark's first regions, up to
@@ -96,16 +97,17 @@
 //! mutator's state, about a sixteenth of its heap in rows. A recalled batch
 //! sizes K by where the stop fell, as any stop does.
 //!
-//! **The recall has two levels** (`dev/plans/S67.md`, S67.9, (10′)): the
-//! take's, and a withheld stack at [`STOP_MARKS`](crate::cycle::deferred_slot_reuse::STOP_MARKS)
-//! times its mark, stop the trace as above; a withheld stack at its mark asks
-//! it to wind down, the mutator running on. The mark, its passes and the
-//! pass before the trace stop at either level; the scan and the stamps' walk
-//! at the stop alone. A mark the wind-down cut ends there, its remaining work
-//! dropped, and the scan runs from every root, the roots posted off its
-//! colours with the set it proved ([`wind_down`]); a stop inside that scan
-//! posts the snapshot.
-//! A mutator freeing under the grant recalls it the same way without waiting,
+//! **The recall has two levels** (`dev/DECISIONS.md`, "a grant is bounded by
+//! the mutator's situation, not by a count of work"): the take's, and a
+//! withheld stack at
+//! [`STOP_MARKS`](crate::cycle::deferred_slot_reuse::STOP_MARKS) times its
+//! mark, stop the trace as above; a withheld stack at its mark asks it to wind
+//! down, the mutator running on. The mark, its passes and the pass before the
+//! trace stop at either level; the scan and the stamps' walk at the stop alone.
+//! A mark the wind-down cut ends there, its remaining work dropped, and the
+//! scan runs from every root, the roots posted off its colours with the set it
+//! proved ([`wind_down`]); a stop inside that scan posts the snapshot. A
+//! mutator freeing under the grant recalls it the same way without waiting,
 //! once one of its withheld stacks holds its mark
 //! (`crate::cycle::deferred_slot_reuse`, "The marks by stack length").
 //!
@@ -638,13 +640,15 @@ fn advance_the_epoch_if_due(record: &MutatorRecord, now: u64) {
     }
 
     let (spent, proving) = record.epoch_work();
-    let by_proofs = proving > 0 && spent >= crate::cycle::epoch::spent_per_proof() * proving;
+    let by_proofs =
+        proving > 0 && spent >= crate::cycle::epoch::spent_per_proof().saturating_mul(proving);
     // X retires no proof before the epoch has stood its walk's wall
     // `SPENT_PER_PROOF` times over: a walk longer than X would otherwise
-    // see its stamps retire before a batch prunes at them (`dev/plans/S67.md`,
-    // S67.9, the Critic of 2026-09-30 on the ceiling, finding 6).
+    // see its stamps retire before a batch prunes at them (`dev/DECISIONS.md`,
+    // "the collector's trace has no rows ceiling, and the runtime sets no
+    // memory limit of its own").
     let x = (epoch_interval().as_nanos() as u64)
-        .max(crate::cycle::epoch::spent_per_proof() * record.proving_wall());
+        .max(crate::cycle::epoch::spent_per_proof().saturating_mul(record.proving_wall()));
     if by_proofs || now.saturating_sub(last) >= x {
         let why = if by_proofs {
             journal::TURNOVER_BY_PROOFS
@@ -1774,7 +1778,8 @@ unsafe fn serve_the_grant(
     // The batch swept the rows, so the release goes first and the arena's
     // blocks back after it, their page discards off the mutator's wait; the
     // grants behind the trace are read between the two, for a recall that
-    // landed in the batch's tail (`dev/plans/S67.md`, S67.13).
+    // landed in the batch's tail (`dev/BENCHMARKS.md`, "S67.13: the grants
+    // behind a stop released at it").
     drop(held);
     arena.release_the_grants_behind();
     drop(arena);
@@ -2467,17 +2472,18 @@ fn journal_verdict(root: *mut RcHeader, verdict: Verdict) {
 }
 
 /// Size the mutator's next batch from what this one, clamped to `size` roots
-/// and taking `taken` of them, did (`dev/plans/S67.md`, S67.9, revision 3,
-/// G5). A trace that completed over the whole clamp doubles K up to
-/// [`BATCH_BOUND`], and so does a stop over the whole clamp that found every
-/// root's first region expanded: the batch reached its held entries, and a
-/// larger one reaches them as soon. A stop inside the first regions halves K,
-/// down to one root: a batch whose first descent the mutator's situation cuts
-/// is a batch too wide for it. A batch short of its clamp, completed or
-/// stopped past the first regions, leaves K where it stands, the ring or P's
-/// room having held no more, which says nothing of what the mutator offers
-/// per batch: a merged lane of three roots read at the threshold off its
-/// blocks would double K at every turnover of a thread that produces nothing
+/// and taking `taken` of them, did (`dev/DECISIONS.md`, "rulings the S65 and
+/// S67 stage notes held, carried at the stages' close"). A trace that completed
+/// over the whole clamp doubles K up to [`BATCH_BOUND`], and so does a stop
+/// over the whole clamp that found every root's first region expanded: the
+/// batch reached its held entries, and a larger one reaches them as soon. A
+/// stop inside the first regions halves K, down to one root: a batch whose
+/// first descent the mutator's situation cuts is a batch too wide for it. A
+/// batch short of its clamp, completed or stopped past the first regions,
+/// leaves K where it stands, the ring or P's room having held no more, which
+/// says nothing of what the mutator offers per batch: a merged lane of three
+/// roots read at the threshold off its blocks would double K at every turnover
+/// of a thread that produces nothing
 /// (`docs/history/cycle-split-package-3-lane-critic-2026-09-27.md`, F3).
 fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, outcome: &BatchOutcome) {
     if outcome.complete || outcome.regions_ended {
@@ -2493,7 +2499,8 @@ fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, outco
 /// the roots, every root met before any is expanded, one mark
 /// ([`crate::cycle::mark::drain`]), one scan from each root, the posts read off
 /// the colours, and the stamps written once
-/// (`dev/plans/S67.md`, S67.9, revision 3, (12')).
+/// (`dev/DECISIONS.md`, "the collector writes the maturation stamps itself, and
+/// the live list goes").
 ///
 /// A root no trace can place is posted first: a count read zero, and a root
 /// with no row ([`read_the_root`]). The recall is read at each root of that

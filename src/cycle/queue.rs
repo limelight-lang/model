@@ -335,7 +335,8 @@ const LANES: usize = 3;
 /// Epoch turns a root waits in each lane before it goes back into R. The
 /// longest, with a turn of lag, stays below the stamp's epochs, sixteen
 /// wide, so a member's stamp of the root's last reading never
-/// reads current at the next (`dev/plans/S65.md`, S65.42).
+/// reads current at the next (`dev/DECISIONS.md`, "rulings the S65 and S67
+/// stage notes held, carried at the stages' close").
 const LANE_WAITS: [u8; LANES] = [1, 3, 7];
 
 const _: () = assert!(

@@ -458,8 +458,11 @@ pub extern "C" fn ll_gc_set_epoch_interval(millis: u64) {
 /// the collector's work and the garbage's wait: a higher ratio keeps the
 /// stamps longer, so more of each mark prunes at a stamped core, and lets
 /// garbage behind a core that died while stamped wait longer for the turn
-/// (`dev/BENCHMARKS.md`, "S67.15"). Callable at any time from any thread; the
-/// next visit of a mutator's clock reads it.
+/// (`dev/BENCHMARKS.md`, "S67.15: the epoch's ratio at 2, 4 and 8"). X waits
+/// the same ratio times the wall of the batches that proved the epoch, so a
+/// high ratio lengthens the turn by time too; the products saturate, so a ratio
+/// as high as `u64::MAX` turns by X alone. Callable at any time from any
+/// thread; the next visit of a mutator's clock reads it.
 #[unsafe(no_mangle)]
 pub extern "C" fn ll_gc_set_epoch_ratio(ratio: u64) {
     crate::cycle::epoch::set_spent_per_proof(ratio);

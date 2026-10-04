@@ -138,7 +138,7 @@ end.
 
 - **Arms.** Four: D and HG, and the best build of each as S65.42 left it
   (S65.43's release not adopted, `dev/DECISIONS.md`, 2026-09-29). Deciding is best D against best HG; D and HG are
-  reported. H is not an arm (PLAN.md's S67 amended to D and HG).
+  reported. H is not an arm (the stage's scope amended to D and HG).
 - **Primary metric.** Instructions a request, the six mutators' runtime
   instructions (the loop's, less the synthetic spin's) and the collector
   threads' together, both read by per-thread counters over the scored

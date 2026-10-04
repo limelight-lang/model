@@ -3,7 +3,8 @@
 //! final drain touched first, the oldest array first; the next batch in the
 //! same epoch prunes at a stamped target, registered or not, and a ring
 //! stamped live in one epoch dies in the next (`crate::cycle::collector_stamps`;
-//! `dev/plans/S67.md`, S67.9, revision 3's (1′)–(3′)).
+//! `dev/DECISIONS.md`, "a collector's batch prunes any stamped target it has
+//! not met, and stamps only what its final drain touched first").
 //!
 //! The collector is a thread of the case's that serves this thread's record,
 //! as in `the_batch`. The fixture is a state behind a held entry: a registered

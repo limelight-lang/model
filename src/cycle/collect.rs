@@ -467,7 +467,8 @@ pub(crate) unsafe fn collection_off_the_poll() -> Collection {
 /// (`crate::cycle::arena::StampReading`): every collection does but the
 /// pressure path's and the exit's, which are after memory now rather than
 /// after the next trace's saving, and whose exhaustive reading a prune would
-/// cut (`dev/plans/S67.md`, S67.9, revision 3).
+/// cut (`dev/DECISIONS.md`, "a collector's batch prunes any stamped target it
+/// has not met, and stamps only what its final drain touched first").
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReadsStamps {
     Yes,

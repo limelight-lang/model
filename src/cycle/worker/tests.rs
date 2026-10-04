@@ -903,7 +903,7 @@ fn a_round_that_panics_leaves_the_word_unborn_for_the_next_birth() {
     assert_eq!(testing::take_spawns(), 2);
 }
 
-/// The kept ring `the_waits_by_readings` builds on (S65.42).
+/// The kept ring `the_waits_by_readings` builds on.
 mod generation_fixtures {
     use super::reset_lanes;
     use super::the_batch::keeper_class;

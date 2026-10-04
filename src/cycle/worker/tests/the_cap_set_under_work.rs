@@ -179,7 +179,8 @@ fn a_trace_running_when_the_cap_goes_to_zero_finishes_and_p_is_collected() {
 /// A take waiting on `COLLECTOR` while the cap goes to zero returns: the
 /// running trace reads the take's recall, stops, and releases as it would
 /// under any cap, and the token is left with the mutator, no claim standing
-/// (`dev/plans/S65.md`, S65.15's Critic, finding 4, the debt S65.30 names).
+/// (`dev/DECISIONS.md`, "under a collector cap of zero the elder asks by a
+/// value of the byte, and the mutator reads no cap").
 #[test]
 fn a_take_waiting_on_the_collector_when_the_cap_goes_to_zero_returns() {
     let _g = test_guard();
@@ -354,7 +355,7 @@ fn a_cap_set_back_resumes_the_takes() {
 /// a serve that requested under the positive cap, is read back as a grant
 /// and released with no batch: no trace starts after the store. Red on the
 /// wait that served every grant it read, which traced a full batch under the
-/// cap (the Critic of S65.15, finding 1).
+/// cap.
 ///
 /// The store is the collector's own, between its reading and its request, so
 /// that it precedes the consent: a store made on the mutator's thread after

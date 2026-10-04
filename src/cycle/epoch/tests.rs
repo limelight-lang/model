@@ -3,12 +3,12 @@
 
 use super::*;
 
-/// The epoch is the cell's low two bits: every turnover opens the next
-/// epoch, and four on the number the header carries is the one it carried
-/// four turnovers ago, which is why a stale stamp is read against the epoch
+/// The epoch is the cell's low four bits: every turnover opens the next
+/// epoch, and sixteen on the number the header carries is the one it carried
+/// sixteen turnovers ago, which is why a stale stamp is read against the epoch
 /// beside it rather than trusted for its age alone.
 #[test]
-fn the_epoch_is_the_cells_low_two_bits() {
+fn the_epoch_is_the_cells_low_four_bits() {
     assert_eq!(epoch_of(0), 0);
     assert_eq!(epoch_of(1), 1);
     assert_eq!(epoch_of(EPOCHS - 1), 15);

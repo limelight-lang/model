@@ -107,9 +107,10 @@ fn the_mth_death_under_a_grant_recalls_it_and_the_mutator_never_waits() {
 /// Red without the remote frees' count: slots another thread frees into this
 /// thread's blocks wait on their remote stacks under a grant, the heap takes
 /// a fresh block each time a class fills, and nothing recalls the grant
-/// (`dev/plans/S65.md`, S65.29). Counted, the reclaim under the holder moves
-/// them onto the deaths' stack, where the mark recalls the grant, hands none
-/// of them out, and the drain gives every one back.
+/// (`dev/DECISIONS.md`, "a cross-thread free under a foreign holder counts
+/// toward the deaths' mark"). Counted, the reclaim under the holder moves them
+/// onto the deaths' stack, where the mark recalls the grant, hands none of them
+/// out, and the drain gives every one back.
 #[test]
 fn a_producers_frees_into_this_threads_blocks_recall_the_grant_at_the_mark() {
     let _guard = test_guard();

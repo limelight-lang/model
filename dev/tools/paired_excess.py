@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""The paired latency excess of S67's protocol (`dev/plans/S67.md`, S67.7).
+"""The paired latency excess of the web loads' protocol
+(`dev/design/the-web-loads.md`).
 
 Pairs two arms' requests files, written by the rig under `LL_RIG_REQUESTS_TO`,
 by (mutator, index): the seeded streams make request i of a mutator the same

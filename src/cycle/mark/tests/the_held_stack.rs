@@ -284,10 +284,10 @@ const SHUFFLED: usize = 128;
 /// in a seeded shuffle of the chain's order: each link waits on its
 /// predecessor's expansion, and a pass meets the links in the hub's order, so
 /// it advances a link or two along the chain, and uncapped passes read the
-/// held entries a number of times quadratic in N (`dev/plans/S67.md`,
-/// the external review's R1). Capped at [`HELD_PASSES`] they read at most that
-/// many times N, and the rows are those of a mark that holds nothing. Red
-/// without the cap, on the reads.
+/// held entries a number of times quadratic in N (`dev/DECISIONS.md`, "rulings
+/// the S65 and S67 stage notes held, carried at the stages' close"). Capped at
+/// [`HELD_PASSES`] they read at most that many times N, and the rows are those
+/// of a mark that holds nothing. Red without the cap, on the reads.
 #[test]
 fn a_chain_met_in_a_shuffled_order_reads_its_held_entries_a_bounded_number_of_times() {
     let _g = test_guard();

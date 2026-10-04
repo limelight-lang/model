@@ -50,8 +50,9 @@ fn flags_layout_matches_the_normative_table() {
     assert_eq!(DESTRUCTOR_PENDING, 1 << 13);
     assert_eq!(DESTRUCTOR_RAN, 1 << 14);
     assert_eq!(DEAD_IN_PLACE, 1 << 15, "dead in place: bit 15");
-    // The build of S65.42 re-lays byte 6 whole: epoch 16-19, age 20-21, the
-    // count of live readings 22-23 (`dev/plans/S65.md`, S65.42).
+    // The deferred lanes' build re-lays byte 6 whole: epoch 16-19, age 20-21, the
+    // count of live readings 22-23 (`dev/DECISIONS.md`, "rulings the S65 and
+    // S67 stage notes held, carried at the stages' close").
     {
         assert_eq!(MATURATION_EPOCH_MASK, 0b1111 << 16, "epoch: bits 16-19");
         assert_eq!(

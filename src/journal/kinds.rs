@@ -289,7 +289,7 @@ pub const DEFAULT_KINDS: u64 = bit(KIND_ENTITY_BIRTH)
     | bit(KIND_ARENA_RESET_SEVERED_EDGE)
     | bit(KIND_ARENA_RESET_REFUSED_CAPTURE);
 
-/// The collector's operations, on demand (S67.8 in `dev/plans/S67.md`):
+/// The collector's operations, on demand:
 /// registrations, batches, verdicts, deferrals, write-backs, re-offers,
 /// turnovers, reclaimed components and returned slots, and grants without a
 /// batch.

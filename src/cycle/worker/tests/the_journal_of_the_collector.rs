@@ -1,5 +1,5 @@
 //! The collector's operations in the debug journal, each kind read once on
-//! an input whose answer is known (S67.8 in `dev/plans/S67.md`): a
+//! an input whose answer is known: a
 //! registration and a decrement over a candidate, a batch of garbage rings
 //! from its start to the slots its members' deaths return, a grant recalled
 //! before its batch, each cause of a turnover, and the lane a turnover hands

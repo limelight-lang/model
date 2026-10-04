@@ -1,7 +1,6 @@
 //! The collector's progress: garbage whose trace runs into a live closure is
 //! freed within a bounded number of grants and turnovers, whatever the
-//! closure's size and however often the mutator recalls its token
-//! (`PLAN.md`, S67.9).
+//! closure's size and however often the mutator recalls its token.
 //!
 //! The garbage is a registered ring of two whose first member holds an edge
 //! into a live core spread one member per heap block, so that every trace of

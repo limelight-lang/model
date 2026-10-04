@@ -140,10 +140,10 @@ const CASCADE_OBJECTS: usize = 400_000;
 
 /// What reference counting alone pays to free a tree of `CASCADE_OBJECTS`
 /// objects by the release of its root: the least cost a collection over a posted
-/// set of that size is read against (`dev/plans/S67.md`, S67.12). A binary
-/// tree of plain objects, two counted properties each, built in one arena
-/// and released once; the minimum and the median of `ROUNDS`, in ms and per
-/// object.
+/// set of that size is read against (`dev/BENCHMARKS.md`, "S67.12: the owner's
+/// longest pause over a posted set"). A binary tree of plain objects, two
+/// counted properties each, built in one arena and released once; the minimum
+/// and the median of `ROUNDS`, in ms and per object.
 #[test]
 #[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
 fn measure_an_acyclic_cascade_of_a_requests_size() {

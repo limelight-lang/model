@@ -354,7 +354,7 @@ struct HoldLine {
     proving_wall: AtomicU64,
     /// This mutator's epoch clock: the turnovers of its epoch, full width and
     /// monotone across the record's lives. The epoch a maturation stamp
-    /// carries is its low two bits (`crate::cycle::epoch`). Written by the
+    /// carries is its low four bits (`crate::cycle::epoch`). Written by the
     /// collector the record is named to and by nobody else, at each advance
     /// (`crate::cycle::worker`, "The epoch clock"); read once per collection
     /// by whoever traces this mutator's graph, at the arena's open, so that

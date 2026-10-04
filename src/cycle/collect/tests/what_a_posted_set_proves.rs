@@ -87,7 +87,8 @@ fn a_set_frees_its_garbage_and_leaves_a_live_member_unstamped() {
 
 /// A set that is garbage whole — a ring of three — reads every met row at zero
 /// after the mark and skips the scan, and the ring is freed as the scan would
-/// have had it (`dev/plans/S67.md`, S67.12). Red with the scan always run.
+/// have had it (`dev/DECISIONS.md`, "rulings the S65 and S67 stage notes held,
+/// carried at the stages' close"). Red with the scan always run.
 #[test]
 fn a_set_garbage_whole_is_freed_without_a_scan() {
     let _g = test_guard();
@@ -130,7 +131,8 @@ fn a_set_garbage_whole_is_freed_without_a_scan() {
 /// row, the walk of the cells skipped: two deferred drops, after which each
 /// outside object stands at the case's reference alone. Red on a count off by
 /// a cell, which the sever's check in every build reads, and the debug build
-/// reads the count against the walk (`dev/plans/S67.md`, S67.12).
+/// reads the count against the walk (`dev/DECISIONS.md`, "rulings the S65 and
+/// S67 stage notes held, carried at the stages' close").
 #[test]
 fn a_set_garbage_whole_reserves_its_outside_children_by_the_drain() {
     let _g = test_guard();
@@ -186,7 +188,8 @@ fn a_set_garbage_whole_reserves_its_outside_children_by_the_drain() {
 /// the trace and the commit: the members' counts no longer sum to the internal
 /// edges the drain read, the commit falls to the exact validation, which reads
 /// the reference, and nothing is freed. Red on a commit that takes the trace's
-/// answer for a set found garbage whole (`dev/plans/S67.md`, S67.12).
+/// answer for a set found garbage whole (`dev/DECISIONS.md`, "rulings the S65
+/// and S67 stage notes held, carried at the stages' close").
 #[test]
 fn a_reference_taken_after_the_trace_sends_a_set_garbage_whole_to_the_validation() {
     let _g = test_guard();
@@ -374,9 +377,10 @@ const SET_MEMBERS: usize = 400_000;
 /// costs at the size of the largest request, read against reference counting's
 /// own cascade over a tree of the same size
 /// (`what_the_poll_costs::measure_an_acyclic_cascade_of_a_requests_size`;
-/// `dev/plans/S67.md`, S67.12). The ring holds no destructor and every member
-/// row reads zero after the drain, so the collection takes the set's fast
-/// path; the minimum and the median of three rounds, in ms and per member.
+/// `dev/BENCHMARKS.md`, "S67.12: the owner's longest pause over a posted set").
+/// The ring holds no destructor and every member row reads zero after the
+/// drain, so the collection takes the set's fast path; the minimum and the
+/// median of three rounds, in ms and per member.
 #[test]
 #[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
 fn measure_the_pause_over_a_set_of_a_requests_size() {

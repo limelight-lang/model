@@ -227,7 +227,8 @@ const MATURATION_STAMP_BYTE: usize = 6;
 /// that waits up to seven turns between two readings would meet a two-bit
 /// epoch again after four, and its members' stamps of the last reading would
 /// read current and be pruned at; sixteen epochs put that gap past the
-/// longest wait (`dev/plans/S65.md`, S65.42).
+/// longest wait (`dev/DECISIONS.md`, "rulings the S65 and S67 stage notes held,
+/// carried at the stages' close").
 pub(crate) const MATURATION_EPOCH_MASK: u32 = 0b1111 << 16;
 
 /// The maturation age, bits 20-21, above the epoch.

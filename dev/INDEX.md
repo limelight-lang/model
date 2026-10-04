@@ -36,8 +36,9 @@ The repairs are proposals, not adopted changes to the algorithm or plan.
 [Operations by scheme](OPERATION-COUNT-BY-SCHEME.md) (Russian, 2026-09-27)
 counts, from the code, the operations over objects and over the queues that
 the four schemes V, D, H and G spend per root and fate, split between the
-mutator and the collector, and checks the model against the rig's counters of
-S65.28 and S65.31.
+mutator and the collector, and checks the model against the rig's counters
+(`dev/BENCHMARKS.md`, "S65.28 D against H on the repaired build", and "S65.31
+deferral by generation against D").
 
 The design the collector thread and the mutator's judgement were built from
 is in `docs/history/` since that stage closed on 2026-10-04, kept for its
@@ -90,10 +91,11 @@ chain is in `git log -- dev/`. The collector–mutator memory protocol of
   | `drops` | the queue a teardown's displaced children wait in until the last member's free | `cycle::reclamation` |
   | `density`, `census`, `loads` | test builds only: the share of a touched block's slots a trace met, the census of one collection with its counters and its replay through both row forms (`dev/BENCHMARKS.md`, 2026-09-12), and the rings the census and `benches/census_driver.rs` build under the `bench-loads` feature | none |
 
-  The deferred lanes wait by live readings (`dev/plans/S65.md`, S65.42; a
-  feature until S67.10): `refcount::SURVIVED_READINGS_MASK` counts a
-  root's live readings, raised by `queue::defer_entry`, the three lanes go back
-  by `queue::reoffer_the_lanes_due` after 1, 3 and 7 turns, and an X turn
+  The deferred lanes wait by live readings (`dev/DECISIONS.md`, "rulings the
+  S65 and S67 stage notes held, carried at the stages' close"):
+  `refcount::SURVIVED_READINGS_MASK` counts a root's live readings, raised by
+  `queue::defer_entry`, the three lanes go back by
+  `queue::reoffer_the_lanes_due` after 1, 3 and 7 turns, and an X turn
   (`MutatorRecord::note_an_x_turn`) releases them all; the cases are
   `worker/tests/the_waits_by_readings.rs`.
 
@@ -380,15 +382,16 @@ picture of 2026-08-31, before the collection driver and the collector
 thread, kept as a record.
 
 `dev/design/the-proof-epoch-collector.md` — the proof-epoch collector, the
-best D build of S67.6, stated for reviewers outside the project;
-`dev/data/s67.6/` — that run's raw cells, requests, A/A check, pilots and
-analysis script (`README.md` there).
+best D build of `dev/BENCHMARKS.md`, "S67.6: D and HG on the web loads",
+stated for reviewers outside the project; `dev/data/s67.6/` — that run's raw
+cells, requests, A/A check, pilots and analysis script (`README.md` there).
 
 `dev/design/the-proof-epoch-collector.ru.md` — the Russian translation, with
 explicit notes on the original's limits; `dev/PROOF-EPOCH-COLLECTOR-REVIEW-RU.md`
 — the 2026-10-03 review, updated after a second round by three critics on
-`826b1bd`: algorithmic cost, mutator latency, progress, the S67.6 evidence
-and the empty-poll improvement, with counterexamples and acceptance criteria.
+`826b1bd`: algorithmic cost, mutator latency, progress, the evidence of
+2026-10-03 and the empty-poll improvement, with counterexamples and acceptance
+criteria.
 
 `dev/design/debug-modes.md` — observability and debug levels: object
 registry, lifetimes, shadow metadata, integrity checks, metrics export.
@@ -425,46 +428,47 @@ collector through `worker::testing::pin_collectors_to`, which
 `cargo test --release --lib --no-run` first.
 
 `cycle::worker::tests::the_web_loads` — the web loads' request
-(`dev/plans/S67.md`, S67.3): the seeded draws by purpose, the plan of one
+(`dev/design/the-web-loads.md`): the seeded draws by purpose, the plan of one
 request, its build along the drawn timeline (`Request::advance`), its end, and
 the garbage in bytes by size (`Garbage`), read off the entity heap's
 test-only count of held bytes (`memory::heap::entity_bytes_held`). The
-mutator's long-lived state beside it (S67.4): `LongLived`, the core, the LRU
+mutator's long-lived state beside it: `LongLived`, the core, the LRU
 cache of values kept by `KeyedLru` outside the heap, the sessions, and the
-setup to their steady state. The arena variant (S67.5), `Variant::Arena`: the
+setup to their steady state. The arena variant, `Variant::Arena`: the
 request in the mutator's arena, its heap references logged and released at
 `promote::arena_reset_full`, and the session writes it promotes; the rig runs
 both as the loads `web-heap`, `web-arena-40k` and `web-arena-150k`
-(`the_rig::a_web_mutator`), outside `rig.sh`'s sweep. With `LL_RIG_ARRIVALS`
-(S67.7) a web mutator serves open-loop Poisson arrivals at
-`LL_RIG_INTERARRIVAL_MS`, its requests spinning their drawn CPU
-(`the_rig::spin_until`, fitted by `SpinCost`) in 50 µs slices around their
-polls and sleeping their drawn waits; the window is the arrivals after the
-warm-up, and the line carries the latency from arrival and from service,
-`instructions_a_request` with the collectors' counters and the spin and the
-plans' draws taken out, and the void reading.
+(`the_rig::a_web_mutator`), outside `rig.sh`'s sweep. With `LL_RIG_ARRIVALS` a
+web mutator serves open-loop Poisson arrivals at `LL_RIG_INTERARRIVAL_MS`, its
+requests spinning their drawn CPU (`the_rig::spin_until`, fitted by
+`SpinCost`) in 50 µs slices around their polls and sleeping their drawn waits;
+the window is the arrivals after the warm-up, and the line carries the latency
+from arrival and from service, `instructions_a_request` with the collectors'
+counters and the spin and the plans' draws taken out, and the void reading.
 
 `dev/tools/arms.sh` and `dev/tools/arms_table.py` — a comparison of arms on
 the rig: one test binary per arm, interleaved inside each repeat, the deciding
-loads paced by the S65.24 protocol and the guards unpaced, then the table of
+loads paced by that entry's protocol and the guards unpaced, then the table of
 each arm's median cycles and instructions an iteration with the protocol's
 tolerance and gates (`dev/BENCHMARKS.md`, "S65.24 A, B and C on a box with a
 PMU"). The mutators' counters need a kernel that grants `perf_event_open`.
-Its phase `web` runs S67's protocol cells, six mutators at caps 1 and 4 on
-the arrivals, and re-runs a void cell once.
+Its phase `web` runs the web loads' protocol cells
+(`dev/design/the-web-loads.md`), six mutators at caps 1 and 4 on the arrivals,
+and re-runs a void cell once.
 
 `dev/tools/paired_excess.py` — the p99.9 of one arm's latency excess less
 another's over requests paired by (mutator, index) from the rig's
 `LL_RIG_REQUESTS_TO` files; `--self-test` reads a scripted pair.
 
-`dev/tools/two_arms_table.py` — two arms of `arms.sh`'s CSV by the S65.24
-protocol as S65.28 fixed it: instructions an iteration as the gate, heap
-garbage and the last free as the memory gates, iterations over 200 µs, the
-collector's CPU beside completion, and each arm's share of the token wait and
-of the withheld returns' time spent in the grant's expiry and death check
-(`worker::testing::BatchSegments`).
+`dev/tools/two_arms_table.py` — two arms of `arms.sh`'s CSV by the protocol of
+`dev/BENCHMARKS.md`, "S65.24 A, B and C on a box with a PMU" as
+`dev/BENCHMARKS.md`, "S65.28 D against H on the repaired build" fixed it:
+instructions an iteration as the gate, heap garbage and the last free as the
+memory gates, iterations over 200 µs, the collector's CPU beside completion,
+and each arm's share of the token wait and of the withheld returns' time spent
+in the grant's expiry and death check (`worker::testing::BatchSegments`).
 
-`dev/tools/stall.sh` — S65.27's loop: one short `live-churn` cell on one
+`dev/tools/stall.sh` — a loop: one short `live-churn` cell on one
 binary, RED when the drain frees less than half of what stood at the stop,
 which is how the collector's chain froze behind a stale room of P.
 

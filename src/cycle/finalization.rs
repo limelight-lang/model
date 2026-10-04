@@ -356,7 +356,7 @@ pub(crate) fn take_confirmed_by_the_sum() -> usize {
 /// an internal edge to another pass it together — and a design that runs code
 /// between the trace and the commit forgets the edges read
 /// (`TraceScratchArena::take_internal_edges_read`) instead of relying on it
-/// (`dev/plans/S67.md`, S67.12, the Critic).
+/// (`dev/DECISIONS.md`, "rulings the S65 and S67 stage notes held, carried at the stages' close").
 ///
 /// # Safety
 /// As [`validate_component`], and no count or counted cell of a member changed

@@ -8,8 +8,9 @@
 //! (`dev/design/the-standing-request-lives-on-the-record.md`).
 //!
 //! The last cases time the byte's states for a mutator that sleeps without
-//! polling (`dev/plans/S67.md`, S67.2): how long a request stood before its
-//! end, and a `POSTED` or an `ASKED` before the take that consumed it.
+//! polling (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage notes held,
+//! carried at the stages' close"): how long a request stood before its end, and
+//! a `POSTED` or an `ASKED` before the take that consumed it.
 //!
 //! The collector here is the case's own thread with a `Standing` of its own,
 //! on a slot no thread stands in, so that the slot's byte-event number moves

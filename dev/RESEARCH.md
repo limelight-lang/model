@@ -539,8 +539,8 @@ figure is Edmond's; the entry records the range and the sources.
 
 ## 2026-09-30 — pruning by generation in cycle collectors, and how an interruptible trace completes
 
-Two web sweeps for S67.9 (`dev/plans/S67.md`, S67.9), each claim with its
-source as the sweep gave it. Only Nim YRC was read here at source
+Two web sweeps for S67.9 (`dev/plans/S67.md` at `410b856`, S67.9), each claim
+with its source as the sweep gave it. Only Nim YRC was read here at source
 (`lib/system/yrc.nim`, `devel`, fetched 2026-09-30): its stamp rule, epoch
 length, promotion age and `genSuspects` buffer are verified by `grep` over the
 file; the rest is the sweeps' reading and is re-verified before it steers a
@@ -595,11 +595,12 @@ the recall keeps its owner question (S67.9's proposal, item 5).
 ## 2026-09-30 — one graph for all roots, breadth first, and liveness flooded from the roots: Firefox, CPython, Lins
 
 A third sweep for S67.9, on Edmond's question whether flow and shortest-path
-algorithms hold a hint (`dev/plans/S67.md`, S67.9, the review's round 1). The
-sweep read Firefox at source (`xpcom/base/nsCycleCollector.cpp` at `e68e3aea`,
-2026-09-01; `dom/base/CCGCScheduler.cpp`, `nsCCUncollectableMarker.cpp`,
-`FragmentOrElement.cpp`, `js/xpconnect/src/XPCJSRuntime.cpp` on main, fetched
-2026-09-30) and CPython at tags v3.14.0, v3.14.4 and v3.14.5 (`Python/gc.c`,
+algorithms hold a hint (`dev/plans/S67.md` at `410b856`, S67.9, the review's
+round 1). The sweep read Firefox at source (`xpcom/base/nsCycleCollector.cpp`
+at `e68e3aea`, 2026-09-01; `dom/base/CCGCScheduler.cpp`,
+`nsCCUncollectableMarker.cpp`, `FragmentOrElement.cpp`,
+`js/xpconnect/src/XPCJSRuntime.cpp` on main, fetched 2026-09-30) and CPython
+at tags v3.14.0, v3.14.4 and v3.14.5 (`Python/gc.c`,
 `Python/gc_free_threading.c`); the papers are cited as the sweep gave them.
 The line numbers are the sweep's and are re-read before a design rests on one.
 

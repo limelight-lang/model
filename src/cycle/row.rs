@@ -131,7 +131,7 @@ pub(crate) unsafe fn resolve_edge_target(child: *mut RcHeader) -> EdgeTarget {
     let block = header as usize;
     // Debug builds only: the walk reads every region of the pool, so its
     // cost grows with the heap, and the rig's release build would count it
-    // as the mutator's (`dev/BENCHMARKS.md`, "S65.42").
+    // as the mutator's (`dev/BENCHMARKS.md`, "S65.42 on the repaired rig").
     #[cfg(all(test, debug_assertions))]
     assert!(
         stands_where_a_block_can(child as usize, block),
@@ -247,7 +247,8 @@ pub(crate) unsafe fn for_each_unreachable(
 /// to the scan. The check walks every row before the first write, because a
 /// scan run after a part of the rows were coloured would stop at them
 /// (`crate::cycle::scan`). The collection over a posted set's fast path
-/// (`crate::cycle::trace::trace_within_the_set`; `dev/plans/S67.md`, S67.12).
+/// (`crate::cycle::trace::trace_within_the_set`; `dev/DECISIONS.md`, "rulings
+/// the S65 and S67 stage notes held, carried at the stages' close").
 ///
 /// # Safety
 /// Every array of `touched` is an initialised array of this collection,

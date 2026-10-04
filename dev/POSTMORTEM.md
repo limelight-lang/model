@@ -7,6 +7,52 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-10-04 — lessons the S65 and S67 stage notes held, carried at the stages' close
+
+Each stood only in the stage's notes file, which the close deletes.
+
+**A question that bundled the build with the rule built the wrong scheme
+(2026-09-27).** S65.31 built "a root that has not outlived an epoch is not
+deferred" on D after one question that asked for the rule and the build
+together; the scheme Edmond meant was H whose chain takes only a root of the
+second generation, and the measurement tested neither. A first build of HG
+then read the rule as "a young root goes to the due part and is re-read"
+(`fc8d7b1`), so each young root was traced every batch until the turn; the
+rig run on it measured the misreading, and its figures were discarded. And
+"outlived an epoch" read off byte 6's two-bit stamp, which the mutator writes
+only when a batch posted, read 17 % of the old readings young on
+`deferred-live-large`. One question a ruling, the rule restated in the
+answer's words before a build, and a stamp's writer checked before a rule
+reads it.
+
+**Why the collector had made no progress by S67.9 (2026-09-30).** The S64
+analysis's four properties — short hold, no continuation, no owner work,
+progress — were answered by "retried with a larger budget", built as one
+fixed `B_max` retry a batch; the turnover's collection over R whole, which the
+analysis leaned on for the large candidate core, was removed the same day and
+the case not re-checked; the price was named at least eight times and
+recorded as a price, the rule "the mutator first" standing without a
+counterweight; the measurement Edmond ordered on 2026-09-24 was never run; and
+the gates compared each arm with D alone. A removal re-checks every case that
+leaned on what it removes, and a price named twice is a finding, not a note.
+
+**A standing-list case asserted a request before it landed (2026-09-29).**
+`the_standing_list::a_retired_collector_leaves_every_record_unlinked` waited
+for every sleeper to read standing and then asserted its byte `REQUESTED`,
+while `worker::serve` links the record before its request lands; a 5 ms sleep
+between the link and the request made it red 5 in 5, and the case waits for
+both since.
+
+**Miri at the stage's close (2026-10-03).** One Stacked Borrows violation, in
+a case's helper: `the_recall`'s empty outside storage read a sixteen-byte cell
+through a pointer to one eight-byte element (`7bfc978`). Two cases were
+quadratic under Miri — a vector searched and a stack walked at every
+allocation — and held a slice for hours (`1af2f24` and the commit before it).
+Two cases red in a long run read a serve answering `Idle`, the collector's
+wait for the consent run out on Miri's clock; each passes alone. A case run
+under Miri pays for every linear scan inside a loop, and a timed wait on
+Miri's clock is a flake source under load.
+
 ## 2026-09-28 — the rig counted a test-only walk of every pool region per edge as the mutator's work
 
 **What happened.** `cycle::row::resolve_edge_target` asserted under

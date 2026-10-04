@@ -2,8 +2,9 @@
 //! grown K as far as it goes, on the two live disjoint shapes: the length of
 //! the grant, the wait of a mutator that asks for its token at the start of
 //! the trace, and the deaths a mutator freeing through the grant withholds
-//! (`PLAN.md`, S65.13's measurement; `dev/DECISIONS.md`, "the trace in parts
-//! waits for the recall and the stack marks").
+//! (`dev/BENCHMARKS.md`, "S65.13 the batch in parts at a grown K";
+//! `dev/DECISIONS.md`, "the trace in parts waits for the recall and the stack
+//! marks").
 //!
 //! **K is grown by the batches themselves.** A collector thread of the case's
 //! serves this thread's record once per batch, as a round does, and the

@@ -758,7 +758,7 @@ On demand:
   start and its end with the exit that ended it, a root's verdict, a root
   deferred, written back or offered again, a turnover and its cause, a set
   a commit reclaimed, a withheld slot returned, a grant released with no
-  batch, a part that met B (`dev/plans/S67.md`, S67.8). A registration per
+  batch, a part that met B. A registration per
   non-final decrement evicts the default kinds within one request of a
   web load, which is why they are asked for;
 - retain and release — the highest-volume event in the runtime, and it

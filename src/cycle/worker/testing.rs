@@ -367,9 +367,10 @@ pub(crate) struct TracedBatch {
     pub(crate) turnovers: u64,
 }
 
-/// What one completed part read (`dev/plans/S67.md`, S67.9, run R1): the
-/// rows it met, the trace arena's blocks at its end, its positions in the
-/// mark and in the scan, the heap blocks whose rows it touched, and its wall.
+/// What one completed part read (`dev/BENCHMARKS.md`, "readings the S65 and S67
+/// stage notes held, carried at the stages' close", run R1): the rows it met,
+/// the trace arena's blocks at its end, its positions in the mark and in the
+/// scan, the heap blocks whose rows it touched, and its wall.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub(crate) struct PartReading {
     pub(crate) rows: usize,
@@ -513,7 +514,8 @@ pub(crate) fn take_outcomes() -> Outcomes {
 
 /// The wall a stubbed trace spins in place of a batch's parts, in
 /// nanoseconds, zero for the real trace; process-wide, for the rig's cell
-/// alone (`dev/plans/S67.md`, S67.9, run R0).
+/// alone (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage notes held,
+/// carried at the stages' close", run R0).
 static STUB_TRACE_NANOS: AtomicU64 = AtomicU64::new(0);
 
 /// Replace every batch's parts with a spin of `wall` until the guard drops:
@@ -1033,8 +1035,7 @@ pub(crate) fn note_collector_born(index: usize) {
 /// The collector threads' user-mode instructions: each standing life's
 /// counter, which the driver reads live from its own thread, the kernel
 /// bringing an active counter up to date at the read, and the lives that
-/// ended, each folded in under the same lock as its counter closes
-/// (`dev/plans/S67.md`, S67.7's Critic, finding 7).
+/// ended, each folded in under the same lock as its counter closes.
 struct CollectorInstructions {
     standing: [Option<ThreadCycles>; super::MAX_COLLECTORS],
     ended: u64,
@@ -1454,7 +1455,8 @@ static DISPOSALS: Mutex<VerdictCollections> = Mutex::new(VerdictCollections {
 /// The returns a mutator withheld under a foreign holder, by stack — deaths,
 /// chunks, blocks, in the unit each stack's mark counts — read at each
 /// crossing of the mark and at each release's drain, where the count is the
-/// grant's peak (`dev/plans/S67.md`, S67.9, run R2).
+/// grant's peak (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage notes
+/// held, carried at the stages' close", run R2).
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct WithheldReadings {
     pub(crate) crossings: [usize; 3],
@@ -1515,7 +1517,8 @@ pub(crate) fn note_disposal(took: std::time::Duration) {
 /// member and on any other (`crate::cycle::collector_stamps`), the edges the collector's marks
 /// pruned (the mutator's own collections not counted), and the roots the
 /// deferred lane held at the turns, which a turn hands back into R whole
-/// (pressure and the exit not counted) (`dev/plans/S65.md`, S65.36).
+/// (pressure and the exit not counted) (`dev/BENCHMARKS.md`, "S65.36: G1, G3,
+/// M1 and S1b each lose or tie against their scheme").
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct SchemeFigures {
     pub(crate) stamped_registered: usize,
@@ -1628,7 +1631,8 @@ pub(crate) fn take_written_back() -> usize {
 }
 
 /// How long a byte state stood before its end: a count, the total and the
-/// longest (`dev/plans/S67.md`, S67.2).
+/// longest (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage notes held,
+/// carried at the stages' close").
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct StandingTimes {
     pub(crate) count: usize,

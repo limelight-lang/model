@@ -4,7 +4,8 @@ The proof-epoch collector (`rfc/dev/GLOSSARY.md`) is the cycle collector
 measured as `bestD` on 2026-10-03 (`dev/BENCHMARKS.md`, "S67.6"): the
 default build of that day plus the feature `wait-by-readings`, built at
 `a72693d` (`c52ff90` is S65.17's build, plain D). Its name is for its epoch,
-which turns when the collector's work reaches twice what its proofs cost.
+which turns when the collector's work reaches a ratio of what its proofs cost
+(2 in the measured build, 4 since; §12).
 Edmond took it as the default build on 2026-10-03, and S67.10 folded the
 feature into the code, so the default build is this collector.
 Written for readers outside the project: it states the algorithm as the code
@@ -228,7 +229,7 @@ epoch turn.
 | `M`, `M_c`, `M_b` | 8,192 deaths, 256 chunks, 16 blocks | withheld-stack marks (wind-down) |
 | `STOP_MARKS` | 2 | the stop level, as a multiple of a mark |
 | `TRAVERSAL_AGE_THRESHOLD` | 1 | a stamp of the current epoch prunes |
-| `SPENT_PER_PROOF` | 2 | the epoch turns when spent ≥ 2 × proving |
+| `SPENT_PER_PROOF` | 2 (4 since, §12) | the epoch turns when spent ≥ ratio × proving |
 | X (`EPOCH_INTERVAL`) | 8 s | the epoch's turn by time |
 | `LANE_WAITS` | 1, 3, 7 epoch turns | the deferred lanes' waits |
 | `WARM_BLOCKS` | 16 | arena blocks kept warm; pages past them discarded at a reset |
@@ -238,7 +239,7 @@ epoch turn.
 - **Soundness** rests on the owner's exact validation of the posted set
   under its own token, and on the withholding of every memory return while
   a collector holds the token. A collector's verdict alone frees nothing.
-- **Progress** (`dev/plans/S67.md`, S67.9): with no budget on the trace, a
+- **Progress**: with no budget on the trace, a
   completed batch stamps the live rows its final drain touched first, so the
   next batches prune at them until the epoch turns; garbage behind a live
   component is freed within a bounded number of turns **where a batch over
@@ -246,7 +247,7 @@ epoch turn.
   each one recalled inside its mark, is not freed by the collector: a stop
   posts its root read live or unwalked and keeps no continuation, and only
   the owner's collections over R whole — under pressure and at the exit —
-  collect it (`dev/plans/S67.md`, Q1, open). On the web loads every best-D
+  collect it (open; `PLAN.md`, the backlog). On the web loads every best-D
   cell freed all its garbage inside a 12 s drain.
 - **Open, measured** (`dev/BENCHMARKS.md`, "S65.17", plain D): a grant on
   `web-arena-40k` lasts up to 185 ms in all, and the blocks a mutator
@@ -254,16 +255,20 @@ epoch turn.
   in S67.6, 438–945. The recall is read; the token is held past it by the
   collector's work after the stop — the stamps' walk after a completed
   trace, which reads the recall at the stop level alone, is the longest
-  part, 105–123 ms on `web-heap` and 23–32 ms on `web-arena-40k` — and by
-  a grant standing behind another
-  mutator's batch, which a stopped trace does not release before its tail.
+  part, 105–123 ms on `web-heap` and 23–32 ms on `web-arena-40k` — and, in
+  the measured build, by a grant standing behind another mutator's batch,
+  which a stopped trace did not release before its tail (released at the
+  stop since, §12). A wind-down does not stop the stamps' walk: the level
+  only rises within a grant, so a walk stopped at it would never stamp the
+  state.
 - **Open, measured** (`dev/data/s67.6/cells.csv`,
   `verdict_collection_longest_us`): the owner's collection over one posted
   set is one pause at one poll, 124–215 ms on `web-heap` over sets of up to
-  410k members. Neither K nor the recall bounds it.
-- **Open, latent**: the passes over held entries read N(N+1)/2 entries on a
-  chain of N registered targets met in an order unrelated to the chain; on
-  the web loads 0.9–1.6 passes a batch.
+  410k members in the measured build, 67–103 ms with the fast path of §12.
+  Neither K nor the recall bounds it; a validation across polls would.
+- **Closed since**: the passes over held entries read N(N+1)/2 entries on a
+  chain of N registered targets met in an order unrelated to the chain; four
+  passes at most since (§12).
 - **Open, measured**: on the arena loads the epoch turns mostly by X, which
   releases every lane, so there the waits by readings act little.
 
@@ -298,3 +303,25 @@ deviations and the gates: `dev/BENCHMARKS.md`, "S67.6"; data:
 | R, deferred lanes, re-offer | `src/cycle/queue.rs` |
 | epoch turn | `src/cycle/epoch.rs` |
 | the model | `rfc/model/gc/rc-cycle.md` |
+
+## 12. Since the measured build
+
+The default build has moved past `a72693d` in four ways, each in
+`dev/DECISIONS.md` or `dev/BENCHMARKS.md` under its date:
+
+- **The epoch's ratio is 4**, the embedder's to set through
+  `ll_gc_set_epoch_ratio` (Edmond, 2026-10-03; `dev/BENCHMARKS.md`, "S67.15").
+- **The owner's fast path over a set garbage whole**: where every met row
+  reads zero after the drain within the set, the scan is skipped, the
+  teardown reserves its drops by the drain's count of cells left out where no
+  member destructor ran, and the commit is confirmed by the members' counts
+  summing to the drain's internal edges, the exact validation where they do
+  not (`dev/BENCHMARKS.md`, "S67.12"; the longest pause on `web-heap` 67–103
+  ms against 117–173).
+- **The grants behind a stopped trace** are released at the stop, and the
+  arena's blocks go back after the traced mutator's release (`dev/BENCHMARKS.md`,
+  "S67.13").
+- **The held passes are capped at four** before the final drain, which takes
+  what is left; the cap moves what a completed batch stamps (§9).
+- **The rest of §8's constants stand.**
+

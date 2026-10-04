@@ -15,8 +15,10 @@ marked so.
 
 Edmond's review (`dev/THE-COLLECTOR-KEEPS-THE-LIVE-ROOTS-REVIEW.md`, F1–F6)
 holds on the code in every finding, and the Sage ruled its open choices on
-2026-09-26; `PLAN.md` S65.24–S65.26 carry the rulings, and they take
-precedence over the text below where the two differ:
+2026-09-26; `dev/DECISIONS.md`, "rulings the S65 and S67 stage notes held,
+carried at the stages' close", "Form D", and the journals' entries of
+2026-09-26 carry the rulings, and they take precedence over the text below
+where the two differ:
 
 - The exit and the pressure path read the whole chain before each round;
   `cap 0`'s asked collection reads its ready part (F1, S8).

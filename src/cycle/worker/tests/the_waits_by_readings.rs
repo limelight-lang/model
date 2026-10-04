@@ -1,10 +1,9 @@
 //! A root read live waits longer the more live readings it has survived
-//! (`dev/plans/S65.md`, S65.42): 1, 3 and 7 epoch turns in
-//! three lanes; a turn the X arm
+//! (`dev/DECISIONS.md`, "rulings the S65 and S67 stage notes held, carried at
+//! the stages' close"): 1, 3 and 7 epoch turns in three lanes; a turn the X arm
 //! made releases every wait; the stamp's epoch is sixteen wide, so a silently
 //! dead ring read after a wait of eight or twelve turns is traced and freed,
-//! where two bits would read its members' stamps as current and prune at
-//! them.
+//! where two bits would read its members' stamps as current and prune at them.
 //!
 //! The residual exposure, named here and not tested as freed: a gap of
 //! sixteen turns between two readings of one root meets the epoch again, and

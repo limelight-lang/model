@@ -9,6 +9,120 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-04 — rulings the S65 and S67 stage notes held, carried at the stages' close
+
+Each stood only in the stage's notes file, which the close deletes; the date
+is the ruling's.
+
+**Old cases that pin a replaced mechanism are rewritten or deleted
+(Edmond, 2026-09-30).** "22 старых теста станут красными — запомни правило.
+старые тесты — не валидны. их надо менять или удалить": a case that pins a
+mechanism a step replaces is rewritten onto the new mechanism or deleted in
+that step, without a separate ask. Every other failing old case is still
+asked about (`dev/WORKFLOW.md`, "Never mute, skip, weaken or delete an
+existing test to go green").
+
+**Form D (2026-09-26, the default build since).** A batch that proposed no
+root releases the token to `NOTHING_PROPOSED` (`word(POSTED, 2)`) and owes P's
+disposition but no trace window: the reading's third arm,
+`Arming::Disposal` between `Retire` and `Verdicts`, `collect::dispose_of_p`.
+
+**The deferred lanes and why they are built so (the Sage, 2026-09-28, three
+Finals).** A root read live waits 1, 3 or 7 turns by its count of live
+readings, written by the mutator alone at `defer_entry`. No fixed schedule of
+turns excludes a gap ≡ 0 mod 4, and a wider stamp epoch changes the period
+and not the fact, so the epoch moves by one always and X counts in a byte of
+its own, `x_turns`, whose advance releases every lane. A difference read as
+an i8 below zero is not due. The retirement pass keeps `sweep_deferred =
+false`: turning it on reads every lane whole a pass, about 2,000 lane reads a
+death on the churn loads. The skip of a root read live in the same epoch
+(e_last) was dropped at the build because e_last can disagree with the
+members' stamps, and byte 6 was laid out again — epoch 16–19, age 20–21, the
+count 22–23 — so an alias needs a gap of sixteen turns.
+
+**Refused, not measured: no trace of a first-generation root (the Sage,
+2026-09-27, Final).** No field says when a root was registered, so the rule
+could only skip the first reading, which delays every garbage ring by an
+epoch.
+
+**Rejected as unsound: a dirty bit cleared at the lane's turn (the Sage,
+2026-09-27).** The collector advances the epoch before the mutator's poll
+turns the lane, so a stamp of the new epoch on an unregistered member blinds
+the reading after the clear: at k+1 the collector reads the live ring A→B→C
+and lists C, the mutator stamps C {k+1, 1} and drops X→B, the turn clears B
+and re-offers it, B reads live through C's stamp and is deferred clean, and
+at k+2 it stays in the lane until the exit; a stamp on a reused slot is a
+second route. The sound variant has the collector flag a `ReadLive` whose
+reading pruned an edge; Edmond took it ("наверное да") to be proved first, and
+the review of 2026-09-29 cut the step.
+
+**The collector's stamps, the Critic's conditions (2026-09-30, accepted).**
+Stamps are written once a batch, after its one trace and before the reset,
+never per part, so a part's stamps cannot split a later part's garbage; the
+exit and the pressure path read no stamp; the stamps' walk reads the recall
+every `RECALL_STRIDE` rows; the record's turnovers are re-read before the walk
+and the walk skipped on a mismatch; byte 6 is written only by the holder of
+the mutator's token.
+
+**The held passes capped at four (2026-10-03).** A chain of registered
+targets met out of order is bounded by `mark::HELD_PASSES` passes before the
+final drain, not by marking each entry a later subtraction brings to zero: the
+row has no spare bit, and the colour the Sage proposed is read before the
+scan by the stop's path (`undo_the_unreachable`, `colour_the_zero_closure`),
+so it would need a walk to clear after a complete mark.
+
+**What a stopped batch posts, and how K moves (revision 3 of S67.9, G3 and
+G5, 2026-09-30).** At a hard stop a batch posts the roots whose met rows read
+zero when the mark stopped, read under the token before the posts; a root the
+mark did not reach is `Unwalked`; a root above zero after its own region was
+expanded is `ReadLive`; a root cut inside its own region is `Unwalked`, except
+in a batch of one root, where it is `ReadLive` and leaves R, so that it does
+not come back cut at every grant. K doubles, up to `BATCH_BOUND`, on a trace
+complete over its whole clamp and on a stop over its whole clamp after the
+mark's first regions; holds on either short of its clamp; and halves on a stop
+inside the first regions, down to one root.
+
+**The owner's fast path over a set garbage whole (2026-10-03, the model on
+Edmond's "сам выбери").** Where every met row reads zero after the drain
+within a posted set, the owner skips the scan, reserves its teardown by the
+drain's count of the cells it left out where no member destructor ran, and
+confirms the commit by the members' counts summing to the drain's internal
+edges, the exact validation where they do not. The sum stands in for the
+exact validation only because no count and no counted cell changes between
+the trace and the commit; it is a partial check, and a design that runs code
+in that gap — a validation across polls — forgets the edges read
+(`dev/BENCHMARKS.md`, "S67.12"). Withdrawn on the way: a set bounded by K
+(`SET_MARK`), since a request's whole tree hangs from its context ring and
+the set does not shrink with K; rejected: sets split into component-closed
+parts, which needs the components of the white set found.
+
+**Declined for the posted set (2026-10-03).** The collector giving back a set
+its owner leaves standing races the return hook's read of the set, and a set
+costs 8 bytes a member, 1.7 MB at the most on `web-heap-150k`; appending the
+set in scan order buys nothing, any subset being sound.
+
+**The stamps' walk keeps reading the stop alone (2026-10-03, the Critic).**
+The recall level only rises within a grant, so a walk stopped at a wind-down
+raised before it would stamp a stride and leave the state for the next batch
+to walk whole again, every batch; no waiting mutator sits behind the walk,
+and running on costs withheld returns up to the second mark.
+
+**The collector's memory given back at the reset (2026-10-03).** A reset gives
+the pool its first `WARM_BLOCKS` (16, 1 MiB, not measured) with their pages
+standing and the rest with their pages past the first 16 KiB discarded; the
+discard pays for a process whose heap is small against the collector's peak
+walk, which no load here is, and it is kept as ruled on 2026-09-30.
+
+**Garbage behind stamps waits a bounded number of epochs (the Sage of
+2026-09-30).** At most two epochs, `k + 1` behind a chain of `k` stamped
+components, where the collector reads R as fast as the mutator writes it
+(`crate::cycle::epoch`, "The turn").
+
+**`partly-overlapping`'s remnant is the scheme's behaviour (2026-10-03).** The
+lanes re-offer a deferred root after one, three or seven turns and X releases
+them all, so a remnant freed only across turns is expected and no step
+follows.
+
 ## 2026-10-03 — the epoch's ratio is 4, and the embedder's to set
 
 **Decided (Edmond, 2026-10-03):** "я бы сделал этот параметр настраиваемым"
@@ -118,10 +232,11 @@ at a cap of zero, and read no stamp under pressure and at the exit
 live rows of the row arrays its final drain touched first, oldest first.
 
 **Why.** A web server's state is entered through registered core objects;
-under the exemption every batch walked it whole (R4, `dev/plans/S67.md`: 45
-complete batches in 20 s against 1,368 with the prune). A live request cut by
-a batch boundary is walked before the final drain, so it is not stamped and
-is walked again once it dies, rather than pruned at for the rest of the epoch.
+under the exemption every batch walked it whole (R4, `dev/plans/S67.md` at
+`410b856`: 45 complete batches in 20 s against 1,368 with the prune). A live
+request cut by a batch boundary is walked before the final drain, so it is not
+stamped and is walked again once it dies, rather than pruned at for the rest
+of the epoch.
 
 **Rejected:** stamping every live row (a dying request pruned for an epoch);
 the `unlisted-registered-members` arm, whose premise — a registered member's
@@ -155,8 +270,9 @@ return go.
 
 **Why.** The list existed only because byte 6 had one writer, the owner
 (`live_list.rs`); its stamps landed after the batch, so a batch's parts could
-not prune each other (R4's 40-s batch, `dev/plans/S67.md`). The two Critics of
-2026-09-30 found no data race; their conditions are in the plan notes.
+not prune each other (R4's 40-s batch, `dev/plans/S67.md` at `410b856`). The
+two Critics of 2026-09-30 found no data race; their conditions are in the plan
+notes.
 
 ## 2026-09-30 — the collector's trace has no rows ceiling, and the runtime sets no memory limit of its own
 
@@ -183,11 +299,11 @@ keeps none of its own ("в будущем менеджер памяти може
 
 **Consequences.** The claim that a refusal stops the trace and never the
 process holds only where `mmap` can fail (overcommit 2, `RLIMIT_AS`, the
-Windows commit limit); `dev/plans/S67.md`, S67.9, states the real bound. The
-peak the walk draws stays in the process's RSS until the collector's memory
-is given back to the system, which is the design work that replaces the cap;
-the worklist stops pushing entities without counted cells, and the mark leaves
-the critical reserve to the scan.
+Windows commit limit); `dev/plans/S67.md` at `410b856`, S67.9, states the real
+bound. The peak the walk draws stays in the process's RSS until the
+collector's memory is given back to the system, which is the design work that
+replaces the cap; the worklist stops pushing entities without counted cells,
+and the mark leaves the critical reserve to the scan.
 
 **Rejected:** a fixed rows ceiling (fitted to a load); a ceiling proportional
 to the traced mutator's heap (no per-mutator count, and no ratio both binds
@@ -200,19 +316,19 @@ unreachable…"): the owner's collection over P is bounded by no count; it reads
 the posted set alone.
 
 **Decided (Sage A of S67.9's round 2 and the Sage over items (14′) and (15′),
-Final; `dev/plans/S67.md`, S67.9):** a batch's roots are all met before any
-expansion; phase 1 drains the stack depth first and holds each first-met
-target carrying the candidate bit on a second stack; phase 2 runs passes over
-the held entries, expanding first each one whose row reads zero — every
-referrer of it already met — and holding the rest, then expands what remains
-depth first. A dead request's registered interior (one in-edge each, its
-parent) promotes pass by pass and is expanded before the shared state, so its
-root reads zero at any stop past its levels; the state, entered through
+Final; `dev/plans/S67.md` at `410b856`, S67.9):** a batch's roots are all met
+before any expansion; phase 1 drains the stack depth first and holds each
+first-met target carrying the candidate bit on a second stack; phase 2 runs
+passes over the held entries, expanding first each one whose row reads zero —
+every referrer of it already met — and holding the rest, then expands what
+remains depth first. A dead request's registered interior (one in-edge each,
+its parent) promotes pass by pass and is expanded before the shared state, so
+its root reads zero at any stop past its levels; the state, entered through
 registered core objects whose rows its own references keep above zero, is
 walked last on the ordinary stack with its locality. A completed batch lists
 only the rows of arrays first touched in that final drain, so a live request
-cut by a batch boundary is not stamped whole. The owner's collection over P
-is bounded by positions, a count of the mutator's own work. The prune stays in
+cut by a batch boundary is not stamped whole. The owner's collection over P is
+bounded by positions, a count of the mutator's own work. The prune stays in
 the explicit collection and at cap 0 and goes from the pressure and exit
 collections. The age stays one bit at k = 1; no carry across epochs.
 
@@ -256,16 +372,16 @@ unreachable…"): the owner validates the collector's listed set without its own
 walk; a reissued slot costs a refusal, not a wrong free.
 
 **Decided (the Sage of S67.9's round 1, Final, over four Critics and a
-research sweep; `dev/plans/S67.md`, S67.9):** a collector's mark keeps two
-worklists: an edge into a target that carries the candidate bit and is not a
-root of the batch is crossed and subtracted as before and held for a second
-phase (its order and the rest of the walk: the entry above); every other
-target stays on the stack. A batch is one trace, every root marked before one
-scan, as the owner's `trace_batch` runs, so the shared live state is walked
-once a batch rather than once a root; what a hard stop proposes is the batch
-roots whose rows read zero when the mark stopped. The owner's collection over P
-walks the same way under a budget of its own and stops as a collector part
-does.
+research sweep; `dev/plans/S67.md` at `410b856`, S67.9):** a collector's mark
+keeps two worklists: an edge into a target that carries the candidate bit and
+is not a root of the batch is crossed and subtracted as before and held for a
+second phase (its order and the rest of the walk: the entry above); every
+other target stays on the stack. A batch is one trace, every root marked
+before one scan, as the owner's `trace_batch` runs, so the shared live state
+is walked once a batch rather than once a root; what a hard stop proposes is
+the batch roots whose rows read zero when the mark stopped. The owner's
+collection over P walks the same way under a budget of its own and stops as a
+collector part does.
 
 **Refused, with the reason:** the stamp as the order key, which three Critics
 and the research proposed — a request listed live in one epoch and dead in the
@@ -294,10 +410,10 @@ proposes the roots its rows read at zero among what it met, and treats what it
 did not reach as live. Until now such a part kept nothing and posted every root
 it met read live, so garbage it had already proven waited behind the live state
 it could not finish, and on `web-heap` nothing was freed at all
-(`dev/plans/S67.md`, S67.9, "web-heap's bytes"). The prune is an optimisation
-and progress may not depend on it. The part's verdict stays a proposal: the
-owner's exact validation (`cycle::validation`) judges every component before a
-free, as before.
+(`dev/plans/S67.md` at `410b856`, S67.9, "web-heap's bytes"). The prune is an
+optimisation and progress may not depend on it. The part's verdict stays a
+proposal: the owner's exact validation (`cycle::validation`) judges every
+component before a free, as before.
 
 Put to the Critic with the stage's revision, not yet ruled: whether B as a
 count of blocks traced still has a role once a stop no longer loses the work.
@@ -453,8 +569,9 @@ mutator's performance comes first, Edmond having handed the choice back.
 
 ## 2026-09-24 — a part that meets B is retried under `B_max` once per grant, a part past the ceiling defers the roots it met, and the batch goes on
 
-**Superseded 2026-10-01** (S67.9 step (c), `dev/plans/S67.md`): the batch is one
-trace with no budget, and a stopped trace posts its snapshot; git keeps the entry.
+**Superseded 2026-10-01** (S67.9 step (c), `dev/plans/S67.md` at `410b856`):
+the batch is one trace with no budget, and a stopped trace posts its snapshot;
+git keeps the entry.
 
 ---
 
@@ -475,8 +592,9 @@ standing from anything else is cleared by the consent.
 
 ## 2026-09-24 — the batch runs in parts: the recall is read at every root before the parts and between two parts, and a part's met roots are found by a walk its own rows bound
 
-**Superseded 2026-10-01** (S67.9 step (c), `dev/plans/S67.md`): the batch is one
-trace with no budget, and a stopped trace posts its snapshot; git keeps the entry.
+**Superseded 2026-10-01** (S67.9 step (c), `dev/plans/S67.md` at `410b856`):
+the batch is one trace with no budget, and a stopped trace posts its snapshot;
+git keeps the entry.
 
 ---
 
@@ -548,8 +666,9 @@ them.
 
 ## 2026-09-23 — the trace in parts waits for the recall and the stack marks
 
-**Superseded 2026-10-01** (S67.9 step (c), `dev/plans/S67.md`): the batch is one
-trace with no budget, and a stopped trace posts its snapshot; git keeps the entry.
+**Superseded 2026-10-01** (S67.9 step (c), `dev/plans/S67.md` at `410b856`):
+the batch is one trace with no budget, and a stopped trace posts its snapshot;
+git keeps the entry.
 
 ---
 

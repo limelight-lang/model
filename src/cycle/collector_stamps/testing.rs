@@ -53,9 +53,9 @@ pub(crate) fn take_stamps() -> usize {
 }
 
 /// What the stamping costs the collector, per batch that ran it
-/// (`dev/plans/S67.md`, S67.9, the Critic of 2026-09-30 on the collector
-/// writing the stamps, finding 3): the walks, their stamps in all and at the
-/// most, and the wall in all and at the longest.
+/// (`dev/DECISIONS.md`, "the collector writes the maturation stamps itself, and
+/// the live list goes"): the walks, their stamps in all and at the most, and
+/// the wall in all and at the longest.
 #[derive(Clone, Copy, Default, Debug)]
 pub(crate) struct Stamping {
     pub(crate) walks: usize,
