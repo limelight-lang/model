@@ -4559,6 +4559,24 @@ fn a_cell_of_the_rig() {
     let _g = test_guard();
     let _wait = testing::HeldRequestWait::crate_own();
     let cell = Cell::from_env();
+    // The two settings S68.8 reads under `recycler-over-counts`: the largest
+    // set the collector frees itself, and the Δ-test's wait for a checkpoint.
+    #[cfg(feature = "recycler-over-counts")]
+    {
+        if let Ok(cap) = std::env::var("LL_RIG_MEMBER_CAP") {
+            let _ = crate::cycle::collector_frees::set_member_cap_for_test(
+                cap.parse().expect("LL_RIG_MEMBER_CAP is a count"),
+            );
+        }
+        if let Ok(wait) = std::env::var("LL_RIG_CHECKPOINT_WAIT_US") {
+            let _ = crate::cycle::delta_test::set_checkpoint_wait_for_test(
+                std::time::Duration::from_micros(
+                    wait.parse()
+                        .expect("LL_RIG_CHECKPOINT_WAIT_US is microseconds"),
+                ),
+            );
+        }
+    }
     let class = member_class("RigNode");
     let loads: Vec<Load> = LOADS
         .into_iter()

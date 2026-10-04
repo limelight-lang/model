@@ -43,6 +43,17 @@ use crate::cycle::row;
 /// far more often than this.
 pub(crate) const CHECKPOINT_WAIT: Duration = Duration::from_millis(2);
 
+/// The bound in force, in nanoseconds: [`CHECKPOINT_WAIT`], or what a
+/// measurement set.
+static WAIT_NANOS: AtomicU64 = AtomicU64::new(CHECKPOINT_WAIT.as_nanos() as u64);
+
+/// Set the bound a measurement reads the Δ-test under, and answer the one it
+/// replaces.
+#[cfg(test)]
+pub(crate) fn set_checkpoint_wait_for_test(wait: Duration) -> Duration {
+    Duration::from_nanos(WAIT_NANOS.swap(wait.as_nanos() as u64, Ordering::Relaxed))
+}
+
 /// Spins before the wait yields its core.
 const SPINS: u32 = 2_000;
 
@@ -230,7 +241,8 @@ fn wait_for_the_checkpoint(
             return true;
         }
 
-        if recalled() || from.elapsed() >= CHECKPOINT_WAIT {
+        if recalled() || from.elapsed() >= Duration::from_nanos(WAIT_NANOS.load(Ordering::Relaxed))
+        {
             return false;
         }
 
