@@ -9,6 +9,58 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-04 — the collector judges and frees a garbage set by window tags, built as an arm beside the default build
+
+**Decision (Edmond: "утверждаю делай", over the Sage of the Recycler round,
+Fable, Final).** A third arm is built beside today's default build, which
+stays as the arm it is measured against: *Recycler over counts* (R2,
+`dev/design/recycler-over-counts.md`). The mutator keeps immediate,
+owner-written reference counting; while a collector holds its token (a
+window numbered 1..255), every count write tags the entity's header byte 7
+with the window number, and every pointer store tags the holder. The
+collector traces as today, records every edge it subtracts, scans over the
+recorded edges only, and at the mutator's next safepoint poll (a handshake)
+reads byte 7 of every white member: no tag of the window means the set is
+garbage, judged by the collector alone. It frees the part with no
+destructor and no weak references itself and hands the owner a short list
+of typed drops; the owner's pause is that list, est. 0.1–1 ms on a
+400k-member set against 48–51 ms measured today.
+
+**What it overturns, for this arm.** `rfc/model/gc/cycle/questions.md` Y1's
+principle — a per-store soundness cost no proof can delete, paid with no
+garbage around: here a byte store on every count write and every GcHeap
+pointer store, est. +1–3 % mutator CPU on `web-heap`. And Y5's "only the
+mutator frees": the collector returns slots (dead in place for registered
+members, per-block chains for the rest), which `rc-cycle.md` forbids today
+and must allow for this arm.
+
+**Why.** Measured the same day (`dev/BENCHMARKS.md`, "one garbage ring, one
+thread against the split"): the split moves only a quarter of the pause off
+the mutator, because the owner re-traces and tears down the set; the owner's
+pause is the weakness of the default build. The design went through two
+Critic rounds and the Sage; the Sage's proof holds under four conditions —
+T at the safepoint checkpoint, no uncounted reference live across a
+checkpoint, window ids 1..255 with 0 closed, the holder tag at every
+GcHeap-holder slot write including in-array permutations.
+
+**Rejected or deferred, the same day:** the logged verdict (the owner checks
+a deletion log and a counts sum instead of re-tracing; est. 25–30 ms) —
+kept as the fallback if the tag's price is refused; the Recycler as
+published (R1: deferred object counts, uncounted locals, collector-owned
+counts) — sound after two fixes but deferred behind R2 (1–3 collector cores,
+≈60 % of `lowering.md` rewritten, the same pause), to be reopened if object
+retain/release is ≥ 8 % of mutator instructions on a PHP-shaped load. R1 was
+first dropped on a destructor-timing "constraint" that Y2 (lines 137-140)
+does not set; that error is recorded in `dev/POSTMORTEM.md`.
+
+**Gate (the Sage's):** retain/release and store microbenchmarks with and
+without the tag; on `web-heap`, mutator CPU within +3 % of the default
+build, the longest owner pause under 5 ms in every cell, held garbage no
+worse, Δ-refusals under 10 % of batches; a loom model of the handshake and a
+debug build asserting the tag at every primitive.
+
+---
+
 ## 2026-10-04 — rulings the S65 and S67 stage notes held, carried at the stages' close
 
 Each stood only in the stage's notes file, which the close deletes; the date

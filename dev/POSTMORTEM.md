@@ -7,6 +7,36 @@ was possible and why it was not caught.
 
 ---
 
+## 2026-10-04 — a design the owner asked for was replaced twice: once by drift, once by a constraint nobody had set
+
+**What happened.** Edmond asked to work out Bacon–Rajan's Recycler (the
+collector judges and frees alone). The model sent a +1/−1-log variant to a
+Critic, followed the Critic's counter-proposal (log pointer stores, the
+owner checks), and three rounds later presented a design in which the
+mutator still judged — the opposite of the request — without saying it had
+left the request. Then, designing the Recycler itself, round 1's Critic
+declared the published form (R1) fatal because "a count that reaches zero
+destructs on the spot", and the model dropped R1 on it. Edmond: that was
+never a condition. `rfc/model/gc/cycle/questions.md` Y2, lines 137-140,
+ruled by him: "PHP promises no instant, so deferred and coalesced counting
+are not disqualified by destructor timing"; the quoted sentence describes
+today's build.
+
+**Why it was possible.** A Critic's counter-proposal was treated as the new
+brief, and a cited "ruling" was taken from a Critic's quotation instead of
+being read in its source; both times the model decided for the owner what
+the owner had not decided.
+
+**Why it was not caught.** No step compared the round's output with the
+owner's request, and no step opened the cited ruling.
+
+**Rule.** A Critic finds breaks in the design the owner asked for; a change
+of direction is the owner's, asked as one question. Any "constraint" or
+"ruling" that would drop an option is read in its source, at its lines,
+before the option is dropped.
+
+---
+
 ## 2026-10-04 — lessons the S65 and S67 stage notes held, carried at the stages' close
 
 Each stood only in the stage's notes file, which the close deletes.

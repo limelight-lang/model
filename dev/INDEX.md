@@ -386,6 +386,13 @@ best D build of `dev/BENCHMARKS.md`, "S67.6: D and HG on the web loads",
 stated for reviewers outside the project; `dev/data/s67.6/` — that run's raw
 cells, requests, A/A check, pilots and analysis script (`README.md` there).
 
+`dev/design/recycler-over-counts.md` — the collector judges and frees a
+garbage set alone by window tags in header byte 7 (Recycler over counts),
+ruled 2026-10-04 and built in S68 as an arm beside the default build.
+`dev/HOW-THE-CYCLE-COLLECTOR-EVOLVED.md` — material for an article: the path
+of decisions from PHP's synchronous collector to S68, with the figures that
+moved each step; S68's run results are appended to it.
+
 `dev/design/the-proof-epoch-collector.ru.md` — the Russian translation, with
 explicit notes on the original's limits; `dev/PROOF-EPOCH-COLLECTOR-REVIEW-RU.md`
 — the 2026-10-03 review, updated after a second round by three critics on

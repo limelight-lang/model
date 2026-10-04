@@ -14,8 +14,7 @@ crate. The destination's last mile, the compiler that links this crate, is
 outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
 `limelight`.
 
-Updated: 2026-10-04 · Active: none; the next stage is drawn from the backlog
-below.
+Updated: 2026-10-04 · Active: S68.
 
 Review 2026-09-29, the last; its text and the closed stages' summaries are in
 `git log -- PLAN.md`.
@@ -114,6 +113,44 @@ criterion, and it leaves when it gets one or when it is ruled on.
   the block kind is the split").
 - `dev/ARCHITECTURE.md` is the crate's knowledge map and moves with behaviour
   like any other document (`dev/WORKFLOW.md`).
+
+## S68 — The collector judges and frees a garbage set alone  [in progress]
+
+Goal: build *Recycler over counts* (`dev/design/recycler-over-counts.md`;
+`dev/DECISIONS.md`, "the collector judges and frees a garbage set by window
+tags…") as a feature beside the default build, which stays as the arm it is
+measured against (Edmond, 2026-10-04: "утверждаю делай").
+Done when: the feature builds and passes the suite under it; a loom model of
+the handshake at T and a debug build asserting the tag at every primitive
+and checking the collector's verdict against the exact validation are
+green; and the Sage's gate is read on the 400k-ring probe and on `web-heap`
+and an array-bearing load — mutator CPU within +3 % of the default build,
+the longest owner pause under 5 ms in every cell, held garbage no worse,
+Δ-refusals under 10 % of batches — the figures put to Edmond, appended to
+`dev/HOW-THE-CYCLE-COLLECTOR-EVOLVED.md`.
+
+- [ ] S68.1 The tag's price: `ll_retain`/`ll_release` and the store barrier
+      with and without a byte-7 store, microbenchmarks and instructions
+      (IR or asm across the ABI), before any build of the rest.
+- [ ] S68.2 Byte 7 freed: `RECONCILING` into the reset window's capture log.
+- [ ] S68.3 The window and the tags, behind the feature: the window number
+      in the record (1..255, advanced at the consent, 0 closed); the tag in
+      `refcount_store`, the slot-write primitives and the in-array
+      permutations; the holder through the barrier (the ABI change).
+- [ ] S68.4 The collector records the edges it subtracts, and its scan runs
+      over the recorded edges only.
+- [ ] S68.5 The handshake at the safepoint checkpoint and the Δ-test; a
+      refused or stopped set goes the default build's exact way.
+- [ ] S68.6 The split W = C ∪ S; the collector frees C (dead in place,
+      per-block chains, `ll_free`'s routing without `free_remote`) and posts
+      typed drops; the owner applies them at its poll, splices the chains,
+      and takes S the exact way.
+- [ ] S68.7 The loom model of the handshake; the debug build's tag asserts and
+      the exact validation run beside the verdict.
+- [ ] S68.8 The runs: the 400k-ring probe (a column in
+      `what_the_split_costs`), `web-heap` and an array-bearing load against
+      the default build, by the gate; the results into the journal and the
+      article.
 
 ## Then: arrays as a performance problem
 
