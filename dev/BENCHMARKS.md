@@ -8,6 +8,40 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-04 — S68.6a: the owner's pause over a 400k garbage ring is not its trace — taking a proved set without one leaves it at 50 ms
+
+**The probe.** `what_the_split_costs::measure_one_thread_against_the_split`,
+release, now printing the owner's pause of the median round by phase (the
+trace within the set as mark and scan, the membership, the commit's first
+reading with the guards and the weak notifications, the destructor pass, the
+second reading with the teardown, the drops; the close is what the total
+leaves). Three builds at the tree of `f2c9d5c` plus S68.6a: the default; the
+feature at S68.5 (the owner still traces the proved set); the feature at
+S68.6a (a set proved by its tags is met with no trace of its cells and
+confirmed by the counts' sum against the edges the collector recorded). One
+run each, a four-core cloud box, nothing else running.
+
+| 400k ring, ms | default | S68.5 | S68.6a |
+|---|---:|---:|---:|
+| one thread | 66.1 | 70.9 | 64.6 |
+| collector | 41.1 | 38.7 | 32.9 |
+| owner's pause | 49.2 | 55.5 | 50.5 |
+| — mark / scan | 12.8 / 1.4 | 15.6 / 1.1 | 9.8 / 0.0 |
+| — membership | 0.7 | 0.7 | 0.7 |
+| — first reading, guards, weak | 6.5 | 7.1 | 6.7 |
+| — destructor pass | 2.1 | 2.3 | 2.1 |
+| — second reading, teardown | 15.9 | 20.2 | 22.3 |
+| — close (the rest) | 9.8 | 8.5 | 8.9 |
+
+**Reading.** Skipping the trace saved its drain and its scan, ≈ 3–4 ms, and
+not more: the "mark" left is the meeting of 400k members — a row each, read
+off the posted set — at ≈ 25 ns a member, and the first reading's cost is its
+guards and weak notifications, not the walk the sum replaced. The pause is
+the teardown and what surrounds it: the meeting, the guards, the teardown, the
+close, ≈ 45 ms of 50. Only the collector freeing the set itself (S68.6b)
+takes those off the owner. The teardown's 16–22 ms spread across the three
+runs is not examined; one run each.
+
 ## 2026-10-04 — S68.5 smoke: on `web-heap` about nine sets in ten the Δ-test reads are proved by their tags, and three tests in ten find no checkpoint
 
 **What.** Two 30 s smoke cells of `web-heap` (46.78 ms interarrival, two

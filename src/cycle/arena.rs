@@ -1799,6 +1799,17 @@ impl TraceScratchArena {
     /// it found garbage whole, and the cells it subtracted as its internal
     /// edges: every met row is a member, so a cell is external exactly where
     /// the drain subtracted from no row.
+    /// Take `edges`, the edges the collector recorded between the members of
+    /// a set it proved by its tags, as the internal edges this collection
+    /// read, for the commit's sum to confirm against
+    /// (`crate::cycle::finalization`); the external children stay unread, for
+    /// the teardown's own walk to count.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn take_the_internal_edges_the_collector_recorded(&mut self, edges: usize) {
+        self.internal_edges_read = Some(edges);
+        self.external_children_read = None;
+    }
+
     pub(crate) fn keep_the_cells_left_out_as_external_children(&mut self) {
         self.external_children_read = Some(self.cells_left_out);
         self.internal_edges_read = Some(self.cells_subtracted);

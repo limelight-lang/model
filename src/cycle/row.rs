@@ -257,39 +257,12 @@ pub(crate) unsafe fn colour_unreachable_where_every_met_row_reads_zero(
     touched: *mut crate::cycle::shadow::RowArray,
 ) -> bool {
     use crate::cycle::shadow::{Color, color, count, recolor};
-    use std::ops::ControlFlow;
     // A trace that met nothing has no set to call garbage.
     if touched.is_null() {
         return false;
     }
-    let each_met_row = |visit: &mut dyn FnMut(*mut u32) -> bool| -> bool {
-        let mut array = touched;
-        while !array.is_null() {
-            let (block, population) = unsafe { ((*array).block, (*array).population) };
-            let whole = if population == Population::SingleEntity {
-                let row = unsafe { crate::memory::large_entity::shadow_row(block) };
-                color(unsafe { *row }) == Color::Untouched || visit(row)
-            } else {
-                unsafe {
-                    crate::cycle::shadow::for_each_met_row(array, |index| {
-                        if visit(crate::cycle::shadow::row(array, index)) {
-                            ControlFlow::Continue(())
-                        } else {
-                            ControlFlow::Break(())
-                        }
-                    })
-                }
-                .is_continue()
-            };
-            if !whole {
-                return false;
-            }
-
-            array = unsafe { (*array).next };
-        }
-
-        true
-    };
+    let each_met_row =
+        |visit: &mut dyn FnMut(*mut u32) -> bool| unsafe { for_each_met_row_of(touched, visit) };
 
     // Unclassified as the mark left every row it met, and at zero: a row the
     // trace coloured otherwise goes to the scan, which reads its colour.
@@ -304,6 +277,67 @@ pub(crate) unsafe fn colour_unreachable_where_every_met_row_reads_zero(
         unsafe { recolor(row, Color::PotentiallyUnreachable) };
         true
     })
+}
+
+/// Visit every row the trace met over the arrays of `touched`, a large
+/// entity's word of its own block header among them, stopping where `visit`
+/// answers false, and answer false when it stopped early.
+///
+/// # Safety
+/// `touched` is the head of a trace's touched list whose rows still stand.
+unsafe fn for_each_met_row_of(
+    touched: *mut crate::cycle::shadow::RowArray,
+    visit: &mut dyn FnMut(*mut u32) -> bool,
+) -> bool {
+    use crate::cycle::shadow::{Color, color};
+    use std::ops::ControlFlow;
+    let mut array = touched;
+    while !array.is_null() {
+        let (block, population) = unsafe { ((*array).block, (*array).population) };
+        let whole = if population == Population::SingleEntity {
+            let row = unsafe { crate::memory::large_entity::shadow_row(block) };
+            color(unsafe { *row }) == Color::Untouched || visit(row)
+        } else {
+            unsafe {
+                crate::cycle::shadow::for_each_met_row(array, |index| {
+                    if visit(crate::cycle::shadow::row(array, index)) {
+                        ControlFlow::Continue(())
+                    } else {
+                        ControlFlow::Break(())
+                    }
+                })
+            }
+            .is_continue()
+        };
+        if !whole {
+            return false;
+        }
+
+        array = unsafe { (*array).next };
+    }
+
+    true
+}
+
+/// Colour every row the trace met over the arrays of `touched` potentially
+/// unreachable, whatever its count: the trace of a set the collector proved
+/// garbage by its tags, which meets the members and reads none of their cells
+/// (`crate::cycle::trace::trace_within_the_set`). What the owner's commit then
+/// confirms is the proof's own sum, the members' counts against the edges the
+/// collector recorded between them.
+///
+/// # Safety
+/// As [`colour_unreachable_where_every_met_row_reads_zero`].
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) unsafe fn colour_every_met_row_unreachable(
+    touched: *mut crate::cycle::shadow::RowArray,
+) {
+    let _ = unsafe {
+        for_each_met_row_of(touched, &mut |row| {
+            crate::cycle::shadow::recolor(row, crate::cycle::shadow::Color::PotentiallyUnreachable);
+            true
+        })
+    };
 }
 
 /// Visit the index of every row of `block` the scan left

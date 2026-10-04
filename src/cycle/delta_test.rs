@@ -166,6 +166,34 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
     }
 }
 
+/// The edges the mark recorded between two members of the set its scan
+/// proved: what the counts of a garbage set sum to, every reference to a
+/// member coming from another (`crate::cycle::finalization`'s sum, which the
+/// owner reads in place of its own trace of a set proved by its tags).
+///
+/// # Safety
+/// As [`test_the_set_by_its_tags`], after it: the rows stand, a run's header
+/// row holding its index, a potentially unreachable row a member.
+pub(crate) unsafe fn internal_edges_of_the_set(arena: &TraceScratchArena) -> usize {
+    use crate::cycle::recorded_edges::RUN;
+    use crate::cycle::shadow::{Color, color};
+
+    let record = arena.recorded_edges();
+    let mut edges = 0;
+    let mut from_a_member = false;
+    for index in 0..record.len() {
+        let entry = unsafe { record.entry(index) };
+        let row = (entry & !RUN) as *const u32;
+        let member = color(unsafe { *row }) == Color::PotentiallyUnreachable;
+        if entry & RUN != 0 {
+            from_a_member = member;
+        } else if from_a_member && member {
+            edges += 1;
+        }
+    }
+    edges
+}
+
 /// Wait for the mutator's answer: true once it passed a checkpoint, false
 /// where `recalled` reads the recall at the stop level, or past
 /// [`CHECKPOINT_WAIT`] from `from`. A recall at the wind-down level does not

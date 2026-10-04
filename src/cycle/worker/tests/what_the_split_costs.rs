@@ -89,10 +89,20 @@ fn measure_one_thread_against_the_split() {
             owner.push(start.elapsed());
             phases.push((start.elapsed(), testing::take_verdict_collections().phases));
             assert_eq!(freed, members, "the owner freed the ring");
+            // The fast path of a set the drain found garbage whole, or under
+            // `recycler-over-counts` that of a set proved by its tags, which
+            // reads no member's cells.
+            #[cfg(not(feature = "recycler-over-counts"))]
             assert_eq!(
                 crate::cycle::trace::take_sets_garbage_whole(),
                 1,
                 "the set took the fast path"
+            );
+            #[cfg(feature = "recycler-over-counts")]
+            assert_eq!(
+                crate::cycle::trace::take_sets_proved_by_tags_validated(),
+                1,
+                "the set took the proved set's path"
             );
         }
         let median = |walls: &mut Vec<Duration>| {

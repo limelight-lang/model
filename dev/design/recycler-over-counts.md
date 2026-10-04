@@ -160,6 +160,53 @@ deferred lanes are all as in the default build.
     a block return — releases it too); the window stays open until the next
     consent opens the next one (§2.1).
 
+### 5a. How S68.6 is built (the plan, before the code)
+
+Measured first (`dev/BENCHMARKS.md`, "S68.6a: the owner's pause over a 400k
+garbage ring is not its trace"): of the owner's 50 ms over a 400k ring, its
+trace was 3–4 ms; the meeting of the members, the guards and weak
+notifications, the teardown and the close are the rest. So the steps:
+
+- **S68.6a (built).** A set proved by its tags reaches the owner marked, with
+  the count of edges the collector recorded between its members; the owner
+  meets the members with no trace of their cells and the commit confirms the
+  set by the counts' sum against that count, walking it where they differ.
+  The owner still tears the set down.
+- **S68.6b, the collector frees a set it can free whole.** The first form
+  takes W whole or not at all: the collector frees it itself where every
+  member is one it can free off the owner's thread —
+  - an `Object` or `Lazy` of a class with no destructor, the default dispose
+    and no outside cells; a `Reference`; a `String` with its bytes inline; an
+    `Array` whose storage, if any, is a body in a buffer-arena chunk;
+  - with no weak references (the Δ-test's `WeaklyHeld` already holds those
+    back), not an arena escapee, in a slot of an ordinary entity-heap block —
+    not a retained block, not a large entity, no body in an OS run.
+  Otherwise W goes the S68.6a way. The split W = C ∪ S of items 9–10 is the
+  form after this one, once the first form's figures are read.
+  Freeing, per member, on the collector's thread, under the grant: every
+  counted child outside W becomes a drop record (the child's address); a
+  child inside W needs nothing, dying with it; an array's body is posted to
+  its chunk's remote stack (`BufferArena::post_remote`, safe from any thread,
+  whose owner-side splice has no withholding gate); the slot is taken
+  (`take_slot_for_free`: count zero, `DEAD_IN_PLACE`). A registered member
+  (`CANDIDATE_BIT`) stays dead in place for the owner's retirement pass;
+  every other slot is linked, through the free-list word at byte 8, onto a
+  chain of its block the collector keeps — never the block's `remote_free`,
+  whose splice under a foreign holder would withhold it and recall the
+  grant. A stop may fall between members: what was freed is posted, the
+  rest of W is a part of garbage the owner may not free alone, and goes the
+  exact way only once every member it names is either freed or listed.
+  *(Open for the Critic: whether a stop between members is allowed at all, or
+  the free of W is one act the recall waits for.)*
+- **What the owner receives.** P's verdicts name W's roots as completed deaths
+  (their slots dead in place); beside them, in place of the set, the drops and
+  the chains. At its poll the owner applies the drops through `drop_ref`
+  (typed then), splices each chain into its block's free list with `used`
+  lowered by the chain's length (the body of `Heap::collect_remote` without
+  its gate), and counts the registered members as candidate deaths
+  (`queue::note_a_candidate_death`, which the collector's thread could not
+  reach). Its pause is then the drops' cascade and one splice a block.
+
 ## 6. The owner's poll
 
 12. The owner applies the drops, each through `drop_ref`, typed at

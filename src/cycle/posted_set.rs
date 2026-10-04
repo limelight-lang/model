@@ -75,9 +75,13 @@ struct SetBlock {
     entries: usize,
     blocks: *mut SetBlock,
     /// In the first block of the members' chain: whether the collector proved
-    /// the set garbage by its tags (`crate::cycle::delta_test`).
+    /// the set garbage by its tags (`crate::cycle::delta_test`), and the edges
+    /// its mark recorded between two members, which the proof makes the sum
+    /// of the members' counts.
     #[cfg(feature = "recycler-over-counts")]
     proved_by_its_tags: bool,
+    #[cfg(feature = "recycler-over-counts")]
+    internal_edges: usize,
 }
 
 const _: () = assert!(size_of::<SetBlock>() <= LINE_SIZE);
@@ -167,6 +171,8 @@ impl Chain {
             (&raw mut (*block).blocks).write(std::ptr::null_mut());
             #[cfg(feature = "recycler-over-counts")]
             (&raw mut (*block).proved_by_its_tags).write(false);
+            #[cfg(feature = "recycler-over-counts")]
+            (&raw mut (*block).internal_edges).write(0);
         }
         if self.tail.is_null() {
             self.head = block;
@@ -195,9 +201,11 @@ pub(crate) struct Writer {
     #[cfg(feature = "recycler-over-counts")]
     left_one_out: bool,
     /// Whether the collector proved the set garbage by its tags
-    /// (`crate::cycle::delta_test`).
+    /// (`crate::cycle::delta_test`), and its internal edges.
     #[cfg(feature = "recycler-over-counts")]
     proved_by_its_tags: bool,
+    #[cfg(feature = "recycler-over-counts")]
+    internal_edges: usize,
 }
 
 impl Writer {
@@ -211,6 +219,8 @@ impl Writer {
             left_one_out: false,
             #[cfg(feature = "recycler-over-counts")]
             proved_by_its_tags: false,
+            #[cfg(feature = "recycler-over-counts")]
+            internal_edges: 0,
         }
     }
 
@@ -274,8 +284,9 @@ impl Writer {
     /// garbage set is garbage, but not one that may be freed alone, the rest
     /// still naming it (the Critic of S68.5, finding 1).
     #[cfg(feature = "recycler-over-counts")]
-    pub(crate) fn mark_proved_by_its_tags(&mut self) {
+    pub(crate) fn mark_proved_by_its_tags(&mut self, internal_edges: usize) {
         self.proved_by_its_tags = !self.closed && !self.left_one_out;
+        self.internal_edges = internal_edges;
     }
 
     /// List `entity`, and first `block` where `first_in_block` says the block
@@ -315,7 +326,8 @@ impl Writer {
         unsafe { (*head).blocks = this.blocks.head };
         #[cfg(feature = "recycler-over-counts")]
         unsafe {
-            (*head).proved_by_its_tags = this.proved_by_its_tags
+            (*head).proved_by_its_tags = this.proved_by_its_tags;
+            (*head).internal_edges = this.internal_edges;
         };
         #[cfg(test)]
         testing::note_members_posted(
@@ -350,6 +362,13 @@ impl PostedSet {
     #[cfg(feature = "recycler-over-counts")]
     pub(crate) fn proved_by_its_tags(&self) -> bool {
         unsafe { (*self.head).proved_by_its_tags }
+    }
+
+    /// The edges the collector's mark recorded between two members: the sum
+    /// of the members' counts, where the set is proved by its tags.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn internal_edges(&self) -> usize {
+        unsafe { (*self.head).internal_edges }
     }
 
     /// Every member, in the order the collector listed them.

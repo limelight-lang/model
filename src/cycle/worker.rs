@@ -2616,7 +2616,9 @@ unsafe fn trace_the_batch(
         if unsafe { crate::cycle::delta_test::test_the_set_by_its_tags(mutator, arena) }
             == crate::cycle::delta_test::TagReading::Garbage
         {
-            set.mark_proved_by_its_tags();
+            set.mark_proved_by_its_tags(unsafe {
+                crate::cycle::delta_test::internal_edges_of_the_set(arena)
+            });
         }
     }
 

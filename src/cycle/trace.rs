@@ -181,6 +181,34 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
 ) -> (TraceOutcome, usize) {
     let members = || set.into_iter().flat_map(PostedSet::members);
     let mut refused = members().any(|member| !unsafe { schedule_root_if_unvisited(arena, member) });
+    // A set the collector proved by its tags is garbage whole: its members
+    // are met and coloured so, and none of their cells is read here. The
+    // commit confirms it by the counts' sum against the edges the collector
+    // recorded between them, and falls back to the walk where they differ
+    // (`crate::cycle::finalization`; `dev/design/recycler-over-counts.md`).
+    #[cfg(feature = "recycler-over-counts")]
+    if let Some(set) = set
+        && set.proved_by_its_tags()
+        && !refused
+    {
+        let mut traced = 0;
+        batch.walk_roots(|root| {
+            traced += 1;
+            refused = !unsafe { schedule_root_if_unvisited(arena, root) };
+            !refused
+        });
+        if refused {
+            return (TraceOutcome::AllocationFailed, traced);
+        }
+
+        arena.drop_the_work();
+        unsafe { crate::cycle::row::colour_every_met_row_unreachable(arena.touched_head()) };
+        arena.take_the_internal_edges_the_collector_recorded(set.internal_edges());
+        #[cfg(test)]
+        SETS_PROVED_BY_TAGS_VALIDATED.with(|count| count.set(count.get() + 1));
+        crate::cycle::token::note_last_row_read();
+        return (TraceOutcome::Complete, traced);
+    }
     let mut traced = 0;
     if !refused {
         batch.walk_roots(|root| {
@@ -203,10 +231,6 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
         #[cfg(test)]
         SETS_GARBAGE_WHOLE.with(|count| count.set(count.get() + 1));
         arena.keep_the_cells_left_out_as_external_children();
-        #[cfg(feature = "recycler-over-counts")]
-        if let Some(set) = set {
-            unsafe { check_a_set_proved_by_its_tags(set) };
-        }
         crate::cycle::token::note_last_row_read();
         return (TraceOutcome::Complete, traced);
     }
@@ -223,61 +247,21 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
         return (TraceOutcome::AllocationFailed, traced);
     }
 
-    #[cfg(feature = "recycler-over-counts")]
-    if let Some(set) = set {
-        unsafe { check_a_set_proved_by_its_tags(set) };
-    }
     crate::cycle::token::note_last_row_read();
     (TraceOutcome::Complete, traced)
 }
 
 #[cfg(all(test, feature = "recycler-over-counts"))]
 thread_local! {
-    /// Sets the collector proved garbage by their tags whose exact
-    /// validation this thread ran since this last answered, which it leaves
-    /// at zero.
+    /// Sets the collector proved garbage by their tags whose members this
+    /// thread met with no trace of their cells, since this last answered,
+    /// which it leaves at zero.
     static SETS_PROVED_BY_TAGS_VALIDATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// The sets proved by their tags [`trace_within_the_set`] validated on this thread since
-/// this last answered.
+/// The sets proved by their tags [`trace_within_the_set`] took on this thread
+/// since this last answered.
 #[cfg(all(test, feature = "recycler-over-counts"))]
 pub(crate) fn take_sets_proved_by_tags_validated() -> usize {
     SETS_PROVED_BY_TAGS_VALIDATED.with(|count| count.replace(0))
-}
-
-/// The exact validation checked against the collector's Δ-test: no member
-/// of a set the collector proved garbage by its tags may read live here
-/// (`crate::cycle::delta_test`). A debug build asserts it; the release build
-/// reads nothing.
-///
-/// # Safety
-/// As [`trace_within_the_set`], after its scan, the rows still standing.
-#[cfg(feature = "recycler-over-counts")]
-unsafe fn check_a_set_proved_by_its_tags(set: &PostedSet) {
-    if !set.proved_by_its_tags() {
-        return;
-    }
-
-    #[cfg(test)]
-    SETS_PROVED_BY_TAGS_VALIDATED.with(|count| count.set(count.get() + 1));
-    #[cfg(debug_assertions)]
-    for member in set.members() {
-        if unsafe { crate::refcount::slot_state(member) } != crate::refcount::SlotState::Live {
-            continue;
-        }
-        let crate::cycle::row::EdgeTarget::Tracked(key) =
-            (unsafe { crate::cycle::row::resolve_edge_target(member) })
-        else {
-            continue;
-        };
-        if let Some(row) = unsafe { crate::cycle::arena::find_initialized_row(key) } {
-            assert_ne!(
-                crate::cycle::shadow::color(unsafe { *row }),
-                crate::cycle::shadow::Color::Live,
-                "a member of a set the collector proved garbage reads live in the exact \
-                 validation: {member:p}"
-            );
-        }
-    }
 }

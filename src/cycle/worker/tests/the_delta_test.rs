@@ -55,9 +55,10 @@ fn served_and_counted() -> crate::cycle::delta_test::TagReadingCounts {
     }
 }
 
-/// A ring nobody touched since the consent is proved by its tags; the owner's
-/// exact validation of the proved set reads every member unreachable, as a
-/// debug build asserts, and frees the ring.
+/// A ring nobody touched since the consent is proved by its tags; the owner
+/// meets its members with no trace of their cells, confirms the set by the
+/// counts' sum against the edges the collector recorded between them — a
+/// debug build walking it beside the sum — and frees the ring.
 #[test]
 fn an_untouched_garbage_ring_is_proved_by_its_tags() {
     let _g = test_guard();
@@ -71,11 +72,17 @@ fn an_untouched_garbage_ring_is_proved_by_its_tags() {
         (counts.proved, counts.touched, counts.no_checkpoint),
         (1, 0, 0)
     );
+    let _ = crate::cycle::finalization::take_confirmed_by_the_sum();
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 2, "the ring was freed");
     assert_eq!(
         crate::cycle::trace::take_sets_proved_by_tags_validated(),
         1,
-        "the owner validated the proved set"
+        "the owner took the proved set without a trace of its cells"
+    );
+    assert_eq!(
+        crate::cycle::finalization::take_confirmed_by_the_sum(),
+        1,
+        "the commit confirmed it by the counts' sum against the recorded edges"
     );
     reset_lanes();
 }
