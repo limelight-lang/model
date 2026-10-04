@@ -48,7 +48,7 @@ unsafe fn spend_creation_references(entities: &[*mut Object]) {
 unsafe fn commit(members: &mut [*mut RcHeader], arena: &mut TraceScratchArena) -> Reclaimed {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(members), None) },
+        unsafe { finalization.confirm(&Membership::listed(members), None, 0) },
         ValidationResult::Unreachable
     );
 

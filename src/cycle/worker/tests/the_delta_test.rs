@@ -166,34 +166,89 @@ fn a_proved_ring_the_collector_keeps_from_is_taken_by_the_owner_without_a_trace(
     reset_lanes();
 }
 
-/// A member tagged with the open window between the mark and the Δ-test — a
-/// count write or a slot store of the mutator's — refuses the set, which the
-/// owner's exact validation then reads as it reads any set.
-#[test]
-fn a_member_touched_in_the_window_refuses_the_set() {
-    let _g = test_guard();
-    reset_lanes();
-    let mut arena = Arena::new();
-    let (a, _) = unsafe { a_garbage_ring(&mut arena) };
+/// Touch `member` with the open window between the next batch's mark and its
+/// Δ-test, as the mutator's own count write or slot store would.
+fn touch_between_the_phases(member: *mut Object) {
     let token = unsafe { &raw const (*record()).token } as usize;
-    let member = a as usize;
+    let member = member as usize;
     testing::between_the_next_phases(Box::new(move || unsafe {
-        // The mutator's tag, written here as its own thread would write it.
         let window = (*(token as *const crate::cycle::token::TraceToken)).window();
         crate::refcount::set_window(window);
         crate::refcount::tag_with_the_window(member as *mut RcHeader);
         crate::refcount::set_window(0);
     }));
-    let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
+}
+
+/// A member tagged with the open window between the mark and the Δ-test — a
+/// count write or a slot store of the mutator's — refuses what its recorded
+/// edges reach, here the whole ring, which goes back to R unwalked; the next
+/// batch, untouched, proves it and the collector frees it.
+#[test]
+fn a_member_touched_in_the_window_sends_what_it_reaches_back_once() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let (a, _) = unsafe { a_garbage_ring(&mut arena) };
+    touch_between_the_phases(a);
+    let requeued = crate::cycle::split::split_counts()[1];
 
     let counts = served_and_counted();
     assert_eq!((counts.proved, counts.touched), (0, 1));
+    assert_eq!(
+        crate::cycle::split::split_counts()[1] - requeued,
+        1,
+        "the touched closure went back to R"
+    );
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        0,
+        "nothing reached the owner"
+    );
+
+    let freed_before = crate::cycle::collector_frees::frees_counts();
+    let counts = served_and_counted();
+    assert_eq!((counts.proved, counts.touched), (1, 0));
+    assert_eq!(
+        crate::cycle::collector_frees::frees_counts().members - freed_before.members,
+        2,
+        "the second batch's collector freed the ring"
+    );
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
+    reset_lanes();
+}
+
+/// A root whose closure a touch refused once, touched again, is refused no
+/// second time: its closure joins S, unmarked, and goes the owner's exact way.
+#[test]
+fn a_closure_touched_twice_goes_the_exact_way() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let (a, _) = unsafe { a_garbage_ring(&mut arena) };
+    touch_between_the_phases(a);
+    let _ = served_and_counted();
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+
+    touch_between_the_phases(a);
+    let second = crate::cycle::split::split_counts()[2];
+    let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
+    let counts = served_and_counted();
+    assert_eq!(counts.touched, 1);
+    assert_eq!(
+        crate::cycle::split::split_counts()[2] - second,
+        1,
+        "the second refusal kept the closure in W"
+    );
     assert_eq!(
         unsafe { ll_gc_maybe_collect() },
         2,
         "the exact validation freed it"
     );
-    assert_eq!(crate::cycle::trace::take_sets_proved_by_tags_validated(), 0);
+    assert_eq!(
+        crate::cycle::trace::take_sets_proved_by_tags_validated(),
+        0,
+        "unmarked"
+    );
     reset_lanes();
 }
 
@@ -259,11 +314,11 @@ fn served_with(mut at_the_poll: impl FnMut()) -> crate::cycle::delta_test::TagRe
 }
 
 /// A count write the mutator makes on a member after the collector's ask and
-/// before its own checkpoint answers it lands in the window and refuses the
-/// set: the answer's release is what puts the tag before the collector's
-/// reads (`dev/design/recycler-over-counts.md`, §4.7).
+/// before its own checkpoint answers it lands in the window and refuses what
+/// the member reaches: the answer's release is what puts the tag before the
+/// collector's reads (`dev/design/recycler-over-counts.md`, §4.7).
 #[test]
-fn a_write_before_the_checkpoint_answers_refuses_the_set() {
+fn a_write_before_the_checkpoint_answers_refuses_what_it_reaches() {
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
@@ -292,8 +347,14 @@ fn a_write_before_the_checkpoint_answers_refuses_the_set() {
     );
     assert_eq!(
         unsafe { ll_gc_maybe_collect() },
+        0,
+        "the touched ring went back to R"
+    );
+    let _ = served_and_counted();
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
         2,
-        "the exact validation freed it"
+        "the next batch freed it"
     );
     reset_lanes();
 }
@@ -315,10 +376,11 @@ fn a_mutator_that_never_answers_costs_the_test_and_nothing_else() {
     reset_lanes();
 }
 
-/// A member with weak references is not proved by the tags: an upgrade after
-/// T can make it live again, which no tag records.
+/// A member with weak references is one the collector does not free: an
+/// upgrade after T can make it live again, which no tag records. It and what
+/// it reaches, here the ring, go the owner's exact way, unmarked.
 #[test]
-fn a_weakly_held_member_keeps_the_set_from_its_proof() {
+fn a_weakly_held_member_sends_what_it_reaches_the_exact_way() {
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
@@ -329,9 +391,15 @@ fn a_weakly_held_member_keeps_the_set_from_its_proof() {
     };
     assert!(!weak.is_null());
 
+    let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
     let counts = served_and_counted();
-    assert_eq!((counts.proved, counts.weakly_held), (0, 1));
+    assert_eq!((counts.proved, counts.weakly_held), (1, 1));
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
+    assert_eq!(
+        crate::cycle::trace::take_sets_proved_by_tags_validated(),
+        0,
+        "unmarked"
+    );
     unsafe {
         assert!(ll_release(weak as *mut RcHeader));
         crate::object::ll_entity_die(weak as *mut RcHeader);
@@ -400,5 +468,166 @@ fn a_set_cut_short_is_not_marked_proved() {
         "the set reached the owner unmarked"
     );
     unsafe { crate::gc::ll_gc_collect_cycles() };
+    reset_lanes();
+}
+
+static DESTRUCTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+unsafe extern "C" fn count_the_destruction(_object: *mut Object) {
+    DESTRUCTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A clean ring `c` holding a ring `d` whose class has a destructor, every
+/// one garbage, `c1` and `d1` registered first so that a batch of two takes
+/// a root in each and the mark reaches all four: W, whose split frees `c` and
+/// posts `d` to the owner, C's one edge into it held.
+unsafe fn a_clean_ring_over_a_destructed_one(arena: &mut Arena) -> [*mut Object; 4] {
+    unsafe { a_clean_ring_over_a_destructed_one_registered(arena, [0, 2, 1, 3]) }
+}
+
+/// [`a_clean_ring_over_a_destructed_one`], registered in `order` of
+/// `[c1, c2, d1, d2]`.
+unsafe fn a_clean_ring_over_a_destructed_one_registered(
+    arena: &mut Arena,
+    order: [usize; 4],
+) -> [*mut Object; 4] {
+    let clean = ClassBuilder::new("DeltaTestHolder")
+        .prop("next", true)
+        .prop("held", true)
+        .build();
+    let destructed = ClassBuilder::new("DeltaTestCountedNode")
+        .prop("next", true)
+        .destructor(count_the_destruction as *const ())
+        .build();
+    let mut context = LLContext { arena: &mut *arena };
+    let c1 = unsafe { new_constructed(&mut context, clean, MemoryCategory::GcHeap) };
+    let c2 = unsafe { new_constructed(&mut context, clean, MemoryCategory::GcHeap) };
+    let d1 = unsafe { new_constructed(&mut context, destructed, MemoryCategory::GcHeap) };
+    let d2 = unsafe { new_constructed(&mut context, destructed, MemoryCategory::GcHeap) };
+    unsafe {
+        store_prop(arena, c1, prop_offset(0), c2);
+        store_prop(arena, c2, prop_offset(0), c1);
+        store_prop(arena, c1, prop_offset(1), d1);
+        store_prop(arena, d1, prop_offset(0), d2);
+        store_prop(arena, d2, prop_offset(0), d1);
+        let members = [c1, c2, d1, d2];
+        for index in order {
+            assert!(!ll_release(members[index] as *mut RcHeader));
+        }
+    }
+    [c1, c2, d1, d2]
+}
+
+/// The split: the collector frees the clean ring, and the destructed ring it
+/// holds reaches the owner marked proved, C's edge into it held — the owner
+/// confirms it by the sum with that edge counted, before any drop into it has
+/// run, and frees it, its destructors run once each.
+#[test]
+fn a_clean_ring_is_freed_by_the_collector_and_the_ring_it_holds_by_the_owner() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let _ = unsafe { a_clean_ring_over_a_destructed_one(&mut arena) };
+    let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
+    let _ = crate::cycle::finalization::take_confirmed_by_the_sum();
+    let freed_before = crate::cycle::collector_frees::frees_counts();
+    let split_before = crate::cycle::split::split_counts()[0];
+    let destructed = DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed);
+
+    let counts = served_and_counted();
+    assert_eq!((counts.proved, counts.touched), (1, 0));
+    assert_eq!(crate::cycle::split::split_counts()[0] - split_before, 1);
+    assert_eq!(
+        crate::cycle::collector_frees::frees_counts().members - freed_before.members,
+        2,
+        "the collector freed the clean ring"
+    );
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        4,
+        "the clean ring applied, the destructed ring freed by the owner"
+    );
+    assert_eq!(crate::cycle::trace::take_sets_proved_by_tags_validated(), 1);
+    assert_eq!(
+        crate::cycle::finalization::take_confirmed_by_the_sum(),
+        1,
+        "confirmed by the sum, C's edge counted"
+    );
+    assert_eq!(
+        DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed,
+        2
+    );
+    reset_lanes();
+}
+
+/// A proved S given back unread — the explicit fire collects over R whole —
+/// takes C's held drops to the record for the next application, which lowers
+/// its counts; the next batch then proves it alone and the owner frees it.
+#[test]
+fn held_drops_given_back_unread_are_applied_at_the_next_poll() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let _ = unsafe { a_clean_ring_over_a_destructed_one(&mut arena) };
+    let destructed = DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed);
+
+    let _ = served_and_counted();
+    assert_eq!(
+        unsafe { crate::gc::ll_gc_collect_cycles() },
+        2,
+        "the clean ring applied; the destructed ring, read over R with C's \\
+         counts standing, survives"
+    );
+    assert_eq!(
+        DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed),
+        destructed
+    );
+    assert!(
+        unsafe { &*record() }.collectors_frees_stand(),
+        "the held drop stands on the record"
+    );
+    let _ = unsafe { ll_gc_maybe_collect() };
+    assert!(!unsafe { &*record() }.collectors_frees_stand());
+
+    crate::cycle::queue::reoffer_deferred_candidates();
+    let _ = served_and_counted();
+    let _ = unsafe { ll_gc_maybe_collect() };
+    assert_eq!(
+        DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed,
+        2,
+        "the destructed ring freed once its counts fell"
+    );
+    reset_lanes();
+}
+
+/// An S no root of the batch lands in is not posted: C's drops into it go to
+/// the owner with the rest, and the poll's application lowers its counts; the
+/// next batch, over its own roots, proves it alone.
+#[test]
+fn an_s_no_root_lands_in_gets_its_drops_at_the_poll() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let _ = unsafe { a_clean_ring_over_a_destructed_one_registered(&mut arena, [0, 1, 2, 3]) };
+    let destructed = DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed);
+
+    let _ = served_and_counted();
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the clean ring applied"
+    );
+    assert!(!unsafe { &*record() }.collectors_frees_stand());
+    assert_eq!(
+        DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed),
+        destructed
+    );
+
+    let _ = served_and_counted();
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2, "the destructed ring");
+    assert_eq!(
+        DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed,
+        2
+    );
     reset_lanes();
 }

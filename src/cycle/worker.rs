@@ -2432,6 +2432,26 @@ impl FinishThePosts<'_> {
         self.roots[index] & HAS_A_VERDICT != 0
     }
 
+    /// Whether a root without a verdict stands in the split's marked rows and
+    /// came back to R after a refusal already: its second chance spent
+    /// (`crate::cycle::queue::SECOND_CHANCE_MARK`).
+    ///
+    /// # Safety
+    /// The batch's rows stand, after a completed scan.
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe fn a_marked_root_spent_its_second_chance(&self) -> bool {
+        (0..self.roots.len()).any(|index| {
+            !self.has_a_verdict(index)
+                && self.roots[index] & crate::cycle::queue::SECOND_CHANCE_MARK != 0
+                && matches!(
+                    unsafe { read_the_root(self.root(index)) },
+                    RootReading::Tracked(key)
+                        if unsafe { crate::cycle::arena::find_initialized_row(key) }
+                            .is_some_and(|row| crate::cycle::split::is_marked(unsafe { *row }))
+                )
+        })
+    }
+
     /// Post `verdict` for the root at `index`, which has none yet.
     fn post(&mut self, index: usize, verdict: Verdict) {
         debug_assert!(!self.has_a_verdict(index), "one verdict per root");
@@ -2601,44 +2621,16 @@ unsafe fn trace_the_batch(
     }
     // The set of a completed mark's completed scan over its record is tested
     // by its tags at the mutator's next checkpoint (`crate::cycle::delta_test`)
-    // before any root is posted; a set proved garbage the collector frees
-    // itself where it can (`crate::cycle::collector_frees`), whose roots the
-    // posts below then read as completed deaths, and otherwise reaches the
-    // owner marked proved, with the edges its members' counts sum to.
+    // before any root is posted, split (`crate::cycle::split`), and the part
+    // the collector can free freed (`crate::cycle::collector_frees`), whose
+    // roots the posts below then read as completed deaths; what reaches the
+    // owner is marked proved where the proof covers it.
     #[cfg(feature = "recycler-over-counts")]
-    let mut proved_edges = None;
-    #[cfg(feature = "recycler-over-counts")]
-    if unsafe { a_root_reads_unreachable(posts) }
-        && unsafe { crate::cycle::delta_test::test_the_set_by_its_tags(mutator, arena) }
-            == crate::cycle::delta_test::TagReading::Garbage
-    {
-        // A debug build checks every proof exactly, read-only before anything
-        // is written; a set past the cap or recalled is left unchecked, as it
-        // is left unfreed, so that the check's map over W stays bounded and a
-        // recall waits for nothing more than the preparation.
-        match unsafe { crate::cycle::collector_frees::prepare(mutator, arena) } {
-            Ok(mut frees) => {
-                #[cfg(debug_assertions)]
-                unsafe {
-                    crate::cycle::collector_frees::check_every_count_is_internal(arena)
-                };
-                unsafe { crate::cycle::collector_frees::commit(arena, &mut frees) };
-                set.carry_the_frees(frees);
-            }
-            Err(_reason) => {
-                #[cfg(debug_assertions)]
-                if !matches!(
-                    _reason,
-                    crate::cycle::collector_frees::NotFreed::PastTheCap
-                        | crate::cycle::collector_frees::NotFreed::Recalled
-                ) {
-                    unsafe { crate::cycle::collector_frees::check_every_count_is_internal(arena) };
-                }
-                proved_edges =
-                    Some(unsafe { crate::cycle::delta_test::internal_edges_of_the_set(arena) });
-            }
-        }
-    }
+    let posting = if unsafe { a_root_reads_unreachable(posts) } {
+        unsafe { split_and_free(mutator, arena, posts, set) }
+    } else {
+        Posting::Unmarked
+    };
 
     for index in 0..posts.roots.len() {
         if !posts.has_a_verdict(index) {
@@ -2648,10 +2640,23 @@ unsafe fn trace_the_batch(
     }
 
     if posts.proposed.get() {
-        unsafe { set.append(arena) };
+        #[cfg(not(feature = "recycler-over-counts"))]
+        unsafe {
+            set.append(arena)
+        };
         #[cfg(feature = "recycler-over-counts")]
-        if let Some(edges) = proved_edges {
-            set.mark_proved_by_its_tags(edges);
+        match posting {
+            Posting::Unmarked => unsafe { set.append(arena) },
+            Posting::WholeProved(edges) => {
+                unsafe { set.append(arena) };
+                set.mark_proved_by_its_tags(edges);
+            }
+            Posting::S(edges) => {
+                unsafe { set.append_the_marked(arena) };
+                if let Some(edges) = edges {
+                    set.mark_proved_by_its_tags(edges);
+                }
+            }
         }
     }
 
@@ -3003,6 +3008,117 @@ unsafe fn read_the_root(root: *mut RcHeader) -> RootReading {
     }
 }
 
+/// What reaches the owner of a batch's proved set.
+#[cfg(feature = "recycler-over-counts")]
+enum Posting {
+    /// W, U taken out, the exact way: unproved, touched, or weakly held.
+    Unmarked,
+    /// W whole, proved, with the edges between its members: the split
+    /// dropped.
+    WholeProved(usize),
+    /// S, C freed and U refused: marked proved with the edges into it where
+    /// the proof covers it — nothing touched in it, no member weakly held —
+    /// C's drops into it then held with it.
+    S(Option<usize>),
+}
+
+/// Test the batch's set by its tags, split it, and free C: what the owner
+/// receives (`dev/design/recycler-over-counts.md`, §5a, S68.6c, item 8).
+///
+/// # Safety
+/// As `trace_the_batch` after a completed scan over the record: the calling
+/// thread holds `mutator`'s grant, and `arena`'s rows stand.
+#[cfg(feature = "recycler-over-counts")]
+unsafe fn split_and_free(
+    mutator: &MutatorRecord,
+    arena: &mut TraceScratchArena,
+    posts: &FinishThePosts<'_>,
+    set: &mut crate::cycle::posted_set::Writer,
+) -> Posting {
+    use crate::cycle::delta_test::TagReading;
+    use crate::cycle::{collector_frees, delta_test, split};
+
+    let test = unsafe { delta_test::test_the_set_by_its_tags(mutator, arena) };
+    let touched = match test.reading {
+        TagReading::NoCheckpoint => return Posting::Unmarked,
+        TagReading::Touched => true,
+        TagReading::Garbage => false,
+    };
+
+    // U: refused and sent back to R once, or, a root of it having spent its
+    // second chance, kept in W as a seed of S, which then goes unmarked.
+    let mut s_proved = !test.weakly_held;
+    if touched {
+        if unsafe { split::close_over_the_record(arena) }.is_break() {
+            unsafe { split::clear_the_marks(arena) };
+            split::note(split::Counted::Dropped);
+            return Posting::Unmarked;
+        }
+        if unsafe { posts.a_marked_root_spent_its_second_chance() } {
+            s_proved = false;
+            split::note(split::Counted::SecondRefusal);
+        } else {
+            unsafe { split::refuse_the_marked(arena) };
+            split::note(split::Counted::Requeued);
+        }
+    }
+
+    // The split dropped: W, U out where it went, the S68.6a way — marked only
+    // where nothing touched stands in it and no member is weakly held.
+    let whole = |arena: &mut TraceScratchArena| {
+        unsafe { split::clear_the_marks(arena) };
+        split::note(split::Counted::Dropped);
+        if touched || test.weakly_held {
+            Posting::Unmarked
+        } else {
+            Posting::WholeProved(unsafe { delta_test::internal_edges_of_the_set(arena) })
+        }
+    };
+
+    unsafe { split::mark_the_seeds(mutator, arena) };
+    if unsafe { split::close_over_the_record(arena) }.is_break() {
+        return whole(arena);
+    }
+    if !unsafe { split::any_unmarked(arena) } {
+        // C is empty: S is W, U out, as S68.6a took it.
+        return Posting::S(s_proved.then(|| unsafe { split::edges_into_the_marked(arena) }));
+    }
+
+    split::note(split::Counted::Split);
+    match unsafe { collector_frees::prepare(mutator, arena) } {
+        Ok(mut frees) => {
+            // A debug build checks every proof exactly, read-only before
+            // anything is written.
+            #[cfg(debug_assertions)]
+            unsafe {
+                collector_frees::check_every_count_is_internal(arena)
+            };
+            unsafe { collector_frees::commit(arena, &mut frees) };
+            let edges = if s_proved {
+                Some(unsafe { split::edges_into_the_marked(arena) })
+            } else {
+                frees.drop_the_held_too();
+                None
+            };
+            set.carry_the_frees(frees);
+            Posting::S(edges)
+        }
+        Err(_reason) => {
+            // A set past the cap or recalled is left unchecked, as it is left
+            // unfreed, so that the check's map over W stays bounded and a
+            // recall waits for nothing more than the preparation.
+            #[cfg(debug_assertions)]
+            if !matches!(
+                _reason,
+                collector_frees::NotFreed::PastTheCap | collector_frees::NotFreed::Recalled
+            ) {
+                unsafe { collector_frees::check_every_count_is_internal(arena) };
+            }
+            whole(arena)
+        }
+    }
+}
+
 /// Whether a root of `posts` without a verdict reads potentially unreachable
 /// after a completed scan: W is empty otherwise, every row the trace met
 /// being reached from a root.
@@ -3042,6 +3158,10 @@ unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
     match unsafe { crate::cycle::arena::find_initialized_row(key) } {
         Some(row) => match shadow::color(unsafe { *row }) {
             Color::PotentiallyUnreachable => Verdict::Proposed,
+            // U, refused by a touch: back to R for the next batch
+            // (`crate::cycle::split`).
+            #[cfg(feature = "recycler-over-counts")]
+            Color::Unclassified => Verdict::Unwalked,
             _ => Verdict::ReadLive,
         },
         None => Verdict::ReadLive,

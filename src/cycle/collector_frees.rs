@@ -2,26 +2,29 @@
 //! thread, and leaves the owner what only the owner may do
 //! (`dev/design/recycler-over-counts.md`, §5a, S68.6b).
 //!
-//! **What the collector frees.** The first form takes W — every row the scan
-//! over the record left potentially unreachable, proved garbage by the Δ-test
-//! (`crate::cycle::delta_test`) — whole or not at all, and only where every
-//! member is one it can free off the owner's thread: an object of a class with
+//! **What the collector frees.** C: what the split leaves unmarked of W —
+//! every row the scan over the record left potentially unreachable, proved
+//! garbage by the Δ-test (`crate::cycle::delta_test`), U refused and S, the
+//! closure of the members the collector cannot free, marked
+//! (`crate::cycle::split`). A member it frees is an object of a class with
 //! the default dispose, no destructor and no outside cells; a reference; a
 //! string with its bytes inline; an array whose storage, if any, is a body in
 //! a block of kind `BLOCK_KIND_BUFFER`; with no weak references, in a slot of
-//! an entity-heap block, every counted child outside W a plain one (no
-//! ownership mark). Anything else sends W the owner's way (S68.6a).
+//! an entity-heap block of the granting mutator's heap ([`eligible`]). A
+//! counted child of C with an ownership mark refuses the preparation, and the
+//! split is dropped.
 //!
 //! **Two phases, so that no part of W is freed alone.** A part freed and the
 //! rest left would leak the rest, which still holds counts from the freed
 //! part, or, given those as drops, release cells naming slots already handed
 //! out again (the Critic of the plan, finding 1).
-//! - [`prepare`] reads and writes nothing of W: it checks every member, builds
-//!   every drop — one record a counted cell naming an entity outside W, in the
-//!   order the member's dispose would release it — and one chain record a
-//!   block, and draws every metadata block these need. A recall at the stop
-//!   level, a pool refusal, an ineligible member or a W past [`MEMBER_CAP`]
-//!   gives W back to the owner's way with nothing written.
+//! - [`prepare`] reads and writes nothing of W: it checks every member of C,
+//!   builds every drop — one record a counted cell naming an entity outside
+//!   C, in the order the member's dispose would release it, those into S
+//!   apart and held — and one chain record a block, and draws every metadata
+//!   block these need. A recall at the stop level, a pool refusal, an
+//!   ineligible member or a C past [`MEMBER_CAP`] drops the split with
+//!   nothing written.
 //! - [`commit`] is one act, under the grant: every member's count to zero and
 //!   its slot taken (`DEAD_IN_PLACE`); a registered member stays so for the
 //!   owner's retirement pass; every other slot linked onto its block's chain
@@ -185,6 +188,10 @@ pub(crate) struct Frees {
     chains: Chain,
     registered: usize,
     members: usize,
+    /// C's drops into S, held for the owner's sum over S
+    /// (`crate::cycle::posted_set`), apart from the rest.
+    held: Chain,
+    held_count: usize,
 }
 
 impl Drop for Frees {
@@ -192,7 +199,37 @@ impl Drop for Frees {
         unsafe {
             release_chain(self.drops.head);
             release_chain(self.chains.head);
+            release_chain(self.held.head);
         }
+    }
+}
+
+impl Frees {
+    /// The drops C holds into S, how many.
+    pub(crate) fn held_count(&self) -> usize {
+        self.held_count
+    }
+
+    /// Hand C's drops into S to the posted set, which holds them until the
+    /// owner's commit over S reads its sum: the chain's first block and its
+    /// block count, or none.
+    pub(crate) fn take_the_held(&mut self) -> Option<(*mut BlockHeader, usize)> {
+        let held = std::mem::replace(&mut self.held, Chain::empty());
+        self.held_count = 0;
+        (!held.head.is_null()).then(|| (held.head.cast(), held.blocks))
+    }
+
+    /// Give C's drops into S to the owner as drops like the rest: S goes
+    /// unmarked, or unposted, and no sum is read over it.
+    pub(crate) fn drop_the_held_too(&mut self) {
+        let held = std::mem::replace(&mut self.held, Chain::empty());
+        self.held_count = 0;
+        if held.head.is_null() {
+            return;
+        }
+        unsafe { (*self.drops.tail).header.next = held.head.cast() };
+        self.drops.tail = held.tail;
+        self.drops.blocks += held.blocks;
     }
 }
 
@@ -242,24 +279,36 @@ fn note_not_freed(reason: NotFreed) -> NotFreed {
     reason
 }
 
-/// Whether `entity` is a member of W: its row met and potentially
-/// unreachable.
+/// Where `entity` stands: in W — its row met and potentially unreachable,
+/// U being recoloured out of it — and then in S or in C.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Outside,
+    S,
+    C,
+}
+
+/// The part of W `entity` stands in.
 ///
 /// # Safety
 /// `entity` is a counted child a member's cells name, under the grant.
-unsafe fn is_a_member(entity: *mut RcHeader) -> bool {
+unsafe fn part_of(entity: *mut RcHeader) -> Part {
     let EdgeTarget::Tracked(key) = (unsafe { row::resolve_edge_target(entity) }) else {
-        return false;
+        return Part::Outside;
     };
-    unsafe { crate::cycle::arena::find_initialized_row(key) }
-        .is_some_and(|row| shadow::color(unsafe { *row }) == Color::PotentiallyUnreachable)
+    match unsafe { crate::cycle::arena::find_initialized_row(key) } {
+        Some(row) if crate::cycle::split::is_marked(unsafe { *row }) => Part::S,
+        Some(row) if shadow::color(unsafe { *row }) == Color::PotentiallyUnreachable => Part::C,
+        _ => Part::Outside,
+    }
 }
 
-/// Whether the first form frees `member` off the owner's thread.
+/// Whether the collector frees `member` off the owner's thread; a member it
+/// does not is a seed of S (`crate::cycle::split`).
 ///
 /// # Safety
 /// `member` is a member of W, its slot withheld under the grant.
-unsafe fn eligible(member: *mut RcHeader, kind: u32, flags: u32) -> bool {
+pub(crate) unsafe fn eligible(member: *mut RcHeader, kind: u32, flags: u32) -> bool {
     if flags & crate::refcount::HAS_WEAK_REFERENCES != 0
         || crate::refcount::MemoryCategory::from_flags(flags) != MemoryCategory::GcHeap
     {
@@ -299,6 +348,8 @@ unsafe fn eligible(member: *mut RcHeader, kind: u32, flags: u32) -> bool {
 /// ineligible.
 struct Drops<'a> {
     drops: &'a mut Chain,
+    held: &'a mut Chain,
+    held_count: &'a mut usize,
     count: &'a mut usize,
     failed: &'a mut Option<NotFreed>,
 }
@@ -306,8 +357,17 @@ struct Drops<'a> {
 impl CellVisitor for Drops<'_> {
     fn cell(&mut self, cell: Cell) -> ControlFlow<()> {
         let child = cell.child;
-        if unsafe { is_a_member(child) } {
-            return ControlFlow::Continue(());
+        match unsafe { part_of(child) } {
+            Part::C => return ControlFlow::Continue(()),
+            Part::S => {
+                if !self.held.push(child as usize) {
+                    *self.failed = Some(NotFreed::AllocationFailed);
+                    return ControlFlow::Break(());
+                }
+                *self.held_count += 1;
+                return ControlFlow::Continue(());
+            }
+            Part::Outside => {}
         }
 
         if unsafe { crate::refcount::mutator_flags(child) } & crate::refcount::OWNERSHIP_MARK != 0 {
@@ -335,14 +395,24 @@ enum Step {
     BlockEnd(*mut u8),
 }
 
-/// Walk every member of W, block by block in the touched list's order: the
-/// order [`prepare`] and [`commit`] share. `step` answers `Break` to stop; a
-/// row whose address cannot be recovered stops the walk too.
+/// Which members a walk visits: C, which [`prepare`] and [`commit`] read, or
+/// all of W but U, which the debug build's exact check reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Of {
+    C,
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    W,
+}
+
+/// Walk every member of `of`, block by block in the touched list's order:
+/// the order [`prepare`] and [`commit`] share. `step` answers `Break` to
+/// stop; a row whose address cannot be recovered stops the walk too.
 ///
 /// # Safety
 /// The rows of a completed record scan stand, under the grant.
 unsafe fn for_each_member(
     arena: &TraceScratchArena,
+    of: Of,
     mut step: impl FnMut(Step) -> ControlFlow<()>,
 ) -> ControlFlow<()> {
     let mut array = arena.touched_head();
@@ -351,6 +421,11 @@ unsafe fn for_each_member(
         let mut any = false;
         let walked = unsafe {
             row::for_each_proposable_met(array, block, population, |index| {
+                if of == Of::C
+                    && crate::cycle::split::is_marked(*row::row_at(array, block, population, index))
+                {
+                    return ControlFlow::Continue(());
+                }
                 if !any {
                     any = true;
                     step(Step::BlockStart(block, population))?;
@@ -385,18 +460,24 @@ pub(crate) unsafe fn prepare(
         return Err(note_not_freed(NotFreed::FreesStand));
     }
 
+    debug_assert!(
+        mutator.posted_set().is_null(),
+        "a thread holds one posted set, and a collector frees only once it is read"
+    );
     let mut frees = Frees {
         drops: Chain::empty(),
         chains: Chain::empty(),
         registered: 0,
         members: 0,
+        held: Chain::empty(),
+        held_count: 0,
     };
     let mut failed = None;
     let mut unregistered_here = 0usize;
     let mut drops = 0usize;
     let arena_ptr: *mut TraceScratchArena = arena;
     let walked = unsafe {
-        for_each_member(&*arena_ptr, |step| match step {
+        for_each_member(&*arena_ptr, Of::C, |step| match step {
             Step::BlockStart(block, population) => {
                 unregistered_here = 0;
                 // An entity block of the granting mutator's own heap: a
@@ -435,6 +516,8 @@ pub(crate) unsafe fn prepare(
                     kind,
                     Drops {
                         drops: &mut frees.drops,
+                        held: &mut frees.held,
+                        held_count: &mut frees.held_count,
                         count: &mut count,
                         failed: &mut refused,
                     },
@@ -493,13 +576,13 @@ pub(crate) unsafe fn prepare(
 pub(crate) unsafe fn check_every_count_is_internal(arena: &TraceScratchArena) {
     let mut internal = std::collections::HashMap::<usize, u32>::new();
     let _ = unsafe {
-        for_each_member(arena, |step| {
+        for_each_member(arena, Of::W, |step| {
             if let Step::Member(member) = step {
                 internal.entry(member as usize).or_insert(0);
                 let kind = crate::cells::entity_kind(member);
                 let _ =
                     crate::cells::trace_cells_until::<AtomicCells>(member, kind, |cell: Cell| {
-                        if is_a_member(cell.child) {
+                        if part_of(cell.child) != Part::Outside {
                             *internal.entry(cell.child as usize).or_insert(0) += 1;
                         }
                     });
@@ -529,7 +612,7 @@ pub(crate) unsafe fn commit(arena: &TraceScratchArena, frees: &mut Frees) {
     let mut tail: *mut u8 = std::ptr::null_mut();
     let mut linked = 0usize;
     let _ = unsafe {
-        for_each_member(arena, |step| {
+        for_each_member(arena, Of::C, |step| {
             match step {
                 Step::BlockStart(..) => {
                     head = std::ptr::null_mut();
@@ -661,6 +744,49 @@ pub(crate) unsafe fn splice_this_threads() {
     // over again.
     let blocks = blocks_from(head).count();
     gc_metadata::hand_over(blocks, blocks * BLOCK_PAYLOAD);
+}
+
+/// Move C's drops into S, which a posted set held for its owner's sum, onto
+/// this thread's record as drops like the rest, for the next application:
+/// the set went back unread, or was read and not freed. It runs no user code,
+/// so every path that drops a set may call it — a block return under
+/// `POSTED`, the teardown's refusal among them (the Sage's ruling, item
+/// 8(b)).
+///
+/// # Safety
+/// On the owning thread, `head` the held chain a posted set taken off this
+/// thread's record carried, its figures this thread's.
+pub(crate) unsafe fn stand_the_held(head: *mut BlockHeader) {
+    let held = head.cast::<FreesBlock>();
+    let blocks = blocks_from(held).count();
+    let record = crate::cycle::mutator_record::this_thread_record();
+    debug_assert!(!record.is_null(), "a posted set stands on a record");
+    // What stands already keeps its figures handed over; the held chain joins
+    // its drops, and only its own blocks are handed over.
+    let standing = unsafe { (*record).take_collectors_frees() }.cast::<FreesBlock>();
+    let first = match blocks_from(standing).last() {
+        None => held,
+        Some(last) => {
+            unsafe { (*last).header.next = held.cast() };
+            standing
+        }
+    };
+    unsafe { (*record).put_back_collectors_frees(first.cast()) };
+    gc_metadata::hand_over(blocks, blocks * BLOCK_PAYLOAD);
+}
+
+/// Give back C's drops into S once the owner freed S whole: every child they
+/// name is gone with it, and the count each stood for went with its member.
+///
+/// # Safety
+/// As [`stand_the_held`].
+pub(crate) unsafe fn release_the_held(head: *mut BlockHeader) {
+    unsafe { release_chain(head.cast()) };
+}
+
+/// The blocks of a held chain, which the posted set's figures count.
+pub(crate) fn held_blocks(head: *mut BlockHeader) -> usize {
+    blocks_from(head.cast()).count()
 }
 
 /// Take what stands on this thread's record, with the figures of its blocks.

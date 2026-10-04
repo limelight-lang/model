@@ -36,7 +36,10 @@
 //! entry it read. **Bit 0 is the close's**, which is where it says a root
 //! belongs to the deferred lane ([`DEFERRED_MARK`]), written over the entries
 //! a collection read and read once, by the pass that disposes of them;
-//! bits 1 and 2 are unused here, and P's ledger is `queue::verdicts`. Every
+//! **bit 2 is the second chance's** ([`SECOND_CHANCE_MARK`]), under
+//! `recycler-over-counts`; bit 1 is unused here, and is the collector's copy's
+//! own (`crate::cycle::worker`, `HAS_A_VERDICT`); P's ledger is
+//! `queue::verdicts`. Every
 //! walk that hands an entry out as an address masks the mark
 //! ([`ENTRY_MARK_BITS`]).
 //!
@@ -520,13 +523,19 @@ pub(crate) unsafe fn register_candidate(entity: *mut RcHeader) {
 /// carrying the provenance of the whole block ([`append_to_overflow`] reaches
 /// past the control line through it).
 unsafe fn append_entry(state: *mut MutatorCycleState, entity: *mut RcHeader) {
+    unsafe { append_marked_entry(state, entity, 0) };
+}
+
+/// [`append_entry`], the entry carrying `mark` where it lands in R; the
+/// overflow buffer, which holds bare addresses, drops it.
+unsafe fn append_marked_entry(state: *mut MutatorCycleState, entity: *mut RcHeader, mark: usize) {
     let mutator_state = unsafe { mutator_state_ref(state) };
     // `register_candidate` established the base block before reaching here,
     // and the record beside it. Drawing either at the first refusal would be
     // too late: every other allocation path would already have found the
     // pool empty.
     let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
-    match writer.push(entity_entry(entity), || fresh_block(mutator_state)) {
+    match writer.push(entity_entry(entity) | mark, || fresh_block(mutator_state)) {
         Ok(ring::Pushed::IntoTailBlock) => {}
         // A block of entries filled: the poll's signal to the collector, on
         // the path that was slow already.
@@ -1191,7 +1200,16 @@ pub(crate) const DEFERRED_MARK: usize = 1;
 /// entry's alignment frees: a fixture's header stands on any eight-byte
 /// boundary, and a mask over bits nothing writes would fold two such headers
 /// into one.
-pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK;
+pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK | SECOND_CHANCE_MARK;
+
+/// The bit that says a root came back to R after the collector refused the
+/// part of a proved set it stands in: bit 2 of the stored address, written
+/// by the disposition on an unwalked entry it writes back, under
+/// `recycler-over-counts` alone, and read by the collector off its copy of
+/// the entry; a root carrying it is refused no second time, but taken the
+/// exact way (`crate::cycle::split`). A path that writes the entry again
+/// without it gives the root one more chance.
+pub(crate) const SECOND_CHANCE_MARK: usize = 4;
 
 /// Give every block of `record`'s R back and leave its two words null,
 /// whichever thread does it: the exit, or the collector whose hold the exit

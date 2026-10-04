@@ -88,7 +88,7 @@ fn a_finalization_no_destructor_ran_in_is_not_read_again() {
         let mut finalization = Finalization::begin_at_this_threads_epoch();
         let mut members = headers(ring);
         assert_eq!(
-            unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
+            unsafe { finalization.confirm(&Membership::listed(&mut members), None, 0) },
             ValidationResult::Unreachable
         );
 
@@ -163,7 +163,7 @@ fn a_destructor_that_keeps_this_leaves_the_component_with_its_true_counts() {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = headers(ring);
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members), None, 0) },
         ValidationResult::Unreachable
     );
 
@@ -231,7 +231,7 @@ fn a_member_whose_guard_was_its_last_reference_dies_at_the_release() {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = headers(ring);
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members), None, 0) },
         ValidationResult::Unreachable
     );
 
@@ -315,7 +315,7 @@ fn a_survivor_the_release_decrements_is_registered_as_a_candidate() {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [peer as *mut RcHeader, keeper_member as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members), None, 0) },
         ValidationResult::Unreachable
     );
 
@@ -384,7 +384,7 @@ fn a_child_of_a_dying_member_runs_its_destructor_inside_the_release() {
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = headers(ring);
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members), None, 0) },
         ValidationResult::Unreachable,
         "the child is a child rather than a holder, so it counts for neither side"
     );
@@ -507,7 +507,7 @@ fn a_component_rooted_by_an_earlier_teardown_is_read_after_it() {
     let mut components = [headers(torn_down), headers(read_later)];
     for members in &mut components {
         assert_eq!(
-            unsafe { finalization.confirm(&Membership::listed(members), None) },
+            unsafe { finalization.confirm(&Membership::listed(members), None, 0) },
             ValidationResult::Unreachable
         );
     }

@@ -82,6 +82,14 @@ struct SetBlock {
     proved_by_its_tags: bool,
     #[cfg(feature = "recycler-over-counts")]
     internal_edges: usize,
+    /// In the first block of the members' chain of a set proved by its tags:
+    /// the drops of the part the collector freed into this set, held until
+    /// the owner's commit reads the set's sum, and how many
+    /// (`crate::cycle::collector_frees::Frees::take_the_held`).
+    #[cfg(feature = "recycler-over-counts")]
+    held: *mut BlockHeader,
+    #[cfg(feature = "recycler-over-counts")]
+    held_count: usize,
 }
 
 const _: () = assert!(size_of::<SetBlock>() <= LINE_SIZE);
@@ -173,6 +181,10 @@ impl Chain {
             (&raw mut (*block).proved_by_its_tags).write(false);
             #[cfg(feature = "recycler-over-counts")]
             (&raw mut (*block).internal_edges).write(0);
+            #[cfg(feature = "recycler-over-counts")]
+            (&raw mut (*block).held).write(std::ptr::null_mut());
+            #[cfg(feature = "recycler-over-counts")]
+            (&raw mut (*block).held_count).write(0);
         }
         if self.tail.is_null() {
             self.head = block;
@@ -242,12 +254,33 @@ impl Writer {
     /// The trace ran on this thread and its rows still stand: before the
     /// arena's reset.
     pub(crate) unsafe fn append(&mut self, arena: &TraceScratchArena) {
+        unsafe { self.append_where(arena, |_| true) };
+    }
+
+    /// Append S alone: the potentially unreachable rows the split marked
+    /// (`crate::cycle::split`), C being freed and U refused.
+    ///
+    /// # Safety
+    /// As [`Self::append`].
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) unsafe fn append_the_marked(&mut self, arena: &TraceScratchArena) {
+        unsafe { self.append_where(arena, crate::cycle::split::is_marked) };
+    }
+
+    /// [`Self::append`] over the potentially unreachable rows `wanted` takes.
+    ///
+    /// # Safety
+    /// As [`Self::append`].
+    unsafe fn append_where(&mut self, arena: &TraceScratchArena, wanted: impl Fn(u32) -> bool) {
         let mut array = arena.touched_head();
         while !array.is_null() && !self.closed {
             let (block, population) = unsafe { ((*array).block, (*array).population) };
             let mut listed_here = false;
             let _ = unsafe {
                 row::for_each_proposable_met(array, block, population, |index| {
+                    if !wanted(*row::row_at(array, block, population, index)) {
+                        return ControlFlow::Continue(());
+                    }
                     // A row whose address cannot be recovered is left out, as
                     // the harvest's walk leaves it.
                     let Some(entity) = row::entity_at(block, population, index) else {
@@ -328,8 +361,21 @@ impl Writer {
     /// release; a set with no member leaves nothing.
     #[cfg_attr(not(feature = "recycler-over-counts"), allow(unused_mut))]
     pub(crate) fn publish(mut self, mutator: &MutatorRecord) {
+        // C's drops into S ride with a set proved by its tags, for the owner's
+        // sum over it; with any other set, or none, they are drops like the
+        // rest.
         #[cfg(feature = "recycler-over-counts")]
-        if let Some(frees) = self.frees.take() {
+        let mut held = None;
+        #[cfg(feature = "recycler-over-counts")]
+        if let Some(mut frees) = self.frees.take() {
+            if self.proved_by_its_tags && !self.members.head.is_null() {
+                let count = frees.held_count();
+                held = frees
+                    .take_the_held()
+                    .map(|(head, blocks)| (head, blocks, count));
+            } else {
+                frees.drop_the_held_too();
+            }
             crate::cycle::collector_frees::publish(frees, mutator);
         }
         let this = std::mem::ManuallyDrop::new(self);
@@ -344,9 +390,15 @@ impl Writer {
         let head = this.members.head;
         unsafe { (*head).blocks = this.blocks.head };
         #[cfg(feature = "recycler-over-counts")]
+        let held_blocks = held.map_or(0, |(_, blocks, _)| blocks);
+        #[cfg(not(feature = "recycler-over-counts"))]
+        let held_blocks = 0;
+        #[cfg(feature = "recycler-over-counts")]
         unsafe {
             (*head).proved_by_its_tags = this.proved_by_its_tags;
             (*head).internal_edges = this.internal_edges;
+            (*head).held = held.map_or(std::ptr::null_mut(), |(chain, _, _)| chain);
+            (*head).held_count = held.map_or(0, |(_, _, count)| count);
         };
         #[cfg(test)]
         testing::note_members_posted(
@@ -354,7 +406,7 @@ impl Writer {
                 .map(|block| unsafe { (*block).entries })
                 .sum(),
         );
-        let blocks = this.members.blocks + this.blocks.blocks;
+        let blocks = this.members.blocks + this.blocks.blocks + held_blocks;
         gc_metadata::hand_over(blocks, blocks * BLOCK_PAYLOAD);
         mutator.publish_posted_set(head.cast());
     }
@@ -397,6 +449,25 @@ impl PostedSet {
         unsafe { (*self.head).internal_edges }
     }
 
+    /// The references into the set the collector's free left counted, its
+    /// drops into the set held: what the members' counts carry besides the
+    /// edges between them, at the owner's reading.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn held_from_outside(&self) -> usize {
+        unsafe { (*self.head).held_count }
+    }
+
+    /// Give the held drops back once the owner freed the set whole: what they
+    /// name is gone with it.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn discard_the_held(&mut self) {
+        let held = std::mem::replace(unsafe { &mut (*self.head).held }, std::ptr::null_mut());
+        unsafe { (*self.head).held_count = 0 };
+        if !held.is_null() {
+            unsafe { crate::cycle::collector_frees::release_the_held(held) };
+        }
+    }
+
     /// Every member, in the order the collector listed them.
     pub(crate) fn members(&self) -> impl Iterator<Item = *mut RcHeader> + '_ {
         blocks_from(self.head).flat_map(|block| {
@@ -409,6 +480,15 @@ impl PostedSet {
 
 impl Drop for PostedSet {
     fn drop(&mut self) {
+        // Drops held for a sum nobody confirmed go onto the record for the
+        // next application, which runs them as it runs the rest.
+        #[cfg(feature = "recycler-over-counts")]
+        {
+            let held = unsafe { (*self.head).held };
+            if !held.is_null() {
+                unsafe { crate::cycle::collector_frees::stand_the_held(held) };
+            }
+        }
         unsafe {
             release_chain((*self.head).blocks);
             release_chain(self.head);
@@ -446,6 +526,8 @@ unsafe fn take_from(record: &MutatorRecord) -> Option<PostedSet> {
     }
 
     let blocks = blocks_from(head).count() + blocks_from(unsafe { (*head).blocks }).count();
+    #[cfg(feature = "recycler-over-counts")]
+    let blocks = blocks + crate::cycle::collector_frees::held_blocks(unsafe { (*head).held });
     gc_metadata::take_over(blocks, blocks * BLOCK_PAYLOAD);
     Some(PostedSet { head })
 }

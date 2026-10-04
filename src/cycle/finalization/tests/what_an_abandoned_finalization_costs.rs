@@ -34,7 +34,7 @@ unsafe fn confirmed_ring(
     let mut finalization = Finalization::begin_at_this_threads_epoch();
     let mut members = [first as *mut RcHeader, second as *mut RcHeader];
     assert_eq!(
-        unsafe { finalization.confirm(&Membership::listed(&mut members), None) },
+        unsafe { finalization.confirm(&Membership::listed(&mut members), None, 0) },
         ValidationResult::Unreachable
     );
     (finalization, members)

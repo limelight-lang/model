@@ -493,7 +493,8 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     // The set the collector's batch proved unreachable is the collection
     // over P's to validate, and no other collection reads it
     // (`crate::cycle::posted_set`).
-    let set = match form {
+    #[cfg_attr(not(feature = "recycler-over-counts"), allow(unused_mut))]
+    let mut set = match form {
         BatchForm::Verdicts => crate::cycle::posted_set::take_this_threads(),
         BatchForm::AllRoots => {
             crate::cycle::posted_set::drop_this_threads();
@@ -534,6 +535,16 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     // A collection over P read the set alone, so a row it leaves live is no
     // proof of liveness, and it stamps nothing.
     let outcome = unsafe { commit(&members, window.arena(), form == BatchForm::AllRoots) };
+    // A set proved by its tags and freed: the drops the collector held into it
+    // go with it. Read and not freed, the set takes them to the record at its
+    // drop, for the next application (`crate::cycle::posted_set`).
+    #[cfg(feature = "recycler-over-counts")]
+    if outcome.initial == ValidationResult::Unreachable
+        && outcome.freed > 0
+        && let Some(set) = set.as_mut()
+    {
+        set.discard_the_held();
+    }
     #[cfg(test)]
     if form == BatchForm::Verdicts {
         let [confirm, destructors, reclaim, drops] =
@@ -1474,7 +1485,13 @@ unsafe fn commit_before_drops<'a>(
     let initial = if members.len() == 0 {
         ValidationResult::ZeroCountMember
     } else {
-        unsafe { finalization.confirm(members, arena.take_internal_edges_read()) }
+        unsafe {
+            finalization.confirm(
+                members,
+                arena.take_internal_edges_read(),
+                arena.take_held_from_outside_read(),
+            )
+        }
     };
     initial_disposition(initial);
     let confirmed = initial == ValidationResult::Unreachable;

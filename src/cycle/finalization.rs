@@ -176,7 +176,9 @@
 use std::marker::PhantomData;
 
 use crate::cycle::membership::Membership;
-use crate::cycle::validation::{ValidationResult, validate_component};
+#[cfg(doc)]
+use crate::cycle::validation::validate_component;
+use crate::cycle::validation::{ValidationResult, validate_component_holding};
 use crate::object::{Object, ll_entity_die, run_user_destructor};
 use crate::refcount::{
     MATURATION_AGE_MAX, MaturationStamp, carries_a_class_word, ll_release, mutator_flags,
@@ -200,6 +202,11 @@ pub(crate) struct Finalization {
     /// reading, so that two components of one collection age against one
     /// epoch whatever the collector advances meanwhile.
     epoch: u32,
+    /// The references into the component its validations allow for besides
+    /// the guards: a set proved by its tags, whose drops from the part the
+    /// collector freed stand held (`crate::cycle::posted_set`); zero
+    /// otherwise.
+    held_from_outside: u64,
     /// The counts and the cells are the owning thread's to write, and the
     /// exact validation reads fields no other thread may read
     /// ([`validate_component`]).
@@ -215,6 +222,7 @@ impl Finalization {
             members: 0,
             sealed: false,
             epoch,
+            held_from_outside: 0,
             _not_send: PhantomData,
         }
     }
@@ -270,19 +278,22 @@ impl Finalization {
         &mut self,
         members: &Membership<'_>,
         internal_edges: Option<usize>,
+        held_from_outside: usize,
     ) -> ValidationResult {
+        self.held_from_outside = held_from_outside as u64;
+        let held = self.held_from_outside;
         let result = match internal_edges {
             Some(edges) if unsafe { counts_sum_to(members, edges) } => {
                 #[cfg(test)]
                 CONFIRMED_BY_THE_SUM.with(|count| count.set(count.get() + 1));
                 debug_assert_eq!(
-                    unsafe { validate_component(members, 0) },
+                    unsafe { validate_component_holding(members, 0, held) },
                     ValidationResult::Unreachable,
                     "the counts that sum to the internal edges validate"
                 );
                 ValidationResult::Unreachable
             }
-            _ => unsafe { validate_component(members, 0) },
+            _ => unsafe { validate_component_holding(members, 0, held) },
         };
         if result != ValidationResult::Unreachable {
             if result == ValidationResult::ExternallyReferenced {
@@ -324,6 +335,7 @@ impl Finalization {
             members: self.members,
             taken: false,
             epoch: self.epoch,
+            held_from_outside: self.held_from_outside,
             _not_send: PhantomData,
         }
     }
@@ -417,6 +429,11 @@ pub(crate) struct Invalidated {
     taken: bool,
     /// The commit's epoch, as [`Finalization`] read it.
     epoch: u32,
+    /// The references into the component its validations allow for besides
+    /// the guards: a set proved by its tags, whose drops from the part the
+    /// collector freed stand held (`crate::cycle::posted_set`); zero
+    /// otherwise.
+    held_from_outside: u64,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -440,6 +457,7 @@ impl Invalidated {
             any_destructor_ran: false,
             closed: false,
             epoch: self.epoch,
+            held_from_outside: self.held_from_outside,
             _not_send: PhantomData,
         }
     }
@@ -485,6 +503,11 @@ pub(crate) struct DestructorPass {
     closed: bool,
     /// The commit's epoch, as [`Finalization`] read it.
     epoch: u32,
+    /// The references into the component its validations allow for besides
+    /// the guards: a set proved by its tags, whose drops from the part the
+    /// collector freed stand held (`crate::cycle::posted_set`); zero
+    /// otherwise.
+    held_from_outside: u64,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -556,6 +579,7 @@ impl DestructorPass {
             any_destructor_ran: self.any_destructor_ran,
             closed: false,
             epoch: self.epoch,
+            held_from_outside: self.held_from_outside,
             _not_send: PhantomData,
         }
     }
@@ -601,6 +625,11 @@ pub(crate) struct Revalidation {
     closed: bool,
     /// The epoch this commit's stamps carry ([`Finalization`]).
     epoch: u32,
+    /// The references into the component its validations allow for besides
+    /// the guards: a set proved by its tags, whose drops from the part the
+    /// collector freed stand held (`crate::cycle::posted_set`); zero
+    /// otherwise.
+    held_from_outside: u64,
     _not_send: PhantomData<*mut ()>,
 }
 
@@ -639,7 +668,7 @@ impl Revalidation {
             return Revalidated::Unreachable(GuardedComponent::over(members.len(), self));
         }
 
-        match unsafe { validate_component(members, 1) } {
+        match unsafe { validate_component_holding(members, 1, self.held_from_outside) } {
             ValidationResult::Unreachable => {
                 Revalidated::Unreachable(GuardedComponent::over(members.len(), self))
             }

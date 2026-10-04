@@ -529,6 +529,9 @@ pub(crate) struct TraceScratchArena {
     /// (`crate::cycle::finalization::Finalization::confirm`); `None` where no
     /// such trace ran.
     internal_edges_read: Option<usize>,
+    /// The references held from outside a set proved by its tags
+    /// (`take_the_references_held_from_outside`).
+    held_from_outside_read: usize,
     /// The external children a trace within a set read off its drain where
     /// it found the set garbage whole, for the teardown to reserve by in place
     /// of its own walk of the cells (`crate::cycle::reclamation`); `None`
@@ -713,6 +716,7 @@ impl TraceScratchArena {
             cells_subtracted: 0,
             external_children_read: None,
             internal_edges_read: None,
+            held_from_outside_read: 0,
             #[cfg(test)]
             swept: std::time::Duration::ZERO,
             recall_readings: 0,
@@ -1003,6 +1007,7 @@ impl TraceScratchArena {
         self.worklist.rewind();
         self.external_children_read = None;
         self.internal_edges_read = None;
+        self.held_from_outside_read = 0;
         // The held entries carry row pointers the same way.
         self.held.rewind();
         self.held_next.rewind();
@@ -1808,6 +1813,21 @@ impl TraceScratchArena {
     pub(crate) fn take_the_internal_edges_the_collector_recorded(&mut self, edges: usize) {
         self.internal_edges_read = Some(edges);
         self.external_children_read = None;
+    }
+
+    /// Keep the references into a set proved by its tags that the collector's
+    /// free of the rest left counted, its drops into the set held: what the
+    /// members' counts carry besides the edges between them, which the
+    /// commit's validations allow for (`crate::cycle::posted_set`).
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn take_the_references_held_from_outside(&mut self, held: usize) {
+        self.held_from_outside_read = held;
+    }
+
+    /// The references held from outside a set proved by its tags, which the
+    /// commit forgets: zero for every other set.
+    pub(crate) fn take_held_from_outside_read(&mut self) -> usize {
+        std::mem::take(&mut self.held_from_outside_read)
     }
 
     pub(crate) fn keep_the_cells_left_out_as_external_children(&mut self) {

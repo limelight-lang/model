@@ -9,7 +9,10 @@
 //! recorded edge into it came from another member; at a checkpoint every
 //! reference is counted, locals included; so at T nothing outside the set
 //! refers into it, and garbage stays garbage (the Sage's proof, §4.8). A
-//! member carrying the window's number was touched, and the set is refused.
+//! member carrying the window's number was touched: its row is marked, and
+//! what its recorded edges reach is refused (U, `crate::cycle::split`) while
+//! the rest of the set stays proved, a touched member being made live only
+//! through a tagged write.
 //!
 //! **Stale tags are cleared as they are read.** Garbage is never touched, so
 //! a member keeps the number of the last window that wrote it, and with eight
@@ -19,11 +22,9 @@
 //! ([`crate::refcount::clear_a_stale_window_tag`]); a stale number equal to
 //! the window's refuses this attempt and is cleared at the next.
 //!
-//! **What the Δ-test does not do yet** (S68.5): the set it proves still
-//! goes to the owner's exact validation, which reads the mark beside it and,
-//! in a debug build, asserts that no member of a set so proved reads live
-//! (`crate::cycle::trace::trace_within_the_set`). The collector's own free of
-//! a set so proved is S68.6.
+//! **What follows the test** is the split of the set it proved
+//! (`crate::cycle::split`) and the collector's own free of the part it can
+//! free (`crate::cycle::collector_frees`).
 //!
 //! **The wait for T is bounded**, by the mutator's recall and by
 //! [`CHECKPOINT_WAIT`]: a mutator that polls no more within it — asleep, or in
@@ -52,17 +53,25 @@ pub(crate) enum TagReading {
     Garbage,
     /// A member carries it, or a member's address could not be recovered
     /// to read it: touched since the consent, for all the test can tell.
+    /// Every such member's row carries the split's mark
+    /// (`crate::cycle::shadow::SPLIT_MARK`), the seeds of U
+    /// (`crate::cycle::split`); the rest of the set is garbage at T.
     Touched,
-    /// A member has weak references: an upgrade after T can make it live
-    /// again, which the tags cannot see (§4.8, "weak cells aside"). S68.6
-    /// takes such members and what they reach the exact way.
-    WeaklyHeld,
     /// The mutator reached no checkpoint before its recall or the bound.
     NoCheckpoint,
 }
 
-/// Sets proved garbage, refused as touched, and given up for want of a
-/// checkpoint, since the process started; and the nanoseconds the collector
+/// The Δ-test's answer, and whether a member has weak references: an upgrade
+/// after T can make it live again, which the tags cannot see (§4.8, "weak
+/// cells aside"), so a set holding one is never marked proved.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct TagTest {
+    pub(crate) reading: TagReading,
+    pub(crate) weakly_held: bool,
+}
+
+/// Sets read untouched, read touched in some member, holding a weakly-held
+/// member, and given up for want of a checkpoint, since the process started; and the nanoseconds the collector
 /// waited for checkpoints, in all and at the longest. Read by the runs of
 /// S68.8 (`tag_reading_counts`).
 static PROVED: AtomicUsize = AtomicUsize::new(0);
@@ -109,7 +118,7 @@ pub(crate) fn tag_reading_counts() -> TagReadingCounts {
 pub(crate) unsafe fn test_the_set_by_its_tags(
     mutator: &MutatorRecord,
     arena: &mut TraceScratchArena,
-) -> TagReading {
+) -> TagTest {
     let token = &mutator.token;
     let from = Instant::now();
     token.ask_for_the_checkpoint();
@@ -120,7 +129,10 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
     LONGEST_WAIT_NANOS.fetch_max(waited, Ordering::Relaxed);
     if !reached {
         NO_CHECKPOINT.fetch_add(1, Ordering::Relaxed);
-        return TagReading::NoCheckpoint;
+        return TagTest {
+            reading: TagReading::NoCheckpoint,
+            weakly_held: false,
+        };
     }
 
     let window = token.window();
@@ -131,15 +143,18 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
         let (block, population) = unsafe { ((*array).block, (*array).population) };
         let _ = unsafe {
             row::for_each_proposable_met(array, block, population, |index| {
+                let row = row::row_at(array, block, population, index);
                 let Some(member) = row::entity_at(block, population, index) else {
                     // A member whose tag cannot be read is not one the test
                     // may pass over.
                     touched = true;
+                    crate::cycle::split::mark(row);
                     return std::ops::ControlFlow::Continue(());
                 };
                 let tag = crate::refcount::window_tag(member);
                 if tag == window {
                     touched = true;
+                    crate::cycle::split::mark(row);
                 } else if tag != 0 {
                     crate::refcount::clear_a_stale_window_tag(member, tag);
                 }
@@ -154,15 +169,19 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
         array = unsafe { (*array).next };
     }
 
-    if touched {
+    if weakly_held {
+        WEAKLY_HELD.fetch_add(1, Ordering::Relaxed);
+    }
+    let reading = if touched {
         TOUCHED.fetch_add(1, Ordering::Relaxed);
         TagReading::Touched
-    } else if weakly_held {
-        WEAKLY_HELD.fetch_add(1, Ordering::Relaxed);
-        TagReading::WeaklyHeld
     } else {
         PROVED.fetch_add(1, Ordering::Relaxed);
         TagReading::Garbage
+    };
+    TagTest {
+        reading,
+        weakly_held,
     }
 }
 

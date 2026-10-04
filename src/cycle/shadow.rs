@@ -80,6 +80,14 @@ const COUNT_BITS: u32 = 30;
 /// large machine rather than absurd.
 pub(crate) const COUNT_MAX: u32 = (1 << COUNT_BITS) - 1;
 
+/// The top bit of a potentially unreachable row's payload after a scan over
+/// the record, where the payload is the run index the first pass left: set,
+/// the member stands in a part of the proved set the collector does not free
+/// itself (`crate::cycle::split`). The run indices stay below it
+/// (`crate::cycle::recorded_edges::MAX_ENTRIES`).
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) const SPLIT_MARK: u32 = 1 << (COUNT_BITS - 1);
+
 /// What the trace has decided about one entity, and the reserved zero
 /// that says it has decided nothing.
 ///

@@ -118,9 +118,27 @@ pub(crate) enum ValidationResult {
 /// no mutator beside it,
 /// which is the condition `cells::trace_cells` reads an entity's cells plainly
 /// under.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) unsafe fn validate_component(
     members: &Membership<'_>,
     guard_refs_per_member: u32,
+) -> ValidationResult {
+    unsafe { validate_component_holding(members, guard_refs_per_member, 0) }
+}
+
+/// [`validate_component`] over a component that `held_from_outside`
+/// references from outside it are known to name, besides the guards: a set
+/// proved by its tags, whose drops from the part the collector freed stand
+/// held until this reading (`crate::cycle::posted_set`). The sum allows for
+/// them; each names a member, so no member reads zero while they stand.
+///
+/// # Safety
+/// As [`validate_component`], and `held_from_outside` counted references to
+/// members stand in cells nobody reads or writes.
+pub(crate) unsafe fn validate_component_holding(
+    members: &Membership<'_>,
+    guard_refs_per_member: u32,
+    held_from_outside: u64,
 ) -> ValidationResult {
     debug_assert!(members.len() > 0, "a component has a member");
     note_validation(members.len());
@@ -165,7 +183,7 @@ pub(crate) unsafe fn validate_component(
     );
 
     let guard_refcount = u64::from(guard_refs_per_member) * members.len() as u64;
-    if total_refcount == internal_edges + guard_refcount {
+    if total_refcount == internal_edges + guard_refcount + held_from_outside {
         ValidationResult::Unreachable
     } else {
         ValidationResult::ExternallyReferenced

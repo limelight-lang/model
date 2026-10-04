@@ -156,7 +156,11 @@ pub(crate) mod delta_test;
 // application of what it leaves, under `recycler-over-counts`.
 #[cfg(feature = "recycler-over-counts")]
 pub(crate) mod collector_frees;
+// The split of a proved set into what a touch reaches, what the collector
+// cannot free, and the rest, under `recycler-over-counts`.
 pub(crate) mod row;
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) mod split;
 // The second phase, and the proposal a collection reads: reached from
 // [`trace`], which [`collect`] drives.
 pub(crate) mod scan;

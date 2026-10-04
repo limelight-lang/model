@@ -48,10 +48,11 @@ pub(crate) const PAGE_SEGMENTS: usize = 512;
 pub(crate) const FIRST_PAGES: usize = 8;
 /// Directory pages the widest top table holds: 32 KiB of pointers.
 const MAX_PAGES: usize = 4096;
-/// Entries the record holds before it refuses: the most a row's thirty bits
-/// can index with one to spare for "no run" (`crate::cycle::shadow::COUNT_MAX`),
-/// eight gibibytes of record — the row's own bound, not one of the record's.
-pub(crate) const MAX_ENTRIES: usize = crate::cycle::shadow::COUNT_MAX as usize - 1;
+/// Entries the record holds before it refuses: the most a row's payload can
+/// index below the split's mark (`crate::cycle::shadow::SPLIT_MARK`), with one
+/// to spare for "no run", four gibibytes of record — the row's own bound, not
+/// one of the record's.
+pub(crate) const MAX_ENTRIES: usize = crate::cycle::shadow::SPLIT_MARK as usize - 2;
 
 const _: () = assert!(MAX_PAGES * PAGE_SEGMENTS * SEGMENT_ENTRIES >= MAX_ENTRIES);
 

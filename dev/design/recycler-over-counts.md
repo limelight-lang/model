@@ -375,6 +375,29 @@ notifications, the teardown and the close are the rest. So the steps:
        W is freed and confirmed; a block return moving the held drops to the
        frees word.
 
+  9. *Built* (S68.6c, `crate::cycle::split`), and where the code departs
+     from item 8.
+     - The held drops are not simply discarded at the confirmation: the
+       commit's validations — the debug build's exact one beside the sum,
+       and the guarded revalidation after S's destructors — read S's counts,
+       which carry C's edges while the drops stand held. So the commit
+       allows for them: the validation's sum is the internal edges, the
+       guards and the held count (`validation::validate_component_holding`);
+       no member reads zero while they stand, each naming a member. Freed
+       whole, S gives them back with it; any other ending leaves them to the
+       posted set's drop, which stands them on the record as drops.
+     - Held drops ride only on a set marked proved; an S that goes unmarked,
+       or that no root of the batch lands in, gives them to the owner as
+       drops like the rest, applied before P is read.
+     - A child of C with an ownership mark refuses the preparation, the
+       split dropped, rather than seeding S: the seeds are read off headers
+       alone, and the mark is a child's.
+     - Whether S holds a weakly-held member is read off the Δ-test's reading
+       of all of W, so a weakly-held member of U unmarks S too.
+     - The explicit fire collects over R whole, which gives P back unread:
+       its S reads live by C's counts in that collection and is stamped,
+       its held drops applied at the next poll.
+
 ## 6. The owner's poll
 
 12. The owner applies the drops, each through `drop_ref`, typed at

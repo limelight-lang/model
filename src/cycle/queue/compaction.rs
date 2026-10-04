@@ -298,8 +298,17 @@ fn dispose_verdicts(
 
         // Written back into R as a registration is, its candidate bit
         // still set (`rfc/model/gc/rc-cycle.md`, "The mutator's
-        // disposition").
-        unsafe { append_entry(state, entity) };
+        // disposition"); an unwalked root with its second chance spent
+        // (`crate::cycle::queue::SECOND_CHANCE_MARK`).
+        #[cfg(feature = "recycler-over-counts")]
+        let mark = if verdicts::entry_verdict(entry) == verdicts::Verdict::Unwalked {
+            SECOND_CHANCE_MARK
+        } else {
+            0
+        };
+        #[cfg(not(feature = "recycler-over-counts"))]
+        let mark = 0;
+        unsafe { append_marked_entry(state, entity, mark) };
         journal_event!(
             journal::KIND_ROOT_WRITTEN_BACK,
             entity as u64,
