@@ -61,6 +61,36 @@ debug build asserting the tag at every primitive.
 
 ---
 
+## 2026-10-04 — the COW reconciliation marks its survivors by a bias on the count word, and byte 7 goes to the window tag
+
+**Decision (S68.2, for the window tag of the entry above).** Under
+`recycler-over-counts` byte 7 carries the window tag, stored whole with no
+read on every count write, so bit 24 cannot stay there without a
+read-modify-write on every count write. The reconciliation now builds its
+sum in the survivor's count word biased by `0xC000_0000`
+(`promote::IN_HAND_BIAS`); a count in `[2^31, u32::MAX)` is "in hand". In
+both builds: one mechanism, on a path no timed figure reads.
+
+**This reverses the Sage's ruling of 2026-09-13** ("the COW reconciliation
+accumulates in the count word, and flags bit 24 says so"), which measured the
+count's top bit 5–7 % cheaper and chose bit 24 to keep every COW entity a
+correction names free to exceed 2^31 references. That narrowing is the cost
+taken: 2^31 references to one entity are 16 GiB of pointers; `u32::MAX`, the
+saturated count, stays out of the range. The three reasons the marker's
+foreign reads are sound stand (the pool does not unmap; a freed slot keeps
+its final header, count zero; a re-issued slot is published whole), and a
+fourth is added: a heap block the reset empties stays with its size class
+until the reset ends (`Heap::retire_empty`), so the slot grid under the log's
+addresses does not change — before, an emptied block went back to the pool and
+could be re-issued to another class mid-reset.
+`rfc/model/classes.md`, "Flags layout", amended the same day.
+
+**Rejected:** a side set of captured addresses — the `HashMap` and the
+search that ruling measured, and an allocation the reset must answer at its
+last step.
+
+---
+
 ## 2026-10-04 — rulings the S65 and S67 stage notes held, carried at the stages' close
 
 Each stood only in the stage's notes file, which the close deletes; the date
@@ -2376,7 +2406,9 @@ when a ring is read.
 written.** Its only spelling is a large constant in the count word, which is
 the bias this design refuses for a separate reason, and `u32::MAX` saturates
 only under `checked-refcount` while an ordinary build wraps it and a debug
-build panics in `ll_retain`.
+build panics in `ll_retain`. (The 2026-10-04 entry "the COW reconciliation
+marks its survivors by a bias on the count word…" adopts that bias for the
+marker, not for holding a survivor alive.)
 
 **The refusal keeps a channel of its own.**
 `reset_window::take_refused_promotion_edge` is read once per round, before the

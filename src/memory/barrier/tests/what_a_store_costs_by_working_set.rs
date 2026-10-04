@@ -683,6 +683,11 @@ fn sweep_slope(figures: &[f64]) -> (f64, f64) {
 #[ignore = "measurement probe; run explicitly with --ignored (release mode)"]
 fn measure_store_cost() {
     let _g = crate::memory::block_pool::test_guard();
+    // An open window, so that the tag every count write stores is the
+    // window's number and not a constant the optimizer may fold
+    // (`PLAN.md` S68.1).
+    #[cfg(feature = "recycler-over-counts")]
+    crate::refcount::set_window(7);
     let holder = holder_class("StoreCostOwner");
     let leaf = leaf_class("StoreCostChild");
     let mut arena = Arena::new();

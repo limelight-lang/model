@@ -35,8 +35,11 @@ deferred lanes are all as in the default build.
      bracket).
    One relaxed one-byte store, no branch (a closed window writes 0). Holders
    in an arena need no tag (`owner_cat` is a compile-time constant).
-3. `RECONCILING`, today the only bit in byte 7, moves into the reset window's
-   capture log, so byte 7 has no other writer.
+3. Byte 7 has no other writer: the reset's COW reconciliation, which held
+   bit 24 there, marks the survivors it has in hand by a bias on the count
+   word instead (`dev/DECISIONS.md`, "the COW reconciliation marks its
+   survivors by a bias on the count word…"), and a heap block a reset empties
+   stays with its size class until the reset ends (`Heap::retire_empty`).
 
 ## 3. The collector's batch
 

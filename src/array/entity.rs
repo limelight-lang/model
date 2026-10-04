@@ -141,6 +141,14 @@ pub(crate) unsafe fn as_table<'a>(a: *mut LLArray) -> (&'a Table, &'a StorageHea
 #[inline]
 pub(crate) unsafe fn as_table_mut<'a>(a: *mut LLArray) -> (&'a mut Table, &'a StorageHead) {
     debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Hash);
+    // Every write into the array's slots, its relocations included, comes
+    // through a mutable view, so the view is where the array is tagged as
+    // the holder whose slots changed (`dev/design/recycler-over-counts.md`,
+    // §2) — ahead of any `begin_move` the caller then makes.
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe {
+        crate::refcount::tag_with_the_window(a as *mut RcHeader)
+    };
     // The `&mut` first and the head second, both from `a` and both
     // field-precise: `&mut (*a).storage` claims the union's bytes and
     // nothing beyond them.
@@ -164,6 +172,11 @@ pub(crate) unsafe fn as_vector<'a>(a: *mut LLArray) -> (&'a Vector, &'a StorageH
 #[inline]
 pub(crate) unsafe fn as_vector_mut<'a>(a: *mut LLArray) -> (&'a mut Vector, &'a StorageHead) {
     debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
+    // Tagged as the holder, as [`as_table_mut`] says.
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe {
+        crate::refcount::tag_with_the_window(a as *mut RcHeader)
+    };
     let vector = unsafe { &mut (*a).storage.vector };
     (vector, unsafe { &(*a).head })
 }

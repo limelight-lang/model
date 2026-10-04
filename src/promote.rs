@@ -1237,6 +1237,21 @@ unsafe fn retrace_survivors(arena: *mut Arena) -> usize {
     unsafe { descend_from(arena, 0) }
 }
 
+/// What [`reconcile_cow_counts`] adds to a survivor's count word while it
+/// has the survivor in hand: the word then holds `IN_HAND_BIAS` plus a
+/// signed sum. A count of 2^31 or more needs 2^31 references, 16 GiB of
+/// pointers, so no count of an entity outside the reconciliation reads in
+/// the biased range, and no sum built inside it leaves the range: its terms
+/// are one per log record, far fewer than 2^30. `u32::MAX`, the count
+/// `checked-refcount` saturates at, is kept out of the range.
+const IN_HAND_BIAS: u32 = 0xC000_0000;
+
+/// Whether `count` is a survivor's biased sum rather than a count
+/// ([`IN_HAND_BIAS`]).
+fn in_hand(count: u32) -> bool {
+    (0x8000_0000..u32::MAX).contains(&count)
+}
+
 /// Settle every COW survivor's count now that the fixpoint is over and
 /// no user code can run again.
 ///
@@ -1259,14 +1274,16 @@ unsafe fn retrace_survivors(arena: *mut Arena) -> usize {
 ///
 /// The population is the log's captures, one per COW survivor the reset
 /// promoted: a correction naming a child with no capture belongs to a COW
-/// entity this reset never promoted, and what tells the two apart is the bit
-/// the first pass below sets (`refcount::is_reconciling`).
+/// entity this reset never promoted, and what tells the two apart is the
+/// bias the first pass below adds to the survivor's count word
+/// ([`IN_HAND_BIAS`]).
 ///
-/// **The sum is built in the survivor's own count word**, which holds a
-/// signed accumulator from the first pass to the third. That is sound
-/// because nothing reads it in between: this function runs no user code, so
-/// no destructor, no collection and no nested reset stands between the
-/// passes, and the bit that marks the state has no other reader.
+/// **The sum is built in the survivor's own count word**, biased, from the
+/// first pass to the third. That is sound because nothing reads it in
+/// between: this function runs no user code, so no destructor, no collection
+/// and no nested reset stands between the passes, and the bias that marks the
+/// state has no other reader. It took the place of a header bit in byte 7 on
+/// 2026-10-04, which the window tag needs whole (`PLAN.md` S68.2).
 ///
 /// **One clamp, on the whole sum.** The terms are signed where a count is
 /// not: `at = 3` with one edge and two post-capture releases sums to `-2`,
@@ -1281,15 +1298,13 @@ unsafe fn retrace_survivors(arena: *mut Arena) -> usize {
 /// blocks are disposed of.
 unsafe fn reconcile_cow_counts() {
     use crate::memory::reset_window::Correction;
-    use crate::refcount::{is_reconciling, set_reconciling};
 
     // **Three passes, and none of them may unwind.** Between the first store
-    // and the last, a promoted survivor's count word holds the sum being
-    // built rather than a count, and the bit that says so has one reader
-    // (`rfc/model/classes.md`, "Flags layout"). A survivor left in that state
-    // is freed by the next release that reads its word, so every check below
-    // records its subject and fires after the last store rather than in the
-    // middle of the walk.
+    // and the last, a promoted survivor's count word holds the biased sum
+    // being built rather than a count, and the bias that says so has one
+    // reader. A survivor left in that state is freed by the next release that
+    // reads its word, so every check below records its subject and fires
+    // after the last store rather than in the middle of the walk.
     let mut captured_twice: *mut RcHeader = std::ptr::null_mut();
     let mut lost_more_than_it_had: *mut RcHeader = std::ptr::null_mut();
 
@@ -1308,16 +1323,13 @@ unsafe fn reconcile_cow_counts() {
 
         // A second capture of one address would seed over a sum already
         // built, which the third pass would then store as the count.
-        if unsafe { is_reconciling(survivor) } {
+        let now = unsafe { header_refcount(survivor) };
+        if in_hand(now) {
             captured_twice = survivor;
             return;
         }
 
-        let now = unsafe { header_refcount(survivor) };
-        unsafe {
-            set_header_refcount(survivor, now.wrapping_sub(at));
-            set_reconciling(survivor, true);
-        }
+        unsafe { set_header_refcount(survivor, IN_HAND_BIAS.wrapping_add(now.wrapping_sub(at))) };
     });
 
     // 2. Apply every correction to the survivor it names, and to nothing
@@ -1327,11 +1339,11 @@ unsafe fn reconcile_cow_counts() {
     //    saturating — the corrections of one child arrive in no order, so a
     //    decrement can land on a delta of zero.
     crate::memory::reset_window::for_each_correction(|child, correction| {
-        if !unsafe { is_reconciling(child) } {
+        let sum = unsafe { header_refcount(child) };
+        if !in_hand(sum) {
             return;
         }
 
-        let sum = unsafe { header_refcount(child) };
         let sum = match correction {
             Correction::DeferredIncrement => sum.wrapping_add(1),
             Correction::DeferredDecrement => sum.wrapping_sub(1),
@@ -1340,17 +1352,15 @@ unsafe fn reconcile_cow_counts() {
     });
 
     // 3. Read the sum as the signed number it is, clamp it once and store the
-    //    count, then give the survivor back.
+    //    count, which gives the survivor back.
     crate::memory::reset_window::for_each_capture(|survivor, _| {
-        if !unsafe { is_reconciling(survivor) } {
+        let sum = unsafe { header_refcount(survivor) };
+        if !in_hand(sum) {
             return;
         }
 
-        let settled = unsafe { header_refcount(survivor) } as i32;
-        unsafe {
-            set_header_refcount(survivor, settled.max(0) as u32);
-            set_reconciling(survivor, false);
-        }
+        let settled = sum.wrapping_sub(IN_HAND_BIAS) as i32;
+        unsafe { set_header_refcount(survivor, settled.max(0) as u32) };
 
         if settled < 0 {
             lost_more_than_it_had = survivor;

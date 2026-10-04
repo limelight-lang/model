@@ -129,10 +129,12 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
 Δ-refusals under 10 % of batches — the figures put to Edmond, appended to
 `dev/HOW-THE-CYCLE-COLLECTOR-EVOLVED.md`.
 
-- [ ] S68.1 The tag's price: `ll_retain`/`ll_release` and the store barrier
+- [x] S68.1 The tag's price: `ll_retain`/`ll_release` and the store barrier
       with and without a byte-7 store, microbenchmarks and instructions
       (IR or asm across the ABI), before any build of the rest.
-- [ ] S68.2 Byte 7 freed: `RECONCILING` into the reset window's capture log.
+- [x] S68.2 Byte 7 freed: the reconciliation marks its survivors by a bias
+      on the count word instead of bit 24, and a block a reset empties stays
+      with its size class until the reset ends.
 - [ ] S68.3 The window and the tags, behind the feature: the window number
       in the record (1..255, advanced at the consent, 0 closed); the tag in
       `refcount_store`, the slot-write primitives and the in-array

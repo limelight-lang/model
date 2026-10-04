@@ -216,6 +216,15 @@ pub(crate) struct TraceToken {
     /// costs one stride more, and nothing but the byte above decides who holds
     /// the token. Relaxed on both sides, since nothing is published beside it.
     waiting: AtomicU8,
+    /// The window the mutator opened at its last consent, 1..=255
+    /// (`dev/design/recycler-over-counts.md`, §2): every count write and
+    /// pointer store of the mutator's tags header byte 7 with it while the
+    /// grant stands, and the collector reads it after its acquire of the
+    /// grant to know which tag means "touched under this grant". Stored by the
+    /// mutator ahead of the consent's release swap, which publishes it;
+    /// relaxed on both sides.
+    #[cfg(feature = "recycler-over-counts")]
+    window: AtomicU8,
     wait: Mutex<()>,
     released: Condvar,
     /// How many times a taker has gone to wait on this token. A case reads
@@ -249,6 +258,8 @@ impl TraceToken {
         Self {
             word: AtomicU8::new(MUTATOR),
             waiting: AtomicU8::new(RECALL_NONE),
+            #[cfg(feature = "recycler-over-counts")]
+            window: AtomicU8::new(0),
             wait: Mutex::new(()),
             released: Condvar::new(),
             #[cfg(test)]
@@ -433,6 +444,11 @@ impl TraceToken {
         // the recall once before its batch, after its acquire of the grant,
         // and a recall stored after the swap can land behind that reading.
         self.waiting.store(level, Ordering::Relaxed);
+        // The grant's window, ahead of the swap for the same reason: a
+        // consent the swap then loses spends a number and opens nothing.
+        #[cfg(feature = "recycler-over-counts")]
+        self.window
+            .store(crate::refcount::open_the_next_window(), Ordering::Relaxed);
         let granted = word(COLLECTOR, slot(seen));
         self.word
             .compare_exchange(seen, granted, Ordering::Release, Ordering::Acquire)
@@ -456,6 +472,16 @@ impl TraceToken {
                 }
                 crate::cycle::worker::wake_for_the_byte(slot(seen));
             })
+    }
+
+    /// The window the mutator opened at the consent the caller's grant came
+    /// from ([`Self::consent`]): read by the collector after its acquire of
+    /// the grant.
+    #[cfg(feature = "recycler-over-counts")]
+    // Read outside the tests from S68.5 on, the Δ-test (`PLAN.md`).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn window(&self) -> u8 {
+        self.window.load(Ordering::Relaxed)
     }
 
     /// Release collector `slot`'s claim: one store — `POSTED` when the batch

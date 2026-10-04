@@ -99,6 +99,18 @@ cargo test --lib --features debug-journal -- --test-threads=8
 Three times, for the reason the run above is run three times: what this
 axis adds is a re-entry into the allocator from inside itself.
 
+Since 2026-10-04 there is a fourth, `recycler-over-counts`
+(`dev/design/recycler-over-counts.md`), the arm built beside the default
+collector. It changes what every count write and every slot store does and,
+as its steps land, what the collector does with a batch, so it is a full leg:
+
+```
+cargo test --lib --features recycler-over-counts -- --test-threads=8
+cargo build --release --features recycler-over-counts
+```
+
+The tests three times, as the default build's.
+
 Run each test command **as its own command and read its result line**;
 never pipe into a filter that can swallow a failure and let a commit
 through on a red suite. That happened once, on 2026-07-27, and again on

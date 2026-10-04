@@ -21,8 +21,9 @@
 //! the owner under its claim through [`write_maturation_stamp`], a collector
 //! under its grant through [`stamp_as_read_live`] — and
 //! `refcount::tests::the_header_the_compiler_shares` is what keeps a
-//! mutator constant from drifting into any of them. Bits 24-31 are
-//! unclaimed.
+//! mutator constant from drifting into any of them. Bits 24-31, byte 7, are
+//! the window tag under `recycler-over-counts` (`tag_with_the_window`) and
+//! unwritten after the publication otherwise.
 
 use crate::journal::kinds::journal_event;
 
@@ -755,6 +756,71 @@ unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
         (*(header as *const core::sync::atomic::AtomicU32))
             .store(value, core::sync::atomic::Ordering::Relaxed)
     };
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe {
+        tag_with_the_window(header)
+    };
+}
+
+#[cfg(feature = "recycler-over-counts")]
+thread_local! {
+    /// The window a collector holding this thread's token opened, 1..=255,
+    /// or 0 while none holds it (`dev/design/recycler-over-counts.md`, §2).
+    /// `Cell<u8>` has no drop glue, which is the rule for anything a
+    /// thread exit can reach.
+    static COLLECTOR_WINDOW: core::cell::Cell<u8> = const { core::cell::Cell::new(0) };
+}
+
+/// Open the window `window` on this thread, or close it with 0. The token's
+/// consent opens the next window ([`open_the_next_window`]); a measurement
+/// of the tag's price and a case set one directly.
+#[cfg(feature = "recycler-over-counts")]
+pub fn set_window(window: u8) {
+    COLLECTOR_WINDOW.with(|open| open.set(window));
+}
+
+/// Open the next window on this thread and answer its number: 1..=255, one
+/// past the last, 255 wrapping to 1 — 0 is no window's. Called by the
+/// consent alone (`crate::cycle::token::TraceToken::consent`). A tag of a
+/// window 255 consents old reads as touched again, which refuses a set and
+/// frees nothing.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn open_the_next_window() -> u8 {
+    COLLECTOR_WINDOW.with(|open| {
+        let next = open.get() % 255 + 1;
+        open.set(next);
+        next
+    })
+}
+
+/// The window tag in header byte 7: the number of the window in which the
+/// entity's count or one of its slots last changed, or 0
+/// ([`tag_with_the_window`]).
+///
+/// # Safety
+/// `header` points at a published entity whose first eight bytes are
+/// readable.
+#[cfg(feature = "recycler-over-counts")]
+// Read outside the tests from S68.5 on, the Δ-test (`PLAN.md`).
+#[cfg_attr(not(test), allow(dead_code))]
+#[inline]
+pub(crate) unsafe fn window_tag(header: *const RcHeader) -> u8 {
+    unsafe { header_byte_load(header, WINDOW_TAG_BYTE) }
+}
+
+/// Write the open window's number into header byte 7: this entity's count
+/// or one of its slots changed while the window stood. One relaxed byte
+/// store, no branch — a closed window writes 0, which no window carries
+/// (`dev/design/recycler-over-counts.md`, §2).
+///
+/// # Safety
+/// `header` points at a published entity whose first eight bytes are
+/// writable by this thread.
+#[cfg(feature = "recycler-over-counts")]
+#[inline]
+pub unsafe fn tag_with_the_window(header: *mut RcHeader) {
+    let window = COLLECTOR_WINDOW.with(|open| open.get());
+    unsafe { header_byte_store(header, WINDOW_TAG_BYTE, window) };
 }
 
 /// The narrow 4-byte loads matching [`refcount_store`]. The hot paths
@@ -795,14 +861,15 @@ unsafe fn flags_load(header: *const RcHeader) -> u32 {
 
 /// The store twin of [`flags_load`]: the mutator's only store of a
 /// published header's flags. Byte 6 and byte 7 have writers of their own,
-/// [`write_maturation_stamp`] and [`set_reconciling`], each one byte wide.
+/// [`write_maturation_stamp`] and, with `recycler-over-counts`, the window
+/// tag, each one byte wide.
 #[inline]
 unsafe fn flags_store(header: *mut RcHeader, flags: u32) {
     debug_assert_eq!(
         flags & 0xFFFF_0000,
         0,
         "the mutator writes flags bits 0-15; byte 6 is the collector's and \
-         byte 7 the reset's, and each is written a byte at a time"
+         byte 7 the window tag's, and each is written a byte at a time"
     );
     unsafe {
         (*((header as *mut u8).add(4) as *const core::sync::atomic::AtomicU16))
@@ -1076,54 +1143,17 @@ pub(crate) unsafe fn stamp_as_read_live(header: *mut RcHeader, epoch: u32) -> bo
     true
 }
 
-/// Byte 7 of the header, whose bit 0 is the flags word's bit 24
-/// (`rfc/model/classes.md`, "Flags layout").
-const RECONCILING_BYTE: usize = 7;
-
-/// Byte 7's bit 0: the arena reset's COW count reconciliation has this entity
-/// in hand, and **its `refcount` is a signed accumulator rather than a count
-/// while the bit stands**. A reader that took the word for a count would free
-/// a live entity, which is why the bit has exactly one reader —
-/// `promote::reconcile_cow_counts`, deciding whether a correction belongs to
-/// its own population.
-///
-/// The bit stands on no entity outside that function: it runs no user code,
-/// opens no nested reset and does not unwind, so nothing observes the window
-/// in which it is up.
-const RECONCILING_IN_BYTE: u8 = 1;
-
-/// Whether the reconciliation has this entity in hand ([`RECONCILING_IN_BYTE`]).
-///
-/// # Safety
-/// `header` points at a published entity whose first eight bytes are readable.
-#[inline]
-pub(crate) unsafe fn is_reconciling(header: *const RcHeader) -> bool {
-    unsafe { header_byte_load(header, RECONCILING_BYTE) & RECONCILING_IN_BYTE != 0 }
-}
-
-/// Take the entity in hand, or give it back. Byte-wide, as byte 6's writer is
-/// and for the same reason: a wider access would overlap the mutator's two
-/// bytes or the collector's one without covering them, and byte 7's second
-/// field, when it arrives, would be lost by a store of the whole byte
-/// (`rfc/model/classes.md`, "Flags layout").
-///
-/// # Safety
-/// As [`is_reconciling`], and the caller is the reset's reconciliation, which
-/// is byte 7's only writer.
-#[inline]
-pub(crate) unsafe fn set_reconciling(header: *mut RcHeader, taken: bool) {
-    let rest = unsafe { header_byte_load(header, RECONCILING_BYTE) } & !RECONCILING_IN_BYTE;
-    let byte = if taken {
-        rest | RECONCILING_IN_BYTE
-    } else {
-        rest
-    };
-    unsafe { header_byte_store(header, RECONCILING_BYTE, byte) };
-}
+/// Byte 7 of the header, the flags word's bits 24-31. Without
+/// `recycler-over-counts` nothing writes it after the publication; with it,
+/// it carries the number of the collector's window in which this entity's
+/// count or one of its slots last changed (`rfc/model/classes.md`, "Flags
+/// layout"; `dev/design/recycler-over-counts.md`, §2).
+#[cfg(feature = "recycler-over-counts")]
+const WINDOW_TAG_BYTE: usize = 7;
 
 /// The relaxed load of one byte of a header, at `at` bytes from its start:
-/// the collector's [`MATURATION_STAMP_BYTE`] and the reset's
-/// [`RECONCILING_BYTE`] are read this way and no wider.
+/// the collector's [`MATURATION_STAMP_BYTE`] is read this way and no wider,
+/// and so is the window tag in byte 7.
 #[inline]
 unsafe fn header_byte_load(header: *const RcHeader, at: usize) -> u8 {
     unsafe {

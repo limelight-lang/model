@@ -94,9 +94,10 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
         ("CLOSED", false),                                // const Cell<bool>, no drop glue
         ("COLLECTION_ARMED", false),
-        ("COMMIT_SPLIT", false),         // test-only const Cell, no drop glue
+        ("COLLECTOR_WINDOW", false), // const Cell<u8>, no drop glue (`recycler-over-counts`)
+        ("COMMIT_SPLIT", false),     // test-only const Cell, no drop glue
         ("CONFIRMED_BY_THE_SUM", false), // test-only const Cell, no drop glue
-        ("COUNTS", false),               // test-only const Cell, no drop glue
+        ("COUNTS", false),           // test-only const Cell, no drop glue
         ("COUNT_PRESSURE_ROOTS", false), // test-only const Cell, no drop glue
         ("CRITICAL", true),
         ("CURRENT_CONTEXT", false),

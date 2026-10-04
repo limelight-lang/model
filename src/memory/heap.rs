@@ -1361,9 +1361,28 @@ impl Heap {
     /// keep it as the class's one bounded empty spare (instant reuse, no
     /// refill) if there isn't one already; otherwise actually return it
     /// to the global pool. See `rfc/model/memory/heap-slot-allocation.md`.
+    ///
+    /// **Inside an arena reset the block stays the class's**, linked and
+    /// empty, whatever the spare holds: the reset's COW reconciliation reads
+    /// the headers of entities its log names after they may have died
+    /// (`promote::reconcile_cow_counts`), and that read is sound only while a
+    /// freed slot keeps its final header or is handed out again at the same
+    /// address and published whole — which a block carved again under
+    /// another size class would break, putting a log address in the middle
+    /// of a foreign body (`rfc/model/classes.md`, "Flags layout"). The cost is
+    /// a block such a reset emptied staying with the thread until it fills
+    /// and empties again outside one.
     #[cold]
     #[inline(never)]
     fn retire_empty(&mut self, ci: usize, block: *mut HeapBlockHeader) {
+        if crate::memory::reset_window::is_open() {
+            if unsafe { !(*block).private.linked } {
+                self.link(ci, block);
+            }
+
+            return;
+        }
+
         if self.empty_reserve[ci].is_null() {
             self.empty_reserve[ci] = block;
             if unsafe { !(*block).private.linked } {

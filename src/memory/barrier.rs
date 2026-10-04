@@ -543,6 +543,12 @@ pub unsafe fn ref_store(
     );
 
     let owner_cat = unsafe { crate::object::header_category(owner) };
+    // The holder whose slot changes, tagged with the open window
+    // (`dev/design/recycler-over-counts.md`, §2).
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe {
+        crate::refcount::tag_with_the_window(owner)
+    };
     // Publish first, and only drop what the slot held if the publish
     // happened: a refused store leaves the slot exactly as it was, which
     // includes the reference it still holds.
@@ -656,6 +662,88 @@ pub unsafe extern "C" fn ll_store_box_owned(
             slot,
             new,
         )
+    }
+}
+
+/// The holder-tagging forms of the four `store_*` entries, for a build with
+/// `recycler-over-counts`: each tags `holder`, the entity whose slot the store
+/// writes, with the open window, then runs its namesake
+/// (`dev/design/recycler-over-counts.md`, §2 and §7). Generated code under the
+/// feature emits these for a slot of an entity; a headerless holder — a
+/// static block — keeps the untagged forms, its slots being roots rather than
+/// edges a trace subtracts.
+///
+/// # Safety
+/// `holder` the live entity containing `slot`; the rest per [`ll_store_ptr`].
+#[cfg(feature = "recycler-over-counts")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_store_ptr_in(
+    ctx: *mut LLContext,
+    owner_cat: u32,
+    holder: *mut RcHeader,
+    slot: *mut *mut RcHeader,
+    new: *mut RcHeader,
+) -> bool {
+    unsafe {
+        crate::refcount::tag_with_the_window(holder);
+        ll_store_ptr(ctx, owner_cat, slot, new)
+    }
+}
+
+/// [`ll_store_ptr_in`]'s form of [`ll_store_box`].
+///
+/// # Safety
+/// As [`ll_store_ptr_in`].
+#[cfg(feature = "recycler-over-counts")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_store_box_in(
+    ctx: *mut LLContext,
+    owner_cat: u32,
+    holder: *mut RcHeader,
+    slot: *mut Value,
+    new: Value,
+) -> bool {
+    unsafe {
+        crate::refcount::tag_with_the_window(holder);
+        ll_store_box(ctx, owner_cat, slot, new)
+    }
+}
+
+/// [`ll_store_ptr_in`]'s form of [`ll_store_ptr_owned`].
+///
+/// # Safety
+/// As [`ll_store_ptr_in`].
+#[cfg(feature = "recycler-over-counts")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_store_ptr_owned_in(
+    ctx: *mut LLContext,
+    owner_cat: u32,
+    holder: *mut RcHeader,
+    slot: *mut *mut RcHeader,
+    new: *mut RcHeader,
+) -> bool {
+    unsafe {
+        crate::refcount::tag_with_the_window(holder);
+        ll_store_ptr_owned(ctx, owner_cat, slot, new)
+    }
+}
+
+/// [`ll_store_ptr_in`]'s form of [`ll_store_box_owned`].
+///
+/// # Safety
+/// As [`ll_store_ptr_in`].
+#[cfg(feature = "recycler-over-counts")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_store_box_owned_in(
+    ctx: *mut LLContext,
+    owner_cat: u32,
+    holder: *mut RcHeader,
+    slot: *mut Value,
+    new: Value,
+) -> bool {
+    unsafe {
+        crate::refcount::tag_with_the_window(holder);
+        ll_store_box_owned(ctx, owner_cat, slot, new)
     }
 }
 

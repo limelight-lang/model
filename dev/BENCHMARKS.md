@@ -8,6 +8,51 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-04 — S68.1: the window tag on every count write costs ≈ +0.4 ns a retain/release pair and ≈ +2 % of `web-heap`'s mutator CPU, inside the run's spread
+
+**The change priced.** `recycler-over-counts` (`dev/design/recycler-over-counts.md`,
+§2): `refcount_store`, the one primitive of every count write, also stores
+the thread's window number into header byte 7 — a relaxed byte store of a
+`thread_local!` `Cell<u8>`. The holder's tag on pointer stores (§2's second
+half) is not in this build; its price is owed with S68.3.
+
+**Instructions.** In the crate's own assembly (`cargo rustc --release --lib
+-- --emit asm`, before linking, the TLS access a `__tls_get_addr` call):
+`ll_retain` 13 → 24, `ll_release` 46 → 59, `ll_store_ptr` 26 → 26 (it calls
+out). Linked into a PIE executable the access relaxes to `mov %fs:0` and a
+`lea`, and `ll_retain` gains 7 instructions (a push and pop besides); linked
+non-PIE (`-C relocation-model=static`) it is 2: `movzbl %fs:off`, the byte
+store. The program the compiler links decides which.
+
+**Microbenchmarks** (one CPU, `taskset -c 2`, A then B then A):
+- `benches/lifecycle`, PIE: the non-final retain/release pair 5.30–5.43 ns
+  → 5.80 ns (the harness alone 0.67 ns); create-release-die 36.8–38.6 →
+  39.4 ns, inside its spread.
+- `what_a_store_costs_by_working_set::measure_store_cost`, heap into heap,
+  one holder hot (a store: retain of the new, release of the old, the write):
+  PIE 5.06–5.07 → 5.42 ns (+0.35); non-PIE 5.63–5.64 → 7.10–7.11 ns (+1.47).
+  The two disagree by more than the tag, and an earlier PIE B whose window
+  was never opened in the binary read 6.27: layout moves these figures by
+  about a nanosecond, so they bound the tag's price rather than state it.
+
+**`web-heap`, the load the gate reads.** The rig at `02acd60` plus the tag,
+arms A (default) and B (the feature), `web-heap` at 46.78 ms
+interarrival, two mutators on CPUs 1–2, cap 1 on CPU 3, three repeats of
+116 s rotated, the S67.12 placement; a four-core cloud box, no PMU (so no
+instructions and the spin not taken out — about an eighth of `web-heap`'s
+mutator instructions on 2026-09-30). Raw lines in the scratchpad, not kept.
+
+| | A | B |
+| --- | ---: | ---: |
+| mutator CPU in the loop, s | 81.07 / 82.09 / 83.26 | 84.04 / 84.44 / 82.46 |
+| collector CPU, s | 46.7 / 47.6 / 49.9 | 48.6 / 49.0 / 48.1 |
+| requests | 4,084 / 4,199 / 4,207 | the same |
+
+Mean mutator CPU +1.9 % (pairs +3.7, +2.9, −1.0 %), inside A's own 2.7 %
+range; repeat 1 ran beside a build of mine (other CPU 0.12–0.17 cores). The
+owner's longest collection over P read 145–160 ms in A, against 67–103 ms
+in S67.12's run of 2026-10-03 at the same placement — not examined here.
+
 ## 2026-10-04 — one garbage ring, one thread against the split: at 400k members one thread pauses 62–67 ms; split, the collector spends 26–28 ms on its own thread and the owner pauses 48–51 ms, a quarter less pause for a fifth more work
 
 **The question** (Edmond): the same roots collected by one thread, against a

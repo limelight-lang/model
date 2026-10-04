@@ -1496,16 +1496,66 @@ fn a_cow_survivor_whose_slots_empty_inside_the_fixpoint_settles_at_zero() {
 
 /// No survivor leaves the reconciliation in hand.
 ///
-/// While the bit stands, the entity's count word holds the sum being built
-/// rather than a count, and the next release that reads it frees a live
-/// entity or wraps to 4.29e9. The bit is therefore taken and given back
-/// inside one function that cannot unwind, and this is what says the giving
-/// back happened: the array below is promoted, settled to its one holder,
-/// and reads clear afterwards.
+/// While a survivor is in hand, its count word holds the biased sum being
+/// built rather than a count (`promote::IN_HAND_BIAS`), and the next release
+/// that reads it frees a live entity or wraps to 4.29e9. The bias is
+/// therefore added and taken off inside one function that cannot unwind, and
+/// this is what says the taking off happened: the array below is promoted and
+/// settled to its one holder.
 #[test]
 fn no_survivor_leaves_the_reconciliation_in_hand() {
-    use crate::array::entity::ll_array_new;
     let _g = crate::memory::block_pool::test_guard();
+    let (array, cache) = a_cow_survivor_reset_into_one_holder();
+    unsafe {
+        assert_eq!(
+            crate::refcount::entity_refcount(array),
+            1,
+            "the array is held by its one promoted holder and by nothing else"
+        );
+
+        assert!(crate::refcount::ll_release(cache as *mut RcHeader));
+        ll_object_die(cache);
+    }
+}
+
+/// The reconciliation shares no header bit with the collector's window tag:
+/// with a window open, every count write of the reset tags byte 7, and the
+/// survivor still settles to its one holder (`PLAN.md` S68.2). Both parities
+/// of the window's number, because the tag's whole-byte store met the
+/// reconciliation's former marker, bit 24, in two ways: an odd window raised
+/// it on entities never taken in hand, an even one cleared it between the
+/// passes. Red on that marker (seen with window 9).
+#[cfg(feature = "recycler-over-counts")]
+#[test]
+fn the_reconciliation_settles_under_an_open_window() {
+    let _g = crate::memory::block_pool::test_guard();
+    for window in [8, 9] {
+        crate::refcount::set_window(window);
+        let (array, cache) = a_cow_survivor_reset_into_one_holder();
+        crate::refcount::set_window(0);
+        unsafe {
+            assert_eq!(
+                crate::refcount::window_tag(array as *const RcHeader),
+                window,
+                "the reconciliation's count writes tagged the survivor"
+            );
+            assert_eq!(
+                crate::refcount::entity_refcount(array),
+                1,
+                "the array is held by its one promoted holder and by nothing else"
+            );
+
+            assert!(crate::refcount::ll_release(cache as *mut RcHeader));
+            ll_object_die(cache);
+        }
+    }
+}
+
+/// A request-arena array held by one request-arena holder, which a heap cache
+/// keeps, reset: the array is a COW survivor the reconciliation settles.
+/// Answers the array and the cache, which the caller lets go.
+fn a_cow_survivor_reset_into_one_holder() -> (*mut crate::array::entity::LLArray, *mut Object) {
+    use crate::array::entity::ll_array_new;
 
     let holder_cls = ClassBuilder::new("InHandHolder")
         .prop("items", true)
@@ -1538,21 +1588,7 @@ fn no_survivor_leaves_the_reconciliation_in_hand() {
 
     unsafe { arena_reset_full(&mut *arena_ptr) };
     set_current_context(std::ptr::null_mut());
-
-    unsafe {
-        assert!(
-            !crate::refcount::is_reconciling(array as *const RcHeader),
-            "the reconciliation left the survivor in hand, so its count word is a sum"
-        );
-        assert_eq!(
-            crate::refcount::entity_refcount(array),
-            1,
-            "the array is held by its one promoted holder and by nothing else"
-        );
-
-        assert!(crate::refcount::ll_release(cache as *mut RcHeader));
-        ll_object_die(cache);
-    }
+    (array, cache)
 }
 
 /// A capture the manager refuses leaves its survivor the references its

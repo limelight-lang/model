@@ -192,6 +192,54 @@ fn empty_block_returns_to_pool() {
     unsafe { heap.free(p) };
 }
 
+/// **Inside an arena reset no emptied block leaves the thread**: the reset's
+/// reconciliation reads headers at addresses its log names after their
+/// entities died, and a block carved again under another size class would put
+/// such an address in the middle of a foreign body (`Heap::retire_empty`).
+/// The same two-block fill as [`empty_block_returns_to_pool`], emptied with a
+/// reset window open: the second block stays the class's and serves its next
+/// allocation. Red on a `retire_empty` that returns it to the pool regardless.
+#[test]
+fn an_emptied_block_stays_with_the_class_inside_a_reset() {
+    let _g = crate::memory::block_pool::test_guard();
+    let mut heap = Heap::new();
+    let mut arena = crate::memory::arena::Arena::new();
+    let mut window = crate::memory::reset_window::ResetWindow::closed();
+
+    let class = 64usize;
+    let slots = BLOCK_PAYLOAD / class;
+    let ptrs: Vec<_> = (0..2 * slots).map(|_| heap.alloc(class)).collect();
+    let spare = ptrs[0] as usize & !BLOCK_MASK;
+    let second = ptrs[2 * slots - 1] as usize & !BLOCK_MASK;
+    assert_ne!(spare, second, "the fill has to span two blocks");
+
+    {
+        let _open = crate::memory::reset_window::open(&mut window, &mut arena);
+        for p in &ptrs {
+            unsafe { heap.free(*p) };
+        }
+    }
+
+    let pool = BlockPool::global();
+    let drawn: Vec<_> = (0..16).map(|_| pool.get()).collect();
+    let reached_the_pool = drawn.iter().any(|b| *b as usize == second);
+    for b in drawn {
+        assert!(!b.is_null());
+        pool.put(b);
+    }
+    assert!(
+        !reached_the_pool,
+        "the block the reset emptied went back to the pool"
+    );
+
+    let p = heap.alloc(class);
+    assert!(
+        [spare, second].contains(&(p as usize & !BLOCK_MASK)),
+        "an emptied block of the class serves it"
+    );
+    unsafe { heap.free(p) };
+}
+
 #[test]
 fn full_block_refills_and_serves_distinct_slots() {
     let _g = crate::memory::block_pool::test_guard();
