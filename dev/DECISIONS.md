@@ -9,6 +9,28 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-04 — an idle mutator answers T by a park, and the gate's owner pause is what stops a mutator
+
+**Decision (the Sage, Fable, on the S68.9 plan after two Critic rounds;
+`dev/design/recycler-over-counts.md`, §5b, item 7).** The checkpoint byte
+takes `PARKED` and `PARKED_ASKED`; a thread that blocks with no poll to come
+parks, and an ask that finds the park takes it as T. Every transition is one
+compare-and-swap from the value read; the runtime owns the bracket
+(`ll_gc_blocking_call`), so no unwind leaves a park up, and a callback into
+compiled code unparks. Built in the rig first; exported once the rig shows
+the no-checkpoint sets gone. The gate's owner pause is the collection over
+P, the application of the collector's frees and a take's wait — not the
+collector's commit, which a recall does not wait on; the 5 ms holds for the
+sets the design routes to the collector, not for destructors routed to the
+owner.
+
+**Why.** S68.8's first reading: a third of the Δ-tests find no checkpoint,
+because a web worker sleeps between requests with no poll, and those sets go
+the owner's exact way with pauses of 95–176 ms. The default arm's own
+160–169 ms shows the gate unmeetable if it counts user destructors.
+
+---
+
 ## 2026-10-04 — the collector splits a proved set: it frees what no destructor reaches, holds its drops into the rest for the owner's sum, and refuses only what a touch reaches
 
 **Decision (the Sage, Fable, on the S68.6c plan after two Critic rounds;

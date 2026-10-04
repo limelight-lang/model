@@ -151,6 +151,9 @@ deferred lanes are all as in the default build.
     member's drops (what its `dispose` would release outside C, edges into S
     included), write count 0 and `DEAD_IN_PLACE`, hand the slot to its
     block's chain. A stop may fall between members, never inside one.
+    (S68.6b's commit is one act instead, a stop falling before or after it:
+    a stop between members would leave the rest naming freed slots — the
+    Sage, 2026-10-04, on S68.9.)
     Freeing follows `ll_free`'s routing (retained blocks, entities in another
     thread's block, large runs) but not `free_remote`, whose withholding would
     recall the collector itself; registered members stay dead in place for
@@ -516,7 +519,45 @@ poll, as a worker blocked in `accept` does — and of the sets past the cap.
      missed a checkpoint come proved and whether the owner's pause meets
      5 ms, at the 64k cap and at 1M. The exported bracket is built only if
      both hold.
-6. *Not in S68.9*: the record scan's `ReadLive` count, two and a half times
+7. *The Sage's ruling* (2026-10-04), which overrides items 1–6 where they
+   differ.
+   - The parked state as item 5 shapes it is sound — between park and
+     unpark the owner writes no count and no slot, so counts the trace reads
+     after T equal those at T — and is built now, in the rig first, on four
+     conditions: no cross-thread path writes a live header of a parked
+     thread's heap (remote frees, a body's remote post, the stale clear,
+     which touches W alone), and the debug flag asserts it; the park is a
+     checkpoint, not a poll — no frees applied, no arming, no user code;
+     `ll_gc_blocking_call`'s argument and anything native code holds across
+     the park is held by a counted reference, written into §7.16 now; and
+     every transition names its case in the loom model, a hand-kept copy.
+   - The exported bracket is built once the rig's park drives the
+     no-checkpoint count near zero and the longest pause, attributed by the
+     posting's kind, is no longer a no-checkpoint set — not on the whole
+     gate, which can fail for causes the bracket cannot touch.
+   - *The commit act is not an owner pause.* A recall blocks nothing: the
+     mutator marks its token and goes on, its withheld returns standing a
+     little longer. The gate's owner pause is every wall a mutator spends
+     stopped by the collector: the collection over P in all its phases, the
+     application of the collector's frees, and a take's wait under
+     `COLLECTOR` (`token_wait_longest_us`). The commit stays one act: a stop
+     between members would leave the rest of C naming freed slots (§5, item
+     10, qualified accordingly).
+   - *The gate's 5 ms* holds for the sets the design routes to the
+     collector; a set it routes to the owner for its destructors is bounded
+     by those destructors, which no collector moves (§9).
+   - *Held garbage is diagnosed before the park's code*: first from the
+     cells in hand — whether this arm stamps more and prunes more, and how
+     many record scans end cut; then one differential arm that runs the heap
+     scan after the record's over the same roots and, for each root the
+     record reads live and the heap does not, records the run that raised
+     it — its holder's tag, and whether the holder's current cells still
+     name the target. The taint's shape, or §4.8's holder-tag fallback, is
+     decided on that.
+   - The rig attributes the longest collection over P by the posting's
+     kind: proved S, unmarked whole, no checkpoint, past the cap, second
+     refusal, weakly held.
+8. *Not in S68.9*: the record scan's `ReadLive` count, two and a half times
    the heap scan's from S68.4 on, whose cause neither the root's tag nor the
    epoch's measure of work explains (`dev/BENCHMARKS.md`, the same entry);
    S68.9's re-reading measures what remains of the garbage first.
@@ -563,7 +604,11 @@ measured today; the collector ≈ 30–40 ms on that set against 26–28 ms toda
 
 The Sage's gate: retain/release and store microbenchmarks with and without
 the tag; on `web-heap`, mutator CPU within +3 % of the default build, the
-longest owner pause under 5 ms in every cell, held garbage no worse,
+longest owner pause under 5 ms in every cell — the pause being every wall a
+mutator spends stopped by the collector (the collection over P, the
+application of the collector's frees, a take's wait), and the bound holding
+for the sets the design routes to the collector, a set routed to the owner
+for its destructors being bounded by them (the Sage, 2026-10-04, on S68.9) — held garbage no worse,
 Δ-refusals under 10 % of batches. A loom model of the handshake at T; a debug
 build asserting the tag at every primitive; a debug build running the exact
 validation beside the collector's verdict and checking both agree, and
