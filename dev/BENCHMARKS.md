@@ -75,6 +75,18 @@ diagnostic arms not kept):
   sixth of the mutator's CPU (35.5 / 35.0 s against 43.6 / 41.8 s at cap 0
   and 42.6 / 43.5 s in A); the 40–60 MB before them is the record scan's and
   the Δ-test's, the steps S68.4 and S68.5 of the first reading's table.
+- *Not the Δ-test's wait.* At cap 0, a 50 µs wait against the 2 ms one, two
+  cells each: missed checkpoints 974 / 940 against 93 / 98, the collector's
+  wait 0.07 s against 0.66–0.69 s a cell, and the garbage 155 / 133 MB
+  against 157 / 157 — inside the spread.
+- *Not the epoch's measure of work, the other way either.* The batch's
+  positions charged eight times over at cap 0, so that the epoch turns by
+  proofs again (52 / 51 turns by proofs and 6 by X a cell, against 0 and
+  18): the garbage rose to 856 / 878 MB against 175 / 164, the mutator's CPU
+  by half and the collector's nearly doubled. The record scan's cheaper
+  positions are not what holds the garbage; turning the epoch faster on them
+  is far worse.
+What holds the remaining 40–60 MB over the default's is still unread.
 
 ---
 
