@@ -258,10 +258,12 @@ pub(crate) enum Counted {
     /// U kept as a seed of S at a second refusal, a member's address
     /// unreadable.
     Unreadable,
+    /// A root of U read live at a second refusal, one a root.
+    RootReadLiveAgain,
 }
 
-static COUNTS: [std::sync::atomic::AtomicUsize; 5] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 5];
+static COUNTS: [std::sync::atomic::AtomicUsize; 6] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 6];
 
 /// Count one `what`.
 pub(crate) fn note(what: Counted) {
@@ -270,6 +272,6 @@ pub(crate) fn note(what: Counted) {
 
 /// The split's counts since the process started, in [`Counted`]'s order.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn split_counts() -> [usize; 5] {
+pub(crate) fn split_counts() -> [usize; 6] {
     std::array::from_fn(|what| COUNTS[what].load(std::sync::atomic::Ordering::Relaxed))
 }

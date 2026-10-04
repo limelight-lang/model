@@ -414,6 +414,7 @@ const _: () = assert!(size_of::<Placement>() == 32);
 /// waits' places; and whether the end's release lands on the registered
 /// context root. A `web-arena` plan has no registrations and no silent end,
 /// its objects registering nothing, and draws its session write instead.
+#[derive(Clone)]
 pub(super) struct Plan {
     pub(super) variant: Variant,
     pub(super) objects: Vec<Placement>,
@@ -816,9 +817,11 @@ impl Advanced {
 /// Advance `request` to `to` in steps of at most [`BIRTHS_AN_ADVANCE`]
 /// births, `step` after each with what it did — the rig's account and poll,
 /// answering the poll's wall — as a compiled build loop polls on its
-/// back-edge; answer the walls summed and where the last step stopped. A
-/// stop at the registrations' bound ([`Stop::Events`]) leaves the rest for
-/// a later point, as one unbounded advance does. Each step's wall, the poll
+/// back-edge; answer the walls summed and where the last step stopped. The
+/// steps share one bound of [`REGISTRATIONS_AN_ADVANCE`] registrations and
+/// lookups, and a stop at it ([`Stop::Events`]) leaves the rest for a later
+/// point, as one unbounded advance does: the build ends where
+/// [`Request::advance`] would. Each step's wall, the poll
 /// apart, is kept for [`longest_build_step`].
 ///
 /// # Safety
@@ -829,13 +832,15 @@ pub(super) unsafe fn build_to(
     to: f64,
     mut step: impl FnMut(Advanced) -> Duration,
 ) -> (Duration, Stop) {
-    let mut walls = Duration::ZERO;
+    let (mut walls, mut events) = (Duration::ZERO, REGISTRATIONS_AN_ADVANCE);
     loop {
         crate::cycle::worker::testing::enter_the_rig_section(
             crate::cycle::worker::testing::RigSection::Build,
         );
         let began = Instant::now();
-        let (advanced, stop) = unsafe { request.advance_at_most(build, to, BIRTHS_AN_ADVANCE) };
+        let (advanced, stop, made) =
+            unsafe { request.advance_at_most(build, to, BIRTHS_AN_ADVANCE, events) };
+        events -= made;
         LONGEST_BUILD_STEP_NANOS.fetch_max(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
         walls += step(advanced);
         if stop != Stop::Births {
@@ -981,13 +986,15 @@ impl Request {
     /// # Safety
     /// As [`Request::start`], on the same `build`.
     pub(super) unsafe fn advance(&mut self, build: &mut RequestBuild, to: f64) -> Advanced {
-        unsafe { self.advance_at_most(build, to, usize::MAX) }.0
+        unsafe { self.advance_at_most(build, to, usize::MAX, REGISTRATIONS_AN_ADVANCE) }.0
     }
 
-    /// [`Request::advance`] stopped before its `births + 1`-th birth: what it
-    /// did, and where it stopped. Called again with the same `to` after a
-    /// [`Stop::Births`], it goes on from there, the events in the order one
-    /// unbounded advance makes them. `births` is at least one.
+    /// [`Request::advance`] stopped before its `births + 1`-th birth or its
+    /// `events + 1`-th registration or lookup: what it did, where it stopped,
+    /// and the registrations and lookups it made. Called again with the same
+    /// `to` after a [`Stop::Births`], and the events left of the bound, it
+    /// goes on from there, the events in the order one unbounded advance
+    /// makes them. `births` is at least one.
     ///
     /// # Safety
     /// As [`Request::advance`].
@@ -996,23 +1003,24 @@ impl Request {
         build: &mut RequestBuild,
         to: f64,
         births: usize,
-    ) -> (Advanced, Stop) {
+        events: usize,
+    ) -> (Advanced, Stop, usize) {
         debug_assert!(births > 0, "a bound of no births advances nothing");
         let mut advanced = Advanced::default();
-        let (mut events, mut born) = (0, 0);
+        let (mut made, mut born) = (0, 0);
         while let Some(event) = self.next_event(to) {
             if matches!(event, Event::Birth) {
                 if born == births {
-                    return (advanced, Stop::Births);
+                    return (advanced, Stop::Births, made);
                 }
 
                 born += 1;
             } else {
-                if events == REGISTRATIONS_AN_ADVANCE {
-                    return (advanced, Stop::Events);
+                if made == events {
+                    return (advanced, Stop::Events, made);
                 }
 
-                events += 1;
+                made += 1;
             }
 
             match event {
@@ -1042,7 +1050,7 @@ impl Request {
             }
         }
 
-        (advanced, Stop::Reached)
+        (advanced, Stop::Reached, made)
     }
 
     /// The next event placed before `to`, the earliest of the next birth,
@@ -2439,7 +2447,8 @@ fn a_bounded_advance_stops_at_its_births_and_goes_on() {
     let mut cuts = 0;
     while !request.is_complete() {
         let before = request.born();
-        let (advanced, stop) = unsafe { request.advance_at_most(&mut build, 1.0, 500) };
+        let (advanced, stop, _) =
+            unsafe { request.advance_at_most(&mut build, 1.0, 500, REGISTRATIONS_AN_ADVANCE) };
         let born = request.born() - before;
         assert!(born <= 500, "a step of {born}");
         if stop == Stop::Births {
@@ -2512,6 +2521,47 @@ fn a_build_to_a_point_polls_between_its_steps() {
     assert!(longest_build_step() > Duration::ZERO);
     let _ = unsafe { request.end() };
     unsafe { crate::gc::ll_gc_collect_cycles() };
+    fixture.let_go();
+}
+
+/// A build to a point below the end, its steps polled, ends where one
+/// unbounded advance to that point ends, the registrations' bound shared by
+/// its steps. Red with the bound counted afresh at each step.
+#[test]
+fn a_build_to_a_point_ends_where_one_advance_ends() {
+    let _g = test_guard();
+    let mut fixture = Fixture::with_core("BuildToAPoint", 10);
+    let plan = fixture.plan(5, 30_000);
+    assert!(
+        plan.registrations.len() > REGISTRATIONS_AN_ADVANCE,
+        "{} registrations",
+        plan.registrations.len()
+    );
+    let to = 0.9;
+    let mut built = |stepped: bool| {
+        let mut build = fixture.build();
+        let (mut request, mut done) = unsafe { Request::start(&mut build, plan.clone()) };
+        if stepped {
+            let _ = unsafe {
+                build_to(&mut request, &mut build, to, |advanced| {
+                    done.add(advanced);
+                    Duration::ZERO
+                })
+            };
+        } else {
+            done.add(unsafe { request.advance(&mut build, to) });
+        }
+        let born = request.born();
+        while !request.is_complete() {
+            let _ = unsafe { request.advance(&mut build, 1.0) };
+        }
+        let _ = unsafe { request.end() };
+        unsafe { crate::gc::ll_gc_collect_cycles() };
+        (born, done)
+    };
+    let one = built(false);
+    let stepped = built(true);
+    assert_eq!(stepped, one);
     fixture.let_go();
 }
 

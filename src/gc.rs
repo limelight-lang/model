@@ -361,6 +361,9 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     #[cfg(not(feature = "recycler-over-counts"))]
     let (freed_by_the_collector, frees_stand) = (0, false);
     if frees_stand {
+        if freed_by_the_collector > 0 {
+            crate::cycle::queue::verdicts::note_freeing_disposition();
+        }
         crate::cycle::queue::signal_the_collector_if_due();
         return freed_by_the_collector;
     }

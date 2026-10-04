@@ -143,13 +143,17 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
     // reads after: the stretch may end before the wait's first reading, and
     // its end erases the ask (`checkpoint_model`, "an ask a stretch answers,
     // the stretch left before the first reading").
+    let mut recalled = false;
     let reached = if token.ask_for_the_checkpoint() {
         ASKS_A_BLOCKING_ANSWERED.fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         crate::cycle::worker::testing::note_an_ask_a_stretch_answered(mutator);
         true
     } else {
-        wait_for_the_checkpoint(token, from, || arena.read_the_recall_now().is_break())
+        wait_for_the_checkpoint(token, from, || {
+            recalled = arena.read_the_recall_now().is_break();
+            recalled
+        })
     };
     token.withdraw_the_checkpoint();
     let waited = from.elapsed().as_nanos() as u64;
@@ -158,7 +162,9 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
     if !reached {
         NO_CHECKPOINT.fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
-        crate::cycle::worker::testing::note_a_checkpoint_missed(mutator);
+        crate::cycle::worker::testing::note_a_checkpoint_missed(mutator, recalled);
+        #[cfg(not(test))]
+        let _ = recalled;
         return TagTest {
             reading: TagReading::NoCheckpoint,
             weakly_held: false,

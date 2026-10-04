@@ -3073,7 +3073,6 @@ unsafe fn split_and_free(
     let mut s_proved = !test.weakly_held;
     // U kept in W: the proof does not cover it, and the debug build's exact
     // check, which asserts every count of W internal, has no premise.
-    #[cfg(debug_assertions)]
     let mut u_kept = false;
     if touched {
         if unsafe { split::close_over_the_record(arena) }.is_break() {
@@ -3084,10 +3083,7 @@ unsafe fn split_and_free(
         let second = unsafe { posts.a_marked_root_spent_its_second_chance() };
         if second && test.unreadable {
             s_proved = false;
-            #[cfg(debug_assertions)]
-            {
-                u_kept = true;
-            }
+            u_kept = true;
             split::note(split::Counted::Unreadable);
         } else {
             unsafe { split::refuse_the_marked(arena) };
@@ -3119,7 +3115,7 @@ unsafe fn split_and_free(
     // weakly-held member.
     let s_kind = if s_proved {
         kind::PROVED_S
-    } else if touched {
+    } else if u_kept {
         kind::UNREADABLE
     } else {
         kind::WEAKLY_HELD
@@ -3225,6 +3221,11 @@ unsafe fn verdict_for(root: *mut RcHeader, second_chance_spent: bool) -> Verdict
             // live at a second refusal (`crate::cycle::split`).
             #[cfg(feature = "recycler-over-counts")]
             Color::Unclassified if !second_chance_spent => Verdict::Unwalked,
+            #[cfg(feature = "recycler-over-counts")]
+            Color::Unclassified => {
+                crate::cycle::split::note(crate::cycle::split::Counted::RootReadLiveAgain);
+                Verdict::ReadLive
+            }
             _ => Verdict::ReadLive,
         },
         None => Verdict::ReadLive,

@@ -687,6 +687,72 @@ fn a_second_refusal_beside_a_clean_ring_reads_the_ring_live() {
     reset_lanes();
 }
 
+/// At a second refusal beside a clean ring the collector frees the clean
+/// ring, its drop into the refused one applied, and reads the refused ring's
+/// roots live: no owner's collection, the refused roots deferred. Red with
+/// the second refusal keeping U in W, or with W sent whole.
+#[test]
+fn a_second_refusal_reads_its_roots_live_and_frees_the_rest() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let (a, _) = unsafe { a_garbage_ring(&mut arena) };
+    touch_between_the_phases(a);
+    let _ = served_and_counted();
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0, "refused once");
+
+    // A clean ring holding the refused one, registered behind it.
+    let holder = ClassBuilder::new("DeltaTestSecondHolder")
+        .prop("next", true)
+        .prop("held", true)
+        .build();
+    let (e1, e2) = {
+        let mut context = LLContext { arena: &mut arena };
+        unsafe {
+            (
+                new_constructed(&mut context, holder, MemoryCategory::GcHeap),
+                new_constructed(&mut context, holder, MemoryCategory::GcHeap),
+            )
+        }
+    };
+    unsafe {
+        store_prop(&mut arena, e1, prop_offset(0), e2);
+        store_prop(&mut arena, e2, prop_offset(0), e1);
+        store_prop(&mut arena, e1, prop_offset(1), a);
+        assert!(!ll_release(e1 as *mut RcHeader));
+        assert!(!ll_release(e2 as *mut RcHeader));
+    }
+
+    touch_between_the_phases(a);
+    let split_before = crate::cycle::split::split_counts();
+    let freed_before = crate::cycle::collector_frees::frees_counts().members;
+    let deferred = crate::cycle::queue::deferred_count();
+    unsafe { &*record() }.set_batch_size(8);
+    assert!(matches!(
+        served_by_a_collector(),
+        Served::Batch { complete: true, .. }
+    ));
+    let split_after = crate::cycle::split::split_counts();
+    assert_eq!(split_after[2] - split_before[2], 1, "a second refusal");
+    assert!(split_after[5] > split_before[5], "its roots read live");
+    assert_eq!(split_after[4], split_before[4], "no member unreadable");
+    assert_eq!(
+        crate::cycle::collector_frees::frees_counts().members - freed_before,
+        2,
+        "the collector freed the clean ring"
+    );
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "its two, and no owner's collection"
+    );
+    assert!(
+        crate::cycle::queue::deferred_count() > deferred,
+        "the refused roots deferred"
+    );
+    reset_lanes();
+}
+
 /// A weakly-held member beside a clean ring: the ring it stands in seeds S,
 /// unmarked, and the collector frees the clean ring holding it; the owner
 /// applies the drop into S, then frees S the exact way.

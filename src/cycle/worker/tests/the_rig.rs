@@ -2279,12 +2279,27 @@ enum Stretch {
 static STRETCHES_ENTERED: [std::sync::atomic::AtomicUsize; 2] =
     [const { std::sync::atomic::AtomicUsize::new(0) }; 2];
 
+/// Stretches entered while drops a poll's slice left stood unapplied, the
+/// posted set unread behind them (`crate::cycle::collector_frees`).
+static STRETCHES_OVER_STANDING_FREES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Leaves the blocking stretch it stands for when dropped, on an unwind too.
 struct LeaveTheStretch;
 
 impl Drop for LeaveTheStretch {
     fn drop(&mut self) {
         crate::cycle::token::leave_blocking_on_this_thread();
+    }
+}
+
+/// Names the rig's section `Other` when dropped: what follows a stretch is
+/// no part of it.
+struct LeaveTheSection;
+
+impl Drop for LeaveTheSection {
+    fn drop(&mut self) {
+        testing::enter_the_rig_section(testing::RigSection::Other);
     }
 }
 
@@ -2297,10 +2312,17 @@ fn in_a_blocking_stretch<R>(stretch: Stretch, work: impl FnOnce() -> R) -> R {
         Stretch::Draw => testing::RigSection::Draw,
         Stretch::Wait => testing::RigSection::Wait,
     });
+    let _section = LeaveTheSection;
     let _leave = (!*NO_BLOCKING.get_or_init(|| std::env::var_os("LL_RIG_NO_BLOCKING").is_some())
         && crate::cycle::token::enter_blocking_on_this_thread())
     .then(|| {
         STRETCHES_ENTERED[stretch as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(feature = "recycler-over-counts")]
+        if unsafe { crate::cycle::mutator_record::this_thread_record().as_ref() }
+            .is_some_and(crate::cycle::mutator_record::MutatorRecord::collectors_frees_stand)
+        {
+            STRETCHES_OVER_STANDING_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         LeaveTheStretch
     });
     work()
@@ -3317,8 +3339,8 @@ impl CellReading {
             ),
             // By the kind of set read (`crate::cycle::posted_set::kind`):
             // not tested, proved S, proved whole, no checkpoint, past the
-            // cap, touched, unreadable, weakly held, cut, unmarked whole,
-            // mark lost, none.
+            // cap, touched, retired, weakly held, cut, unmarked whole,
+            // mark lost, unreadable, none.
             (
                 "verdict_collection_longest_by_kind_us",
                 self.verdict_collections
@@ -3876,9 +3898,13 @@ impl CellReading {
             ),
             ("split_sets", split_counts()[0].to_string()),
             ("split_requeued", split_counts()[1].to_string()),
-            ("split_second_refusals", split_counts()[2].to_string()),
+            (
+                "split_second_refusals_read_live",
+                split_counts()[2].to_string(),
+            ),
             ("split_dropped", split_counts()[3].to_string()),
             ("split_unreadable", split_counts()[4].to_string()),
+            ("split_roots_read_live_again", split_counts()[5].to_string()),
             // The rig's own stretches by kind, and the Δ-test's missed
             // checkpoints and the asks a stretch answered at once by the
             // section the mutator stood in (`testing::RigSection`: other,
@@ -3897,11 +3923,21 @@ impl CellReading {
             ),
             (
                 "checkpoints_missed_by_section",
-                joined(&testing::checkpoints_by_section().0),
+                joined(&testing::checkpoints_by_section()[0]),
+            ),
+            (
+                "checkpoint_waits_recalled_by_section",
+                joined(&testing::checkpoints_by_section()[1]),
             ),
             (
                 "asks_a_stretch_answered_by_section",
-                joined(&testing::checkpoints_by_section().1),
+                joined(&testing::checkpoints_by_section()[2]),
+            ),
+            (
+                "stretches_over_standing_frees",
+                STRETCHES_OVER_STANDING_FREES
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .to_string(),
             ),
             (
                 "build_step_longest_us",
@@ -4701,13 +4737,13 @@ fn joined(counts: &[usize]) -> String {
 }
 
 /// [`crate::cycle::split::split_counts`], zeros without the feature.
-fn split_counts() -> [usize; 5] {
+fn split_counts() -> [usize; 6] {
     #[cfg(feature = "recycler-over-counts")]
     {
         crate::cycle::split::split_counts()
     }
     #[cfg(not(feature = "recycler-over-counts"))]
-    [0; 5]
+    [0; 6]
 }
 
 /// One cell's line, prefixed `rig,` for the driver, after the header's

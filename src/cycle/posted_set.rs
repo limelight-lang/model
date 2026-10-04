@@ -114,9 +114,9 @@ pub(crate) mod kind {
     pub(crate) const PAST_THE_CAP: u8 = 4;
     /// Touched: W, U out, unmarked.
     pub(crate) const TOUCHED: u8 = 5;
-    /// U kept at a second refusal of a set with a member whose address
-    /// could not be read: S unmarked.
-    pub(crate) const UNREADABLE: u8 = 6;
+    // 6 is retired: the exact way of every second refusal, which read live
+    // from 2026-10-05; its pauses stand in the readings before it.
+
     /// A weakly-held member: unmarked.
     pub(crate) const WEAKLY_HELD: u8 = 7;
     /// The batch's trace or scan cut short: its set posted at the stop.
@@ -126,9 +126,12 @@ pub(crate) mod kind {
     /// Marked proved, and the mark lost at the publication — the pool closed
     /// the set short, or its walk left a member out.
     pub(crate) const MARK_LOST: u8 = 10;
+    /// U kept at a second refusal of a set with a member whose address
+    /// could not be read: S unmarked.
+    pub(crate) const UNREADABLE: u8 = 11;
     /// The kinds.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const KINDS: usize = 11;
+    pub(crate) const KINDS: usize = 12;
 }
 
 /// The addresses `block` holds.

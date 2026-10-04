@@ -36,8 +36,9 @@
 //! registered members counted as candidate deaths, then each drop through
 //! `drop_ref(GcHeap, child)` — the dead holder's category, the child's read by
 //! `drop_ref` at application. Every path that gives the posted set back
-//! unread applies these first; dropped, they would leave each child a count
-//! no one holds and each block a `used` counting dead slots. A poll applies
+//! unread applies these after it, its held drops standing with them; left
+//! unapplied, they would leave each child a count no one holds and each
+//! block a `used` counting dead slots. A poll applies
 //! a slice ([`apply_a_slice_of_this_threads`]): every chain, then at most
 //! [`APPLY_STRIDE`] drops, the rest pushed back for the next poll. The stack
 //! is pushed by a compare-exchange from both sides and taken whole by the
@@ -836,16 +837,26 @@ pub(crate) unsafe fn apply_a_slice_of_this_threads() -> (usize, bool) {
         }
 
         if !block.is_null() {
-            unsafe { stand(block) };
+            // The rest of this chain leads what stands.
+            unsafe { (*block).below = below };
+            head = block;
+            break;
         }
         head = below;
     }
 
-    let mut rest = head;
+    // What stands goes back in the order it came off, its top last.
+    let mut rest = std::ptr::null_mut::<FreesBlock>();
+    while !head.is_null() {
+        let below = unsafe { (*head).below };
+        unsafe { (*head).below = rest };
+        rest = head;
+        head = below;
+    }
     while !rest.is_null() {
-        let below = unsafe { (*rest).below };
+        let above = unsafe { (*rest).below };
         unsafe { stand(rest) };
-        rest = below;
+        rest = above;
     }
     note_an_application(from);
     let record = crate::cycle::mutator_record::this_thread_record();

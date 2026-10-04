@@ -2367,6 +2367,8 @@ static SECTION_OWNERS: [AtomicUsize; SECTION_SLOTS] =
 static SECTION_NOW: [AtomicUsize; SECTION_SLOTS] = [const { AtomicUsize::new(0) }; SECTION_SLOTS];
 static MISSED_BY_SECTION: [AtomicUsize; RIG_SECTIONS] =
     [const { AtomicUsize::new(0) }; RIG_SECTIONS];
+static RECALLED_BY_SECTION: [AtomicUsize; RIG_SECTIONS] =
+    [const { AtomicUsize::new(0) }; RIG_SECTIONS];
 static ANSWERED_BY_SECTION: [AtomicUsize; RIG_SECTIONS] =
     [const { AtomicUsize::new(0) }; RIG_SECTIONS];
 
@@ -2403,9 +2405,15 @@ fn section_of(mutator: &MutatorRecord) -> usize {
 }
 
 /// Count a checkpoint `mutator` missed against the section it stood in when
-/// the wait ended.
-pub(crate) fn note_a_checkpoint_missed(mutator: &MutatorRecord) {
-    MISSED_BY_SECTION[section_of(mutator)].fetch_add(1, Ordering::Relaxed);
+/// the wait ended: by the bound, or by its recall at the stop level, which
+/// the withheld returns of its frees raise and no poll would have answered.
+pub(crate) fn note_a_checkpoint_missed(mutator: &MutatorRecord, recalled: bool) {
+    let by = if recalled {
+        &RECALLED_BY_SECTION
+    } else {
+        &MISSED_BY_SECTION
+    };
+    by[section_of(mutator)].fetch_add(1, Ordering::Relaxed);
 }
 
 /// Count an ask a stretch of `mutator`'s answered at once against the
@@ -2414,10 +2422,13 @@ pub(crate) fn note_an_ask_a_stretch_answered(mutator: &MutatorRecord) {
     ANSWERED_BY_SECTION[section_of(mutator)].fetch_add(1, Ordering::Relaxed);
 }
 
-/// Missed checkpoints and asks a stretch answered, by [`RigSection`].
-pub(crate) fn checkpoints_by_section() -> ([usize; RIG_SECTIONS], [usize; RIG_SECTIONS]) {
-    (
-        std::array::from_fn(|section| MISSED_BY_SECTION[section].load(Ordering::Relaxed)),
-        std::array::from_fn(|section| ANSWERED_BY_SECTION[section].load(Ordering::Relaxed)),
-    )
+/// By [`RigSection`]: checkpoints missed by the bound, waits a recall
+/// ended, and asks a stretch answered.
+pub(crate) fn checkpoints_by_section() -> [[usize; RIG_SECTIONS]; 3] {
+    [
+        &MISSED_BY_SECTION,
+        &RECALLED_BY_SECTION,
+        &ANSWERED_BY_SECTION,
+    ]
+    .map(|by| std::array::from_fn(|section| by[section].load(Ordering::Relaxed)))
 }

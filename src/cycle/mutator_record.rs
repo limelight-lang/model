@@ -267,9 +267,10 @@ struct WriterLine {
     /// members it left dead in place — or of drops the owner left for a
     /// later poll. Pushed by a compare-exchange from either side — a
     /// collector's publication under its grant, the owner's put-back — so
-    /// that neither overwrites the other; taken whole by the owner's one
-    /// swap, which every path that gives the posted set back unread makes
-    /// first.
+    /// that neither overwrites the other; taken whole by the owner's swap.
+    /// A path that gives the posted set back unread gives it back before it
+    /// applies the stack, so that the set's held drops stand on it and go
+    /// with the rest.
     #[cfg(feature = "recycler-over-counts")]
     collectors_frees: AtomicPtr<BlockHeader>,
     /// The identity of this record's thread's entity heap, as its blocks'

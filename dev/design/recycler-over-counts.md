@@ -116,9 +116,11 @@ deferred lanes are all as in the default build.
    store — cannot turn a fresh tag into 0. Garbage is never touched, so
    without the clear a set whose members carry k stale numbers would be
    refused in k/255 of its attempts, and one grown across 255 consents for
-   good. A refused set goes back to the queue once and the exact way on a
-   second refusal: the first refusal may be a stale tag equal to the window,
-   which the next attempt, in the next window, clears. The clear writes
+   good. A refused set goes back to the queue once, and at a second refusal
+   its roots read live (the Sage, 2026-10-05, §5d): the first refusal may be
+   a stale tag equal to the window, which the next attempt, in the next
+   window, clears, and a garbage set is written in no window after the one
+   it died in. The clear writes
    garbage lines only; a clear during the trace would dirty the header line of
    every live entity traced, the line every retain and release hits (the
    Sage, 2026-10-04).
@@ -321,7 +323,7 @@ notifications, the teardown and the close are the rest. So the steps:
   6. *Counted.* Members put in S by reason (ineligible, weakly held,
      ownership mark, foreign block, reached), sets split, sets whose split
      a failed preparation dropped, S's held drops discarded and applied,
-     sets re-queued and sets taken the exact way on a second refusal; in
+     sets re-queued and sets whose roots a second refusal read live; in
      `frees_counts()` (`NOT_FREED` resized), the
      Δ-test's counts and the rig's columns; a journal kind for a split and
      one for a re-queue.
@@ -337,8 +339,8 @@ notifications, the teardown and the close are the rest. So the steps:
      confirmed by the sum with C's edges and freed, its held drops
      discarded; a walked S gets its held drops at the next poll; the
      explicit fire applies the frees before it reads P; a touched set is re-queued once,
-     its live roots read live, and taken the exact way at its second
-     refusal.
+     its live roots read live, and its roots read live at its second
+     refusal while the collector frees the rest.
 
   8. *The Sage's ruling* (2026-10-04), which overrides items 1–5 where they
      differ.
