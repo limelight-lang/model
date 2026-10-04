@@ -96,6 +96,21 @@ it read (two cells each way, not kept) turned the epoch by proofs no more
 often — none — and moved neither `ReadLive` nor the garbage; B's epoch turns
 by X 18 times a 60 s cell, about as often as A's turns of both kinds.
 
+**Nor is it the record's stale edges** (the Sage's differential, ruled on
+the S68.9 plan; two 60 s cells of B at `88aa9ef` with a diagnostic patch,
+not kept, which noted the run that raised each row in the scan's second pass
+and read every root the scan left live). Of 1.15M and 1.13M roots read live,
+99.7 % were live by their own count after the mark's subtractions; 3.2k and
+5.4k were raised by another row's run, and in every case but one that
+holder's current cells still named the root — no stale edge — its tag the
+window's in 91 and 79 of them. So the taint over the raises (§3) would move
+nothing here, and the excess `ReadLive` is roots whose counts the mark did
+not bring to zero: more of them reach the batches in this arm, the deferred
+lanes re-offering 49k roots a turn against A's 17k, the cause of that still
+unread. The two cells' own garbage figures (0.80–0.83 GB) are the
+diagnostic's, a hash map per batch on the collector's thread, and say
+nothing of the arm.
+
 **Reading.** The gate is not met: mutator CPU (−6 to −15 %) and Δ-refusals
 (about 1 %) pass; the owner's longest pause fails in both arms, and held
 garbage fails in B. The two failures have separate causes, each named
