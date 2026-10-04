@@ -111,6 +111,28 @@ diagnostic arms not kept):
   of zero modulo four. Under the arm every turn is an X turn, so the rule
   turns the lanes' waits off altogether.
 
+  The same switch in both builds, and a middle rule, two 60 s cells each,
+  alternated (diagnostic arms at `7a7b44c`, not kept): *released* is the
+  rule as built, *two X* hands a lane back once two X turns passed since it
+  filled, *kept* never hands it back for X.
+
+  | | A released | A kept | B released | B two X | B kept |
+  |---|---|---|---|---|---|
+  | turns by proofs / by X | 9 / 11 · 11 / 9 | 13 / 7 · 11 / 9 | 0 / 18 | 0 / 18 | 0 / 18 |
+  | garbage mean, MB | 105.6 / 71.9 | 62.6 / 70.7 | 181.0 / 158.5 | 105.1 / 99.0 | 72.2 / 62.0 |
+  | garbage peak, MB | 350 / 301 | 301 / 311 | 380 / 342 | 310 / 323 | 310 / 294 |
+  | roots offered again | 454k / 390k | 165k / 161k | 882k / 883k | 448k / 450k | 162k / 165k |
+  | garbage at the drain's end, MB | 0 / 0 | 1.8 / 1.7 | 0 / 0 | 0.2 / 0.2 | 1.6 / 1.6 |
+  | mutator CPU, s | 44.5 / 43.9 | 43.6 / 44.2 | 36.7 / 35.0 | 35.1 / 33.4 | 33.9 / 32.6 |
+  | collector CPU, s | 25.5 / 25.2 | 25.2 / 25.4 | 27.5 / 26.2 | 27.4 / 26.6 | 27.0 / 26.2 |
+  | arrival p99.9, ms | 671 / 470 | 268 / 503 | 537 / 302 | 403 / 252 | 369 / 302 |
+
+  The release costs the default build too, where half the turns are X:
+  its garbage spreads 72–106 MB with it and 63–71 without. Keeping the
+  waits leaves 1.6–1.8 MB at a 12 s drain's end in both builds; at a 30 s
+  drain A's is gone by 24.4 s, and B's stands at 1.6 MB with 73k roots in R
+  the collector has not taken.
+
 ---
 
 ## 2026-10-04 — S68.8, first reading: on `web-heap` the arm spends less mutator CPU but holds twice the garbage, and neither arm keeps the owner's pause under 5 ms
