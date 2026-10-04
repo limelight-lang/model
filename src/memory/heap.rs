@@ -1357,6 +1357,23 @@ impl Heap {
         true
     }
 
+    /// The identity of the heap owning the entity block `block`, or null for
+    /// an abandoned one: compared by a collector against the record's, never
+    /// dereferenced (`crate::cycle::collector_frees`).
+    ///
+    /// # Safety
+    /// `block` is the header of a commissioned entity block.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) unsafe fn owner_of_the_block(block: *mut u8) -> *mut u8 {
+        unsafe {
+            (*(block as *mut HeapBlockHeader))
+                .shared
+                .owner
+                .load(Ordering::Acquire)
+        }
+        .cast()
+    }
+
     /// Splice a chain of `n` slots a collector freed in `block` — linked
     /// head to tail through their free-list words, the tail's word written
     /// here — into the block's free list, and lower `used` by `n`; then the

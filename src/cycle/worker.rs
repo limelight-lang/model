@@ -2987,16 +2987,6 @@ unsafe fn read_the_root(root: *mut RcHeader) -> RootReading {
     }
 }
 
-/// The verdict a completed trace supports for `root`: the verdict of
-/// [`read_the_root`] where it gives one, and otherwise the color of its row,
-/// potentially unreachable being [`Verdict::Proposed`] and live being
-/// [`Verdict::ReadLive`]. A root with no met row is read live too: the trace
-/// could not place it, which the trace's own rule reads as an external live
-/// reference.
-///
-/// # Safety
-/// The trace over `root`'s closure completed on this thread and its rows still
-/// stand.
 /// Whether a root of `posts` without a verdict reads potentially unreachable
 /// after a completed scan: W is empty otherwise, every row the trace met
 /// being reached from a root.
@@ -3017,6 +3007,16 @@ unsafe fn a_root_reads_unreachable(posts: &FinishThePosts<'_>) -> bool {
     })
 }
 
+/// The verdict a completed trace supports for `root`: the verdict of
+/// [`read_the_root`] where it gives one, and otherwise the color of its row,
+/// potentially unreachable being [`Verdict::Proposed`] and live being
+/// [`Verdict::ReadLive`]. A root with no met row is read live too: the trace
+/// could not place it, which the trace's own rule reads as an external live
+/// reference.
+///
+/// # Safety
+/// The trace over `root`'s closure completed on this thread and its rows still
+/// stand.
 unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
     let key = match unsafe { read_the_root(root) } {
         RootReading::Verdict(verdict) => return verdict,

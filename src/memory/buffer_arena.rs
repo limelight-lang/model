@@ -757,17 +757,6 @@ fn pop_fit_in(
     None
 }
 
-/// Post a chunk to the block's cross-thread stack: one CAS loop, and
-/// nothing else in the block is touched.
-///
-/// The link is written into the freed chunk itself, which is sound for
-/// the same reason the owner's free list is — the chunk is dead, and its
-/// first 16 bytes are the arena's by contract. A chunk a worker trace may
-/// still be reading must not reach here: the free path withholds it under
-/// the foreign holder (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the token").
-///
-/// # Safety
-/// `(ptr, size)` is a live chunk of `block`, freed by this call.
 /// Post the long-lived body `(ptr, capacity)`, in a block of kind
 /// `BLOCK_KIND_BUFFER`, to its block's remote stack, as a free from a thread
 /// that does not own it does: the collector freeing a proved set off its
@@ -784,6 +773,17 @@ pub(crate) unsafe fn post_a_body_remote(ptr: *mut u8, capacity: usize) {
     unsafe { post_remote(block, ptr, round_up_8(capacity).max(MIN_CHUNK)) };
 }
 
+/// Post a chunk to the block's cross-thread stack: one CAS loop, and
+/// nothing else in the block is touched.
+///
+/// The link is written into the freed chunk itself, which is sound for
+/// the same reason the owner's free list is — the chunk is dead, and its
+/// first 16 bytes are the arena's by contract. A chunk a worker trace may
+/// still be reading must not reach here: the free path withholds it under
+/// the foreign holder (`crate::cycle::deferred_slot_reuse`, "A foreign holder of the token").
+///
+/// # Safety
+/// `(ptr, size)` is a live chunk of `block`, freed by this call.
 unsafe fn post_remote(block: *mut BufferBlockHeader, ptr: *mut u8, size: usize) {
     let chunk = ptr as *mut FreeChunk;
     unsafe { (*chunk).size = size };

@@ -761,16 +761,15 @@ pub(crate) const EXIT_ROUNDS: usize = 8;
 /// As [`collect_off_the_poll`], with the heaps, the buffer arena and the weak
 /// table still alive for the destructors the rounds run.
 pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
-    // What a collector freed on this thread's behalf is applied before the
-    // posted set goes back: its drops and chains are no set a round finds
-    // again (`crate::cycle::collector_frees`).
-    #[cfg(feature = "recycler-over-counts")]
-    unsafe {
-        crate::cycle::collector_frees::apply_this_threads()
-    };
     // The posted set goes back unread: the rounds collect over R whole,
     // which reads what it holds anyway.
     let claim = HeldToken::take_giving_back_the_posted_set();
+    // What a collector freed on this thread's behalf is applied under the
+    // final claim, which no grant follows, so nothing is published after it:
+    // its drops and chains are no set a round finds again
+    // (`crate::cycle::collector_frees`).
+    #[cfg(feature = "recycler-over-counts")]
+    let _ = unsafe { crate::cycle::collector_frees::apply_this_threads() };
     let mut freed = 0;
     // By lane and not as one sum: a round that defers a verdict's root moves
     // it from P to the deferred lane, which the next round re-offers and
@@ -803,6 +802,14 @@ pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
     // on a free list, the exit's own frees went through the rounds' windows,
     // and no holder arrives after this pop, the claim being kept.
     unsafe { crate::cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace() };
+    // The claim keeps every collector out, so nothing one freed stands past
+    // it, where the record goes to a reset.
+    #[cfg(feature = "recycler-over-counts")]
+    debug_assert!(
+        unsafe { crate::cycle::mutator_record::this_thread_record().as_ref() }
+            .is_none_or(|record| !record.collectors_frees_stand()),
+        "the exit applied what the collector freed before its rounds"
+    );
     claim.keep();
 
     let residue = ExitResidue {
@@ -868,6 +875,12 @@ unsafe fn refused_under_pressure(closed: GateClosed) -> usize {
         // back unread here, as a pressure collection's take gives it back,
         // before the pass returns anything.
         crate::cycle::posted_set::drop_this_threads();
+        // What a collector freed for this thread gives its slots back here
+        // too; the drops wait for an open poll, since they run destructors.
+        #[cfg(feature = "recycler-over-counts")]
+        unsafe {
+            crate::cycle::collector_frees::splice_this_threads()
+        };
         unsafe {
             crate::cycle::queue::retire_candidates();
             make_withheld_returns_before_the_retry();
@@ -955,9 +968,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     // its slots being what a thread under pressure wants first
     // (`crate::cycle::collector_frees`).
     #[cfg(feature = "recycler-over-counts")]
-    unsafe {
-        crate::cycle::collector_frees::apply_this_threads()
-    };
+    let _ = unsafe { crate::cycle::collector_frees::apply_this_threads() };
 
     #[cfg(test)]
     PRESSURE_COLLECTIONS.with(|count| count.set(count.get() + 1));

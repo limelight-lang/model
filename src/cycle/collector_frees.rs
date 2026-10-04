@@ -79,6 +79,8 @@ struct FreesBlock {
 }
 
 const _: () = assert!(size_of::<FreesBlock>() <= LINE_SIZE);
+// A chain record is four words, and none may straddle two blocks.
+const _: () = assert!(ENTRIES_PER_BLOCK % 4 == 0);
 
 /// One chain of metadata blocks as the collector grows it.
 struct Chain {
@@ -325,8 +327,8 @@ impl CellVisitor for Drops<'_> {
 
 /// One step of the walk over W the two phases share.
 enum Step {
-    /// The first member of a block of this population is next.
-    BlockStart(Population),
+    /// The first member of this block, of this population, is next.
+    BlockStart(*mut u8, Population),
     /// A member.
     Member(*mut RcHeader),
     /// The block's last member was the last step.
@@ -351,7 +353,7 @@ unsafe fn for_each_member(
             row::for_each_proposable_met(array, block, population, |index| {
                 if !any {
                     any = true;
-                    step(Step::BlockStart(population))?;
+                    step(Step::BlockStart(block, population))?;
                 }
                 match row::entity_at(block, population, index) {
                     Some(member) => step(Step::Member(member)),
@@ -395,9 +397,15 @@ pub(crate) unsafe fn prepare(
     let arena_ptr: *mut TraceScratchArena = arena;
     let walked = unsafe {
         for_each_member(&*arena_ptr, |step| match step {
-            Step::BlockStart(population) => {
+            Step::BlockStart(block, population) => {
                 unregistered_here = 0;
-                if population == Population::Slotted {
+                // An entity block of the granting mutator's own heap: a
+                // registered member stands in its ring, and its chain is
+                // spliced into its heap.
+                if population == Population::Slotted
+                    && crate::memory::heap::Heap::owner_of_the_block(block) == mutator.owner_heap()
+                    && !mutator.owner_heap().is_null()
+                {
                     ControlFlow::Continue(())
                 } else {
                     failed = Some(NotFreed::Ineligible);
@@ -570,6 +578,8 @@ pub(crate) unsafe fn commit(arena: &TraceScratchArena, frees: &mut Frees) {
                         entries_of(chain_block.expect("the preparation drew a record a block"));
                     debug_assert_eq!(entries[at], block as usize);
                     debug_assert_eq!(entries[at + 1], linked);
+                    // The count the splice lowers `used` by is the act's own.
+                    entries[at + 1] = linked;
                     // The chain runs head to tail, the head the last slot linked.
                     entries[at + 2] = head as usize;
                     entries[at + 3] = tail as usize;
@@ -611,30 +621,78 @@ pub(crate) fn publish(frees: Frees, mutator: &MutatorRecord) {
 /// Apply what a collector freed on this thread's behalf, if anything stands:
 /// splice each chain, count the registered members as candidate deaths, then
 /// drop each child outside the freed set through `drop_ref` — where the
-/// destructors those deaths reach run. Every path that gives the posted set
-/// back unread calls this first. Answers the members the collector freed,
-/// which this application makes the thread's: the poll counts them as freed.
+/// destructors those deaths reach run. Answers the members the collector
+/// freed, registered ones among them, which this application makes the
+/// thread's: the poll counts them as freed, as an owner's collection counts
+/// the members it frees and leaves dead in place for the retirement pass.
 ///
 /// # Safety
 /// On a thread at a point where user destructors may run: the poll under an
-/// open gate, a collection under pressure, the exit.
+/// open gate, a collection under pressure, the exit under its final claim.
 pub(crate) unsafe fn apply_this_threads() -> usize {
+    let Some(head) = (unsafe { take_this_threads() }) else {
+        return 0;
+    };
+    let members = unsafe { (*head).members };
+    unsafe { splice(head) };
+    for block in blocks_from(head) {
+        for &child in unsafe { entries_of(block) }.iter() {
+            unsafe {
+                crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, child as *mut RcHeader)
+            };
+        }
+    }
+    unsafe { release_chain(head) };
+    members
+}
+
+/// The part of [`apply_this_threads`] that runs no user code — the chains
+/// spliced, the registered members counted — for a thread under pressure
+/// inside a teardown, which wants its slots and may not run a destructor; the
+/// drops stay on the record for the next open poll.
+///
+/// # Safety
+/// On the owning thread.
+pub(crate) unsafe fn splice_this_threads() {
+    let Some(head) = (unsafe { take_this_threads() }) else {
+        return;
+    };
+    unsafe { splice(head) };
+    let record = crate::cycle::mutator_record::this_thread_record();
+    unsafe { (*record).put_back_collectors_frees(head.cast()) };
+    // The figures move back with the word: the next application takes them
+    // over again.
+    let blocks = blocks_from(head).count();
+    gc_metadata::hand_over(blocks, blocks * BLOCK_PAYLOAD);
+}
+
+/// Take what stands on this thread's record, with the figures of its blocks.
+///
+/// # Safety
+/// On the owning thread.
+unsafe fn take_this_threads() -> Option<*mut FreesBlock> {
     let record = crate::cycle::mutator_record::this_thread_record();
     if record.is_null() {
-        return 0;
+        return None;
     }
 
     let head = unsafe { (*record).take_collectors_frees() }.cast::<FreesBlock>();
     if head.is_null() {
-        return 0;
+        return None;
     }
 
-    let chains = unsafe { (*head).chains };
-    let registered = unsafe { (*head).registered };
-    let members = unsafe { (*head).members };
-    let blocks = blocks_from(head).count() + blocks_from(chains).count();
+    let blocks = blocks_from(head).count() + blocks_from(unsafe { (*head).chains }).count();
     gc_metadata::take_over(blocks, blocks * BLOCK_PAYLOAD);
+    Some(head)
+}
 
+/// Splice the chains `head` carries and count its registered members, once:
+/// the chains go back to the pool and the head keeps the drops alone.
+///
+/// # Safety
+/// `head` was taken off this thread's record.
+unsafe fn splice(head: *mut FreesBlock) {
+    let chains = unsafe { (*head).chains };
     let heap = crate::memory::heap::thread_entity_heap();
     for block in blocks_from(chains) {
         for record in unsafe { entries_of(block) }.chunks_exact(4) {
@@ -649,22 +707,14 @@ pub(crate) unsafe fn apply_this_threads() -> usize {
             };
         }
     }
-    for _ in 0..registered {
+    for _ in 0..unsafe { (*head).registered } {
         crate::cycle::queue::note_a_candidate_death();
     }
-    for block in blocks_from(head) {
-        for &child in unsafe { entries_of(block) }.iter() {
-            unsafe {
-                crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, child as *mut RcHeader)
-            };
-        }
-    }
-
     unsafe {
         release_chain(chains);
-        release_chain(head);
+        (*head).chains = std::ptr::null_mut();
+        (*head).registered = 0;
     }
-    members
 }
 
 #[cfg(test)]

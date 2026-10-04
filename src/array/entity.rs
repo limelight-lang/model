@@ -285,13 +285,6 @@ pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) 
     true
 }
 
-/// Give the storage back, whichever representation holds it. The
-/// elements are the caller's to release first.
-///
-/// # Safety
-/// `a` addresses a live array, and `category` is the one its header
-/// carries at this call ([`category_of`]).
-#[inline]
 /// The array's storage body and the capacity its dispose would free it at, or
 /// `None` where it has none: what a collector freeing the array off its
 /// owner's thread hands to the body's block itself
@@ -315,6 +308,13 @@ pub(crate) unsafe fn body_of(a: *mut LLArray) -> Option<(*mut u8, usize)> {
     (!body.is_null()).then_some((body, capacity))
 }
 
+/// Give the storage back, whichever representation holds it. The
+/// elements are the caller's to release first.
+///
+/// # Safety
+/// `a` addresses a live array, and `category` is the one its header
+/// carries at this call ([`category_of`]).
+#[inline]
 pub(crate) unsafe fn dispose_storage(a: *mut LLArray, category: MemoryCategory) {
     match unsafe { (*a).head.tag() } {
         StorageTag::Hash => {

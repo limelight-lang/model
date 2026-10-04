@@ -269,6 +269,12 @@ struct WriterLine {
     /// that gives the posted set back unread makes first.
     #[cfg(feature = "recycler-over-counts")]
     collectors_frees: AtomicPtr<BlockHeader>,
+    /// The identity of this record's thread's entity heap, as its blocks'
+    /// owner word names it, stored when the thread's initialisation makes the
+    /// record claimable: a collector frees only members in blocks it names
+    /// (`crate::cycle::collector_frees`). Compared, never dereferenced.
+    #[cfg(feature = "recycler-over-counts")]
+    owner_heap: AtomicPtr<u8>,
 }
 
 /// The line the collector, the exit and the registry share.
@@ -448,6 +454,8 @@ impl WriterLine {
             posted_set: AtomicPtr::new(std::ptr::null_mut()),
             #[cfg(feature = "recycler-over-counts")]
             collectors_frees: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(feature = "recycler-over-counts")]
+            owner_heap: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -460,6 +468,17 @@ impl WriterLine {
         self.collecting.store(false, Ordering::Relaxed);
         self.freeing_dispositions.store(0, Ordering::Relaxed);
         self.merges.store(0, Ordering::Relaxed);
+        // The exit applies a collector's frees under its final claim, which no
+        // grant follows, so a record goes back with none standing.
+        #[cfg(feature = "recycler-over-counts")]
+        {
+            debug_assert!(
+                self.collectors_frees.load(Ordering::Relaxed).is_null(),
+                "a record went back with a collector's frees unapplied"
+            );
+            self.owner_heap
+                .store(std::ptr::null_mut(), Ordering::Relaxed);
+        }
     }
 }
 
@@ -659,6 +678,27 @@ impl MutatorRecord {
             .collectors_frees
             .load(Ordering::Acquire)
             .is_null()
+    }
+
+    /// The identity of this record's thread's entity heap (the record's
+    /// `owner_heap` word), read by the collector under its grant, whose
+    /// consent's release orders the initialisation's store before it.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn owner_heap(&self) -> *mut u8 {
+        self.writer.owner_heap.load(Ordering::Relaxed)
+    }
+
+    /// Put back what [`Self::take_collectors_frees`] took, the part an
+    /// application under a closed gate could not apply.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn put_back_collectors_frees(&self, head: *mut BlockHeader) {
+        debug_assert!(
+            self.writer
+                .collectors_frees
+                .load(Ordering::Relaxed)
+                .is_null()
+        );
+        self.writer.collectors_frees.store(head, Ordering::Relaxed);
     }
 
     /// Take what the collector freed off this record, leaving null.
@@ -1060,6 +1100,13 @@ pub(crate) unsafe fn make_thread_record_claimable() {
                 == crate::cycle::token::MUTATOR,
         "the initialisation's hold is what this releases"
     );
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe {
+        (*record).writer.owner_heap.store(
+            crate::memory::heap::thread_entity_heap().cast(),
+            Ordering::Relaxed,
+        )
+    };
     unsafe { (*record).token.release() };
 }
 
