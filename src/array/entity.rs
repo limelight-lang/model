@@ -292,6 +292,29 @@ pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) 
 /// `a` addresses a live array, and `category` is the one its header
 /// carries at this call ([`category_of`]).
 #[inline]
+/// The array's storage body and the capacity its dispose would free it at, or
+/// `None` where it has none: what a collector freeing the array off its
+/// owner's thread hands to the body's block itself
+/// (`crate::cycle::collector_frees`).
+///
+/// # Safety
+/// `a` is a live array no thread writes.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) unsafe fn body_of(a: *mut LLArray) -> Option<(*mut u8, usize)> {
+    let (body, capacity) = match unsafe { (*a).head.tag() } {
+        StorageTag::Hash => {
+            let (table, head) = unsafe { as_table(a) };
+            (head.storage(), table.storage_capacity())
+        }
+        StorageTag::Vector => {
+            let (vector, head) = unsafe { as_vector(a) };
+            (head.storage(), vector.storage_capacity())
+        }
+        StorageTag::Typed => unreachable!("no producer stamps the typed vector"),
+    };
+    (!body.is_null()).then_some((body, capacity))
+}
+
 pub(crate) unsafe fn dispose_storage(a: *mut LLArray, category: MemoryCategory) {
     match unsafe { (*a).head.tag() } {
         StorageTag::Hash => {

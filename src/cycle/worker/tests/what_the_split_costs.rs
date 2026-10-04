@@ -55,6 +55,14 @@ fn measure_one_thread_against_the_split() {
     const ROUNDS: usize = 3;
     let _g = test_guard();
     reset_lanes();
+    // Under `recycler-over-counts`, `LL_PROBE_MEMBER_CAP` sets the largest set
+    // the collector frees itself (`crate::cycle::collector_frees`).
+    #[cfg(feature = "recycler-over-counts")]
+    if let Ok(cap) = std::env::var("LL_PROBE_MEMBER_CAP") {
+        let cap = cap.parse().expect("a member cap");
+        let _ = crate::cycle::collector_frees::set_member_cap_for_test(cap);
+        eprintln!("member cap {cap}");
+    }
     eprintln!("members | one thread | collector | owner's pause | collector + owner");
     for members in [4_000, 40_000, 400_000] {
         let mut alone = Vec::new();
@@ -99,10 +107,10 @@ fn measure_one_thread_against_the_split() {
                 "the set took the fast path"
             );
             #[cfg(feature = "recycler-over-counts")]
-            assert_eq!(
-                crate::cycle::trace::take_sets_proved_by_tags_validated(),
-                1,
-                "the set took the proved set's path"
+            assert!(
+                crate::cycle::trace::take_sets_proved_by_tags_validated() == 1
+                    || crate::cycle::collector_frees::frees_counts().sets > 0,
+                "the set took the proved set's path, or the collector freed it"
             );
         }
         let median = |walls: &mut Vec<Duration>| {

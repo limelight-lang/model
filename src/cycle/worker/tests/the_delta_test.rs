@@ -16,6 +16,8 @@ use crate::object::{Object, new_constructed};
 use crate::refcount::{MemoryCategory, RcHeader, ll_release, window_tag};
 use crate::test_support::{prop_offset, store_prop};
 
+unsafe extern "C" fn no_destructor_body(_object: *mut Object) {}
+
 fn node_class() -> *const Class {
     ClassBuilder::new("DeltaTestNode")
         .prop("next", true)
@@ -55,10 +57,9 @@ fn served_and_counted() -> crate::cycle::delta_test::TagReadingCounts {
     }
 }
 
-/// A ring nobody touched since the consent is proved by its tags; the owner
-/// meets its members with no trace of their cells, confirms the set by the
-/// counts' sum against the edges the collector recorded between them — a
-/// debug build walking it beside the sum — and frees the ring.
+/// A ring nobody touched since the consent is proved by its tags, and the
+/// collector frees it itself (S68.6b): the owner's poll applies what it left
+/// and counts the two members freed, with no collection over a set.
 #[test]
 fn an_untouched_garbage_ring_is_proved_by_its_tags() {
     let _g = test_guard();
@@ -66,12 +67,61 @@ fn an_untouched_garbage_ring_is_proved_by_its_tags() {
     let mut arena = Arena::new();
     let _ = unsafe { a_garbage_ring(&mut arena) };
     let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
+    let freed_before = crate::cycle::collector_frees::frees_counts();
 
     let counts = served_and_counted();
     assert_eq!(
         (counts.proved, counts.touched, counts.no_checkpoint),
         (1, 0, 0)
     );
+    let freed = crate::cycle::collector_frees::frees_counts();
+    assert_eq!(
+        (
+            freed.sets - freed_before.sets,
+            freed.members - freed_before.members
+        ),
+        (1, 2),
+        "the collector freed the ring"
+    );
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the poll applied its frees"
+    );
+    assert_eq!(
+        crate::cycle::trace::take_sets_proved_by_tags_validated(),
+        0,
+        "no set reached the owner"
+    );
+    reset_lanes();
+}
+
+/// A proved ring the collector does not free itself — a member with a
+/// destructor — reaches the owner marked: the owner meets its members with no
+/// trace of their cells, confirms the set by the counts' sum against the edges
+/// the collector recorded between them, and frees the ring (S68.6a).
+#[test]
+fn a_proved_ring_the_collector_keeps_from_is_taken_by_the_owner_without_a_trace() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let kept = ClassBuilder::new("DeltaTestDestructedNode")
+        .prop("next", true)
+        .destructor(no_destructor_body as *const ())
+        .build();
+    let mut context = LLContext { arena: &mut arena };
+    let a = unsafe { new_constructed(&mut context, kept, MemoryCategory::GcHeap) };
+    let b = unsafe { new_constructed(&mut context, kept, MemoryCategory::GcHeap) };
+    unsafe {
+        store_prop(&mut arena, a, prop_offset(0), b);
+        store_prop(&mut arena, b, prop_offset(0), a);
+        assert!(!ll_release(a as *mut RcHeader));
+        assert!(!ll_release(b as *mut RcHeader));
+    }
+    let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
+
+    let counts = served_and_counted();
+    assert_eq!(counts.proved, 1);
     let _ = crate::cycle::finalization::take_confirmed_by_the_sum();
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 2, "the ring was freed");
     assert_eq!(
@@ -269,7 +319,12 @@ fn a_set_cut_short_is_not_marked_proved() {
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
-    let small = node_class();
+    // A destructor keeps the set from the collector's own free (S68.6b), so
+    // that it reaches the owner as a set, marked or not.
+    let small = ClassBuilder::new("DeltaTestKeptNode")
+        .prop("next", true)
+        .destructor(no_destructor_body as *const ())
+        .build();
     let wide = ClassBuilder::new("DeltaTestWideNode")
         .prop("next", true)
         .prop("a", false)

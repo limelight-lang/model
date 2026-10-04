@@ -172,40 +172,63 @@ notifications, the teardown and the close are the rest. So the steps:
   meets the members with no trace of their cells and the commit confirms the
   set by the counts' sum against that count, walking it where they differ.
   The owner still tears the set down.
-- **S68.6b, the collector frees a set it can free whole.** The first form
-  takes W whole or not at all: the collector frees it itself where every
-  member is one it can free off the owner's thread —
-  - an `Object` or `Lazy` of a class with no destructor, the default dispose
-    and no outside cells; a `Reference`; a `String` with its bytes inline; an
-    `Array` whose storage, if any, is a body in a buffer-arena chunk;
-  - with no weak references (the Δ-test's `WeaklyHeld` already holds those
-    back), not an arena escapee, in a slot of an ordinary entity-heap block —
-    not a retained block, not a large entity, no body in an OS run.
-  Otherwise W goes the S68.6a way. The split W = C ∪ S of items 9–10 is the
-  form after this one, once the first form's figures are read.
-  Freeing, per member, on the collector's thread, under the grant: every
-  counted child outside W becomes a drop record (the child's address); a
-  child inside W needs nothing, dying with it; an array's body is posted to
-  its chunk's remote stack (`BufferArena::post_remote`, safe from any thread,
-  whose owner-side splice has no withholding gate); the slot is taken
-  (`take_slot_for_free`: count zero, `DEAD_IN_PLACE`). A registered member
-  (`CANDIDATE_BIT`) stays dead in place for the owner's retirement pass;
-  every other slot is linked, through the free-list word at byte 8, onto a
-  chain of its block the collector keeps — never the block's `remote_free`,
-  whose splice under a foreign holder would withhold it and recall the
-  grant. A stop may fall between members: what was freed is posted, the
-  rest of W is a part of garbage the owner may not free alone, and goes the
-  exact way only once every member it names is either freed or listed.
-  *(Open for the Critic: whether a stop between members is allowed at all, or
-  the free of W is one act the recall waits for.)*
-- **What the owner receives.** P's verdicts name W's roots as completed deaths
-  (their slots dead in place); beside them, in place of the set, the drops and
-  the chains. At its poll the owner applies the drops through `drop_ref`
-  (typed then), splices each chain into its block's free list with `used`
-  lowered by the chain's length (the body of `Heap::collect_remote` without
-  its gate), and counts the registered members as candidate deaths
-  (`queue::note_a_candidate_death`, which the collector's thread could not
-  reach). Its pause is then the drops' cascade and one splice a block.
+- **S68.6b, the collector frees a set it can free whole** (the plan as the
+  Critic of 2026-10-04 on it left it). The first form takes W whole or not
+  at all, and only where every member is one the collector can free off the
+  owner's thread:
+  - an `Object` of a class whose dispose releases exactly its counted cells
+    (today: the default dispose) and that has no destructor and no outside
+    cells; a `Reference`; a `String` with its bytes inline; an `Array` whose
+    storage, if any, is a body in a block of kind `BLOCK_KIND_BUFFER`;
+  - no weak references (the Δ-test's `WeaklyHeld`), not an arena escapee,
+    in a slot of an entity-heap block the granting mutator's heap owns — not
+    a retained block, not a large entity, not another thread's block.
+  `Lazy` waits for a factory to test it with. Otherwise W goes the S68.6a way.
+  The split W = C ∪ S of items 9–10 is the form after this one.
+
+  **Two phases, so that no part of W is ever freed alone.** A part freed and
+  the rest left is unsafe both ways: the rest still holds counts from the
+  freed part and leaks, or, given those as drops, releases cells naming slots
+  already handed out again.
+  1. *Preparation, read-only, stoppable anywhere.* Check every member's
+     eligibility; build every drop — one record a counted cell naming an
+     entity outside W, in the order the member's own dispose would release
+     them; build the per-block chains — head, tail and length a block, the
+     links not yet written; draw every metadata block these need, charged to
+     the ledger and handed over with the release as the posted set's are
+     (`gc_metadata::hand_over`). A stop, a pool refusal or an ineligible
+     member here sends W the S68.6a way, nothing written. A debug build
+     validates W exactly here, read-only on the collector's thread under the
+     grant (trial deletion over its cells), and goes on only where it agrees.
+  2. *The commit, one act the recall waits for.* For each member: take the
+     slot (`take_slot_for_free`: count zero, `DEAD_IN_PLACE`); a registered
+     member (`CANDIDATE_BIT`) stays so for the owner's retirement pass; every
+     other slot's free-list word at byte 8 written to the next of its block's
+     chain; an array's body posted to its chunk's remote stack
+     (`BufferArena::post_remote`). A cap on W's size bounds the act — a W
+     above it goes the S68.6a way — first set at 64k members and read by
+     S68.8.
+
+  **What the owner receives, on a record word of its own.** P's verdicts name
+  W's roots as completed deaths; the drops and the chains stand on a word of
+  the record beside the posted set, never in place of it, and **every path
+  that gives P back unread applies them first**: the take under pressure, the
+  exit (before `abandon_all`), the teardown's refusal, `dispose_of_p`, a held
+  token's drop, a block return under `POSTED` (`posted_set::drop_before_a_return`).
+  Dropped, the drops would leave each child outside W a count no one holds,
+  and the chains would leave `used` counting dead slots past the thread's
+  exit. The application, at the owner's poll or on those paths:
+  - each drop through `drop_ref(GcHeap, child)` itself — the dead holder's
+    category, the child's read by `drop_ref` at application, which is what
+    covers a child a reset promoted since — never a copy of its body;
+  - each chain spliced into its block's free list with `used` lowered by the
+    chain's length, the block's owner checked again first (an exit and an
+    adoption can move it), and then `collect_remote`'s tail: an emptied block
+    retired, an unlinked one linked;
+  - the registered members counted as candidate deaths.
+  Its pause is then the drops' cascade and one splice a block. The entity
+  deaths the journal records for an owner's free are written at the
+  application, one a chain, not a member.
 
 ## 6. The owner's poll
 

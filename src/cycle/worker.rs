@@ -2599,6 +2599,31 @@ unsafe fn trace_the_batch(
         let rows = testing::note_rows_met(arena);
         testing::note_the_part(arena, rows, traced_from);
     }
+    // The set of a completed mark's completed scan over its record is tested
+    // by its tags at the mutator's next checkpoint (`crate::cycle::delta_test`)
+    // before any root is posted; a set proved garbage the collector frees
+    // itself where it can (`crate::cycle::collector_frees`), whose roots the
+    // posts below then read as completed deaths, and otherwise reaches the
+    // owner marked proved, with the edges its members' counts sum to.
+    #[cfg(feature = "recycler-over-counts")]
+    let mut proved_edges = None;
+    #[cfg(feature = "recycler-over-counts")]
+    if unsafe { a_root_reads_unreachable(posts) }
+        && unsafe { crate::cycle::delta_test::test_the_set_by_its_tags(mutator, arena) }
+            == crate::cycle::delta_test::TagReading::Garbage
+    {
+        match unsafe { crate::cycle::collector_frees::prepare(mutator, arena) } {
+            Ok(mut frees) => {
+                unsafe { crate::cycle::collector_frees::commit(arena, &mut frees) };
+                set.carry_the_frees(frees);
+            }
+            Err(_) => {
+                proved_edges =
+                    Some(unsafe { crate::cycle::delta_test::internal_edges_of_the_set(arena) });
+            }
+        }
+    }
+
     for index in 0..posts.roots.len() {
         if !posts.has_a_verdict(index) {
             let verdict = unsafe { verdict_for(posts.root(index)) };
@@ -2608,17 +2633,9 @@ unsafe fn trace_the_batch(
 
     if posts.proposed.get() {
         unsafe { set.append(arena) };
-        // The set of a completed mark's completed scan over its record is
-        // tested by its tags at the mutator's next checkpoint
-        // (`crate::cycle::delta_test`); the owner's exact validation still reads
-        // it, and in a debug build checks the Δ-test against its own.
         #[cfg(feature = "recycler-over-counts")]
-        if unsafe { crate::cycle::delta_test::test_the_set_by_its_tags(mutator, arena) }
-            == crate::cycle::delta_test::TagReading::Garbage
-        {
-            set.mark_proved_by_its_tags(unsafe {
-                crate::cycle::delta_test::internal_edges_of_the_set(arena)
-            });
+        if let Some(edges) = proved_edges {
+            set.mark_proved_by_its_tags(edges);
         }
     }
 
@@ -2980,6 +2997,26 @@ unsafe fn read_the_root(root: *mut RcHeader) -> RootReading {
 /// # Safety
 /// The trace over `root`'s closure completed on this thread and its rows still
 /// stand.
+/// Whether a root of `posts` without a verdict reads potentially unreachable
+/// after a completed scan: W is empty otherwise, every row the trace met
+/// being reached from a root.
+///
+/// # Safety
+/// As [`verdict_for`].
+#[cfg(feature = "recycler-over-counts")]
+unsafe fn a_root_reads_unreachable(posts: &FinishThePosts<'_>) -> bool {
+    (0..posts.roots.len()).any(|index| {
+        !posts.has_a_verdict(index)
+            && matches!(
+                unsafe { read_the_root(posts.root(index)) },
+                RootReading::Tracked(key)
+                    if unsafe { crate::cycle::arena::find_initialized_row(key) }.is_some_and(
+                        |row| shadow::color(unsafe { *row }) == Color::PotentiallyUnreachable
+                    )
+            )
+    })
+}
+
 unsafe fn verdict_for(root: *mut RcHeader) -> Verdict {
     let key = match unsafe { read_the_root(root) } {
         RootReading::Verdict(verdict) => return verdict,

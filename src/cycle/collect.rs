@@ -761,6 +761,13 @@ pub(crate) const EXIT_ROUNDS: usize = 8;
 /// As [`collect_off_the_poll`], with the heaps, the buffer arena and the weak
 /// table still alive for the destructors the rounds run.
 pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
+    // What a collector freed on this thread's behalf is applied before the
+    // posted set goes back: its drops and chains are no set a round finds
+    // again (`crate::cycle::collector_frees`).
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe {
+        crate::cycle::collector_frees::apply_this_threads()
+    };
     // The posted set goes back unread: the rounds collect over R whole,
     // which reads what it holds anyway.
     let claim = HeldToken::take_giving_back_the_posted_set();
@@ -942,6 +949,14 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     let _collecting = match CollectingThread::take_under_pressure() {
         Ok(collecting) => collecting,
         Err(closed) => return unsafe { refused_under_pressure(closed) },
+    };
+    // The take gave the posted set back unread; what a collector freed on
+    // this thread's behalf stands on a word of its own and is applied here,
+    // its slots being what a thread under pressure wants first
+    // (`crate::cycle::collector_frees`).
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe {
+        crate::cycle::collector_frees::apply_this_threads()
     };
 
     #[cfg(test)]

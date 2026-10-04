@@ -1357,6 +1357,53 @@ impl Heap {
         true
     }
 
+    /// Splice a chain of `n` slots a collector freed in `block` — linked
+    /// head to tail through their free-list words, the tail's word written
+    /// here — into the block's free list, and lower `used` by `n`; then the
+    /// tail [`Self::collect_remote`]'s callers make: an emptied block retired,
+    /// an unlinked one linked. A block this heap no longer owns — an exit and
+    /// an adoption can move it between the collector's free and this splice —
+    /// takes the slots as any thread's frees, through `free_remote`
+    /// (`crate::cycle::collector_frees`).
+    ///
+    /// # Safety
+    /// On the thread whose heap this is; `head..tail` are `n` dead slots of
+    /// `block`, each on no list, linked in order.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) unsafe fn splice_a_collectors_chain(
+        &mut self,
+        block: *mut u8,
+        head: *mut u8,
+        tail: *mut u8,
+        n: u32,
+    ) {
+        let block = block as *mut HeapBlockHeader;
+        if unsafe { (*block).shared.owner.load(Ordering::Acquire) } != self as *mut Heap {
+            let mut slot = head as *mut FreeSlot;
+            for _ in 0..n {
+                let next = unsafe { (*slot).next };
+                Self::free_remote(block, slot as *mut u8);
+                slot = next;
+            }
+            return;
+        }
+
+        let ci = unsafe { (*block).size_class.load(Ordering::Relaxed) } as usize;
+        let b = unsafe { &mut (*block).private };
+        unsafe { (*(tail as *mut FreeSlot)).next = b.free };
+        b.free = head as *mut FreeSlot;
+        b.used -= n;
+        #[cfg(test)]
+        {
+            self.bytes_in_owned_blocks[ci] -= n as usize * SIZE_CLASSES[ci];
+        }
+        if b.used == 0 {
+            self.retire_empty(ci, block);
+        } else if !b.linked {
+            self.link(ci, block);
+        }
+    }
+
     /// Common tail once a block's `used` count has just reached zero:
     /// keep it as the class's one bounded empty spare (instant reuse, no
     /// refill) if there isn't one already; otherwise actually return it

@@ -341,6 +341,14 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     #[cfg(feature = "recycler-over-counts")]
     crate::cycle::token::reach_the_checkpoint_on_this_thread();
 
+    // What a collector freed on this thread's behalf: its chains spliced, its
+    // drops applied, where the destructors they reach may run
+    // (`crate::cycle::collector_frees`).
+    #[cfg(feature = "recycler-over-counts")]
+    let freed_by_the_collector = unsafe { crate::cycle::collector_frees::apply_this_threads() };
+    #[cfg(not(feature = "recycler-over-counts"))]
+    let freed_by_the_collector = 0;
+
     // An armed poll that read a collector tracing defers: the batch is the
     // trace taken off this thread, and the collection its verdicts owe is
     // fired one poll later, by `POSTED` at the next reading or by the arming
@@ -348,7 +356,7 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // (`rfc/dev/design/trace-token-handshake.md`, E9).
     if reading == crate::cycle::token::Reading::Collector {
         crate::cycle::queue::signal_the_collector_if_due();
-        return 0;
+        return freed_by_the_collector;
     }
 
     // Armed, so fire, over what the arming names. The disarm happens whether
@@ -358,11 +366,12 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // that keeps the arming, and it is the one where no fire happened.
     crate::cycle::queue::take_retired_by_the_close();
     let arming = take_arming();
-    let freed = if arming == Arming::None {
-        0
-    } else {
-        unsafe { fire(arming) }
-    };
+    let freed = freed_by_the_collector
+        + if arming == Arming::None {
+            0
+        } else {
+            unsafe { fire(arming) }
+        };
 
     // What the collection freed or retired — a death retired out of P, or an
     // entity the collection a proposal armed reclaimed — is the collector's

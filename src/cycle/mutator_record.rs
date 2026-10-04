@@ -260,6 +260,15 @@ struct WriterLine {
     /// at returns and the collector writes it once a grant. `FREE` promises a
     /// null word, as it promises an empty P.
     posted_set: AtomicPtr<BlockHeader>,
+    /// The first block of what the last grant's collector freed itself — the
+    /// drops it owes the children outside the freed set, the chains of slots
+    /// it freed, the registered members it left dead in place — for the
+    /// owner to apply, and null for none (`crate::cycle::collector_frees`).
+    /// Written as the posted set is, beside it and never in place of it; taken
+    /// back to null by the one swap of the application, which every path
+    /// that gives the posted set back unread makes first.
+    #[cfg(feature = "recycler-over-counts")]
+    collectors_frees: AtomicPtr<BlockHeader>,
 }
 
 /// The line the collector, the exit and the registry share.
@@ -437,6 +446,8 @@ impl WriterLine {
             freeing_dispositions: AtomicU32::new(0),
             merges: AtomicU32::new(0),
             posted_set: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(feature = "recycler-over-counts")]
+            collectors_frees: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -622,6 +633,40 @@ impl MutatorRecord {
             "a grant opened over a set nobody consumed"
         );
         self.writer.posted_set.store(head, Ordering::Release);
+    }
+
+    /// Publish `head`, the first block of what this grant's collector freed
+    /// (the record's `collectors_frees` word), under the grant and before the
+    /// release.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn publish_collectors_frees(&self, head: *mut BlockHeader) {
+        debug_assert!(
+            self.writer
+                .collectors_frees
+                .load(Ordering::Relaxed)
+                .is_null(),
+            "a collector freed under a grant whose last frees nobody applied"
+        );
+        self.writer.collectors_frees.store(head, Ordering::Release);
+    }
+
+    /// Whether a collector's frees stand unapplied: a collector frees nothing
+    /// more until they are.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn collectors_frees_stand(&self) -> bool {
+        !self
+            .writer
+            .collectors_frees
+            .load(Ordering::Acquire)
+            .is_null()
+    }
+
+    /// Take what the collector freed off this record, leaving null.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn take_collectors_frees(&self) -> *mut BlockHeader {
+        self.writer
+            .collectors_frees
+            .swap(std::ptr::null_mut(), Ordering::Acquire)
     }
 
     /// The set standing on this record, or null: the mutator's filter before

@@ -206,6 +206,10 @@ pub(crate) struct Writer {
     proved_by_its_tags: bool,
     #[cfg(feature = "recycler-over-counts")]
     internal_edges: usize,
+    /// What the collector freed itself under this grant, published beside the
+    /// set (`crate::cycle::collector_frees`).
+    #[cfg(feature = "recycler-over-counts")]
+    frees: Option<crate::cycle::collector_frees::Frees>,
 }
 
 impl Writer {
@@ -221,6 +225,8 @@ impl Writer {
             proved_by_its_tags: false,
             #[cfg(feature = "recycler-over-counts")]
             internal_edges: 0,
+            #[cfg(feature = "recycler-over-counts")]
+            frees: None,
         }
     }
 
@@ -289,6 +295,14 @@ impl Writer {
         self.internal_edges = internal_edges;
     }
 
+    /// Carry what the collector freed itself to the release, which publishes
+    /// it beside the set.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn carry_the_frees(&mut self, frees: crate::cycle::collector_frees::Frees) {
+        debug_assert!(self.frees.is_none(), "one free a grant");
+        self.frees = Some(frees);
+    }
+
     /// List `entity`, and first `block` where `first_in_block` says the block
     /// is not listed yet; false where the pool refused a block. The block goes
     /// first: a member listed without its block would let the block's return
@@ -312,7 +326,12 @@ impl Writer {
     /// Leave the set on `mutator`'s record for its collection over P, and
     /// with it this thread's hold on its blocks. Under the grant, before its
     /// release; a set with no member leaves nothing.
-    pub(crate) fn publish(self, mutator: &MutatorRecord) {
+    #[cfg_attr(not(feature = "recycler-over-counts"), allow(unused_mut))]
+    pub(crate) fn publish(mut self, mutator: &MutatorRecord) {
+        #[cfg(feature = "recycler-over-counts")]
+        if let Some(frees) = self.frees.take() {
+            crate::cycle::collector_frees::publish(frees, mutator);
+        }
         let this = std::mem::ManuallyDrop::new(self);
         if this.members.head.is_null() {
             unsafe { release_chain(this.blocks.head) };
@@ -343,6 +362,13 @@ impl Writer {
 
 impl Drop for Writer {
     fn drop(&mut self) {
+        // A free the collector made is in the heap already: its record may
+        // only leave by publication. A batch that freed always posts.
+        #[cfg(feature = "recycler-over-counts")]
+        debug_assert!(
+            self.frees.is_none() || std::thread::panicking(),
+            "the collector's frees were dropped unpublished"
+        );
         unsafe {
             release_chain(self.members.head);
             release_chain(self.blocks.head);

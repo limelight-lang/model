@@ -768,6 +768,22 @@ fn pop_fit_in(
 ///
 /// # Safety
 /// `(ptr, size)` is a live chunk of `block`, freed by this call.
+/// Post the long-lived body `(ptr, capacity)`, in a block of kind
+/// `BLOCK_KIND_BUFFER`, to its block's remote stack, as a free from a thread
+/// that does not own it does: the collector freeing a proved set off its
+/// owner's thread (`crate::cycle::collector_frees`). The owner's collect of
+/// the stack has no gate a foreign holder could close, so the body reaches its
+/// free list at the owner's next collect.
+///
+/// # Safety
+/// `(ptr, capacity)` is a live body of a block of kind `BLOCK_KIND_BUFFER`,
+/// freed by this call, which no thread reads again.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) unsafe fn post_a_body_remote(ptr: *mut u8, capacity: usize) {
+    let block = BufferBlockHeader::of_ptr(ptr);
+    unsafe { post_remote(block, ptr, round_up_8(capacity).max(MIN_CHUNK)) };
+}
+
 unsafe fn post_remote(block: *mut BufferBlockHeader, ptr: *mut u8, size: usize) {
     let chunk = ptr as *mut FreeChunk;
     unsafe { (*chunk).size = size };

@@ -257,6 +257,12 @@ impl Vector {
     /// survive the pair being published separately, its `nslots` being
     /// zero throughout, and it is bracketed anyway — the exemption is an
     /// accident of the layout rather than a property either body states.
+    /// The capacity the storage body was granted at, which its free takes.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn storage_capacity(&self) -> usize {
+        self.storage_capacity
+    }
+
     pub fn dispose(&mut self, head: &StorageHead, category: MemoryCategory) {
         let p = head.storage();
         let capacity = self.storage_capacity;

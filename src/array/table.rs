@@ -1537,6 +1537,12 @@ impl Table {
     /// strides the index region as entries. The window is also what
     /// makes the order of the three stores below free to change: without
     /// it the null chunk has to be published first and nothing says so.
+    /// The capacity the storage body was granted at, which its free takes.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn storage_capacity(&self) -> usize {
+        self.storage_capacity
+    }
+
     pub fn dispose(&mut self, head: &StorageHead, category: MemoryCategory) {
         let p = head.storage();
         let capacity = self.storage_capacity;

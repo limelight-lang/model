@@ -152,6 +152,10 @@ pub(crate) mod recorded_edges;
 // under `recycler-over-counts`.
 #[cfg(feature = "recycler-over-counts")]
 pub(crate) mod delta_test;
+// The collector's own free of a set its Δ-test proved, and the owner's
+// application of what it leaves, under `recycler-over-counts`.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) mod collector_frees;
 pub(crate) mod row;
 // The second phase, and the proposal a collection reads: reached from
 // [`trace`], which [`collect`] drives.

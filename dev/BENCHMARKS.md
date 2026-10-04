@@ -8,6 +8,31 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-04 — S68.6b: the collector frees the proved ring itself — the owner's pause over 400k members falls from 49 ms to 0.11 ms
+
+**The probe.** `what_the_split_costs::measure_one_thread_against_the_split`,
+release, the feature build at S68.6b, the member cap set by
+`LL_PROBE_MEMBER_CAP`: 64k, the first setting, and 1M, past every row. One
+run each, a four-core cloud box, nothing else running. "Owner's pause" is
+the poll that applies the collector's frees — chains spliced, no drops on a
+ring — or, past the cap, the S68.6a collection.
+
+| ms | cap 64k: 4k | 40k | 400k | cap 1M: 4k | 40k | 400k |
+|---|---:|---:|---:|---:|---:|---:|
+| one thread | 0.56 | 5.72 | 65.14 | 0.63 | 5.79 | 68.59 |
+| collector | 0.38 | 3.81 | 44.92 | 0.45 | 6.20 | 63.52 |
+| owner's pause | 0.00 | 0.01 | 49.02 | 0.00 | 0.02 | 0.11 |
+| collector + owner | 0.38 | 3.82 | 93.94 | 0.45 | 6.22 | 63.63 |
+
+**Reading.** Where the collector frees the set, the owner's pause is the
+splice of a chain a block — 0.11 ms over 400k members in some 3,000 blocks —
+under the gate's 5 ms by forty times, and the whole work is below one
+thread's (63.6 against 68.6 ms). The collector's share grows by the free:
+the 400k batch reads 63.5 ms against 32.9–41.1 when the owner freed.
+Past the cap the set goes the S68.6a way and the pause is the owner's 49 ms
+again: the cap is what S68.8 has to set, against the recall's wait through
+the act (not measured here).
+
 ## 2026-10-04 — S68.6a: the owner's pause over a 400k garbage ring is not its trace — taking a proved set without one leaves it at 50 ms
 
 **The probe.** `what_the_split_costs::measure_one_thread_against_the_split`,
