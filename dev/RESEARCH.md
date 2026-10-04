@@ -641,3 +641,112 @@ object's full closure, and is present at v3.14.4 and absent at v3.14.5.
 **Not found:** a production collector that posts partial results from a
 truncated trial deletion; the soundness of S67.9's (6′) rests on this crate's
 own reading. Not read: Pony ORCA, Paz–Petrank, Oilpan, PHP, Perl.
+
+## 2026-10-04 — immediate RC with a concurrent or incremental cycle collector: who built the hybrid
+
+Asked by Edmond after the Recycler design rounds: has anyone combined
+owner-written immediate reference counting with a cycle collector that runs
+beside the mutator, and how did each make mutations during the collection
+safe? A web sweep by a research agent; WebFetch could not read the PDFs of
+Bacon–Rajan, Formiga–Lins, Joisha and Frampton, so those are taken from
+abstracts and secondary pages and marked so. Nothing here was run.
+
+### What each system does (sourced)
+
+- **Firefox, the XPCOM cycle collector.** Immediate RC, a purple buffer, an
+  incremental collector on the main thread. Only graph building runs in
+  slices; `ScanRoots` and `CollectWhite` run in one slice with no mutator
+  between them ([nsCycleCollector.cpp](https://raw.githubusercontent.com/mozilla/gecko-dev/master/xpcom/base/nsCycleCollector.cpp)).
+  During an incremental collection both `AddRef` and `Release` put the object
+  in the purple buffer with a dirty bit; every dirty object is treated as
+  live, and what the buffer gains during the collection is a suspect only for
+  the next one ([bug 850065](https://bugzilla.mozilla.org/show_bug.cgi?id=850065)).
+  Debug builds run a synchronous collection beside it and check that both
+  find the same garbage. A ~200k-object teardown went from ~600 ms to ~200 ms
+  in 40–47 ms slices. A count reaching zero sends the object to the buffer as
+  "snow-white" rather than deleting it, and snow-white objects are not freed
+  while a scan runs ([nsISupportsImpl.h](https://raw.githubusercontent.com/mozilla/gecko-dev/master/xpcom/base/nsISupportsImpl.h)).
+  The use-after-free of [bug 1023758](https://bugzilla.mozilla.org/show_bug.cgi?id=1023758):
+  a node traversed earlier died during the collection, was ignored, and a live
+  object it pointed to was unlinked; the fix treats dead traversed nodes as
+  roots. In production.
+- **Kotlin/Native's first memory manager.** Deferred RC with a
+  trial-deletion cycle collector, and a "shared cyclic collector" on a
+  background thread over frozen objects reachable from atomic references,
+  restarting with backoff when it saw a count change; review noted it was
+  "not properly synchronized with refCount() mutation"
+  ([roadmap 2020](https://blog.jetbrains.com/kotlin/2020/07/kotlin-native-memory-management-roadmap/),
+  [update 2021](https://blog.jetbrains.com/kotlin/2021/05/kotlin-native-memory-management-update/),
+  [PR 3742](https://github.com/JetBrains/kotlin-native/pull/3742)). Replaced
+  by a tracing collector in 2021–22 for low throughput, "pauses become rarer
+  but longer", the freezing model, no code sharing with the JVM, leaks of
+  cycles through atomic references, and tracing being "far more flexible and
+  tunable".
+- **CPython.** The free-threaded build (PEP 703) uses biased RC and a
+  stop-the-world cycle collector ([PEP 703](https://peps.python.org/pep-0703/)).
+  The incremental cycle collector shipped in 3.14 was reverted in 3.14.5: the
+  longest pause fell from 26 ms to 1.3 ms, but memory grew up to 5× and total
+  runtime was slower ([discussion](https://discuss.python.org/t/reverting-the-incremental-gc-in-python-3-14-and-3-15/107014)).
+  No concurrent-thread attempt found.
+- **PHP, `zend_gc`.** Synchronous Bacon–Rajan when its 10k-entry root
+  buffer fills ([manual](https://www.php.net/manual/en/features.gc.collecting-cycles.php)).
+  No concurrent proposal found.
+- **Others.** Nim ORC: synchronous trial deletion in the thread
+  ([blog](https://nim-lang.org/blog/2020/12/08/introducing-orc.html)).
+  Lobster reports leaked cycles at exit
+  ([docs](https://aardappel.github.io/lobster/memory_management.html)).
+  Perceus/Koka collects no cycles ([paper](https://xnning.github.io/papers/perceus.pdf)).
+  Swift, Objective-C, Perl and Vala have no cycle collector and rely on weak
+  references (from memory, not checked). Pony traces inside an actor and
+  counts references between actors deferred; a detector actor proposes cycles
+  of blocked actors and confirms them by CONF/ACK messages
+  ([OOPSLA'13](https://www.ponylang.io/media/papers/opsla237-clebsch.pdf)) —
+  the closest "collector proposes, owners confirm" protocol, but over actors.
+- **Samsara (Rust), the closest in mechanism.** Mutators do immediate RC on
+  `Arc`; a collector thread runs trial deletion concurrently and frees what
+  it finds; a visited object that is decremented turns DIRTY and is re-queued;
+  the collector holds read/write locks while scanning, so a mutator may block
+  on a write; an unsound free panics ([blog](https://redvice.org/2023/samsara-garbage-collector/),
+  [repo](https://github.com/chc4/samsara)). A hobby project with no
+  benchmarks. `bacon_rajan_cc` and `dumpster` collect in the calling thread.
+- **Academic.** Bacon–Rajan's concurrent collector (the Recycler): deferred
+  RC, mutators log increments and decrements into epoch buffers the collector
+  applies ([PLDI'01](https://dl.acm.org/doi/10.1145/378795.378819)), longest
+  pause 2.6–6 ms; Σ-test (no reference from outside the cycle) and Δ-test (no
+  member's count rose in the next epoch), from a
+  [secondary summary](https://maplant.com/2024-12-13-Scheme-to-the-Spec-Part-I:-Concurrent-Cycle-Collection.html).
+  Paz et al.: sliding-views cycle collection over deferred RC, ~1 ms pauses,
+  fixing Bacon–Rajan's termination problem
+  ([TOPLAS 2007](https://dl.acm.org/doi/10.1145/1255450.1255453)). Lins and
+  Formiga–Lins: the mutator sends increment/decrement queues to a collector
+  processor; "preliminary" speedups only
+  ([VECPAR'02](https://link.springer.com/chapter/10.1007/3-540-36569-9_44),
+  [JUCS'07](https://zenodo.org/records/6999854)). Frampton et al.: deferred RC
+  with concurrent mark-sweep for cycles; "objects subject to races during
+  concurrent tracing are trivially identified using data already established
+  by the reference counter"; up to 2× better than trial deletion
+  ([TR](https://www.semanticscholar.org/paper/Efficient-Concurrent-Mark-Sweep-Cycle-Collection-Frampton-Blackburn/c153afb4e7ec70d0c7fa272208e671680c07a28e)).
+  LXR ([PLDI'22](https://arxiv.org/abs/2210.17175)), RC Immix and Ulterior RC
+  are deferred RC with backup tracing. Joisha's Bartok: immediate RC with
+  compiler optimisations ([TR](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/tr-2007-104.pdf));
+  its cycle handling not confirmed.
+
+### What applies here (inference, not sourced)
+
+- No published or production system was found with owner-written,
+  non-atomic immediate RC plus a concurrent collector thread over shadow
+  state; the combination appears new. Closest: Firefox (the same mutation
+  rule in one thread), Samsara (a concurrent thread over immediate RC, with a
+  DIRTY flag), Pony (proposal and confirmation).
+- Firefox's rule — any count write during the window means live, deferred to
+  the next round — is the window-tag variant (R2) run in one thread, and it
+  holds only with increments marking as well as decrements, with objects that
+  die mid-scan treated as roots (bug 1023758), and with no mutation between
+  the final scan and the free; on a separate thread the last is the handshake
+  that publishes the owner's tag bytes.
+- Bacon–Rajan's Σ/Δ and Lins' design assume deferred counts the collector
+  owns; over owner-written counts the window tags stand in for the Δ-test.
+- Deferring suspects to the next round can inflate memory (CPython 3.14,
+  up to 5×); Kotlin/Native dropped its concurrent RC cycle collector for
+  races, pauses and inflexibility. A shadow synchronous checker in debug
+  builds, as Firefox runs, is the soundness check to copy.
