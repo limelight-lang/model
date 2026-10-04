@@ -813,6 +813,58 @@ impl Advanced {
     }
 }
 
+/// Advance `request` to `to` in steps of at most [`BIRTHS_AN_ADVANCE`]
+/// births, `step` after each with what it did — the rig's account and poll,
+/// answering the poll's wall — as a compiled build loop polls on its
+/// back-edge; answer the walls summed and where the last step stopped. A
+/// stop at the registrations' bound ([`Stop::Events`]) leaves the rest for
+/// a later point, as one unbounded advance does. Each step's wall, the poll
+/// apart, is kept for [`longest_build_step`].
+///
+/// # Safety
+/// As [`Request::advance`].
+pub(super) unsafe fn build_to(
+    request: &mut Request,
+    build: &mut RequestBuild,
+    to: f64,
+    mut step: impl FnMut(Advanced) -> Duration,
+) -> (Duration, Stop) {
+    let mut walls = Duration::ZERO;
+    loop {
+        crate::cycle::worker::testing::enter_the_rig_section(
+            crate::cycle::worker::testing::RigSection::Build,
+        );
+        let began = Instant::now();
+        let (advanced, stop) = unsafe { request.advance_at_most(build, to, BIRTHS_AN_ADVANCE) };
+        LONGEST_BUILD_STEP_NANOS.fetch_max(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        walls += step(advanced);
+        if stop != Stop::Births {
+            return (walls, stop);
+        }
+    }
+}
+
+/// The longest step [`build_to`] made, in nanoseconds, since the process
+/// started.
+static LONGEST_BUILD_STEP_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// The longest step of a request's build since the process started.
+pub(super) fn longest_build_step() -> Duration {
+    Duration::from_nanos(LONGEST_BUILD_STEP_NANOS.load(Ordering::Relaxed))
+}
+
+/// Where [`Request::advance_at_most`] stopped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Stop {
+    /// Every event placed before its point is done.
+    Reached,
+    /// Its births' bound, a birth before its point still to come.
+    Births,
+    /// [`REGISTRATIONS_AN_ADVANCE`] registrations and lookups, the rest left
+    /// for the next advance to a later point.
+    Events,
+}
+
 /// What a request's end did: whether the external reference landed on a
 /// registered object, read before the release — the silent death — the
 /// request's heap bytes by size index, garbage from here on, and the roots
@@ -932,10 +984,10 @@ impl Request {
         unsafe { self.advance_at_most(build, to, usize::MAX) }.0
     }
 
-    /// [`Request::advance`] stopped after `births` births: what it did, and
-    /// whether the bound stopped it before `to` — the caller polls and calls
-    /// again with the same `to`, and the events come in the order one
-    /// unbounded advance makes them.
+    /// [`Request::advance`] stopped before its `births + 1`-th birth: what it
+    /// did, and where it stopped. Called again with the same `to` after a
+    /// [`Stop::Births`], it goes on from there, the events in the order one
+    /// unbounded advance makes them. `births` is at least one.
     ///
     /// # Safety
     /// As [`Request::advance`].
@@ -944,19 +996,20 @@ impl Request {
         build: &mut RequestBuild,
         to: f64,
         births: usize,
-    ) -> (Advanced, bool) {
+    ) -> (Advanced, Stop) {
+        debug_assert!(births > 0, "a bound of no births advances nothing");
         let mut advanced = Advanced::default();
         let (mut events, mut born) = (0, 0);
         while let Some(event) = self.next_event(to) {
             if matches!(event, Event::Birth) {
                 if born == births {
-                    return (advanced, true);
+                    return (advanced, Stop::Births);
                 }
 
                 born += 1;
             } else {
                 if events == REGISTRATIONS_AN_ADVANCE {
-                    break;
+                    return (advanced, Stop::Events);
                 }
 
                 events += 1;
@@ -989,7 +1042,7 @@ impl Request {
             }
         }
 
-        (advanced, false)
+        (advanced, Stop::Reached)
     }
 
     /// The next event placed before `to`, the earliest of the next birth,
@@ -2386,10 +2439,10 @@ fn a_bounded_advance_stops_at_its_births_and_goes_on() {
     let mut cuts = 0;
     while !request.is_complete() {
         let before = request.born();
-        let (advanced, cut) = unsafe { request.advance_at_most(&mut build, 1.0, 500) };
+        let (advanced, stop) = unsafe { request.advance_at_most(&mut build, 1.0, 500) };
         let born = request.born() - before;
         assert!(born <= 500, "a step of {born}");
-        if cut {
+        if stop == Stop::Births {
             assert_eq!(born, 500, "the bound stopped it");
             cuts += 1;
         }
@@ -2405,6 +2458,58 @@ fn a_bounded_advance_stops_at_its_births_and_goes_on() {
         registrations + 1,
         "and the start's context root"
     );
+    let _ = unsafe { request.end() };
+    unsafe { crate::gc::ll_gc_collect_cycles() };
+    fixture.let_go();
+}
+
+/// The build to a point steps at the births' bound and polls after each
+/// step: every step but the last stopped by the bound, the polls' walls
+/// summed, and the plan built whole. Red with the steps' loop gone, which
+/// builds a slice's births past the bound in a later slice.
+#[test]
+fn a_build_to_a_point_polls_between_its_steps() {
+    let _g = test_guard();
+    let mut fixture = Fixture::with_core("BuildTo", 10);
+    let plan = fixture.plan(5, 3 * BIRTHS_AN_ADVANCE + 100);
+    let (births, bytes) = (plan.objects.len(), plan.bytes());
+    let mut build = fixture.build();
+    let (mut request, started) = unsafe { Request::start(&mut build, plan) };
+    let mut built = started;
+    let mut steps = 0;
+    let (walls, stop) = unsafe {
+        build_to(&mut request, &mut build, 1.0, |advanced| {
+            built.add(advanced);
+            steps += 1;
+            Duration::from_micros(1)
+        })
+    };
+
+    if stop == Stop::Events {
+        let _ = unsafe {
+            build_to(&mut request, &mut build, 1.0, |advanced| {
+                built.add(advanced);
+                Duration::ZERO
+            })
+        };
+    } else {
+        assert_eq!(stop, Stop::Reached);
+        assert_eq!(
+            steps,
+            (births - CONTEXT).div_ceil(BIRTHS_AN_ADVANCE),
+            "{births} births"
+        );
+        assert_eq!(
+            walls,
+            Duration::from_micros(steps as u64),
+            "the walls summed"
+        );
+    }
+
+    assert!(steps >= 3, "{steps} steps");
+    assert!(request.is_complete());
+    assert_eq!(built.born, bytes);
+    assert!(longest_build_step() > Duration::ZERO);
     let _ = unsafe { request.end() };
     unsafe { crate::gc::ll_gc_collect_cycles() };
     fixture.let_go();

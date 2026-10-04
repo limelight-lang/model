@@ -709,6 +709,13 @@ differ (`dev/DECISIONS.md`, the same date).
 - Items 1 and 2 are built. `MEMBER_CAP`'s doc reads "the bound of a take's
   wait"; the take-on-commit cell is judged against `token_wait_longest_us`,
   and if it fails there the knob for that configuration goes to Edmond.
+  The cap is set only by a measurement today (`set_member_cap_for_test`,
+  `LL_RIG_MEMBER_CAP`); an embedder's setter comes with that reading if it
+  asks for one.
+- The rig reads what the ruling asks of it: its stretches by kind (the
+  draw's apart from the waits'), the missed checkpoints and the asks a
+  stretch answered at once by the section the mutator stood in, and the
+  longest build step.
 - The commit and its publication stay under the grant.
 - §4.7's premise is qualified: the reset and the collection keep it; in a
   teardown only a compiled destructor's frame remains, under §7.16. A

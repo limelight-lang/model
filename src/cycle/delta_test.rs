@@ -145,6 +145,8 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
     // the stretch left before the first reading").
     let reached = if token.ask_for_the_checkpoint() {
         ASKS_A_BLOCKING_ANSWERED.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        crate::cycle::worker::testing::note_an_ask_a_stretch_answered(mutator);
         true
     } else {
         wait_for_the_checkpoint(token, from, || arena.read_the_recall_now().is_break())
@@ -155,6 +157,8 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
     LONGEST_WAIT_NANOS.fetch_max(waited, Ordering::Relaxed);
     if !reached {
         NO_CHECKPOINT.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        crate::cycle::worker::testing::note_a_checkpoint_missed(mutator);
         return TagTest {
             reading: TagReading::NoCheckpoint,
             weakly_held: false,

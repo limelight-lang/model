@@ -2331,3 +2331,93 @@ pub(super) fn note_the_batchs_trace(
         turnovers: mutator.turnovers(),
     });
 }
+
+/// The sections of the rig's request loop a mutator stands in, by which the
+/// Δ-test's missed checkpoints and the asks a stretch answered at once are
+/// read (`dev/design/recycler-over-counts.md`, §5d, "Then read"). The rig
+/// names its section as it enters one ([`enter_the_rig_section`]); a
+/// mutator no section names reads as [`RigSection::Other`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RigSection {
+    Other,
+    /// The draw of the next request's plan.
+    Draw,
+    /// A step of a request's build.
+    Build,
+    /// A poll.
+    Poll,
+    /// The timed spin of a request's drawn CPU.
+    Spin,
+    /// A wait slept without a poll.
+    Wait,
+    /// A request's end.
+    End,
+}
+
+/// The sections [`RigSection`] names.
+pub(crate) const RIG_SECTIONS: usize = 7;
+
+/// Mutators the section table names: one cell's two or three, and room.
+const SECTION_SLOTS: usize = 16;
+
+/// Each slot's mutator record, claimed at its first section, and the
+/// section it stands in.
+static SECTION_OWNERS: [AtomicUsize; SECTION_SLOTS] =
+    [const { AtomicUsize::new(0) }; SECTION_SLOTS];
+static SECTION_NOW: [AtomicUsize; SECTION_SLOTS] = [const { AtomicUsize::new(0) }; SECTION_SLOTS];
+static MISSED_BY_SECTION: [AtomicUsize; RIG_SECTIONS] =
+    [const { AtomicUsize::new(0) }; RIG_SECTIONS];
+static ANSWERED_BY_SECTION: [AtomicUsize; RIG_SECTIONS] =
+    [const { AtomicUsize::new(0) }; RIG_SECTIONS];
+
+/// Name the section this thread's mutator enters; nothing for a thread with
+/// no record or past the table's slots.
+pub(crate) fn enter_the_rig_section(section: RigSection) {
+    let me = crate::cycle::mutator_record::this_thread_record() as usize;
+    if me == 0 {
+        return;
+    }
+
+    for slot in 0..SECTION_SLOTS {
+        let owner = SECTION_OWNERS[slot].load(Ordering::Relaxed);
+        let mine = owner == me
+            || owner == 0
+                && SECTION_OWNERS[slot]
+                    .compare_exchange(0, me, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok();
+        if mine {
+            SECTION_NOW[slot].store(section as usize, Ordering::Relaxed);
+            return;
+        }
+    }
+}
+
+/// The section `mutator` stands in, as its own thread last named it.
+fn section_of(mutator: &MutatorRecord) -> usize {
+    let mutator = std::ptr::from_ref(mutator) as usize;
+    (0..SECTION_SLOTS)
+        .find(|&slot| SECTION_OWNERS[slot].load(Ordering::Relaxed) == mutator)
+        .map_or(RigSection::Other as usize, |slot| {
+            SECTION_NOW[slot].load(Ordering::Relaxed)
+        })
+}
+
+/// Count a checkpoint `mutator` missed against the section it stood in when
+/// the wait ended.
+pub(crate) fn note_a_checkpoint_missed(mutator: &MutatorRecord) {
+    MISSED_BY_SECTION[section_of(mutator)].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Count an ask a stretch of `mutator`'s answered at once against the
+/// section it stood in.
+pub(crate) fn note_an_ask_a_stretch_answered(mutator: &MutatorRecord) {
+    ANSWERED_BY_SECTION[section_of(mutator)].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Missed checkpoints and asks a stretch answered, by [`RigSection`].
+pub(crate) fn checkpoints_by_section() -> ([usize; RIG_SECTIONS], [usize; RIG_SECTIONS]) {
+    (
+        std::array::from_fn(|section| MISSED_BY_SECTION[section].load(Ordering::Relaxed)),
+        std::array::from_fn(|section| ANSWERED_BY_SECTION[section].load(Ordering::Relaxed)),
+    )
+}
