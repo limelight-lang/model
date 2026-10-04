@@ -14,7 +14,7 @@ what was tried, measured, and accepted or rejected.
 section each mutator is in (the draw of the next plan, from the poll after a
 request's end to the next start; a phase's advance; the poll; the tail of the
 build; the end), and the Δ-test counts each missed checkpoint against the
-section its mutator stood in. One 60 s cell of `web-heap` each, 46.78 ms, two
+section its mutator stood in when the wait ended. One 60 s cell of `web-heap` each, 46.78 ms, two
 mutators, `cap-1`.
 
 | member cap | missed | in the draw of the next plan | in a phase's advance | elsewhere | longest pause by kind, ms |

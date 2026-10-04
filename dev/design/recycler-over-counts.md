@@ -651,32 +651,59 @@ polls: the rig's code, not the runtime's.
   pressure, the explicit fire and a second mutator's grant held by the same
   collector wait the whole act, which the gate counts.
 
-**What is built.**
-1. *The rig polls where compiled code would.* (a) The draw of a plan touches
-   no entity of the runtime's heap, so it runs inside a blocking stretch, as
-   the waits do (`sleep_without_poll`): the rig's own bookkeeping, not the
-   program's. (b) A request's advance stops after `BIRTHS_AN_ADVANCE` births
-   (`POLL_STRIDE`), as it stops after `REGISTRATIONS_AN_ADVANCE`
-   registrations, and the caller polls before the next: a build's loop polls
-   on its back-edge. Every arm runs the same rig, so A's figures move too
-   and are read again beside B's.
-2. *The default cap 1M.* At 1M no `web-heap` set went past it, the longest
-   commit read 8.7–12.0 ms and no take waited on one.
+**What is built** (revised after the Critic's second round).
+1. *The rig's own work leaves the mutator's exposure, and its build polls.*
+   (a) The draw of the next plan is the harness's bookkeeping, which the
+   rig already subtracts from the window as its own work (`draw_a_plan`):
+   it touches no entity of the runtime's heap (the test binary's allocator
+   is `System`), runs at teardown depth 0 under an open gate, and writes no
+   count, slot or tag. It runs inside a blocking stretch, entered and left
+   outside the draw's instruction bracket so that B's runtime instructions
+   are not subtracted as the rig's. This is not a compiled program's form —
+   the compiler emits no stretch of its own (§7.16) — but the harness taken
+   out of the program; what it removes from the no-checkpoint count does not
+   count toward the Sage's condition for `ll_gc_blocking_call`, which is
+   about blocking calls. (b) Within one slice the build advances to the
+   slice's point in steps of at most `BIRTHS_AN_ADVANCE` births, a poll after
+   each step, the polls' walls added to the deadline as today's one poll's
+   is: a build's loop polls on its back-edge, the timeline and the order of
+   events unchanged, nothing carried into the next slice that today's
+   advance would have built in this one. `Request::advance` keeps its
+   meaning; a bounded `advance_at_most` is the slice's. `BIRTHS_AN_ADVANCE`
+   is `POLL_STRIDE` and is a new parameter of the protocol
+   (`dev/design/the-web-loads.md`); it bounds births, not time, so the
+   reading reads the longest step.
+2. *The default cap 1M, as a trade.* At 64k a set past the cap pauses its
+   owner 144–167 ms, certainly; at 1M a take that lands on a commit waits up
+   to its length, 8.7–12.0 ms read on `web-heap` (objects; an array-heavy
+   commit, which posts bodies remote, not read), and with one collector and
+   two mutators the second's withheld returns stand as long. No measured cap
+   keeps the act under 5 ms; 1M trades a certain pause for a possible one.
 
 **Then read**, by the gate (§9), five 96 s cells of A and of B at 1M: the
 longest owner pause by the posting's kind, missed checkpoints by the rig's
-section, the application's longest, the garbage. What remains over 5 ms
-decides whether the slices, the second chance for a miss, or a cap derived
-from a time budget come next.
+section (charged at the wait's end), the longest build step, the
+application's longest, the garbage; and one cell where a take can land on a
+commit — two mutators on one collector with the explicit fire, or a heap
+limit that refuses allocations. What remains over 5 ms decides what comes
+next; none of the queued items touches the second refusals (3–14 ms), the
+application (3.1–8.6 ms) or a take's wait on a commit, and the second chance
+for a miss would add to the first.
 
-**For the Sage, not built**: whether the commit, which after the Δ-test
-reads and writes members of W alone, can run after the grant is released,
-so that no take waits on it and no cap is needed.
+**For the Sage, not built**: whether the commit and its publication can
+leave the grant. Under the token today the frees word, P's verdicts and the
+posted set each have one writer; a commit after the release would race a
+mutator's `stand_the_held` on the frees word (a plain store over the
+collector's publication, C's drops and chains lost). And whether §4.7's
+premise — inside a teardown the runtime holds references it has not counted
+— still stands, since no such reference was found in the runtime's own
+cascade frames; it decides whether a checkpoint may ever be answered there.
 
-**Tests.** An advance of a plan with more births than `BIRTHS_AN_ADVANCE`
-returns before the plan's place, and the next advance goes on from it; the
-draw's stretch is entered and left around the draw, and a draw under a
-closed gate enters none.
+**Tests.** `advance_at_most` of a plan with more births than the bound
+stops at the bound and the next call goes on from it, the events in the
+order `advance` builds them; a slice whose plan places more births than the
+bound polls between its steps and ends at the same point on the timeline;
+the draw runs between an entered and a left stretch.
 
 ## 6. The owner's poll
 
