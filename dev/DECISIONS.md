@@ -26,6 +26,22 @@ thrice-read root waits up to seven X, where garbage waits in R's queue
 anyway. Both builds share the rule. No `K` knob; the drain gate stays
 absolute at 12 s.
 
+**The bound, read per generation (the Sage, third ruling of 2026-10-05).**
+"About one X" is one X a generation: a ring the collector's own frees make
+garbage behind a root deferred after an X waits the next. Read by the
+protocol, the rule halves the garbage in both builds, and one drain cell of
+B in five left 2,176 bytes at 12 s. That is the rule's drain cell failing
+the protocol's letter, not a defect of the rule; it goes to Edmond only
+with its mechanism proved by a journaled cell and a fix costed, in one
+message with the take-on-commit wait. Rejected as fixes: any trigger that
+hands back every lane oftener than X (the refuted volume), a shorter X on a
+quiet thread (K by another name), a drain-side X made by the rig, a second
+R entry for a lane-held root (two entries naming one slot). If the remnant
+is a completed death a lane entry withholds, the retirement pass reads the
+lanes too; if it is a ring behind a lane root, it is the documented bound.
+Order: that cell, the collector's pacing, the pass if owed, one reread of
+A and B, the ring loads, S68.11's open items.
+
 **Rejected.** The tail (a fixed share keeps the volume); a re-offered root
 pruned by a current stamp (no re-offered root carries one, every turn
 advancing the byte); K = 7 flat (the drain gate fails in every cell — the
