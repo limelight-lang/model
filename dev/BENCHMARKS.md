@@ -135,6 +135,17 @@ diagnostic arms not kept):
   waits kept delay a dead ring behind a deferred root, up to seven X, and
   leak none.
 
+  Where the release's garbage stands, one journaled 60 s cell each of B
+  (`debug-journal`, the same switch): released against kept, batch roots
+  2.86M / 2.36M, read live 965k / 269k, **zero count 1.78M / 1.88M**,
+  slots freed at P's reading 1.89M / 1.99M, at R's front run 1.25M / 1.28M,
+  the garbage 181 / 85 MB. Two roots in three a batch reads have already
+  died by count, their slots withheld until the batch reads their entry, and
+  the two arms withhold about as many. *Not proved*: the release's 700k more
+  live roots stand in R ahead of those entries, so each withheld slot waits
+  longer; the garbage would then follow R's length ahead of a death, which
+  no column here reads.
+
 ---
 
 ## 2026-10-04 — S68.8, first reading: on `web-heap` the arm spends less mutator CPU but holds twice the garbage, and neither arm keeps the owner's pause under 5 ms
