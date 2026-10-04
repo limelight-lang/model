@@ -760,6 +760,25 @@ production sources below; the ECOOP'01 full text was not reachable (abstract
 only). The UCSB mirror "bacon-concurrent.pdf" is the PLDI paper, so section
 and table numbers are the PLDI paper's. Nothing here was run.
 
+### Bottom line: why it did not spread
+
+1. Its 2.6 ms pauses were bought with a spare CPU for every ~3 mutator CPUs,
+   an atomic exchange on every heap pointer store, and collector work many
+   times mark-sweep's (javac 104.1 s against 2.8 s); its one collector thread
+   did not scale, in the authors' own words, and mutators blocked when memory
+   or the mutation buffers ran out (up to 43 MB).
+2. Its concurrent cycle collector rescanned candidates repeatedly and had a
+   liveness race that could leave a garbage cycle unreclaimed for ever
+   (Paz, Bacon et al.); even the repaired collector trailed backup tracing by
+   5–10 %.
+3. Its successors kept deferred or coalesced counting but found cycles by
+   tracing (Levanoni–Petrank, Ulterior RC, RC Immix, LXR); only the
+   synchronous Bacon–Rajan algorithm reached production (PHP, Firefox, Nim).
+4. Here: most of its cost bought concurrent counting, which per-thread
+   non-atomic counting avoids; what applies is trial deletion's walk over the
+   live data reachable from candidates (Composer disabled PHP's collector for
+   it).
+
 ### What the Recycler measured ([PLDI'01](https://dl.acm.org/doi/10.1145/378795.378819); [mirror](https://sites.cs.ucsb.edu/~ckrintz/racelab/gc/papers/bacon-concurrent.pdf))
 
 - A 24-way 450 MHz RS/6000 with one more CPU than mutator threads (§7).
