@@ -72,6 +72,26 @@ In `held` the batch's root stands in C, so S is not posted and the leaves
 die by counting at the application — 200k destructors on the owner, which
 no split can move off it.
 
+**The garbage, step by step.** The feature built at each step's commit with
+`debug-journal`, 60 s cells, two each, alternated:
+
+| build | garbage mean, MB | `ReadLive` posted | turns by proofs / by X |
+|---|---:|---:|---:|
+| A, default (`c024dc0`) | 113 / 93 | 0.42M / 0.29M | 10 / 10 · 12 / 8 |
+| S68.3, the tags (`8ce9ec0`) | 108 / 96 | 0.41M / 0.32M | 11 / 9 · 12 / 8 |
+| S68.4, the record scan (`a5c1850`) | 123 / 115 | 0.93M / 0.96M | 0 / 18 · 0 / 18 |
+| S68.5, the Δ-test (`f2c9d5c`) | 137 / 134 | 0.95M / 0.95M | 0 / 18 · 0 / 18 |
+| S68.6b, the collector frees (`4151311`) | 172 / 157 | 0.95M / 0.97M | 0 / 18 · 0 / 18 |
+| S68.6c, the split (`c024dc0`) | 215 / 206 | 0.99M / 0.94M | 0 / 18 · 0 / 18 |
+
+The record scan is where `ReadLive` grows two and a half times and the
+epoch stops turning by proofs; the garbage then grows a little at every step
+after it. A diagnostic arm that posted a root read live and tagged with the
+window `Unwalked` instead of deferring it (two cells each way, not kept)
+moved `ReadLive` by 3k of 920k and the garbage not at all: the roots read
+live are not ones the window wrote, so the taint's root half would not
+answer this.
+
 **Reading.** The gate is not met: mutator CPU (−6 to −15 %) and Δ-refusals
 (about 1 %) pass; the owner's longest pause fails in both arms, and held
 garbage fails in B. The two failures have separate causes, each named
