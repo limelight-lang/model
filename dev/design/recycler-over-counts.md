@@ -485,7 +485,38 @@ poll, as a worker blocked in `accept` does — and of the sets past the cap.
    skipped unpark is cleared by the next poll; a thread that exits parked
    leaves `NONE`; a set proved at a park is freed. *Docs*: §7's obligation,
    a DECISIONS entry.
-5. *Not in S68.9*: the record scan's `ReadLive` count, two and a half times
+5. *After the Critic's second round* (overriding items 1–4 where they
+   differ).
+   - *The ask and the unpark are one CAS each from the value read.* The ask
+     loads the byte and moves it by one `compare_exchange`, retried on
+     failure from the value the failure read: `NONE` or a stale `REACHED`
+     to `ASKED`, `PARKED` to `PARKED_ASKED` (reached at once); a byte already
+     `PARKED_ASKED` or `ASKED` is a defect, one ask standing a grant. The
+     unpark is `compare_exchange(PARKED or PARKED_ASKED, NONE, AcqRel,
+     Acquire)`, so that a park the gate refused never erases a live ask. The
+     withdrawal loops likewise, from each value read back, until the byte
+     reads `NONE` or `PARKED`.
+   - *The runtime owns the bracket.* Not a pair the compiler places, but
+     `ll_gc_blocking_call(f, arg)`, which parks, calls, and unparks on every
+     way out, an unwind's included, so that no exit can leave `PARKED` up;
+     and every entry from native code into compiled code — a callback, a
+     comparator — unparks on entry and parks again on its return, so that
+     no count is written under a park. §7, item 16, gains the obligation
+     before the code: the compiler emits no park of its own and holds no
+     ARC-elided temporary across a blocking call.
+   - *The clear of a stale park at a poll or a consent* stays, as the
+     release build's guard; the debug build's flag asserts first, so a
+     stale park is a defect in a test, never an outcome.
+   - *The exit* unparks before its thread-local destructors run.
+   - *The order of the work.* First the byte, its loom model over every
+     transition (an unpark or a re-park between an ask's read and its CAS,
+     the withdrawal's loop, a gated park against a live ask), and the rig's
+     web loads parking around their wait — where the contract holds by
+     construction — then S68.8's reading again: whether the sets that
+     missed a checkpoint come proved and whether the owner's pause meets
+     5 ms, at the 64k cap and at 1M. The exported bracket is built only if
+     both hold.
+6. *Not in S68.9*: the record scan's `ReadLive` count, two and a half times
    the heap scan's from S68.4 on, whose cause neither the root's tag nor the
    epoch's measure of work explains (`dev/BENCHMARKS.md`, the same entry);
    S68.9's re-reading measures what remains of the garbage first.
