@@ -135,14 +135,16 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
 - [x] S68.2 Byte 7 freed: the reconciliation marks its survivors by a bias
       on the count word instead of bit 24, and a block a reset empties stays
       with its size class until the reset ends.
-- [ ] S68.3 The window and the tags, behind the feature: the window number
+- [x] S68.3 The window and the tags, behind the feature: the window number
       in the record (1..255, advanced at the consent, never closed); the tag in
       `refcount_store`, the slot-write primitives and the in-array
       permutations; the holder through the barrier (the ABI change).
 - [ ] S68.4 The collector records the edges it subtracts, and its scan runs
       over the recorded edges only.
-- [ ] S68.5 The handshake at the safepoint checkpoint and the Δ-test; a
-      refused or stopped set goes the default build's exact way.
+- [ ] S68.5 The handshake at the safepoint checkpoint and the Δ-test, which
+      clears stale tags by a one-byte CAS on members of W; a refused set
+      re-queues once, and a second refusal or a stop sends it the default
+      build's exact way.
 - [ ] S68.6 The split W = C ∪ S; the collector frees C (dead in place,
       per-block chains, `ll_free`'s routing without `free_remote`) and posts
       typed drops; the owner applies them at its poll, splices the chains,

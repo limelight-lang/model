@@ -40,7 +40,9 @@ deferred lanes are all as in the default build.
      bracket).
    One relaxed one-byte store, no branch. Holders
    in an arena need no tag (`owner_cat` is a compile-time constant).
-3. Byte 7 has no other writer: the reset's COW reconciliation, which held
+3. Byte 7 has one other writer, the collector's one-byte CAS at the Δ-test
+   on members of W only (§4.8). Nothing else writes it: the reset's COW
+   reconciliation, which held
    bit 24 there, marks the survivors it has in hand by a bias on the count
    word instead (`dev/DECISIONS.md`, "the COW reconciliation marks its
    survivors by a bias on the count word…"), and a heap block a reset empties
@@ -65,9 +67,20 @@ deferred lanes are all as in the default build.
    release on T's request, an acquire on the poll's read) — after which the
    collector sees every tag stored before T.
 8. The collector reads byte 7 of every member of W. Any member carrying the
-   window's number: the set is not judged (back to the queue, or the exact
-   way). None: W is garbage at T and stays garbage — judged by the collector
-   alone.
+   window's number: the set is not judged. None: W is garbage at T and stays
+   garbage — judged by the collector alone. While it reads, it clears every
+   tag that is neither 0 nor the window's by a one-byte
+   `compare_exchange(stale, 0)`: a value other than the window's predates the
+   consent and says nothing of [consent, T], and the CAS — never a plain
+   store — cannot turn a fresh tag into 0. Garbage is never touched, so
+   without the clear a set whose members carry k stale numbers would be
+   refused in k/255 of its attempts, and one grown across 255 consents for
+   good. A refused set goes back to the queue once and the exact way on a
+   second refusal: the first refusal may be a stale tag equal to the window,
+   which the next attempt, in the next window, clears. The clear writes
+   garbage lines only; a clear during the trace would dirty the header line of
+   every live entity traced, the line every retain and release hits (the
+   Sage, 2026-10-04).
 
    *Why (the Sage's proof).* An entity untagged at T had no count write and
    no slot write in [consent, T], so its count is the value read and every
@@ -77,6 +90,16 @@ deferred lanes are all as in the default build.
    checkpoint every reference is counted (locals included), so nothing
    outside W refers into it. Garbage cannot be resurrected after T (weak
    cells aside, which §5 routes to the owner).
+
+   The holder's tag is what makes "every recorded edge out of it stands at T"
+   true under count-free moves — an ARC-cancelled pair, or the runtime's own
+   `Table::remove` or a pop — which move a reference into or out of a slot
+   with no count write on the target: the slot's holder is tagged, so a W
+   whose rows changed is refused, and W's slots are frozen between the trace
+   and T. The fallback, if the gate fails on the holder's tag, is to tag the
+   moved entity instead, with three coupled obligations across the compiler
+   and the runtime and drops read from live slots at the free (the Sage,
+   2026-10-04).
 
 ## 5. Splitting and freeing
 
@@ -109,17 +132,20 @@ deferred lanes are all as in the default build.
 
 16. No uncounted reference is live across a safepoint checkpoint (an
     ARC-cancelled retain/release pair never spans a poll).
-17. The store barrier receives the holder (`store_ptr(holder, slot, …)`): an
-    ABI change.
+17. The store barrier receives the holder (`ll_store_*_in(ctx, owner_cat,
+    holder, slot, new)`): an ABI change, enforced — under the feature the
+    untagged `ll_store_ptr`/`_box`/`_owned` names are not exported, so an
+    emitter still calling them fails to link; a slot of a headerless static
+    block, a root, stores through `ll_store_ptr_root`/`ll_store_box_root`.
 
 ## 8. Cost, by who pays and how often (estimates, not measured)
 
 | when | mutator | collector |
 |---|---|---|
-| always, while a window is open (nearly always on `web-heap`) | every count write: + one byte store (≈ +2 instructions); every GcHeap pointer store: + one byte store and one argument | — |
+| always | every count write: + one byte store (≈ +2 instructions, measured ≈ +0.35 ns on a hot store); every GcHeap pointer store: + the holder's byte store and one argument (measured 6.26 → 7.40 ns on a hot heap-into-heap store) | — |
 | a grant | the consent as today, the window number advanced | the request as today |
 | the batch | runs on, withholds returns as today | every traced edge: the subtraction as today + one recorded edge (≈ 4 B); the scan over the recorded edges |
-| T | one handshake | one byte read per member of W |
+| T | one handshake | one byte read per member of W, + one CAS per stale member |
 | splitting and freeing | — | per member: the S test, its drops, count 0 and dead in place or the chain; per edge out: one drop entry |
 | the owner's poll | per drop: `drop_ref` (+ its cascade, an ordinary RC death); per block: a splice; dead in place: the retirement pass as today; S: the exact way | — |
 
@@ -134,7 +160,8 @@ the tag; on `web-heap`, mutator CPU within +3 % of the default build, the
 longest owner pause under 5 ms in every cell, held garbage no worse,
 Δ-refusals under 10 % of batches. A loom model of the handshake at T; a debug
 build asserting the tag at every primitive; a debug build running the exact
-validation beside the collector's verdict and checking both agree (as
+validation beside the collector's verdict and checking both agree, and
+asserting the collector writes byte 7 of no entity outside W (as
 Firefox's debug builds do, `dev/RESEARCH.md`, "immediate RC with a concurrent
 or incremental cycle collector").
 

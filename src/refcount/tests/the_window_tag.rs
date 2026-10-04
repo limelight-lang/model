@@ -189,6 +189,27 @@ fn a_slot_write_tags_its_holder() {
         "the array whose slots changed"
     );
 
+    // The ABI form generated code calls under the feature, which names the
+    // holder: here a store of null, whose only count write would be the
+    // displaced occupant's, were there one.
+    let slot = unsafe { Object::prop_at(kept, prop_offset(0)) };
+    set_window(43);
+    assert!(unsafe {
+        crate::memory::barrier::ll_store_box_in(
+            &mut context,
+            MemoryCategory::GcHeap as u32,
+            kept as *mut RcHeader,
+            slot,
+            Value::null(),
+        )
+    });
+    set_window(0);
+    assert_eq!(
+        unsafe { window_tag(kept as *const RcHeader) },
+        43,
+        "the holder the ABI named"
+    );
+
     // A hash array, whose writes come through the table's mutable view: an
     // insert, then a remove, each in a window of its own.
     let table = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };

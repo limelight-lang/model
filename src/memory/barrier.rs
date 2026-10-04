@@ -585,7 +585,10 @@ pub unsafe extern "C" fn ll_ref_store(
 ///
 /// # Safety
 /// As [`store_ptr`]; `owner_cat` a valid `MemoryCategory` code (`0..=3`).
-#[unsafe(no_mangle)]
+// Not exported under `recycler-over-counts`, where generated code stores
+// through the holder-tagging `_in` forms or the `_root` forms below, so an
+// emitter still calling this name fails to link.
+#[cfg_attr(not(feature = "recycler-over-counts"), unsafe(no_mangle))]
 pub unsafe extern "C" fn ll_store_ptr(
     ctx: *mut LLContext,
     owner_cat: u32,
@@ -606,7 +609,10 @@ pub unsafe extern "C" fn ll_store_ptr(
 ///
 /// # Safety
 /// As [`store_box`]; `owner_cat` a valid `MemoryCategory` code (`0..=3`).
-#[unsafe(no_mangle)]
+// Not exported under `recycler-over-counts`, where generated code stores
+// through the holder-tagging `_in` forms or the `_root` forms below, so an
+// emitter still calling this name fails to link.
+#[cfg_attr(not(feature = "recycler-over-counts"), unsafe(no_mangle))]
 pub unsafe extern "C" fn ll_store_box(
     ctx: *mut LLContext,
     owner_cat: u32,
@@ -627,7 +633,10 @@ pub unsafe extern "C" fn ll_store_box(
 ///
 /// # Safety
 /// As `store_ptr_owned`; `owner_cat` a valid `MemoryCategory` code (`0..=3`).
-#[unsafe(no_mangle)]
+// Not exported under `recycler-over-counts`, where generated code stores
+// through the holder-tagging `_in` forms or the `_root` forms below, so an
+// emitter still calling this name fails to link.
+#[cfg_attr(not(feature = "recycler-over-counts"), unsafe(no_mangle))]
 pub unsafe extern "C" fn ll_store_ptr_owned(
     ctx: *mut LLContext,
     owner_cat: u32,
@@ -648,7 +657,10 @@ pub unsafe extern "C" fn ll_store_ptr_owned(
 ///
 /// # Safety
 /// As `store_box_owned`; `owner_cat` a valid `MemoryCategory` code (`0..=3`).
-#[unsafe(no_mangle)]
+// Not exported under `recycler-over-counts`, where generated code stores
+// through the holder-tagging `_in` forms or the `_root` forms below, so an
+// emitter still calling this name fails to link.
+#[cfg_attr(not(feature = "recycler-over-counts"), unsafe(no_mangle))]
 pub unsafe extern "C" fn ll_store_box_owned(
     ctx: *mut LLContext,
     owner_cat: u32,
@@ -667,11 +679,14 @@ pub unsafe extern "C" fn ll_store_box_owned(
 
 /// The holder-tagging forms of the four `store_*` entries, for a build with
 /// `recycler-over-counts`: each tags `holder`, the entity whose slot the store
-/// writes, with the open window, then runs its namesake
+/// writes, with the thread's window, then runs its namesake
 /// (`dev/design/recycler-over-counts.md`, §2 and §7). Generated code under the
-/// feature emits these for a slot of an entity; a headerless holder — a
-/// static block — keeps the untagged forms, its slots being roots rather than
-/// edges a trace subtracts.
+/// feature emits these for every slot of an entity, and the untagged names are
+/// not exported: a count-free move into or out of an entity's slot that left
+/// the holder untagged would let the collector free a set whose rows no
+/// longer stand. A headerless holder — a static block — stores through
+/// [`ll_store_ptr_root`] and [`ll_store_box_root`], its slots being roots
+/// rather than edges a trace subtracts.
 ///
 /// # Safety
 /// `holder` the live entity containing `slot`; the rest per [`ll_store_ptr`].
@@ -745,6 +760,42 @@ pub unsafe extern "C" fn ll_store_box_owned_in(
         crate::refcount::tag_with_the_window(holder);
         ll_store_box_owned(ctx, owner_cat, slot, new)
     }
+}
+
+/// The store into a slot of a headerless holder — a static block, whose
+/// slots are roots a trace does not subtract — for a build with
+/// `recycler-over-counts`: [`ll_store_ptr`] under a name of its own, so that
+/// a slot of an entity cannot reach the untagged store by its old name
+/// (`dev/design/recycler-over-counts.md`, §7). Nothing here can tell a
+/// static slot from an entity's without a lookup the hot path does not pay;
+/// the debug build's checks of S68.7 own that assertion.
+///
+/// # Safety
+/// `slot` in a static block; the rest per [`ll_store_ptr`].
+#[cfg(feature = "recycler-over-counts")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_store_ptr_root(
+    ctx: *mut LLContext,
+    owner_cat: u32,
+    slot: *mut *mut RcHeader,
+    new: *mut RcHeader,
+) -> bool {
+    unsafe { ll_store_ptr(ctx, owner_cat, slot, new) }
+}
+
+/// [`ll_store_ptr_root`]'s form of [`ll_store_box`].
+///
+/// # Safety
+/// As [`ll_store_ptr_root`].
+#[cfg(feature = "recycler-over-counts")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_store_box_root(
+    ctx: *mut LLContext,
+    owner_cat: u32,
+    slot: *mut Value,
+    new: Value,
+) -> bool {
+    unsafe { ll_store_box(ctx, owner_cat, slot, new) }
 }
 
 /// C ABI: the `drop` micro-op. `ctx` is unused — a `drop` needs no arena —

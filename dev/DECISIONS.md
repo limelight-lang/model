@@ -61,6 +61,37 @@ debug build asserting the tag at every primitive.
 
 ---
 
+## 2026-10-04 — stale window tags are cleared at the Δ-test, and the holder's tag stays, enforced by the ABI
+
+**Decision (the Sage, on the Critic's review of S68.3).** Two findings on
+`dev/design/recycler-over-counts.md`:
+
+**Stale tags.** Garbage is never touched, so each member keeps the number of
+the last window that wrote it, and with 8-bit numbers a set whose members
+carry k stale numbers is refused in k/255 of its attempts — one grown across
+255 consents, for good, against the gate's 10 % of refusals. The collector
+clears every tag that is neither 0 nor the window's by a one-byte
+`compare_exchange(stale, 0)` while it reads W's tags at the Δ-test, and a
+refused set re-queues once before it goes the exact way. Sound: a value other
+than the window's predates the consent, and a CAS cannot turn a fresh tag into
+0. **Rejected:** the clear during the trace (the Critic's), which would dirty
+the header line of every live entity traced — the line every retain and
+release hits — where the Δ-test's clear writes garbage lines only.
+
+**The holder's tag.** The Critic asked whether forbidding count-free moves
+into heap slots would let the holder's tag go. It would not: a move out of a
+slot into a local, and the runtime's own `Table::remove` and pops, move a
+reference with no count write on the target too; tagging the moved entity
+instead needs three coupled invariants across the compiler and the runtime
+and drops read from live slots at the free, against one invariant the ABI can
+enforce, which freezes W's rows. So the holder's tag stays, and under the
+feature the untagged store names are not exported (an emitter still calling
+them fails to link); static blocks store through `ll_store_*_root`. Its
+price, ≈ +1.1 ns on a hot heap-into-heap store (`dev/BENCHMARKS.md`), is the
+gate's to judge; the moved-entity tag is the fallback if it fails.
+
+---
+
 ## 2026-10-04 — the COW reconciliation marks its survivors by a bias on the count word, and byte 7 goes to the window tag
 
 **Decision (S68.2, for the window tag of the entry above).** Under

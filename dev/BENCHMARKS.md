@@ -8,6 +8,36 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-04 — S68.3: the holder's tag on a pointer store costs ≈ +1.1 ns a hot heap-into-heap store
+
+**What.** Under `recycler-over-counts` every store into an entity's slot also
+tags the holder (`ll_store_*_in`, `ref_store`, the array views). Priced by a
+new arm of `what_a_store_costs_by_working_set::measure_store_cost`,
+`heap_into_heap_holder_tagged`: `heap_into_heap` plus the holder's tag before
+each `store_box`, in the same binary, interleaved with it. In the loop the
+difference is two instructions (`movzbl %fs:…`, `mov %al,0x7(%rbx)`) and two
+stack reloads the extra register pressure costs; the extra ABI argument of
+`ll_store_box_in` is not in it.
+
+**Figures** (release, PIE test binary; median ns a store; the hot rows of
+working set 1 from three runs of the probe, the rest from one):
+
+| working set | log | heap_into_heap | holder tagged |
+|---|---|---|---|
+| 1 | hot | 6.26–6.28 | 7.40–7.41 |
+| 1 | cold | 6.86 | 7.97 |
+| 1 | hot again | 6.23–6.26 | 7.40–7.54 |
+| 64 | hot | 6.26 | 7.64 |
+| 64 | cold | 7.02 | 8.13 |
+| 64 | hot again | 6.27 | 7.63 |
+
+≈ +1.1–1.4 ns, three to four times the count tag's +0.35 ns on the same
+store (S68.1, below) for a byte store of the same shape — more than two
+instructions should cost in a call-bound loop, and not explained here: no
+PMU on this machine to read where the cycles go. The Sage kept the tag
+(`dev/DECISIONS.md`, "stale window tags are cleared at the Δ-test…"); its
+share of `web-heap`'s mutator CPU is S68.8's to read.
+
 ## 2026-10-04 — S68.1: the window tag on every count write costs ≈ +0.4 ns a retain/release pair and ≈ +2 % of `web-heap`'s mutator CPU, inside the run's spread
 
 **The change priced.** `recycler-over-counts` (`dev/design/recycler-over-counts.md`,
