@@ -257,6 +257,16 @@ diagnostic arms not kept):
   turns to garbage is registered behind every re-offered live root the last
   X turn spliced into R, and waits for the collector to read through them.
 
+  *Spread, not cut.* A diagnostic arm that hands an X-due lane to R a block
+  each 200 ms, not whole (two 60 s cells each, release / spread / waits
+  kept): garbage 150.6 / 227.5 / 64.5 and 140.0 / 205.2 / 54.4 MB; R's mean
+  59k / 83k / 28k and 55k / 78k / 26k; the last free of the drain at 7.1 /
+  7.7 / 12.0 s and 7.3 / 7.8 / 12.0 s, the waits kept leaving 1.6–1.8 MB.
+  Spreading the same roots over the interval lengthens R further: what
+  holds the garbage is how many live roots go through R, not when. The
+  collector reads 2.4–2.9M roots a cell, the release adds 0.7M of them, and
+  a queue near its server's rate lengthens faster than its load.
+
 ---
 
 ## 2026-10-04 — S68.8, first reading: on `web-heap` the arm spends less mutator CPU but holds twice the garbage, and neither arm keeps the owner's pause under 5 ms
