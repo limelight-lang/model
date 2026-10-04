@@ -182,7 +182,7 @@ const WIDE_RING_MEMBERS: usize = 20;
 
 /// The live disjoint shape with rings each a part fills the workspace with:
 /// the case the plan's Critic names against the trace in parts
-/// (`dev/S65-PLAN-CRITIC.md`, F3), where every part fits and their union
+/// (`docs/history/s65-plan-critic-2026-09-27.md`, F3), where every part fits and their union
 /// passes the budget, so that a grant in parts runs longer than one trace
 /// over the same roots.
 const DISJOINT_WIDE_LIVE: Shape = Shape {

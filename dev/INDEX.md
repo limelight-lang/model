@@ -39,24 +39,17 @@ the four schemes V, D, H and G spend per root and fate, split between the
 mutator and the collector, and checks the model against the rig's counters of
 S65.28 and S65.31.
 
-The design S65 builds, kept until the stage closes: **[the package, third
-version](CYCLE-SPLIT-PACKAGE-3.md)** (Russian), with [the lane
-amendment](CYCLE-SPLIT-PACKAGE-3-LANE.md) and [its
-Critic](CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md), whose F2 and F3 are the form
-taken (`dev/DECISIONS.md`, "the collector finds and the mutator judges, and a
-recall of the token bounds the mutator's wait instead of the budget"); [the
-Critic over the S65 plan](S65-PLAN-CRITIC.md), whose F1–F7 the steps carry;
-and [the S64 analysis](S64-GC-IMPROVEMENT-ANALYSIS.md) (Russian), whose
-"Какие опыты нужны" is the rig S65.16 and S65.19 build and S65.17 runs. [The progress review of
-2026-09-25](S65-PROGRESS-REVIEW.md) (Russian) reads the stage before S65.12
-against the S64 analysis: what the numbers prove for the mutator, what the
-collector pays, the seven thin places of the algorithm as built, and three
-counters proposed for the rig. The review chain that led to the
-package, its first two versions and their Critics, and the Sage rulings on
-the recall per take path were deleted on 2026-09-24; their outcomes stand in
-`dev/DECISIONS.md` and in `PLAN.md`'s S65 steps, and the files in `git log
--- dev/`. The collector–mutator memory protocol of 2026-09-09 and its review
-are in `docs/history/`, superseded by the collector thread that was built.
+The design the collector thread and the mutator's judgement were built from
+is in `docs/history/` since that stage closed on 2026-10-04, kept for its
+reasoning: the package's third version, its lane amendment and that
+amendment's Critic, whose F2 and F3 are the form taken (`dev/DECISIONS.md`,
+"the collector finds and the mutator judges, and a recall of the token bounds
+the mutator's wait instead of the budget"); the Critic over that stage's plan,
+F1–F7; the analysis before it, whose "Какие опыты нужны" the rig answered; and
+the progress review of 2026-09-25 (all `*-2026-09-27.md`, the Russian ones
+marked). What was decided stands in `dev/DECISIONS.md`, and the earlier review
+chain is in `git log -- dev/`. The collector–mutator memory protocol of
+2026-09-09 and its review are in `docs/history/` too.
 
 ## Entry points
 

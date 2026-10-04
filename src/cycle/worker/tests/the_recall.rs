@@ -1,7 +1,7 @@
 //! The recall of the token: a mutator that asks for its token while a
 //! collector traces for it waits through at most [`RECALL_STRIDE`] positions
 //! of storage, the batch's posts and one reset of the arena, whatever the
-//! positions hold (`dev/S65-PLAN-CRITIC.md`, F1). The five containers are
+//! positions hold (`docs/history/s65-plan-critic-2026-09-27.md`, F1). The five containers are
 //! strides in which a position yields no counted reference — a vector of
 //! scalars, a hash whose entries hold none, an object of null Box fields, one
 //! of null typed fields and a class's outside storage of empty cells — so

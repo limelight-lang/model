@@ -1431,7 +1431,7 @@ enum RingRound {
 /// lane since the merges last accounted for: the merged roots are the
 /// collector's to trace, and a ring the owner packed into one block reads
 /// below the threshold off its front block
-/// (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F2). Otherwise it is taken
+/// (`docs/history/cycle-split-package-3-lane-critic-2026-09-27.md`, F2). Otherwise it is taken
 /// as an ordinary batch at the first visit [`standing_interval`] or more
 /// after the visit that first read it standing, and that visit is where the
 /// instant is stamped — of the collector's clock, not the mutator's, so that
@@ -2170,7 +2170,7 @@ impl Drop for Standing {
 /// read off the front block and the backlog by R's count: a ring the batch
 /// leaves in two blocks reads at the threshold off its front block whatever
 /// the two hold, a merged lane of two behind the batch's last block being
-/// one such (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F7), and a backlog
+/// one such (`docs/history/cycle-split-package-3-lane-critic-2026-09-27.md`, F7), and a backlog
 /// read that way would vote a sibling's birth for nothing.
 ///
 /// **The ring under the token decides the form, not the request's origin**
@@ -2478,7 +2478,7 @@ fn journal_verdict(root: *mut RcHeader, verdict: Verdict) {
 /// room having held no more, which says nothing of what the mutator offers
 /// per batch: a merged lane of three roots read at the threshold off its
 /// blocks would double K at every turnover of a thread that produces nothing
-/// (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F3).
+/// (`docs/history/cycle-split-package-3-lane-critic-2026-09-27.md`, F3).
 fn size_the_next_batch(mutator: &MutatorRecord, size: usize, taken: usize, outcome: &BatchOutcome) {
     if outcome.complete || outcome.regions_ended {
         if taken == size {

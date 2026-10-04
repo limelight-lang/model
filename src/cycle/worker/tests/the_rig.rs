@@ -1,6 +1,7 @@
 //! The rig: mutators running one load for a set wall time, each pinned to the
 //! logical CPU the driver names, beside collectors pinned the same way. Its
-//! placements are those of `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Какие опыты
+//! placements are those of
+//! `docs/history/s64-gc-improvement-analysis-2026-09-27.md`, "Какие опыты
 //! нужны": C−1 mutators and the collector on a core of its own, C mutators and
 //! the collector competing with them, C+1 mutators under a cap of zero. One
 //! process runs one cell, a placement and a load, and prints one line;
@@ -230,7 +231,7 @@ struct Load {
     /// root read live before it dies is a completed death whose slot the
     /// entry naming it withholds until a retirement.
     churn_dies_by_count: bool,
-    /// A web load of `dev/plans/S67.md`, "The loads", run by
+    /// A web load of `dev/design/the-web-loads.md`, "The loads", run by
     /// [`a_web_mutator`] in place of the ring loop; every field above is
     /// empty beside it.
     web: Option<Web>,
@@ -309,7 +310,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
 
 /// The loads of the S64 analysis's list, then those of `dev/BENCHMARKS.md`,
 /// "S65.21 the front run against leaving the deaths in R" and "S65.24 A, B
-/// and C on the rig", then the web loads of `dev/plans/S67.md`, "The
+/// and C on the rig", then the web loads of `dev/design/the-web-loads.md`, "The
 /// protocol (S67.1, before any run)", its deciding cells. Change a name or
 /// add a ring load, and change `LOADS` in `dev/tools/rig.sh` with it; the
 /// web loads are not in its sweep.
@@ -1389,7 +1390,7 @@ fn a_mutator(
 const REQUEST_STEPS: usize = 128;
 
 /// The synthetic CPU between two polls of a request's phase
-/// (`dev/plans/S67.md`, "The loads").
+/// (`dev/design/the-web-loads.md`, "The loads").
 const SLICE: Duration = Duration::from_micros(50);
 
 /// The garbage a web mutator may hold before its loop ends early: 1.5 GiB
@@ -2704,7 +2705,7 @@ impl WindowEdge {
 }
 
 /// A cell whose guest held more than this share of a core busy with other
-/// processes over the window is void (`dev/plans/S67.md`, the protocol).
+/// processes over the window is void (`dev/design/the-web-loads.md`, the protocol).
 const VOID_CORES: f64 = 0.5;
 
 /// The collector's stamping's columns, in the order

@@ -1,3 +1,9 @@
+> **Superseded.** A design document of the stage that built the collector
+> thread and the mutator's judgement (S65), kept for its reasoning; the
+> stage closed on 2026-10-04. What was decided stands in `dev/DECISIONS.md`,
+> what was measured in `dev/BENCHMARKS.md`, and the code is the reference;
+> its figures and its plan steps are of their day.
+
 # S65: удалось ли добиться прогресса — обзор алгоритма и замеров
 
 Дата: 2026-09-25. Прочитано на `model` `e63440d` и `rfc` `50e4e3b`, перед
@@ -6,7 +12,7 @@
 целиком; код `src/cycle/` (`worker.rs`, `token.rs`, `collect.rs`,
 `queue.rs`, `queue/verdicts.rs`, `queue/compaction.rs`, `live_list.rs`,
 `mutator_record.rs`, `mark.rs`, `worker/birth.rs`) и `src/gc.rs`;
-`dev/BENCHMARKS.md` S60–S65 против `dev/S64-GC-IMPROVEMENT-ANALYSIS.md` и
+`dev/BENCHMARKS.md` S60–S65 против `docs/history/s64-gc-improvement-analysis-2026-09-27.md` и
 done-line этапа в `PLAN.md`. Suite `cargo test --lib cycle::` на этом
 дереве зелёный: 539 пройдено, 0 упало, 32 пропущено. Ни один файл кроме
 этого и `dev/INDEX.md` не менялся; ни один замер здесь не снят, каждое
@@ -169,7 +175,7 @@ withholds").
 **По документам `rfc`.** Буква N значит две константы: stride отзыва и
 число батчей на оборот эпохи (`rc-cycle.md`, "Concurrency" в двух местах).
 M, M_b, M_c, N_b и G в `rfc` не названы вовсе — они живут только в
-`dev/CYCLE-SPLIT-PACKAGE-3.md`, "13. Открытые вопросы для владельца".
+`docs/history/cycle-split-package-3-2026-09-27.md`, "13. Открытые вопросы для владельца".
 `strategies.md` цитирует раздел «Death while enrolled», которого в
 `rc-cycle.md` нет (материал — "Zero-count entities pending slot reuse").
 `rc-cycle.md` и handshake цитируют запись DECISIONS, удалённую 2026-09-24,
@@ -180,7 +186,7 @@ M, M_b, M_c, N_b и G в `rfc` не названы вовсе — они жив�
 
 ## 4. Против целей S64
 
-`dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Главный вывод", назвал пять
+`docs/history/s64-gc-improvement-analysis-2026-09-27.md`, "Главный вывод", назвал пять
 механизмов и "Какие опыты нужны" — четыре опыта.
 
 | S64 | Состояние |
@@ -214,7 +220,7 @@ M, M_b, M_c, N_b и G в `rfc` не названы вовсе — они жив�
    принимать.
 3. **Доля грантов, отозванных отметкой M, против отозванных take'ом.** Если
    M доминирует, значение выбрано не там, и удвоение M из
-   `dev/CYCLE-SPLIT-PACKAGE-3.md`, "13. Открытые вопросы для владельца",
+   `docs/history/cycle-split-package-3-2026-09-27.md`, "13. Открытые вопросы для владельца",
    возвращается на стол.
 
 Отдельно, не к стенду: ordering в `hand_over_half` (пункт 6) стоит

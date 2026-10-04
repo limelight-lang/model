@@ -1,6 +1,12 @@
+> **Superseded.** A design document of the stage that built the collector
+> thread and the mutator's judgement (S65), kept for its reasoning; the
+> stage closed on 2026-10-04. What was decided stands in `dev/DECISIONS.md`,
+> what was measured in `dev/BENCHMARKS.md`, and the code is the reference;
+> its figures and its plan steps are of their day.
+
 # Поправка к версии 3: чем сборщик судит влитую полосу
 
-Дата: 2026-09-23. Ответ Sage на предложение основной сессии убрать из латентности полосы «до `STANDING_INTERVAL`» ценой одного store сборщика. Прочитано на рабочем дереве `model` (`64ac6ad`): `dev/CYCLE-SPLIT-PACKAGE-3.md` целиком; `src/cycle/worker.rs` (`serve`, `decide_the_branch_and_stamp_the_instant`, `batch`, `serve_the_grant` с `ReleaseOnDrop`, `Standing`, `read_one_record`, `hand_over_half`, константы); `src/cycle/mutator_record.rs` (`HoldLine`, `take_record`, `reset` обеих линий); `src/cycle/queue.rs` (`reoffer_deferred_if_epoch_moved`, `reoffer_deferred_candidates`, `answer_a_turnover_request`, `defer_entry`, `signal_the_collector_if_due`) и `queue/compaction.rs`; `src/ring.rs` (`splice_after_tail`, `front_block_reading`, `holds_at_least`, `Packing`, `dismantle`, `unlink_after_tail`); `src/gc.rs`, poll; `dev/design/a-standing-r-is-taken-after-n-rounds.md`; `dev/DECISIONS.md` за 2026-09-21 и 2026-09-22; `dev/BENCHMARKS.md`, S60.6 и «the live-roots arm». Каждое число ниже прочитано в файле или получено показанной арифметикой; оценки помечены.
+Дата: 2026-09-23. Ответ Sage на предложение основной сессии убрать из латентности полосы «до `STANDING_INTERVAL`» ценой одного store сборщика. Прочитано на рабочем дереве `model` (`64ac6ad`): `docs/history/cycle-split-package-3-2026-09-27.md` целиком; `src/cycle/worker.rs` (`serve`, `decide_the_branch_and_stamp_the_instant`, `batch`, `serve_the_grant` с `ReleaseOnDrop`, `Standing`, `read_one_record`, `hand_over_half`, константы); `src/cycle/mutator_record.rs` (`HoldLine`, `take_record`, `reset` обеих линий); `src/cycle/queue.rs` (`reoffer_deferred_if_epoch_moved`, `reoffer_deferred_candidates`, `answer_a_turnover_request`, `defer_entry`, `signal_the_collector_if_due`) и `queue/compaction.rs`; `src/ring.rs` (`splice_after_tail`, `front_block_reading`, `holds_at_least`, `Packing`, `dismantle`, `unlink_after_tail`); `src/gc.rs`, poll; `dev/design/a-standing-r-is-taken-after-n-rounds.md`; `dev/DECISIONS.md` за 2026-09-21 и 2026-09-22; `dev/BENCHMARKS.md`, S60.6 и «the live-roots arm». Каждое число ниже прочитано в файле или получено показанной арифметикой; оценки помечены.
 
 ## 1. Вывод
 

@@ -1,3 +1,9 @@
+> **Superseded.** A design document of the stage that built the collector
+> thread and the mutator's judgement (S65), kept for its reasoning; the
+> stage closed on 2026-10-04. What was decided stands in `dev/DECISIONS.md`,
+> what was measured in `dev/BENCHMARKS.md`, and the code is the reference;
+> its figures and its plan steps are of their day.
+
 # Critic on the S65 implementation plan
 
 Date: 2026-09-23. Reviewed `dev/S65-PLAN-FOR-REVIEW.md` (deleted 2026-09-24, kept by git) against model
@@ -220,7 +226,7 @@ defined boundary, intact P, continuing clock turnover, and successful restart.
 The step requires measurements first and only then lifting the clamp and
 adding threshold/merge collections. But the referenced Astra experiment
 explicitly requires a control with no background collector and equivalent
-reclamation (`dev/S64-GC-IMPROVEMENT-ANALYSIS.md:502–519`). Package section
+reclamation (`docs/history/s64-gc-improvement-analysis-2026-09-27.md:502–519`). Package section
 14.9 itself names the in-line-at-threshold mode as a dependency on commit 9.
 The current setter clamps zero to one (`src/cycle/worker.rs:422–424`).
 

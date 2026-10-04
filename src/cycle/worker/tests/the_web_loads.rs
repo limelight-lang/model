@@ -1,5 +1,5 @@
-//! The web loads' request (`dev/plans/S67.md`, "`web-heap`, a request", and
-//! its section S67.3): the draws that shape one request, the request built
+//! The web loads' request (`dev/design/the-web-loads.md`, "`web-heap`, a
+//! request"): the draws that shape one request, the request built
 //! object by object along its drawn timeline, its end, and the garbage it
 //! leaves, in bytes by size. The rig's loop (S67.5) and the arrivals, the
 //! spin and the waits' durations (S67.7) drive what is here; the cases below
@@ -23,8 +23,8 @@
 //! object drawn uniformly among those born before it. A request's
 //! [`LOOKUPS`] cache lookups fall at uniform places too.
 //!
-//! **The long-lived state** (`dev/plans/S67.md`, "Long-lived state per
-//! mutator", and its section S67.4) is [`LongLived`]: a core of one strongly
+//! **The long-lived state** (`dev/design/the-web-loads.md`, "Long-lived
+//! state per mutator") is [`LongLived`]: a core of one strongly
 //! connected component the requests' edges point into, an LRU cache of
 //! ten-object values and the sessions, the last two hung from the core by
 //! directory trees, so that a trace from a core root reaches all of it. The
@@ -124,7 +124,7 @@ pub(super) const SESSION_WRITE_STEADY_SHARE: f64 = 1.0 - 0.007 / 0.307;
 const SESSION_WRITE_SLOT: u32 = 2;
 
 /// A request's drawn CPU: lognormal, median 4 ms, σ 1 [A]
-/// (`dev/plans/S67.md`, "The loads").
+/// (`dev/design/the-web-loads.md`, "The loads").
 pub(super) const REQUEST_CPU_MEDIAN: Duration = Duration::from_millis(4);
 
 /// Each of a request's two blocking waits: lognormal, median 3 ms, σ 1 [A].
@@ -183,7 +183,7 @@ impl Arrivals {
     }
 }
 
-/// Where a request's objects live (`dev/plans/S67.md`, "The loads"): in the
+/// Where a request's objects live (`dev/design/the-web-loads.md`, "The loads"): in the
 /// GC heap, `web-heap`, or in the mutator's arena, reset at the request's
 /// end, `web-arena`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -820,7 +820,7 @@ pub(super) struct Ended {
     /// Of a `web-arena` reset's registrations, the cache values: the
     /// distinct value heads its lookups stored standing no candidate before
     /// it; zero for `web-heap`, whose values register at their hits
-    /// (`dev/plans/S67.md`, the protocol's "distinct cache values
+    /// (`dev/design/the-web-loads.md`, the protocol's "distinct cache values
     /// registered").
     pub(super) values_registered: usize,
 }
@@ -1360,8 +1360,8 @@ impl DirectoryOf {
     }
 }
 
-/// A mutator's long-lived state (`dev/plans/S67.md`, "Long-lived state per
-/// mutator", and its section S67.4). Built by [`LongLived::new`] and
+/// A mutator's long-lived state (`dev/design/the-web-loads.md`, "Long-lived
+/// state per mutator"). Built by [`LongLived::new`] and
 /// registered to its steady state by [`LongLived::register_the_steady_state`];
 /// held by the creation reference on the core's first object until
 /// [`LongLived::let_go`].

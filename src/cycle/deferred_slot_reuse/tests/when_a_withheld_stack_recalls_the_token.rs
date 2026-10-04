@@ -1,7 +1,7 @@
 //! The marks by stack length: a mutator that withholds its returns under a
 //! foreign holder recalls the grant once a stack holds its mark — M deaths,
 //! M_b blocks, M_c chunks — and goes on freeing, waiting for nothing
-//! (`dev/CYCLE-SPLIT-PACKAGE-3.md`, section 6).
+//! (`docs/history/cycle-split-package-3-2026-09-27.md`, section 6).
 //!
 //! Every case reads the recall off the token and off the holder's slot, and
 //! the token's count of waits for the mutator's side; the collector's stop at

@@ -1,3 +1,9 @@
+> **Superseded.** A design document of the stage that built the collector
+> thread and the mutator's judgement (S65), kept for its reasoning; the
+> stage closed on 2026-10-04. What was decided stands in `dev/DECISIONS.md`,
+> what was measured in `dev/BENCHMARKS.md`, and the code is the reference;
+> its figures and its plan steps are of their day.
+
 # S64: как сохранить работу фонового сборщика и не отнимать время у занятых ядер
 
 Статус: материал для обсуждения. Это не принятое решение и не план

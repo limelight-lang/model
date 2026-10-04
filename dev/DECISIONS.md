@@ -528,7 +528,7 @@ the exception to it.
 
 **Where it applies.** The stage's rule forbids a step to lengthen the wait
 or the withheld memory of a mutator under a grant beyond today's until the
-recall bounds it (`PLAN.md`, S65; `dev/S65-PLAN-CRITIC.md`, F3). The waits
+recall bounds it (`PLAN.md`, S65; `docs/history/s65-plan-critic-2026-09-27.md`, F3). The waits
 under a shortage of memory are two, both on a refused allocation: the
 pressure collection (`cycle::collect::collect_under_pressure`) and the
 retirement pass after a refusal inside a teardown
@@ -557,7 +557,7 @@ trace with no budget, and a stopped trace posts its snapshot; git keeps the entr
 
 **Decided (Edmond, 2026-09-23), over the review chain of the day**
 (`dev/CYCLE-SPLIT-*.md`, the package at its third version with the lane
-amendment, `dev/CYCLE-SPLIT-PACKAGE-3.md` and `dev/CYCLE-SPLIT-PACKAGE-3-LANE.md`). Built as S65.
+amendment, `docs/history/cycle-split-package-3-2026-09-27.md` and `docs/history/cycle-split-package-3-lane-2026-09-27.md`). Built as S65.
 
 **His rulings, as given.**
 - The mutator's performance comes first; every remaining choice is taken by
@@ -611,7 +611,7 @@ stands on the record's hold line rather than in a separate array (no pointer
 and no second block on the mutator's commit); the lane amendment is taken in
 the form the Critic of the amendment gave (a merge counter on R's writer
 line), and K doubles only when a batch filled its clamp
-(`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F2 and F3).
+(`docs/history/cycle-split-package-3-lane-critic-2026-09-27.md`, F2 and F3).
 
 **Refused, with the reason.** Two traces over one heap at once (form B): it
 needs the collector's rows out of the blocks' row arrays and a finer

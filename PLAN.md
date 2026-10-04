@@ -150,12 +150,12 @@ collector finds and the mutator judges what it proposes, and what bounds the
 mutator's wait for its token is a recall rather than the trace's block budget
 (`dev/DECISIONS.md`, "the collector finds and the mutator judges, and a recall
 of the token bounds the mutator's wait instead of the budget"). The design is
-`dev/CYCLE-SPLIT-PACKAGE-3.md` with `dev/CYCLE-SPLIT-PACKAGE-3-LANE.md` as
-amended by its Critic (`dev/CYCLE-SPLIT-PACKAGE-3-LANE-CRITIC.md`, F2 and F3);
-the analysis behind it is `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`. Each step is one commit of the package's
+`docs/history/cycle-split-package-3-2026-09-27.md` with `docs/history/cycle-split-package-3-lane-2026-09-27.md` as
+amended by its Critic (`docs/history/cycle-split-package-3-lane-critic-2026-09-27.md`, F2 and F3);
+the analysis behind it is `docs/history/s64-gc-improvement-analysis-2026-09-27.md`. Each step is one commit of the package's
 build order (its section 11), with that section's mechanism, red test and
 measurement; the rule of the stage is the owner's: the mutator's performance
-comes first. The Critic over this section (`dev/S65-PLAN-CRITIC.md`,
+comes first. The Critic over this section (`docs/history/s65-plan-critic-2026-09-27.md`,
 2026-09-23) returned seven findings, F1–F7, all taken into the steps below
 and into the package in place; the split itself it left standing. Two of
 them are rules for every step: a step that changes a behaviour the `rfc`
@@ -243,7 +243,7 @@ Notes: dev/plans/S65.md
       handoff: `worker/tests/the_cap_at_zero.rs`, nine cases, each red on its
         mutation; `dev/BENCHMARKS.md`, "S65.12 the poll under a cap of zero".
 - [x] S65.15 A cap changed while collectors work (package commit 9, second
-        half; `dev/S65-PLAN-CRITIC.md` F5)
+        half; `docs/history/s65-plan-critic-2026-09-27.md` F5)
       handoff: `Standing::withdraw_every_request`, the cap read in `serve_the_grant`;
         `worker/tests/the_cap_set_under_work.rs`, seven cases.
 - [x] S65.16 The rig's placement and driver (structure agreed with Edmond

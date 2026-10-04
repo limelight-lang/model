@@ -2,7 +2,7 @@
 //! round withdraws a request left standing and releases a grant it reads
 //! back with no batch, a trace already running finishes and its `POSTED` is
 //! collected over, a second collector's list is withdrawn by its own round,
-//! and a cap set back resumes the takes (`dev/S65-PLAN-CRITIC.md`, F5).
+//! and a cap set back resumes the takes (`docs/history/s65-plan-critic-2026-09-27.md`, F5).
 //!
 //! The collector is the case's thread with a `Standing` of its own on a slot
 //! no thread stands in, as in `the_standing_list`.

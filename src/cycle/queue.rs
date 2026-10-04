@@ -1394,7 +1394,7 @@ pub(crate) fn arm_to_retire_if_the_count_stands() {
 /// made ([`note_a_candidate_death`]): the completed deaths in R, its
 /// overflow and P given back under this thread's own token, or at `POSTED`
 /// holding nothing, the deferred lane left to its turnover, and nothing
-/// traced (`dev/CYCLE-SPLIT-PACKAGE-3.md`, section 8). The pass reads R's
+/// traced (`docs/history/cycle-split-package-3-2026-09-27.md`, section 8). The pass reads R's
 /// entries below the collector's threshold and the overflow buffer.
 ///
 /// A ring at the threshold is not read: it is the collector's to batch,

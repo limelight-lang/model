@@ -4,7 +4,7 @@
 # The modes are the three arms of the Sage's report (`model`'s
 # `dev/CYCLE-SPLIT-SAGE-REPORT.md`, deleted in c7f9e56, "The arm that would
 # prove the loss"), each at C-1, C and C+1 mutators, so that the three
-# placements of `dev/S64-GC-IMPROVEMENT-ANALYSIS.md`, "Какие опыты нужны", are
+# placements of `docs/history/s64-gc-improvement-analysis-2026-09-27.md`, "Какие опыты нужны", are
 # three of its cells and every mode is read at the same mutator count. At C-1
 # mutators core C carries none, so `shared-core` there is a second
 # `spare-core`:

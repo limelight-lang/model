@@ -1,4 +1,10 @@
-# Critic on the lane amendment (`CYCLE-SPLIT-PACKAGE-3-LANE.md`)
+> **Superseded.** A design document of the stage that built the collector
+> thread and the mutator's judgement (S65), kept for its reasoning; the
+> stage closed on 2026-10-04. What was decided stands in `dev/DECISIONS.md`,
+> what was measured in `dev/BENCHMARKS.md`, and the code is the reference;
+> its figures and its plan steps are of their day.
+
+# Critic on the lane amendment (`cycle-split-package-3-lane-2026-09-27.md`)
 
 Date: 2026-09-23. Read-only review; no test was run. Saved verbatim from the
 Critic's hand-back. The model's disposition of the findings is recorded in

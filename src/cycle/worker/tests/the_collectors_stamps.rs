@@ -492,7 +492,7 @@ fn a_batch_prices_its_proof_and_the_next_pays_toward_the_turn() {
 
 /// A stop raised inside the stamps' walk is read within a stride of rows and
 /// ends the batch before the release, and the stamps written before it stay:
-/// they are live rows of a trace that completed (`dev/S65-PLAN-CRITIC.md`,
+/// they are live rows of a trace that completed (`docs/history/s65-plan-critic-2026-09-27.md`,
 /// F1); a wind-down raised at the same row ends nothing, the walk stamping the
 /// ring whole, as the scan runs on through one. The ring holds three strides
 /// of live rows, so a walk that read the recall once, before it began, would
