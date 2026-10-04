@@ -148,6 +148,10 @@ pub(crate) mod records;
 // heap under `recycler-over-counts`.
 #[cfg(feature = "recycler-over-counts")]
 pub(crate) mod recorded_edges;
+// The collector's Δ-test of the set its scan proved, by the window tags,
+// under `recycler-over-counts`.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) mod delta_test;
 pub(crate) mod row;
 // The second phase, and the proposal a collection reads: reached from
 // [`trace`], which [`collect`] drives.

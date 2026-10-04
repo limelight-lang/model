@@ -2608,6 +2608,16 @@ unsafe fn trace_the_batch(
 
     if posts.proposed.get() {
         unsafe { set.append(arena) };
+        // The set of a completed mark's completed scan over its record is
+        // tested by its tags at the mutator's next checkpoint
+        // (`crate::cycle::delta_test`); the owner's exact validation still reads
+        // it, and in a debug build checks the Δ-test against its own.
+        #[cfg(feature = "recycler-over-counts")]
+        if unsafe { crate::cycle::delta_test::test_the_set_by_its_tags(mutator, arena) }
+            == crate::cycle::delta_test::TagReading::Garbage
+        {
+            set.mark_proved_by_its_tags();
+        }
     }
 
     // A stop inside the stamps' walk ends the batch, though every verdict

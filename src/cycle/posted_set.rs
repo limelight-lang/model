@@ -74,6 +74,10 @@ struct SetBlock {
     header: BlockHeader,
     entries: usize,
     blocks: *mut SetBlock,
+    /// In the first block of the members' chain: whether the collector proved
+    /// the set garbage by its tags (`crate::cycle::delta_test`).
+    #[cfg(feature = "recycler-over-counts")]
+    proved_by_its_tags: bool,
 }
 
 const _: () = assert!(size_of::<SetBlock>() <= LINE_SIZE);
@@ -161,6 +165,8 @@ impl Chain {
             (&raw mut (*block).header.next).write(std::ptr::null_mut());
             (&raw mut (*block).entries).write(0);
             (&raw mut (*block).blocks).write(std::ptr::null_mut());
+            #[cfg(feature = "recycler-over-counts")]
+            (&raw mut (*block).proved_by_its_tags).write(false);
         }
         if self.tail.is_null() {
             self.head = block;
@@ -184,6 +190,14 @@ pub(crate) struct Writer {
     blocks: Chain,
     /// Whether the set takes no more: the pool refused a block.
     closed: bool,
+    /// Whether the walk left a potentially unreachable row out: an address
+    /// it could not recover, or a member torn down during the grant.
+    #[cfg(feature = "recycler-over-counts")]
+    left_one_out: bool,
+    /// Whether the collector proved the set garbage by its tags
+    /// (`crate::cycle::delta_test`).
+    #[cfg(feature = "recycler-over-counts")]
+    proved_by_its_tags: bool,
 }
 
 impl Writer {
@@ -193,6 +207,10 @@ impl Writer {
             members: Chain::empty(),
             blocks: Chain::empty(),
             closed: false,
+            #[cfg(feature = "recycler-over-counts")]
+            left_one_out: false,
+            #[cfg(feature = "recycler-over-counts")]
+            proved_by_its_tags: false,
         }
     }
 
@@ -217,6 +235,10 @@ impl Writer {
                     // A row whose address cannot be recovered is left out, as
                     // the harvest's walk leaves it.
                     let Some(entity) = row::entity_at(block, population, index) else {
+                        #[cfg(feature = "recycler-over-counts")]
+                        {
+                            self.left_one_out = true;
+                        }
                         return ControlFlow::Continue(());
                     };
 
@@ -225,6 +247,10 @@ impl Writer {
                     // empty the block after the release and drop the set; the
                     // slot is withheld, so its state reads the death.
                     if crate::refcount::slot_state(entity) != crate::refcount::SlotState::Live {
+                        #[cfg(feature = "recycler-over-counts")]
+                        {
+                            self.left_one_out = true;
+                        }
                         return ControlFlow::Continue(());
                     }
 
@@ -239,6 +265,17 @@ impl Writer {
             };
             array = unsafe { (*array).next };
         }
+    }
+
+    /// Mark the set proved garbage by the collector's Δ-test
+    /// (`crate::cycle::delta_test`), where it lists every member the test
+    /// read: the mark travels with it to the owner. A set the pool closed
+    /// early, or whose walk left a row out, is left unmarked — a part of a
+    /// garbage set is garbage, but not one that may be freed alone, the rest
+    /// still naming it (the Critic of S68.5, finding 1).
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn mark_proved_by_its_tags(&mut self) {
+        self.proved_by_its_tags = !self.closed && !self.left_one_out;
     }
 
     /// List `entity`, and first `block` where `first_in_block` says the block
@@ -276,6 +313,10 @@ impl Writer {
         }
         let head = this.members.head;
         unsafe { (*head).blocks = this.blocks.head };
+        #[cfg(feature = "recycler-over-counts")]
+        unsafe {
+            (*head).proved_by_its_tags = this.proved_by_its_tags
+        };
         #[cfg(test)]
         testing::note_members_posted(
             blocks_from(head)
@@ -304,6 +345,13 @@ pub(crate) struct PostedSet {
 }
 
 impl PostedSet {
+    /// Whether the collector proved the set garbage by its tags
+    /// (`crate::cycle::delta_test`).
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn proved_by_its_tags(&self) -> bool {
+        unsafe { (*self.head).proved_by_its_tags }
+    }
+
     /// Every member, in the order the collector listed them.
     pub(crate) fn members(&self) -> impl Iterator<Item = *mut RcHeader> + '_ {
         blocks_from(self.head).flat_map(|block| {
@@ -431,18 +479,30 @@ pub(crate) mod testing {
     }
 
     static DROPPED_AT_A_RETURN: AtomicUsize = AtomicUsize::new(0);
-    static REFUSE_THE_NEXT_BLOCK: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
+    /// The block listing a set refuses next, counted from one; zero for
+    /// none.
+    static REFUSE_AT_THE_BLOCK: AtomicUsize = AtomicUsize::new(0);
     static MEMBERS_POSTED: AtomicUsize = AtomicUsize::new(usize::MAX);
 
-    /// Have the next listing of a member's block fail as a pool's refusal of
-    /// the blocks' chain would.
+    /// Refuse the next block a set lists, as the pool would.
     pub(crate) fn refuse_the_next_block() {
-        REFUSE_THE_NEXT_BLOCK.store(true, Ordering::Relaxed);
+        REFUSE_AT_THE_BLOCK.store(1, Ordering::Relaxed);
+    }
+
+    /// Refuse the second block a set lists from here: the set keeps the
+    /// members of its first block and closes short of the rest.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn refuse_the_second_block() {
+        REFUSE_AT_THE_BLOCK.store(2, Ordering::Relaxed);
     }
 
     pub(super) fn refuses_the_next_block() -> bool {
-        REFUSE_THE_NEXT_BLOCK.swap(false, Ordering::Relaxed)
+        let mut refused = false;
+        let _ = REFUSE_AT_THE_BLOCK.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |at| {
+            refused = at == 1;
+            at.checked_sub(1)
+        });
+        refused
     }
 
     pub(super) fn note_members_posted(members: usize) {

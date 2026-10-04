@@ -1030,6 +1030,8 @@ mod the_batch;
 mod the_cap_at_zero;
 mod the_cap_set_under_work;
 mod the_collectors_stamps;
+#[cfg(feature = "recycler-over-counts")]
+mod the_delta_test;
 mod the_epoch_clock;
 #[cfg(feature = "debug-journal")]
 mod the_journal_of_the_collector;

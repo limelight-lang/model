@@ -203,6 +203,10 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
         #[cfg(test)]
         SETS_GARBAGE_WHOLE.with(|count| count.set(count.get() + 1));
         arena.keep_the_cells_left_out_as_external_children();
+        #[cfg(feature = "recycler-over-counts")]
+        if let Some(set) = set {
+            unsafe { check_a_set_proved_by_its_tags(set) };
+        }
         crate::cycle::token::note_last_row_read();
         return (TraceOutcome::Complete, traced);
     }
@@ -219,6 +223,61 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
         return (TraceOutcome::AllocationFailed, traced);
     }
 
+    #[cfg(feature = "recycler-over-counts")]
+    if let Some(set) = set {
+        unsafe { check_a_set_proved_by_its_tags(set) };
+    }
     crate::cycle::token::note_last_row_read();
     (TraceOutcome::Complete, traced)
+}
+
+#[cfg(all(test, feature = "recycler-over-counts"))]
+thread_local! {
+    /// Sets the collector proved garbage by their tags whose exact
+    /// validation this thread ran since this last answered, which it leaves
+    /// at zero.
+    static SETS_PROVED_BY_TAGS_VALIDATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The sets proved by their tags [`trace_within_the_set`] validated on this thread since
+/// this last answered.
+#[cfg(all(test, feature = "recycler-over-counts"))]
+pub(crate) fn take_sets_proved_by_tags_validated() -> usize {
+    SETS_PROVED_BY_TAGS_VALIDATED.with(|count| count.replace(0))
+}
+
+/// The exact validation checked against the collector's Δ-test: no member
+/// of a set the collector proved garbage by its tags may read live here
+/// (`crate::cycle::delta_test`). A debug build asserts it; the release build
+/// reads nothing.
+///
+/// # Safety
+/// As [`trace_within_the_set`], after its scan, the rows still standing.
+#[cfg(feature = "recycler-over-counts")]
+unsafe fn check_a_set_proved_by_its_tags(set: &PostedSet) {
+    if !set.proved_by_its_tags() {
+        return;
+    }
+
+    #[cfg(test)]
+    SETS_PROVED_BY_TAGS_VALIDATED.with(|count| count.set(count.get() + 1));
+    #[cfg(debug_assertions)]
+    for member in set.members() {
+        if unsafe { crate::refcount::slot_state(member) } != crate::refcount::SlotState::Live {
+            continue;
+        }
+        let crate::cycle::row::EdgeTarget::Tracked(key) =
+            (unsafe { crate::cycle::row::resolve_edge_target(member) })
+        else {
+            continue;
+        };
+        if let Some(row) = unsafe { crate::cycle::arena::find_initialized_row(key) } {
+            assert_ne!(
+                crate::cycle::shadow::color(unsafe { *row }),
+                crate::cycle::shadow::Color::Live,
+                "a member of a set the collector proved garbage reads live in the exact \
+                 validation: {member:p}"
+            );
+        }
+    }
 }

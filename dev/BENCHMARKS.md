@@ -8,6 +8,29 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-04 — S68.5 smoke: on `web-heap` about nine sets in ten the Δ-test reads are proved by their tags, and three tests in ten find no checkpoint
+
+**What.** Two 30 s smoke cells of `web-heap` (46.78 ms interarrival, two
+mutators on CPUs 1–2, cap 1 on CPU 3, 10 s warm-up, 12 s drain) of the
+feature build at S68.5, the rig's new `tag_*` columns, which count over the
+whole process — warm-up and drain included. Not the gate's run (S68.8): one
+arm, short, to see what the Δ-test meets before S68.6 builds on it.
+
+| cell | sets posted (loop) | proved | touched | weakly held | no checkpoint | wait in all | longest wait |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1,007 | 956 | 77 | 0 | 433 | 1.27 s | 2.5 ms |
+| 2 | 943 | 861 | 88 | 0 | 448 | 1.29 s | 4.9 ms |
+
+**Reading.** Of the tests that reached a checkpoint, 91–93 % proved the set
+and 7–9 % were refused as touched, under the gate's 10 % of refusals. But
+29–33 % of the tests found no checkpoint within the 2 ms bound: a paced
+mutator spends most of its time waiting for the next arrival, with no poll to
+answer, which is the Critic of S68.5's finding 7 (a "parked" byte as T,
+design §4.7, "Open"). The waits cost the collector about 1.3 s of a cell's
+≈ 13–14 s of CPU, mostly the missed ones' full bound; the longest wait passed
+the bound by up to 3 ms, the yield's granularity. The first smoke, before the
+wait stopped ending at a wind-down, read 471 missed against 905 proved.
+
 ## 2026-10-04 — S68.3: the holder's tag on a pointer store costs ≈ +1.1 ns a hot heap-into-heap store
 
 **What.** Under `recycler-over-counts` every store into an entity's slot also

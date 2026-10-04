@@ -787,6 +787,12 @@ pub(crate) fn set_window(window: u8) {
     COLLECTOR_WINDOW.with(|open| open.set(window));
 }
 
+/// This thread's window, as a case reads it to put it back.
+#[cfg(all(test, feature = "recycler-over-counts"))]
+pub(crate) fn this_threads_window() -> u8 {
+    COLLECTOR_WINDOW.with(|open| open.get())
+}
+
 /// The number the next consent opens: one past this thread's window, 255
 /// wrapping to 1 — 0 is no window's. Answered without opening it, so that a
 /// consent whose swap fails spends no number. A tag of a window 255 consents
@@ -804,11 +810,33 @@ pub(crate) fn the_next_window() -> u8 {
 /// `header` points at a published entity whose first eight bytes are
 /// readable.
 #[cfg(feature = "recycler-over-counts")]
-// Read outside the tests from S68.5 on, the Δ-test (`PLAN.md`).
-#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 pub(crate) unsafe fn window_tag(header: *const RcHeader) -> u8 {
     unsafe { header_byte_load(header, WINDOW_TAG_BYTE) }
+}
+
+/// Clear a stale window tag: `stale`, read by the collector at the Δ-test and
+/// neither 0 nor the window it tests for, back to 0 by a one-byte
+/// compare-and-swap (`dev/design/recycler-over-counts.md`, §4.8). A plain
+/// store could bury a fresh tag the mutator wrote meanwhile; the swap fails on
+/// it instead. Relaxed: the handshake orders the read, and a failed clear
+/// costs nothing but the next attempt's refusal.
+///
+/// # Safety
+/// `header` points at an entity whose first eight bytes are mapped: a member
+/// of a set the collector proved, its slot withheld under the grant.
+#[cfg(feature = "recycler-over-counts")]
+#[inline]
+pub(crate) unsafe fn clear_a_stale_window_tag(header: *mut RcHeader, stale: u8) {
+    let byte = unsafe {
+        &*((header as *mut u8).add(WINDOW_TAG_BYTE) as *const core::sync::atomic::AtomicU8)
+    };
+    let _ = byte.compare_exchange(
+        stale,
+        0,
+        core::sync::atomic::Ordering::Relaxed,
+        core::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 /// Write this thread's window number into header byte 7: this entity's

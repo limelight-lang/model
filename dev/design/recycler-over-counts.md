@@ -74,10 +74,13 @@ deferred lanes are all as in the default build.
    during the trace reads live through the holder's run, where the heap scan
    saw it at zero and proposed it: its root posts read live and waits for the
    epoch's turn, and in a final-drain array it can be stamped mature and
-   pruned at for the rest of the epoch. S68.5 answers it with the tags: a
+   pruned at for the rest of the epoch. S68.6 answers it with the tags: a
    raise through a run whose header carries the window's tag — a holder
-   written since the consent — leaves the target unwalked rather than read
-   live, and stamps nothing (the Critic of S68.4, finding 2).
+   written since the consent — still colours the target live, so that it
+   leaves W (the proof needs every live source to colour its targets live),
+   but its root is posted unwalked rather than read live, and nothing it
+   reaches is stamped (the Critics of S68.4, finding 2, and of S68.5,
+   finding 4).
 
 ## 4. The judgement
 
@@ -85,9 +88,28 @@ deferred lanes are all as in the default build.
    reading, inside which a frame may hold ARC-elided temporaries): a
    handshake — a release by the mutator that the collector acquires (and a
    release on T's request, an acquire on the poll's read) — after which the
-   collector sees every tag stored before T.
+   collector sees every tag stored before T. Built as a byte beside the
+   token (`TraceToken::ask_for_the_checkpoint`), answered by
+   `ll_gc_maybe_collect` under an open gate alone — inside a teardown, a
+   reset or a collection the runtime holds references it has not counted —
+   and waited for under the grant up to a bound (`delta_test::CHECKPOINT_WAIT`,
+   2 ms, a placeholder S68.8 reads) or the mutator's recall at the stop level
+   — a wind-down does not end the wait, as it does not end the scan — the
+   wait releasing the grants held behind this one at each reading, as the
+   trace's stride does; a missed checkpoint sends the set the exact way.
+   *Open:* a mutator that blocks with no poll to come — between requests, in
+   native I/O — misses every checkpoint; a "parked" byte it stores with a
+   release before blocking, at a point where every reference is counted,
+   could stand for T (the Critic of S68.5, finding 7). S68.8's count of
+   missed checkpoints decides whether it is built.
 8. The collector reads byte 7 of every member of W. Any member carrying the
-   window's number: the set is not judged. None: W is garbage at T and stays
+   window's number, or one whose address cannot be recovered to read it:
+   the set is not judged. A member with weak references keeps the set
+   unproved as well — an upgrade after T makes it live with no tag — and
+   S68.6 takes it and what it reaches the exact way. A set marked proved
+   lists every member the test read: one the pool closed short, or whose
+   walk left a row out, is a part of the garbage that may not be freed
+   while the rest names it (the Critic of S68.5, findings 1–2). None: W is garbage at T and stays
    garbage — judged by the collector alone. While it reads, it clears every
    tag that is neither 0 nor the window's by a one-byte
    `compare_exchange(stale, 0)`: a value other than the window's predates the
@@ -151,7 +173,10 @@ deferred lanes are all as in the default build.
 ## 7. The compiler's obligations
 
 16. No uncounted reference is live across a safepoint checkpoint (an
-    ARC-cancelled retain/release pair never spans a poll).
+    ARC-cancelled retain/release pair never spans a poll) — and a runtime
+    entry that polls inside itself is one: `ll_release_vector` calls the
+    full poll every `POLL_STRIDE` elements, so no uncounted reference may be
+    live across a call to it either.
 17. The store barrier receives the holder (`ll_store_*_in(ctx, owner_cat,
     holder, slot, new)`): an ABI change, enforced — under the feature the
     untagged `ll_store_ptr`/`_box`/`_owned` names are not exported, so an

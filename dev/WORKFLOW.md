@@ -503,7 +503,8 @@ with a Miri run holding the box's cores (load average 3.2), and once more at
 eight threads that evening beside two Miri slices, green in five runs alone
 after. On 2026-10-04 it read red once in three default-build runs at eight
 threads of the S68.4 gate, its message not kept, with nothing else running;
-the 25 feature-build runs after it were green.
+the 25 feature-build runs after it were green. Again once in three
+feature-build runs of the S68.5 gate the same day, nothing else running.
 `worker::tests::the_merged_lane::a_merge_under_a_grant_is_taken_at_the_next_round`
 read red once on 2026-10-03 in a full run under `debug-journal` at eight
 threads, beside two Miri slices, on the tree of the owner's fast path after

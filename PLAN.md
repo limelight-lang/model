@@ -141,16 +141,20 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       permutations; the holder through the barrier (the ABI change).
 - [x] S68.4 The collector records the edges it subtracts, and its scan runs
       over the recorded edges only.
-- [ ] S68.5 The handshake at the safepoint checkpoint and the Δ-test, which
-      clears stale tags by a one-byte CAS on members of W; a refused set
-      re-queues once, and a second refusal or a stop sends it the default
-      build's exact way. A raise through a run whose header carries the
-      window's tag leaves its target unwalked and unstamped (design §3, "What
-      the record costs in held garbage").
+- [x] S68.5 The handshake at the safepoint checkpoint and the Δ-test, which
+      clears stale tags by a one-byte CAS on members of W
+      (`src/cycle/delta_test.rs`). The proved set still goes to the owner's
+      exact validation, which counts it and, in a debug build, asserts no
+      member reads live; a refused set or a missed checkpoint goes the exact
+      way as every set does today.
 - [ ] S68.6 The split W = C ∪ S; the collector frees C (dead in place,
       per-block chains, `ll_free`'s routing without `free_remote`) and posts
       typed drops; the owner applies them at its poll, splices the chains,
-      and takes S the exact way.
+      and takes S the exact way. Carried from S68.5: a refused set re-queues
+      once before the exact way, now that a proved one skips it; a raise
+      through a run whose header carries the window's tag leaves its target
+      unwalked and unstamped (design §3, "What the record costs in held
+      garbage").
 - [ ] S68.7 The loom model of the handshake; the debug build's tag asserts and
       the exact validation run beside the verdict.
 - [ ] S68.8 The runs: the 400k-ring probe (a column in

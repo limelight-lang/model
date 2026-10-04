@@ -60,6 +60,7 @@ fn measure_one_thread_against_the_split() {
         let mut alone = Vec::new();
         let mut collector = Vec::new();
         let mut owner = Vec::new();
+        let mut phases = Vec::new();
         for _ in 0..ROUNDS {
             let mut arena = Arena::new();
             unsafe { a_garbage_ring(&mut arena, members) };
@@ -82,9 +83,11 @@ fn measure_one_thread_against_the_split() {
                 }
             ));
             collector.push(wall);
+            let _ = testing::take_verdict_collections();
             let start = Instant::now();
             let freed = unsafe { ll_gc_maybe_collect() };
             owner.push(start.elapsed());
+            phases.push((start.elapsed(), testing::take_verdict_collections().phases));
             assert_eq!(freed, members, "the owner freed the ring");
             assert_eq!(
                 crate::cycle::trace::take_sets_garbage_whole(),
@@ -107,6 +110,19 @@ fn measure_one_thread_against_the_split() {
             ms(collector),
             ms(owner),
             ms(collector + owner),
+        );
+        // The owner's pause of the median round, by phase: the trace within
+        // the set (mark, scan), the membership, the commit's first reading,
+        // destructors, second reading with the teardown, drops.
+        phases.sort_unstable_by_key(|(wall, _)| *wall);
+        let (_, split) = phases[ROUNDS / 2];
+        eprintln!(
+            "{members} owner by phase: {}",
+            split
+                .iter()
+                .map(|phase| format!("{:.2}", ms(*phase)))
+                .collect::<Vec<_>>()
+                .join(" | ")
         );
     }
 }

@@ -335,6 +335,12 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         return 0;
     }
 
+    // The safepoint checkpoint a collector holding the grant asks for, the
+    // cut-off of the set it proved (`dev/design/recycler-over-counts.md`,
+    // §4.7): under an open gate alone, where every reference is counted.
+    #[cfg(feature = "recycler-over-counts")]
+    crate::cycle::token::reach_the_checkpoint_on_this_thread();
+
     // An armed poll that read a collector tracing defers: the batch is the
     // trace taken off this thread, and the collection its verdicts owe is
     // fired one poll later, by `POSTED` at the next reading or by the arming

@@ -2208,6 +2208,11 @@ pub(crate) fn take_the_serving_threads_counts() -> crate::journal::Counts {
 pub(crate) fn consent_while<T>(collector: JoinHandle<T>) -> T {
     while !collector.is_finished() {
         crate::cycle::token::read_and_act_on_this_thread();
+        // The harness thread stands at a safepoint between its reads: every
+        // reference a case holds into the collected heap is counted, or names
+        // an entity the case has made garbage on purpose.
+        #[cfg(feature = "recycler-over-counts")]
+        crate::cycle::token::reach_the_checkpoint_on_this_thread();
         std::thread::yield_now();
     }
 

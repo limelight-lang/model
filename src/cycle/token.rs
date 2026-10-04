@@ -101,6 +101,16 @@ pub(crate) const ASKED: u8 = word(POSTED, 1);
 /// own ending, whose scan proposed nothing.
 pub(crate) const NOTHING_PROPOSED: u8 = word(POSTED, 2);
 
+/// No handshake stands ([`TraceToken::ask_for_the_checkpoint`]).
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) const CHECKPOINT_NONE: u8 = 0;
+/// The collector asks for the mutator's next safepoint checkpoint.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) const CHECKPOINT_ASKED: u8 = 1;
+/// The mutator passed a safepoint checkpoint after the ask.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) const CHECKPOINT_REACHED: u8 = 2;
+
 /// No recall: the collector traces on (`TraceToken::recall_level`).
 pub(crate) const RECALL_NONE: u8 = 0;
 /// The mutator's withheld returns crossed their mark: the collector ends its
@@ -225,6 +235,15 @@ pub(crate) struct TraceToken {
     /// relaxed on both sides.
     #[cfg(feature = "recycler-over-counts")]
     window: AtomicU8,
+    /// The handshake at the cut-off T (`dev/design/recycler-over-counts.md`,
+    /// §4.7): [`CHECKPOINT_ASKED`] stored by the collector, under its grant,
+    /// once its scan has proved a set; [`CHECKPOINT_REACHED`] stored by the
+    /// mutator, with a release, at its next poll whose gate is open — a
+    /// safepoint where every reference it holds is counted — and loaded by
+    /// the collector with an acquire, after which every tag the mutator
+    /// stored before that poll is the collector's to read.
+    #[cfg(feature = "recycler-over-counts")]
+    checkpoint: AtomicU8,
     wait: Mutex<()>,
     released: Condvar,
     /// How many times a taker has gone to wait on this token. A case reads
@@ -260,6 +279,8 @@ impl TraceToken {
             waiting: AtomicU8::new(RECALL_NONE),
             #[cfg(feature = "recycler-over-counts")]
             window: AtomicU8::new(0),
+            #[cfg(feature = "recycler-over-counts")]
+            checkpoint: AtomicU8::new(CHECKPOINT_NONE),
             wait: Mutex::new(()),
             released: Condvar::new(),
             #[cfg(test)]
@@ -482,10 +503,48 @@ impl TraceToken {
     /// from ([`Self::consent`]): read by the collector after its acquire of
     /// the grant.
     #[cfg(feature = "recycler-over-counts")]
-    // Read outside the tests from S68.5 on, the Δ-test (`PLAN.md`).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn window(&self) -> u8 {
         self.window.load(Ordering::Relaxed)
+    }
+
+    /// Ask, as the collector holding the grant, for the mutator's next
+    /// safepoint checkpoint: the cut-off T of the set its scan proved.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn ask_for_the_checkpoint(&self) {
+        self.checkpoint.store(CHECKPOINT_ASKED, Ordering::Release);
+    }
+
+    /// Whether the mutator passed a checkpoint since the ask, read with the
+    /// acquire that orders every tag it stored before it ahead of the
+    /// collector's reads.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn checkpoint_reached(&self) -> bool {
+        self.checkpoint.load(Ordering::Acquire) == CHECKPOINT_REACHED
+    }
+
+    /// Whether a collector's ask for a checkpoint stands unanswered. A case
+    /// reads it to place a write between the ask and its answer.
+    #[cfg(all(test, feature = "recycler-over-counts"))]
+    pub(crate) fn checkpoint_is_asked(&self) -> bool {
+        self.checkpoint.load(Ordering::Acquire) == CHECKPOINT_ASKED
+    }
+
+    /// Withdraw the ask, answered or not, before the grant is released: a
+    /// mutator's late answer then lands on a byte no collector reads until it
+    /// asks again, which overwrites it.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn withdraw_the_checkpoint(&self) {
+        self.checkpoint.store(CHECKPOINT_NONE, Ordering::Relaxed);
+    }
+
+    /// Answer an ask, as the mutator at a safepoint checkpoint: one acquire
+    /// load on every poll, and a release store where an ask stands.
+    #[cfg(feature = "recycler-over-counts")]
+    #[inline]
+    pub(crate) fn reach_the_checkpoint(&self) {
+        if self.checkpoint.load(Ordering::Acquire) == CHECKPOINT_ASKED {
+            self.checkpoint.store(CHECKPOINT_REACHED, Ordering::Release);
+        }
     }
 
     /// Release collector `slot`'s claim: one store — `POSTED` when the batch
@@ -896,6 +955,21 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
         COLLECTOR => Reading::Collector,
         MUTATOR => Reading::Mutator,
         _ => act_on_the_byte(token, seen),
+    }
+}
+
+/// Answer the collector's ask for a safepoint checkpoint on this thread's
+/// token ([`TraceToken::reach_the_checkpoint`]). Called by the poll alone,
+/// where its gate is open: inside a teardown, a reset or a collection the
+/// runtime holds references it has not counted, and a checkpoint there would
+/// let the collector free what one of them names
+/// (`dev/design/recycler-over-counts.md`, §7.16).
+#[cfg(feature = "recycler-over-counts")]
+#[inline]
+pub(crate) fn reach_the_checkpoint_on_this_thread() {
+    let record = crate::cycle::mutator_record::this_thread_record();
+    if !record.is_null() {
+        unsafe { &(*record).token }.reach_the_checkpoint();
     }
 }
 

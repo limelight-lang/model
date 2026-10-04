@@ -3729,6 +3729,15 @@ impl CellReading {
                     .sum::<usize>()
                     .to_string(),
             ),
+            // The collector's Δ-test over the whole process — warm-up and
+            // drain included, one cell a process — and zeros without
+            // `recycler-over-counts` (`crate::cycle::delta_test`).
+            ("tag_sets_proved", tag_counts().0.to_string()),
+            ("tag_sets_touched", tag_counts().1.to_string()),
+            ("tag_sets_weakly_held", tag_counts().5.to_string()),
+            ("tag_checkpoints_missed", tag_counts().2.to_string()),
+            ("tag_checkpoint_wait_us", tag_counts().3.to_string()),
+            ("tag_checkpoint_wait_longest_us", tag_counts().4.to_string()),
         ]
     }
 
@@ -4453,6 +4462,26 @@ fn write_the_requests(path: &str, mutators: &[WebReading]) {
     }
     std::fs::write(path, text)
         .unwrap_or_else(|error| panic!("the requests were written to {path}: {error}"));
+}
+
+/// The Δ-test's counts: sets proved, touched, checkpoints missed, the
+/// checkpoint waits in all and at the longest in microseconds, and sets
+/// weakly held.
+fn tag_counts() -> (usize, usize, usize, u128, u128, usize) {
+    #[cfg(feature = "recycler-over-counts")]
+    {
+        let counts = crate::cycle::delta_test::tag_reading_counts();
+        (
+            counts.proved,
+            counts.touched,
+            counts.no_checkpoint,
+            counts.waited.as_micros(),
+            counts.longest_wait.as_micros(),
+            counts.weakly_held,
+        )
+    }
+    #[cfg(not(feature = "recycler-over-counts"))]
+    (0, 0, 0, 0, 0, 0)
 }
 
 /// One cell's line, prefixed `rig,` for the driver, after the header's
