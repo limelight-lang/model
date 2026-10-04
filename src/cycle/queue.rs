@@ -1550,11 +1550,18 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
     reoffer_the_lanes_due(mutator_state, byte)
 }
 
+/// The farthest the byte a poll reads can stand behind a lane's mirror by a
+/// race: each collector visiting the record may store the byte of an
+/// advance another visit already passed (`MutatorRecord::advance_the_epoch`).
+/// A difference further below is a byte that wrapped since the lane filled,
+/// more than a hundred turns, and the lane is due.
+const STALE_BYTE_LAG: i8 = 2 * crate::cycle::worker::MAX_COLLECTORS as i8;
+
 /// Hand back into R every lane whose wait the
 /// collector's byte `byte` has passed since the lane filled, and every lane
 /// filled before an X turn it did not see where R holds fewer than the soft
-/// threshold's entries — the collector caught up with this thread — or
-/// before as many X turns as its wait; answers whether any went back. Under load
+/// threshold's entries at the first poll after the turn — the collector
+/// caught up with this thread; answers whether any went back. Under load
 /// a lane re-offered at every X would send each live root through R once an
 /// X and lengthen the queue every fresh root waits in (`dev/DECISIONS.md`,
 /// "an X turn releases every lane only on a thread the collector has caught
@@ -1565,8 +1572,15 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
 fn reoffer_the_lanes_due(mutator_state: &MutatorCycleState, byte: u8) -> bool {
     let record = this_thread_record_ref();
     let x_turns = record.x_turns();
-    // Read once, at the first lane an X turn makes a candidate.
-    let mut caught_up = None;
+    // An X turn a lane has not seen is read once, at the first poll after
+    // it and before any lane goes back — a splice of this poll's own would
+    // read as a standing R: it releases every lane it reached where the
+    // collector has caught up with this thread, and is spent where it has
+    // not, the lanes waiting their own turns.
+    let x_reached = (0..LANES).any(|index| {
+        !mutator_state.lane(index).is_empty() && mutator_state.x_mirrors[index].get() != x_turns
+    });
+    let caught_up = x_reached && collector_caught_up(record);
     let mut moved = false;
     for index in 0..LANES {
         let lane = mutator_state.lane(index);
@@ -1575,18 +1589,12 @@ fn reoffer_the_lanes_due(mutator_state: &MutatorCycleState, byte: u8) -> bool {
         }
 
         let behind = byte.wrapping_sub(mutator_state.lane_mirror(index).get()) as i8;
-        if behind < LANE_WAITS[index] as i8 {
-            // An X turn releases the lane where the collector has caught up
-            // with this thread, or where as many X turns as its wait passed:
-            // the X count only grows, so this also bounds a lane whose
-            // turnover byte wrapped past its mirror.
-            let x_behind = x_turns.wrapping_sub(mutator_state.x_mirrors[index].get());
-            let released_by_x = x_behind != 0
-                && (x_behind >= LANE_WAITS[index]
-                    || *caught_up.get_or_insert_with(|| collector_caught_up(record)));
-            if !released_by_x {
-                continue;
-            }
+        let by_x = mutator_state.x_mirrors[index].get() != x_turns;
+        if by_x && !caught_up {
+            mutator_state.x_mirrors[index].set(x_turns);
+        }
+        if behind < LANE_WAITS[index] as i8 && behind >= -STALE_BYTE_LAG && !(by_x && caught_up) {
+            continue;
         }
 
         moved |= hand_the_lane_back(lane);

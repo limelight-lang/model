@@ -130,6 +130,95 @@ fn an_x_turn_under_a_standing_r_is_a_turn_like_any() {
     unsafe { free_the_ring(&mut arena, ring) };
 }
 
+/// An X turn on a thread the collector has caught up with releases every
+/// lane it reached, the shortest included, in one poll: the reading of R
+/// comes before the poll's own splice of the shortest lane, which would read
+/// as a standing R. Red with R read after the first lane goes back.
+#[test]
+fn an_x_turn_releases_two_lanes_in_one_poll() {
+    let _g = test_guard();
+    reset_lanes();
+    let _ = a_nonzero_epoch();
+    let mut arena = Arena::new();
+    let longest = unsafe { a_kept_ring(&mut arena, "LongestOfTwo") };
+    in_the_longest_lane();
+    let shortest = unsafe { a_kept_ring(&mut arena, "ShortestOfTwo") };
+    a_reading();
+    assert_eq!(deferred_count(), 2, "one root in each lane");
+
+    turn_this_threads_cell();
+    unsafe { &*record() }.note_an_x_turn();
+    assert!(reoffer_deferred_if_epoch_moved());
+    assert_eq!(
+        (candidate_count(), deferred_count()),
+        (2, 0),
+        "both went back"
+    );
+
+    reset_lanes();
+    unsafe { free_the_ring(&mut arena, shortest) };
+    unsafe { free_the_ring(&mut arena, longest) };
+}
+
+/// An X turn met by a standing R is spent: R emptied before the lane's own
+/// wait runs out does not release it, and its seventh turn does. Red with
+/// the reading taken at every poll after the turn.
+#[test]
+fn an_x_turn_met_by_a_standing_r_is_spent() {
+    let _g = test_guard();
+    reset_lanes();
+    let _ = a_nonzero_epoch();
+    let mut arena = Arena::new();
+    let ring = unsafe { a_kept_ring(&mut arena, "SpentX") };
+    in_the_longest_lane();
+    let standing = unsafe { a_standing_r(&mut arena) };
+    turn_this_threads_cell();
+    unsafe { &*record() }.note_an_x_turn();
+    assert!(!reoffer_deferred_if_epoch_moved(), "R stood at the turn");
+
+    // R read through, as a collector's batch takes it: the standing entries
+    // leave R, the objects still held.
+    let mut taken = vec![0usize; 2 * crate::cycle::worker::SOFT_THRESHOLD];
+    let reader = unsafe { crate::ring::Reader::new((*record()).candidate_ring()) };
+    let _ = reader.take(&mut taken);
+    assert!(candidate_count() < crate::cycle::worker::SOFT_THRESHOLD);
+    assert_eq!(deferred_count(), 1, "the lane stands");
+    assert!(!reoffer_deferred_if_epoch_moved(), "the turn was spent");
+    let longest = *WAITS.last().expect("waits") as usize;
+    for _ in 1..longest - 1 {
+        turn_this_threads_cell();
+        assert!(!reoffer_deferred_if_epoch_moved());
+    }
+    turn_this_threads_cell();
+    assert!(reoffer_deferred_if_epoch_moved(), "its own wait ran out");
+
+    reset_lanes();
+    for object in standing {
+        unsafe { crate::refcount::ll_release(object as *mut RcHeader) };
+    }
+    reset_lanes();
+    unsafe { free_the_ring(&mut arena, ring) };
+}
+
+/// A lane whose mirror stands further ahead of the byte than any race can
+/// leave it is a byte that wrapped since the lane filled: due.
+#[test]
+fn a_byte_wrapped_past_the_mirror_reads_as_due() {
+    let _g = test_guard();
+    reset_lanes();
+    let _ = a_nonzero_epoch();
+    let mut arena = Arena::new();
+    let ring = unsafe { a_kept_ring(&mut arena, "ByteWrapped") };
+    let turnovers = unsafe { &*record() }.turnovers();
+    defer_candidates(read_batch(), turnovers + 100);
+    assert_eq!(deferred_count(), 1);
+    assert!(
+        reoffer_deferred_if_epoch_moved(),
+        "a hundred turns behind is wrapped"
+    );
+    unsafe { free_the_ring(&mut arena, ring) };
+}
+
 /// Put the case's root in the longest lane this build keeps: a reading for
 /// each wait, the last one deferring it.
 fn in_the_longest_lane() {

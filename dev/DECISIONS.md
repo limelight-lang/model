@@ -420,7 +420,9 @@ components, where the collector reads R as fast as the mutator writes it
 **`partly-overlapping`'s remnant is the scheme's behaviour (2026-10-03).** The
 lanes re-offer a deferred root after one, three or seven turns and X releases
 them all, so a remnant freed only across turns is expected and no step
-follows.
+follows. *Its premise is narrowed* (2026-10-05, "an X turn releases every
+lane only on a thread the collector has caught up with"): the remnant is read
+again on the ring loads after that build.
 
 ## 2026-10-03 — the epoch's ratio is 4, and the embedder's to set
 

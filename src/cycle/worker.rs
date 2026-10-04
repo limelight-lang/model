@@ -362,9 +362,9 @@ const FALLBACK_INTERVAL_MAX: Duration = Duration::from_secs(1);
 /// The longest a mutator's epoch stands before its collector advances it,
 /// on the collector's own clock: the bound on how long a component that
 /// became garbage behind a deferred root waits on a quiet thread, whose
-/// batches prove nothing and whose R the collector has caught up with, and
-/// a seventh of it on a thread whose R stands at the threshold, where the
-/// longest lane waits seven turns ("The epoch clock"). 8 s,
+/// batches prove nothing and whose R the collector has caught up with; on a
+/// thread whose R stands at the threshold the bound is seven times it, the
+/// longest lane's own wait ("The epoch clock"). 8 s,
 /// borrowed from V8's memory reducer, which collects a mutator that went quiet
 /// after the same delay; not measured here, and the field runs from that to
 /// Go's two minutes (`dev/RESEARCH.md`, "the idle-GC timers of five runtimes").

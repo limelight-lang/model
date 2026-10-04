@@ -132,7 +132,8 @@ pub(crate) struct MutatorRecord {
     /// published beside it, and a byte read late delays the re-offer by one
     /// poll, never a wrong free. Eight bits wrap at 256 turnovers, which at X
     /// is over half an hour of a thread that never polls; the price of the
-    /// alias is one more X.
+    /// alias is one more X, or a lane's own wait where the collector stands
+    /// behind the thread.
     turnover: AtomicU8,
     /// Turns the collector's X arm made, as against its proofs' arm, counted
     /// modulo 256 by the collector alone at each advance that arm makes. A

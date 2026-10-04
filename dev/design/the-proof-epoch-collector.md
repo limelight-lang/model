@@ -209,7 +209,9 @@ until enough epoch turns pass for its reading to be worth repeating.
   later → 7.
 - At its poll the mutator compares the collector's epoch byte with each
   lane's mirror and splices every lane whose wait has passed back into R
-  behind its tail; a turn made by X releases every lane at once.
+  behind its tail; a turn made by X releases every lane at once where R
+  stands below the soft threshold at the first poll after it, and is a turn
+  like any otherwise (`dev/DECISIONS.md`, 2026-10-05).
 - The stamp's epoch is sixteen wide, so the longest wait
   plus a turn of lag stays below a full cycle of the epoch, and a member's
   stamp of a root's last reading never reads current at its next.
@@ -269,8 +271,10 @@ epoch turn.
 - **Closed since**: the passes over held entries read N(N+1)/2 entries on a
   chain of N registered targets met in an order unrelated to the chain; four
   passes at most since (§12).
-- **Open, measured**: on the arena loads the epoch turns mostly by X, which
-  releases every lane, so there the waits by readings act little.
+- **Measured, then ruled** (`dev/DECISIONS.md`, 2026-10-05): where the epoch
+  turns mostly by X, an X turn that released every lane left the waits by
+  readings acting little and sent every live root through R once an X; it
+  releases them only where the collector has caught up.
 
 ## 10. How it measured (S67.6, summary)
 

@@ -96,7 +96,8 @@ chain is in `git log -- dev/`. The collector–mutator memory protocol of
   `refcount::SURVIVED_READINGS_MASK` counts a root's live readings, raised by
   `queue::defer_entry`, the three lanes go back by
   `queue::reoffer_the_lanes_due` after 1, 3 and 7 turns, and an X turn
-  (`MutatorRecord::note_an_x_turn`) releases them all; the cases are
+  (`MutatorRecord::note_an_x_turn`) releases them all where the collector
+  has caught up with the thread (`dev/DECISIONS.md`, 2026-10-05); the cases are
   `worker/tests/the_waits_by_readings.rs`.
 
   Two numbers about a row are pinned by tests: a count at the field's bound
