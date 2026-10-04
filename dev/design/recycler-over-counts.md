@@ -731,7 +731,12 @@ differ (`dev/DECISIONS.md`, the same date).
   in the first slice; the drops `POLL_STRIDE` a poll; the rest put back by a
   splice behind what stands, never a store; P read after the last slice.
   `FreesStand` refusals read before and after; if they rise, the frees word
-  becomes a list (the collector pushes, the owner takes).
+  becomes a list (the collector pushes, the owner takes). *Built with the
+  list from the start*: the poll consents before it applies, so a grant can
+  stand while a slice runs, and a collector that read the word empty in its
+  preparation would publish over the rest a plain store put back. The word
+  is a stack, pushed by a compare-exchange from both sides and taken whole
+  by the owner; `FreesStand` still refuses, and is read.
 - *Then read* adds the owner's freed members by posting kind.
 
 **Tests.** `advance_at_most` of a plan with more births than the bound

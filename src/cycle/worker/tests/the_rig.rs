@@ -134,8 +134,8 @@
 
 use super::the_web_loads::{
     Advanced, Arrivals, CORE_OBJECTS, CacheCounts, Garbage, LongLived, LongLivedShape, Plan,
-    Request, RequestBuild, Stop, Streams, VALUE_OBJECTS, Variant, WebClasses, build_to,
-    held_by_size, longest_build_step, specified_interarrival,
+    Request, RequestBuild, Streams, VALUE_OBJECTS, Variant, WebClasses, build_to, held_by_size,
+    longest_build_step, specified_interarrival,
 };
 use super::what_a_take_costs::{MEMBER_CLASS_BYTES, member_class};
 use super::*;

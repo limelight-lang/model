@@ -349,13 +349,21 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     #[cfg(feature = "recycler-over-counts")]
     crate::cycle::token::reach_the_checkpoint_on_this_thread();
 
-    // What a collector freed on this thread's behalf: its chains spliced, its
-    // drops applied, where the destructors they reach may run
-    // (`crate::cycle::collector_frees`).
+    // What a collector freed on this thread's behalf: its chains spliced, a
+    // slice of its drops applied, where the destructors they reach may run
+    // (`crate::cycle::collector_frees`). While drops stand the poll reads no
+    // posted set and keeps its arming for the poll that applies the last of
+    // them: every reader of P applies the collector's drops first
+    // (`dev/design/recycler-over-counts.md`, §5a, S68.6c, item 2).
     #[cfg(feature = "recycler-over-counts")]
-    let freed_by_the_collector = unsafe { crate::cycle::collector_frees::apply_this_threads() };
+    let (freed_by_the_collector, frees_stand) =
+        unsafe { crate::cycle::collector_frees::apply_a_slice_of_this_threads() };
     #[cfg(not(feature = "recycler-over-counts"))]
-    let freed_by_the_collector = 0;
+    let (freed_by_the_collector, frees_stand) = (0, false);
+    if frees_stand {
+        crate::cycle::queue::signal_the_collector_if_due();
+        return freed_by_the_collector;
+    }
 
     // An armed poll that read a collector tracing defers: the batch is the
     // trace taken off this thread, and the collection its verdicts owe is

@@ -260,13 +260,16 @@ struct WriterLine {
     /// at returns and the collector writes it once a grant. `FREE` promises a
     /// null word, as it promises an empty P.
     posted_set: AtomicPtr<BlockHeader>,
-    /// The first block of what the last grant's collector freed itself — the
-    /// drops it owes the children outside the freed set, the chains of slots
-    /// it freed, the registered members it left dead in place — for the
-    /// owner to apply, and null for none (`crate::cycle::collector_frees`).
-    /// Written as the posted set is, beside it and never in place of it; taken
-    /// back to null by the one swap of the application, which every path
-    /// that gives the posted set back unread makes first.
+    /// A stack of what collectors freed on this thread's behalf, for the
+    /// owner to apply, and null for none (`crate::cycle::collector_frees`):
+    /// each entry the first block of one chain — the drops owed the children
+    /// outside a freed set, the chains of slots it freed, the registered
+    /// members it left dead in place — or of drops the owner left for a
+    /// later poll. Pushed by a compare-exchange from either side — a
+    /// collector's publication under its grant, the owner's put-back — so
+    /// that neither overwrites the other; taken whole by the owner's one
+    /// swap, which every path that gives the posted set back unread makes
+    /// first.
     #[cfg(feature = "recycler-over-counts")]
     collectors_frees: AtomicPtr<BlockHeader>,
     /// The identity of this record's thread's entity heap, as its blocks'
@@ -654,19 +657,28 @@ impl MutatorRecord {
         self.writer.posted_set.store(head, Ordering::Release);
     }
 
-    /// Publish `head`, the first block of what this grant's collector freed
-    /// (the record's `collectors_frees` word), under the grant and before the
-    /// release.
+    /// Push `head` onto the record's stack of frees (`collectors_frees`),
+    /// `link` writing the entry it goes on top of into it; from a collector
+    /// under its grant, or from the owner putting back what it left.
     #[cfg(feature = "recycler-over-counts")]
-    pub(crate) fn publish_collectors_frees(&self, head: *mut BlockHeader) {
-        debug_assert!(
-            self.writer
-                .collectors_frees
-                .load(Ordering::Relaxed)
-                .is_null(),
-            "a collector freed under a grant whose last frees nobody applied"
-        );
-        self.writer.collectors_frees.store(head, Ordering::Release);
+    pub(crate) fn push_collectors_frees(
+        &self,
+        head: *mut BlockHeader,
+        link: impl Fn(*mut BlockHeader),
+    ) {
+        let mut top = self.writer.collectors_frees.load(Ordering::Relaxed);
+        loop {
+            link(top);
+            match self.writer.collectors_frees.compare_exchange_weak(
+                top,
+                head,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(seen) => top = seen,
+            }
+        }
     }
 
     /// Whether a collector's frees stand unapplied: a collector frees nothing
@@ -688,20 +700,7 @@ impl MutatorRecord {
         self.writer.owner_heap.load(Ordering::Relaxed)
     }
 
-    /// Put back what [`Self::take_collectors_frees`] took, the part an
-    /// application under a closed gate could not apply.
-    #[cfg(feature = "recycler-over-counts")]
-    pub(crate) fn put_back_collectors_frees(&self, head: *mut BlockHeader) {
-        debug_assert!(
-            self.writer
-                .collectors_frees
-                .load(Ordering::Relaxed)
-                .is_null()
-        );
-        self.writer.collectors_frees.store(head, Ordering::Relaxed);
-    }
-
-    /// Take what the collector freed off this record, leaving null.
+    /// Take the stack of frees off this record whole, leaving null.
     #[cfg(feature = "recycler-over-counts")]
     pub(crate) fn take_collectors_frees(&self) -> *mut BlockHeader {
         self.writer

@@ -31,13 +31,18 @@
 //!   through the free-list word; an array's body posted to its block's remote
 //!   stack.
 //!
-//! **What the owner applies** ([`apply_this_threads`]), from a word of its
+//! **What the owner applies** ([`apply_this_threads`]), from a stack on its
 //! record beside the posted set: each chain spliced into its block, the
 //! registered members counted as candidate deaths, then each drop through
 //! `drop_ref(GcHeap, child)` — the dead holder's category, the child's read by
 //! `drop_ref` at application. Every path that gives the posted set back
 //! unread applies these first; dropped, they would leave each child a count
-//! no one holds and each block a `used` counting dead slots.
+//! no one holds and each block a `used` counting dead slots. A poll applies
+//! a slice ([`apply_a_slice_of_this_threads`]): every chain, then at most
+//! [`APPLY_STRIDE`] drops, the rest pushed back for the next poll. The stack
+//! is pushed by a compare-exchange from both sides and taken whole by the
+//! owner, so that a collector's publication and the owner's put-back never
+//! write over each other.
 
 use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -75,7 +80,8 @@ const ENTRIES_PER_BLOCK: usize = BLOCK_PAYLOAD / size_of::<usize>();
 
 /// A metadata block of a chain: the pool's header, whose `next` links the
 /// chain, and the count of addresses in its payload; in the first block of
-/// the drops' chain, the chains' chain and the registered members' count.
+/// the drops' chain, the chains' chain, the registered members' count, the
+/// members freed, and the entry below it on the record's stack.
 #[repr(C)]
 struct FreesBlock {
     header: BlockHeader,
@@ -83,6 +89,7 @@ struct FreesBlock {
     chains: *mut FreesBlock,
     registered: usize,
     members: usize,
+    below: *mut FreesBlock,
 }
 
 const _: () = assert!(size_of::<FreesBlock>() <= LINE_SIZE);
@@ -137,6 +144,7 @@ impl Chain {
             (&raw mut (*block).chains).write(std::ptr::null_mut());
             (&raw mut (*block).registered).write(0);
             (&raw mut (*block).members).write(0);
+            (&raw mut (*block).below).write(std::ptr::null_mut());
         }
         if self.tail.is_null() {
             self.head = block;
@@ -727,7 +735,26 @@ pub(crate) fn publish(frees: Frees, mutator: &MutatorRecord) {
     }
     let blocks = this.drops.blocks + this.chains.blocks;
     gc_metadata::hand_over(blocks, blocks * BLOCK_PAYLOAD);
-    mutator.publish_collectors_frees(head.cast());
+    unsafe { push(mutator, head) };
+}
+
+/// Push the chain `head` leads onto `mutator`'s stack of frees.
+///
+/// # Safety
+/// `head` is the first block of a chain nobody else reads, its figures
+/// handed over.
+unsafe fn push(mutator: &MutatorRecord, head: *mut FreesBlock) {
+    mutator.push_collectors_frees(head.cast(), |top| unsafe {
+        (*head).below = top.cast();
+    });
+}
+
+/// The entries of a stack of frees, from `top` down.
+fn heads_from(top: *mut FreesBlock) -> impl Iterator<Item = *mut FreesBlock> {
+    std::iter::successors((!top.is_null()).then_some(top), |&head| {
+        let below = unsafe { (*head).below };
+        (!below.is_null()).then_some(below)
+    })
 }
 
 /// Apply what a collector freed on this thread's behalf, if anything stands:
@@ -742,24 +769,131 @@ pub(crate) fn publish(frees: Frees, mutator: &MutatorRecord) {
 /// On a thread at a point where user destructors may run: the poll under an
 /// open gate, a collection under pressure, the exit under its final claim.
 pub(crate) unsafe fn apply_this_threads() -> usize {
-    let Some(head) = (unsafe { take_this_threads() }) else {
+    let Some(top) = (unsafe { take_this_threads() }) else {
         return 0;
     };
     let from = std::time::Instant::now();
-    let members = unsafe { (*head).members };
-    unsafe { splice(head) };
-    for block in blocks_from(head) {
-        for &child in unsafe { entries_of(block) }.iter() {
-            unsafe {
-                crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, child as *mut RcHeader)
-            };
+    let members = unsafe { splice_every(top) };
+    let mut head = top;
+    while !head.is_null() {
+        let below = unsafe { (*head).below };
+        for block in blocks_from(head) {
+            for &child in unsafe { entries_of(block) }.iter() {
+                unsafe { drop_a_child(child) };
+            }
         }
+        unsafe { release_chain(head) };
+        head = below;
     }
-    unsafe { release_chain(head) };
+    note_an_application(from);
+    members
+}
+
+/// The drops one poll applies ([`apply_a_slice_of_this_threads`]): the
+/// runtime's own stride for a loop the compiler cannot see inside.
+const APPLY_STRIDE: usize = crate::cycle::queue::POLL_STRIDE;
+
+/// [`apply_this_threads`] bounded for a poll: every chain spliced and the
+/// registered members counted, then at most [`APPLY_STRIDE`] drops applied,
+/// the rest pushed back onto the record for the next poll, never stored over
+/// what a collector or a destructor's held drops pushed meanwhile (the Sage,
+/// 2026-10-05). Answers the members the collector freed, as
+/// [`apply_this_threads`] does, and whether drops stand: while they do, the
+/// poll reads no posted set.
+///
+/// # Safety
+/// As [`apply_this_threads`].
+pub(crate) unsafe fn apply_a_slice_of_this_threads() -> (usize, bool) {
+    let Some(top) = (unsafe { take_this_threads() }) else {
+        return (0, false);
+    };
+    let from = std::time::Instant::now();
+    let members = unsafe { splice_every(top) };
+    let mut left = APPLY_STRIDE;
+    let mut head = top;
+    while !head.is_null() && left > 0 {
+        let below = unsafe { (*head).below };
+        let mut block = head;
+        while !block.is_null() && left > 0 {
+            let next = unsafe { (*block).header.next }.cast::<FreesBlock>();
+            let entries = unsafe { entries_of(block) };
+            let take = entries.len().min(left);
+            for &child in &entries[..take] {
+                unsafe { drop_a_child(child) };
+            }
+            left -= take;
+            if take < entries.len() {
+                // The rest of this block leads what stands: its drops shifted
+                // to the front, the block made the chain's head.
+                entries.copy_within(take.., 0);
+                unsafe { (*block).entries -= take };
+                break;
+            }
+
+            gc_metadata::discharge(BLOCK_PAYLOAD);
+            gc_metadata::release(block.cast());
+            block = next;
+        }
+
+        if !block.is_null() {
+            unsafe { stand(block) };
+        }
+        head = below;
+    }
+
+    let mut rest = head;
+    while !rest.is_null() {
+        let below = unsafe { (*rest).below };
+        unsafe { stand(rest) };
+        rest = below;
+    }
+    note_an_application(from);
+    let record = crate::cycle::mutator_record::this_thread_record();
+    (members, unsafe { (*record).collectors_frees_stand() })
+}
+
+/// Drop one child a freed member held.
+///
+/// # Safety
+/// As [`apply_this_threads`]; `child` an address the preparation drew.
+unsafe fn drop_a_child(child: usize) {
+    unsafe { crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, child as *mut RcHeader) };
+}
+
+/// Splice the chains of every entry of the stack from `top` and count their
+/// registered members, once; answer the members they freed, each entry's
+/// count taken.
+///
+/// # Safety
+/// `top` came off this thread's record by a take.
+unsafe fn splice_every(top: *mut FreesBlock) -> usize {
+    heads_from(top)
+        .map(|head| unsafe {
+            splice(head);
+            std::mem::take(&mut (*head).members)
+        })
+        .sum()
+}
+
+/// Push the drops' chain `head` leads back onto this thread's record, with
+/// its blocks' figures: the head of a chain, its own chains spliced.
+///
+/// # Safety
+/// On the owning thread, `head` a chain only this thread reads, its figures
+/// this thread's.
+unsafe fn stand(head: *mut FreesBlock) {
+    debug_assert!(unsafe { (*head).chains }.is_null(), "its chains spliced");
+    let blocks = blocks_from(head).count();
+    gc_metadata::hand_over(blocks, blocks * BLOCK_PAYLOAD);
+    let record = crate::cycle::mutator_record::this_thread_record();
+    unsafe { push(&*record, head) };
+}
+
+/// Count one application's wall.
+fn note_an_application(from: std::time::Instant) {
     let took = from.elapsed().as_nanos() as u64;
     APPLICATION_NANOS.fetch_add(took, Ordering::Relaxed);
     LONGEST_APPLICATION_NANOS.fetch_max(took, Ordering::Relaxed);
-    members
 }
 
 /// The part of [`apply_this_threads`] that runs no user code — the chains
@@ -770,16 +904,20 @@ pub(crate) unsafe fn apply_this_threads() -> usize {
 /// # Safety
 /// On the owning thread.
 pub(crate) unsafe fn splice_this_threads() {
-    let Some(head) = (unsafe { take_this_threads() }) else {
+    let Some(top) = (unsafe { take_this_threads() }) else {
         return;
     };
-    unsafe { splice(head) };
-    let record = crate::cycle::mutator_record::this_thread_record();
-    unsafe { (*record).put_back_collectors_frees(head.cast()) };
-    // The figures move back with the word: the next application takes them
-    // over again.
-    let blocks = blocks_from(head).count();
-    gc_metadata::hand_over(blocks, blocks * BLOCK_PAYLOAD);
+    // The members stay counted on each head: the next application answers
+    // them.
+    let mut head = top;
+    while !head.is_null() {
+        let below = unsafe { (*head).below };
+        unsafe {
+            splice(head);
+            stand(head);
+        }
+        head = below;
+    }
 }
 
 /// Move C's drops into S, which a posted set held for its owner's sum, onto
@@ -793,22 +931,13 @@ pub(crate) unsafe fn splice_this_threads() {
 /// On the owning thread, `head` the held chain a posted set taken off this
 /// thread's record carried, its figures this thread's.
 pub(crate) unsafe fn stand_the_held(head: *mut BlockHeader) {
-    let held = head.cast::<FreesBlock>();
-    let blocks = blocks_from(held).count();
-    let record = crate::cycle::mutator_record::this_thread_record();
-    debug_assert!(!record.is_null(), "a posted set stands on a record");
-    // What stands already keeps its figures handed over; the held chain joins
-    // its drops, and only its own blocks are handed over.
-    let standing = unsafe { (*record).take_collectors_frees() }.cast::<FreesBlock>();
-    let first = match blocks_from(standing).last() {
-        None => held,
-        Some(last) => {
-            unsafe { (*last).header.next = held.cast() };
-            standing
-        }
-    };
-    unsafe { (*record).put_back_collectors_frees(first.cast()) };
-    gc_metadata::hand_over(blocks, blocks * BLOCK_PAYLOAD);
+    debug_assert!(
+        !crate::cycle::mutator_record::this_thread_record().is_null(),
+        "a posted set stands on a record"
+    );
+    // Pushed beside what stands, never over it: the held chain's head carries
+    // no chains and no members of its own.
+    unsafe { stand(head.cast()) };
 }
 
 /// Give back C's drops into S once the owner freed S whole: every child they
@@ -835,14 +964,16 @@ unsafe fn take_this_threads() -> Option<*mut FreesBlock> {
         return None;
     }
 
-    let head = unsafe { (*record).take_collectors_frees() }.cast::<FreesBlock>();
-    if head.is_null() {
+    let top = unsafe { (*record).take_collectors_frees() }.cast::<FreesBlock>();
+    if top.is_null() {
         return None;
     }
 
-    let blocks = blocks_from(head).count() + blocks_from(unsafe { (*head).chains }).count();
+    let blocks: usize = heads_from(top)
+        .map(|head| blocks_from(head).count() + blocks_from(unsafe { (*head).chains }).count())
+        .sum();
     gc_metadata::take_over(blocks, blocks * BLOCK_PAYLOAD);
-    Some(head)
+    Some(top)
 }
 
 /// Splice the chains `head` carries and count its registered members, once:
