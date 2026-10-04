@@ -9,6 +9,38 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-04 — the collector splits a proved set: it frees what no destructor reaches, holds its drops into the rest for the owner's sum, and refuses only what a touch reaches
+
+**Decision (the Sage, Fable, on the S68.6c plan after two Critic rounds;
+`dev/design/recycler-over-counts.md`, §5a, S68.6c, item 8).** W splits into
+S, the closure of the members the collector cannot free (a destructor,
+weak references, an ownership-marked child, a foreign block), and C = W − S,
+which the collector frees. S reaches the owner marked proved, with the
+edges the record names into it, unless a member is weakly held; C's drops
+into S travel with P, held until the owner's commit has confirmed S by that
+sum, and are discarded with S, or applied where the sum fails or P goes
+back unread. A refusal by a touched member refuses U, the closure of the
+touched members, not W; U's roots go back to R once, and at a second
+refusal U joins S. No taint over the scan's raises in S68.6.
+
+**Why.** Leaving S unmarked whenever C drops into it is never marking S:
+the common W is a clean root over a destructor-bearing graph, and its walk
+is the 50 ms pause the arm exists to remove. Applying the drops first lets a
+drop free a member of S and a destructor reuse its slot for an entity held
+from outside, which the sum alone would confirm (the Critic, round 1); held,
+nothing can change S's counts before the commit reads them. They ride on P
+and not on the frees word because a destructor run by an application can
+fire a collection that reads P. A refusal of W whole sends innocent rings
+the exact way under steady touch traffic (the Critic, round 2); a touched
+member is made live only through a tagged write, so only what it reaches is
+suspect. The taint costs the stamps' pruning on a hot holder's state or a
+header read a run, against held garbage nobody has measured.
+
+**Overturns.** The S68.6b form's "W whole or not at all"; S68.5's refusal of
+W whole on one touched member; the plan's transitive taint (design §3).
+
+---
+
 ## 2026-10-04 — the collector judges and frees a garbage set by window tags, built as an arm beside the default build
 
 **Decision (Edmond: "утверждаю делай", over the Sage of the Recycler round,

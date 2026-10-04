@@ -1226,6 +1226,24 @@ pub(crate) unsafe fn set_header_refcount(header: *mut RcHeader, value: u32) {
     unsafe { refcount_store(header, value) };
 }
 
+/// [`set_header_refcount`] with no window tag: the collector's own count
+/// write over a member of a set it proved and frees
+/// (`crate::cycle::collector_frees`). A collector holds no window, and a
+/// plain store of its tag over byte 7 is what the stale clear's
+/// compare-and-swap exists to avoid; byte 7 has one writer besides the
+/// mutator, the clear.
+///
+/// # Safety
+/// As [`set_header_refcount`].
+#[cfg(feature = "recycler-over-counts")]
+#[inline]
+pub(crate) unsafe fn set_header_refcount_untagged(header: *mut RcHeader, value: u32) {
+    unsafe {
+        (*(header as *const core::sync::atomic::AtomicU32))
+            .store(value, core::sync::atomic::Ordering::Relaxed)
+    };
+}
+
 /// The count and the mutator's half of the flags together, for a caller
 /// that wants both — [`cow_separation_needed`] is the predicate over the
 /// pair.

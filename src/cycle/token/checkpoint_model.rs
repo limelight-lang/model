@@ -25,18 +25,33 @@
 //!   release store after an acquire load of the ask; the collector's reading
 //!   is an acquire load. A relaxed answer lets the collector read the answer
 //!   and the tag from before it, and prove a set the mutator touched.
-//! - **An answer to an ask the collector withdrew is an answer to the next
-//!   ask.** The answer is a load and a store, not one swap: the mutator can
-//!   read the first ask, the collector withdraw and ask again, and the
-//!   mutator's store land after the second ask. That store still follows
-//!   every tag the mutator stored before it, so the collector that reads it
-//!   reads those tags: the cut-off is the store, not the load.
+//! - **An answer to an ask the collector withdrew never answers the next
+//!   grant's ask.** The answer is a load and a store, not one swap, so the
+//!   mutator can read an ask, the collector withdraw it and release, and the
+//!   store land late. One ask stands per grant — one Δ-test a batch, one
+//!   batch a grant — and the next ask follows the mutator's consent, a
+//!   release the mutator makes after that store in program order; so the
+//!   collector that asks again reads only an answer made after the consent,
+//!   which carries every tag stored before it.
 //! - **The stale clear never buries a fresh tag.** The clear is a one-byte
 //!   compare-and-swap from the stale number to 0; a load and a store in its
 //!   place lose a tag the mutator wrote between them.
 //! - **The window number the collector tests for is the one the mutator
 //!   tags with.** The mutator advances its window before its consent, a
 //!   release; the collector's grant is an acquire.
+//!
+//! # What it does not check
+//!
+//! The other half of the proof: "its count is the value read" needs the
+//! trace's reads to come before T, so that no count the trace read is one
+//! the mutator wrote after its checkpoint. The chain is the trace, then the
+//! ask's release store, which the poll's acquire load of the ask reads, then
+//! every write the mutator makes after its answer. A trace whose relaxed
+//! read returns a write made after the answer, while the mutator's load read
+//! the ask, is load buffering, which loom does not model (its README); so no
+//! case here fails when the ask or the poll's load is relaxed, and the
+//! poll's acquire load is the one ordering this file cannot defend. It is
+//! defended by hand, at [`TraceToken::reach_the_checkpoint`](super::TraceToken::reach_the_checkpoint).
 //!
 //! # Running it
 //!
@@ -141,15 +156,22 @@ fn checkpoint_model_a_relaxed_answer_carries_nothing() {
     loom::model(|| touched_then_answered(Ordering::Relaxed));
 }
 
-/// Two asks in a row, the first withdrawn: an answer that read the first ask
-/// and stored after the second still follows the tag stored before it.
-fn withdrawn_then_asked_again() {
+/// An ask the mutator reads, withdrawn and released before its answer lands,
+/// then a new grant and its ask: `consent` is the ordering of the consent's
+/// swap. The collector that reads an answer to its second ask must read the
+/// tag the mutator stored after consenting to that grant.
+fn an_answer_across_two_grants(consent: Ordering) {
     let shared = shared(0);
+    shared.token.store(COLLECTOR, Ordering::Relaxed);
 
     let collector = {
         let shared = shared.clone();
         thread::spawn(move || {
             let _ = ask_and_wait(&shared);
+            shared.token.store(REQUESTED, Ordering::Release);
+            while shared.token.load(Ordering::Acquire) != COLLECTOR {
+                thread::yield_now();
+            }
             if ask_and_wait(&shared) {
                 Some(shared.tag.load(Ordering::Relaxed))
             } else {
@@ -158,18 +180,31 @@ fn withdrawn_then_asked_again() {
         })
     };
 
-    shared.tag.store(WINDOW, Ordering::Relaxed);
     reach(&shared, Ordering::Release);
+    while shared
+        .token
+        .compare_exchange(REQUESTED, COLLECTOR, consent, Ordering::Relaxed)
+        .is_err()
+    {
+        thread::yield_now();
+    }
+    shared.tag.store(WINDOW, Ordering::Relaxed);
     reach(&shared, Ordering::Release);
 
     if collector.join().unwrap() == Some(0) {
-        panic!("a late answer to a withdrawn ask hid a tag");
+        panic!("an answer from before the consent answered the next grant");
     }
 }
 
 #[test]
-fn checkpoint_model_a_late_answer_answers_the_next_ask_soundly() {
-    loom::model(withdrawn_then_asked_again);
+fn checkpoint_model_an_answer_never_crosses_a_consent() {
+    loom::model(|| an_answer_across_two_grants(Ordering::Release));
+}
+
+#[test]
+#[should_panic(expected = "an answer from before the consent answered the next grant")]
+fn checkpoint_model_a_relaxed_consent_lets_it_cross() {
+    loom::model(|| an_answer_across_two_grants(Ordering::Relaxed));
 }
 
 /// The collector clears a stale tag while the mutator — reaching a weakly
@@ -177,11 +212,11 @@ fn checkpoint_model_a_late_answer_answers_the_next_ask_soundly() {
 /// compare-and-swap; false is a load and a store.
 ///
 /// The mutator's tag is a plain relaxed byte store, written here as a swap:
-/// loom 0.7 lets a compare-and-swap read past a plain store to the same
-/// location (the swap reads 6 and leaves 0 after the store of 7, an outcome
-/// the C++ model's read-modify-write atomicity forbids), which a swap in the
-/// store's place does not. The swap is the store's value and position in
-/// the modification order and nothing more.
+/// loom 0.7 can leave a plain store and a racing read-modify-write unordered
+/// in the modification order, so that a load after both returns the
+/// compare-and-swap's 0 over the store's 7 — an outcome the C11 model
+/// forbids, whichever of the two comes first. A swap in the store's place
+/// takes the same position in the modification order and is ordered.
 fn stale_clear_against_a_fresh_tag(swap: bool) {
     let shared = shared(STALE);
 

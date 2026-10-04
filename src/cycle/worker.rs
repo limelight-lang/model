@@ -2612,16 +2612,28 @@ unsafe fn trace_the_batch(
         && unsafe { crate::cycle::delta_test::test_the_set_by_its_tags(mutator, arena) }
             == crate::cycle::delta_test::TagReading::Garbage
     {
-        #[cfg(debug_assertions)]
-        unsafe {
-            crate::cycle::collector_frees::check_every_count_is_internal(arena)
-        };
+        // A debug build checks every proof exactly, read-only before anything
+        // is written; a set past the cap or recalled is left unchecked, as it
+        // is left unfreed, so that the check's map over W stays bounded and a
+        // recall waits for nothing more than the preparation.
         match unsafe { crate::cycle::collector_frees::prepare(mutator, arena) } {
             Ok(mut frees) => {
+                #[cfg(debug_assertions)]
+                unsafe {
+                    crate::cycle::collector_frees::check_every_count_is_internal(arena)
+                };
                 unsafe { crate::cycle::collector_frees::commit(arena, &mut frees) };
                 set.carry_the_frees(frees);
             }
-            Err(_) => {
+            Err(_reason) => {
+                #[cfg(debug_assertions)]
+                if !matches!(
+                    _reason,
+                    crate::cycle::collector_frees::NotFreed::PastTheCap
+                        | crate::cycle::collector_frees::NotFreed::Recalled
+                ) {
+                    unsafe { crate::cycle::collector_frees::check_every_count_is_internal(arena) };
+                }
                 proved_edges =
                     Some(unsafe { crate::cycle::delta_test::internal_edges_of_the_set(arena) });
             }

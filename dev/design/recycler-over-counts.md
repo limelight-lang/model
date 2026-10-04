@@ -74,13 +74,12 @@ deferred lanes are all as in the default build.
    during the trace reads live through the holder's run, where the heap scan
    saw it at zero and proposed it: its root posts read live and waits for the
    epoch's turn, and in a final-drain array it can be stamped mature and
-   pruned at for the rest of the epoch. S68.6 answers it with the tags: a
-   raise through a run whose header carries the window's tag — a holder
-   written since the consent — still colours the target live, so that it
-   leaves W (the proof needs every live source to colour its targets live),
-   but its root is posted unwalked rather than read live, and nothing it
-   reaches is stamped (the Critics of S68.4, finding 2, and of S68.5,
-   finding 4).
+   pruned at for the rest of the epoch. S68.6 builds no answer to it (the
+   Sage, 2026-10-04, on S68.6c): a taint over the raises costs the stamps'
+   pruning on a hot holder's state or a header read a run, and S68.8
+   measures the held garbage against the default build first, with a load
+   whose hot holder drops a cyclic subtree during the trace (§5a, S68.6c,
+   item 5).
 
 ## 4. The judgement
 
@@ -333,6 +332,48 @@ notifications, the teardown and the close are the rest. So the steps:
      explicit fire applies the frees before it reads P; a touched set is re-queued once,
      its live roots read live, and taken the exact way at its second
      refusal.
+
+  8. *The Sage's ruling* (2026-10-04), which overrides items 1–5 where they
+     differ.
+     - Item 2's held drops are built, as ruled sound: at T nothing outside
+       W refers into S, S has no edge into C and no weakly-held member, and
+       C's other drops run destructors that reach only what they reference.
+       Four conditions. (a) The held drops travel with P — on the posted
+       set's first block — and not on the frees word: a destructor run by
+       an application may call `ll_gc_collect_cycles`, which reads P while
+       the outer application holds the frees in a local, so drops held
+       there would be applied after the inner commit freed S. (b) A path
+       that gives P back unread and may not run user code — a block return
+       under `POSTED`, the teardown's refusal — moves the held drops to the
+       frees word for the next open poll. (c) A sum that does not match on
+       an S with held drops is no walk: the walk would read S held from
+       outside by C's counts and stamp it for the epoch; the held drops are
+       applied instead, and counting takes S. (d) The expected sum is one
+       pass over the record counting the entries whose target row carries
+       the S bit.
+     - The second chance refuses U, the closure over the recorded edges of
+       the members the Δ-test read touched, and not W: a touched member is
+       made live only by a count write, which tags it, or a count-free move
+       out of a tagged holder, so only its recorded successors are suspect,
+       and its predecessors' edges into U are drops like any edge out of
+       C. U is closed under successors, so S has no edge into it. U's rows
+       are recoloured `Unclassified` — listed by no append, stamped by no
+       walk, read by `is_a_member` as outside W — and `verdict_for` answers
+       `Unwalked` for such a root, so the second-chance bit applies to U's
+       roots alone; a root of U carrying it makes U a seed of S, which then
+       goes unmarked. `NoCheckpoint` still refuses W whole.
+     - No set with a weakly-held member is marked proved, confirmed; and
+       where U is not empty, neither is W sent back whole by a failed
+       preparation. That W, U taken out, goes the exact way unmarked.
+     - `prepare`'s refusal while frees stand covers a P with held drops
+       standing too; a thread holds one P, which a debug build asserts.
+     - The taint: none in S68.6, confirmed (§3).
+     - Tests besides item 7's: an explicit fire inside a destructor that one
+       of C's other drops runs, while S stands posted, under the release
+       profile; a sum that does not match applying the held drops with no
+       stamp; a touched member whose closure is refused while the rest of
+       W is freed and confirmed; a block return moving the held drops to the
+       frees word.
 
 ## 6. The owner's poll
 

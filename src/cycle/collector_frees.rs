@@ -545,7 +545,7 @@ pub(crate) unsafe fn commit(arena: &TraceScratchArena, frees: &mut Frees) {
                     {
                         crate::memory::buffer_arena::post_a_body_remote(body, capacity);
                     }
-                    crate::refcount::set_header_refcount(member, 0);
+                    crate::refcount::set_header_refcount_untagged(member, 0);
                     let flags = crate::refcount::take_slot_for_free(member)
                         .expect("a member of W is freed once, by this act");
                     if flags & crate::refcount::CANDIDATE_BIT == 0 {

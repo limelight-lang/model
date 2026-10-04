@@ -247,3 +247,35 @@ fn a_slot_write_tags_its_holder() {
         crate::object::ll_entity_die(array as *mut RcHeader);
     }
 }
+
+/// A count-free move — a hash's compaction, which moves its entries past the
+/// hole a remove left — writes no count of the moved entities, so the
+/// holder's tag is all that carries it (`dev/design/recycler-over-counts.md`,
+/// §4.8, "The holder's tag").
+#[test]
+fn a_count_free_move_tags_its_holder() {
+    use crate::array::table::Key;
+    use crate::value::Value;
+
+    let _g = crate::memory::block_pool::test_guard();
+    let table = unsafe { crate::array::testing::hash_array(MemoryCategory::GcHeap) };
+    for key in 1..=3 {
+        let inserted =
+            unsafe { crate::array::testing::insert(table, Key::Int(key), Value::int(key)) };
+        assert!(matches!(inserted, Some((true, None))));
+    }
+    assert!(unsafe { crate::array::testing::remove(table, Key::Int(1)) }.is_some());
+    set_window(45);
+    assert!(unsafe { crate::array::testing::compact(table) }.is_some());
+    set_window(0);
+    assert_eq!(
+        unsafe { window_tag(table as *const RcHeader) },
+        45,
+        "the compaction"
+    );
+
+    unsafe {
+        assert!(ll_release(table as *mut RcHeader));
+        crate::object::ll_entity_die(table as *mut RcHeader);
+    }
+}

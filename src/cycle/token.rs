@@ -539,6 +539,15 @@ impl TraceToken {
 
     /// Answer an ask, as the mutator at a safepoint checkpoint: one acquire
     /// load on every poll, and a release store where an ask stands.
+    ///
+    /// Both orderings carry the proof (`dev/design/recycler-over-counts.md`,
+    /// §4.8). The release store puts every tag stored before it ahead of the
+    /// collector's reading of the answer. The acquire load, which reads the
+    /// collector's release of its ask, puts the whole trace ahead of every
+    /// write the mutator makes after it, so that no count the trace read is
+    /// one written after T. Relaxed, it would cost no test anything: the
+    /// failure is load buffering, which the loom model cannot exhibit
+    /// (`checkpoint_model`, "What it does not check").
     #[cfg(feature = "recycler-over-counts")]
     #[inline]
     pub(crate) fn reach_the_checkpoint(&self) {

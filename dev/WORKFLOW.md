@@ -513,6 +513,12 @@ of its file alone were green after. Unexplained; under watch.
 `the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_disposition`
 read red once the same day in a run where a collector thread panicked beside
 it, and green in every run after.
+`worker::tests::the_recall::a_grant_behind_another_trace_is_released_at_the_strides_next_reading`
+read red twice on 2026-10-04 over the S68.7 tree, once in a full feature-build
+run at eight threads and once in thirty runs alone, at its last assertion
+("the mutator behind waited out the other's batch"): a wall-clock race of the
+woken mutator against the end of a batch over a scalar vector, whose tail is
+short. Sixty runs alone after, and forty of the commit before, were green.
 
 **Never mute, skip, weaken or delete an existing test to go green.** A
 failing old test is a signal: either the change broke behaviour, or the
@@ -867,11 +873,14 @@ raw pointers or reaches thread-locals cannot run under it — a model is a
 hand-written **copy of the protocol**, and it drifts from the code
 silently unless someone keeps the two in step. And loom's own README
 records gaps in its model, load buffering among them, so a green run is
-weak evidence while a red one exhibits an execution. Loom 0.7 also lets a
-compare-and-swap read past a plain store to the same location, an outcome
-the C11 model forbids (2026-10-04: a swap read 6 and left 0 after a store
-of 7); a model whose RMW races a store writes the store as a swap, which
-stands for the same position in the modification order. Write the model so
+weak evidence while a red one exhibits an execution. Loom 0.7 can also
+leave a plain store and a racing read-modify-write to the same location
+unordered in the modification order, so that a load after both returns the
+RMW's value over the store's — an outcome the C11 model forbids whichever
+comes first (2026-10-04: a store of 7 and a compare-and-swap of 6 to 0,
+read 0 after both). A model whose final reading follows such a race writes
+the store as a swap, which takes the same position and is ordered; the
+three older models have no such reading (audited 2026-10-04). Write the model so
 that the defective configurations stay pinned as `should_panic` tests:
 that is the half of the run that proves something.
 

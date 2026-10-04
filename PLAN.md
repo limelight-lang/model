@@ -156,7 +156,16 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       unwalked and unstamped (design §3, "What the record costs in held
       garbage").
 - [ ] S68.7 The loom model of the handshake; the debug build's tag asserts and
-      the exact validation run beside the verdict.
+      the exact validation run beside the verdict. Built: the model
+      (`src/cycle/token/checkpoint_model.rs`, eight cases, three defective
+      orderings pinned), the exact check beside every proof the preparation
+      does not leave past the cap or recalled, the count-free move's tag test,
+      the collector's count write untagged. Open (the Critic of S68.7,
+      finding 4): an assert at the end of an array's mutable view that its
+      tag is the open window — the views hand out references with no end to
+      hook, so it needs a guard over sixteen call sites; and the poll's
+      acquire load, which no loom case can defend (load buffering), stands
+      on the argument at `TraceToken::reach_the_checkpoint` alone.
 - [ ] S68.8 The runs: the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the
