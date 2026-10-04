@@ -8,6 +8,37 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-04 — one garbage ring, one thread against the split: at 400k members one thread pauses 62–67 ms; split, the collector spends 26–28 ms on its own thread and the owner pauses 48–51 ms, a quarter less pause for a fifth more work
+
+**The question** (Edmond): the same roots collected by one thread, against a
+collector that finds and an owner that validates and frees. The earlier
+comparison of the owner's pause with reference counting's acyclic cascade
+answered neither.
+
+**The probe.**
+`cycle::worker::tests::what_the_split_costs::measure_one_thread_against_the_split`,
+release, `5912b8c` plus the probe: a garbage ring of N members of one counted
+property and no destructor, one root registered. One thread:
+`ll_gc_collect_cycles` in line over R whole. Split: a real serve on a thread
+of its own at K = 1, its wall read on that thread (the request and the
+harness's consent included), then the owner's `ll_gc_maybe_collect`, which
+took the set's fast path. Median of three rounds, three runs; a four-core
+cloud box at a load average of 0.4–0.8.
+
+| N | one thread | collector | owner's pause | collector + owner |
+| ---: | ---: | ---: | ---: | ---: |
+| 4,000 | 0.55–0.61 ms | 0.28–0.33 ms | 0.41–0.42 ms | 0.70–0.75 ms |
+| 40,000 | 5.5–5.9 ms | 2.4–2.7 ms | 4.2–4.5 ms | 6.8–7.2 ms |
+| 400,000 | 62.4–66.7 ms | 26.3–28.3 ms | 47.6–51.2 ms | 75.1–77.5 ms |
+
+**Reading.** The split moves about a quarter of the pause off the mutator and
+costs about a fifth more work in all. The owner's part is three quarters of
+one thread's: it walks the set again and frees it, and only the scan is saved.
+In the same session the old probes read 43.4 ms for the owner's pause over a
+posted set of 400k (26.1–26.3 ms on 2026-10-03, a different load on the box)
+and 15.0–15.2 ms for reference counting's cascade over an acyclic tree of
+400k, the freeing alone.
+
 ## 2026-10-04 — readings the S65 and S67 stage notes held, carried at the stages' close
 
 Each was recorded only in the stage's notes file, which the close deletes;
