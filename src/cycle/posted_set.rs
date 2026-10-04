@@ -90,9 +90,37 @@ struct SetBlock {
     held: *mut BlockHeader,
     #[cfg(feature = "recycler-over-counts")]
     held_count: usize,
+    /// Why the set reaches the owner as it does ([`kind`]), for the runs.
+    #[cfg(feature = "recycler-over-counts")]
+    kind: u8,
 }
 
 const _: () = assert!(size_of::<SetBlock>() <= LINE_SIZE);
+
+/// Why a set reaches the owner as it does: what the runs attribute the
+/// owner's collections over P to (the Sage, 2026-10-04, on S68.9).
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) mod kind {
+    /// No root of the batch read potentially unreachable: no Δ-test.
+    pub(crate) const NOT_TESTED: u8 = 0;
+    /// S, proved by its tags.
+    pub(crate) const PROVED_S: u8 = 1;
+    /// W whole, proved, the split dropped by a refusal other than the cap.
+    pub(crate) const DROPPED: u8 = 2;
+    /// No checkpoint within the bound.
+    pub(crate) const NO_CHECKPOINT: u8 = 3;
+    /// W whole, proved, past the member cap.
+    pub(crate) const PAST_THE_CAP: u8 = 4;
+    /// Touched: W, U out, unmarked.
+    pub(crate) const TOUCHED: u8 = 5;
+    /// U kept at a second refusal: S unmarked.
+    pub(crate) const SECOND_REFUSAL: u8 = 6;
+    /// A weakly-held member: unmarked.
+    pub(crate) const WEAKLY_HELD: u8 = 7;
+    /// The kinds.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const KINDS: usize = 8;
+}
 
 /// The addresses `block` holds.
 ///
@@ -185,6 +213,8 @@ impl Chain {
             (&raw mut (*block).held).write(std::ptr::null_mut());
             #[cfg(feature = "recycler-over-counts")]
             (&raw mut (*block).held_count).write(0);
+            #[cfg(feature = "recycler-over-counts")]
+            (&raw mut (*block).kind).write(kind::NOT_TESTED);
         }
         if self.tail.is_null() {
             self.head = block;
@@ -222,6 +252,8 @@ pub(crate) struct Writer {
     /// set (`crate::cycle::collector_frees`).
     #[cfg(feature = "recycler-over-counts")]
     frees: Option<crate::cycle::collector_frees::Frees>,
+    #[cfg(feature = "recycler-over-counts")]
+    kind: u8,
 }
 
 impl Writer {
@@ -239,7 +271,15 @@ impl Writer {
             internal_edges: 0,
             #[cfg(feature = "recycler-over-counts")]
             frees: None,
+            #[cfg(feature = "recycler-over-counts")]
+            kind: kind::NOT_TESTED,
         }
+    }
+
+    /// Note why the set reaches the owner as it does ([`kind`]).
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn note_the_kind(&mut self, why: u8) {
+        self.kind = why;
     }
 
     /// Append every entity whose met row stands potentially unreachable
@@ -399,6 +439,7 @@ impl Writer {
             (*head).internal_edges = this.internal_edges;
             (*head).held = held.map_or(std::ptr::null_mut(), |(chain, _, _)| chain);
             (*head).held_count = held.map_or(0, |(_, _, count)| count);
+            (*head).kind = this.kind;
         };
         #[cfg(test)]
         testing::note_members_posted(
@@ -455,6 +496,13 @@ impl PostedSet {
     #[cfg(feature = "recycler-over-counts")]
     pub(crate) fn held_from_outside(&self) -> usize {
         unsafe { (*self.head).held_count }
+    }
+
+    /// Why the set reaches the owner as it does ([`kind`]).
+    #[cfg(feature = "recycler-over-counts")]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn kind(&self) -> u8 {
+        unsafe { (*self.head).kind }
     }
 
     /// Give the held drops back once the owner freed the set whole: what they

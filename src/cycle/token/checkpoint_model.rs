@@ -40,6 +40,12 @@
 //!   tags with.** The mutator advances its window before its consent, a
 //!   release; the collector's grant is an acquire.
 //!
+//! - **A blocking stretch stands for a checkpoint, and nothing buries it.**
+//!   The stretch's entry carries the tags before it to an ask that takes it;
+//!   a withdrawal leaves a stretch standing; a late poll answer never lands
+//!   after a withdrawal; leaving a stretch against an ask leaves the byte
+//!   holding nothing (`dev/design/recycler-over-counts.md`, §5b).
+//!
 //! # What it does not check
 //!
 //! The other half of the proof: "its count is the value read" needs the
@@ -290,4 +296,245 @@ fn checkpoint_model_the_grant_reads_the_window_the_consent_opened() {
 #[should_panic(expected = "the collector tested for a window the mutator had left")]
 fn checkpoint_model_a_relaxed_consent_hides_the_window() {
     loom::model(|| the_window_the_grant_reads(Ordering::Relaxed));
+}
+
+// The blocking stretch (`dev/design/recycler-over-counts.md`, §5b): two more
+// values of the byte, and every transition one compare-and-swap from the
+// value read, as `TraceToken::{ask_for_the_checkpoint,
+// withdraw_the_checkpoint, enter_blocking, leave_blocking,
+// reach_the_checkpoint}` make them.
+
+const BLOCKING: u8 = 3;
+const BLOCKING_ASKED: u8 = 4;
+
+// The loops below start from a guessed value where the code starts from a
+// load: a compare-and-swap from a wrong guess fails and reads the value, which
+// is the load's work, so the two are one protocol. Loom 0.7 is incomplete on
+// the load's form — with a load ahead of the withdrawal's compare-and-swap it
+// never schedules a late answer between them, an outcome the C11 model allows
+// (2026-10-04, a two-thread case in the scratchpad) — and complete on this
+// one, which exhibits it.
+
+/// The ask: true where a blocking stretch answers it at once.
+fn ask(shared: &Shared) -> bool {
+    let mut seen = NONE;
+    loop {
+        let (asked, blocking) = if seen == BLOCKING {
+            (BLOCKING_ASKED, true)
+        } else {
+            (ASKED, false)
+        };
+        match shared
+            .checkpoint
+            .compare_exchange(seen, asked, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => return blocking,
+            Err(now) => seen = now,
+        }
+        thread::yield_now();
+    }
+}
+
+/// The withdrawal; `store` is the defective form, a store of nothing.
+fn withdraw(shared: &Shared, store: bool) {
+    if store {
+        shared.checkpoint.store(NONE, Ordering::Relaxed);
+        return;
+    }
+    let mut seen = ASKED;
+    loop {
+        let withdrawn = match seen {
+            ASKED | REACHED => NONE,
+            BLOCKING_ASKED => BLOCKING,
+            _ => return,
+        };
+        match shared.checkpoint.compare_exchange(
+            seen,
+            withdrawn,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return,
+            Err(now) => seen = now,
+        }
+        thread::yield_now();
+    }
+}
+
+/// The wait: whether the checkpoint was reached within the bound.
+fn wait(shared: &Shared) -> bool {
+    for _ in 0..READINGS {
+        if matches!(
+            shared.checkpoint.load(Ordering::Acquire),
+            REACHED | BLOCKING | BLOCKING_ASKED
+        ) {
+            return true;
+        }
+        thread::yield_now();
+    }
+    false
+}
+
+/// The poll's answer; `store` is the defective form, a load and a store —
+/// the store written as a swap, which loom orders against the withdrawal's
+/// compare-and-swap where a plain store it leaves unordered (`dev/WORKFLOW.md`,
+/// "Loom").
+fn answer(shared: &Shared, store: bool) {
+    if shared.checkpoint.load(Ordering::Acquire) == ASKED {
+        if store {
+            let _ = shared.checkpoint.swap(REACHED, Ordering::Release);
+        } else {
+            let _ = shared.checkpoint.compare_exchange(
+                ASKED,
+                REACHED,
+                Ordering::Release,
+                Ordering::Acquire,
+            );
+        }
+    }
+}
+
+/// Entering the stretch, `entry` the ordering of its swap.
+fn enter(shared: &Shared, entry: Ordering) {
+    let _ = shared.checkpoint.swap(BLOCKING, entry);
+}
+
+/// Leaving it.
+fn leave(shared: &Shared) {
+    let mut seen = BLOCKING;
+    while seen == BLOCKING || seen == BLOCKING_ASKED {
+        match shared
+            .checkpoint
+            .compare_exchange(seen, NONE, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => return,
+            Err(now) => seen = now,
+        }
+    }
+}
+
+/// A stretch against an ask: the mutator tags a member, then blocks; an ask
+/// that takes the stretch as its checkpoint must read the tag.
+fn a_stretch_against_an_ask(entry: Ordering) {
+    let shared = shared(0);
+
+    let collector = {
+        let shared = shared.clone();
+        thread::spawn(move || {
+            let reached = ask(&shared) || wait(&shared);
+            let tag = shared.tag.load(Ordering::Relaxed);
+            withdraw(&shared, false);
+            reached.then_some(tag)
+        })
+    };
+
+    let _ = shared.tag.swap(WINDOW, Ordering::Relaxed);
+    enter(&shared, entry);
+
+    if collector.join().unwrap() == Some(0) {
+        panic!("a stretch answered an ask before the tag it follows");
+    }
+}
+
+#[test]
+fn checkpoint_model_a_stretch_carries_the_tags_before_it() {
+    loom::model(|| a_stretch_against_an_ask(Ordering::AcqRel));
+}
+
+#[test]
+#[should_panic(expected = "a stretch answered an ask before the tag it follows")]
+fn checkpoint_model_a_relaxed_stretch_carries_nothing() {
+    loom::model(|| a_stretch_against_an_ask(Ordering::Relaxed));
+}
+
+/// A withdrawal against a stretch: the stretch the mutator stands in must
+/// outlive the collector's withdrawal of its ask.
+fn a_withdrawal_against_a_stretch(store: bool) {
+    let shared = shared(0);
+
+    let collector = {
+        let shared = shared.clone();
+        thread::spawn(move || {
+            let _ = ask(&shared) || wait(&shared);
+            withdraw(&shared, store);
+        })
+    };
+
+    enter(&shared, Ordering::AcqRel);
+    collector.join().unwrap();
+
+    if shared.checkpoint.load(Ordering::Relaxed) != BLOCKING {
+        panic!("the withdrawal buried a stretch");
+    }
+}
+
+#[test]
+fn checkpoint_model_a_withdrawal_leaves_a_stretch_standing() {
+    loom::model(|| a_withdrawal_against_a_stretch(false));
+}
+
+#[test]
+#[should_panic(expected = "the withdrawal buried a stretch")]
+fn checkpoint_model_a_withdrawal_by_store_buries_it() {
+    loom::model(|| a_withdrawal_against_a_stretch(true));
+}
+
+/// A late answer against a withdrawal: an answer to an ask the collector
+/// withdrew must not stand after the withdrawal.
+fn a_late_answer_against_a_withdrawal(store: bool) {
+    let shared = shared(0);
+
+    let collector = {
+        let shared = shared.clone();
+        thread::spawn(move || {
+            let _ = ask(&shared);
+            withdraw(&shared, false);
+        })
+    };
+
+    answer(&shared, store);
+    collector.join().unwrap();
+
+    if shared.checkpoint.load(Ordering::Relaxed) != NONE {
+        panic!("an answer stood after its ask was withdrawn");
+    }
+}
+
+#[test]
+fn checkpoint_model_a_late_answer_never_lands() {
+    loom::model(|| a_late_answer_against_a_withdrawal(false));
+}
+
+#[test]
+#[should_panic(expected = "an answer stood after its ask was withdrawn")]
+fn checkpoint_model_a_load_and_a_store_answer_late() {
+    loom::model(|| a_late_answer_against_a_withdrawal(true));
+}
+
+/// Leaving a stretch against an ask: whatever the order, the byte ends
+/// holding nothing — no stretch the running mutator would answer with, and no
+/// ask a later grant would find.
+fn leaving_against_an_ask() {
+    let shared = shared(0);
+
+    let collector = {
+        let shared = shared.clone();
+        thread::spawn(move || {
+            let _ = ask(&shared) || wait(&shared);
+            withdraw(&shared, false);
+        })
+    };
+
+    enter(&shared, Ordering::AcqRel);
+    leave(&shared);
+    collector.join().unwrap();
+
+    if shared.checkpoint.load(Ordering::Relaxed) != NONE {
+        panic!("a stretch or an ask outlived both");
+    }
+}
+
+#[test]
+fn checkpoint_model_leaving_against_an_ask_leaves_nothing() {
+    loom::model(leaving_against_an_ask);
 }

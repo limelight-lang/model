@@ -2233,8 +2233,21 @@ impl Cell {
 /// polls or frees again, and the returns it withholds under a foreign trace
 /// stay withheld through the sleep. The web loads' wait is its second
 /// caller.
+///
+/// The sleep is a blocking stretch
+/// (`crate::cycle::token::enter_blocking_on_this_thread`), as a
+/// worker's blocking call is under the runtime's bracket: every reference
+/// the rig holds is counted, and the gate is open, so a collector's ask finds
+/// its checkpoint at once. Under `LL_RIG_NO_BLOCKING` it is not, the first
+/// reading's behaviour; without `recycler-over-counts` the blocking stretch is a no-op.
 fn sleep_without_poll(wait: Duration) {
+    static NO_BLOCKING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let blocking = !*NO_BLOCKING.get_or_init(|| std::env::var_os("LL_RIG_NO_BLOCKING").is_some())
+        && crate::cycle::token::enter_blocking_on_this_thread();
     std::thread::sleep(wait);
+    if blocking {
+        crate::cycle::token::leave_blocking_on_this_thread();
+    }
 }
 
 /// Turns the timed spin makes between two readings of its deadline.
@@ -3217,6 +3230,18 @@ impl CellReading {
                 "verdict_collection_longest_us",
                 self.verdict_collections.longest.as_micros().to_string(),
             ),
+            // By the kind of set read (`crate::cycle::posted_set::kind`):
+            // not tested, proved S, dropped, no checkpoint, past the cap,
+            // touched, second refusal, weakly held, none.
+            (
+                "verdict_collection_longest_by_kind_us",
+                self.verdict_collections
+                    .longest_by_kind
+                    .iter()
+                    .map(|wall| wall.as_micros().to_string())
+                    .collect::<Vec<_>>()
+                    .join(";"),
+            ),
             (
                 "freed_by_verdict_collections",
                 self.verdict_collections.freed.to_string(),
@@ -3738,6 +3763,14 @@ impl CellReading {
             ("tag_checkpoints_missed", tag_counts().2.to_string()),
             ("tag_checkpoint_wait_us", tag_counts().3.to_string()),
             ("tag_checkpoint_wait_longest_us", tag_counts().4.to_string()),
+            ("tag_asks_a_blocking_answered", tag_counts().6.to_string()),
+            ("blocking_entered", blocking_counts()[0].to_string()),
+            ("blocking_answered_an_ask", blocking_counts()[1].to_string()),
+            (
+                "blocking_left_after_an_ask",
+                blocking_counts()[2].to_string(),
+            ),
+            ("blocking_stale_cleared", blocking_counts()[3].to_string()),
             // The collector's own frees and the split, the same way
             // (`crate::cycle::collector_frees`, `crate::cycle::split`).
             ("frees_sets", frees_counts()[0].to_string()),
@@ -4488,7 +4521,7 @@ fn write_the_requests(path: &str, mutators: &[WebReading]) {
 /// The Δ-test's counts: sets proved, touched, checkpoints missed, the
 /// checkpoint waits in all and at the longest in microseconds, and sets
 /// weakly held.
-fn tag_counts() -> (usize, usize, usize, u128, u128, usize) {
+fn tag_counts() -> (usize, usize, usize, u128, u128, usize, usize) {
     #[cfg(feature = "recycler-over-counts")]
     {
         let counts = crate::cycle::delta_test::tag_reading_counts();
@@ -4499,10 +4532,21 @@ fn tag_counts() -> (usize, usize, usize, u128, u128, usize) {
             counts.waited.as_micros(),
             counts.longest_wait.as_micros(),
             counts.weakly_held,
+            counts.blocking,
         )
     }
     #[cfg(not(feature = "recycler-over-counts"))]
-    (0, 0, 0, 0, 0, 0)
+    (0, 0, 0, 0, 0, 0, 0)
+}
+
+/// [`crate::cycle::token::blocking_counts`], zeros without the feature.
+fn blocking_counts() -> [usize; 4] {
+    #[cfg(feature = "recycler-over-counts")]
+    {
+        crate::cycle::token::blocking_counts()
+    }
+    #[cfg(not(feature = "recycler-over-counts"))]
+    [0; 4]
 }
 
 /// [`crate::cycle::collector_frees::frees_counts`] flat, times in µs: sets,

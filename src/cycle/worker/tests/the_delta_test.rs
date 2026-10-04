@@ -744,3 +744,129 @@ fn an_s_no_root_lands_in_gets_its_drops_at_the_poll() {
     );
     reset_lanes();
 }
+
+/// A blocking stretch the mutator enters while an ask stands answers it: the
+/// collector proves the ring and frees it, with no poll in between.
+#[test]
+fn a_blocking_stretch_answers_a_standing_ask() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let _ = unsafe { a_garbage_ring(&mut arena) };
+    let token = unsafe { &(*record()).token };
+    let answered = crate::cycle::token::blocking_counts()[1];
+    let mut entered = false;
+
+    let counts = served_with(|| {
+        if !entered && token.checkpoint_is_asked() {
+            entered = crate::cycle::token::enter_blocking_on_this_thread();
+            assert!(entered, "the gate is open here");
+        }
+    });
+    crate::cycle::token::leave_blocking_on_this_thread();
+    assert!(entered, "the ask stood at a reading");
+    assert_eq!((counts.proved, counts.no_checkpoint), (1, 0));
+    assert_eq!(crate::cycle::token::blocking_counts()[1] - answered, 1);
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
+    reset_lanes();
+}
+
+/// A blocking stretch that stands before the ask is the checkpoint at once.
+#[test]
+fn an_ask_finds_a_blocking_stretch_reached_at_once() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let _ = unsafe { a_garbage_ring(&mut arena) };
+    let token = unsafe { &raw const (*record()).token } as usize;
+    // On the collector's thread, before its ask: the byte alone, the debug
+    // flag being the mutator thread's.
+    testing::between_the_next_phases(Box::new(move || unsafe {
+        (*(token as *const crate::cycle::token::TraceToken)).enter_blocking();
+    }));
+    let before = tag_reading_counts().blocking;
+
+    let counts = served_with(|| {});
+    unsafe { &(*record()).token }.leave_blocking();
+    assert_eq!((counts.proved, counts.no_checkpoint), (1, 0));
+    assert_eq!(tag_reading_counts().blocking - before, 1);
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
+    reset_lanes();
+}
+
+/// The byte's transitions one at a time: an ask's withdrawal leaves a
+/// blocking stretch standing; a late answer never lands after a withdrawal;
+/// a stretch met at a poll is stale and cleared.
+#[test]
+fn the_checkpoint_byte_keeps_a_blocking_stretch_and_drops_a_late_answer() {
+    use crate::cycle::token::{
+        CHECKPOINT_BLOCKING, CHECKPOINT_BLOCKING_ASKED, CHECKPOINT_NONE, TraceToken,
+    };
+    let token = TraceToken::new_held();
+
+    token.enter_blocking();
+    assert!(token.ask_for_the_checkpoint(), "reached at once");
+    assert_eq!(token.checkpoint_for_test(), CHECKPOINT_BLOCKING_ASKED);
+    assert!(token.checkpoint_reached());
+    token.withdraw_the_checkpoint();
+    assert_eq!(
+        token.checkpoint_for_test(),
+        CHECKPOINT_BLOCKING,
+        "not buried"
+    );
+    token.leave_blocking();
+    assert_eq!(token.checkpoint_for_test(), CHECKPOINT_NONE);
+
+    assert!(!token.ask_for_the_checkpoint());
+    token.withdraw_the_checkpoint();
+    token.reach_the_checkpoint();
+    assert_eq!(
+        token.checkpoint_for_test(),
+        CHECKPOINT_NONE,
+        "no answer after the withdrawal"
+    );
+
+    let stale = crate::cycle::token::blocking_counts()[3];
+    token.enter_blocking();
+    token.reach_the_checkpoint();
+    assert_eq!(token.checkpoint_for_test(), CHECKPOINT_NONE, "cleared");
+    assert_eq!(crate::cycle::token::blocking_counts()[3] - stale, 1);
+}
+
+static ENTERED_IN_A_TEARDOWN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+unsafe extern "C" fn try_to_block(_object: *mut Object) {
+    let entered = crate::cycle::token::enter_blocking_on_this_thread();
+    if entered {
+        crate::cycle::token::leave_blocking_on_this_thread();
+    }
+    ENTERED_IN_A_TEARDOWN.store(1 + entered as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Under a closed gate — inside a teardown, where the runtime holds references
+/// it has not counted — a blocking stretch is refused and stores nothing.
+#[test]
+fn a_blocking_stretch_under_a_closed_gate_stores_nothing() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let class = ClassBuilder::new("DeltaTestBlocksInATeardown")
+        .destructor(try_to_block as *const ())
+        .build();
+    let before = unsafe { &(*record()).token }.checkpoint_for_test();
+    let object = {
+        let mut context = LLContext { arena: &mut arena };
+        unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) }
+    };
+    unsafe {
+        assert!(ll_release(object as *mut RcHeader));
+        crate::object::ll_object_die(object);
+    }
+    assert_eq!(
+        ENTERED_IN_A_TEARDOWN.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the destructor ran, and its stretch was refused"
+    );
+    assert_eq!(unsafe { &(*record()).token }.checkpoint_for_test(), before);
+    reset_lanes();
+}

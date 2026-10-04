@@ -2626,11 +2626,16 @@ unsafe fn trace_the_batch(
     // roots the posts below then read as completed deaths; what reaches the
     // owner is marked proved where the proof covers it.
     #[cfg(feature = "recycler-over-counts")]
-    let posting = if unsafe { a_root_reads_unreachable(posts) } {
+    let (posting, kind) = if unsafe { a_root_reads_unreachable(posts) } {
         unsafe { split_and_free(mutator, arena, posts, set) }
     } else {
-        Posting::Unmarked
+        (
+            Posting::Unmarked,
+            crate::cycle::posted_set::kind::NOT_TESTED,
+        )
     };
+    #[cfg(feature = "recycler-over-counts")]
+    set.note_the_kind(kind);
 
     for index in 0..posts.roots.len() {
         if !posts.has_a_verdict(index) {
@@ -3034,13 +3039,14 @@ unsafe fn split_and_free(
     arena: &mut TraceScratchArena,
     posts: &FinishThePosts<'_>,
     set: &mut crate::cycle::posted_set::Writer,
-) -> Posting {
+) -> (Posting, u8) {
     use crate::cycle::delta_test::TagReading;
+    use crate::cycle::posted_set::kind;
     use crate::cycle::{collector_frees, delta_test, split};
 
     let test = unsafe { delta_test::test_the_set_by_its_tags(mutator, arena) };
     let touched = match test.reading {
-        TagReading::NoCheckpoint => return Posting::Unmarked,
+        TagReading::NoCheckpoint => return (Posting::Unmarked, kind::NO_CHECKPOINT),
         TagReading::Touched => true,
         TagReading::Garbage => false,
     };
@@ -3056,7 +3062,7 @@ unsafe fn split_and_free(
         if unsafe { split::close_over_the_record(arena) }.is_break() {
             unsafe { split::clear_the_marks(arena) };
             split::note(split::Counted::Dropped);
-            return Posting::Unmarked;
+            return (Posting::Unmarked, kind::DROPPED);
         }
         if unsafe { posts.a_marked_root_spent_its_second_chance() } {
             s_proved = false;
@@ -3073,23 +3079,40 @@ unsafe fn split_and_free(
 
     // The split dropped: W, U out where it went, the S68.6a way — marked only
     // where nothing touched stands in it and no member is weakly held.
-    let whole = |arena: &mut TraceScratchArena| {
+    let whole = |arena: &mut TraceScratchArena, why: u8| {
         unsafe { split::clear_the_marks(arena) };
         split::note(split::Counted::Dropped);
-        if touched || test.weakly_held {
-            Posting::Unmarked
+        if touched {
+            (Posting::Unmarked, kind::TOUCHED)
+        } else if test.weakly_held {
+            (Posting::Unmarked, kind::WEAKLY_HELD)
         } else {
-            Posting::WholeProved(unsafe { delta_test::internal_edges_of_the_set(arena) })
+            (
+                Posting::WholeProved(unsafe { delta_test::internal_edges_of_the_set(arena) }),
+                why,
+            )
         }
+    };
+    // What reaches the owner of S: proved, or unmarked for a kept U or a
+    // weakly-held member.
+    let s_kind = if s_proved {
+        kind::PROVED_S
+    } else if touched {
+        kind::SECOND_REFUSAL
+    } else {
+        kind::WEAKLY_HELD
     };
 
     unsafe { split::mark_the_seeds(mutator, arena) };
     if unsafe { split::close_over_the_record(arena) }.is_break() {
-        return whole(arena);
+        return whole(arena, kind::DROPPED);
     }
     if !unsafe { split::any_unmarked(arena) } {
         // C is empty: S is W, U out, as S68.6a took it.
-        return Posting::S(s_proved.then(|| unsafe { split::edges_into_the_marked(arena) }));
+        return (
+            Posting::S(s_proved.then(|| unsafe { split::edges_into_the_marked(arena) })),
+            s_kind,
+        );
     }
 
     split::note(split::Counted::Split);
@@ -3109,7 +3132,7 @@ unsafe fn split_and_free(
                 None
             };
             set.carry_the_frees(frees);
-            Posting::S(edges)
+            (Posting::S(edges), s_kind)
         }
         Err(_reason) => {
             // A set past the cap or recalled is left unchecked, as it is left
@@ -3124,7 +3147,12 @@ unsafe fn split_and_free(
             {
                 unsafe { collector_frees::check_every_count_is_internal(arena) };
             }
-            whole(arena)
+            let why = if _reason == collector_frees::NotFreed::PastTheCap {
+                kind::PAST_THE_CAP
+            } else {
+                kind::DROPPED
+            };
+            whole(arena, why)
         }
     }
 }

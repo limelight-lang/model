@@ -495,7 +495,17 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     // (`crate::cycle::posted_set`).
     #[cfg_attr(not(feature = "recycler-over-counts"), allow(unused_mut))]
     let mut set = match form {
-        BatchForm::Verdicts => crate::cycle::posted_set::take_this_threads(),
+        BatchForm::Verdicts => {
+            let set = crate::cycle::posted_set::take_this_threads();
+            #[cfg(all(test, feature = "recycler-over-counts"))]
+            crate::cycle::worker::testing::note_the_set_kind(
+                set.as_ref()
+                    .map_or(crate::cycle::worker::testing::SET_KINDS, |set| {
+                        usize::from(set.kind())
+                    }),
+            );
+            set
+        }
         BatchForm::AllRoots => {
             crate::cycle::posted_set::drop_this_threads();
             // The drops a proved set held stand on the record once it goes

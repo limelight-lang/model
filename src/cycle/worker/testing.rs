@@ -1364,7 +1364,17 @@ pub(crate) struct VerdictCollections {
     /// those of the longest collection; the close is what the total leaves.
     pub(crate) phases: [std::time::Duration; COLLECTION_PHASES],
     pub(crate) phases_of_the_longest: [std::time::Duration; COLLECTION_PHASES],
+    /// The longest collection by the kind of set it read
+    /// (`crate::cycle::posted_set::kind`), the last slot a collection that read
+    /// none; all in the last slot without `recycler-over-counts`.
+    pub(crate) longest_by_kind: [std::time::Duration; SET_KINDS + 1],
 }
+
+/// The kinds a posted set carries.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) const SET_KINDS: usize = crate::cycle::posted_set::kind::KINDS;
+#[cfg(not(feature = "recycler-over-counts"))]
+pub(crate) const SET_KINDS: usize = 0;
 
 /// The phases of a collection over P the rig splits its pause into.
 pub(crate) const COLLECTION_PHASES: usize = 7;
@@ -1392,6 +1402,17 @@ pub(crate) fn take_commit_split() -> [std::time::Duration; 4] {
 }
 
 thread_local! {
+    /// The kind of set the collection over P running on this thread read,
+    /// `SET_KINDS` for none.
+    static PENDING_KIND: std::cell::Cell<usize> = const { std::cell::Cell::new(SET_KINDS) };
+}
+
+/// Note the kind of set the collection over P that is running read.
+pub(crate) fn note_the_set_kind(kind: usize) {
+    PENDING_KIND.with(|pending| pending.set(kind.min(SET_KINDS)));
+}
+
+thread_local! {
     /// The phases the collection over P running on this thread noted, read by
     /// the note of its whole time ([`note_verdict_collection`]), on the same
     /// thread: every mutator collects over its own P.
@@ -1414,11 +1435,14 @@ static VERDICT_COLLECTIONS: Mutex<VerdictCollections> = Mutex::new(VerdictCollec
     positions_longest: 0,
     phases: [std::time::Duration::ZERO; COLLECTION_PHASES],
     phases_of_the_longest: [std::time::Duration::ZERO; COLLECTION_PHASES],
+    longest_by_kind: [std::time::Duration::ZERO; SET_KINDS + 1],
 });
 
 pub(crate) fn note_verdict_collection(took: std::time::Duration, freed: usize, positions: usize) {
     let phases = PENDING_PHASES.with(|pending| pending.take());
+    let kind = PENDING_KIND.with(|pending| pending.replace(SET_KINDS));
     let mut collections = lock(&VERDICT_COLLECTIONS);
+    collections.longest_by_kind[kind] = collections.longest_by_kind[kind].max(took);
     collections.collections += 1;
     collections.total += took;
     if took > collections.longest {
@@ -1450,6 +1474,7 @@ static DISPOSALS: Mutex<VerdictCollections> = Mutex::new(VerdictCollections {
     positions_longest: 0,
     phases: [std::time::Duration::ZERO; COLLECTION_PHASES],
     phases_of_the_longest: [std::time::Duration::ZERO; COLLECTION_PHASES],
+    longest_by_kind: [std::time::Duration::ZERO; SET_KINDS + 1],
 });
 
 /// The returns a mutator withheld under a foreign holder, by stack — deaths,

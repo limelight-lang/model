@@ -850,6 +850,12 @@ pub(crate) unsafe fn clear_a_stale_window_tag(header: *mut RcHeader, stale: u8) 
 #[cfg(feature = "recycler-over-counts")]
 #[inline]
 pub unsafe fn tag_with_the_window(header: *mut RcHeader) {
+    // Every count write and every slot write tags, so this is where a debug
+    // build checks that none runs inside a blocking stretch, which promises none.
+    debug_assert!(
+        !crate::cycle::token::this_thread_is_blocking(),
+        "a count or slot write inside a blocking stretch"
+    );
     let window = COLLECTOR_WINDOW.with(|open| open.get());
     unsafe { header_byte_store(header, WINDOW_TAG_BYTE, window) };
 }

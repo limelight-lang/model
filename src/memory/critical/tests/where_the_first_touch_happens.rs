@@ -87,6 +87,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("ARMED", false),                 // test-only const Cell, no drop glue
         ("AT_THE_SURPLUS_UNLINK", false), // test-only const Cell of an fn pointer, no drop glue
         ("BETWEEN_THE_READS", false),     // test-only const Cell of an fn pointer, no drop glue
+        ("BLOCKING", false), // debug-only const Cell<bool>, no drop glue (`recycler-over-counts`)
         ("BLOCKS", false),
         ("BLOCKS_CARVED", false), // test-only const Cell, no drop glue
         ("BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
@@ -134,7 +135,8 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PANIC_IN_CLOSE", false),
         ("PANIC_IN_HARVEST", false),
         ("PANIC_IN_RESET", false),
-        ("PENDING_PHASES", false),    // test-only const Cell, no drop glue
+        ("PENDING_KIND", false), // test-only const Cell<usize>, no drop glue
+        ("PENDING_PHASES", false), // test-only const Cell, no drop glue
         ("PHASE_BOUNDARY_AT", false), // test-only const Cell, no drop glue
         ("PINNED", false),
         ("PINNED_THRESHOLD", false), // test-only const Cell, no drop glue

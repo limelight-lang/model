@@ -89,6 +89,7 @@ static PROVED: AtomicUsize = AtomicUsize::new(0);
 static TOUCHED: AtomicUsize = AtomicUsize::new(0);
 static WEAKLY_HELD: AtomicUsize = AtomicUsize::new(0);
 static NO_CHECKPOINT: AtomicUsize = AtomicUsize::new(0);
+static ASKS_A_BLOCKING_ANSWERED: AtomicUsize = AtomicUsize::new(0);
 static WAITED_NANOS: AtomicU64 = AtomicU64::new(0);
 static LONGEST_WAIT_NANOS: AtomicU64 = AtomicU64::new(0);
 
@@ -100,6 +101,8 @@ pub(crate) struct TagReadingCounts {
     pub(crate) touched: usize,
     pub(crate) weakly_held: usize,
     pub(crate) no_checkpoint: usize,
+    /// Asks a standing blocking stretch answered at once.
+    pub(crate) blocking: usize,
     pub(crate) waited: Duration,
     pub(crate) longest_wait: Duration,
 }
@@ -112,6 +115,7 @@ pub(crate) fn tag_reading_counts() -> TagReadingCounts {
         touched: TOUCHED.load(Ordering::Relaxed),
         weakly_held: WEAKLY_HELD.load(Ordering::Relaxed),
         no_checkpoint: NO_CHECKPOINT.load(Ordering::Relaxed),
+        blocking: ASKS_A_BLOCKING_ANSWERED.load(Ordering::Relaxed),
         waited: Duration::from_nanos(WAITED_NANOS.load(Ordering::Relaxed)),
         longest_wait: Duration::from_nanos(LONGEST_WAIT_NANOS.load(Ordering::Relaxed)),
     }
@@ -132,7 +136,9 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
 ) -> TagTest {
     let token = &mutator.token;
     let from = Instant::now();
-    token.ask_for_the_checkpoint();
+    if token.ask_for_the_checkpoint() {
+        ASKS_A_BLOCKING_ANSWERED.fetch_add(1, Ordering::Relaxed);
+    }
     let reached = wait_for_the_checkpoint(token, from, || arena.read_the_recall_now().is_break());
     token.withdraw_the_checkpoint();
     let waited = from.elapsed().as_nanos() as u64;

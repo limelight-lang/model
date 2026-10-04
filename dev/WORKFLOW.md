@@ -880,7 +880,12 @@ RMW's value over the store's — an outcome the C11 model forbids whichever
 comes first (2026-10-04: a store of 7 and a compare-and-swap of 6 to 0,
 read 0 after both). A model whose final reading follows such a race writes
 the store as a swap, which takes the same position and is ordered; the
-three older models have no such reading (audited 2026-10-04). Write the model so
+three older models have no such reading (audited 2026-10-04). Nor does it
+schedule every interleaving of a loop that loads a value and then
+compares-and-swaps from it: with the load ahead, a write landing between the
+two was never tried (2026-10-04, the checkpoint byte's withdrawal); a loop
+that starts from a guessed value, its first failure reading the value, is the
+same protocol and is explored whole. Write the model so
 that the defective configurations stay pinned as `should_panic` tests:
 that is the half of the run that proves something.
 

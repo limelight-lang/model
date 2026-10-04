@@ -164,10 +164,12 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       hook, so it needs a guard over sixteen call sites; and the poll's
       acquire load, which no loom case can defend (load buffering), stands
       on the argument at `TraceToken::reach_the_checkpoint` alone.
-- [ ] S68.9 What the first reading asks (design §5b): the parked state on
-      the checkpoint byte (`ll_gc_park`/`ll_gc_unpark`), which an idle
-      mutator's blocking wait answers T with; the member cap at 1M; the loom
-      model's park cases; then S68.8's runs again.
+- [ ] S68.9 What the first reading asks (design §5b): the blocking stretch
+      on the checkpoint byte, which an idle mutator's blocking wait answers T
+      with — built in the crate and the rig (`enter_blocking_on_this_thread`),
+      with the loom model's cases and the posting's kind in the rig; the
+      exported bracket (`ll_gc_blocking_call`) after the re-reading, on the
+      Sage's condition; the cap read at 64k and 1M; then S68.8's runs again.
 - [ ] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9): the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the

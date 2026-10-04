@@ -110,6 +110,16 @@ pub(crate) const CHECKPOINT_ASKED: u8 = 1;
 /// The mutator passed a safepoint checkpoint after the ask.
 #[cfg(feature = "recycler-over-counts")]
 pub(crate) const CHECKPOINT_REACHED: u8 = 2;
+/// The mutator stands in a blocking stretch: no poll to come, at a point where a
+/// poll could stand, so that an ask finds its checkpoint reached at once
+/// (`dev/design/recycler-over-counts.md`, §5b).
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) const CHECKPOINT_BLOCKING: u8 = 3;
+/// In a blocking stretch, and a collector's ask took the stretch as its
+/// checkpoint: the byte keeps the stretch, so that the withdrawal leaves it
+/// standing.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) const CHECKPOINT_BLOCKING_ASKED: u8 = 4;
 
 /// No recall: the collector traces on (`TraceToken::recall_level`).
 pub(crate) const RECALL_NONE: u8 = 0;
@@ -461,6 +471,16 @@ impl TraceToken {
     /// not by a recall a mark raised under an earlier grant.
     pub(crate) fn consent(&self, seen: u8, level: u8) -> Result<(), u8> {
         debug_assert_eq!(state(seen), REQUESTED);
+        // A blocking stretch the thread did not leave answers no ask of the grant this
+        // consent opens (`dev/design/recycler-over-counts.md`, §5b).
+        #[cfg(feature = "recycler-over-counts")]
+        {
+            debug_assert!(
+                !this_thread_is_blocking(),
+                "a consent inside a blocking stretch"
+            );
+            let _ = self.clear_a_stale_blocking();
+        }
         // Ahead of the release swap, which publishes it: the collector reads
         // the recall once before its batch, after its acquire of the grant,
         // and a recall stored after the swap can land behind that reading.
@@ -508,18 +528,48 @@ impl TraceToken {
     }
 
     /// Ask, as the collector holding the grant, for the mutator's next
-    /// safepoint checkpoint: the cut-off T of the set its scan proved.
+    /// safepoint checkpoint: the cut-off T of the set its scan proved. True
+    /// where a blocking stretch answers it at once, T being the blocking stretch.
+    ///
+    /// One compare-and-swap from the value read, retried from the value a
+    /// failure reads (`checkpoint_model`, "an ask against a blocking stretch"): nothing,
+    /// or a stale answer to an earlier grant's ask, becomes the ask; a blocking stretch
+    /// becomes the asked blocking stretch, which keeps it. Its release orders the trace
+    /// before every write the mutator makes after it reads the ask.
     #[cfg(feature = "recycler-over-counts")]
-    pub(crate) fn ask_for_the_checkpoint(&self) {
-        self.checkpoint.store(CHECKPOINT_ASKED, Ordering::Release);
+    pub(crate) fn ask_for_the_checkpoint(&self) -> bool {
+        let mut seen = self.checkpoint.load(Ordering::Acquire);
+        loop {
+            let (asked, blocking) = match seen {
+                CHECKPOINT_BLOCKING => (CHECKPOINT_BLOCKING_ASKED, true),
+                _ => {
+                    debug_assert!(
+                        seen == CHECKPOINT_NONE || seen == CHECKPOINT_REACHED,
+                        "one ask stands a grant"
+                    );
+                    (CHECKPOINT_ASKED, false)
+                }
+            };
+            match self
+                .checkpoint
+                .compare_exchange(seen, asked, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return blocking,
+                Err(now) => seen = now,
+            }
+        }
     }
 
-    /// Whether the mutator passed a checkpoint since the ask, read with the
-    /// acquire that orders every tag it stored before it ahead of the
-    /// collector's reads.
+    /// Whether the mutator passed a checkpoint since the ask, or stands
+    /// in a blocking stretch, read with the acquire that orders every tag it
+    /// stored before
+    /// either ahead of the collector's reads.
     #[cfg(feature = "recycler-over-counts")]
     pub(crate) fn checkpoint_reached(&self) -> bool {
-        self.checkpoint.load(Ordering::Acquire) == CHECKPOINT_REACHED
+        matches!(
+            self.checkpoint.load(Ordering::Acquire),
+            CHECKPOINT_REACHED | CHECKPOINT_BLOCKING | CHECKPOINT_BLOCKING_ASKED
+        )
     }
 
     /// Whether a collector's ask for a checkpoint stands unanswered. A case
@@ -529,11 +579,114 @@ impl TraceToken {
         self.checkpoint.load(Ordering::Acquire) == CHECKPOINT_ASKED
     }
 
-    /// Withdraw the ask, answered or not, before the grant is released: a
-    /// mutator's late answer then lands on a byte no collector reads until it
-    /// asks again, which overwrites it.
+    /// Withdraw the ask, answered or not, before the grant is released, by
+    /// compare-and-swap from each value read back until the byte holds no
+    /// ask: an ask or an answer becomes nothing, an asked stretch the stretch,
+    /// which no withdrawal may bury (`checkpoint_model`, "a withdrawal
+    /// against a blocking stretch").
     #[cfg(feature = "recycler-over-counts")]
     pub(crate) fn withdraw_the_checkpoint(&self) {
+        let mut seen = self.checkpoint.load(Ordering::Acquire);
+        loop {
+            let withdrawn = match seen {
+                CHECKPOINT_ASKED | CHECKPOINT_REACHED => CHECKPOINT_NONE,
+                CHECKPOINT_BLOCKING_ASKED => CHECKPOINT_BLOCKING,
+                _ => return,
+            };
+            match self.checkpoint.compare_exchange(
+                seen,
+                withdrawn,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(now) => seen = now,
+            }
+        }
+    }
+
+    /// Enter a blocking stretch, as the mutator about to block with no poll to
+    /// come, at a point
+    /// where a poll could stand: every reference counted, the gate open. An
+    /// ask standing is answered by the blocking stretch, which an ask's wait reads as
+    /// reached (`checkpoint_model`, "a blocking stretch against an ask").
+    #[cfg(feature = "recycler-over-counts")]
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn enter_blocking(&self) {
+        let seen = self.checkpoint.swap(CHECKPOINT_BLOCKING, Ordering::AcqRel);
+        debug_assert!(
+            seen != CHECKPOINT_BLOCKING && seen != CHECKPOINT_BLOCKING_ASKED,
+            "a blocking stretch inside a blocking stretch"
+        );
+        if seen == CHECKPOINT_ASKED {
+            BLOCKINGS_ANSWERING_AN_ASK.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Leave the blocking stretch, as the mutator running again: the stretch,
+    /// asked or not, becomes
+    /// nothing, by one compare-and-swap from the value read, whose acquire of
+    /// an ask that read the blocking stretch puts that ask's trace before every write
+    /// after the leave (`checkpoint_model`, "an leave against an ask"). A
+    /// byte holding no stretch — one the gate refused — is left as it is.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn leave_blocking(&self) {
+        let mut seen = self.checkpoint.load(Ordering::Acquire);
+        while matches!(seen, CHECKPOINT_BLOCKING | CHECKPOINT_BLOCKING_ASKED) {
+            match self.checkpoint.compare_exchange(
+                seen,
+                CHECKPOINT_NONE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    if seen == CHECKPOINT_BLOCKING_ASKED {
+                        BLOCKINGS_LEFT_AFTER_AN_ASK.fetch_add(1, Ordering::Relaxed);
+                    }
+                    return;
+                }
+                Err(now) => seen = now,
+            }
+        }
+    }
+
+    /// Clear a blocking stretch the mutator did not leave — met at a poll or a consent,
+    /// where a blocking thread cannot stand — so that it answers no later ask:
+    /// the release build's guard, a debug build asserting first
+    /// (`enter_blocking_on_this_thread`). Answers whether there was one.
+    #[cfg(feature = "recycler-over-counts")]
+    fn clear_a_stale_blocking(&self) -> bool {
+        let mut seen = self.checkpoint.load(Ordering::Acquire);
+        loop {
+            let cleared = match seen {
+                CHECKPOINT_BLOCKING => CHECKPOINT_NONE,
+                CHECKPOINT_BLOCKING_ASKED => CHECKPOINT_ASKED,
+                _ => return false,
+            };
+            match self.checkpoint.compare_exchange(
+                seen,
+                cleared,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    STALE_BLOCKINGS_CLEARED.fetch_add(1, Ordering::Relaxed);
+                    return true;
+                }
+                Err(now) => seen = now,
+            }
+        }
+    }
+
+    /// The checkpoint byte as it stands, for a case.
+    #[cfg(all(test, feature = "recycler-over-counts"))]
+    pub(crate) fn checkpoint_for_test(&self) -> u8 {
+        self.checkpoint.load(Ordering::Acquire)
+    }
+
+    /// Leave the byte holding nothing, for a record's next life.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn clear_the_checkpoint(&self) {
         self.checkpoint.store(CHECKPOINT_NONE, Ordering::Relaxed);
     }
 
@@ -548,11 +701,30 @@ impl TraceToken {
     /// one written after T. Relaxed, it would cost no test anything: the
     /// failure is load buffering, which the loom model cannot exhibit
     /// (`checkpoint_model`, "What it does not check").
+    ///
+    /// The answer is a compare-and-swap from the ask, so that an ask the
+    /// collector withdrew between the load and the answer is never answered
+    /// late (`checkpoint_model`, "a late answer against a withdrawal"); an
+    /// unasked poll pays the load alone. A blocking stretch met here is stale, and is
+    /// cleared.
     #[cfg(feature = "recycler-over-counts")]
     #[inline]
     pub(crate) fn reach_the_checkpoint(&self) {
-        if self.checkpoint.load(Ordering::Acquire) == CHECKPOINT_ASKED {
-            self.checkpoint.store(CHECKPOINT_REACHED, Ordering::Release);
+        match self.checkpoint.load(Ordering::Acquire) {
+            CHECKPOINT_ASKED => {
+                let _ = self.checkpoint.compare_exchange(
+                    CHECKPOINT_ASKED,
+                    CHECKPOINT_REACHED,
+                    Ordering::Release,
+                    Ordering::Acquire,
+                );
+            }
+            CHECKPOINT_BLOCKING | CHECKPOINT_BLOCKING_ASKED => {
+                if self.clear_a_stale_blocking() {
+                    self.reach_the_checkpoint();
+                }
+            }
+            _ => {}
         }
     }
 
@@ -976,9 +1148,102 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
 #[cfg(feature = "recycler-over-counts")]
 #[inline]
 pub(crate) fn reach_the_checkpoint_on_this_thread() {
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        !BLOCKING.with(std::cell::Cell::get),
+        "a poll inside a blocking stretch"
+    );
     let record = crate::cycle::mutator_record::this_thread_record();
     if !record.is_null() {
         unsafe { &(*record).token }.reach_the_checkpoint();
+    }
+}
+
+#[cfg(all(feature = "recycler-over-counts", debug_assertions))]
+thread_local! {
+    /// Whether this thread stands in a blocking stretch: a debug build's check
+    /// that nothing
+    /// a blocking stretch forbids — a count write, a poll, a consent — runs inside one.
+    static BLOCKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread stands in a blocking stretch, in a debug build; false
+/// otherwise.
+#[cfg(feature = "recycler-over-counts")]
+#[inline]
+pub(crate) fn this_thread_is_blocking() -> bool {
+    #[cfg(debug_assertions)]
+    return BLOCKING.with(std::cell::Cell::get);
+    #[cfg(not(debug_assertions))]
+    false
+}
+
+/// Blocking stretches entered, stretches that answered an ask standing, stretches
+/// left that found an ask over them, and stale stretches a poll or consent
+/// cleared, since the process started.
+#[cfg(feature = "recycler-over-counts")]
+static BLOCKINGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "recycler-over-counts")]
+static BLOCKINGS_ANSWERING_AN_ASK: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "recycler-over-counts")]
+static BLOCKINGS_LEFT_AFTER_AN_ASK: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "recycler-over-counts")]
+static STALE_BLOCKINGS_CLEARED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// The blocking stretches' counts, in the order of the statics above.
+#[cfg(feature = "recycler-over-counts")]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn blocking_counts() -> [usize; 4] {
+    [
+        BLOCKINGS.load(Ordering::Relaxed),
+        BLOCKINGS_ANSWERING_AN_ASK.load(Ordering::Relaxed),
+        BLOCKINGS_LEFT_AFTER_AN_ASK.load(Ordering::Relaxed),
+        STALE_BLOCKINGS_CLEARED.load(Ordering::Relaxed),
+    ]
+}
+
+/// Enter a blocking stretch on this thread before it blocks with no poll to
+/// come (`dev/design/recycler-over-counts.md`, §5b): a checkpoint, not a poll —
+/// nothing applied, nothing armed, no user code. Under a closed gate — a
+/// teardown, a reset, a collection, where the runtime holds references it
+/// has not counted — it stores nothing, and answers false; a thread with no
+/// record enters none either. The caller's contract is the poll's: every
+/// reference counted. A no-op without `recycler-over-counts`.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn enter_blocking_on_this_thread() -> bool {
+    #[cfg(feature = "recycler-over-counts")]
+    {
+        if !crate::cycle::collect::may_collect() {
+            return false;
+        }
+        let record = crate::cycle::mutator_record::this_thread_record();
+        if record.is_null() {
+            return false;
+        }
+        #[cfg(debug_assertions)]
+        BLOCKING.with(|blocking| blocking.set(true));
+        BLOCKINGS.fetch_add(1, Ordering::Relaxed);
+        unsafe { &(*record).token }.enter_blocking();
+        true
+    }
+    #[cfg(not(feature = "recycler-over-counts"))]
+    false
+}
+
+/// Leave the blocking stretch on this thread, running again after one
+/// [`enter_blocking_on_this_thread`] answered true for. A no-op without `recycler-over-counts`.
+pub(crate) fn leave_blocking_on_this_thread() {
+    #[cfg(feature = "recycler-over-counts")]
+    {
+        let record = crate::cycle::mutator_record::this_thread_record();
+        if !record.is_null() {
+            unsafe { &(*record).token }.leave_blocking();
+        }
+        #[cfg(debug_assertions)]
+        BLOCKING.with(|blocking| blocking.set(false));
     }
 }
 

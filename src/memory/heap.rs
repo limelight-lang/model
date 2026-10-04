@@ -2011,6 +2011,10 @@ pub extern "C" fn ll_thread_exit() {
         return;
     }
 
+    // A thread that exits blocking runs again: the sequence below writes counts
+    // (`crate::cycle::token::enter_blocking_on_this_thread`).
+    crate::cycle::token::leave_blocking_on_this_thread();
+
     // The collection's gate, because its three closed states — collecting,
     // teardown, reset — are exactly the states in which user code runs over
     // structures the sequence below disposes of, and the frames above such a
