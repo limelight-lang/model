@@ -421,39 +421,70 @@ The pause is the exact way of the sets whose Δ-test found no checkpoint —
 a third of them on `web-heap`, whose mutators sleep between requests with no
 poll, as a worker blocked in `accept` does — and of the sets past the cap.
 
-1. *The parked state.* The checkpoint byte (`TraceToken`, beside the token)
-   takes a fourth value, `PARKED`, and the runtime two exports:
-   `ll_gc_park()`, which an embedder calls before it blocks with no poll to
-   come, at a point where every reference is counted and the gate is open
-   (where a poll could stand), and `ll_gc_unpark()`, which it calls when it
-   runs again. Every transition is a read-modify-write of the one byte, so
-   the byte's modification order orders them all:
-   - park: `swap(PARKED, AcqRel)`; an ask it finds standing is answered by
-     the park itself;
-   - unpark: `compare_exchange(PARKED, NONE, AcqRel, Acquire)`; a failure
-     reads the collector's write over `PARKED`, and leaves it;
-   - the ask: `swap(ASKED, AcqRel)`, the previous value read — `PARKED` is
-     a checkpoint reached at once, T being the park;
-   - the wait reads `REACHED` or `PARKED` as reached;
-   - the withdrawal: `compare_exchange` of `ASKED` or `REACHED` to `NONE`,
-     never a store, so that it cannot bury a park.
-   Why it is sound: the park's release puts every tag the mutator stored
-   before it ahead of the collector's acquire of `PARKED`; the mutator
-   writes nothing between the park and the unpark; and the unpark's
-   read-modify-write, later in the byte's order than the collector's ask
-   whenever the ask read `PARKED`, acquires the ask's release, so that no
-   write after the unpark is one the trace — before the ask — could have
-   read (the load-buffering half the poll's acquire covers, §4.7). A
-   mutator that never parks is unchanged. The rig's web loads park around
-   their wait for the next arrival.
-2. *The cap.* `MEMBER_CAP` goes from 64k to 1M: the 400k-member sets take the
-   collector's free, and the act a recall waits for is read at 9.4 ms the
-   longest on `web-heap` at that cap.
-3. *The loom model* (`checkpoint_model`) takes the park: a park against an
-   ask, an unpark against an ask that read the park, a withdrawal against a
-   park.
-4. *Counted*: checkpoints reached by a park, in the Δ-test's counts and the
-   rig's `tag_*` columns.
+1. *The parked state* (revised after the Critic of the plan). The
+   checkpoint byte (`TraceToken`, beside the token) takes two more values,
+   `PARKED` and `PARKED_ASKED`, and the runtime two exports, `ll_gc_park()`
+   and `ll_gc_unpark()`, which bracket a stretch in which the thread blocks
+   with no poll to come.
+   - *The contract is the poll's.* A park stands where a poll could: every
+     reference counted, the gate open. The gate is enforced in code — a
+     park under a closed gate (a teardown, a reset, a collection) stores
+     nothing — and the counting is the compiler's, as the poll's is: it
+     emits the pair around a call it treats as a safepoint, holding no
+     ARC-elided temporary across it (§7, item 16 extended).
+   - *Every transition is a read-modify-write of the one byte*, so its
+     modification order orders them all:
+     - park: `swap(PARKED, AcqRel)`; an `ASKED` it finds is answered by the
+       park, which stands as `PARKED` and is read as reached;
+     - the ask: `swap(ASKED, AcqRel)`, its previous value read: `PARKED` is a
+       checkpoint reached at once, T being the park, and the ask writes
+       `PARKED_ASKED` instead (a second `compare_exchange`), so that the
+       byte keeps the park; a previous `REACHED` is stale — an answer to an
+       earlier grant's ask — and is not a checkpoint;
+     - the poll's answer: `compare_exchange(ASKED, REACHED, Release,
+       Acquire)`, on the branch where its load read `ASKED` alone, so that
+       an unasked poll pays nothing more and a withdrawn ask is never
+       answered late;
+     - the wait reads `REACHED`, `PARKED` or `PARKED_ASKED` as reached;
+     - the withdrawal: `ASKED` or `REACHED` to `NONE`, `PARKED_ASKED` to
+       `PARKED`, by `compare_exchange`, never a store, so that it cannot
+       bury a park;
+     - unpark: `swap(NONE, AcqRel)`.
+   - *A park that outlives its stretch answers nothing later.* Every poll,
+     and every consent, reads the byte already; one that reads `PARKED` or
+     `PARKED_ASKED` — a skipped unpark — clears it to `NONE` (or `ASKED`)
+     first. A record reset for a new life stores `NONE`, and the exit
+     unparks before its own collection. A debug build keeps a thread-local
+     parked flag and asserts it clear at every count write, poll and
+     consent.
+   - *Why it is sound.* The park's release puts every tag stored before it
+     ahead of the collector's acquire of `PARKED`; between park and unpark
+     the thread writes no count and no slot (the debug flag checks it; a
+     free into its heap from another thread writes only dead slots'
+     metadata); and the unpark's read-modify-write, later in the byte's
+     order than any ask that read the park, acquires the ask's release, so
+     that no write after the unpark is one the trace before the ask could
+     read (the load-buffering half the poll's acquire covers, §4.7).
+   - *Both builds export the pair*: no-ops in the default build and on a
+     thread with no record. The rig's web loads park around their wait for
+     the next arrival in both arms.
+2. *The cap is measured, not set.* S68.9's reading runs `web-heap` at 64k and
+   at 1M: at 64k the act already read 5.0–6.2 ms, so the cap alone does not
+   bound what a recall waits for; a commit that a stop could break between
+   members would (§5, item 10, against S68.6b's one act), which is a
+   question for after the reading.
+3. *The loom model* (`checkpoint_model`) takes: a park against an ask, an
+   unpark against an ask that read the park, a withdrawal against a park,
+   a late poll answer against a withdrawal, and a stale `REACHED` read by
+   the next ask.
+4. *Counted*: parks; asks a standing park answered; parks that answered a
+   standing ask; unparks that found the collector's write; stale parks a
+   poll or a consent cleared — in the Δ-test's counts, the rig's `tag_*`
+   columns and a journal kind. *Tests*: a park under a closed gate stores
+   nothing; a park, an ask and a withdrawal leave the park standing; a
+   skipped unpark is cleared by the next poll; a thread that exits parked
+   leaves `NONE`; a set proved at a park is freed. *Docs*: §7's obligation,
+   a DECISIONS entry.
 5. *Not in S68.9*: the record scan's `ReadLive` count, two and a half times
    the heap scan's from S68.4 on, whose cause neither the root's tag nor the
    epoch's measure of work explains (`dev/BENCHMARKS.md`, the same entry);
