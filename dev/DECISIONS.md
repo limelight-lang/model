@@ -61,6 +61,18 @@ debug build asserting the tag at every primitive.
 
 ---
 
+## 2026-10-04 — a tracing cycle collector comes after S68, beside the trial-deletion one in the same build
+
+**Ruled by Edmond**, on the research of the day (`dev/RESEARCH.md`, "immediate
+RC plus a backup tracing collector for cycles…", which advised an arm beside
+the default build): the tracing collector is built after S68 is finished, and
+as a second collector available in the same build rather than a feature arm,
+since it may prove the better one for some loads and two kinds of cycle
+collector would then both be wanted. **Rejected:** building it now beside
+S68.5 (both would move slower); a separate build-time arm.
+
+---
+
 ## 2026-10-04 — the collector's scan reads the edges its mark recorded, and a run's index takes the row's count
 
 **Decision (S68.4, under `recycler-over-counts`).** A collector's mark records

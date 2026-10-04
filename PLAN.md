@@ -158,6 +158,19 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       the default build, by the gate; the results into the journal and the
       article.
 
+## Then: a tracing cycle collector beside the trial-deletion one
+
+Ruled by Edmond on 2026-10-04, after the research of that day
+(`dev/RESEARCH.md`, "immediate RC plus a backup tracing collector for
+cycles…"): build it **after S68**, and not as a build-time arm but as a second
+cycle collector in the same build, available beside the trial-deletion one —
+a load it serves better may want it ("может оказаться, что трассирующий
+сборщик хорош для каких-то случаев… логично иметь два вида сборщика").
+Its first form per the research: registration off the decrement path, a
+per-thread trace at the owner's safepoint triggered by heap growth, roots read
+off the counts, cyclic garbage's destructors run once and freed at the next
+trace. Not planned in steps yet; how the two are chosen between is open.
+
 ## Then: arrays as a performance problem
 
 Opened 2026-08-07; the representation is built (`dev/DECISIONS.md`,
