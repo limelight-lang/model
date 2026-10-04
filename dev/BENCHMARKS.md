@@ -8,6 +8,50 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-04 — S68.9, the second reading: the blocking stretch takes seven missed checkpoints in eight; the past-the-cap sets and the rest still pause the owner, and the garbage stays two to three times the default's
+
+**Builds.** `232cdec`, release test binaries: A the default build (its waits'
+stretches no-ops), B the feature at the 64k cap, C the feature at the 1M cap
+(`LL_RIG_MEMBER_CAP`); the rig's waits without a poll are blocking stretches
+in every arm. `web-heap` as the first reading: 46.78 ms interarrival, two
+mutators on CPUs 1–2, cap 1 on CPU 3, 10 s warm-up, 12 s drain, 116 s cells,
+A B, B A, A B, then C twice. A four-core cloud box, nothing else running.
+
+| | A | B (64k) | C (1M) |
+|---|---:|---:|---:|
+| mutator CPU in the loop, s | 87.9 / 83.6 / 81.4 | 74.5 / 72.0 / 64.9 | 61.3 / 60.0 |
+| collector CPU, s | 52.1 / 49.0 / 47.6 | 54.5 / 52.3 / 49.6 | 51.4 / 50.3 |
+| collections over P | 4,004 / 4,183 / 4,313 | 367 / 356 / 325 | 196 / 181 |
+| longest collection over P, ms | 210 / 168 / 142 | 167 / 153 / 144 | 93 / 43 |
+| — of a set past the cap, ms | — | 167 / 153 / 144 | — |
+| — of a set with no checkpoint, ms | — | 53 / 120 / 78 | 93 / 43 |
+| — of a second refusal, ms | — | 0 / 6.9 / 1.5 | 8.6 / 7.4 |
+| longest application of the collector's frees, ms | — | 3.4 / 8.2 / 3.1 | 3.7 / 7.0 |
+| longest wait of a take, ms | 0 | 0 | 0 |
+| longest commit, ms | — | 8.6 / 6.0 / 6.7 | 12.0 / 8.7 |
+| garbage mean, MB | 78 / 90 / 98 | 310 / 251 / 187 | 199 / 222 |
+| garbage peak, MB | 357 / 356 / 394 | 580 / 533 / 421 | 464 / 493 |
+| Δ-tests proved / touched / no checkpoint | — | 5,040 / 39 / 234 · 4,988 / 55 / 219 · 4,934 / 43 / 190 | 4,939 / 84 / 199 · 5,001 / 77 / 181 |
+| asks a stretch answered at once / stretches that answered an ask | — | 1,756 / 117 · 1,803 / 132 · 1,895 / 148 | 1,858 / 139 · 1,853 / 140 |
+| members the collector freed | — | 61.9M / 61.9M / 62.6M | 78.9M / 79.3M |
+| p99.9 request latency, ms | 369 / 302 / 302 | 537 / 604 / 302 | 336 / 302 |
+
+**Reading.** The stretch did what the Sage conditioned the exported bracket
+on, in part: missed checkpoints fell from 1,625–1,684 to 181–234 a cell. But
+the longest pause at 1M is still a no-checkpoint set (43–93 ms), so the
+condition is not met and the bracket is not built. What misses now is not
+read yet: not a request's synthetic CPU, which polls every 50 µs (`SLICE`);
+the candidates, unverified, are a mutator inside a collection of its own,
+whose polls the closed gate keeps from answering, and a request's build
+between two polls. At 64k the
+longest pause is the past-the-cap set's; at 1M those go to the collector,
+whose longest commit reads 8.7–12.0 ms, which no take waited on. The
+application of the collector's frees passed 5 ms in two cells of five (7.0
+and 8.2 ms). The garbage is 2–3 times A's in every cell of the feature,
+the first reading's finding unchanged by the stretch.
+
+---
+
 ## 2026-10-04 — S68.8, first reading: on `web-heap` the arm spends less mutator CPU but holds twice the garbage, and neither arm keeps the owner's pause under 5 ms
 
 **Builds.** `c024dc0` (S68.6c and its Critic's fixes), release test
