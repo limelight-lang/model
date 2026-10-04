@@ -8,6 +8,45 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-05 — S68.10 read by the protocol: an X turn that releases the lanes only where the collector caught up halves the garbage in both builds, and B's matches A's
+
+**Builds.** `837b424`, release test binaries: A the default build, B the
+feature; both with the rule (`dev/DECISIONS.md`, "an X turn releases every
+lane only on a thread the collector has caught up with"), read once at the
+first poll after the turn, before any splice. `web-heap`, 46.78 ms, two
+mutators, `cap-1`, the protocol's cell: 20 s warm-up, 96 s, 12 s drain;
+five repeats, alternated. The S68.11 entry below is the same protocol
+before the rule.
+
+| | A | B |
+|---|---|---|
+| garbage mean, MB | 41.7 / 53.5 / 49.6 / 42.8 / 40.2 | 44.2 / 40.9 / 45.2 / 53.3 / 45.3 |
+| the same before the rule (S68.11) | 73.7–108.6 | 133.7–212.4 |
+| garbage peak, MB | 256–360 | 255–282 |
+| garbage at the drain's end, bytes | 0 · 0 · 0 · 0 · 0 | 0 · 0 · 0 · 0 · **2,176** |
+| the drain's last free, s | 7.0 / 9.4 / 6.1 / 8.1 / 8.0 | 10.7 / 7.0 / 10.4 / 9.5 / 12.0 (cut) |
+| roots offered again | 333k–352k | 354k–386k |
+| mutator CPU, s | 60.1–62.2 | 40.7–42.9 |
+| collector CPU, s | 33.5–34.7 | 33.4–36.0 |
+| longest owner pause, ms | a collection, 98–184 | the application, 0.7–10.0; no collection over P |
+| members the owner's collections freed, M | 52.6–55.6 | 0.0 |
+| arrival p99.9, ms | 235–436 | 168–302 |
+| Δ-tests proved / touched / no checkpoint | — | 3,152–3,266 / 839–1,020 / 0–1 |
+| second refusals, sets / roots read live | — | 154–232 / 29.8k–47.1k |
+
+**Reading.** The rule does what the readings before it said: the garbage
+falls to 40–54 MB in both builds, and the feature's is the default's. The
+protocol's absolute gate fails in one cell of B: 2,176 bytes stood at the
+12 s drain's end, and the drain's last free comes late in the others too
+(7.0–10.7 s), against 6.1–9.4 s in A. A ring that turns to garbage behind a
+root read live after the drain's first X waits for the next, 8 s later.
+More touches than before (839–1,020 against 96–164), the roots reading live
+in lanes for longer; the second refusals that read their roots live
+154–232 a cell. The application's 10.0 ms in one cell is one slice, the
+host's steal not ruled out.
+
+---
+
 ## 2026-10-05 — S68.11 read by the protocol: the collector frees 99.8 % of the cyclic garbage, the owner's longest pause falls from 117–198 ms to 10–34 ms, and the garbage stays twice the default's
 
 **Builds.** `10b5e7d`, release test binaries: A the default build, B the
