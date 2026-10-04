@@ -576,7 +576,7 @@ poll, as a worker blocked in `accept` does — and of the sets past the cap.
      leaves on every way out, is what closes it.
    - The posting's kinds separate a cut batch, a whole set marked from one
      unmarked, and a mark lost at the publication.
-9. *Not in S69.9*: the record scan's `ReadLive` count, two and a half times
+9. *Not in S68.9*: the record scan's `ReadLive` count, two and a half times
    the heap scan's from S68.4 on, whose cause neither the root's tag nor the
    epoch's measure of work explains (`dev/BENCHMARKS.md`, the same entry);
    S68.9's re-reading measures what remains of the garbage first.

@@ -170,6 +170,10 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       with the loom model's cases and the posting's kind in the rig; the
       exported bracket (`ll_gc_blocking_call`) after the re-reading, on the
       Sage's condition; the cap read at 64k and 1M; then S68.8's runs again.
+- [ ] S68.10 The deferred lanes under turns by X alone (design §5c): every
+      X turn hands back every lane, and under the record scan every turn is
+      an X turn, so no root read live waits; the rule read again, through
+      the Critic and the Sage, before S68.8's runs.
 - [ ] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9): the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the
