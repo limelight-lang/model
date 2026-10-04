@@ -886,3 +886,149 @@ Bacon–Rajan algorithm did:
   pathology; mitigations are an acyclic filter, purging, an adaptive
   threshold, perhaps tracing the young); the root buffer's memory; unbounded
   synchronous pauses; the free-list allocator's locality cost (RC Immix).
+
+## 2026-10-04 — immediate RC plus a backup tracing collector for cycles, against trial deletion over a root buffer
+
+Asked by Edmond: the papers he read suggest tracing finds cycles more cheaply
+than trial deletion over a root buffer; is a hybrid — immediate counting plus
+a tracing collector for cycles, with no root buffer — worth building as an arm
+to compare? A researcher read the full texts below (nothing run here). The
+entries above on the Recycler and on immediate RC with a concurrent cycle
+collector are not repeated.
+
+### Bottom line
+
+Worth trying, **as an arm beside the default build, not a replacement**, in its
+cheapest form first: a per-thread stop-the-owner mark–sweep triggered by heap
+growth, no root buffer, no registration on a decrement, its roots taken from
+the counts (CPython's rule: a count above the in-heap references is held from
+outside). Every like-for-like comparison found puts backup tracing ahead of
+trial deletion (Frampton: trial deletion 1.41–1.94× tracing's time per
+collection, on every benchmark). The main risk is the pause: it grows with the
+live heap (Nim's old mark-and-sweep, 46–205 ms worst latency on a 135 MB live
+heap, against 1.1–6.2 ms for ORC), so a stop-the-owner trace may beat today's
+longest owner pause but cannot meet the 5 ms gate of
+`dev/design/recycler-over-counts.md`; that needs concurrent marking, which
+brings a hook on decrements back, though only while marking runs. The second
+risk is memory: "the choice of heuristics dominated results, rather than the
+algorithm" (Frampton).
+
+### What the literature measured
+
+- **Frampton's thesis, ch. 4** (Jikes RVM, stop-the-world, a collection per
+  8 MB allocated): trial deletion costs 1.69× backup tracing (geometric mean;
+  1.43× the nodes visited, 1.19× the cost a visit), "around 70% worse" across
+  triggers from 128 KB to 128 MB; backup tracing ≈ 8 ns a visit. A concurrent
+  SATB "cycle tracing" is 0.83× backup tracing, skipping acyclic types,
+  sweeping only candidates and re-checking only objects whose count fell to
+  non-zero during the trace; trial deletion's candidate set "requires that
+  this set be continually maintained", a measurable cost. Counterpoint: trial
+  deletion won mutator time on jess.
+  <https://users.cecs.anu.edu.au/~steveb/pubs/theses/frampton-2010.pdf>
+- **Down for the Count? (ISMM'12)** calls backup tracing "substantially better
+  than trial deletion", citing Frampton, with no measurement of its own.
+  <https://users.cecs.anu.edu.au/~steveb/pubs/papers/rc-ismm-2012.pdf>
+- **RC Immix (OOPSLA'13)**: backup tracing needs the stack and register roots,
+  hence stack maps — "naïve reference counting implementations usually do not
+  perform cycle collection" for that reason.
+  <https://users.cecs.anu.edu.au/~steveb/pubs/papers/rcix-oopsla-2013.pdf>
+- **LXR (PLDI'22)**: an SATB trace on the counting write barrier finds cycles
+  "with no additional mutator overhead" (barrier 1.6 %), triggered by free
+  blocks or predicted wastage; "RC may never delete an unmarked object while an
+  SATB trace is underway". Worst case: a live singly-linked list.
+  <https://users.cecs.anu.edu.au/~steveb/pubs/papers/lxr-pldi-2022.pdf>
+- **Fast Conservative GC (OOPSLA'14)**: a conservative stack and register scan
+  falsely retains under 0.01 % of objects; conservative RC Immix is within
+  2–3 % of exact. <https://dl.acm.org/doi/abs/10.1145/2660193.2660198>
+- **Nim's old `refc`** ("Refcounting + Mark&Sweep... Been there, done that,
+  didn't work."): deferred counting, a conservative stack scan, a cycle pass
+  marking from stack and globals at a threshold of 4 MB then twice the
+  occupied memory. ORC (trial deletion) replaced it; against mark-and-sweep:
+  worst latency 1.10 vs 46.4 ms, memory 137 vs 333 MiB, throughput 35.0k vs
+  39.6k requests/s — mark-and-sweep faster.
+  <https://raw.githubusercontent.com/nim-lang/Nim/devel/lib/system/gc.nim>,
+  <https://nim-lang.org/blog/2020/12/08/introducing-orc.html>
+- **CPython** scans no stack: the working count is the refcount less the
+  references from inside the set, and what stays above zero is held from
+  outside; containers are tracked at allocation, not at decrement; a full
+  collection runs when pending long-lived objects exceed 25 % of them; PEP 442
+  runs finalizers, then detects again for resurrection.
+  <https://github.com/python/cpython/blob/main/InternalDocs/garbage_collector.md>
+- **PHP** runs destructors, sets `IS_OBJ_DESTRUCTOR_CALLED` and collects once
+  more. <https://github.com/php/php-src/blob/master/Zend/zend_gc.c>
+- **Oilpan** moved Blink from counting to tracing over cycle leaks and
+  use-after-free; precise heap, conservative native stack.
+  <https://v8.dev/blog/high-performance-cpp-gc>
+- **Rust**: `dumpster` is trial deletion over a candidate set filled at drop
+  (<https://claytonwramsey.com/blog/dumpster>); `bacon-rajan-cc` collects
+  synchronously.
+- **2024–26, abstracts only**: Kim et al., partial tracing for C++/Rust without
+  stack maps, counts identifying the roots
+  (<https://jhyeon.kim/papers/pldi26.pdf>); Arborescent GC (ISMM'25,
+  <https://dl.acm.org/doi/10.1145/3735950.3735953>); Verona's SCC-based
+  counting (ISMM'24, <https://dl.acm.org/doi/10.1145/3652024.3665507>).
+- Not verified in a primary source: the Unified Theory paper read in abstract
+  only (<https://doi.org/10.1145/1028976.1028982>); Swift, Objective-C and Perl
+  having no cycle collector, from memory.
+
+### What decides the winner
+
+Trial deletion walks each candidate's reachable subgraph two or three times a
+round, live parts included, and the same live structure comes back with every
+new candidate: its work is the sum of those subgraphs, unbounded by the heap.
+Tracing visits each live object once a collection plus a sweep. Tracing loses
+where the live heap dwarfs the cyclic garbage and the candidates' subgraphs
+stay small (Nim's JSON server), where the pause must stay short without
+concurrent marking, where concurrent marking needs a barrier, and where the
+roots cannot be found.
+
+### Fit here
+
+- Destructors and copy-on-write are untouched: immediate counting still frees
+  acyclic garbage at once; the trace takes only what counts cannot.
+- With a growth-triggered stop-the-owner trace the decrement loses its
+  registration (S67.5 counted 1.60M registrations in one `web-heap` run; the
+  saving is unmeasured).
+- Per-thread heaps, no reference crossing threads: a per-thread trace with no
+  barrier.
+- Roots without stack maps: (a) from the counts, CPython's rule — sound only at
+  safepoints where no ARC-elided borrow is an entity's sole reference, the
+  compiler's to confirm, at one extra pass over every object; (b) a
+  conservative scan of the owner's stack and registers plus an explicit list
+  of Rust-side holders, which needs an "is this an allocated object start"
+  lookup; (c) request boundaries, where the stack is empty.
+- A concurrent stage 2: re-check objects whose count fell to non-zero during
+  marking (Frampton, for deferred counting; that it holds with counted locals
+  is the researcher's inference, unverified), LXR's rule for an object whose
+  count reaches zero during marking (the withheld returns may cover it), new
+  objects live.
+- Cyclic garbage's destructors as PHP and CPython: called in sweep order, the
+  "called" flag set, the objects kept to the next trace and freed then if still
+  unmarked — which makes resurrection safe.
+
+### Numbers, all estimates
+
+Our own figures point the same way, by inference: on `web-heap` the collector
+spends 46.7–49.9 s of CPU a 116 s run against the mutators' ≈ 82 s (S68.1,
+`dev/BENCHMARKS.md`), ≈ 230 whole walks of `web-heap-150k`'s state (1.53M rows,
+202 ms a walk). The 400k garbage ring: marking does not touch garbage; ≈ 3 ms a
+pass at 8 ns a visit, freeing ≈ 15 ms (the measured acyclic cascade) — an owner
+pause of ≈ 20–30 ms against 62–67 ms on one thread and 48–51 ms split today.
+`web-heap-150k`: 25–70 ms a trace, ≈ 0.03–0.14 of a core at one or two traces a
+second, against ≈ 0.4 today. Caveat: part of any win is representation, not
+algorithm — our trial deletion costs ≈ 155 ns a ring member against ≈ 8 ns a
+mark visit with a header bit.
+
+### The minimal experiment it proposes
+
+A feature arm `trace-backup`: registration out of the decrement path; a
+per-thread trigger on held bytes (twice what the last trace left, 4 MB floor);
+at the owner's safepoint, in-heap reference counts, a mark from what is held
+from outside, the destructor phase, a sweep; in debug builds a check of its
+verdicts against Bacon–Rajan run beside it. Measure: registration's price alone
+(on and off, collector off, `web-heap` mutator CPU); the 400k-ring probe;
+`web-heap` and `web-arena` (mutator plus trace CPU, the longest owner pause,
+mean and peak held garbage, RSS); two loads where tracing should lose (a large
+live heap with rare cycles, a long live list). Gate against the default build:
+total CPU lower, held garbage no worse than its 71–78 MB mean, the longest pause
+under its 67–160 ms; a stage 2 with concurrent marking against the 5 ms gate.
