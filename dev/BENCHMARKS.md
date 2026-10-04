@@ -86,7 +86,30 @@ diagnostic arms not kept):
   by half and the collector's nearly doubled. The record scan's cheaper
   positions are not what holds the garbage; turning the epoch faster on them
   is far worse.
-What holds the remaining 40–60 MB over the default's is still unread.
+- *The X turn's release of every lane.* B's epoch turns only by X since
+  S68.4, and every X turn hands back every deferred lane (`reoffer_the_lanes_due`,
+  the `x_turns` mirror), so every root read live is offered again at every
+  turn instead of after one, three or seven. A diagnostic arm at `cd8be5d`
+  that keeps the lanes' waits across an X turn, two 60 s cells each at the
+  64k cap, alternated, against the same binary with the release:
+
+  | | waits kept | every lane released |
+  |---|---|---|
+  | garbage mean, MB | 65.7 / 68.7 | 165.0 / 173.4 |
+  | garbage peak, MB | 299 / 312 | 345 / 363 |
+  | roots offered again | 161k / 159k | 882k / 882k |
+  | freed in the drain, members | 122k / 51k | 1.85M / 2.03M |
+  | garbage at the drain's end, MB | 1.6 / 1.6 | 0 / 0 |
+  | mutator CPU, s | 35.6 / 34.8 | 37.6 / 36.8 |
+  | collector CPU, s | 28.1 / 27.7 | 27.3 / 27.2 |
+
+  With the waits kept the garbage is below the default's 78–98 MB of the
+  table above. The 1.6 MB left at the drain's end is not read yet; it is
+  garbage the drain's turns did not reach with the waits kept. The rule is the Sage's of 2026-09-28
+  (`dev/DECISIONS.md`): X counts in a byte of its own whose advance releases
+  every lane, because no fixed schedule of turns excludes a stamp-epoch gap
+  of zero modulo four. Under the arm every turn is an X turn, so the rule
+  turns the lanes' waits off altogether.
 
 ---
 
