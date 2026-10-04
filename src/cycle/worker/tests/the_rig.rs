@@ -70,6 +70,9 @@
 //!   (`dev/BENCHMARKS.md`, "readings the S65 and S67 stage notes held, carried
 //!   at the stages' close", a mutator asleep to its requests); the drain polls
 //!   every millisecond either way;
+//! - `LL_RIG_FIRE_EVERY` — the web loads' explicit fire
+//!   (`ll_gc_collect_cycles`) after every that many requests a mutator
+//!   serves, a take that can land on a collector's commit; none when unset;
 //! - `LL_RIG_STANDINGS` — set to 1, the tokens' byte states are timed
 //!   (`worker::testing::record_standings`), whose table's lock the handshake
 //!   then takes on both sides; the standing figures read zero when unset;
@@ -1872,6 +1875,11 @@ impl WebLoop {
             self.reading.checksum =
                 self.streams.checksum().rotate_left(17) ^ self.long_lived.draws_checksum();
         }
+        let fire_every = count_from_env("LL_RIG_FIRE_EVERY");
+        if fire_every > 0 && self.requests.is_multiple_of(fire_every) {
+            self.freed_by_polls += unsafe { crate::gc::ll_gc_collect_cycles() };
+            garbage.read(Instant::now(), held_by_size());
+        }
         overran
     }
 
@@ -2692,6 +2700,24 @@ fn seconds_from_env(variable: &str) -> Duration {
 }
 
 /// Milliseconds `variable` names, zero when it is unset.
+/// The count `variable` names, read once a process; zero when unset.
+fn count_from_env(variable: &'static str) -> usize {
+    static COUNTS: std::sync::Mutex<Vec<(&str, usize)>> = std::sync::Mutex::new(Vec::new());
+    let mut counts = COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(&(_, count)) = counts.iter().find(|(name, _)| *name == variable) {
+        return count;
+    }
+    let count = std::env::var(variable).map_or(0, |count| {
+        count
+            .parse()
+            .unwrap_or_else(|_| panic!("{variable} is a count"))
+    });
+    counts.push((variable, count));
+    count
+}
+
 fn millis_from_env(variable: &str) -> Duration {
     std::env::var(variable).map_or(Duration::ZERO, |millis| {
         Duration::from_secs_f64(millis.parse::<f64>().expect("a count of milliseconds") / 1000.0)

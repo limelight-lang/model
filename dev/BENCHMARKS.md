@@ -67,6 +67,15 @@ a few milliseconds a theft is about the 340 long events; the box is a
 Firecracker guest of four vCPUs. A mutator whose vCPU is stolen for longer
 than the Δ-test's 2 ms wait misses its checkpoint, and no poll answers it.
 
+**A take that lands on a commit** (`LL_RIG_FIRE_EVERY=20`: each mutator's
+explicit fire after every 20 requests, one protocol cell of B at the 1M
+cap, `0123e22` with the knob): 83 takes waited on the token, 93 ms in all,
+the longest 13.2 ms against the longest commit's 13.4 ms; the application's
+longest 4.5 ms; no collection over P. The protocol's `token_wait_longest_us`
+gate (twice the default's, which is 0, plus 1 ms) fails: at 1M a take waits
+out a whole commit. The fires collect R whole on the owner, so the cell's
+garbage (28 MB) and latency (p99.9 940 ms) read the fires, not the scheme.
+
 **The Δ-test's wait at 20 ms** (`LL_RIG_CHECKPOINT_WAIT_US`, one protocol
 cell each of B, `f1e6795`): no checkpoint 1 against 38 at 2 ms; collections
 over P 0 against 29; members the owner freed 0.0M against 0.3M; the
