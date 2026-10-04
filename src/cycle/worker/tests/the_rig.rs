@@ -3738,6 +3738,27 @@ impl CellReading {
             ("tag_checkpoints_missed", tag_counts().2.to_string()),
             ("tag_checkpoint_wait_us", tag_counts().3.to_string()),
             ("tag_checkpoint_wait_longest_us", tag_counts().4.to_string()),
+            // The collector's own frees and the split, the same way
+            // (`crate::cycle::collector_frees`, `crate::cycle::split`).
+            ("frees_sets", frees_counts()[0].to_string()),
+            ("frees_members", frees_counts()[1].to_string()),
+            ("frees_drops", frees_counts()[2].to_string()),
+            ("frees_held_drops", frees_counts()[3].to_string()),
+            ("frees_not_ineligible", frees_counts()[4].to_string()),
+            ("frees_not_past_the_cap", frees_counts()[5].to_string()),
+            ("frees_not_recalled", frees_counts()[6].to_string()),
+            ("frees_not_allocation_failed", frees_counts()[7].to_string()),
+            ("frees_not_frees_stand", frees_counts()[8].to_string()),
+            ("frees_longest_act_us", frees_counts()[9].to_string()),
+            ("frees_application_us", frees_counts()[10].to_string()),
+            (
+                "frees_longest_application_us",
+                frees_counts()[11].to_string(),
+            ),
+            ("split_sets", split_counts()[0].to_string()),
+            ("split_requeued", split_counts()[1].to_string()),
+            ("split_second_refusals", split_counts()[2].to_string()),
+            ("split_dropped", split_counts()[3].to_string()),
         ]
     }
 
@@ -4482,6 +4503,43 @@ fn tag_counts() -> (usize, usize, usize, u128, u128, usize) {
     }
     #[cfg(not(feature = "recycler-over-counts"))]
     (0, 0, 0, 0, 0, 0)
+}
+
+/// [`crate::cycle::collector_frees::frees_counts`] flat, times in µs: sets,
+/// members, drops, held drops, the five refusals, the longest act, the
+/// applications in all and at the longest; zeros without the feature.
+fn frees_counts() -> [u128; 12] {
+    #[cfg(feature = "recycler-over-counts")]
+    {
+        let counts = crate::cycle::collector_frees::frees_counts();
+        let [a, b, c, d, e] = counts.not_freed.map(|n| n as u128);
+        [
+            counts.sets as u128,
+            counts.members as u128,
+            counts.drops as u128,
+            counts.held as u128,
+            a,
+            b,
+            c,
+            d,
+            e,
+            counts.longest_act.as_micros(),
+            counts.applications.as_micros(),
+            counts.longest_application.as_micros(),
+        ]
+    }
+    #[cfg(not(feature = "recycler-over-counts"))]
+    [0; 12]
+}
+
+/// [`crate::cycle::split::split_counts`], zeros without the feature.
+fn split_counts() -> [usize; 4] {
+    #[cfg(feature = "recycler-over-counts")]
+    {
+        crate::cycle::split::split_counts()
+    }
+    #[cfg(not(feature = "recycler-over-counts"))]
+    [0; 4]
 }
 
 /// One cell's line, prefixed `rig,` for the driver, after the header's

@@ -394,9 +394,24 @@ notifications, the teardown and the close are the rest. So the steps:
        alone, and the mark is a child's.
      - Whether S holds a weakly-held member is read off the Δ-test's reading
        of all of W, so a weakly-held member of U unmarks S too.
-     - The explicit fire collects over R whole, which gives P back unread:
-       its S reads live by C's counts in that collection and is stamped,
-       its held drops applied at the next poll.
+     - A collection over R whole — the explicit fire's among them — gives P
+       back unread and then applies what stands on the record, the held
+       drops with it, before its trace, as the pressure path does (the
+       Critic of the S68.6c code, finding 2).
+     - A child of S with an ownership mark refuses the preparation too: the
+       dispose a held drop stands in for destroys an owned child, which a
+       release does not (finding 4).
+     - Where U is kept in W, the debug build's exact check is not run: it
+       asserts every count of W internal, which a live member of U breaks
+       (finding 1).
+     - *Open* (finding 3): the disposition sets the second-chance bit on
+       every unwalked root it writes back, and a root left unwalked by a
+       recall or a refused allocation is one; such a root, met by a touch
+       at its next batch, goes the exact way at its first refusal. P's
+       entries have no bit free to tell the two apart (two for the verdict,
+       one for the deferral's mark), so the cost is counted rather than
+       removed: the runs read `split_second_refusals` against
+       `split_requeued`.
 
 ## 6. The owner's poll
 

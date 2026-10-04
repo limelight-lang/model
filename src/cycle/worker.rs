@@ -3048,6 +3048,10 @@ unsafe fn split_and_free(
     // U: refused and sent back to R once, or, a root of it having spent its
     // second chance, kept in W as a seed of S, which then goes unmarked.
     let mut s_proved = !test.weakly_held;
+    // U kept in W: the proof does not cover it, and the debug build's exact
+    // check, which asserts every count of W internal, has no premise.
+    #[cfg(debug_assertions)]
+    let mut u_kept = false;
     if touched {
         if unsafe { split::close_over_the_record(arena) }.is_break() {
             unsafe { split::clear_the_marks(arena) };
@@ -3056,6 +3060,10 @@ unsafe fn split_and_free(
         }
         if unsafe { posts.a_marked_root_spent_its_second_chance() } {
             s_proved = false;
+            #[cfg(debug_assertions)]
+            {
+                u_kept = true;
+            }
             split::note(split::Counted::SecondRefusal);
         } else {
             unsafe { split::refuse_the_marked(arena) };
@@ -3090,9 +3098,9 @@ unsafe fn split_and_free(
             // A debug build checks every proof exactly, read-only before
             // anything is written.
             #[cfg(debug_assertions)]
-            unsafe {
-                collector_frees::check_every_count_is_internal(arena)
-            };
+            if !u_kept {
+                unsafe { collector_frees::check_every_count_is_internal(arena) };
+            }
             unsafe { collector_frees::commit(arena, &mut frees) };
             let edges = if s_proved {
                 Some(unsafe { split::edges_into_the_marked(arena) })
@@ -3108,10 +3116,12 @@ unsafe fn split_and_free(
             // unfreed, so that the check's map over W stays bounded and a
             // recall waits for nothing more than the preparation.
             #[cfg(debug_assertions)]
-            if !matches!(
-                _reason,
-                collector_frees::NotFreed::PastTheCap | collector_frees::NotFreed::Recalled
-            ) {
+            if !u_kept
+                && !matches!(
+                    _reason,
+                    collector_frees::NotFreed::PastTheCap | collector_frees::NotFreed::Recalled
+                )
+            {
                 unsafe { collector_frees::check_every_count_is_internal(arena) };
             }
             whole(arena)

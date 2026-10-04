@@ -561,10 +561,10 @@ fn a_clean_ring_is_freed_by_the_collector_and_the_ring_it_holds_by_the_owner() {
 }
 
 /// A proved S given back unread — the explicit fire collects over R whole —
-/// takes C's held drops to the record for the next application, which lowers
-/// its counts; the next batch then proves it alone and the owner frees it.
+/// has C's held drops applied before that collection's trace, so S reads its
+/// own counts there and is freed with the rest.
 #[test]
-fn held_drops_given_back_unread_are_applied_at_the_next_poll() {
+fn held_drops_given_back_unread_are_applied_before_the_trace_over_r() {
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
@@ -574,29 +574,142 @@ fn held_drops_given_back_unread_are_applied_at_the_next_poll() {
     let _ = served_and_counted();
     assert_eq!(
         unsafe { crate::gc::ll_gc_collect_cycles() },
-        2,
-        "the clean ring applied; the destructed ring, read over R with C's \\
-         counts standing, survives"
+        4,
+        "the clean ring applied, the destructed ring collected over R"
     );
-    assert_eq!(
-        DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed),
-        destructed
-    );
-    assert!(
-        unsafe { &*record() }.collectors_frees_stand(),
-        "the held drop stands on the record"
-    );
-    let _ = unsafe { ll_gc_maybe_collect() };
-    assert!(!unsafe { &*record() }.collectors_frees_stand());
-
-    crate::cycle::queue::reoffer_deferred_candidates();
-    let _ = served_and_counted();
-    let _ = unsafe { ll_gc_maybe_collect() };
     assert_eq!(
         DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed,
-        2,
-        "the destructed ring freed once its counts fell"
+        2
     );
+    assert!(!unsafe { &*record() }.collectors_frees_stand());
+    reset_lanes();
+}
+
+/// A clean ring `d` whose first member holds the first of a ring `a`, every
+/// one garbage, `d1` and `a1` registered first: a batch of two reaches all
+/// four, and a touch of `a1` refuses `a` alone.
+unsafe fn a_clean_ring_over_a_ring(arena: &mut Arena) -> [*mut Object; 4] {
+    let holder = ClassBuilder::new("DeltaTestOuterHolder")
+        .prop("next", true)
+        .prop("held", true)
+        .build();
+    let node = node_class();
+    let mut context = LLContext { arena: &mut *arena };
+    let d1 = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
+    let d2 = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
+    let a1 = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
+    let a2 = unsafe { new_constructed(&mut context, node, MemoryCategory::GcHeap) };
+    unsafe {
+        store_prop(arena, d1, prop_offset(0), d2);
+        store_prop(arena, d2, prop_offset(0), d1);
+        store_prop(arena, d1, prop_offset(1), a1);
+        store_prop(arena, a1, prop_offset(0), a2);
+        store_prop(arena, a2, prop_offset(0), a1);
+        for member in [d1, a1, d2, a2] {
+            assert!(!ll_release(member as *mut RcHeader));
+        }
+    }
+    [d1, d2, a1, a2]
+}
+
+/// A touch refuses what it reaches and no more: the ring the touched member
+/// stands in goes back to R, the clean ring holding it is freed by the
+/// collector, its edge into the refused ring a drop like any other; the next
+/// batch proves the refused ring alone.
+#[test]
+fn a_touch_refuses_its_closure_and_the_rest_is_freed() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let [_, _, a1, _] = unsafe { a_clean_ring_over_a_ring(&mut arena) };
+    touch_between_the_phases(a1);
+    let freed_before = crate::cycle::collector_frees::frees_counts();
+    let requeued = crate::cycle::split::split_counts()[1];
+
+    let counts = served_and_counted();
+    assert_eq!(counts.touched, 1);
+    assert_eq!(crate::cycle::split::split_counts()[1] - requeued, 1);
+    assert_eq!(
+        crate::cycle::collector_frees::frees_counts().members - freed_before.members,
+        2,
+        "the clean ring freed beside the refused one"
+    );
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the clean ring applied"
+    );
+
+    let counts = served_and_counted();
+    assert_eq!((counts.proved, counts.touched), (1, 0));
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the refused ring, proved"
+    );
+    reset_lanes();
+}
+
+/// At a second refusal the touched closure stays in W as a seed of S, which
+/// goes the owner's exact way unmarked, while the collector frees C beside
+/// it; the owner applies C's drop into S before it reads P.
+#[test]
+fn a_second_refusal_beside_a_clean_ring_frees_both() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let [_, _, a1, _] = unsafe { a_clean_ring_over_a_ring(&mut arena) };
+    touch_between_the_phases(a1);
+    let _ = served_and_counted();
+    // The clean ring is freed at the first batch, and the refused ring's roots
+    // go back to R.
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
+
+    touch_between_the_phases(a1);
+    let second = crate::cycle::split::split_counts()[2];
+    let counts = served_and_counted();
+    assert_eq!(counts.touched, 1);
+    assert_eq!(crate::cycle::split::split_counts()[2] - second, 1);
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the refused ring, the exact way"
+    );
+    reset_lanes();
+}
+
+/// A weakly-held member beside a clean ring: the ring it stands in seeds S,
+/// unmarked, and the collector frees the clean ring holding it; the owner
+/// applies the drop into S, then frees S the exact way.
+#[test]
+fn a_weakly_held_ring_beside_a_clean_one_is_split_and_unmarked() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let [_, _, a1, _] = unsafe { a_clean_ring_over_a_ring(&mut arena) };
+    let weak = {
+        let mut context = LLContext { arena: &mut arena };
+        unsafe { crate::weak::ll_weakref_create(&mut context, a1 as *mut RcHeader) }
+    };
+    let freed_before = crate::cycle::collector_frees::frees_counts();
+    let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
+
+    let counts = served_and_counted();
+    assert_eq!((counts.proved, counts.weakly_held), (1, 1));
+    assert_eq!(
+        crate::cycle::collector_frees::frees_counts().members - freed_before.members,
+        2
+    );
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 4);
+    assert_eq!(
+        crate::cycle::trace::take_sets_proved_by_tags_validated(),
+        0,
+        "S unmarked"
+    );
+    unsafe {
+        assert!(ll_release(weak as *mut RcHeader));
+        crate::object::ll_entity_die(weak as *mut RcHeader);
+    }
     reset_lanes();
 }
 

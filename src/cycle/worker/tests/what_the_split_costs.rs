@@ -41,6 +41,89 @@ unsafe fn a_garbage_ring(arena: &mut Arena, members: usize) {
     }
 }
 
+/// A garbage ring of `members` arrays, each a mixed vector holding two
+/// integers and the next array, one root registered: the array-bearing form
+/// of [`a_garbage_ring`], whose members each carry a body.
+unsafe fn a_garbage_ring_of_arrays(members: usize) {
+    use crate::value::{Tag, Value};
+    let ring: Vec<*mut crate::array::entity::LLArray> = (0..members)
+        .map(|_| unsafe { crate::array::entity::ll_array_new(MemoryCategory::GcHeap) })
+        .collect();
+    for index in 0..members {
+        let array = ring[index];
+        unsafe {
+            assert!(crate::array::testing::push(array, Value::int(1)));
+            assert!(crate::array::testing::push(array, Value::int(2)));
+            // The next array's creation reference, moved into the slot.
+            assert!(crate::array::testing::push(
+                array,
+                Value::entity(Tag::Array, ring[(index + 1) % members] as *mut RcHeader)
+            ));
+        }
+    }
+    unsafe {
+        ll_retain(ring[0] as *mut RcHeader);
+        assert!(
+            !ll_release(ring[0] as *mut RcHeader),
+            "the root is registered"
+        );
+    }
+}
+
+unsafe extern "C" fn a_leaf_destructor(_object: *mut Object) {}
+
+/// A garbage ring of `members / 2` clean objects, each holding one leaf of a
+/// class with a destructor, one root registered: the split's form, whose
+/// ring the collector frees and whose leaves reach the owner proved, the
+/// ring's edge into each held.
+unsafe fn a_clean_ring_holding_destructed_leaves(arena: &mut Arena, members: usize) {
+    let ring_class = ClassBuilder::new("SplitHoldingNode")
+        .prop("next", true)
+        .prop("held", true)
+        .build();
+    let leaf_class = ClassBuilder::new("SplitDestructedLeaf")
+        .destructor(a_leaf_destructor as *const ())
+        .build();
+    let new = |arena: &mut Arena, class| {
+        let mut context = LLContext { arena: &mut *arena };
+        unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) }
+    };
+    let ring: Vec<*mut Object> = (0..members / 2).map(|_| new(arena, ring_class)).collect();
+    for index in 0..ring.len() {
+        let leaf = new(arena, leaf_class);
+        unsafe {
+            move_prop(ring[index], prop_offset(0), ring[(index + 1) % ring.len()]);
+            move_prop(ring[index], prop_offset(1), leaf);
+        }
+    }
+    unsafe {
+        ll_retain(ring[0] as *mut RcHeader);
+        assert!(
+            !ll_release(ring[0] as *mut RcHeader),
+            "the root is registered"
+        );
+    }
+}
+
+/// The ring a round builds: `LL_PROBE_SHAPE` names it — `objects`, the
+/// default, `arrays`, or `held` — and answers the members the owner's poll
+/// counts as freed where the collector frees C. In `held` that is the ring
+/// alone: the batch's root stands in C, so no root lands in S, which is not
+/// posted, and the leaves die by counting at the application of C's drops,
+/// which no poll counts.
+unsafe fn a_ring_of_the_probes_shape(arena: &mut Arena, members: usize) -> usize {
+    match std::env::var("LL_PROBE_SHAPE").as_deref() {
+        Ok("arrays") => unsafe { a_garbage_ring_of_arrays(members) },
+        Ok("held") => {
+            unsafe { a_clean_ring_holding_destructed_leaves(arena, members) };
+            return members / 2;
+        }
+        Ok("objects") | Err(_) => unsafe { a_garbage_ring(arena, members) },
+        Ok(other) => panic!("no probe shape {other}"),
+    }
+    members
+}
+
 /// The milliseconds of `wall`.
 fn ms(wall: Duration) -> f64 {
     wall.as_secs_f64() * 1e3
@@ -63,6 +146,10 @@ fn measure_one_thread_against_the_split() {
         let _ = crate::cycle::collector_frees::set_member_cap_for_test(cap);
         eprintln!("member cap {cap}");
     }
+    eprintln!(
+        "shape {}",
+        std::env::var("LL_PROBE_SHAPE").unwrap_or_else(|_| "objects".into())
+    );
     eprintln!("members | one thread | collector | owner's pause | collector + owner");
     for members in [4_000, 40_000, 400_000] {
         let mut alone = Vec::new();
@@ -71,14 +158,14 @@ fn measure_one_thread_against_the_split() {
         let mut phases = Vec::new();
         for _ in 0..ROUNDS {
             let mut arena = Arena::new();
-            unsafe { a_garbage_ring(&mut arena, members) };
+            let _ = unsafe { a_ring_of_the_probes_shape(&mut arena, members) };
             let start = Instant::now();
             let freed = unsafe { ll_gc_collect_cycles() };
             alone.push(start.elapsed());
             assert_eq!(freed, members, "one thread freed the ring");
 
             let mut arena = Arena::new();
-            unsafe { a_garbage_ring(&mut arena, members) };
+            let counted = unsafe { a_ring_of_the_probes_shape(&mut arena, members) };
             unsafe { &*record() }.set_batch_size(1);
             let _ = crate::cycle::trace::take_sets_garbage_whole();
             let (served, wall) = timed_serve();
@@ -96,7 +183,11 @@ fn measure_one_thread_against_the_split() {
             let freed = unsafe { ll_gc_maybe_collect() };
             owner.push(start.elapsed());
             phases.push((start.elapsed(), testing::take_verdict_collections().phases));
-            assert_eq!(freed, members, "the owner freed the ring");
+            // A C past the cap drops the split, and the owner frees W whole.
+            assert!(
+                freed == counted || freed == members,
+                "the owner freed the ring: {freed} of {members}"
+            );
             // The fast path of a set the drain found garbage whole, or under
             // `recycler-over-counts` that of a set proved by its tags, which
             // reads no member's cells.

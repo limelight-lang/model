@@ -252,6 +252,11 @@ static SETS_FREED: AtomicUsize = AtomicUsize::new(0);
 static MEMBERS_FREED: AtomicUsize = AtomicUsize::new(0);
 static DROPS_POSTED: AtomicUsize = AtomicUsize::new(0);
 static NOT_FREED: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
+static HELD_DROPS: AtomicUsize = AtomicUsize::new(0);
+static LONGEST_ACT_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static APPLICATION_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LONGEST_APPLICATION_NANOS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// The collector's frees since the process started: sets, members, drops,
 /// and the sets that went the owner's way by reason, in [`NotFreed`]'s order.
@@ -262,6 +267,14 @@ pub(crate) struct FreesCounts {
     pub(crate) members: usize,
     pub(crate) drops: usize,
     pub(crate) not_freed: [usize; 5],
+    /// Drops into S held with a proved set.
+    pub(crate) held: usize,
+    /// The longest commit, the act a recall waits for, which the cap bounds.
+    pub(crate) longest_act: std::time::Duration,
+    /// The owner's applications, in all and at the longest: its pause for
+    /// what the collector freed.
+    pub(crate) applications: std::time::Duration,
+    pub(crate) longest_application: std::time::Duration,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -270,6 +283,12 @@ pub(crate) fn frees_counts() -> FreesCounts {
         sets: SETS_FREED.load(Ordering::Relaxed),
         members: MEMBERS_FREED.load(Ordering::Relaxed),
         drops: DROPS_POSTED.load(Ordering::Relaxed),
+        held: HELD_DROPS.load(Ordering::Relaxed),
+        longest_act: std::time::Duration::from_nanos(LONGEST_ACT_NANOS.load(Ordering::Relaxed)),
+        applications: std::time::Duration::from_nanos(APPLICATION_NANOS.load(Ordering::Relaxed)),
+        longest_application: std::time::Duration::from_nanos(
+            LONGEST_APPLICATION_NANOS.load(Ordering::Relaxed),
+        ),
         not_freed: std::array::from_fn(|reason| NOT_FREED[reason].load(Ordering::Relaxed)),
     }
 }
@@ -357,7 +376,18 @@ struct Drops<'a> {
 impl CellVisitor for Drops<'_> {
     fn cell(&mut self, cell: Cell) -> ControlFlow<()> {
         let child = cell.child;
-        match unsafe { part_of(child) } {
+        let part = unsafe { part_of(child) };
+        // An owned child is destroyed with its holder, which a release does
+        // not do: the dispose this act stands in for may not be replaced by a
+        // drop, whether the child is outside W or in S.
+        if part != Part::C
+            && unsafe { crate::refcount::mutator_flags(child) } & crate::refcount::OWNERSHIP_MARK
+                != 0
+        {
+            *self.failed = Some(NotFreed::Ineligible);
+            return ControlFlow::Break(());
+        }
+        match part {
             Part::C => return ControlFlow::Continue(()),
             Part::S => {
                 if !self.held.push(child as usize) {
@@ -368,11 +398,6 @@ impl CellVisitor for Drops<'_> {
                 return ControlFlow::Continue(());
             }
             Part::Outside => {}
-        }
-
-        if unsafe { crate::refcount::mutator_flags(child) } & crate::refcount::OWNERSHIP_MARK != 0 {
-            *self.failed = Some(NotFreed::Ineligible);
-            return ControlFlow::Break(());
         }
 
         if !self.drops.push(child as usize) {
@@ -605,6 +630,7 @@ pub(crate) unsafe fn check_every_count_is_internal(arena: &TraceScratchArena) {
 /// # Safety
 /// As [`prepare`], straight after it answered `frees` for the same rows.
 pub(crate) unsafe fn commit(arena: &TraceScratchArena, frees: &mut Frees) {
+    let from = std::time::Instant::now();
     let mut chain_blocks = blocks_from(frees.chains.head);
     let mut chain_block = chain_blocks.next();
     let mut at = 0usize;
@@ -669,8 +695,10 @@ pub(crate) unsafe fn commit(arena: &TraceScratchArena, frees: &mut Frees) {
             ControlFlow::Continue(())
         })
     };
+    LONGEST_ACT_NANOS.fetch_max(from.elapsed().as_nanos() as u64, Ordering::Relaxed);
     SETS_FREED.fetch_add(1, Ordering::Relaxed);
     MEMBERS_FREED.fetch_add(frees.members, Ordering::Relaxed);
+    HELD_DROPS.fetch_add(frees.held_count, Ordering::Relaxed);
     DROPS_POSTED.fetch_add(
         blocks_from(frees.drops.head)
             .map(|block| unsafe { (*block).entries })
@@ -713,6 +741,7 @@ pub(crate) unsafe fn apply_this_threads() -> usize {
     let Some(head) = (unsafe { take_this_threads() }) else {
         return 0;
     };
+    let from = std::time::Instant::now();
     let members = unsafe { (*head).members };
     unsafe { splice(head) };
     for block in blocks_from(head) {
@@ -723,6 +752,9 @@ pub(crate) unsafe fn apply_this_threads() -> usize {
         }
     }
     unsafe { release_chain(head) };
+    let took = from.elapsed().as_nanos() as u64;
+    APPLICATION_NANOS.fetch_add(took, Ordering::Relaxed);
+    LONGEST_APPLICATION_NANOS.fetch_max(took, Ordering::Relaxed);
     members
 }
 

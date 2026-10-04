@@ -147,14 +147,12 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       exact validation, which counts it and, in a debug build, asserts no
       member reads live; a refused set or a missed checkpoint goes the exact
       way as every set does today.
-- [ ] S68.6 The split W = C ∪ S; the collector frees C (dead in place,
-      per-block chains, `ll_free`'s routing without `free_remote`) and posts
-      typed drops; the owner applies them at its poll, splices the chains,
-      and takes S the exact way. Carried from S68.5: a refused set re-queues
-      once before the exact way, now that a proved one skips it; a raise
-      through a run whose header carries the window's tag leaves its target
-      unwalked and unstamped (design §3, "What the record costs in held
-      garbage").
+- [x] S68.6 The split W = C ∪ S; the collector frees C and the owner takes S.
+      S68.6a (the owner takes a proved set without a trace), S68.6b (the
+      collector frees a set it can free whole), S68.6c (the split, U refused
+      once, C's drops into a proved S held for the owner's sum; the Sage's
+      ruling, design §5a items 8–9). The taint is not built: S68.8 measures
+      held garbage first (design §3).
 - [ ] S68.7 The loom model of the handshake; the debug build's tag asserts and
       the exact validation run beside the verdict. Built: the model
       (`src/cycle/token/checkpoint_model.rs`, eight cases, three defective

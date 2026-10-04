@@ -498,6 +498,12 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
         BatchForm::Verdicts => crate::cycle::posted_set::take_this_threads(),
         BatchForm::AllRoots => {
             crate::cycle::posted_set::drop_this_threads();
+            // The drops a proved set held stand on the record once it goes
+            // back; applied here, ahead of the trace over R, so that the set
+            // they name reads its own counts and not a freed part's, as the
+            // pressure path applies them after its take.
+            #[cfg(feature = "recycler-over-counts")]
+            let _ = unsafe { crate::cycle::collector_frees::apply_this_threads() };
             None
         }
     };
