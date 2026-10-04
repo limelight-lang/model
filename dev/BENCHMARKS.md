@@ -55,6 +55,25 @@ garbage against A's 52–55M, and spends 28–33 % less CPU. The garbage is
 A stretch entered over standing frees keeps the posted set unread through
 it, 222–279 a cell; what that holds is not read.
 
+**Where the remaining misses come from: the host takes the vCPU.** A
+diagnostic arm (not kept) timing each event of a build step, one 60 s cell
+of B: 340 events over 1 ms a cell, longest 8.6 ms, 215 of them inside one
+object's allocation (`new_constructed`), the rest in the link, the store,
+even the rig's own `Vec::push` (up to 11 ms in another cell). First-touch
+page faults are not it: 327,680 fresh pages touched by hand, none over
+1 ms, the longest 0.73 ms. The host's steal is: across the same cell the
+mutators' CPUs 1 and 2 lost 71 and 59 ticks (1.3 s of about 85 s), which at
+a few milliseconds a theft is about the 340 long events; the box is a
+Firecracker guest of four vCPUs. A mutator whose vCPU is stolen for longer
+than the Δ-test's 2 ms wait misses its checkpoint, and no poll answers it.
+
+**The Δ-test's wait at 20 ms** (`LL_RIG_CHECKPOINT_WAIT_US`, one protocol
+cell each of B, `f1e6795`): no checkpoint 1 against 38 at 2 ms; collections
+over P 0 against 29; members the owner freed 0.0M against 0.3M; the
+longest owner pause the application's, 5.3 ms against a collection's
+22.6 ms; the collector's wait 0.65 s against 0.60 s a cell; garbage 204
+against 195 MB; mutator CPU 50.2 against 51.7 s.
+
 ---
 
 ## 2026-10-05 — S68.11: where the checkpoints are missed — the rig's draw of the next plan and a request's build, both without a poll
