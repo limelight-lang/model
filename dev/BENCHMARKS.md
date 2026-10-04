@@ -8,6 +8,55 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-05 — S68.11 read by the protocol: the collector frees 99.8 % of the cyclic garbage, the owner's longest pause falls from 117–198 ms to 10–34 ms, and the garbage stays twice the default's
+
+**Builds.** `10b5e7d`, release test binaries: A the default build, B the
+feature with S68.11 (a)–(d) — the rig's draw in a stretch and its build
+polling every `POLL_STRIDE` births, the member cap 1M, a second refusal read
+live, the application in slices. `web-heap`, 46.78 ms, two mutators,
+`cap-1`, the protocol's cell (`dev/design/the-web-loads.md`): 20 s warm-up,
+96 s, 12 s drain; five repeats, A and B alternated.
+
+| | A | B |
+|---|---|---|
+| longest owner pause, ms | 151 / 152 / 117 / 198 / 163 | 15.2 / 16.5 / 27.7 / 34.4 / 10.0 |
+| its kind | — | no checkpoint, every cell |
+| longest application of the collector's frees, ms | — | 1.7 / 1.9 / 2.6 / 3.3 / 2.2 |
+| longest take's wait, ms | 0 | 0 |
+| longest commit, ms | — | 10.5 / 10.9 / 8.5 / 11.0 / 9.4 |
+| members the owner's collections freed, M | 52.6 / 54.9 / 53.1 / 55.4 / 52.2 | 0.1 / 0.1 / 0.2 / 0.2 / 0.0 |
+| members the collector freed, M | — | 67.2 / 69.2 / 67.7 / 69.2 / 67.2 |
+| collections over P | 3,049–3,196 | 3–24 |
+| mutator CPU, s | 67.6 / 70.5 / 70.4 / 69.2 / 68.3 | 48.5 / 49.6 / 47.0 / 50.3 / 47.2 |
+| collector CPU, s | 38.5–41.1 | 39.3–41.3 |
+| garbage mean, MB | 85.8 / 106.9 / 108.6 / 73.7 / 88.3 | 172.7 / 169.0 / 172.5 / 212.4 / 133.7 |
+| garbage peak, MB | 313–384 | 319–515 |
+| garbage at the drain's end | 0 | 0 |
+| arrival p99.9, ms | 336–503 | 252–369 |
+| Δ-tests proved / touched / no checkpoint | — | 4,113–4,202 / 96–164 / 6–30 |
+| missed by section (other, draw, build, poll, spin, wait, end) | — | 0;0;25;0;0;0;0 · 2;0;14;0;1;0;0 · 1;0;15;0;2;1;0 · 0;0;26;0;4;0;0 · 1;0;3;1;1;0;0 |
+| waits a recall ended | — | 0 |
+| asks a stretch answered at once, draw / wait | — | 271–336 / 1,542–1,621 |
+| stretches entered over standing frees | — | 222–279 |
+| longest build step, ms | 11.6–23.0 | 6.9–15.5 |
+| second refusals, sets / roots read live | — | 12–31 / 1,193–7,569 |
+| `FreesStand` refusals, unreadable members | — | 0, 0 |
+
+**Reading.** The owner pause the gate bounds at 5 ms is met by every path
+the design routes to the collector: the application in slices (≤ 3.3 ms),
+no take waited on a commit. What still pauses the owner is the set whose
+Δ-test found no checkpoint, 10–34 ms, and those misses fall inside a
+request's build step (3–26 a cell), whose longest wall is 7–15 ms in B and
+12–23 ms in A for at most `POLL_STRIDE` births: the step's time is not the
+births'. The draw's stretches answered 271–336 asks a cell that the first
+reading counted as misses. The mutator frees 0.0–0.2M members of cyclic
+garbage against A's 52–55M, and spends 28–33 % less CPU. The garbage is
+1.6–2.3 times A's, the lanes' release at every X turn (S68.10, not built).
+A stretch entered over standing frees keeps the posted set unread through
+it, 222–279 a cell; what that holds is not read.
+
+---
+
 ## 2026-10-05 — S68.11: where the checkpoints are missed — the rig's draw of the next plan and a request's build, both without a poll
 
 **Build.** `8227c6d` with a diagnostic patch, not kept: the rig names the
