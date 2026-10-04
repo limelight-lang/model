@@ -39,9 +39,13 @@ use crate::cycle::mutator_record::MutatorRecord;
 use crate::cycle::row;
 
 /// How long the collector waits for the mutator's checkpoint before it gives
-/// the Δ-test up. A placeholder, read by S68.8's runs: a web load polls
-/// far more often than this.
-pub(crate) const CHECKPOINT_WAIT: Duration = Duration::from_millis(2);
+/// the Δ-test up: longer than a theft of the mutator's CPU, which no poll
+/// answers. Read on `web-heap` (`dev/BENCHMARKS.md`, 2026-10-05): at 2 ms
+/// 6–38 sets a cell missed while the host held the mutator's vCPU for a few
+/// milliseconds, each going the owner's way; at 20 ms one, the collector's
+/// wall in waits 0.65 s a cell against 0.60 s. A miss costs the collector
+/// the bound and the mutator nothing.
+pub(crate) const CHECKPOINT_WAIT: Duration = Duration::from_millis(20);
 
 /// The bound in force, in nanoseconds: [`CHECKPOINT_WAIT`], or what a
 /// measurement set.
