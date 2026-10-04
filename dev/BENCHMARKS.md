@@ -131,7 +131,9 @@ diagnostic arms not kept):
   its garbage spreads 72–106 MB with it and 63–71 without. Keeping the
   waits leaves 1.6–1.8 MB at a 12 s drain's end in both builds; at a 30 s
   drain A's is gone by 24.4 s, and B's stands at 1.6 MB with 73k roots in R
-  the collector has not taken.
+  the collector has not taken; at a 90 s drain B's is gone by 32.7 s. The
+  waits kept delay a dead ring behind a deferred root, up to seven X, and
+  leak none.
 
 ---
 

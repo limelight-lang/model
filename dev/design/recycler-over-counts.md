@@ -581,6 +581,47 @@ poll, as a worker blocked in `accept` does — and of the sets past the cap.
    epoch's measure of work explains (`dev/BENCHMARKS.md`, the same entry);
    S68.9's re-reading measures what remains of the garbage first.
 
+### 5c. The deferred lanes under turns by X alone: S68.10 (the plan, before the code)
+
+**What was read** (`dev/BENCHMARKS.md`, the S68.9 second reading's entry,
+"The X turn's release of every lane"). A root read live waits one, three or
+seven turns in its lane; a lane filled before an X turn it has not seen goes
+back into R at the next poll whatever its wait (the Sage, 2026-09-28;
+`reoffer_the_lanes_due`). Under the record scan the epoch turns by X alone —
+no batch's positions reach twice the proving price — so every turn releases
+every lane and no root waits at all: 882k roots offered again in a 60 s cell
+against 162k with the waits kept, and the garbage 159–181 MB against
+62–72 MB. The default build pays the same rule on its X turns, about half of
+its turns on `web-heap`: 72–106 MB against 63–71 MB.
+
+**What the release buys.** The bound the crate's X is documented as
+(`EPOCH_INTERVAL`, 8 s): how long a component that died behind a deferred
+root waits on a thread whose batches prove too little to turn the epoch. A
+wait counted in X turns alone would hold such a ring seven X, 56 s at the
+crate's X. Read at the drain: with the waits kept the last garbage went at
+32.7 s of a 90 s drain in B and 24.4 s of a 30 s drain in A; with the
+release, within 7.8 s.
+
+**The choice.**
+1. *The waits kept across X* (the release dropped). The bound becomes
+   `7 × X`; the garbage the lowest read in either build.
+2. *A lane goes back once two X turns passed since it filled*. The bound
+   `2 × X`; B's garbage 99–105 MB, between the two.
+3. *As 2 with the count `K` the embedder's* (`ll_gc_set_lane_x_turns`, a
+   knob beside the epoch's ratio), the default read on `web-heap` and the
+   ring loads.
+
+Proposed: 3 with `K` = 7 by default, which is choice 1, since the longest
+lane's own wait is seven turns; the bound written into `EPOCH_INTERVAL`'s
+contract as `K × X`. To be read before the build:
+the ring loads (`partly-overlapping` and the churn loads) at `K` = 1, 2 and
+7, whose remnant this rule moves (`dev/DECISIONS.md`, 2026-10-03,
+"`partly-overlapping`'s remnant is the scheme's behaviour").
+
+**Tests.** `an_x_turn_releases_every_lane` pins the release at one X turn;
+it is rewritten onto `K`: the longest lane goes back at the `K`-th X turn
+and not before. A case for `K` = 1 keeps today's behaviour reachable.
+
 ## 6. The owner's poll
 
 12. The owner applies the drops, each through `drop_ref`, typed at
