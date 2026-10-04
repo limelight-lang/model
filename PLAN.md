@@ -174,6 +174,11 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       X turn hands back every lane, and under the record scan every turn is
       an X turn, so no root read live waits; the rule read again, through
       the Critic and the Sage, before S68.8's runs.
+- [ ] S68.11 The sets that still fall to the owner (design §5d): no member
+      cap by default, the application in slices, a checkpoint answered
+      inside the runtime's teardown and the rig's build, and a set without a
+      checkpoint given the second chance; through the Critic and the Sage,
+      before S68.10's build.
 - [ ] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9): the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the
