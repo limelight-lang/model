@@ -246,6 +246,17 @@ diagnostic arms not kept):
   longer; the garbage would then follow R's length ahead of a death, which
   no column here reads.
 
+  *Read on 2026-10-05* (diagnostic arms at `c00a137`, not kept, one 60 s
+  cell each of B, the release against the waits kept). The withheld deaths
+  are not it: a death by count stamped into its dead slot and read at the
+  slot's return waits alike, 147k deaths a cell, mean 56 against 66 ms, 98 %
+  of both under 100 ms. R's length is: sampled at every poll, R stands at
+  61k entries on the mean (142k at most) with the release against 30k
+  (124k) with the waits kept, the lanes 56k against 68k; the garbage 158
+  against 73 MB; the collector read 2.87M against 2.39M roots. A ring that
+  turns to garbage is registered behind every re-offered live root the last
+  X turn spliced into R, and waits for the collector to read through them.
+
 ---
 
 ## 2026-10-04 — S68.8, first reading: on `web-heap` the arm spends less mutator CPU but holds twice the garbage, and neither arm keeps the owner's pause under 5 ms
